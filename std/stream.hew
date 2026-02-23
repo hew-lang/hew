@@ -1,0 +1,172 @@
+//! Stream<T> and Sink<T> — bounded, FIFO data channels.
+//!
+//! Streams and sinks are language intrinsics for passing typed data between
+//! producers and consumers, including across actor boundaries.
+//!
+//! - `Stream<T>` is a readable handle — pull items with `.next()` or `for await`
+//! - `Sink<T>` is a writable handle — push items with `.write(value)`
+//! - Both are move-only and `Send` (safe to pass to actors)
+//! - Both auto-close when dropped (RAII); explicit `.close()` is optional
+//!
+//! # Example
+//!
+//! ```
+//! import std::stream;
+//!
+//! fn main() {
+//!     let (sink, input) = stream.channel(16);
+//!
+//!     sink.write("hello");
+//!     sink.write("world");
+//!     sink.close();  // optional — would auto-close on drop
+//!
+//!     for await item in input {
+//!         println(item);
+//!     }
+//! }
+//! ```
+
+/// A readable stream handle.
+type Stream {}
+
+/// A writable sink handle.
+type Sink {}
+
+// ── Stream methods ────────────────────────────────────────────────────
+
+trait StreamMethods {
+    /// Pull the next item from the stream. Returns the item, or signals EOF.
+    fn next(self: Stream) -> String;
+
+    /// Close this stream and release resources early (optional — auto-closes on drop).
+    fn close(self: Stream);
+
+    /// Wrap with a line-delimited adapter. Yields one line per next().
+    fn lines(self: Stream) -> Stream;
+
+    /// Wrap with a fixed-size chunking adapter.
+    fn chunks(self: Stream, size: i64) -> Stream;
+
+    /// Consume the entire stream and concatenate as a single string.
+    fn collect(self: Stream) -> String;
+}
+
+impl StreamMethods for Stream {
+    fn next(self: Stream) -> String { hew_stream_next(self) }
+    fn close(self: Stream) { hew_stream_close(self); }
+    fn lines(self: Stream) -> Stream { hew_stream_lines(self) }
+    fn chunks(self: Stream, size: i64) -> Stream { hew_stream_chunks(self, size) }
+    fn collect(self: Stream) -> String { hew_stream_collect_string(self) }
+}
+
+// ── Sink methods ──────────────────────────────────────────────────────
+
+trait SinkMethods {
+    /// Write a value to the sink.
+    fn write(self: Sink, data: String);
+
+    /// Flush any buffered data.
+    fn flush(self: Sink);
+
+    /// Close the sink, signaling EOF to the reader (optional — auto-closes on drop).
+    fn close(self: Sink);
+}
+
+impl SinkMethods for Sink {
+    fn write(self: Sink, data: String) { hew_sink_write_string(self, data); }
+    fn flush(self: Sink) { hew_sink_flush(self); }
+    fn close(self: Sink) { hew_sink_close(self); }
+}
+
+// ── Constructors ──────────────────────────────────────────────────────
+
+/// Create a bounded in-memory channel with the given capacity.
+/// Returns a `(Sink, Stream)` pair for writing and reading.
+pub fn channel(capacity: i64) -> (Sink, Stream) {
+    let pair = hew_stream_channel(capacity);
+    let sink = hew_stream_pair_sink(pair);
+    let input = hew_stream_pair_stream(pair);
+    hew_stream_pair_free(pair);
+    (sink, input)
+}
+
+/// Open a file as a readable Stream<String>.
+///
+/// Returns `Err` with the OS error message if the file cannot be opened.
+///
+/// # Examples
+///
+/// ```
+/// let file = stream.from_file("data.txt")?;
+/// for await line in file.lines() { println(line); }
+/// ```
+pub fn from_file(path: String) -> Result<Stream, String> {
+    let s = hew_stream_from_file_read(path);
+    if hew_stream_is_valid(s) {
+        Ok(s)
+    } else {
+        Err(hew_stream_last_error())
+    }
+}
+
+/// Open a file as a writable Sink<String>.
+///
+/// Returns `Err` with the OS error message if the file cannot be created.
+///
+/// # Examples
+///
+/// ```
+/// let sink = stream.to_file("output.txt")?;
+/// sink.write("hello");
+/// // sink auto-closes when dropped
+/// ```
+pub fn to_file(path: String) -> Result<Sink, String> {
+    let s = hew_stream_from_file_write(path);
+    if hew_sink_is_valid(s) {
+        Ok(s)
+    } else {
+        Err(hew_stream_last_error())
+    }
+}
+
+/// Pipe all items from a stream into a sink, then close both.
+///
+/// This is the streaming equivalent of `io.Copy` — it reads from the source
+/// until EOF and writes each item to the destination.
+///
+/// # Examples
+///
+/// ```
+/// let file = stream.from_file("data.txt");
+/// let body = req.respond_stream(200, "text/plain")?;
+/// stream.pipe(file, body);  // streams file directly to HTTP response
+/// ```
+pub fn pipe(source: Stream, dest: Sink) {
+    hew_stream_pipe(source, dest);
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+/// Internal paired channel handle.
+type StreamPair {}
+
+extern "C" {
+    fn hew_stream_channel(capacity: i64) -> StreamPair;
+    fn hew_stream_pair_sink(pair: StreamPair) -> Sink;
+    fn hew_stream_pair_stream(pair: StreamPair) -> Stream;
+    fn hew_stream_pair_free(pair: StreamPair);
+    fn hew_stream_from_file_read(path: String) -> Stream;
+    fn hew_stream_from_file_write(path: String) -> Sink;
+    fn hew_stream_is_valid(stream: Stream) -> bool;
+    fn hew_sink_is_valid(sink: Sink) -> bool;
+    fn hew_stream_last_error() -> String;
+    fn hew_stream_next(stream: Stream) -> String;
+    fn hew_stream_collect_string(stream: Stream) -> String;
+    fn hew_stream_close(stream: Stream);
+    fn hew_stream_lines(stream: Stream) -> Stream;
+    fn hew_stream_chunks(stream: Stream, size: i64) -> Stream;
+    fn hew_stream_pipe(source: Stream, dest: Sink);
+    fn hew_sink_write_string(sink: Sink, data: String);
+    fn hew_sink_flush(sink: Sink);
+    fn hew_sink_close(sink: Sink);
+}

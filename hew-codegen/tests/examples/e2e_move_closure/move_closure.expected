@@ -1,0 +1,4 @@
+adder(5)(10) = 15
+adder(20)(10) = 30
+apply_twice(4) = 24
+PASS

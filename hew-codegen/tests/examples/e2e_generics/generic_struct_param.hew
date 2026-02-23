@@ -1,0 +1,20 @@
+type Wrapper<T> {
+    inner: T;
+}
+
+fn wrap<T>(val: T) -> Wrapper<T> {
+    Wrapper { inner: val }
+}
+
+fn unwrap<T>(w: Wrapper<T>) -> T {
+    w.inner
+}
+
+fn main() {
+    let w = wrap<int>(42);
+    let result = unwrap<int>(w);
+    println(result);
+
+    let w2 = wrap<int>(99);
+    println(unwrap<int>(w2));
+}

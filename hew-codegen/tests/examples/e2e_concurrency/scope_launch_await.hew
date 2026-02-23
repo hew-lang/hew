@@ -1,0 +1,22 @@
+// Test: scope launch with await — proves tasks return results
+fn compute_a() -> int {
+    return 10;
+}
+
+fn compute_b() -> int {
+    return 20;
+}
+
+fn main() {
+    let result = scope |s| {
+        let t1 = s.launch {
+            compute_a()
+        };
+        let t2 = s.launch {
+            compute_b()
+        };
+        let r1 = await t1;
+        let r2 = await t2;
+        println(r1 + r2);
+    };
+}

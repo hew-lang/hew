@@ -1,0 +1,14 @@
+// Test: HashMap for-in iteration with destructured key-value pairs
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("alpha", 1);
+    m.insert("beta", 2);
+    m.insert("gamma", 3);
+    var total = 0;
+    for (k, v) in m {
+        print(k);
+        println(f"={v}");
+        total = total + v;
+    }
+    println(total);
+}

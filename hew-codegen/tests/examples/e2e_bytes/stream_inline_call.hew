@@ -1,0 +1,16 @@
+import std::fs;
+import std::stream;
+
+fn main() {
+    hew_file_write("/tmp/hew_inline_stream_test.txt", "alpha\nbeta\ngamma\n");
+
+    let raw = match stream.from_file("/tmp/hew_inline_stream_test.txt") {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    var count = 0;
+    for await line in raw.lines() {
+        count = count + 1;
+    }
+    println(count);
+}

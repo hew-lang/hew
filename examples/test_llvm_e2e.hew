@@ -1,0 +1,65 @@
+// End-to-end test for the LLVM API backend.
+// Tests: arithmetic, control flow, function calls, variables.
+fn add(x: i32, y: i32) -> i32 {
+    x + y
+}
+
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+
+fn test_arithmetic() -> i32 {
+    let a = 10;
+    let b = 20;
+    let sum = a + b;
+    let prod = a * b;
+    if sum == 30 {
+        if prod == 200 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_control_flow() -> i32 {
+    var result = 0;
+    for i in 0..10 {
+        result = result + i;
+    }
+    if result == 45 {
+        1
+    } else {
+        0
+    }
+}
+
+fn main() -> i32 {
+    let r1 = add(3, 4);
+    let r2 = factorial(5);
+    let r3 = test_arithmetic();
+    let r4 = test_control_flow();
+    if r1 == 7 {
+        if r2 == 120 {
+            if r3 == 1 {
+                if r4 == 1 {
+                    0
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else {
+        1
+    }
+}

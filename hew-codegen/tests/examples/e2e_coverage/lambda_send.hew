@@ -1,0 +1,11 @@
+// E2E test: lambda actor .send() exercises generateSendExpr.
+fn main() {
+    let counter = spawn (x: int) => {
+        println(x);
+    };
+    counter.send(42);
+    sleep_ms(50);
+    counter.send(99);
+    sleep_ms(50);
+    println("done");
+}

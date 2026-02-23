@@ -1,0 +1,35 @@
+trait Describable {
+    fn describe(self: Self) -> String;
+}
+
+type Dog {
+    name: String;
+}
+
+type Cat {
+    name: String;
+}
+
+impl Describable for Dog {
+    fn describe(self: Dog) -> String {
+        string_concat("Dog: ", self.name)
+    }
+}
+
+impl Describable for Cat {
+    fn describe(self: Cat) -> String {
+        string_concat("Cat: ", self.name)
+    }
+}
+
+fn print_description(obj: dyn Describable) {
+    let desc = obj.describe();
+    println(desc);
+}
+
+fn main() {
+    let d = Dog { name: "Rex" };
+    let c = Cat { name: "Whiskers" };
+    print_description(d);
+    print_description(c);
+}

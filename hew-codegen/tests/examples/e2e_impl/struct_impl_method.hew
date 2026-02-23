@@ -1,0 +1,20 @@
+type Counter {
+    value: int;
+}
+
+impl Counter {
+    fn increment(self: Counter) -> Counter {
+        Counter { value: self.value + 1 }
+    }
+
+    fn get(self: Counter) -> int {
+        self.value
+    }
+}
+
+fn main() {
+    let c = Counter { value: 0 };
+    let c2 = c.increment();
+    let c3 = c2.increment();
+    println(c3.get());
+}

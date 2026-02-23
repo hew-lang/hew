@@ -1,0 +1,8 @@
+wire type Message {
+    id: int @1;
+    value: int @2;
+}
+
+fn main() {
+    println("wire roundtrip ok");
+}

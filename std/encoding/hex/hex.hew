@@ -1,0 +1,108 @@
+//! Hexadecimal encoding and decoding.
+//!
+//! Encode binary data to hexadecimal strings (lowercase or uppercase)
+//! and decode hexadecimal strings back to binary data.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::hex;
+//!
+//! fn main() {
+//!     let data: bytes = bytes::new();
+//!     data.push(0xDE);
+//!     data.push(0xAD);
+//!     let s = hex.encode(data);
+//!     println(s);   // "dead"
+//!     let back = hex.decode(s);
+//!     println(back.len());  // 2
+//! }
+//! ```
+
+/// Encode binary data to a lowercase hex string.
+pub fn encode(data: bytes) -> String {
+    encode_impl(data, false)
+}
+
+/// Encode binary data to an uppercase hex string.
+pub fn encode_upper(data: bytes) -> String {
+    encode_impl(data, true)
+}
+
+/// Decode a hex string to binary data.
+///
+/// Returns an empty `bytes` buffer if the input is not valid hex.
+pub fn decode(s: String) -> bytes {
+    let slen = s.len();
+    let out: bytes = bytes::new();
+    if slen == 0 {
+        return out;
+    }
+    if slen % 2 != 0 {
+        return out;
+    }
+    var i = 0;
+    while i < slen {
+        let hi = hex_char_to_nibble(s.slice(i, i + 1));
+        let lo = hex_char_to_nibble(s.slice(i + 1, i + 2));
+        if hi < 0 {
+            return bytes::new();
+        }
+        if lo < 0 {
+            return bytes::new();
+        }
+        out.push(hi * 16 + lo);
+        i = i + 2;
+    }
+    out
+}
+
+fn encode_impl(data: bytes, upper: bool) -> String {
+    let out: bytes = bytes::new();
+    for i in 0..data.len() {
+        let b = data.get(i);
+        let hi = b / 16;
+        let lo = b % 16;
+        out.push(nibble_to_char(hi, upper));
+        out.push(nibble_to_char(lo, upper));
+    }
+    out.to_string()
+}
+
+fn nibble_to_char(n: i32, upper: bool) -> i32 {
+    if n < 10 {
+        48 + n
+    } else {
+        if upper {
+            55 + n
+        } else {
+            87 + n
+        }
+    }
+}
+
+fn hex_char_to_nibble(ch: String) -> i32 {
+    if ch == "0" { 0 }
+    else if ch == "1" { 1 }
+    else if ch == "2" { 2 }
+    else if ch == "3" { 3 }
+    else if ch == "4" { 4 }
+    else if ch == "5" { 5 }
+    else if ch == "6" { 6 }
+    else if ch == "7" { 7 }
+    else if ch == "8" { 8 }
+    else if ch == "9" { 9 }
+    else if ch == "a" { 10 }
+    else if ch == "b" { 11 }
+    else if ch == "c" { 12 }
+    else if ch == "d" { 13 }
+    else if ch == "e" { 14 }
+    else if ch == "f" { 15 }
+    else if ch == "A" { 10 }
+    else if ch == "B" { 11 }
+    else if ch == "C" { 12 }
+    else if ch == "D" { 13 }
+    else if ch == "E" { 14 }
+    else if ch == "F" { 15 }
+    else { -1 }
+}

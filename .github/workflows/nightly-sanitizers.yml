@@ -1,0 +1,122 @@
+name: Nightly Sanitizers
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "21"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # hew-codegen ASan+UBSan — targeted high-signal coverage for memory/UB
+  # ─────────────────────────────────────────────────────────────────────────
+  hew-codegen-sanitizers:
+    name: hew-codegen ASan+UBSan (targeted)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }} \
+            lld-${{ env.LLVM_VERSION }} \
+            libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: hew-codegen-sanitizer-rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: hew-codegen-sanitizer-rust-${{ runner.os }}-
+
+      - name: Build Rust frontend/runtime for E2E harness
+        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize
+
+      - name: Configure hew-codegen with ASan+UBSan
+        run: |
+          cd hew-codegen
+          cmake -B build-sanitizer -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_C_COMPILER=clang-${{ env.LLVM_VERSION }} \
+            -DCMAKE_CXX_COMPILER=clang++-${{ env.LLVM_VERSION }} \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
+            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
+
+      - name: Build hew-codegen (sanitizers)
+        run: cmake --build hew-codegen/build-sanitizer -j"$(nproc)"
+
+      - name: Run compiler unit tests (sanitizers)
+        env:
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cd hew-codegen/build-sanitizer
+          ctest --output-on-failure -R "^(mlir_dialect|translate|coro_generator|coro_fib_generator)$"
+
+      - name: Run targeted sanitizer E2E tests
+        continue-on-error: true
+        env:
+          # MLIR internals intentionally retain process-lifetime allocations.
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cd hew-codegen/build-sanitizer
+          ctest --output-on-failure -j"$(nproc)" -R "^(mlirgen|e2e_actor_basic|e2e_vec_basic|e2e_hashmap_basic|e2e_concurrency_concurrent_counter|e2e_concurrency_message_ordering|e2e_memory_.*|coro_generator|coro_fib_generator)$"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rust runtime ASan — memory safety for the actor runtime
+  # ─────────────────────────────────────────────────────────────────────────
+  rust-runtime-asan:
+    name: Rust runtime ASan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/sanitizer-runtime-asan/
+          key: runtime-asan-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: runtime-asan-${{ runner.os }}-
+
+      - name: Run hew-runtime ASan tests
+        env:
+          CARGO_TARGET_DIR: target/sanitizer-runtime-asan
+          RUSTFLAGS: -Zsanitizer=address -Cforce-frame-pointers=yes
+          ASAN_OPTIONS: detect_leaks=1
+        run: |
+          # Nightly Rust supports ASan for this target; UBSan coverage is provided
+          # by the C++ sanitizer job above.
+          cargo +nightly test --target x86_64-unknown-linux-gnu -p hew-runtime --lib

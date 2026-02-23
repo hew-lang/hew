@@ -1,0 +1,29 @@
+//! @name Pattern Matching
+//! @description Match expressions with enums
+
+enum Shape {
+    Circle(i32);
+    Rectangle(i32, i32);
+    Triangle(i32, i32);
+}
+
+fn area(shape: Shape) -> i32 {
+    match shape {
+        Circle(r) => r * r * 3,
+        Rectangle(w, h) => w * h,
+        Triangle(b, h) => b * h / 2,
+    }
+}
+
+fn main() {
+    let c = Circle(5);
+    let r = Rectangle(4, 6);
+    let t = Triangle(3, 8);
+
+    print("Circle area: ");
+    println(area(c));
+    print("Rectangle area: ");
+    println(area(r));
+    // Or using inline interpolation
+    println(f"Triangle area: {area(t)}");
+}

@@ -1,0 +1,104 @@
+// Service Architecture with Supervision
+//
+// Models a real-world service: a cache, a database connection, and an API
+// handler that depends on both. If the cache crashes, only it restarts.
+// If the database crashes, the API handler (which depends on it) must also
+// restart — that's what rest_for_one does.
+//
+// This is the same "dependency-aware restart" pattern used in Erlang/OTP
+// application supervisors and Kubernetes pod restart policies.
+actor Cache {
+    let capacity: i32;
+    let entries: i32;
+    receive fn store(key: i32) {
+        self.entries = self.entries + 1;
+        print("[cache] stored key=");
+        print(key);
+        print(" (");
+        print(self.entries);
+        print("/");
+        print(self.capacity);
+        println(")");
+    }
+    receive fn corrupt() {
+        println("[cache] corruption detected!");
+        panic("cache corruption");
+    }
+}
+
+actor Database {
+    let connections: i32;
+    init() {
+        print("[db] connected (pool=");
+        print(self.connections);
+        println(")");
+    }
+    receive fn query(id: i32) {
+        print("[db] SELECT * FROM users WHERE id=");
+        println(id);
+    }
+    receive fn disconnect() {
+        println("[db] lost connection!");
+        panic("database disconnected");
+    }
+}
+
+actor ApiHandler {
+    let port: i32;
+    init() {
+        print("[api] listening on port ");
+        println(self.port);
+    }
+    receive fn request(user_id: i32) {
+        print("[api] GET /users/");
+        println(user_id);
+    }
+}
+
+// rest_for_one: if a child crashes, it and all children started AFTER it
+// restart. This models dependency order:
+//   cache → database → api_handler
+// If database crashes, api_handler also restarts (it depends on the DB).
+// If cache crashes, only cache restarts (DB and API are independent of it).
+supervisor ServiceStack {
+    strategy: rest_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child cache: Cache(1000, 0);
+    child db: Database(4);
+    child api: ApiHandler(8080);
+}
+
+fn main() {
+    println("=== Service Stack ===");
+    let svc = spawn ServiceStack;
+    sleep_ms(50);
+    let cache = supervisor_child(svc, 0);
+    let db = supervisor_child(svc, 1);
+    let api = supervisor_child(svc, 2);
+    // Normal operation
+    cache.store(42);
+    sleep_ms(10);
+    db.query(42);
+    sleep_ms(10);
+    api.request(42);
+    sleep_ms(30);
+
+    // Cache crashes — only cache restarts (DB and API unaffected)
+    println("");
+    println("--- cache crashes ---");
+    cache.corrupt();
+    sleep_ms(200);
+    let cache2 = supervisor_child(svc, 0);
+    let db2 = supervisor_child(svc, 1);
+    let api2 = supervisor_child(svc, 2);
+    cache2.store(99);
+    sleep_ms(20);
+    db2.query(99);
+    sleep_ms(20);
+    api2.request(99);
+    sleep_ms(50);
+    println("");
+    println("Service stack is resilient.");
+}

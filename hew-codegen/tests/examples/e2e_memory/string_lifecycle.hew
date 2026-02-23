@@ -1,0 +1,14 @@
+// Test: String Lifecycle
+// Exercises: Create many strings without leak
+fn main() {
+    println("=== String Lifecycle ===");
+
+    // Print many strings
+    var i = 0;
+    while i < 10 {
+        println(f"Line {i}");
+        i = i + 1;
+    }
+    println("String output completed");
+    println("PASS");
+}

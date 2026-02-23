@@ -1,0 +1,23 @@
+// Test: Actor Orchestration
+// Exercises: Multiple actors coordinated from main via await
+actor Doubler {
+    let factor: int;
+    receive fn double(x: int) -> int {
+        x * self.factor
+    }
+}
+
+actor Adder {
+    let base: int;
+    receive fn add(x: int) -> int {
+        x + self.base
+    }
+}
+
+fn main() {
+    let d = spawn Doubler(target: 2);
+    let a = spawn Adder(base: 100);
+    let x = await d.double(5);
+    let y = await a.add(x);
+    println(y);
+}

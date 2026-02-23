@@ -1,0 +1,19 @@
+//! @name Wire Types
+//! @description Wire structs and enums for serialization
+
+wire type UserMessage {
+    name: String @1;
+    age: i32 @2;
+}
+
+wire enum Command {
+    Start;
+    Stop;
+    Pause;
+}
+
+fn main() {
+    println("Wire types define serialization schemas.");
+    println("Fields have explicit tags (@1, @2) for");
+    println("backwards-compatible binary encoding.");
+}

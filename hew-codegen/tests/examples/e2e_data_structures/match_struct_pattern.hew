@@ -1,0 +1,19 @@
+// Test: Struct patterns in match expressions
+// Exercises: PatternKind::Struct with field destructuring
+type Point {
+    x: int;
+    y: int;
+}
+
+fn sum_point(p: Point) -> int {
+    match p {
+        Point { x, y } => x + y,
+    }
+}
+
+fn main() {
+    let p1 = Point { x: 3, y: 7 };
+    println(sum_point(p1));
+    let p2 = Point { x: 10, y: 20 };
+    println(sum_point(p2));
+}

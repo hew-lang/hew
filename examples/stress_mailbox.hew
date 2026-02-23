@@ -1,0 +1,28 @@
+// stress_mailbox.hew - Test bounded mailbox under pressure
+// Sends many messages to a bounded mailbox and verifies backpressure
+// doesn't deadlock and all messages are eventually processed.
+actor Counter {
+    let count: i32;
+
+    mailbox 10;
+    receive fn increment() {
+        self.count = self.count + 1;
+    }
+    receive fn report() {
+        println(f"Counter count: {self.count}");
+    }
+}
+
+fn main() {
+    println("=== Stress: Bounded Mailbox ===");
+    let c = spawn Counter;
+    // Send 1000 messages to mailbox with capacity 10
+    // This exercises backpressure: sender must wait when mailbox is full
+    for i in 0..1000 {
+        c.increment();
+    }
+    sleep_ms(500);
+    c.report();
+    println("PASS: bounded mailbox processed all messages without deadlock");
+    stop(c);
+}

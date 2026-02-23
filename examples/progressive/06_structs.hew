@@ -1,0 +1,20 @@
+// Test 6: Structs
+// Defining and using structures
+type Person {
+    age: i32;
+    id: i32;
+}
+
+type Point {
+    x: i32;
+    y: i32;
+}
+
+fn main() {
+    let person = Person { age: 25, id: 101 };
+    println(person.age);
+    println(person.id);
+    let point = Point { x: 10, y: 20 };
+    println(point.x);
+    println(point.y);
+}

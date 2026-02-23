@@ -1,0 +1,79 @@
+//! JSON Web Token encoding and validation.
+//!
+//! Encode, decode, and validate JWTs using HMAC or RSA algorithms.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::crypto::jwt;
+//!
+//! fn main() {
+//!     let token = jwt.encode("{\"sub\":\"1234\"}", "secret", "HS256");
+//!     if jwt.validate(token, "secret", "HS256") {
+//!         let payload = jwt.decode(token, "secret", "HS256");
+//!         println(payload);
+//!     }
+//! }
+//! ```
+
+/// Encode a JSON payload into a signed JWT string.
+///
+/// # Examples
+///
+/// ```
+/// let token = jwt.encode("{\"sub\":\"user1\"}", "my_secret", "HS256");
+/// ```
+pub fn encode(payload: String, secret: String, algorithm: String) -> String {
+    hew_jwt_encode(payload, secret, algorithm)
+}
+
+/// Decode and verify a JWT, returning its payload as a JSON string.
+///
+/// Panics if the token signature is invalid.
+///
+/// # Examples
+///
+/// ```
+/// let payload = jwt.decode(token, "my_secret", "HS256");
+/// ```
+pub fn decode(token: String, secret: String, algorithm: String) -> String {
+    hew_jwt_decode(token, secret, algorithm)
+}
+
+/// Decode a JWT without verifying its signature.
+///
+/// **Warning:** This does not validate the token. Only use for
+/// inspecting untrusted tokens when you don't need authenticity.
+///
+/// # Examples
+///
+/// ```
+/// let payload = jwt.decode_insecure(token);
+/// ```
+pub fn decode_insecure(token: String) -> String {
+    hew_jwt_decode_insecure(token)
+}
+
+/// Validate a JWT signature and expiration.
+///
+/// Returns `true` if the token is valid, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// if jwt.validate(token, "my_secret", "HS256") {
+///     println("valid");
+/// }
+/// ```
+pub fn validate(token: String, secret: String, algorithm: String) -> bool {
+    hew_jwt_validate(token, secret, algorithm)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_jwt_encode(payload: String, secret: String, algorithm: String) -> String;
+    fn hew_jwt_decode(token: String, secret: String, algorithm: String) -> String;
+    fn hew_jwt_decode_insecure(token: String) -> String;
+    fn hew_jwt_validate(token: String, secret: String, algorithm: String) -> bool;
+}

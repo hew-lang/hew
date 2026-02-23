@@ -1,0 +1,24 @@
+[package]
+name = "hew-observe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TUI actor observer for debugging Hew actor systems"
+
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+
+[[bin]]
+name = "hew-observe"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.29"
+ratatui = "0.30"
+reqwest = { version = "0.13", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

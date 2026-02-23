@@ -1,0 +1,22 @@
+fn classify(n: int) -> int {
+    match n {
+        x if x > 100 => {
+            println("big");
+            2
+        },
+        x if x > 0 => {
+            println("positive");
+            1
+        },
+        _ => {
+            println("non-positive");
+            0
+        },
+    }
+}
+
+fn main() {
+    let _ = classify(150);
+    let _ = classify(42);
+    let _ = classify(-5);
+}

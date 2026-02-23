@@ -1,0 +1,47 @@
+import std::crypto::crypto;
+
+import std::encoding::hex;
+
+fn main() {
+    // SHA-256 of empty input
+    let empty: bytes = bytes::new();
+    let h = crypto.sha256(empty);
+    println(h.len());
+
+    // SHA-256 of "abc" should start with ba7816bf
+    let abc: bytes = bytes::new();
+    abc.push(97); // a
+    abc.push(98); // b
+    abc.push(99); // c
+    let hash = crypto.sha256(abc);
+    let prefix = hex.encode(hash);
+    // Print first 8 hex chars (4 bytes)
+    println(hash.get(0));
+    println(hash.get(1));
+    println(hash.get(2));
+    println(hash.get(3));
+
+    // random_bytes length
+    let rand = crypto.random_bytes(16);
+    println(rand.len());
+
+    // constant_time_eq: equal
+    let a: bytes = bytes::new();
+    a.push(1);
+    a.push(2);
+    let b: bytes = bytes::new();
+    b.push(1);
+    b.push(2);
+    if crypto.constant_time_eq(a, b) {
+        println("equal");
+    }
+    // constant_time_eq: not equal
+    let c: bytes = bytes::new();
+    c.push(1);
+    c.push(3);
+    if crypto.constant_time_eq(a, c) {
+        println("equal");
+    } else {
+        println("not equal");
+    }
+}

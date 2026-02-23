@@ -1,0 +1,50 @@
+// Golden test: struct definition, initialization, field access, field set
+// Exercises: StructInitOp, FieldGetOp, FieldSetOp
+type Point {
+    x: int;
+    y: int;
+}
+
+type Rect {
+    w: int;
+    h: int;
+}
+
+fn make_point(x: int, y: int) -> Point {
+    Point { x: x, y: y }
+}
+
+fn point_sum(p: Point) -> int {
+    p.x + p.y
+}
+
+fn area(r: Rect) -> int {
+    r.w * r.h
+}
+
+fn main() {
+    // Direct struct init + field access
+    let p = Point { x: 10, y: 20 };
+    println(p.x);
+    println(p.y);
+    println(point_sum(p));
+
+    // Factory function
+    let p2 = make_point(3, 4);
+    println(p2.x + p2.y);
+
+    // Field set on mutable variable
+    var p3 = Point { x: 1, y: 2 };
+    p3.x = 100;
+    p3.y = 200;
+    println(p3.x);
+    println(p3.y);
+
+    // Compound assignment
+    p3.x += 5;
+    println(p3.x);
+
+    // Second struct type
+    let r = Rect { w: 6, h: 7 };
+    println(area(r));
+}

@@ -1,0 +1,117 @@
+//! File system operations.
+//!
+//! Read, write, and query files on the local file system.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::fs;
+//!
+//! fn main() {
+//!     let contents = fs.read("config.toml");
+//!     fs.write("output.txt", "hello");
+//!     if fs.exists("data.csv") {
+//!         let size = fs.size("data.csv");
+//!         println(size);
+//!     }
+//! }
+//! ```
+
+/// Read the entire contents of a file as a UTF-8 string.
+///
+/// Panics if the file does not exist or cannot be read.
+///
+/// # Examples
+///
+/// ```
+/// let src = fs.read("main.hew");
+/// ```
+pub fn read(path: String) -> String {
+    hew_file_read(path)
+}
+
+/// Write a string to a file, creating or overwriting it.
+///
+/// Returns 0 on success, non-zero on error.
+pub fn write(path: String, content: String) -> i32 {
+    hew_file_write(path, content)
+}
+
+/// Append a string to the end of a file.
+///
+/// Creates the file if it does not exist. Returns 0 on success.
+pub fn append(path: String, content: String) -> i32 {
+    hew_file_append(path, content)
+}
+
+/// Check whether a file exists at the given path.
+///
+/// # Examples
+///
+/// ```
+/// if fs.exists("config.toml") {
+///     println("found config");
+/// }
+/// ```
+pub fn exists(path: String) -> bool {
+    hew_file_exists(path)
+}
+
+/// Delete a file. Returns 0 on success.
+pub fn delete(path: String) -> i32 {
+    hew_file_delete(path)
+}
+
+/// Returns the size of a file in bytes.
+pub fn size(path: String) -> i64 {
+    hew_file_size(path)
+}
+
+/// Read a single line from standard input.
+///
+/// Blocks until the user presses Enter.
+///
+/// # Examples
+///
+/// ```
+/// print("Name: ");
+/// let name = fs.read_line();
+/// ```
+pub fn read_line() -> String {
+    hew_stdin_read_line()
+}
+
+/// Read the raw bytes of a file into a `bytes` value.
+///
+/// Returns an empty `bytes` buffer on error.
+///
+/// # Examples
+///
+/// ```
+/// let data = fs.read_bytes("image.png");
+/// println(data.len());
+/// ```
+pub fn read_bytes(path: String) -> bytes {
+    hew_file_read_bytes(path)
+}
+
+/// Write a `bytes` value to a file, creating or overwriting it.
+///
+/// Returns 0 on success, non-zero on error.
+pub fn write_bytes(path: String, data: bytes) -> i32 {
+    hew_file_write_bytes(path, data)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_file_read(path: String) -> String;
+    fn hew_file_write(path: String, content: String) -> i32;
+    fn hew_file_append(path: String, content: String) -> i32;
+    fn hew_file_exists(path: String) -> bool;
+    fn hew_file_delete(path: String) -> i32;
+    fn hew_file_size(path: String) -> i64;
+    fn hew_stdin_read_line() -> String;
+    fn hew_file_read_bytes(path: String) -> bytes;
+    fn hew_file_write_bytes(path: String, data: bytes) -> i32;
+}

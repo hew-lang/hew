@@ -1,0 +1,121 @@
+// ─────────────────────────────────────────────────────────────────
+// Hew: Nested Supervisor Trees
+// ─────────────────────────────────────────────────────────────────
+//
+// Demonstrates OTP-style supervision hierarchies where supervisors
+// contain other supervisors as children. When an inner supervisor's
+// restart budget is exhausted, it escalates to the outer supervisor,
+// which restarts the entire inner subtree.
+//
+// Topology:
+//                    AppSupervisor
+//                    /           \
+//              WorkerPool     CacheManager
+//              /      \            |
+//          Worker(1)  Worker(2)  Cache(42)
+actor Worker {
+    let id: i32;
+    let count: i32;
+    receive fn process(item: i32) {
+        self.count = self.count + 1;
+        print("[worker ");
+        print(self.id);
+        print("] processed item ");
+        print(item);
+        print(" (total: ");
+        print(self.count);
+        println(")");
+    }
+    receive fn fail() {
+        print("[worker ");
+        print(self.id);
+        println("] crashing!");
+        panic("worker failure");
+    }
+}
+
+actor Cache {
+    let capacity: i32;
+    let entries: i32;
+    receive fn store(key: i32) {
+        self.entries = self.entries + 1;
+        print("[cache] stored key=");
+        print(key);
+        print(" (");
+        print(self.entries);
+        print("/");
+        print(self.capacity);
+        println(")");
+    }
+}
+
+// Inner supervisor: manages a pool of workers
+supervisor WorkerPool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker(1, 0);
+    child w2: Worker(2, 0);
+}
+
+// Inner supervisor: manages cache actors
+supervisor CacheManager {
+    strategy: one_for_one;
+    max_restarts: 2;
+    window: 60;
+
+    child cache: Cache(1000, 0);
+}
+
+// Root supervisor: manages the inner supervisors
+supervisor AppSupervisor {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child pool: WorkerPool;
+    child cache_mgr: CacheManager;
+}
+
+fn main() {
+    println("=== Nested Supervisor Tree ===");
+    println("");
+    let app = spawn AppSupervisor;
+    sleep_ms(100);
+
+    // Get inner supervisors
+    let pool = supervisor_child(app, 0);
+    let cache_mgr = supervisor_child(app, 1);
+    sleep_ms(50);
+
+    // Get individual workers and cache
+    let w1 = supervisor_child(pool, 0);
+    let w2 = supervisor_child(pool, 1);
+    let cache = supervisor_child(cache_mgr, 0);
+    // Normal operation
+    println("--- Normal Operation ---");
+    w1.process(100);
+    sleep_ms(20);
+    w2.process(200);
+    sleep_ms(20);
+    cache.store(42);
+    sleep_ms(30);
+
+    // Worker crashes — inner supervisor restarts it
+    println("");
+    println("--- Worker Crash (handled by WorkerPool) ---");
+    w1.fail();
+    sleep_ms(500);
+
+    // Fresh worker is operational
+    let w1b = supervisor_child(pool, 0);
+    w1b.process(101);
+    sleep_ms(20);
+
+    // Cache is unaffected (different subtree)
+    cache.store(99);
+    sleep_ms(30);
+    println("");
+    println("Tree structure preserved. Crash isolation works across subtrees.");
+}

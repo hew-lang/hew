@@ -1,0 +1,49 @@
+// stress_ping_pong.hew - Classic actor stress test
+// Two actors exchange messages in a pipeline pattern, exercising
+// rapid message passing and actor scheduling under load.
+actor Pinger {
+    let count: i32;
+    receive fn ping(n: i32) {
+        self.count = n;
+    }
+    receive fn report() {
+        println(f"Pinger final count: {self.count}");
+    }
+}
+
+actor Ponger {
+    let count: i32;
+    receive fn pong(n: i32) {
+        self.count = n;
+    }
+    receive fn report() {
+        println(f"Ponger final count: {self.count}");
+    }
+}
+
+fn main() {
+    println("=== Stress: Ping-Pong ===");
+    let pinger = spawn Pinger;
+    let ponger = spawn Ponger;
+    // Rapid alternating message sends — simulates ping-pong
+    for i in 0..1000 {
+        pinger.ping(i);
+        ponger.pong(i);
+    }
+    sleep_ms(200);
+    pinger.report();
+    ponger.report();
+
+    // Second burst: stress with higher volume
+    println("--- Round 2: 5000 rounds ---");
+    for j in 0..5000 {
+        pinger.ping(j);
+        ponger.pong(j);
+    }
+    sleep_ms(500);
+    pinger.report();
+    ponger.report();
+    println("PASS: 6000 ping-pong rounds completed");
+    stop(pinger);
+    stop(ponger);
+}

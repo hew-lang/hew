@@ -1,0 +1,8 @@
+fn main() {
+    let arr = [10, 20, 30, 40, 50];
+    println(arr[0]);
+    println(arr[1]);
+    println(arr[4]);
+    let sum = arr[0] + arr[1] + arr[2] + arr[3] + arr[4];
+    println(sum);
+}

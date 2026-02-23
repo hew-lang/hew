@@ -1,0 +1,53 @@
+// E2E test: comprehensive tuple operations
+fn swap(a: int, b: int) -> (int, int) {
+    (b, a)
+}
+
+fn make_triple(x: int) -> (int, int, int) {
+    (x, x * 2, x * 3)
+}
+
+fn main() {
+    // Tuple creation with mixed types
+    let t = (42, "hello", 100);
+    // Field access
+    println(t.0);
+    println(t.1);
+    println(t.2);
+
+    // Tuple destructuring
+    let (a, b, c) = t;
+    println(a);
+    println(b);
+    println(c);
+
+    // Function returning tuple
+    let swapped = swap(10, 20);
+    println(swapped.0);
+    println(swapped.1);
+
+    // Destructure function result
+    let (x, y) = swap(3, 7);
+    println(x);
+    println(y);
+
+    // Triple from function
+    let triple = make_triple(5);
+    println(triple.0);
+    println(triple.1);
+    println(triple.2);
+
+    // Nested tuples — use intermediate let to work around parser
+    let nested = ((1, 2), (3, 4));
+    let inner0 = nested.0;
+    let inner1 = nested.1;
+    println(inner0.0);
+    println(inner0.1);
+    println(inner1.0);
+    println(inner1.1);
+
+    // Tuple arithmetic
+    let pair = (10, 20);
+    let sum = pair.0 + pair.1;
+    println(sum);
+}

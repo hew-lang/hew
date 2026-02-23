@@ -1,0 +1,54 @@
+import std::net;
+
+import std::os;
+
+import std::fs;
+
+actor ServerReader {
+    let conn: Connection;
+
+    receive fn start(unused: i32) {
+        var running = true;
+        while running {
+            let msg = self.conn.read_string();
+            if msg.contains("__HEW_TCP_DISCONNECT__") {
+                println("[client] server disconnected");
+                running = false;
+            } else {
+                println(msg);
+            }
+        }
+    }
+}
+
+fn main() {
+    var port: String = "9000";
+    var name: String = "guest";
+    let argc = os.args_count();
+    if argc > 1 {
+        port = os.args(1);
+    }
+    if argc > 2 {
+        name = os.args(2);
+    }
+    let addr = f"127.0.0.1:{port}";
+    let conn = net.connect(addr);
+    println("=== Hew TCP Chat Client ===");
+    println(f"Connected to {addr}");
+    println("Type messages and press Enter. Type /quit to exit.");
+    let reader = spawn ServerReader(conn: conn);
+    reader.start(0);
+    var running = true;
+    while running {
+        let line = fs.read_line();
+        if line.contains("/quit") {
+            running = false;
+            let _ = conn.close();
+            println("[client] disconnected");
+        } else {
+            let outbound = f"{name}: {line}";
+            conn.write_string(outbound);
+        }
+    }
+    sleep_ms(50);
+}

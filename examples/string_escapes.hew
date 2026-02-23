@@ -1,0 +1,15 @@
+// String escape sequences
+// Demonstrates tab, newline, quote, and backslash escapes.
+//
+// Expected output:
+//   Tabs:	working
+//   Line 1
+//   Line 2
+//   Quotes: "hello"
+//   Path: C:\Users\hew
+fn main() {
+    println("Tabs:\tworking");
+    println("Line 1\nLine 2");
+    println("Quotes: \"hello\"");
+    println("Path: C:\\Users\\hew");
+}

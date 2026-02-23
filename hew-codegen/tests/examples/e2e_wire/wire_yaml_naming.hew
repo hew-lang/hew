@@ -1,0 +1,24 @@
+// Test: YAML naming conventions and per-field overrides.
+// YAML preserves insertion (declaration) order.
+#[yaml(camelCase)]
+wire type CamelYaml {
+    user_id: i32 @1;
+    event_type: i32 @2;
+}
+
+#[yaml(camelCase)]
+wire type OverrideYaml {
+    internal_ref: String @1 yaml("ref");
+    created_by: i32 @2 yaml("owner");
+    version: i32 @3;
+}
+
+extern "C" {
+    fn CamelYaml_to_yaml(user_id: i32, event_type: i32) -> String;
+    fn OverrideYaml_to_yaml(internal_ref: String, created_by: i32, version: i32) -> String;
+}
+
+fn main() {
+    print(CamelYaml_to_yaml(1, 2));
+    print(OverrideYaml_to_yaml("item-123", 42, 7));
+}

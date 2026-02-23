@@ -1,0 +1,12 @@
+import std::os;
+
+import std::string;
+
+fn main() {
+    let s = string.from_int(42);
+    println(s);
+    let pid = hew_pid();
+    if pid > 0 {
+        println("pid ok");
+    }
+}

@@ -1,0 +1,99 @@
+//! Result helper functions — pure Hew alternatives to the Rust FFI runtime.
+//!
+//! These functions provide idiomatic Hew wrappers for common `Result<T, E>`
+//! operations.  They use `match` on the built-in `Result` type and avoid
+//! FFI calls entirely for the supported element types.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::result;
+//!
+//! fn main() {
+//!     let x: Result<int, int> = Ok(42);
+//!     println(result.is_ok_int(x));          // true
+//!     println(result.unwrap_or_int(x, 0));   // 42
+//!
+//!     let y: Result<int, int> = Err(1);
+//!     println(result.is_err_int(y));          // true
+//!     println(result.unwrap_or_int(y, -1));   // -1
+//! }
+//! ```
+
+// ── Predicates ──────────────────────────────────────────────────────
+
+/// Returns `true` if the result contains an `Ok` value.
+pub fn is_ok_int(r: Result<int, int>) -> bool {
+    match r {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+/// Returns `true` if the result contains an `Err` value.
+pub fn is_err_int(r: Result<int, int>) -> bool {
+    match r {
+        Ok(_) => false,
+        Err(_) => true,
+    }
+}
+
+// ── Unwrap ──────────────────────────────────────────────────────────
+
+/// Unwrap the `Ok` value.  Panics if the result is `Err`.
+pub fn unwrap_int(r: Result<int, int>) -> int {
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            panic(f"result: unwrap called on Err({e})");
+            0
+        },
+    }
+}
+
+/// Unwrap the `Err` value.  Panics if the result is `Ok`.
+pub fn unwrap_err_int(r: Result<int, int>) -> int {
+    match r {
+        Ok(v) => {
+            panic(f"result: unwrap_err called on Ok({v})");
+            0
+        },
+        Err(e) => e,
+    }
+}
+
+/// Unwrap the `Ok` value, or return `fallback` if `Err`.
+pub fn unwrap_or_int(r: Result<int, int>, fallback: int) -> int {
+    match r {
+        Ok(v) => v,
+        Err(_) => fallback,
+    }
+}
+
+// ── Map ─────────────────────────────────────────────────────────────
+
+/// Apply `f` to the contained `Ok` value, or return `Err` unchanged.
+pub fn map_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+    match r {
+        Ok(v) => Ok(f(v)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Apply `f` to the contained `Err` value, or return `Ok` unchanged.
+pub fn map_err_int(r: Result<int, int>, f: fn(int) -> int) -> Result<int, int> {
+    match r {
+        Ok(v) => Ok(v),
+        Err(e) => Err(f(e)),
+    }
+}
+
+// ── Contains ────────────────────────────────────────────────────────
+
+/// Returns `true` if the result is `Ok` and contains `needle`.
+pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
+    match r {
+        Ok(v) => v == needle,
+        Err(_) => false,
+    }
+}

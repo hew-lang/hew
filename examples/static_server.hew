@@ -1,0 +1,71 @@
+// Static Content Web Server in Hew
+//
+// An actor-based HTTP server: the accept loop dispatches each request
+// to a Handler actor for concurrent processing with proper MIME types.
+//
+// Usage: hew build static_server.hew -o serve && ./serve [port] [root]
+// Defaults: port 8080, root "."
+import std::net::http;
+
+import std::fs;
+
+import std::os;
+
+import std::net::mime;
+
+fn resolve_path(root: String, url_path: String) -> String {
+    var path = root + url_path;
+    if url_path.ends_with("/") {
+        return path + "index.html";
+    }
+    // Bare directory -> try index.html inside it
+    if !fs.exists(path) {
+        let index = path + "/index.html";
+        if fs.exists(index) {
+            return index;
+        }
+    }
+    path
+}
+
+// Each request is handled by this actor, decoupling accept from serve.
+actor Handler {
+    let root: String;
+    receive fn handle(req: Request, path: String) {
+        if path.contains("..") {
+            req.respond_text(403, "403 Forbidden");
+        } else {
+            let file_path = resolve_path(self.root, path);
+            if fs.exists(file_path) {
+                let body = fs.read(file_path);
+                let content_type = mime.from_path(file_path);
+                let size = fs.size(file_path);
+                req.respond(200, content_type, size, body);
+            } else {
+                req.respond_text(404, "404 Not Found");
+            }
+        }
+    }
+}
+
+fn main() {
+    var port = "8080";
+    var root = ".";
+    let argc = os.args_count();
+    if argc > 1 {
+        port = os.args(1);
+    }
+    if argc > 2 {
+        root = os.args(2);
+    }
+    let addr = f"0.0.0.0:{port}";
+    println(f"Serving {root} on http://{addr}");
+    let handler = spawn Handler(root: root);
+    let server = http.listen(addr);
+    // Accept loop: dispatch each request to the handler actor
+    loop {
+        let req = server.accept();
+        let path = req.path();
+        handler.handle(req, path);
+    }
+}

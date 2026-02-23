@@ -1,0 +1,143 @@
+// Test: Loop Patterns
+// Exercises: bare loop {}, for range edge cases, nested loops, break, continue
+fn test_bare_loop_break() -> int {
+    var counter = 0;
+    loop {
+        counter = counter + 1;
+        if counter == 5 {
+            break;
+        }
+    }
+    if counter == 5 {
+        println("PASS: bare_loop_break");
+        1
+    } else {
+        println("FAIL: bare_loop_break");
+        0
+    }
+}
+
+fn test_loop_continue() -> int {
+    var i = 0;
+    var sum = 0;
+    while i < 10 {
+        i = i + 1;
+        if i % 2 == 0 {
+            continue;
+        }
+        sum = sum + i;
+    }
+    // odds: 1 + 3 + 5 + 7 + 9 = 25
+    if sum == 25 {
+        println("PASS: loop_continue");
+        1
+    } else {
+        println("FAIL: loop_continue");
+        0
+    }
+}
+
+fn test_for_range() -> int {
+    var sum = 0;
+    for i in 0 .. 5 {
+        sum = sum + i;
+    }
+    // 0 + 1 + 2 + 3 + 4 = 10
+    if sum == 10 {
+        println("PASS: for_range");
+        1
+    } else {
+        println("FAIL: for_range");
+        0
+    }
+}
+
+fn test_for_range_start() -> int {
+    var sum = 0;
+    for i in 3 .. 7 {
+        sum = sum + i;
+    }
+    // 3 + 4 + 5 + 6 = 18
+    if sum == 18 {
+        println("PASS: for_range_start");
+        1
+    } else {
+        println("FAIL: for_range_start");
+        0
+    }
+}
+
+fn test_nested_loops() -> int {
+    var count = 0;
+    var i = 0;
+    while i < 3 {
+        var j = 0;
+        while j < 3 {
+            count = count + 1;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if count == 9 {
+        println("PASS: nested_loops");
+        1
+    } else {
+        println("FAIL: nested_loops");
+        0
+    }
+}
+
+fn test_loop_with_early_break() -> int {
+    var found = 0;
+    var i = 51;
+    while i < 100 {
+        if i % 7 == 0 {
+            found = i;
+            break;
+        }
+        i = i + 1;
+    }
+    // first multiple of 7 after 50 is 56
+    if found == 56 {
+        println("PASS: loop_with_early_break");
+        1
+    } else {
+        println("FAIL: loop_with_early_break");
+        0
+    }
+}
+
+fn test_while_false() -> int {
+    var counter = 0;
+    while false {
+        counter = counter + 1;
+    }
+    if counter == 0 {
+        println("PASS: while_false");
+        1
+    } else {
+        println("FAIL: while_false");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: Loop Patterns ===");
+    var passed = 0;
+    let total = 7;
+    passed = passed + test_bare_loop_break();
+    passed = passed + test_loop_continue();
+    passed = passed + test_for_range();
+    passed = passed + test_for_range_start();
+    passed = passed + test_nested_loops();
+    passed = passed + test_loop_with_early_break();
+    passed = passed + test_while_false();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

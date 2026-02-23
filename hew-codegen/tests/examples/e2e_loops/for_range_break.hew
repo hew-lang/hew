@@ -1,0 +1,33 @@
+fn main() {
+    // break exits the for loop early
+    var sum: i32 = 0;
+    for i in 0 .. 10 {
+        if i == 5 {
+            break;
+        }
+        sum = sum + i;
+    }
+    println(sum);
+
+    // continue skips current iteration
+    var sum2: i32 = 0;
+    for i in 0 .. 10 {
+        if i % 2 == 0 {
+            continue;
+        }
+        sum2 = sum2 + i;
+    }
+    println(sum2);
+
+    // nested break (inner only)
+    var count: i32 = 0;
+    for i in 0 .. 5 {
+        for j in 0 .. 5 {
+            if j == 2 {
+                break;
+            }
+            count = count + 1;
+        }
+    }
+    println(count);
+}

@@ -1,0 +1,26 @@
+// Test: Select expression - picks first completed async result
+actor Fast {
+    let value: int;
+    receive fn get() -> int {
+        self.value
+    }
+}
+
+actor Slow {
+    let value: int;
+    receive fn get() -> int {
+        sleep_ms(200);
+        self.value
+    }
+}
+
+fn main() {
+    let fast = spawn Fast(value: 42);
+    let slow = spawn Slow(value: 999);
+    let result = select {
+        x from await fast.get() => x,
+        y from await slow.get() => y,
+    };
+    println(result);
+    sleep_ms(300);
+}

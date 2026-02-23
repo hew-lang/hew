@@ -1,0 +1,85 @@
+//! Counting semaphore for concurrency control.
+//!
+//! Limit the number of concurrent actors or tasks that can access a
+//! shared resource.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::semaphore;
+//!
+//! fn main() {
+//!     let sem = semaphore.new(3);
+//!     sem.acquire();
+//!     // critical section
+//!     sem.release();
+//!     sem.free();
+//! }
+//! ```
+
+/// An opaque counting semaphore handle.
+///
+/// Created by `semaphore.new(count)`. Must be freed with `free()` when
+/// no longer needed to avoid leaking memory.
+type Semaphore {}
+
+/// Methods available on a `Semaphore`.
+trait SemaphoreMethods {
+    // Block until a permit is available, then acquire it.
+    fn acquire(self: Semaphore);
+
+    // Try to acquire a permit without blocking.
+    //
+    // Returns `true` if a permit was acquired, `false` otherwise.
+    fn try_acquire(self: Semaphore) -> bool;
+
+    // Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
+    //
+    // Returns `true` if a permit was acquired before the timeout.
+    fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool;
+
+    // Release a previously acquired permit.
+    fn release(self: Semaphore);
+
+    // Return the current number of available permits.
+    fn count(self: Semaphore) -> i32;
+
+    // Release the semaphore resources.
+    fn free(self: Semaphore);
+}
+
+impl SemaphoreMethods for Semaphore {
+    fn acquire(self: Semaphore) { hew_semaphore_acquire(self); }
+    fn try_acquire(self: Semaphore) -> bool { hew_semaphore_try_acquire(self) }
+    fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool {
+        hew_semaphore_acquire_timeout(self, timeout_ms)
+    }
+    fn release(self: Semaphore) { hew_semaphore_release(self); }
+    fn count(self: Semaphore) -> i32 { hew_semaphore_count(self) }
+    fn free(self: Semaphore) { hew_semaphore_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a new counting semaphore with the given number of permits.
+///
+/// # Examples
+///
+/// ```
+/// let sem = semaphore.new(5);
+/// ```
+pub fn new(count: i32) -> Semaphore {
+    hew_semaphore_new(count)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_semaphore_new(initial_count: i32) -> Semaphore;
+    fn hew_semaphore_acquire(sem: Semaphore);
+    fn hew_semaphore_try_acquire(sem: Semaphore) -> bool;
+    fn hew_semaphore_acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool;
+    fn hew_semaphore_release(sem: Semaphore);
+    fn hew_semaphore_count(sem: Semaphore) -> i32;
+    fn hew_semaphore_free(sem: Semaphore);
+}

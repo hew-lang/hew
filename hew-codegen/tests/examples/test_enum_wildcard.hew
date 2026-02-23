@@ -1,0 +1,19 @@
+enum Shape {
+    Circle(int);
+    Square(int);
+    Empty;
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Circle(r) => r * r * 3,
+        Square(side) => side * side,
+        _ => 0,
+    }
+}
+
+fn main() {
+    println(area(Circle(5)));
+    println(area(Square(4)));
+    println(area(Empty));
+}

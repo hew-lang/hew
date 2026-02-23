@@ -1,0 +1,16 @@
+Source: hew
+Section: devel
+Priority: optional
+Maintainer: The Hew Project Developers <hello@hew.sh>
+Build-Depends: debhelper-compat (= 13), curl
+Standards-Version: 4.6.0
+Homepage: https://hew.sh
+Rules-Requires-Root: no
+
+Package: hew
+Architecture: amd64 arm64
+Depends: ${misc:Depends}
+Description: The Hew programming language compiler and package manager
+ Hew is a statically-typed, actor-oriented programming language targeting
+ concurrent and distributed systems. This package includes the hew compiler
+ driver, the adze package manager, and the standard library.

@@ -1,0 +1,27 @@
+fn main() {
+    // Float literals
+    let pi: f64 = 3.14159;
+    let half: f64 = 0.5;
+    // Arithmetic
+    let sum = pi + half;
+    let diff = pi - half;
+    let prod = pi * half;
+    let quot = pi / half;
+    // Print results
+    println(sum);
+    println(diff);
+    println(prod);
+    println(quot);
+
+    // Comparison
+    if pi > half {
+        println(1);
+    }
+    // Int to float promotion
+    let x: f64 = 42;
+    println(x);
+
+    // Mixed arithmetic
+    let y = pi + 1;
+    println(y);
+}

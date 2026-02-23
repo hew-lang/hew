@@ -1,0 +1,30 @@
+// Tests CastOpLowering — exercises hew.cast for numeric type conversions.
+// Covers: int narrowing (i64→i32), int-to-float promotion, int widening (i32→i64).
+fn takes_i32(x: i32) -> i32 {
+    return x;
+}
+
+fn main() {
+    // i64 literal → i32 variable (int narrowing via hew.cast)
+    let a: i32 = 42;
+    println(a);
+
+    // i64 literal → i32 via function arg coercion
+    let b: i32 = takes_i32(100);
+    println(b);
+
+    // int-to-float promotion: mixed arithmetic triggers hew.cast i64→f64
+    let c = 3.14 + 1;
+    println(c);
+
+    // int-to-float promotion: right side
+    let d = 2 + 1.5;
+    println(d);
+
+    // i32 result widened to i64 for further use (i32→i64 widening)
+    let e: i32 = 10;
+    let f: i64 = e;
+    println(f);
+
+    println("done");
+}

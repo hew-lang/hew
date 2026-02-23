@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+# Multi-arch Dockerfile for CI release builds.
+# Expects both linux-x86_64 and linux-aarch64 tarballs in the build context.
+# Used with: docker buildx build --platform linux/amd64,linux/arm64
+
+FROM alpine:3.21 AS fetch
+ARG TARGETARCH
+COPY *.tar.gz /tmp/
+RUN set -e; \
+    case "$TARGETARCH" in \
+      amd64)  ARCH=x86_64 ;; \
+      arm64)  ARCH=aarch64 ;; \
+      *)      echo "Unsupported arch: $TARGETARCH"; exit 1 ;; \
+    esac && \
+    tar -xzf /tmp/hew-v*-linux-${ARCH}.tar.gz -C /tmp && \
+    mv /tmp/hew-v*-linux-${ARCH} /tmp/hew
+
+FROM alpine:3.21
+RUN apk add --no-cache \
+      gcompat \
+      libgcc \
+      libstdc++ \
+      ca-certificates
+COPY --from=fetch /tmp/hew/bin/hew           /usr/local/bin/hew
+COPY --from=fetch /tmp/hew/bin/adze          /usr/local/bin/adze
+COPY --from=fetch /tmp/hew/bin/hew-codegen   /usr/local/bin/hew-codegen
+COPY --from=fetch /tmp/hew/lib               /usr/local/lib/hew/
+COPY --from=fetch /tmp/hew/std               /usr/local/share/hew/std/
+ENV HEW_STD=/usr/local/share/hew/std
+WORKDIR /work
+LABEL org.opencontainers.image.title="Hew" \
+      org.opencontainers.image.description="Statically-typed, actor-oriented programming language" \
+      org.opencontainers.image.url="https://hew.sh" \
+      org.opencontainers.image.source="https://github.com/hew-lang/hew" \
+      org.opencontainers.image.licenses="MIT OR Apache-2.0" \
+      org.opencontainers.image.authors="Stephen Olesen <slepp@slepp.ca>"
+
+ENTRYPOINT ["/usr/local/bin/hew"]
+CMD ["--help"]

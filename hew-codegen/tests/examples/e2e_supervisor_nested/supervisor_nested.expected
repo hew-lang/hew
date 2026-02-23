@@ -1,0 +1,6 @@
+=== Nested Supervisor ===
+worker 1 value=1
+worker 2 value=1
+worker 1 crashing!
+worker 1 value=1
+nested supervision works

@@ -1,0 +1,22 @@
+[package]
+name = "hew-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Language Server Protocol implementation for Hew"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "programming-language", "lsp", "language-server"]
+categories = ["compilers", "development-tools"]
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-lexer = { path = "../hew-lexer" }
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"

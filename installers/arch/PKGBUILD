@@ -1,0 +1,75 @@
+# Maintainer: The Hew Project Developers <hello@hew.sh>
+pkgname=hew-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="The Hew programming language compiler and package manager"
+arch=('x86_64' 'aarch64')
+url="https://hew.sh"
+license=('MIT' 'Apache-2.0')
+provides=('hew' 'adze')
+conflicts=('hew' 'hew-git')
+options=('!strip')  # binaries are pre-stripped
+
+source_x86_64=("https://github.com/hew-lang/hew/releases/download/v${pkgver}/hew-v${pkgver}-linux-x86_64.tar.gz")
+source_aarch64=("https://github.com/hew-lang/hew/releases/download/v${pkgver}/hew-v${pkgver}-linux-aarch64.tar.gz")
+
+# NOTE: Replace SKIP with actual SHA256 hashes at release time.
+# Run: sha256sum hew-v${pkgver}-linux-{x86_64,aarch64}.tar.gz
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  local _hew_arch
+  case "$CARCH" in
+    x86_64)  _hew_arch="x86_64" ;;
+    aarch64) _hew_arch="aarch64" ;;
+  esac
+
+  local _srcdir="${srcdir}/hew-v${pkgver}-linux-${_hew_arch}"
+
+  # Binaries
+  install -Dm755 "${_srcdir}/bin/hew"          "${pkgdir}/usr/bin/hew"
+  install -Dm755 "${_srcdir}/bin/adze"         "${pkgdir}/usr/bin/adze"
+  install -Dm755 "${_srcdir}/bin/hew-codegen"  "${pkgdir}/usr/bin/hew-codegen"
+
+  # Runtime library
+  install -Dm644 "${_srcdir}/lib/libhew_runtime.a" \
+    "${pkgdir}/usr/lib/hew/libhew_runtime.a"
+
+  # Standard library
+  if [ -d "${_srcdir}/std" ]; then
+    install -dm755 "${pkgdir}/usr/share/hew/std"
+    cp -r "${_srcdir}/std/." "${pkgdir}/usr/share/hew/std/"
+  fi
+
+  # Shell completions
+  if [ -f "${_srcdir}/completions/hew.bash" ]; then
+    install -Dm644 "${_srcdir}/completions/hew.bash" \
+      "${pkgdir}/usr/share/bash-completion/completions/hew"
+  fi
+  if [ -f "${_srcdir}/completions/hew.zsh" ]; then
+    install -Dm644 "${_srcdir}/completions/hew.zsh" \
+      "${pkgdir}/usr/share/zsh/site-functions/_hew"
+  fi
+  if [ -f "${_srcdir}/completions/hew.fish" ]; then
+    install -Dm644 "${_srcdir}/completions/hew.fish" \
+      "${pkgdir}/usr/share/fish/vendor_completions.d/hew.fish"
+  fi
+  if [ -f "${_srcdir}/completions/adze.bash" ]; then
+    install -Dm644 "${_srcdir}/completions/adze.bash" \
+      "${pkgdir}/usr/share/bash-completion/completions/adze"
+  fi
+  if [ -f "${_srcdir}/completions/adze.zsh" ]; then
+    install -Dm644 "${_srcdir}/completions/adze.zsh" \
+      "${pkgdir}/usr/share/zsh/site-functions/_adze"
+  fi
+  if [ -f "${_srcdir}/completions/adze.fish" ]; then
+    install -Dm644 "${_srcdir}/completions/adze.fish" \
+      "${pkgdir}/usr/share/fish/vendor_completions.d/adze.fish"
+  fi
+
+  # Licenses
+  install -Dm644 "${_srcdir}/LICENSE-MIT"    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+  install -Dm644 "${_srcdir}/LICENSE-APACHE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+  install -Dm644 "${_srcdir}/NOTICE"         "${pkgdir}/usr/share/licenses/${pkgname}/NOTICE"
+}

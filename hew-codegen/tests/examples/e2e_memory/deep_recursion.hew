@@ -1,0 +1,40 @@
+// Test: Deep Recursion
+// Exercises: Stack depth, no crash at reasonable depth
+fn sum_to(n: int) -> int {
+    if n <= 0 {
+        0
+    } else {
+        n + sum_to(n - 1)
+    }
+}
+
+fn main() -> int {
+    println("=== Deep Recursion ===");
+    let r1 = sum_to(10);
+    println(f"sum_to(10) = {r1}");
+    let r2 = sum_to(100);
+    println(f"sum_to(100) = {r2}");
+    let r3 = sum_to(1000);
+    println(f"sum_to(1000) = {r3}");
+
+    // 10*(10+1)/2 = 55
+    // 100*(100+1)/2 = 5050
+    // 1000*(1000+1)/2 = 500500
+    if r1 == 55 {
+        if r2 == 5050 {
+            if r3 == 500500 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

@@ -1,0 +1,20 @@
+//! @name Higher-Order Functions
+//! @description Lambdas and function passing
+
+fn apply(f: fn(int) -> int, x: int) -> int {
+    f(x)
+}
+
+fn main() {
+    let double = (x: int) -> int => { x * 2 };
+    let square = (x: int) -> int => { x * x };
+    let negate = (x: int) -> int => { 0 - x };
+
+    // Calculate and store the value for display
+    let double_res = apply(double, 5);
+    println(f"double(5) = {double_res}");
+    
+    // Just directly display it in the interpolated string format
+    println(f"square(5) = {apply(square, 5)}");
+    println(f"negate(7) = {apply(negate, 7)}");
+}

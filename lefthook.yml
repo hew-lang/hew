@@ -1,0 +1,37 @@
+# Lefthook configuration — git hook manager
+# https://github.com/evilmartians/lefthook
+#
+# Per-developer overrides go in lefthook-local.yml (gitignored).
+
+output:
+  - failure
+  - execution_out
+
+no_tty: true
+
+pre-commit:
+  commands:
+    fmt-rust:
+      glob: "*.rs"
+      stage_fixed: true
+      run: cargo fmt --quiet 2>/dev/null
+
+    fmt-cpp:
+      glob: "*.{cpp,h,hpp}"
+      stage_fixed: true
+      run: clang-format -i {staged_files}
+
+    fmt-toml:
+      glob: "*.toml"
+      stage_fixed: true
+      run: taplo fmt {staged_files} 2>/dev/null
+
+    fmt-shell:
+      glob: "*.sh"
+      stage_fixed: true
+      run: shfmt -i 4 -w {staged_files} 2>/dev/null
+
+    fmt-prettier:
+      glob: "*.{yml,yaml,json,md}"
+      stage_fixed: true
+      run: prettier --write --log-level silent {staged_files} 2>/dev/null

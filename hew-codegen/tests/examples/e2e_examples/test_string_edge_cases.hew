@@ -1,0 +1,154 @@
+// Test: String Edge Cases
+// Exercises: empty strings, find boundaries, starts/ends/contains, trim, replace, int-string roundtrip
+
+fn test_empty_string_length() -> int {
+    let len = string_length("");
+    if len == 0 {
+        println("PASS: empty_string_length");
+        1
+    } else {
+        println("FAIL: empty_string_length");
+        0
+    }
+}
+
+fn test_empty_string_concat() -> int {
+    let a = string_concat("", "hello");
+    let b = string_concat("world", "");
+    let ok_a = string_equals(a, "hello");
+    let ok_b = string_equals(b, "world");
+    if ok_a {
+        if ok_b {
+            println("PASS: empty_string_concat");
+            1
+        } else {
+            println("FAIL: empty_string_concat");
+            0
+        }
+    } else {
+        println("FAIL: empty_string_concat");
+        0
+    }
+}
+
+fn test_string_find_not_found() -> int {
+    let idx = "hello".find("xyz");
+    if idx == -1 {
+        println("PASS: string_find_not_found");
+        1
+    } else {
+        println("FAIL: string_find_not_found");
+        0
+    }
+}
+
+fn test_string_find_at_start() -> int {
+    let idx = "hello world".find("hello");
+    if idx == 0 {
+        println("PASS: string_find_at_start");
+        1
+    } else {
+        println("FAIL: string_find_at_start");
+        0
+    }
+}
+
+fn test_string_starts_ends() -> int {
+    let sw = "foobar".starts_with("foo");
+    let ew = "foobar".ends_with("bar");
+    let no_sw = "foobar".starts_with("bar");
+    if sw {
+        if ew {
+            if no_sw {
+                println("FAIL: string_starts_ends");
+                0
+            } else {
+                println("PASS: string_starts_ends");
+                1
+            }
+        } else {
+            println("FAIL: string_starts_ends");
+            0
+        }
+    } else {
+        println("FAIL: string_starts_ends");
+        0
+    }
+}
+
+fn test_string_contains() -> int {
+    let found = "hello world".contains("lo wo");
+    let not_found = "hello".contains("xyz");
+    if found {
+        if not_found {
+            println("FAIL: string_contains");
+            0
+        } else {
+            println("PASS: string_contains");
+            1
+        }
+    } else {
+        println("FAIL: string_contains");
+        0
+    }
+}
+
+fn test_string_trim() -> int {
+    let trimmed = "  hello  ".trim();
+    let ok = string_equals(trimmed, "hello");
+    if ok {
+        println("PASS: string_trim");
+        1
+    } else {
+        println("FAIL: string_trim");
+        0
+    }
+}
+
+fn test_string_replace() -> int {
+    let replaced = "aabbcc".replace("bb", "XX");
+    let ok = string_equals(replaced, "aaXXcc");
+    if ok {
+        println("PASS: string_replace");
+        1
+    } else {
+        println("FAIL: string_replace");
+        0
+    }
+}
+
+fn test_int_string_roundtrip() -> int {
+    let s = string_from_int(42);
+    let n = string_to_int(s);
+    if n == 42 {
+        println("PASS: int_string_roundtrip");
+        1
+    } else {
+        println("FAIL: int_string_roundtrip");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: String Edge Cases ===");
+    var passed = 0;
+    let total = 9;
+    passed = passed + test_empty_string_length();
+    passed = passed + test_empty_string_concat();
+    passed = passed + test_string_find_not_found();
+    passed = passed + test_string_find_at_start();
+    passed = passed + test_string_starts_ends();
+    passed = passed + test_string_contains();
+    passed = passed + test_string_trim();
+    passed = passed + test_string_replace();
+    passed = passed + test_int_string_roundtrip();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

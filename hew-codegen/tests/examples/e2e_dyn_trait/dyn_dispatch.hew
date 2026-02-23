@@ -1,0 +1,34 @@
+trait Greetable {
+    fn greet(self: Self) -> int;
+}
+
+type Dog {
+    legs: int;
+}
+
+type Cat {
+    lives: int;
+}
+
+impl Greetable for Dog {
+    fn greet(self: Dog) -> int {
+        return self.legs;
+    }
+}
+
+impl Greetable for Cat {
+    fn greet(self: Cat) -> int {
+        return self.lives;
+    }
+}
+
+fn call_greet(obj: dyn Greetable) -> int {
+    return obj.greet();
+}
+
+fn main() {
+    let d = Dog { legs: 4 };
+    let c = Cat { lives: 9 };
+    println(call_greet(d));
+    println(call_greet(c));
+}

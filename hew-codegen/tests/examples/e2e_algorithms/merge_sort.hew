@@ -1,0 +1,100 @@
+// Test: Merge Sort
+// Exercises: Recursion, Vec operations, array construction
+fn merge(left: Vec<int>, right: Vec<int>) -> Vec<int> {
+    let result: Vec<int> = Vec::new();
+    var i = 0;
+    var j = 0;
+    let left_len = left.len();
+    let right_len = right.len();
+    while i < left_len {
+        if j < right_len {
+            let l = left.get(i);
+            let r = right.get(j);
+            if l <= r {
+                result.push(l);
+                i = i + 1;
+            } else {
+                result.push(r);
+                j = j + 1;
+            }
+        } else {
+            result.push(left.get(i));
+            i = i + 1;
+        }
+    }
+    while j < right_len {
+        result.push(right.get(j));
+        j = j + 1;
+    }
+    result
+}
+
+fn sort(arr: Vec<int>) -> Vec<int> {
+    let len = arr.len();
+    if len <= 1 {
+        return arr;
+    }
+    let mid = len / 2;
+    let left: Vec<int> = Vec::new();
+    let right: Vec<int> = Vec::new();
+    var i = 0;
+    while i < mid {
+        left.push(arr.get(i));
+        i = i + 1;
+    }
+    while i < len {
+        right.push(arr.get(i));
+        i = i + 1;
+    }
+    let sorted_left = sort(left);
+    let sorted_right = sort(right);
+    merge(sorted_left, sorted_right)
+}
+
+fn print_vec(v: Vec<int>) {
+    let len = v.len();
+    var i = 0;
+    while i < len {
+        if i > 0 {
+            print(" ");
+        }
+        print(v.get(i));
+        i = i + 1;
+    }
+    println("");
+}
+
+fn main() -> int {
+    println("=== Merge Sort ===");
+    let arr: Vec<int> = Vec::new();
+    arr.push(38);
+    arr.push(27);
+    arr.push(43);
+    arr.push(3);
+    arr.push(9);
+    arr.push(82);
+    arr.push(10);
+    print("Input:  ");
+    print_vec(arr);
+    let sorted = sort(arr);
+    print("Sorted: ");
+    print_vec(sorted);
+
+    // Verify sorted order
+    var ok = 1;
+    var i = 1;
+    let len = sorted.len();
+    while i < len {
+        if sorted.get(i) < sorted.get(i - 1) {
+            ok = 0;
+        }
+        i = i + 1;
+    }
+    if ok == 1 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

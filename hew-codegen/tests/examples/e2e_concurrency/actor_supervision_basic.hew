@@ -1,0 +1,47 @@
+// Test: Actor Supervision (basic)
+// Exercises: Actor error handling pattern
+actor Guardian {
+    let restarts: int;
+    receive fn report(status: int) {
+        if status == 0 {
+            println("Guardian: child OK");
+        } else {
+            self.restarts = self.restarts + 1;
+            println(f"Guardian: child failed, restarts = {self.restarts}");
+        }
+    }
+}
+
+actor ChildWorker {
+    let id: int;
+    receive fn work(difficulty: int) {
+        if difficulty > 5 {
+            print("Worker ");
+            print(self.id);
+            println(": task too hard, reporting failure");
+        } else {
+            print("Worker ");
+            print(self.id);
+            println(": task completed");
+        }
+    }
+}
+
+fn main() {
+    println("=== Actor Supervision ===");
+    let guardian = spawn Guardian(restarts: 0);
+    let worker = spawn ChildWorker(id: 1);
+    worker.work(3);
+    sleep_ms(50);
+    guardian.report(0);
+    sleep_ms(50);
+    worker.work(8);
+    sleep_ms(50);
+    guardian.report(1);
+    sleep_ms(50);
+    worker.work(2);
+    sleep_ms(50);
+    guardian.report(0);
+    sleep_ms(100);
+    println("Done");
+}

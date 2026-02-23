@@ -1,0 +1,95 @@
+// stress_recursion.hew - Deeply recursive fibonacci to test stack handling
+// This program tests the compiler's ability to handle deep recursion
+// and proper stack management in generated code.
+fn fibonacci_recursive(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2)
+    }
+}
+
+fn fibonacci_tail_recursive(n: i32, acc1: i32, acc2: i32) -> i32 {
+    if n <= 0 {
+        acc1
+    } else if n == 1 {
+        acc2
+    } else {
+        fibonacci_tail_recursive(n - 1, acc2, acc1 + acc2)
+    }
+}
+
+fn factorial_recursive(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial_recursive(n - 1)
+    }
+}
+
+fn ackermann(m: i32, n: i32) -> i32 {
+    if m == 0 {
+        n + 1
+    } else if n == 0 {
+        ackermann(m - 1, 1)
+    } else {
+        ackermann(m - 1, ackermann(m, n - 1))
+    }
+}
+
+fn tree_sum(depth: i32, value: i32) -> i32 {
+    if depth <= 0 {
+        value
+    } else {
+        tree_sum(depth - 1, value * 2) + tree_sum(depth - 1, value * 2 + 1)
+    }
+}
+
+fn mutual_recursion_a(n: i32) -> i32 {
+    if n <= 0 {
+        0
+    } else {
+        mutual_recursion_b(n - 1) + 1
+    }
+}
+
+fn mutual_recursion_b(n: i32) -> i32 {
+    if n <= 0 {
+        1
+    } else {
+        mutual_recursion_a(n - 1) + 2
+    }
+}
+
+fn nested_recursive_calls(depth: i32) -> i32 {
+    if depth <= 0 {
+        1
+    } else {
+        let branch1 = nested_recursive_calls(depth - 1);
+        let branch2 = nested_recursive_calls(depth - 2);
+        let branch3 = nested_recursive_calls(depth - 3);
+        branch1 + branch2 + branch3
+    }
+}
+
+fn main() -> i32 {
+    // Test various recursive algorithms with moderate depth to avoid stack overflow
+    let fib_result = fibonacci_recursive(10);
+    let tail_fib_result = fibonacci_tail_recursive(20, 0, 1);
+    let fact_result = factorial_recursive(8);
+    let ack_result = ackermann(3, 3);
+    let tree_result = tree_sum(5, 1);
+    let mutual_result = mutual_recursion_a(15);
+    let nested_result = nested_recursive_calls(6);
+    // Print results (in a real implementation)
+    // printf("Fibonacci(10): %d\n", fib_result);
+    // printf("Tail Fibonacci(20): %d\n", tail_fib_result);
+    // printf("Factorial(8): %d\n", fact_result);
+    // printf("Ackermann(3,3): %d\n", ack_result);
+    // printf("Tree sum(5): %d\n", tree_result);
+    // printf("Mutual recursion(15): %d\n", mutual_result);
+    // printf("Nested recursion(6): %d\n", nested_result);
+
+    // Return sum of all results
+    fib_result + tail_fib_result + fact_result + ack_result + tree_result + mutual_result + nested_result
+}

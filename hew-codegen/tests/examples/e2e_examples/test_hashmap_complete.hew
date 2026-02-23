@@ -1,0 +1,126 @@
+// Test: HashMap Complete
+// Exercises: insert, len, contains_key, overwrite, remove
+fn test_hashmap_len() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    let empty_len = m.len();
+    m.insert("x", 10);
+    m.insert("y", 20);
+    m.insert("z", 30);
+    let full_len = m.len();
+    if empty_len == 0 {
+        if full_len == 3 {
+            println("PASS: hashmap_len");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_contains_key() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("x", 10);
+    let has_x = m.contains_key("x");
+    let has_y = m.contains_key("y");
+    if has_x == 1 {
+        if has_y == 0 {
+            println("PASS: hashmap_contains_key");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_overwrite() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("key", 100);
+    m.insert("key", 200);
+    let len = m.len();
+    // Overwrite should keep len at 1
+    if len == 1 {
+        println("PASS: hashmap_overwrite");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_insert_many() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.insert("c", 3);
+    m.insert("d", 4);
+    m.insert("e", 5);
+    let len = m.len();
+    let has_a = m.contains_key("a");
+    let has_e = m.contains_key("e");
+    let has_z = m.contains_key("z");
+    if len == 5 {
+        if has_a == 1 {
+            if has_e == 1 {
+                if has_z == 0 {
+                    println("PASS: hashmap_insert_many");
+                    1
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_remove() -> int {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.insert("c", 3);
+    m.remove("b");
+    let len = m.len();
+    let has_a = m.contains_key("a");
+    let has_b = m.contains_key("b");
+    if len == 2 {
+        if has_a == 1 {
+            if has_b == 0 {
+                println("PASS: hashmap_remove");
+                1
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: HashMap Complete ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_hashmap_len();
+    passed = passed + test_hashmap_contains_key();
+    passed = passed + test_hashmap_overwrite();
+    passed = passed + test_hashmap_insert_many();
+    passed = passed + test_hashmap_remove();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

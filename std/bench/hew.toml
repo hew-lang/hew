@@ -1,0 +1,9 @@
+[package]
+name = "std::bench"
+version = "0.1.0"
+description = "Hew std::bench package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+"std::time::datetime" = "0.1.0"

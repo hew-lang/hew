@@ -1,0 +1,39 @@
+// Stress test: Actor ring
+// 10 actors in a ring, token passed 100 rounds. Each pass increments by 1.
+// Total increments = 10 actors * 100 rounds = 1000.
+// Exercises: high-volume sequential await, actor reuse, scheduler fairness.
+actor RingNode {
+    let id: int;
+    receive fn pass(value: int) -> int {
+        value + 1
+    }
+}
+
+fn main() {
+    let n0 = spawn RingNode(id: 0);
+    let n1 = spawn RingNode(id: 1);
+    let n2 = spawn RingNode(id: 2);
+    let n3 = spawn RingNode(id: 3);
+    let n4 = spawn RingNode(id: 4);
+    let n5 = spawn RingNode(id: 5);
+    let n6 = spawn RingNode(id: 6);
+    let n7 = spawn RingNode(id: 7);
+    let n8 = spawn RingNode(id: 8);
+    let n9 = spawn RingNode(id: 9);
+    var value = 0;
+    var round = 0;
+    while round < 100 {
+        value = await n0.pass(value);
+        value = await n1.pass(value);
+        value = await n2.pass(value);
+        value = await n3.pass(value);
+        value = await n4.pass(value);
+        value = await n5.pass(value);
+        value = await n6.pass(value);
+        value = await n7.pass(value);
+        value = await n8.pass(value);
+        value = await n9.pass(value);
+        round = round + 1;
+    }
+    println(value);
+}

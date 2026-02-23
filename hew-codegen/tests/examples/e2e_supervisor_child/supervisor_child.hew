@@ -1,0 +1,42 @@
+// E2E test: supervisor_child() returns a typed actor reference
+// that can receive messages like any other actor.
+actor Worker {
+    let id: i32;
+    init() {
+        print("Worker ");
+        print(self.id);
+        println(" ready");
+    }
+    receive fn ping() {
+        print("Worker ");
+        print(self.id);
+        println(" ponged");
+    }
+}
+
+supervisor WorkerPool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w0: Worker(1);
+    child w1: Worker(2);
+    child w2: Worker(3);
+}
+
+fn main() {
+    let pool = spawn WorkerPool;
+    sleep_ms(50);
+
+    // Get each child by index and send a message
+    let a = supervisor_child(pool, 0);
+    let b = supervisor_child(pool, 1);
+    let c = supervisor_child(pool, 2);
+    a.ping();
+    sleep_ms(10);
+    b.ping();
+    sleep_ms(10);
+    c.ping();
+    sleep_ms(50);
+    println("done");
+}

@@ -1,0 +1,41 @@
+// Closure capture test
+// Exercises lambdas that capture variables from enclosing scope
+
+// Simple closure capturing one variable — type inferred from capture
+fn test_simple_capture() -> i32 {
+    let x: i32 = 10;
+    let add_x = (y) => x + y;
+    add_x(5)
+}
+
+// Closure capturing multiple variables
+fn test_multi_capture() -> i32 {
+    let a: i32 = 3;
+    let b: i32 = 7;
+    let sum_with = (c) => a + b + c;
+    sum_with(10)
+}
+
+// Closure used as a factory pattern
+fn make_adder(n: i32) -> i32 {
+    let add = (x) => n + x;
+    add(100)
+}
+
+// Non-capturing lambda — type inferred from body literal
+fn test_no_capture() -> i32 {
+    let twice = (x) => x * 2;
+    twice(21)
+}
+
+fn main() {
+    println("=== Closure Tests ===");
+    let r1 = test_simple_capture();
+    println(r1); // 15
+    let r2 = test_multi_capture();
+    println(r2); // 20
+    let r3 = make_adder(42);
+    println(r3); // 142
+    let r4 = test_no_capture();
+    println(r4);
+} // 42

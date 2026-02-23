@@ -1,0 +1,18 @@
+// Lambda functions
+
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn double_fn(n: i32) -> i32 {
+    n * 2
+}
+
+fn triple_fn(n: i32) -> i32 {
+    n * 3
+}
+
+fn main() {
+    println(apply(double_fn, 10));
+    println(apply(triple_fn, 10));
+}

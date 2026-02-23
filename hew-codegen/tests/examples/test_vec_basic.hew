@@ -1,0 +1,12 @@
+fn main() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    println(v.len());
+    println(v.get(0));
+    println(v.get(1));
+    println(v.get(2));
+    let sum = v.get(0) + v.get(1) + v.get(2);
+    println(sum);
+}

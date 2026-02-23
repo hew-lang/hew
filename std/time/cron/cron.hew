@@ -1,0 +1,72 @@
+//! Cron expression parsing and scheduling.
+//!
+//! Parse cron expressions and compute the next or previous firing times
+//! relative to a given epoch timestamp.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::time::cron;
+//! import std::time::datetime;
+//!
+//! fn main() {
+//!     let expr = cron.parse("0 */5 * * *");
+//!     let next_run = expr.next(datetime.now_secs());
+//!     println(next_run);
+//!     expr.free();
+//! }
+//! ```
+
+/// A parsed cron expression.
+///
+/// Created by `cron.parse(expr)`. Must be freed with `free()` when
+/// no longer needed to avoid leaking memory.
+type Expr {}
+
+/// Methods available on a parsed `Expr`.
+trait ExprMethods {
+    // Compute the next firing time (epoch seconds) after the given timestamp.
+    fn next(self: Expr, after_epoch_secs: i64) -> i64;
+
+    // Compute the previous firing time (epoch seconds) before the given timestamp.
+    fn prev(self: Expr, before_epoch_secs: i64) -> i64;
+
+    // Return the cron expression as a string.
+    fn to_string(self: Expr) -> String;
+
+    // Release the parsed expression resources.
+    fn free(self: Expr);
+}
+
+impl ExprMethods for Expr {
+    fn next(self: Expr, after_epoch_secs: i64) -> i64 { hew_cron_next(self, after_epoch_secs) }
+    fn prev(self: Expr, before_epoch_secs: i64) -> i64 { hew_cron_prev(self, before_epoch_secs) }
+    fn to_string(self: Expr) -> String { hew_cron_to_string(self) }
+    fn free(self: Expr) { hew_cron_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Parse a cron expression string.
+///
+/// Panics if the expression syntax is invalid.
+///
+/// # Examples
+///
+/// ```
+/// let every_minute = cron.parse("* * * * *");
+/// let weekdays_9am = cron.parse("0 9 * * 1-5");
+/// ```
+pub fn parse(expr: String) -> Expr {
+    hew_cron_parse(expr)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_cron_parse(expr: String) -> Expr;
+    fn hew_cron_next(expr: Expr, after_epoch_secs: i64) -> i64;
+    fn hew_cron_prev(expr: Expr, before_epoch_secs: i64) -> i64;
+    fn hew_cron_to_string(expr: Expr) -> String;
+    fn hew_cron_free(expr: Expr);
+}

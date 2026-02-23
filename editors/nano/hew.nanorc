@@ -1,0 +1,98 @@
+## Hew syntax highlighting for GNU nano
+## Keywords sourced from hew-lexer ALL_KEYWORDS (single source of truth).
+
+syntax "hew" "\.hew$"
+
+# Comments
+color cyan "//.*$"
+color cyan start="/\*" end="\*/"
+
+# Strings
+color yellow ""([^"\\]|\\.)*""
+color yellow "'([^'\\]|\\.)*'"
+# Raw strings
+color yellow "r\"([^"])*\""
+
+# Regex literals
+color yellow "re\"([^"])*\""
+
+# F-strings
+color yellow "f\"([^"\\]|\\.)*\""
+
+# Escape sequences in strings
+color brightyellow "\\[nrt\\\"0]"
+color brightyellow "\\x[0-9a-fA-F]{2}"
+
+# Numbers
+color brightmagenta "\<0[xX][0-9a-fA-F][0-9a-fA-F_]*\>"
+color brightmagenta "\<0[bB][01][01_]*\>"
+color brightmagenta "\<0[oO][0-7][0-7_]*\>"
+color brightmagenta "\<[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?\>"
+color brightmagenta "\<[0-9][0-9_]*(ns|us|ms|s|m|h)\>"
+color brightmagenta "\<[0-9][0-9_]*\>"
+
+# Boolean & None
+color brightmagenta "\<(true|false|None)\>"
+
+# Control flow keywords
+color brightwhite "\<(if|else|match|loop|for|in|while|break|continue|return)\>"
+color brightwhite "\<(try|catch|select|join|yield|cooperate|after|from|await)\>"
+color brightwhite "\<(scope|race|defer)\>"
+
+# Declaration keywords
+color green "\<(let|var|const|fn|gen|type|struct|enum|trait|impl)\>"
+color green "\<(import|pub|where|dyn|move|unsafe)\>"
+
+# Actor & concurrency
+color brightgreen "\<(actor|receive|init|spawn|async)\>"
+
+# Supervisor
+color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
+
+# Wire protocol
+color green "\<(wire|reserved|optional|deprecated|default)\>"
+
+# Other keywords
+color green "\<(extern|package|super|pure|as)\>"
+
+# Strategy & policy constants
+color brightmagenta "\<(one_for_one|one_for_all|rest_for_one)\>"
+color brightmagenta "\<(permanent|transient|temporary)\>"
+
+# Types — primitives
+color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize)\>"
+color brightblue "\<(bool|char|string|bytes|void)\>"
+
+# Types — generic / collection / concurrency
+color brightblue "\<(Result|Option|Vec|HashMap|HashSet|Box|Arc|Rc|Weak)\>"
+color brightblue "\\<(Actor|ActorRef|Task|Scope|Generator|AsyncGenerator|Stream|Sink)\\>"
+
+# Traits
+color brightblue "\<(Send|Frozen|Copy|Drop|Clone|Eq|Ord|Hash|Display|Debug)\>"
+color brightblue "\<(Default|Iterator|AsyncIterator|IntoIterator|Into|From|Try|Allocator)\>"
+
+# Self
+color brightblue "\<Self\>"
+color red "\<self\>"
+
+# PascalCase type names
+color brightblue "\<[A-Z][a-zA-Z0-9_]*\>"
+
+# Function definitions
+color brightcyan "\<fn +[a-zA-Z_][a-zA-Z0-9_]*"
+
+# Operators
+color white "->|=>|<-|\.\.[=]?"
+color white "==[^=]|!=|=~|!~|<=|>="
+color white "<<=|>>=|&=|\|=|\^=|\+=|-=|\*=|/=|%="
+color white "<<|>>"
+color white "::"
+
+# Attributes
+color magenta "#\[[^\]]*\]"
+
+# Labels
+color red "@[a-zA-Z_][a-zA-Z0-9_]*"
+
+# TODO/FIXME in comments
+color brightyellow,cyan "\<(TODO|FIXME|XXX|NOTE|HACK)\>" 

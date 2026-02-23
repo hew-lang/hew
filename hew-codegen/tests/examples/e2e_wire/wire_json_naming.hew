@@ -1,0 +1,40 @@
+// Test: JSON serialization with all naming conventions.
+// Each wire type uses a different #[json(NamingCase)] attribute.
+// JSON keys are alphabetically sorted by serde_json.
+#[json(camelCase)]
+wire type CamelDoc {
+    user_id: i32 @1;
+    event_type: i32 @2;
+}
+
+#[json(PascalCase)]
+wire type PascalDoc {
+    max_size: i32 @1;
+    min_count: i32 @2;
+}
+
+#[json(SCREAMING_SNAKE)]
+wire type ScreamDoc {
+    first_name: String @1;
+    age: i32 @2;
+}
+
+#[json("kebab-case")]
+wire type KebabDoc {
+    start_time: i64 @1;
+    is_done: i32 @2;
+}
+
+extern "C" {
+    fn CamelDoc_to_json(user_id: i32, event_type: i32) -> String;
+    fn PascalDoc_to_json(max_size: i32, min_count: i32) -> String;
+    fn ScreamDoc_to_json(first_name: String, age: i32) -> String;
+    fn KebabDoc_to_json(start_time: i64, is_done: i32) -> String;
+}
+
+fn main() {
+    println(CamelDoc_to_json(1, 2));
+    println(PascalDoc_to_json(100, 5));
+    println(ScreamDoc_to_json("Alice", 30));
+    println(KebabDoc_to_json(5000, 0));
+}

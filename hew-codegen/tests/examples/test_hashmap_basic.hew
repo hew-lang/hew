@@ -1,0 +1,12 @@
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("x", 10);
+    m.insert("y", 20);
+    m.insert("z", 30);
+    println(m.len());
+    println(m.get("x"));
+    println(m.get("y"));
+    println(m.get("z"));
+    println(m.contains_key("x"));
+    println(m.contains_key("w"));
+}

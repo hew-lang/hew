@@ -1,0 +1,12 @@
+gen fn count_up() -> int {
+    yield 1;
+    yield 2;
+    yield 3;
+}
+
+fn main() {
+    let g = count_up();
+    println(g.next());
+    println(g.next());
+    println(g.next());
+}

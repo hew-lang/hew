@@ -1,0 +1,5 @@
+=== Deep Recursion ===
+sum_to(10) = 55
+sum_to(100) = 5050
+sum_to(1000) = 500500
+PASS

@@ -1,0 +1,6 @@
+=== Large Vec Lifecycle ===
+Created vec with 10000 elements
+First: 0
+Mid: 5000
+Last: 9999
+PASS

@@ -1,0 +1,111 @@
+//! TOML parsing.
+//!
+//! Parse TOML documents into values, inspect types, extract fields,
+//! and serialize back to TOML text.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::toml;
+//!
+//! fn main() {
+//!     let doc = toml.parse("[package]\nname = \"hew\"");
+//!     let pkg = doc.get_field("package");
+//!     let name = pkg.get_field("name");
+//!     println(name.get_string());  // "hew"
+//!     name.free();
+//!     pkg.free();
+//!     doc.free();
+//! }
+//! ```
+
+/// An opaque TOML value.
+///
+/// Represents any TOML type: String, integer, float, boolean, array,
+/// table, or datetime. Created by `toml.parse(s)` or by navigating
+/// into a parsed value. Must be freed with `free()` when no longer needed.
+type Value {}
+
+/// Methods available on a TOML `Value`.
+trait ValueMethods {
+    // Return the type tag of this value.
+    //
+    // 0 = string, 1 = int, 2 = float, 3 = bool, 4 = array,
+    // 5 = table, 6 = datetime.
+    fn type_of(self: Value) -> i32;
+
+    // Extract the string value.
+    fn get_string(self: Value) -> String;
+
+    // Extract the integer value.
+    fn get_int(self: Value) -> i64;
+
+    // Extract the floating-point value.
+    fn get_float(self: Value) -> f64;
+
+    // Extract the boolean value (0 or 1).
+    fn get_bool(self: Value) -> i32;
+
+    // Look up a field by key in a TOML table.
+    //
+    // Returns a new `Value` that must be freed separately.
+    fn get_field(self: Value, key: String) -> Value;
+
+    // Return the number of elements in a TOML array.
+    fn array_len(self: Value) -> i32;
+
+    // Return the element at the given index in a TOML array.
+    //
+    // Returns a new `Value` that must be freed separately.
+    fn array_get(self: Value, index: i32) -> Value;
+
+    // Serialize the value back to a TOML string.
+    fn stringify(self: Value) -> String;
+
+    // Release the value resources.
+    fn free(self: Value);
+}
+
+impl ValueMethods for Value {
+    fn type_of(self: Value) -> i32 { hew_toml_type(self) }
+    fn get_string(self: Value) -> String { hew_toml_get_string(self) }
+    fn get_int(self: Value) -> i64 { hew_toml_get_int(self) }
+    fn get_float(self: Value) -> f64 { hew_toml_get_float(self) }
+    fn get_bool(self: Value) -> i32 { hew_toml_get_bool(self) }
+    fn get_field(self: Value, key: String) -> Value { hew_toml_get_field(self, key) }
+    fn array_len(self: Value) -> i32 { hew_toml_array_len(self) }
+    fn array_get(self: Value, index: i32) -> Value { hew_toml_array_get(self, index) }
+    fn stringify(self: Value) -> String { hew_toml_stringify(self) }
+    fn free(self: Value) { hew_toml_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Parse a TOML string into a `Value`.
+///
+/// Panics if the input is not valid TOML.
+///
+/// # Examples
+///
+/// ```
+/// let config = toml.parse("debug = true\nport = 8080");
+/// ```
+pub fn parse(s: String) -> Value {
+    hew_toml_parse(s)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_toml_parse(s: String) -> Value;
+    fn hew_toml_type(val: Value) -> i32;
+    fn hew_toml_get_string(val: Value) -> String;
+    fn hew_toml_get_int(val: Value) -> i64;
+    fn hew_toml_get_float(val: Value) -> f64;
+    fn hew_toml_get_bool(val: Value) -> i32;
+    fn hew_toml_get_field(val: Value, key: String) -> Value;
+    fn hew_toml_array_len(val: Value) -> i32;
+    fn hew_toml_array_get(val: Value, index: i32) -> Value;
+    fn hew_toml_stringify(val: Value) -> String;
+    fn hew_toml_free(val: Value);
+}

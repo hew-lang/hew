@@ -1,0 +1,124 @@
+// Test: Structured Concurrency
+// Exercises: scope expressions, scope as value, scope with actors
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+actor Worker {
+    let id: i32;
+    receive fn compute(n: i32) {
+        print("  [Worker ");
+        print(self.id);
+        print("] fib(");
+        print(n);
+        print(") = ");
+        println(fib(n));
+    }
+}
+
+fn test_basic_scope() -> i32 {
+    println("--- test_basic_scope ---");
+    let result = scope {
+        let x = 10;
+        let y = 20;
+        x + y
+    };
+    if result == 30 {
+        println("PASS: basic scope expression");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_nested_scope() -> i32 {
+    println("--- test_nested_scope ---");
+    let outer = scope {
+        let a = scope {
+            42
+        };
+        let b = scope {
+            58
+        };
+        a + b
+    };
+    if outer == 100 {
+        println("PASS: nested scope");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_scope_with_computation() -> i32 {
+    println("--- test_scope_with_computation ---");
+    let result = scope {
+        var sum = 0;
+        var i = 1;
+        while i <= 10 {
+            sum = sum + i;
+            i = i + 1;
+        }
+        sum
+    };
+    // 1+2+...+10 = 55
+    if result == 55 {
+        println("PASS: scope with computation");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_sequential_scopes() -> i32 {
+    println("--- test_sequential_scopes ---");
+    let a = scope {
+        42
+    };
+    let b = scope {
+        58
+    };
+    if a + b == 100 {
+        println("PASS: sequential scopes");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_scope_with_actors() -> i32 {
+    println("--- test_scope_with_actors ---");
+    scope {
+        let w1 = spawn Worker;
+        let w2 = spawn Worker;
+        w1.compute(8);
+        w2.compute(10);
+        0
+    };
+    println("PASS: scope with actors (structured concurrency)");
+    1
+}
+
+fn main() -> i32 {
+    println("=== Test: Structured Concurrency ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_scope();
+    passed = passed + test_nested_scope();
+    passed = passed + test_scope_with_computation();
+    passed = passed + test_sequential_scopes();
+    passed = passed + test_scope_with_actors();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

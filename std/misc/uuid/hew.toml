@@ -1,0 +1,6 @@
+[package]
+name = "std::misc::uuid"
+version = "0.1.0"
+description = "Hew std::misc::uuid package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

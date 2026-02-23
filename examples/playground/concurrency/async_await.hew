@@ -1,0 +1,22 @@
+//! @name Async/Await
+//! @description Async functions with await
+
+async fn compute(n: int) -> int {
+    let result = fib(n);
+    result
+}
+
+fn fib(n: int) -> int {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    let future = compute(10);
+    let result = await future;
+    print("fib(10) = ");
+    println(result);
+}

@@ -1,0 +1,29 @@
+// Golden test: actor spawn, send, state, stop
+// Exercises: ActorSpawnOp, ActorSendOp, ActorSelfOp, ActorStopOp
+actor Counter {
+    let count: int;
+
+    receive fn increment(amount: int) {
+        self.count = self.count + amount;
+    }
+
+    receive fn print_count() {
+        println(self.count);
+    }
+}
+
+fn main() {
+    // Struct actor: spawn with initial state
+    let c = spawn Counter(count: 0);
+    c.increment(5);
+    c.increment(3);
+    c.print_count();
+    sleep_ms(100);
+
+    // Lambda actor: spawn and send
+    let doubler = spawn (x: int) => {
+        println(x * 2);
+    };
+    doubler.send(21);
+    sleep_ms(100);
+}

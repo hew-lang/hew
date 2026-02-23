@@ -1,0 +1,16 @@
+type Resource {
+    id: int;
+}
+
+impl Drop for Resource {
+    fn drop(self: Resource) {
+        println("dropping resource");
+        println(self.id);
+    }
+}
+
+fn main() -> int {
+    let r = Resource { id: 42 };
+    println("before scope end");
+    return 0;
+}

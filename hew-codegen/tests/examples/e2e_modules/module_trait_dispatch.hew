@@ -1,0 +1,25 @@
+import "trait_lib.hew";
+
+impl Describable for Circle {
+    fn describe(self: Circle) -> String {
+        string_concat("Circle: ", self.name)
+    }
+}
+
+impl Describable for Square {
+    fn describe(self: Square) -> String {
+        string_concat("Square: ", self.name)
+    }
+}
+
+fn print_description(d: dyn Describable) {
+    let desc = d.describe();
+    println(desc);
+}
+
+fn main() {
+    let c = new_circle("round");
+    let s = new_square("boxy");
+    print_description(c);
+    print_description(s);
+}

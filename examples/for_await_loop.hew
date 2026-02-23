@@ -1,0 +1,14 @@
+// Demonstrates `for await` loop syntax for async streams.
+// requires: async-streams (for await syntax not yet fully implemented)
+//
+// Intended usage:
+// for await item in stream {
+//     println(item);
+// }
+
+// Placeholder: use a regular loop to demonstrate the concept
+fn main() {
+    for i in 0..5 {
+        println(i);
+    }
+}

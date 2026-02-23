@@ -1,0 +1,45 @@
+// Test: Error handling via return codes
+// Exercises: functions returning sentinel values for errors,
+// conditional branching on error indicators, early return patterns.
+fn might_fail(x: int) -> int {
+    if x < 0 {
+        return -1;
+    }
+    x * 2
+}
+
+fn clamp(val: int, lo: int, hi: int) -> int {
+    if val < lo {
+        lo
+    } else {
+        if val > hi {
+            hi
+        } else {
+            val
+        }
+    }
+}
+
+fn safe_divide(a: int, b: int) -> int {
+    if b == 0 {
+        return -1;
+    }
+    a / b
+}
+
+fn main() {
+    let r1 = might_fail(5);
+    println(r1);
+    let r2 = might_fail(-3);
+    println(r2);
+    let c1 = clamp(50, 0, 100);
+    println(c1);
+    let c2 = clamp(150, 0, 100);
+    println(c2);
+    let c3 = clamp(-10, 0, 100);
+    println(c3);
+    let d1 = safe_divide(20, 4);
+    println(d1);
+    let d2 = safe_divide(20, 0);
+    println(d2);
+}

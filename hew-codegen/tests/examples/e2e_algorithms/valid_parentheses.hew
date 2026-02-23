@@ -1,0 +1,113 @@
+// Test: Valid Parentheses (LeetCode #20)
+// Exercises: Vec as stack, String character comparison, match
+fn is_valid(s: Vec<int>) -> int {
+    // Encode chars as ints: ( = 1, ) = 2, [ = 3, ] = 4, { = 5, } = 6
+    let stack: Vec<int> = Vec::new();
+    var i = 0;
+    let len = s.len();
+    while i < len {
+        let ch = s.get(i);
+        if ch == 1 {
+            stack.push(2);
+        } else {
+            if ch == 3 {
+                stack.push(4);
+            } else {
+                if ch == 5 {
+                    stack.push(6);
+                } else {
+                    // Closing bracket
+                    if stack.len() == 0 {
+                        return 0;
+                    }
+                    let top = stack.pop();
+                    if top != ch {
+                        return 0;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if stack.len() == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Valid Parentheses ===");
+
+    // Test "()" -> valid
+    let t1: Vec<int> = Vec::new();
+    t1.push(1);
+    t1.push(2);
+    let r1 = is_valid(t1);
+    println(f"() -> {r1}");
+
+    // Test "()[]{}" -> valid
+    let t2: Vec<int> = Vec::new();
+    t2.push(1);
+    t2.push(2);
+    t2.push(3);
+    t2.push(4);
+    t2.push(5);
+    t2.push(6);
+    let r2 = is_valid(t2);
+    print("()[]{} -> ");
+    println(r2);
+
+    // Test "(]" -> invalid
+    let t3: Vec<int> = Vec::new();
+    t3.push(1);
+    t3.push(4);
+    let r3 = is_valid(t3);
+    println(f"(] -> {r3}");
+
+    // Test "([)]" -> invalid
+    let t4: Vec<int> = Vec::new();
+    t4.push(1);
+    t4.push(3);
+    t4.push(2);
+    t4.push(4);
+    let r4 = is_valid(t4);
+    println(f"([)] -> {r4}");
+
+    // Test "{[]}" -> valid
+    let t5: Vec<int> = Vec::new();
+    t5.push(5);
+    t5.push(3);
+    t5.push(4);
+    t5.push(6);
+    let r5 = is_valid(t5);
+    print("{[]} -> ");
+    println(r5);
+    if r1 == 1 {
+        if r2 == 1 {
+            if r3 == 0 {
+                if r4 == 0 {
+                    if r5 == 1 {
+                        println("PASS");
+                        0
+                    } else {
+                        println("FAIL");
+                        1
+                    }
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

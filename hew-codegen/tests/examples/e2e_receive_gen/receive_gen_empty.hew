@@ -1,0 +1,15 @@
+actor Empty {
+    // Generator body completes immediately without yielding
+    let x: int;
+    receive gen fn items() -> int {
+    }
+}
+
+fn main() {
+    let e = spawn Empty(x: 0);
+    var count = 0;
+    for await val in e.items() {
+        count = count + 1;
+    }
+    println(count);
+}

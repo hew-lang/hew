@@ -1,0 +1,20 @@
+// Test: YAML round-trip — encode, then decode via from_yaml, then re-encode.
+// Both YAML outputs must be identical.
+wire type Metric {
+    name: string @1;
+    value: i64 @2;
+    active: i32 @3;
+}
+
+extern "C" {
+    fn Metric_to_yaml(name: String, value: i64, active: i32) -> String;
+    fn Metric_from_yaml(yaml: String) -> Metric;
+}
+
+fn main() {
+    let yaml1 = Metric_to_yaml("cpu_usage", 75, 1);
+    print(yaml1);
+    let m = Metric_from_yaml(yaml1);
+    let yaml2 = Metric_to_yaml(m.name, m.value, m.active);
+    print(yaml2);
+}

@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-crypto-password"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::crypto::password — password hashing via Argon2"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
+libc = "0.2"
+
+[lints]
+workspace = true

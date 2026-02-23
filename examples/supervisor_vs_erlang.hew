@@ -1,0 +1,126 @@
+// ─────────────────────────────────────────────────────────────────
+// Hew Supervisor: Language Comparison
+// ─────────────────────────────────────────────────────────────────
+//
+// The same pattern in three languages. Hew wins on clarity.
+//
+// ── Erlang/OTP ──────────────────────────────────────────────────
+// -module(connection_pool_sup).
+// -behaviour(supervisor).
+// -export([start_link/0, init/1]).
+//
+// start_link() ->
+//     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+//
+// init([]) ->
+//     SupFlags = #{strategy => one_for_one,
+//                  intensity => 5,
+//                  period => 60},
+//     ChildSpecs = [
+//         #{id => reader,
+//           start => {conn_worker, start_link, [reader, 8080]},
+//           restart => permanent,
+//           shutdown => 5000,
+//           type => worker,
+//           modules => [conn_worker]},
+//         #{id => writer,
+//           start => {conn_worker, start_link, [writer, 8081]},
+//           restart => permanent,
+//           shutdown => 5000,
+//           type => worker,
+//           modules => [conn_worker]}
+//     ],
+//     {ok, {SupFlags, ChildSpecs}}.
+//
+// That's 25 lines of boilerplate to supervise 2 workers.
+//
+// ── Akka (Scala) ───────────────────────────────────────────────
+// class ConnectionPoolSupervisor extends Actor {
+//   override val supervisorStrategy =
+//     OneForOneStrategy(maxNrOfRetries = 5, withinTimeRange = 60.seconds) {
+//       case _: IOException => Restart
+//       case _: Exception   => Stop
+//     }
+//
+//   override def preStart(): Unit = {
+//     context.actorOf(Props(classOf[ConnWorker], "reader", 8080), "reader")
+//     context.actorOf(Props(classOf[ConnWorker], "writer", 8081), "writer")
+//   }
+//
+//   def receive = { case _ => }
+// }
+//
+// That's 14 lines. Better, but still requires a class, lifecycle hooks,
+// pattern matching on exception types, and implicit actor context.
+//
+// ── Hew ─────────────────────────────────────────────────────────
+// 6 lines. Declarative. No boilerplate. The compiler generates all the
+// lifecycle code. The runtime handles crash isolation, restart backoff,
+// and budget enforcement automatically.
+actor ConnWorker {
+    let role: i32; // 0 = reader, 1 = writer
+    let port: i32;
+    receive fn handle(request_id: i32) {
+        if self.role == 0 {
+            print("  [reader:");
+        } else {
+            print("  [writer:");
+        }
+        print(self.port);
+        print("] handling request ");
+        println(request_id);
+    }
+    receive fn fail() {
+        if self.role == 0 {
+            print("  [reader:");
+        } else {
+            print("  [writer:");
+        }
+        print(self.port);
+        println("] connection lost!");
+        panic("connection failure");
+    }
+}
+
+// This IS the supervision tree. 6 lines.
+supervisor ConnectionPool {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child reader: ConnWorker(0, 8080);
+    child writer: ConnWorker(1, 8081);
+}
+
+fn main() {
+    println("─── Connection Pool Demo ───");
+    println("");
+    let pool = spawn ConnectionPool;
+    sleep_ms(30);
+    let reader = supervisor_child(pool, 0);
+    let writer = supervisor_child(pool, 1);
+    // Normal operation
+    reader.handle(1);
+    sleep_ms(10);
+    writer.handle(2);
+    sleep_ms(10);
+    reader.handle(3);
+    sleep_ms(30);
+
+    // Reader crashes — writer keeps running
+    println("");
+    println("Reader connection drops:");
+    reader.fail();
+    sleep_ms(300);
+
+    // New reader is already running (supervisor restarted it)
+    println("");
+    println("After automatic restart:");
+    let reader2 = supervisor_child(pool, 0);
+    reader2.handle(4);
+    sleep_ms(10);
+    writer.handle(5);
+    sleep_ms(30);
+    println("");
+    println("Zero downtime. Zero manual recovery. That's supervision.");
+}

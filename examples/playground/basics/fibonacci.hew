@@ -1,0 +1,17 @@
+//! @name Fibonacci
+//! @description Calculate Fibonacci numbers recursively
+
+fn fib(n: int) -> int {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    for i in 0..10 {
+        print(f"fib({i}) = ");
+        println(fib(i));
+    }
+}

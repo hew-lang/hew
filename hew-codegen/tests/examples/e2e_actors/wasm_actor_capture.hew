@@ -1,0 +1,10 @@
+// Test: Lambda actor with closure capture
+// Exercises: lambda actor, captured outer variable
+fn main() {
+    let base = 100;
+    let adder = spawn (x: int) => {
+        println(base + x);
+    };
+    adder.send(1);
+    adder.send(42);
+}

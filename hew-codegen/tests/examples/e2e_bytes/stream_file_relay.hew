@@ -1,0 +1,30 @@
+import std::fs;
+import std::stream;
+
+fn relay_file(path: string, sink: Sink) {
+    let raw = match stream.from_file(path) {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    let chunked = raw.chunks(5);
+    for await chunk in chunked {
+        sink.write(chunk);
+    }
+    sink.close();
+}
+
+fn main() {
+    hew_file_write("/tmp/hew_relay_test.txt", "helloworld_test");
+
+    let (sink, input) = stream.channel(8);
+
+    relay_file("/tmp/hew_relay_test.txt", sink);
+
+    var count = 0;
+    for await item in input {
+        println(item);
+        count = count + 1;
+    }
+    println(count);
+    input.close();
+}

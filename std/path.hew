@@ -1,0 +1,211 @@
+//! File path and glob utilities.
+//!
+//! Manipulate file paths (join, split, check existence) and expand
+//! glob patterns to lists of matching paths.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::path;
+//!
+//! fn main() {
+//!     let dir = path.dirname("/home/user/file.txt");
+//!     let ext = path.extension("photo.jpg");
+//!     let result = path.glob("*.hew");
+//!     for i in 0..result.count() {
+//!         println(result.get(i));
+//!     }
+//!     result.free();
+//! }
+//! ```
+
+/// The result of a glob expansion.
+///
+/// Created by `path.glob(pattern)`. Must be freed with `free()` when
+/// no longer needed to avoid leaking memory.
+type GlobResult {}
+
+/// Methods available on a `GlobResult`.
+trait GlobResultMethods {
+    // Return the number of matched paths.
+    fn count(self: GlobResult) -> i32;
+
+    // Return the matched path at the given index.
+    fn get(self: GlobResult, index: i32) -> String;
+
+    // Release the glob result resources.
+    fn free(self: GlobResult);
+}
+
+impl GlobResultMethods for GlobResult {
+    fn count(self: GlobResult) -> i32 { hew_glob_count(self) }
+    fn get(self: GlobResult, index: i32) -> String { hew_glob_get(self, index) }
+    fn free(self: GlobResult) { hew_glob_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Expand a glob pattern and return all matching paths.
+///
+/// # Examples
+///
+/// ```
+/// let files = path.glob("src/**/*.hew");
+/// ```
+pub fn glob(pattern: String) -> GlobResult {
+    hew_glob(pattern)
+}
+
+/// Combine two path segments with the platform path separator.
+///
+/// # Examples
+///
+/// ```
+/// path.combine("/home/user", "file.txt")  // "/home/user/file.txt"
+/// ```
+pub fn combine(a: String, b: String) -> String {
+    if b.starts_with("/") {
+        return b;
+    }
+    if a.ends_with("/") {
+        return a + b;
+    }
+    a + "/" + b
+}
+
+/// Return the directory portion of a path.
+///
+/// # Examples
+///
+/// ```
+/// path.dirname("/home/user/file.txt")  // "/home/user"
+/// ```
+pub fn dirname(p: String) -> String {
+    let s = strip_trailing_slash(p);
+    let pos = last_slash_pos(s);
+    if pos < 0 {
+        return "";
+    }
+    if pos == 0 {
+        return "/";
+    }
+    s.slice(0, pos)
+}
+
+/// Return the final component of a path.
+///
+/// # Examples
+///
+/// ```
+/// path.basename("/home/user/file.txt")  // "file.txt"
+/// ```
+pub fn basename(p: String) -> String {
+    let s = strip_trailing_slash(p);
+    if s == "/" {
+        return "";
+    }
+    let pos = last_slash_pos(s);
+    if pos < 0 {
+        return s;
+    }
+    s.slice(pos + 1, s.len())
+}
+
+/// Return the file extension (without the dot).
+///
+/// # Examples
+///
+/// ```
+/// path.extension("photo.jpg")  // "jpg"
+/// ```
+pub fn extension(p: String) -> String {
+    let base = basename(p);
+    let dot_pos = last_dot_pos(base);
+    if dot_pos <= 0 {
+        return "";
+    }
+    base.slice(dot_pos + 1, base.len())
+}
+
+/// Test whether a path exists on the filesystem.
+pub fn exists(p: String) -> bool {
+    hew_path_exists(p)
+}
+
+/// Test whether a path refers to a regular file.
+pub fn is_file(p: String) -> bool {
+    hew_path_is_file(p)
+}
+
+/// Test whether a path refers to a directory.
+pub fn is_dir(p: String) -> bool {
+    hew_path_is_dir(p)
+}
+
+/// Return the absolute form of a path.
+pub fn absolute(p: String) -> String {
+    hew_path_absolute(p)
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+fn strip_trailing_slash(p: String) -> String {
+    if p == "/" {
+        return p;
+    }
+    if p.len() > 1 && p.ends_with("/") {
+        return p.slice(0, p.len() - 1);
+    }
+    p
+}
+
+fn last_slash_pos(s: String) -> i32 {
+    let first = s.find("/");
+    if first < 0 {
+        return -1;
+    }
+    var last = first;
+    var search_from = first + 1;
+    while search_from < s.len() {
+        let rest = s.slice(search_from, s.len());
+        let next = rest.find("/");
+        if next < 0 {
+            return last;
+        }
+        last = search_from + next;
+        search_from = last + 1;
+    }
+    last
+}
+
+fn last_dot_pos(s: String) -> i32 {
+    let first = s.find(".");
+    if first < 0 {
+        return -1;
+    }
+    var last = first;
+    var search_from = first + 1;
+    while search_from < s.len() {
+        let rest = s.slice(search_from, s.len());
+        let next = rest.find(".");
+        if next < 0 {
+            return last;
+        }
+        last = search_from + next;
+        search_from = last + 1;
+    }
+    last
+}
+
+// ── FFI bindings (filesystem operations only) ────────────────────────
+
+extern "C" {
+    fn hew_glob(pattern: String) -> GlobResult;
+    fn hew_glob_count(result: GlobResult) -> i32;
+    fn hew_glob_get(result: GlobResult, index: i32) -> String;
+    fn hew_glob_free(result: GlobResult);
+    fn hew_path_exists(path: String) -> bool;
+    fn hew_path_is_file(path: String) -> bool;
+    fn hew_path_is_dir(path: String) -> bool;
+    fn hew_path_absolute(path: String) -> String;
+}

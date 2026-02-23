@@ -1,0 +1,76 @@
+//! Wire format encoding and decoding.
+//!
+//! import std::encoding::wire;
+//!
+//! Low-level functions for Hew's binary wire protocol, used by the
+//! runtime for actor-to-actor message serialization across network
+//! boundaries.
+//!
+//! Most users should use `wire type` declarations instead of calling
+//! these functions directly.
+
+// HBF header layout (10 bytes):
+//   [0..3]  magic   "HEW1" = [72, 69, 87, 49]
+//   [4]     version 0x01
+//   [5]     flags   (bit 0 = compressed)
+//   [6..9]  payload_len (little-endian u32)
+
+/// Encode a wire format header for a message.
+///
+/// `payload_len` is the byte length of the serialized payload.
+/// `flags` controls optional features (e.g., `1` for compression).
+///
+/// Returns the 10-byte encoded header as a `bytes` value.
+pub fn encode_header(payload_len: i32, flags: i32) -> bytes {
+    let out: bytes = bytes::new();
+    // Magic: "HEW1"
+    out.push(72);   // 'H'
+    out.push(69);   // 'E'
+    out.push(87);   // 'W'
+    out.push(49);   // '1'
+    // Version
+    out.push(1);
+    // Flags (only bit 0 is valid)
+    out.push(flags & 1);
+    // Payload length (little-endian 4 bytes)
+    out.push(payload_len & 255);
+    out.push((payload_len >> 8) & 255);
+    out.push((payload_len >> 16) & 255);
+    out.push((payload_len >> 24) & 255);
+    out
+}
+
+/// Decode a wire format header from a `bytes` buffer.
+///
+/// Returns the payload length on success, or -1 if the header is invalid.
+pub fn decode_header(buffer: bytes) -> i64 {
+    if !validate_header(buffer) {
+        return -1;
+    }
+    let b0 = buffer.get(6);
+    let b1 = buffer.get(7);
+    let b2 = buffer.get(8);
+    let b3 = buffer.get(9);
+    // Reconstruct little-endian u32 as i64
+    let result: i64 = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216;
+    result
+}
+
+/// Validate that a `bytes` buffer contains a well-formed wire header.
+///
+/// Returns `true` if the header is valid.
+pub fn validate_header(buffer: bytes) -> bool {
+    if buffer.len() < 10 {
+        return false;
+    }
+    // Check magic "HEW1"
+    if buffer.get(0) != 72 { return false; }
+    if buffer.get(1) != 69 { return false; }
+    if buffer.get(2) != 87 { return false; }
+    if buffer.get(3) != 49 { return false; }
+    // Check version
+    if buffer.get(4) != 1 { return false; }
+    // Check flags (only bit 0 allowed)
+    if buffer.get(5) & 254 != 0 { return false; }
+    true
+}

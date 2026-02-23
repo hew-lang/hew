@@ -1,0 +1,26 @@
+enum Result {
+    Ok(int);
+    Err(int);
+}
+
+fn unwrap_or(r: Result, fallback: int) -> int {
+    match r {
+        Ok(val) => val,
+        Err(_) => fallback,
+    }
+}
+
+fn main() {
+    let a = Ok(100);
+    let b = Err(42);
+    println(unwrap_or(a, 0));
+    println(unwrap_or(b, -1));
+
+    // Test match expression returning value
+    let c = Ok(7);
+    let val = match c {
+        Ok(x) => x + 3,
+        Err(e) => e,
+    };
+    println(val);
+}

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hew Profiler</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ed; --muted: #8b8fa3; --accent: #6c8cff;
+    --green: #4ade80; --red: #f87171; --yellow: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+         background: var(--bg); color: var(--text); padding: 20px; }
+  h1 { font-size: 1.4em; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.85em; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border);
+          border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 1em; color: var(--muted); margin-bottom: 12px;
+             text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .stat-value { font-size: 1.6em; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 0.75em; color: var(--muted); text-transform: uppercase;
+                letter-spacing: 0.04em; }
+  .stat-unit { font-size: 0.6em; color: var(--muted); font-weight: 400; }
+  canvas { width: 100%; height: 120px; display: block; margin-top: 12px; }
+  .rate { color: var(--accent); font-size: 0.8em; }
+  .rate.warn { color: var(--yellow); }
+</style>
+</head>
+<body>
+  <h1>🔬 Hew Profiler</h1>
+  <div class="subtitle" id="uptime">Connecting...</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Scheduler</h2>
+      <div class="stats">
+        <div><div class="stat-value" id="tasks-spawned">-</div>
+             <div class="stat-label">Tasks Spawned</div></div>
+        <div><div class="stat-value" id="tasks-completed">-</div>
+             <div class="stat-label">Tasks Completed</div></div>
+        <div><div class="stat-value" id="messages-sent">-</div>
+             <div class="stat-label">Messages Sent</div></div>
+        <div><div class="stat-value" id="active-workers">-</div>
+             <div class="stat-label">Active Workers</div></div>
+      </div>
+      <canvas id="chart-scheduler"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Memory</h2>
+      <div class="stats">
+        <div><div class="stat-value" id="bytes-live">-</div>
+             <div class="stat-label">Bytes Live</div></div>
+        <div><div class="stat-value" id="peak-bytes">-</div>
+             <div class="stat-label">Peak Bytes</div></div>
+        <div><div class="stat-value" id="alloc-count">-</div>
+             <div class="stat-label">Allocations</div></div>
+        <div><div class="stat-value" id="alloc-rate">-</div>
+             <div class="stat-label">Alloc Rate <span class="stat-unit">/s</span></div></div>
+      </div>
+      <canvas id="chart-memory"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Messages</h2>
+      <div class="stats">
+        <div><div class="stat-value" id="msg-rate-in">-</div>
+             <div class="stat-label">Recv Rate <span class="stat-unit">/s</span></div></div>
+        <div><div class="stat-value" id="msg-rate-out">-</div>
+             <div class="stat-label">Send Rate <span class="stat-unit">/s</span></div></div>
+        <div><div class="stat-value" id="steals">-</div>
+             <div class="stat-label">Work Steals</div></div>
+        <div><div class="stat-value" id="steal-rate">-</div>
+             <div class="stat-label">Steal Rate <span class="stat-unit">/s</span></div></div>
+      </div>
+      <canvas id="chart-messages"></canvas>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Allocation Timeline</h2>
+      <canvas id="chart-alloc-timeline" style="height: 160px;"></canvas>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Export Profiles</h2>
+      <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+        <a href="/debug/pprof/heap" download="heap.pb.gz"
+           style="color: var(--accent); text-decoration: none; padding: 8px 16px;
+                  border: 1px solid var(--border); border-radius: 6px; font-size: 0.85em;">
+          📦 pprof Heap Profile (.pb.gz)
+        </a>
+        <a href="/debug/pprof/profile" target="_blank"
+           style="color: var(--accent); text-decoration: none; padding: 8px 16px;
+                  border: 1px solid var(--border); border-radius: 6px; font-size: 0.85em;">
+          📊 Flat Profile (gprof-style text)
+        </a>
+      </div>
+      <div style="margin-top: 8px; color: var(--muted); font-size: 0.75em;">
+        pprof: <code>go tool pprof heap.pb.gz</code> or <code>pprof -top heap.pb.gz</code> · Flat: human-readable text
+      </div>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Actors</h2>
+      <div style="overflow-x: auto;">
+        <table id="actors-table" style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+          <thead>
+            <tr style="color: var(--muted); text-align: left; border-bottom: 1px solid var(--border);">
+              <th style="padding: 6px 8px;">ID</th>
+              <th style="padding: 6px 8px;">PID</th>
+              <th style="padding: 6px 8px;">State</th>
+              <th style="padding: 6px 8px;">Messages</th>
+              <th style="padding: 6px 8px;">Time (ms)</th>
+              <th style="padding: 6px 8px;">Avg (μs)</th>
+              <th style="padding: 6px 8px;">Mailbox</th>
+              <th style="padding: 6px 8px;">HWM</th>
+            </tr>
+          </thead>
+          <tbody id="actors-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>

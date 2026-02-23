@@ -1,0 +1,22 @@
+// Test: Message Throughput
+// Exercises: High-volume message passing
+actor Counter {
+    let count: int;
+    receive fn tick(n: int) {
+        self.count = self.count + 1;
+    }
+}
+
+fn main() {
+    println("=== Message Throughput ===");
+    let counter = spawn Counter(count: 0);
+    // Send 1000 messages
+    var i = 0;
+    while i < 1000 {
+        counter.tick(i);
+        i = i + 1;
+    }
+    sleep_ms(500);
+    println("Sent 1000 messages");
+    println("PASS");
+}

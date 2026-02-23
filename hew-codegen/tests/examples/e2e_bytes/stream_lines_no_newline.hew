@@ -1,0 +1,16 @@
+import std::fs;
+import std::stream;
+
+fn main() {
+    hew_file_write("/tmp/hew_nonl_test.txt", "first\nsecond");
+
+    let raw = match stream.from_file("/tmp/hew_nonl_test.txt") {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    let lines = raw.lines();
+
+    for await line in lines {
+        println(line);
+    }
+}

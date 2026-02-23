@@ -1,0 +1,96 @@
+//! CSV parsing.
+//!
+//! Parse CSV data from strings or files into a table that can be
+//! queried by row/column index or column name.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::csv;
+//!
+//! fn main() {
+//!     let table = csv.parse("name,age\nAlice,30\nBob,25");
+//!     let rows = table.rows();
+//!     let name = table.get_by_name(0, "name");
+//!     println(name);  // "Alice"
+//!     table.free();
+//! }
+//! ```
+
+/// An opaque CSV table.
+///
+/// Represents parsed CSV data with optional headers. Created by
+/// `csv.parse`, `csv.parse_no_headers`, or `csv.parse_file`.
+/// Must be freed with `free()` when no longer needed.
+type Table {}
+
+/// Methods available on a CSV `Table`.
+trait TableMethods {
+    // Return the number of data rows (excluding the header row).
+    fn rows(self: Table) -> i32;
+
+    // Return the number of columns.
+    fn cols(self: Table) -> i32;
+
+    // Return the header name for the given column index.
+    fn header(self: Table, col: i32) -> String;
+
+    // Return the cell value at the given row and column index.
+    fn get(self: Table, row: i32, col: i32) -> String;
+
+    // Return the cell value at the given row for the named column.
+    fn get_by_name(self: Table, row: i32, col_name: String) -> String;
+
+    // Release the table resources.
+    fn free(self: Table);
+}
+
+impl TableMethods for Table {
+    fn rows(self: Table) -> i32 { hew_csv_rows(self) }
+    fn cols(self: Table) -> i32 { hew_csv_cols(self) }
+    fn header(self: Table, col: i32) -> String { hew_csv_header(self, col) }
+    fn get(self: Table, row: i32, col: i32) -> String { hew_csv_get(self, row, col) }
+    fn get_by_name(self: Table, row: i32, col_name: String) -> String {
+        hew_csv_get_by_name(self, row, col_name)
+    }
+    fn free(self: Table) { hew_csv_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Parse CSV data from a string (first row is treated as headers).
+///
+/// # Examples
+///
+/// ```
+/// let table = csv.parse("a,b\n1,2");
+/// ```
+pub fn parse(data: String) -> Table {
+    hew_csv_parse(data)
+}
+
+/// Parse CSV data from a string without treating the first row as headers.
+pub fn parse_no_headers(data: String) -> Table {
+    hew_csv_parse_no_headers(data)
+}
+
+/// Parse CSV data from a file path (first row is treated as headers).
+///
+/// Panics if the file cannot be read.
+pub fn parse_file(path: String) -> Table {
+    hew_csv_parse_file(path)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_csv_parse(data: String) -> Table;
+    fn hew_csv_parse_no_headers(data: String) -> Table;
+    fn hew_csv_parse_file(path: String) -> Table;
+    fn hew_csv_rows(table: Table) -> i32;
+    fn hew_csv_cols(table: Table) -> i32;
+    fn hew_csv_header(table: Table, col: i32) -> String;
+    fn hew_csv_get(table: Table, row: i32, col: i32) -> String;
+    fn hew_csv_get_by_name(table: Table, row: i32, col_name: String) -> String;
+    fn hew_csv_free(table: Table);
+}

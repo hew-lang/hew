@@ -1,0 +1,18 @@
+async fn compute(n: i32) -> i32 {
+    let result = fib(n);
+    result
+}
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    let future = compute(10);
+    let result = await future;
+    println(result);
+}

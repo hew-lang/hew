@@ -1,0 +1,153 @@
+// Test: Float Arithmetic
+// Exercises: f64 addition, subtraction, multiplication, division,
+// comparisons, negation, and complex expressions
+fn test_float_add() -> int {
+    let a: f64 = 2.5;
+    let b: f64 = 3.5;
+    let result = a + b;
+    if result == 6.0 {
+        println("PASS: test_float_add");
+        1
+    } else {
+        println("FAIL: test_float_add");
+        0
+    }
+}
+
+fn test_float_sub() -> int {
+    let a: f64 = 10.0;
+    let b: f64 = 3.5;
+    let result = a - b;
+    if result == 6.5 {
+        println("PASS: test_float_sub");
+        1
+    } else {
+        println("FAIL: test_float_sub");
+        0
+    }
+}
+
+fn test_float_mul() -> int {
+    let a: f64 = 3.0;
+    let b: f64 = 4.0;
+    let result = a * b;
+    if result == 12.0 {
+        println("PASS: test_float_mul");
+        1
+    } else {
+        println("FAIL: test_float_mul");
+        0
+    }
+}
+
+fn test_float_div() -> int {
+    let a: f64 = 15.0;
+    let b: f64 = 4.0;
+    let result = a / b;
+    if result == 3.75 {
+        println("PASS: test_float_div");
+        1
+    } else {
+        println("FAIL: test_float_div");
+        0
+    }
+}
+
+fn test_float_comparisons() -> int {
+    let lt = if 1.5 < 2.5 {
+        1
+    } else {
+        0
+    };
+    let gt = if 3.0 > 2.0 {
+        1
+    } else {
+        0
+    };
+    let le = if 2.0 <= 2.0 {
+        1
+    } else {
+        0
+    };
+    let ge = if 3.0 >= 2.5 {
+        1
+    } else {
+        0
+    };
+    let ne = if 1.0 != 2.0 {
+        1
+    } else {
+        0
+    };
+    if lt == 1 {
+        if gt == 1 {
+            if le == 1 {
+                if ge == 1 {
+                    if ne == 1 {
+                        println("PASS: test_float_comparisons");
+                        1
+                    } else {
+                        println("FAIL: test_float_comparisons");
+                        0
+                    }
+                } else {
+                    println("FAIL: test_float_comparisons");
+                    0
+                }
+            } else {
+                println("FAIL: test_float_comparisons");
+                0
+            }
+        } else {
+            println("FAIL: test_float_comparisons");
+            0
+        }
+    } else {
+        println("FAIL: test_float_comparisons");
+        0
+    }
+}
+
+fn test_float_negation() -> int {
+    let x: f64 = 5.0;
+    let neg = -x;
+    if neg == -5.0 {
+        println("PASS: test_float_negation");
+        1
+    } else {
+        println("FAIL: test_float_negation");
+        0
+    }
+}
+
+fn test_float_complex_expr() -> int {
+    let result = (2.0 + 3.0) * 4.0 - 1.0;
+    if result == 19.0 {
+        println("PASS: test_float_complex_expr");
+        1
+    } else {
+        println("FAIL: test_float_complex_expr");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: Float Arithmetic ===");
+    var passed = 0;
+    let total = 7;
+    passed = passed + test_float_add();
+    passed = passed + test_float_sub();
+    passed = passed + test_float_mul();
+    passed = passed + test_float_div();
+    passed = passed + test_float_comparisons();
+    passed = passed + test_float_negation();
+    passed = passed + test_float_complex_expr();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

@@ -1,0 +1,7 @@
+import std::misc::log;
+
+fn main() {
+    log.setup();
+    log.info("request handled", status: 200, path: "/api/users");
+    println("done");
+}

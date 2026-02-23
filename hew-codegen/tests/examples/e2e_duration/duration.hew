@@ -1,0 +1,11 @@
+// Test: duration literals become i64 nanosecond values
+fn main() {
+    let a = 100ms;
+    println(a);
+    let b = 5s;
+    println(b);
+    let c = 1m;
+    println(c);
+    let d = 2h;
+    println(d);
+}

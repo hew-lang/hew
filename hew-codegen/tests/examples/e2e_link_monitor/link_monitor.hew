@@ -1,0 +1,36 @@
+// Test: Actor link and monitor builtins
+// Exercises: link(), unlink(), monitor(), demonitor()
+actor Worker {
+    let id: int;
+    receive fn ping() {
+        println(f"Worker {self.id} pinged");
+    }
+}
+
+fn main() {
+    println("=== Link/Monitor Test ===");
+    let w1 = spawn Worker(id: 1);
+    let w2 = spawn Worker(id: 2);
+    // Link w1 to w2 (bidirectional)
+    link(w1);
+    println("Linked to w1");
+
+    // Monitor w2 (unidirectional, returns ref_id)
+    let ref_id = monitor(w2);
+    println(f"Monitoring w2, ref_id = {ref_id}");
+
+    // Unlink w1
+    unlink(w1);
+    println("Unlinked from w1");
+
+    // Demonitor w2
+    demonitor(ref_id);
+    println("Demonitored w2");
+
+    // Send messages to verify actors still work
+    w1.ping();
+    sleep_ms(50);
+    w2.ping();
+    sleep_ms(100);
+    println("Done");
+}

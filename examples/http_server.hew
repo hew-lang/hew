@@ -1,0 +1,66 @@
+// HTTP static file server in Hew
+//
+// Accepts connections in main, dispatches each request to a Handler
+// actor for concurrent file serving with MIME type detection.
+//
+// Usage: http_server [port] [root_dir]
+// Defaults: port=8080, root_dir="."
+import std::net::http;
+
+import std::fs;
+
+import std::os;
+
+import std::net::mime;
+
+actor Handler {
+    let root: String;
+    receive fn serve(req: Request, path: String) {
+        if path.contains("..") {
+            req.respond_text(403, "403 Forbidden");
+        } else {
+            var file_path = self.root + path;
+            if path.ends_with("/") {
+                file_path = file_path + "index.html";
+            }
+            if fs.exists(file_path) {
+                let body = fs.read(file_path);
+                let content_type = mime.from_path(file_path);
+                let size = fs.size(file_path);
+                req.respond(200, content_type, size, body);
+            } else {
+                let index_path = file_path + "/index.html";
+                if fs.exists(index_path) {
+                    let body = fs.read(index_path);
+                    let content_type = mime.from_path(index_path);
+                    let size = fs.size(index_path);
+                    req.respond(200, content_type, size, body);
+                } else {
+                    req.respond_text(404, "404 Not Found");
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    var port: String = "8080";
+    var root: String = ".";
+    let argc = os.args_count();
+    if argc > 1 {
+        port = os.args(1);
+    }
+    if argc > 2 {
+        root = os.args(2);
+    }
+    let addr = f"0.0.0.0:{port}";
+    println("=== Hew HTTP Static File Server ===");
+    println(f"Listening on http://{addr}  root={root}");
+    let handler = spawn Handler(root: root);
+    let srv = http.listen(addr);
+    loop {
+        let req = srv.accept();
+        let path = req.path();
+        handler.serve(req, path);
+    }
+}

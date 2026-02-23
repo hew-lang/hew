@@ -1,0 +1,42 @@
+// Test: Move Closures
+// Exercises: `move` keyword on lambdas to capture variables by value
+fn make_adder(x: int) -> int {
+    let add = move (y: int) -> int => {
+        x + y
+    };
+    add(10)
+}
+
+fn apply_twice(x: int) -> int {
+    let factor = 3;
+    let mul = move (y: int) -> int => {
+        y * factor
+    };
+    mul(x) + mul(x)
+}
+
+fn main() -> int {
+    let r1 = make_adder(5);
+    println(f"adder(5)(10) = {r1}");
+    let r2 = make_adder(20);
+    println(f"adder(20)(10) = {r2}");
+    let r3 = apply_twice(4);
+    println(f"apply_twice(4) = {r3}");
+    if r1 == 15 {
+        if r2 == 30 {
+            if r3 == 24 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

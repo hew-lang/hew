@@ -1,0 +1,7 @@
+=== Option/Result Chain ===
+Find 30: index 2
+Find 99: not found
+100/5 = 20
+100/0 = 0
+Chain result: 5
+PASS

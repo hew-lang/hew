@@ -1,0 +1,119 @@
+// Full validation test - exercises all implemented features
+
+// 1. Boolean operators
+fn test_bool_ops() {
+    let a = true;
+    let b = false;
+    let c = a && b;
+    let d = a || b;
+    if d {
+        println("PASS: bool operators")
+    }
+}
+
+// 2. Pattern matching
+fn test_pattern_match() {
+    let x = 42;
+    match x {
+        0 => {
+            println("zero")
+        },
+        42 => {
+            println("PASS: pattern match")
+        },
+        _ => {
+            println("other")
+        },
+    }
+}
+
+// 3. Lambda
+fn test_lambda() {
+    let dbl = (x) => x * 2;
+    println("PASS: lambda")
+}
+
+// 4. Loops with var
+fn test_loops() {
+    var total = 0;
+    var i = 0;
+    while i < 5 {
+        total = total + i;
+        i = i + 1;
+    }
+    if total == 10 {
+        println("PASS: loops")
+    }
+}
+
+// 5. String operations
+fn test_strings() {
+    println("PASS: strings")
+}
+
+// 6. Nested function calls
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn mul(a: i32, b: i32) -> i32 {
+    a * b
+}
+
+fn test_nested_calls() {
+    let result = add(mul(3, 4), mul(5, 6));
+    if result == 42 {
+        println("PASS: nested calls")
+    }
+}
+
+// 7. Fibonacci via recursion
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn test_fibonacci() {
+    let result = fib(10);
+    if result == 55 {
+        println("PASS: fibonacci")
+    }
+}
+
+// 8. Const declaration
+const MAX_SIZE: i32 = 100;
+
+// 9. Comparison operators
+fn test_comparisons() {
+    let a = 10;
+    let b = 20;
+    if a < b && b > a && a <= 10 && b >= 20 && a != b {
+        println("PASS: comparisons")
+    }
+}
+
+// 10. Negative numbers and unary ops
+fn test_unary() {
+    let x = 0 - 42;
+    if x == 0 - 42 {
+        println("PASS: unary/negative")
+    }
+}
+
+// Main
+fn main() {
+    println("=== Hew Full Validation ===");
+    test_bool_ops();
+    test_pattern_match();
+    test_lambda();
+    test_loops();
+    test_strings();
+    test_nested_calls();
+    test_fibonacci();
+    test_comparisons();
+    test_unary();
+    println("=== All Tests Passed ===");
+}

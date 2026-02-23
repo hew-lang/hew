@@ -1,0 +1,8 @@
+=== Queue via Stacks ===
+Enqueued: 1, 2, 3
+Dequeue: 1
+Enqueued: 4
+Dequeue: 2
+Dequeue: 3
+Dequeue: 4
+PASS

@@ -1,0 +1,14 @@
+type Point {
+    x: f64;
+    y: f64;
+}
+
+fn get_x(p: Point) -> f64 {
+    p.x
+}
+
+fn main() {
+    let p = Point { x: 3.0, y: 4.0 };
+    let x = get_x(p);
+    println(x);
+}

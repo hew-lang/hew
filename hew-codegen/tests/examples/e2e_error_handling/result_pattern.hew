@@ -1,0 +1,67 @@
+// Test: Result-like error handling patterns using enums
+// Exercises: custom enum with payload variants for Ok/Err, match destructuring,
+// error propagation via return values.
+enum DivResult {
+    DivOk(int);
+    DivErr(int);
+}
+
+fn divide(a: int, b: int) -> DivResult {
+    if b == 0 {
+        DivErr(1)
+    } else {
+        DivOk(a / b)
+    }
+}
+
+fn checked_add(a: int, b: int) -> DivResult {
+    let sum = a + b;
+    if sum > 1000 {
+        DivErr(2)
+    } else {
+        DivOk(sum)
+    }
+}
+
+fn main() {
+    // Successful division
+    let r1 = divide(10, 2);
+    match r1 {
+        DivOk(val) => {
+            println(f"10/2 = {val}");
+        },
+        DivErr(code) => {
+            println(f"error code: {code}");
+        },
+    }
+    // Division by zero
+    let r2 = divide(10, 0);
+    match r2 {
+        DivOk(val) => {
+            println(val);
+        },
+        DivErr(code) => {
+            println(f"div error: {code}");
+        },
+    }
+    // Successful addition
+    let r3 = checked_add(100, 200);
+    match r3 {
+        DivOk(val) => {
+            println(f"100+200 = {val}");
+        },
+        DivErr(code) => {
+            println(f"add error: {code}");
+        },
+    }
+    // Overflow addition
+    let r4 = checked_add(900, 200);
+    match r4 {
+        DivOk(val) => {
+            println(val);
+        },
+        DivErr(code) => {
+            println(f"add error: {code}");
+        },
+    }
+}

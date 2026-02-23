@@ -1,0 +1,6 @@
+=== Fibonacci Iterative Bench ===
+fib(10) = 55
+fib(20) = 6765
+fib(30) = 832040
+1000 x fib(20) sum = 6765000
+PASS

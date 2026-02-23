@@ -1,0 +1,86 @@
+// Test: Matrix Multiply
+// Exercises: Nested loops, 2D indexing via flat Vec
+fn mat_get(m: Vec<int>, cols: int, row: int, col: int) -> int {
+    m.get(row * cols + col)
+}
+
+fn mat_mul(a: Vec<int>, b: Vec<int>, n: int) -> Vec<int> {
+    let result: Vec<int> = Vec::new();
+    var i = 0;
+    while i < n {
+        var j = 0;
+        while j < n {
+            var sum = 0;
+            var k = 0;
+            while k < n {
+                sum = sum + mat_get(a, n, i, k) * mat_get(b, n, k, j);
+                k = k + 1;
+            }
+            result.push(sum);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+fn print_matrix(m: Vec<int>, n: int) {
+    var i = 0;
+    while i < n {
+        var j = 0;
+        while j < n {
+            if j > 0 {
+                print(" ");
+            }
+            print(mat_get(m, n, i, j));
+            j = j + 1;
+        }
+        println("");
+        i = i + 1;
+    }
+}
+
+fn main() -> int {
+    println("=== Matrix Multiply ===");
+
+    // A = [[1, 2], [3, 4]]
+    let a: Vec<int> = Vec::new();
+    a.push(1);
+    a.push(2);
+    a.push(3);
+    a.push(4);
+
+    // B = [[5, 6], [7, 8]]
+    let b: Vec<int> = Vec::new();
+    b.push(5);
+    b.push(6);
+    b.push(7);
+    b.push(8);
+    let c = mat_mul(a, b, 2);
+    println("Result:");
+    print_matrix(c, 2);
+
+    // Expected: [[19, 22], [43, 50]]
+    if mat_get(c, 2, 0, 0) == 19 {
+        if mat_get(c, 2, 0, 1) == 22 {
+            if mat_get(c, 2, 1, 0) == 43 {
+                if mat_get(c, 2, 1, 1) == 50 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

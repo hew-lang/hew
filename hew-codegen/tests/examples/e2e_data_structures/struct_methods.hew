@@ -1,0 +1,62 @@
+// Test: Struct with Methods
+// Exercises: Type declaration, field access, methods
+type Point {
+    x: int;
+    y: int;
+}
+
+fn point_new(x: int, y: int) -> Point {
+    Point { x: x, y: y }
+}
+
+fn point_manhattan(p: Point) -> int {
+    var ax = p.x;
+    var ay = p.y;
+    if ax < 0 {
+        ax = 0 - ax;
+    }
+    if ay < 0 {
+        ay = 0 - ay;
+    }
+    ax + ay
+}
+
+fn point_add(a: Point, b: Point) -> Point {
+    Point { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn main() -> int {
+    println("=== Struct Methods ===");
+    let p1 = point_new(3, 4);
+    print("p1 = (");
+    print(p1.x);
+    print(", ");
+    print(p1.y);
+    println(")");
+    let p2 = point_new(-1, 2);
+    let p3 = point_add(p1, p2);
+    print("p1 + p2 = (");
+    print(p3.x);
+    print(", ");
+    print(p3.y);
+    println(")");
+    let dist = point_manhattan(p2);
+    println(f"manhattan(-1, 2) = {dist}");
+    if p3.x == 2 {
+        if p3.y == 6 {
+            if dist == 3 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

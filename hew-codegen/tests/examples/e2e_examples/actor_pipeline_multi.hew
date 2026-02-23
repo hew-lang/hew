@@ -1,0 +1,23 @@
+// Test: Multi-stage Actor Pipeline
+// Exercises: Actors forwarding messages to each other through a chain
+actor Printer {
+    receive fn print_result(x: int) {
+        println(x);
+    }
+}
+
+actor Doubler {
+    let next: Printer;
+    receive fn double(x: int) {
+        self.next.print_result(x * 2);
+    }
+}
+
+fn main() {
+    let p = spawn Printer;
+    let d = spawn Doubler(target: p);
+    d.double(5);
+    d.double(10);
+    d.double(15);
+    sleep_ms(100);
+}

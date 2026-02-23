@@ -1,0 +1,104 @@
+// Test: Lambda Patterns
+// Exercises: lambda creation, invocation, capture, higher-order functions, loops
+fn apply(f: fn(int) -> int, val: int) -> int {
+    f(val)
+}
+
+fn test_lambda_basic() -> int {
+    let double = (x) => x * 2;
+    let result = double(5);
+    if result == 10 {
+        println("PASS: lambda_basic");
+        1
+    } else {
+        println("FAIL: lambda_basic");
+        0
+    }
+}
+
+fn test_lambda_no_params() -> int {
+    let greet = () => 42;
+    let result = greet();
+    if result == 42 {
+        println("PASS: lambda_no_params");
+        1
+    } else {
+        println("FAIL: lambda_no_params");
+        0
+    }
+}
+
+fn test_lambda_multi_params() -> int {
+    let add = (a, b) => a + b;
+    let result = add(3, 7);
+    if result == 10 {
+        println("PASS: lambda_multi_params");
+        1
+    } else {
+        println("FAIL: lambda_multi_params");
+        0
+    }
+}
+
+fn test_lambda_capture() -> int {
+    let x = 10;
+    let f = (y) => x + y;
+    let result = f(5);
+    if result == 15 {
+        println("PASS: lambda_capture");
+        1
+    } else {
+        println("FAIL: lambda_capture");
+        0
+    }
+}
+
+fn test_higher_order() -> int {
+    let triple = (x) => x * 3;
+    let result = apply(triple, 4);
+    if result == 12 {
+        println("PASS: higher_order");
+        1
+    } else {
+        println("FAIL: higher_order");
+        0
+    }
+}
+
+fn test_lambda_in_loop() -> int {
+    let square = (n) => n * n;
+    var sum = 0;
+    var i = 1;
+    while i <= 5 {
+        sum = sum + square(i);
+        i = i + 1;
+    }
+    // 1 + 4 + 9 + 16 + 25 = 55
+    if sum == 55 {
+        println("PASS: lambda_in_loop");
+        1
+    } else {
+        println("FAIL: lambda_in_loop");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: Lambda Patterns ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_lambda_basic();
+    passed = passed + test_lambda_no_params();
+    passed = passed + test_lambda_multi_params();
+    passed = passed + test_lambda_capture();
+    passed = passed + test_higher_order();
+    passed = passed + test_lambda_in_loop();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

@@ -1,0 +1,36 @@
+// Test: Ping Pong (Erlang classic)
+// Exercises: Two actors exchanging messages
+actor Pinger {
+    let count: int;
+    receive fn ping(n: int) {
+        println(f"Ping {n}");
+        self.count = self.count + 1;
+    }
+}
+
+actor Ponger {
+    let count: int;
+    receive fn pong(n: int) {
+        println(f"Pong {n}");
+        self.count = self.count + 1;
+    }
+}
+
+fn main() {
+    println("=== Ping Pong ===");
+    let pinger = spawn Pinger(count: 0);
+    let ponger = spawn Ponger(count: 0);
+    pinger.ping(1);
+    sleep_ms(50);
+    ponger.pong(1);
+    sleep_ms(50);
+    pinger.ping(2);
+    sleep_ms(50);
+    ponger.pong(2);
+    sleep_ms(50);
+    pinger.ping(3);
+    sleep_ms(50);
+    ponger.pong(3);
+    sleep_ms(200);
+    println("Done");
+}

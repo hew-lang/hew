@@ -1,0 +1,32 @@
+// Fibonacci across actors - demonstrates actor-based message passing
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+actor FibWorker {
+    let id: i32;
+    receive fn compute(n: i32) {
+        let result = fib(n);
+        print("Worker ");
+        print(self.id);
+        print(": fib(");
+        print(n);
+        println(f") = {result}");
+    }
+}
+
+fn main() {
+    println("=== Fibonacci via Actors ===");
+    let w1 = spawn FibWorker;
+    let w2 = spawn FibWorker;
+    let w3 = spawn FibWorker;
+    w1.compute(5);
+    w2.compute(10);
+    w3.compute(15);
+    sleep_ms(200);
+    println("=== Done ===");
+}

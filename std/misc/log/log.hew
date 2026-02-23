@@ -1,0 +1,118 @@
+//! Structured logging for Hew programs.
+//!
+//! import std::misc::log;
+//! Provides five log levels with structured key-value fields
+//! and automatic actor context injection.
+//!
+//! # Usage
+//!
+//! ```
+//! fn main() {
+//!     log.setup();
+//!     log.info("server starting", port: 8080);
+//!     log.debug("cache initialized", capacity: 1024);
+//! }
+//! ```
+//!
+//! # Levels
+//!
+//! ERROR (0) > WARN (1) > INFO (2) > DEBUG (3) > TRACE (4)
+//!
+//! # Output
+//!
+//! Default: colored text to stderr
+//! ```
+//! 12:34:56.789 INFO  server starting  port=8080
+//! ```
+
+// ── Format constants ─────────────────────────────────────────────────
+
+/// Colored text output format (default).
+pub const TEXT: i32 = 0;
+
+/// Single-line JSON (NDJSON) output format.
+pub const JSON: i32 = 1;
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Initialize logging at the default INFO level.
+pub fn setup() {
+    hew_log_set_level(2);
+}
+
+/// Initialize logging at a specific level.
+///
+/// Levels: 0=error, 1=warn, 2=info, 3=debug, 4=trace.
+///
+/// # Examples
+///
+/// ```
+/// log.setup_level(3); // enable debug and above
+/// ```
+pub fn setup_level(level: i32) {
+    hew_log_set_level(level);
+}
+
+/// Set the log level filter.
+pub fn set_level(level: i32) {
+    hew_log_set_level(level);
+}
+
+/// Get the current log level filter.
+pub fn get_level() -> i32 {
+    hew_log_get_level()
+}
+
+/// Set the log output format.
+///
+/// Use `log.TEXT` (0) for colored text or `log.JSON` (1) for NDJSON.
+///
+/// # Examples
+///
+/// ```
+/// log.set_format(log.JSON);
+/// log.info("structured", service: "api");
+/// ```
+pub fn set_format(format: i32) {
+    hew_log_set_format(format);
+}
+
+/// Get the current log output format.
+pub fn get_format() -> i32 {
+    hew_log_get_format()
+}
+
+/// Log a message at error level (named args handled by compiler).
+pub fn error(msg: String) {
+    hew_log_emit(0, msg);
+}
+
+/// Log a message at warn level.
+pub fn warn(msg: String) {
+    hew_log_emit(1, msg);
+}
+
+/// Log a message at info level.
+pub fn info(msg: String) {
+    hew_log_emit(2, msg);
+}
+
+/// Log a message at debug level.
+pub fn debug(msg: String) {
+    hew_log_emit(3, msg);
+}
+
+/// Log a message at trace level.
+pub fn trace(msg: String) {
+    hew_log_emit(4, msg);
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_log_emit(level: i32, msg: String);
+    fn hew_log_get_level() -> i32;
+    fn hew_log_set_level(level: i32);
+    fn hew_log_set_format(format: i32);
+    fn hew_log_get_format() -> i32;
+}

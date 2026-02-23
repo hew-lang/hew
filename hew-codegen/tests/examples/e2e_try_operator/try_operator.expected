@@ -1,0 +1,10 @@
+=== Test: Try Operator ===
+PASS: direct Result Ok
+PASS: direct Result Err
+PASS: ? operator Ok path
+PASS: ? operator Err propagation
+PASS: chained ? Ok path
+PASS: chained ? first Err
+PASS: chained ? second Err
+
+Passed: 7/7

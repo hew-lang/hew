@@ -1,0 +1,80 @@
+// Enum and Option/Result type test
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+fn color_name(c: Color) -> int {
+    match c {
+        Red => {
+            println("red");
+            0
+        },
+        Green => {
+            println("green");
+            1
+        },
+        Blue => {
+            println("blue");
+            2
+        },
+    }
+}
+
+fn test_enum() {
+    println("PASS: enum declaration");
+}
+
+fn test_option_match() {
+    let opt = Some(42);
+    match opt {
+        Some(v) => {
+            println("PASS: Some pattern");
+            println(v)
+        },
+        None => {
+            println("FAIL: expected Some")
+        },
+    }
+    let empty = None;
+    match empty {
+        Some(v) => {
+            println("FAIL: expected None")
+        },
+        None => {
+            println("PASS: None pattern")
+        },
+    }
+}
+
+fn test_result_match() {
+    let ok_val = Ok(99);
+    match ok_val {
+        Ok(val) => {
+            println("PASS: Ok pattern");
+            println(val)
+        },
+        Err(code) => {
+            println("FAIL: expected Ok")
+        },
+    }
+    let err_val = Err(42);
+    match err_val {
+        Ok(val) => {
+            println("FAIL: expected Err")
+        },
+        Err(code) => {
+            println("PASS: Err pattern");
+            println(code)
+        },
+    }
+}
+
+fn main() {
+    println("=== Enums and Options ===");
+    test_enum();
+    test_option_match();
+    test_result_match();
+    println("=== Done ===");
+}

@@ -1,0 +1,17 @@
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+fn make_pair<T>(a: T, b: T) -> Pair<T> {
+    Pair { first: a, second: b }
+}
+
+fn main() {
+    let pi = make_pair<int>(10, 20);
+    let pf = make_pair<float>(1.5, 2.5);
+    println(pi.first);
+    println(pi.second);
+    println(pf.first);
+    println(pf.second);
+}

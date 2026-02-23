@@ -1,0 +1,6 @@
+import std::misc::log;
+
+fn main() {
+    log.setup();
+    log.info("hello from hew");
+}

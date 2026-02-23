@@ -1,0 +1,59 @@
+// Test: Bitwise operators
+// Exercises: &, |, ^, <<, >>, ~, compound assignment
+fn main() {
+    // Basic bitwise AND
+    let a = 255;
+    let b = 15;
+    println(a & b); // 15
+
+    // Bitwise OR
+    println(a | 256); // 511
+
+    // Bitwise XOR
+    println(170 ^ 85); // 255  (0xAA ^ 0x55)
+
+    // Left shift
+    println(1 << 8); // 256
+
+    // Right shift
+    println(256 >> 4); // 16
+
+    // Bitwise NOT
+    // ~0 in 32-bit signed = -1
+    println(~0); // -1
+
+    // ~1 = -2
+    println(~1); // -2
+
+    // Compound assignments
+    var x = 65280; // 0xFF00
+    x &= 4080; // 0x0FF0
+    println(x); // 3840  (0x0F00)
+    var y = 15; // 0x0F
+    y |= 240; // 0xF0
+    println(y); // 255
+    var z = 255;
+    z ^= 15;
+    println(z); // 240
+    var s = 1;
+    s <<= 10;
+    println(s); // 1024
+    var r = 1024;
+    r >>= 3;
+    println(r); // 128
+
+    // Precedence test: & binds tighter than |
+    // 48 & 240 = 48, then 15 | 48 = 63
+    let p = 15 | 48 & 240;
+    println(p); // 63
+
+    // Shift used with mask
+    let flags = 1 << 3 | 1 << 5;
+    println(flags); // 40  (8 + 32)
+
+    // Extract a nibble
+    let val = 43981; // 0xABCD
+    let nibble = val >> 4 & 15;
+    println(nibble); // 12  (0xC)
+    println("done");
+}

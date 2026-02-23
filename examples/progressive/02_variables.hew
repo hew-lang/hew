@@ -1,0 +1,17 @@
+// Test 2: Variables and arithmetic
+// Trying to see how variable assignment and basic math works
+fn main() {
+    let x = 10;
+    let y = 20;
+    let sum = x + y;
+    println("Testing variables:");
+    println(x);
+    println(y);
+    println(sum);
+
+    // Try some more math
+    let product = x * y;
+    let difference = y - x;
+    println(product);
+    println(difference);
+}

@@ -1,0 +1,165 @@
+//! HTTP server for handling web requests.
+//!
+//! Provides a blocking HTTP server that listens on a TCP address,
+//! accepts incoming requests, and sends responses.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::http;
+//!
+//! fn main() {
+//!     let server = http.listen(":8080");
+//!     loop {
+//!         let req = server.accept();
+//!         let path = req.path();
+//!         req.respond_text(200, "Hello from Hew!");
+//!     }
+//! }
+//! ```
+
+/// An HTTP server bound to a TCP address.
+///
+/// Created by calling `http.listen(addr)`. Use `accept()` to wait for
+/// incoming requests in a loop.
+type Server {}
+
+/// An incoming HTTP request.
+///
+/// Obtained from `server.accept()`. Provides accessors for the request
+/// method, path, headers, and body. Must be responded to with one of
+/// the `respond` methods.
+type Request {}
+
+// ── Server methods ────────────────────────────────────────────────────
+
+/// Methods available on an HTTP `Server`.
+trait ServerMethods {
+    // Block until a client connects and returns the next `Request`.
+    fn accept(self: Server) -> Request;
+
+    // Close the server and release the listening socket.
+    fn close(self: Server);
+}
+
+impl ServerMethods for Server {
+    fn accept(self: Server) -> Request {
+        hew_http_server_recv(self)
+    }
+    fn close(self: Server) {
+        hew_http_server_close(self);
+    }
+}
+
+// ── Request methods ───────────────────────────────────────────────────
+
+/// Methods available on an HTTP `Request`.
+trait RequestMethods {
+    // Returns the HTTP method (e.g. `"GET"`, `"POST"`).
+    fn method(self: Request) -> String;
+
+    // Returns the request path (e.g. `"/api/users"`).
+    fn path(self: Request) -> String;
+
+    // Returns the value of the named header, or an empty string.
+    fn header(self: Request, name: String) -> String;
+
+    // Returns the request body, decoded according to `encoding`.
+    //
+    // Pass `"utf-8"` for text bodies, or `"raw"` for binary.
+    fn body(self: Request, encoding: String) -> String;
+
+    // Send a full HTTP response with status, content-type, and body.
+    //
+    // `content_length` should be the byte length of `body`.
+    fn respond(self: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
+
+    // Send a plain-text HTTP response.
+    //
+    // # Examples
+    //
+    // ```
+    // req.respond_text(200, "OK");
+    // req.respond_text(404, "Not Found");
+    // ```
+    fn respond_text(self: Request, status: i32, body: String) -> i32;
+
+    // Send a JSON HTTP response with `Content-Type: application/json`.
+    fn respond_json(self: Request, status: i32, json: String) -> i32;
+
+    // Begin a streaming response. Returns a `Sink` that writes directly
+    // to the HTTP response body using chunked transfer encoding.
+    //
+    // Each `sink.write(chunk)` sends data to the client immediately.
+    // Call `sink.close()` to finish the response.
+    //
+    // # Examples
+    //
+    // ```
+    // let body = req.respond_stream(200, "text/plain");
+    // body.write("chunk 1");
+    // body.write("chunk 2");
+    // body.close();
+    // ```
+    fn respond_stream(self: Request, status: i32, content_type: String) -> Sink;
+
+}
+
+impl RequestMethods for Request {
+    fn method(self: Request) -> String { hew_http_request_method(self) }
+    fn path(self: Request) -> String { hew_http_request_path(self) }
+    fn header(self: Request, name: String) -> String { hew_http_request_header(self, name) }
+    fn body(self: Request, encoding: String) -> String { hew_http_request_body(self, encoding) }
+    fn respond(self: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32 {
+        hew_http_respond(self, status, content_type, content_length, body)
+    }
+    fn respond_text(self: Request, status: i32, body: String) -> i32 {
+        hew_http_respond_text(self, status, body)
+    }
+    fn respond_json(self: Request, status: i32, json: String) -> i32 {
+        hew_http_respond_json(self, status, json)
+    }
+    fn respond_stream(self: Request, status: i32, content_type: String) -> Sink {
+        hew_http_respond_stream(self, status, content_type)
+    }
+}
+
+impl Drop for Request {
+    fn drop(self: Request) {
+        hew_http_request_free(self);
+    }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a new HTTP server listening on the given address.
+///
+/// The address format is `"host:port"` or `":port"` to listen on all
+/// interfaces.
+///
+/// # Examples
+///
+/// ```
+/// let server = http.listen(":8080");
+/// let server = http.listen("127.0.0.1:3000");
+/// ```
+pub fn listen(addr: String) -> Server {
+    hew_http_server_new(addr)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_http_server_new(addr: String) -> Server;
+    fn hew_http_server_recv(server: Server) -> Request;
+    fn hew_http_request_method(req: Request) -> String;
+    fn hew_http_request_path(req: Request) -> String;
+    fn hew_http_request_body(req: Request, encoding: String) -> String;
+    fn hew_http_request_header(req: Request, name: String) -> String;
+    fn hew_http_respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
+    fn hew_http_respond_text(req: Request, status: i32, body: String) -> i32;
+    fn hew_http_respond_json(req: Request, status: i32, json: String) -> i32;
+    fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink;
+    fn hew_http_server_close(server: Server);
+    fn hew_http_request_free(req: Request);
+}

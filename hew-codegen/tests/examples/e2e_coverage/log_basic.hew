@@ -1,0 +1,9 @@
+// Test: log function calls — exercises generateLogCall, generateLogEmit
+import std::misc::log;
+
+fn main() {
+    log.setup();
+    log.info("hello from log");
+    log.warn("warning message");
+    println("log done");
+}

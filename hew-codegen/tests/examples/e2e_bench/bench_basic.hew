@@ -1,0 +1,22 @@
+import std::bench;
+
+fn work() -> i32 {
+    var sum = 0;
+    var i = 0;
+    while i < 10 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    sum
+}
+
+fn main() {
+    let s = bench.suite("Test Suite");
+    s.add("work", 5, () => {
+        let _ = work();
+    });
+    println(s.results.len());
+    let r = s.results.get(0);
+    println(r.name);
+    println(r.iterations);
+}

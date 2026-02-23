@@ -1,0 +1,142 @@
+// Test: Nested Structs
+// Exercises: struct init, field access, nested structs, struct params, struct returns
+type Point {
+    x: int;
+    y: int;
+}
+
+type Rect {
+    origin: Point;
+    width: int;
+    height: int;
+}
+
+// === Test 1: Basic struct creation and field access ===
+fn test_struct_basic() -> int {
+    let p = Point { x: 3, y: 4 };
+    if p.x == 3 {
+        if p.y == 4 {
+            println("PASS: test_struct_basic");
+            1
+        } else {
+            println("FAIL: test_struct_basic");
+            0
+        }
+    } else {
+        println("FAIL: test_struct_basic");
+        0
+    }
+}
+
+// === Test 2: Struct nested inside another struct ===
+fn test_struct_in_struct() -> int {
+    let r = Rect { origin: Point { x: 1, y: 2 }, width: 10, height: 20 };
+    if r.origin.x == 1 {
+        if r.origin.y == 2 {
+            if r.width == 10 {
+                if r.height == 20 {
+                    println("PASS: test_struct_in_struct");
+                    1
+                } else {
+                    println("FAIL: test_struct_in_struct");
+                    0
+                }
+            } else {
+                println("FAIL: test_struct_in_struct");
+                0
+            }
+        } else {
+            println("FAIL: test_struct_in_struct");
+            0
+        }
+    } else {
+        println("FAIL: test_struct_in_struct");
+        0
+    }
+}
+
+// === Test 3: Struct passed as function parameter ===
+fn sum_point(p: Point) -> int {
+    p.x + p.y
+}
+
+fn test_struct_as_param() -> int {
+    let p = Point { x: 7, y: 8 };
+    let result = sum_point(p);
+    if result == 15 {
+        println("PASS: test_struct_as_param");
+        1
+    } else {
+        println("FAIL: test_struct_as_param");
+        0
+    }
+}
+
+// === Test 4: Function returning a struct ===
+fn make_point(a: int, b: int) -> Point {
+    Point { x: a, y: b }
+}
+
+fn test_struct_return() -> int {
+    let p = make_point(100, 200);
+    if p.x == 100 {
+        if p.y == 200 {
+            println("PASS: test_struct_return");
+            1
+        } else {
+            println("FAIL: test_struct_return");
+            0
+        }
+    } else {
+        println("FAIL: test_struct_return");
+        0
+    }
+}
+
+// === Test 5: Struct fields used in computation ===
+fn distance_squared(p: Point) -> int {
+    p.x * p.x + p.y * p.y
+}
+
+fn rect_area(r: Rect) -> int {
+    r.width * r.height
+}
+
+fn test_struct_computation() -> int {
+    let p = Point { x: 3, y: 4 };
+    let dist_sq = distance_squared(p);
+    let r = Rect { origin: Point { x: 0, y: 0 }, width: 5, height: 6 };
+    let area = rect_area(r);
+    if dist_sq == 25 {
+        if area == 30 {
+            println("PASS: test_struct_computation");
+            1
+        } else {
+            println("FAIL: test_struct_computation");
+            0
+        }
+    } else {
+        println("FAIL: test_struct_computation");
+        0
+    }
+}
+
+// === Main ===
+fn main() -> int {
+    println("=== Test: Nested Structs ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_struct_basic();
+    passed = passed + test_struct_in_struct();
+    passed = passed + test_struct_as_param();
+    passed = passed + test_struct_return();
+    passed = passed + test_struct_computation();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

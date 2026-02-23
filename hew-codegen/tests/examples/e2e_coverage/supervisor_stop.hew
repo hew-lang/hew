@@ -1,0 +1,27 @@
+// E2E test: supervisor_stop() shuts down a supervisor and its children.
+actor Worker {
+    let id: i32;
+    receive fn ping() {
+        print("worker ");
+        println(self.id);
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+    child w1: Worker(1);
+    child w2: Worker(2);
+}
+
+fn main() {
+    let pool = spawn Pool;
+    sleep_ms(100);
+    let w1 = supervisor_child(pool, 0);
+    w1.ping();
+    sleep_ms(50);
+    supervisor_stop(pool);
+    sleep_ms(100);
+    println("stopped");
+}

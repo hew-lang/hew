@@ -1,0 +1,347 @@
+//! String conversion and manipulation utilities.
+//!
+//! Most string operations (`.find()`, `.slice()`, `.trim()`, etc.)
+//! are built-in methods available on all strings. This module provides
+//! type-conversion helpers and additional string utilities.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::string;
+//!
+//! fn main() {
+//!     let s = string.from_int(42);        // "42"
+//!     let n = string.to_int("42");        // 42
+//!     let nl = string.from_char(10);      // "\n"
+//!     let stars = string.repeat("*", 3);  // "***"
+//!     let padded = string.pad_left("7", 3, "0");  // "007"
+//! }
+//! ```
+
+/// Convert an integer to its string representation.
+///
+/// # Examples
+///
+/// ```
+/// let s = string.from_int(42);  // "42"
+/// ```
+pub fn from_int(n: i32) -> String {
+    f"{n}"
+}
+
+/// Convert a float to its string representation.
+pub fn from_float(f: f64) -> String {
+    f"{f}"
+}
+
+/// Convert a bool to `"true"` or `"false"`.
+pub fn from_bool(b: bool) -> String {
+    if b { "true" } else { "false" }
+}
+
+/// Convert a character code to a single-character string.
+///
+/// # Examples
+///
+/// ```
+/// let newline = string.from_char(10);
+/// ```
+pub fn from_char(code: i32) -> String {
+    hew_char_to_string(code)
+}
+
+/// Parse a string as an integer. Returns 0 if parsing fails.
+///
+/// Unlike C's `atoi`, this function does **not** stop at the first non-digit
+/// character — any non-digit anywhere in the string (after an optional leading
+/// `+`/`-`) causes the whole parse to fail and return `0`.
+/// For example, `"42abc"` returns `0`, not `42`.
+///
+/// There is no overflow protection: very large inputs will wrap silently.
+///
+/// # Examples
+///
+/// ```
+/// let n = string.to_int("42");     // 42
+/// let m = string.to_int("42abc");  // 0 — partial numbers return 0
+/// let z = string.to_int("");       // 0 — empty string returns 0
+/// ```
+pub fn to_int(s: String) -> i32 {
+    let slen = s.len();
+    if slen == 0 {
+        return 0;
+    }
+    var start = 0;
+    var negative = false;
+    let first = s.slice(0, 1);
+    if first == "-" {
+        negative = true;
+        start = 1;
+    } else if first == "+" {
+        start = 1;
+    }
+    if start >= slen {
+        return 0;
+    }
+    var result = 0;
+    for i in start..slen {
+        let d = digit_value(s.slice(i, i + 1));
+        if d < 0 {
+            return 0;
+        }
+        result = result * 10 + d;
+    }
+    if negative { 0 - result } else { result }
+}
+
+fn digit_value(ch: String) -> i32 {
+    if ch == "0" { 0 }
+    else if ch == "1" { 1 }
+    else if ch == "2" { 2 }
+    else if ch == "3" { 3 }
+    else if ch == "4" { 4 }
+    else if ch == "5" { 5 }
+    else if ch == "6" { 6 }
+    else if ch == "7" { 7 }
+    else if ch == "8" { 8 }
+    else if ch == "9" { 9 }
+    else { -1 }
+}
+
+// ── Pure Hew string utilities ────────────────────────────────────────
+
+/// Check if a string is empty.
+///
+/// # Examples
+///
+/// ```
+/// string.is_empty("")    // true
+/// string.is_empty("hi")  // false
+/// ```
+pub fn is_empty(s: String) -> bool {
+    s.len() == 0
+}
+
+/// Repeat a string `n` times.
+///
+/// # Examples
+///
+/// ```
+/// let stars = string.repeat("*", 5);  // "*****"
+/// ```
+pub fn repeat(s: String, n: i32) -> String {
+    var result = "";
+    for i in 0..n {
+        result = result + s;
+    }
+    result
+}
+
+/// Pad a string on the left to reach the given width.
+///
+/// If `s` is already at least `width` characters, returns `s` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// string.pad_left("42", 5, " ")   // "   42"
+/// string.pad_left("42", 5, "0")   // "00042"
+/// ```
+pub fn pad_left(s: String, width: i32, pad: String) -> String {
+    let slen = s.len();
+    if slen >= width {
+        return s;
+    }
+    repeat(pad, width - slen) + s
+}
+
+/// Pad a string on the right to reach the given width.
+///
+/// If `s` is already at least `width` characters, returns `s` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// string.pad_right("hi", 5, " ")  // "hi   "
+/// ```
+pub fn pad_right(s: String, width: i32, pad: String) -> String {
+    let slen = s.len();
+    if slen >= width {
+        return s;
+    }
+    s + repeat(pad, width - slen)
+}
+
+/// Check if a string contains only ASCII digits (0-9).
+///
+/// Returns false for empty strings.
+///
+/// # Examples
+///
+/// ```
+/// string.is_numeric("123")   // true
+/// string.is_numeric("12a")   // false
+/// string.is_numeric("")      // false
+/// ```
+pub fn is_numeric(s: String) -> bool {
+    let slen = s.len();
+    if slen == 0 {
+        return false;
+    }
+    for i in 0..slen {
+        let d = digit_value(s.slice(i, i + 1));
+        if d < 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Count the number of non-overlapping occurrences of `needle` in `haystack`.
+///
+/// # Examples
+///
+/// ```
+/// string.count("abcabc", "abc")  // 2
+/// string.count("hello", "x")     // 0
+/// ```
+pub fn count(haystack: String, needle: String) -> i32 {
+    let nlen = needle.len();
+    if nlen == 0 {
+        return 0;
+    }
+    var n = 0;
+    var pos = 0;
+    let hlen = haystack.len();
+    while pos <= hlen - nlen {
+        let rest = haystack.slice(pos, hlen);
+        let idx = rest.find(needle);
+        if idx < 0 {
+            return n;
+        }
+        n = n + 1;
+        pos = pos + idx + nlen;
+    }
+    n
+}
+
+/// Check if a string starts with the given prefix.
+///
+/// # Examples
+///
+/// ```
+/// string.starts_with("hello", "he")   // true
+/// string.starts_with("hello", "lo")   // false
+/// ```
+pub fn starts_with(s: String, prefix: String) -> bool {
+    let plen = prefix.len();
+    if s.len() < plen {
+        return false;
+    }
+    s.slice(0, plen) == prefix
+}
+
+/// Check if a string ends with the given suffix.
+///
+/// # Examples
+///
+/// ```
+/// string.ends_with("hello", "lo")   // true
+/// string.ends_with("hello", "he")   // false
+/// ```
+pub fn ends_with(s: String, suffix: String) -> bool {
+    let slen = s.len();
+    let suflen = suffix.len();
+    if slen < suflen {
+        return false;
+    }
+    s.slice(slen - suflen, slen) == suffix
+}
+
+/// Check if a string contains the given substring.
+///
+/// # Examples
+///
+/// ```
+/// string.contains("hello world", "world")  // true
+/// string.contains("hello", "xyz")          // false
+/// ```
+pub fn contains(s: String, sub: String) -> bool {
+    s.find(sub) >= 0
+}
+
+/// Check if a string contains only ASCII characters (code points 0–127).
+///
+/// # Examples
+///
+/// ```
+/// string.is_ascii("hello")  // true
+/// string.is_ascii("héllo")  // false
+/// ```
+pub fn is_ascii(s: String) -> bool {
+    let len = s.len();
+    var i = 0;
+    while i < len {
+        let ch = string_char_at(s, i);
+        if ch < 0 || ch > 127 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+/// Convert a string to lowercase.
+pub fn to_lower(s: String) -> String {
+    hew_string_to_lowercase(s)
+}
+
+/// Convert a string to uppercase.
+pub fn to_upper(s: String) -> String {
+    hew_string_to_uppercase(s)
+}
+
+/// Trim leading and trailing whitespace from a string.
+pub fn trim(s: String) -> String {
+    hew_string_trim(s)
+}
+
+/// Replace all occurrences of `old` in `s` with `new_val`.
+pub fn replace(s: String, old: String, new_val: String) -> String {
+    hew_string_replace(s, old, new_val)
+}
+
+// ── FFI declarations for string extras ──────────────────────────────
+
+extern "C" {
+    fn hew_string_to_lowercase(s: String) -> String;
+    fn hew_string_to_uppercase(s: String) -> String;
+    fn hew_string_trim(s: String) -> String;
+    fn hew_string_replace(s: String, old: String, new_val: String) -> String;
+}
+
+// ── Trait: ToString ──────────────────────────────────────────────────
+
+/// Trait for types that can be converted to a string representation.
+///
+/// Provides a standard interface for string conversion across modules.
+///
+/// # Examples
+///
+/// ```
+/// import std::string;
+///
+/// // Implement for custom types:
+/// // impl ToString for MyType {
+/// //     fn to_str(self: MyType) -> String { ... }
+/// // }
+/// ```
+pub trait ToString {
+    fn to_str(self) -> String;
+}
+
+// ── FFI binding (char-code-to-string has no builtin equivalent) ─────
+
+extern "C" {
+    fn hew_char_to_string(code: i32) -> String;
+}

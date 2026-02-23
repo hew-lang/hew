@@ -1,0 +1,21 @@
+// Simple counter actor
+
+actor Counter {
+    let count: i32;
+
+    receive fn increment(n: i32) {
+        self.count = self.count + n;
+    }
+
+    receive fn get_count() {
+        println(self.count);
+    }
+}
+
+fn main() {
+    let counter = spawn Counter;
+    counter.increment(5);
+    counter.increment(10);
+    counter.get_count();
+    sleep_ms(100);
+}

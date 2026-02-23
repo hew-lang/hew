@@ -1,0 +1,156 @@
+// Test: Error Handling
+// Exercises: Result<T,E>, Ok/Err, Option<T>, Some/None, ? operator, match
+fn divide(a: i64, b: i64) -> Result<i64, String> {
+    if b == 0 {
+        Err("division by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+fn test_result_ok() -> i32 {
+    let result = divide(10, 2);
+    let val = match result {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    if val == 5 {
+        println("PASS: Result Ok");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_result_err() -> i32 {
+    let result = divide(10, 0);
+    let val = match result {
+        Ok(v) => v,
+        Err(msg) => {
+            println(f"  error: {msg}");
+            -1
+        },
+    };
+    if val == -1 {
+        println("PASS: Result Err");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_option_some() -> i32 {
+    let x = Some(42);
+    let val = match x {
+        Some(v) => v,
+        None => -1,
+    };
+    if val == 42 {
+        println("PASS: Option Some");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_option_none() -> i32 {
+    let x: Option<i64> = None;
+    let val = match x {
+        Some(v) => v,
+        None => -1,
+    };
+    if val == -1 {
+        println("PASS: Option None");
+        1
+    } else {
+        0
+    }
+}
+
+// ? operator propagation
+fn try_divide(a: i64, b: i64) -> Result<i64, String> {
+    let x = divide(a, b)?;
+    Ok(x * 2)
+}
+
+fn test_try_ok() -> i32 {
+    let result = try_divide(10, 2);
+    let val = match result {
+        Ok(v) => v,
+        Err(_) => -999,
+    };
+    if val == 10 {
+        println("PASS: ? operator (Ok path)");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_try_err() -> i32 {
+    let result = try_divide(10, 0);
+    let val = match result {
+        Ok(v) => v,
+        Err(_) => -999,
+    };
+    if val == -999 {
+        println("PASS: ? operator (Err propagation)");
+        1
+    } else {
+        0
+    }
+}
+
+// Chained ? operator
+fn chain_divide(a: i64, b: i64, c: i64) -> Result<i64, String> {
+    let x = divide(a, b)?;
+    let y = divide(x, c)?;
+    Ok(y)
+}
+
+fn test_chained_try() -> i32 {
+    let result = chain_divide(100, 5, 2);
+    let val = match result {
+        Ok(v) => v,
+        Err(_) => -999,
+    };
+    // 100 / 5 = 20, 20 / 2 = 10
+    if val == 10 {
+        println("PASS: chained ? operator");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_chained_try_err() -> i32 {
+    let result = chain_divide(100, 0, 2);
+    let val = match result {
+        Ok(v) => v,
+        Err(_) => -999,
+    };
+    if val == -999 {
+        println("PASS: chained ? error propagation");
+        1
+    } else {
+        0
+    }
+}
+
+fn main() {
+    println("=== Test: Error Handling ===");
+    var passed = 0;
+    let total = 8;
+    passed = passed + test_result_ok();
+    passed = passed + test_result_err();
+    passed = passed + test_option_some();
+    passed = passed + test_option_none();
+    passed = passed + test_try_ok();
+    passed = passed + test_try_err();
+    passed = passed + test_chained_try();
+    passed = passed + test_chained_try_err();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+}

@@ -1,0 +1,322 @@
+(* ============================================================
+   Hew Programming Language — Formal Grammar (EBNF)
+   Version: 0.7.0
+   
+   This is the authoritative grammar specification for the Hew
+   programming language. It is extracted from and kept in sync
+   with the full language specification at docs/specs/HEW-SPEC.md.
+   
+   Notation follows ISO 14977 EBNF:
+     { ... }     — repetition (zero or more)
+     [ ... ]     — optional (zero or one)  
+     ( ... )     — grouping
+     |           — alternation
+     "..."       — terminal string
+     (* ... *)   — comment
+   ============================================================ *)
+
+(* Comments *)
+Comment        = LineComment | BlockComment | DocComment ;
+LineComment    = "//" { AnyChar } Newline ;
+BlockComment   = "/*" { AnyChar } "*/" ;
+DocComment     = "///" { AnyChar } Newline ;
+
+(* Program structure *)
+Program        = { Item } ;
+
+Item           = Attribute* Visibility? ( Import
+                             | ConstDecl
+                             | TypeDecl
+                             | TypeAlias
+                             | TraitDecl
+                             | ImplDecl
+                             | WireDecl
+                             | FnDecl
+                             | AsyncFnDecl
+                             | GenFnDecl
+                             | AsyncGenFnDecl
+                             | ExternBlock
+                             | ActorDecl
+                             | SupervisorDecl ) ;
+
+TypeAlias      = "type" Ident "=" Type ";" ;
+
+Visibility     = "pub" ;
+
+(* Attributes *)
+Attribute      = "#[" AttrContent "]" ;
+AttrContent    = Ident ( "(" AttrArgs ")" )? ;
+AttrArgs       = AttrArg { "," AttrArg } ;
+AttrArg        = Ident ( "=" (StringLit | Ident) )?
+               | StringLit ;
+
+(* Module system *)
+Import         = "import" ( StringLit | ModulePath ( "::" ImportSpec )? ) ";" ;
+ModulePath     = Ident { "::" Ident } ;
+ImportSpec     = Ident
+               | "{" Ident { "," Ident } "}"
+               | "*" ;
+
+(* Constants and types *)
+ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
+
+TypeDecl       = ("type" | "enum") Ident TypeParams? WhereClause? TypeBody ;
+(* Struct-level naming: #[json(camelCase)] / #[yaml(snake_case)] before wire decl *)
+(* Valid naming conventions: camelCase, PascalCase, snake_case, SCREAMING_SNAKE, kebab-case *)
+WireDecl       = "wire" ("type" | "enum") Ident WireBody ;
+
+TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
+TypeParam      = Ident ( ":" TraitBounds )? ;
+TraitBounds    = TraitBound { "+" TraitBound } ;
+TraitBound     = Ident TypeArgs? ;
+
+(* Where clauses for complex bounds *)
+WhereClause    = "where" WherePredicate { "," WherePredicate } ;
+WherePredicate = Type ":" TraitBounds ;
+
+TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
+WireBody       = "{" { WireFieldDecl | VariantDecl } "}" ;
+
+StructFieldDecl = Ident ":" Type ";" ;
+ActorFieldDecl  = ("let" | "var") Ident ":" Type ("=" Expr)? ";" ;
+WireFieldDecl  = Ident ":" Type "@" IntLit WireAttr* ";" ;
+WireAttr       = "optional" | "deprecated" | "repeated"
+               | ("default" "(" Expr ")")  (* not yet implemented *)
+               | "json" "(" StringLit ")"   (* per-field JSON key override *)
+               | "yaml" "(" StringLit ")"   (* per-field YAML key override *)
+               | ReservedDecl ;
+ReservedDecl   = "reserved" "(" IntLit { "," IntLit } ")" ;
+
+VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ("," | ";") ;
+TypeList       = Type { "," Type } ;
+
+(* Traits *)
+TraitDecl      = "trait" Ident TypeParams? TraitSuper? WhereClause? "{" { TraitItem } "}" ;
+TraitSuper     = ":" TraitBounds ;
+TraitItem      = FnSig ";"
+               | AssociatedType ;
+AssociatedType = "type" Ident ( ":" TraitBounds )? ( "=" Type )? ";" ;
+FnSig          = "fn" Ident TypeParams? "(" (SelfParam ("," Params)? | Params)? ")" RetType? WhereClause? ;
+SelfParam      = "self" ;
+
+ImplDecl       = "impl" TypeParams? TraitBound "for" Type WhereClause? "{" { FnDecl | AssociatedTypeImpl } "}" ;
+AssociatedTypeImpl = "type" Ident "=" Type ";" ;
+
+(* Actors *)
+ActorDecl      = "actor" Ident TraitSuper? "{"
+                   ActorInit?
+                   MailboxDecl?
+                   { ActorFieldDecl | ReceiveFnDecl | ReceiveGenFnDecl | FnDecl | GenFnDecl }
+                 "}" ;
+ActorInit      = "init" "(" Params? ")" Block ;
+MailboxDecl    = "mailbox" IntLit OverflowPolicy? ";" ;
+OverflowPolicy = "overflow" OverflowKind ;
+OverflowKind   = "block" | "drop_new" | "drop_old" | "fail"
+               | "coalesce" "(" Ident ")" CoalesceFallback? ;
+CoalesceFallback = "fallback" OverflowKind ;
+ReceiveFnDecl  = "pure"? "receive" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+ReceiveGenFnDecl = "pure"? "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+
+(* Supervisors *)
+SupervisorDecl = "supervisor" Ident "{"
+                 { SupervisorField | ChildSpec }
+               "}" ;
+SupervisorField = "strategy" ":" SupervisorStrategy
+                | "max_restarts" ":" IntLit
+                | "window" ":" IntLit ;
+SupervisorStrategy = "one_for_one" | "one_for_all" | "rest_for_one" ;
+ChildSpec      = "child" Ident ":" Ident ( "(" Args ")" )? RestartPolicy? ;
+RestartPolicy  = "permanent" | "transient" | "temporary" ;
+
+(* FFI / Extern declarations *)
+ExternBlock    = "extern" StringLit? "{" { ExternFnDecl } "}" ;
+ExternFnDecl   = "fn" Ident "(" ExternParams? ")" RetType? Variadic? ";" ;
+ExternParams   = ExternParam { "," ExternParam } ;
+ExternParam    = Ident ":" Type ;
+Variadic       = ".." ;
+
+(* Functions *)
+FnDecl         = "pure"? "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+AsyncFnDecl    = "pure"? "async" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+GenFnDecl      = "pure"? "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+AsyncGenFnDecl = "pure"? "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+Params         = Param { "," Param } ;
+Param          = "var"? Ident ":" Type ;
+RetType        = "->" Type ;
+
+(* Unsafe blocks *)
+UnsafeBlock    = "unsafe" Block ;
+
+(* Statements *)
+Block          = "{" { Stmt } Expr? "}" ;
+
+Stmt           = LetStmt | VarStmt | AssignStmt | IfStmt | MatchStmt
+               | LoopStmt | ForStmt | WhileStmt
+               | BreakStmt | ContinueStmt | ReturnStmt | DeferStmt | ExprStmt
+               | UnsafeBlock | Scope | Block ;
+
+LetStmt        = "let" Pattern ( ":" Type )? ( "=" Expr )? ";" ;
+VarStmt        = "var" Ident ( ":" Type )? ( "=" Expr )? ";" ;
+AssignStmt     = LValue AssignOp Expr ";" ;
+AssignOp       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
+LValue         = Ident { "." Ident | "[" Expr "]" } ;
+
+IfStmt         = "if" Expr Block ( "else" (IfStmt | Block) )? ;
+MatchStmt      = "match" Expr "{" { MatchArm } "}" ;
+MatchArm       = Pattern Guard? "=>" (Expr "," | Block) ;
+Guard          = "if" Expr ;
+
+LoopStmt       = ("@" Ident ":")? "loop" Block ;
+ForStmt        = "for" "await"? Pattern "in" Expr Block ;
+WhileStmt      = ("@" Ident ":")? "while" Expr Block ;
+BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
+ContinueStmt   = "continue" ("@" Ident)? ";" ;
+ReturnStmt     = "return" Expr? ";" ;
+DeferStmt      = "defer" Expr ";" ;
+ExprStmt       = Expr ";" ;
+
+(* Expressions *)
+Expr           = UnsafeExpr | SendExpr ;
+UnsafeExpr     = "unsafe" Block ;
+SendExpr       = TimeoutExpr ( "<-" Expr )? ;      (* Send: actor <- msg *)
+TimeoutExpr    = OrExpr ( "|" "after" Expr )? ;     (* Timeout: expr | after duration *)
+OrExpr         = BitOrExpr { "||" BitOrExpr } ;
+BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
+BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;
+BitAndExpr     = AndExpr { "&" AndExpr } ;
+AndExpr        = EqExpr  { "&&" EqExpr } ;
+EqExpr         = RelExpr { ("==" | "!=" | "=~" | "!~") RelExpr } ;
+RelExpr        = RangeExpr { ("<" | "<=" | ">" | ">=") RangeExpr } ;
+RangeExpr      = ShiftExpr ( (".." | "..=") ShiftExpr )? ;
+ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
+AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
+MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;
+UnaryExpr      = ("!" | "-" | "~" | "await") UnaryExpr | PostfixExpr ;
+PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" } ;
+
+Primary        = Literal
+               | InterpolatedStr
+               | Ident ( "{" FieldInitList "}" )?   (* Struct init: Point { x: 1, y: 2 } *)
+               | "[" ExprList? "]"                  (* Array literal *)
+               | "[" Expr ";" Expr "]"              (* Array repeat: [0; 256] *)
+               | "(" Expr ")"
+               | "(" ExprList ")"                   (* Tuple *)
+               | IfExpr
+               | MatchExpr
+               | Lambda
+               | Spawn
+               | SelectExpr                          (* select { ... } *)
+               | JoinExpr                            (* join { ... } *)
+               | Scope                              (* scope { ... } or scope |s| { ... } *)
+               | CooperateExpr
+               | YieldExpr ;
+
+FieldInitList  = FieldInit { "," FieldInit } ","? ;
+FieldInit      = Ident ":" Expr ;
+
+IfExpr         = "if" Expr Block ( "else" (IfExpr | Block) )? ;
+MatchExpr      = "match" Expr "{" { MatchArm } "}" ;
+
+Literal        = IntLit | FloatLit | DurationLit | StringLit | RegexLiteral | "true" | "false" ;
+ExprList       = Expr { "," Expr } ;
+Args           = Arg { "," Arg } ;
+Arg            = ( Ident ":" )? Expr ;
+
+(* Closures — arrow syntax only (v0.6.0: pipe syntax |x| removed) *)
+Lambda         = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+LambdaParams   = LambdaParam { "," LambdaParam } ;
+LambdaParam    = Ident ( ":" Type )? ;
+
+(* Actor operations *)
+Spawn          = "spawn" ( LambdaActor | ActorSpawn ) ;
+ActorSpawn     = Ident TypeArgs? "(" FieldInitList? ")" ;  (* Named fields: spawn Counter(count: 0) *)
+LambdaActor    = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+
+(* Concurrency expressions *)
+SelectExpr     = "select" "{" { SelectArm } TimeoutArm? "}" ;
+SelectArm      = Pattern ("from" | "<-") Expr "=>" Expr ","? ;
+TimeoutArm     = "after" Expr "=>" Expr ","? ;
+
+JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
+
+(* Structured concurrency *)
+Scope          = "scope" ( "|" Ident "|" )? Block ;
+(* Inside a scope |s| { ... } block, the binding s supports:
+   s.launch { expr }      — launch a concurrent task, returns Task<T>
+   s.cancel()             — request cancellation of all tasks
+   s.is_cancelled()       — check cancellation state *)
+CooperateExpr  = "cooperate" ;
+YieldExpr      = "yield" Expr ;
+
+(* Types *)
+(* Type aliases: "int" = i64, "uint" = u64, "byte" = u8, "float" = f64 *)
+(* Integer literals default to int (i64), float literals default to float (f64) *)
+Type           = Ident TypeArgs?
+               | "Task" "<" Type ">"              (* Task type: Task<T> *)
+               | "Scope"                          (* Scope type (within scope blocks) *)
+               | "ActorRef" "<" Type ">"          (* Actor reference: ActorRef<A> *)
+               | "Actor" "<" Type ("," Type)? ">" (* Actor type: Actor<M> or Actor<M, R> *)
+               | "Arc" "<" Type ">"               (* Atomic refcount: Arc<T> *)
+               | "Rc" "<" Type ">"                (* Single-actor refcount: Rc<T> *)
+               | "Weak" "<" Type ">"              (* Weak reference: Weak<T> *)
+               | "Result" "<" Type "," Type ">"
+               | "Option" "<" Type ">"
+               | "Generator" "<" Type ">"          (* Sync generator: Generator<Y> *)
+               | "AsyncGenerator" "<" Type ">"     (* Async generator: AsyncGenerator<Y> *)
+               | "ActorStream" "<" Type ">"        (* Deprecated alias for Stream<Y>; use Stream<T> *)
+               | "Stream" "<" Type ">"            (* First-class readable stream: Stream<T> *)
+               | "Sink" "<" Type ">"              (* First-class writable sink: Sink<T> *)
+               | "Vec" "<" Type ">"               (* Growable array: Vec<T> *)
+               | "HashMap" "<" Type "," Type ">"  (* Hash map: HashMap<K, V> *)
+               | "(" TypeList? ")"                (* Tuple type / Unit *)
+               | "[" Type ";" IntLit "]"          (* Fixed array *)
+               | "[" Type "]"                     (* Slice *)
+               | "fn" "(" TypeList? ")" RetType?  (* Function type *)
+               | "*" Type                         (* Immutable raw pointer *)
+               | "*" "var" Type                   (* Mutable raw pointer *)
+               | "dyn" TraitBound                 (* Trait object *)
+               | "dyn" "(" TraitBounds ")"         (* Multiple trait object *)
+               | "_" ;                             (* Infer type from context *)
+
+TypeArgs       = "<" Type { "," Type } ">" ;
+
+(* Wire types *)
+(* Wire fields use standard Type — no separate WireType needed. *)
+
+(* Pattern matching *)
+Pattern        = "_"
+               | LiteralPattern
+               | Ident
+               | Ident "(" PatternList? ")"           (* Constructor pattern *)
+               | Ident "::" Ident "(" PatternList? ")" (* Qualified constructor pattern *)
+               | Ident "{" PatternFieldList? "}"       (* Struct pattern *)
+               | "(" PatternList ")"                   (* Tuple pattern *)
+               | Pattern "|" Pattern ;                 (* Or-pattern *)
+
+LiteralPattern = IntLit | FloatLit | StringLit | "true" | "false" ;
+PatternList    = Pattern { "," Pattern } ;
+PatternFieldList = PatternField { "," PatternField } ;
+PatternField   = Ident ( ":" Pattern )? ;
+
+(* Literals *)
+DurationLit    = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
+IntLit         = Digit { Digit | "_" }
+               | "0x" HexDigit { HexDigit | "_" }
+               | "0o" OctDigit { OctDigit | "_" }
+               | "0b" BinDigit { BinDigit | "_" } ;
+FloatLit       = Digit { Digit } "." Digit { Digit } ( ("e" | "E") ("+" | "-")? Digit { Digit } )? ;
+StringLit      = '"' { Char | EscapeSeq } '"'
+               | 'r"' { AnyChar } '"' ;          (* Raw string *)
+InterpolatedStr = 'f"' { InterpPart } '"' ;     (* f-string with expression support *)
+InterpPart      = Char | EscapeSeq | "{" Expr "}" ;
+(* Template literals removed — use f-strings: f"hello {expr}" *)
+RegexLiteral   = 're"' { RegexChar } '"' ;      (* Regex literal: re"pattern" *)
+RegexChar      = (* any char except unescaped " *) | '\\"' | '\\' AnyChar ;
+
+Ident          = Letter { Letter | Digit | "_" } ;
+Letter         = "a".."z" | "A".."Z" ;
+Digit          = "0".."9" ;
+HexDigit       = Digit | "a".."f" | "A".."F" ;
+OctDigit       = "0".."7" ;
+BinDigit       = "0" | "1" ;
+EscapeSeq      = "\\" ( "n" | "r" | "t" | "\\" | '"' | "0" | "x" HexDigit HexDigit ) ;

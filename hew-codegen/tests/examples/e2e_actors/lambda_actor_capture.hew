@@ -1,0 +1,46 @@
+// Test: Lambda Actor Closure Capture
+// Exercises: Lambda actors capturing variables from enclosing scope
+fn main() -> int {
+    println("=== Lambda Actor Capture ===");
+
+    // 1. Capture a scalar (int) from enclosing scope
+    let factor = 3;
+    let multiplier = spawn (x: int) => {
+        println(x * factor);
+    };
+    multiplier.send(7);
+    sleep_ms(50);
+
+    // 2. Capture a string from enclosing scope
+    let tag = "TAGGED";
+    let tagger = spawn (x: int) => {
+        print("[");
+        print(tag);
+        println(f"] {x}");
+    };
+    tagger.send(42);
+    sleep_ms(50);
+
+    // 3. Capture an actor reference (pipeline pattern)
+    let printer = spawn (x: int) => {
+        println(f"Final: {x}");
+    };
+    let doubler = spawn (x: int) => {
+        printer.send(x * 2);
+    };
+    doubler.send(5);
+    sleep_ms(50);
+
+    // 4. Factory function returning lambda actor with capture
+    let adder = make_adder(100);
+    adder.send(23);
+    sleep_ms(50);
+    println("Done");
+    0
+}
+
+fn make_adder(base: int) -> Actor<int> {
+    spawn (x: int) => {
+        println(base + x);
+    }
+}

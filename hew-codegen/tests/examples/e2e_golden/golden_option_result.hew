@@ -1,0 +1,65 @@
+// Golden test: Option/Result, ? operator, pattern matching
+// Exercises: Option/Result enum ops, PostfixTry handling
+
+fn divide(a: int, b: int) -> Result<int, int> {
+    if b == 0 {
+        Err(1)
+    } else {
+        Ok(a / b)
+    }
+}
+
+fn try_divide(a: int, b: int) -> Result<int, int> {
+    let x = divide(a, b)?;
+    Ok(x * 2)
+}
+
+fn chain_divide(a: int, b: int, c: int) -> Result<int, int> {
+    let x = divide(a, b)?;
+    let y = divide(x, c)?;
+    Ok(y)
+}
+
+fn main() {
+    // Direct Result Ok
+    let r1 = divide(10, 2);
+    match r1 {
+        Ok(v) => println(v),
+        Err(_) => println(-1),
+    }
+
+    // Direct Result Err
+    let r2 = divide(10, 0);
+    match r2 {
+        Ok(v) => println(v),
+        Err(e) => println(e),
+    }
+
+    // Try operator: Ok path
+    let r3 = try_divide(10, 2);
+    match r3 {
+        Ok(v) => println(v),
+        Err(_) => println(-1),
+    }
+
+    // Try operator: Err propagation
+    let r4 = try_divide(10, 0);
+    match r4 {
+        Ok(_) => println(0),
+        Err(e) => println(e),
+    }
+
+    // Chained try: Ok path
+    let r5 = chain_divide(100, 5, 2);
+    match r5 {
+        Ok(v) => println(v),
+        Err(_) => println(-1),
+    }
+
+    // Chained try: Err at second divide
+    let r6 = chain_divide(100, 5, 0);
+    match r6 {
+        Ok(_) => println(0),
+        Err(e) => println(e),
+    }
+}

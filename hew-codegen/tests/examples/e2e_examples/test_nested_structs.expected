@@ -1,0 +1,8 @@
+=== Test: Nested Structs ===
+PASS: test_struct_basic
+PASS: test_struct_in_struct
+PASS: test_struct_as_param
+PASS: test_struct_return
+PASS: test_struct_computation
+
+Passed: 5/5

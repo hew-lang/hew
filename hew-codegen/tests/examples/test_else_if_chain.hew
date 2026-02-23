@@ -1,0 +1,25 @@
+// E2E test: else-if chains with various conditions
+fn classify(n: int) -> int {
+    if n < 0 {
+        return -1;
+    } else if n == 0 {
+        return 0;
+    } else if n < 10 {
+        return 1;
+    } else if n < 100 {
+        return 2;
+    } else if n < 1000 {
+        return 3;
+    } else {
+        return 4;
+    }
+}
+
+fn main() {
+    println(classify(-5));
+    println(classify(0));
+    println(classify(7));
+    println(classify(42));
+    println(classify(999));
+    println(classify(1000));
+}

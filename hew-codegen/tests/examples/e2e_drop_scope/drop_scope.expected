@@ -1,0 +1,15 @@
+test1
+in if
+drop 1
+after if
+test2
+drop 20
+drop 21
+after break
+test3
+1
+drop 30
+drop 31
+3
+drop 32
+after loop

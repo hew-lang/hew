@@ -1,0 +1,21 @@
+// Enum with payload
+
+enum Maybe {
+    Just(i32);
+    Nothing;
+}
+
+fn unwrap_or(m: Maybe, fallback: i32) -> i32 {
+    match m {
+        Just(x) => x,
+        Nothing => fallback,
+    }
+}
+
+fn main() {
+    let val1 = Just(42);
+    let val2 = Nothing;
+
+    println(unwrap_or(val1, 0));
+    println(unwrap_or(val2, 99));
+}

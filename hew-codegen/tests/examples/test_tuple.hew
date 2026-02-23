@@ -1,0 +1,8 @@
+fn main() {
+    let t = (10, 20, 30);
+    println(t.0);
+    println(t.1);
+    println(t.2);
+    let sum = t.0 + t.1 + t.2;
+    println(sum);
+}

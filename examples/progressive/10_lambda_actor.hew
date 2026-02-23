@@ -1,0 +1,12 @@
+// Test 10: Lambda Actor
+// Trying a simple lambda-based actor
+fn main() {
+    // Create a simple counter lambda actor
+    let counter = spawn (msg: i32) => {
+        println(msg * 2);
+    };
+    counter.send(5);
+    counter.send(10);
+    counter.send(15);
+    sleep_ms(100);
+}

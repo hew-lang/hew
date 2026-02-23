@@ -1,0 +1,10 @@
+=== Test: Loop Patterns ===
+PASS: bare_loop_break
+PASS: loop_continue
+PASS: for_range
+PASS: for_range_start
+PASS: nested_loops
+PASS: loop_with_early_break
+PASS: while_false
+
+Passed: 7/7

@@ -1,0 +1,10 @@
+=== Deadlock Avoidance ===
+Resource 1 acquired by 1
+Resource 2 acquired by 1
+Resource 2 released by 1
+Resource 1 released by 1
+Resource 1 acquired by 2
+Resource 2 acquired by 2
+Resource 2 released by 2
+Resource 1 released by 2
+No deadlock

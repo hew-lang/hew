@@ -1,0 +1,18 @@
+//! @name Actor Pipeline
+//! @description Actors processing messages independently
+
+actor Doubler {
+    receive fn process(n: i32) {
+        let result = n * 2;
+        print("Result: ");
+        println(result);
+    }
+}
+
+fn main() {
+    let doubler = spawn Doubler;
+    doubler.process(5);
+    doubler.process(21);
+    doubler.process(100);
+    sleep_ms(200);
+}

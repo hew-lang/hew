@@ -1,0 +1,31 @@
+// Actor-based Fibonacci - Hew language example
+// Demonstrates actors computing fibonacci via message passing
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+actor FibWorker {
+    let id: i32;
+    receive fn compute(n: i32) {
+        let result = fibonacci(n);
+        print("FibWorker ");
+        print(self.id);
+        print(": fib(");
+        print(n);
+        println(f") = {result}");
+    }
+}
+
+fn main() {
+    println("=== Actor-based Fibonacci ===");
+    let w1 = spawn FibWorker;
+    let w2 = spawn FibWorker;
+    w1.compute(10);
+    w2.compute(15);
+    sleep_ms(200);
+    println("=== Done ===");
+}

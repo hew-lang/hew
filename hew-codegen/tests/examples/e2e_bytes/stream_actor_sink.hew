@@ -1,0 +1,23 @@
+// Test: Cross-actor streaming — actor receives a Sink and writes to it
+import std::stream;
+
+actor Writer {
+    receive fn write_items(sink: Sink) {
+        sink.write("from_actor_1");
+        sink.write("from_actor_2");
+        sink.write("from_actor_3");
+        sink.close();
+    }
+}
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    let w = spawn Writer;
+    w.write_items(sink);
+
+    for await item in input {
+        println(item);
+    }
+    input.close();
+}

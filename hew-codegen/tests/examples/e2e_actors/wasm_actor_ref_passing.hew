@@ -1,0 +1,20 @@
+// Test: Actor ref passing as message argument
+// Exercises: sending ActorRef between actors
+actor Printer {
+    receive fn print_val(x: int) {
+        println(x);
+    }
+}
+
+actor Forwarder {
+    receive fn forward(target: ActorRef<Printer>, val: int) {
+        target.print_val(val);
+    }
+}
+
+fn main() {
+    let p = spawn Printer;
+    let f = spawn Forwarder;
+    f.forward(p, 42);
+    f.forward(p, 99);
+}

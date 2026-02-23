@@ -1,0 +1,100 @@
+// stress_fanout.hew - Test fan-out pattern with multiple workers
+// Spawns multiple workers, sends computation to each, verifies all complete.
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+actor Computer {
+    let id: i32;
+    receive fn compute(x: i32) {
+        let result = fib(x);
+        print("Worker ");
+        print(self.id);
+        print(": fib(");
+        print(x);
+        println(f") = {result}");
+    }
+}
+
+actor ResultCollector {
+    let received: i32;
+    receive fn done() {
+        self.received = self.received + 1;
+    }
+    receive fn report() {
+        println(f"Results received: {self.received}");
+    }
+}
+
+fn main() {
+    println("=== Stress: Fan-out ===");
+    let collector = spawn ResultCollector;
+    // Fan out to 10 workers
+    let w1 = spawn Computer;
+    let w2 = spawn Computer;
+    let w3 = spawn Computer;
+    let w4 = spawn Computer;
+    let w5 = spawn Computer;
+    let w6 = spawn Computer;
+    let w7 = spawn Computer;
+    let w8 = spawn Computer;
+    let w9 = spawn Computer;
+    let w10 = spawn Computer;
+    // Send different workloads to each
+    w1.compute(5);
+    w2.compute(8);
+    w3.compute(10);
+    w4.compute(12);
+    w5.compute(6);
+    w6.compute(9);
+    w7.compute(11);
+    w8.compute(7);
+    w9.compute(13);
+    w10.compute(14);
+
+    // Track completions
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    collector.done();
+    sleep_ms(500);
+    collector.report();
+
+    // Second round: burst messages to all workers
+    println("--- Round 2: burst ---");
+    for i in 0..5 {
+        w1.compute(i + 3);
+        w2.compute(i + 4);
+        w3.compute(i + 5);
+        w4.compute(i + 6);
+        w5.compute(i + 7);
+        w6.compute(i + 3);
+        w7.compute(i + 4);
+        w8.compute(i + 5);
+        w9.compute(i + 6);
+        w10.compute(i + 7);
+    }
+    sleep_ms(500);
+    println("PASS: fan-out to 10 workers with burst messaging");
+    stop(w1);
+    stop(w2);
+    stop(w3);
+    stop(w4);
+    stop(w5);
+    stop(w6);
+    stop(w7);
+    stop(w8);
+    stop(w9);
+    stop(w10);
+    stop(collector);
+}

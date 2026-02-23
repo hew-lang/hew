@@ -1,0 +1,6 @@
+=== Parallel Computation ===
+compute 3^2 = 9
+compute 4^2 = 16
+compute 5^2 = 25
+Sum = 50
+PASS

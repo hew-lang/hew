@@ -1,0 +1,96 @@
+// Test: Vec Operations (comprehensive)
+// Exercises: Vec creation, push, get, pop, len
+fn main() -> int {
+    println("=== Vec Operations ===");
+    var passed = 0;
+    let total = 5;
+    // Test 1: Basic push/get
+    println("--- push and get ---");
+    let v: Vec<int> = Vec::new();
+    v.push(100);
+    v.push(200);
+    v.push(300);
+    if v.get(0) == 100 {
+        if v.get(1) == 200 {
+            if v.get(2) == 300 {
+                println("PASS: push/get");
+                passed = passed + 1;
+            }
+        }
+    }
+    // Test 2: Length tracking
+    println("--- length ---");
+    let v2: Vec<int> = Vec::new();
+    let empty_len = v2.len();
+    v2.push(1);
+    let one_len = v2.len();
+    v2.push(2);
+    v2.push(3);
+    let three_len = v2.len();
+    if empty_len == 0 {
+        if one_len == 1 {
+            if three_len == 3 {
+                println("PASS: length");
+                passed = passed + 1;
+            }
+        }
+    }
+    // Test 3: Pop returns last
+    println("--- pop ---");
+    let v3: Vec<int> = Vec::new();
+    v3.push(10);
+    v3.push(20);
+    v3.push(30);
+    let p1 = v3.pop();
+    let p2 = v3.pop();
+    if p1 == 30 {
+        if p2 == 20 {
+            if v3.len() == 1 {
+                println("PASS: pop");
+                passed = passed + 1;
+            }
+        }
+    }
+    // Test 4: Many elements
+    println("--- many elements ---");
+    let v4: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 1000 {
+        v4.push(i * 2);
+        i = i + 1;
+    }
+    if v4.len() == 1000 {
+        if v4.get(0) == 0 {
+            if v4.get(999) == 1998 {
+                println("PASS: 1000 elements");
+                passed = passed + 1;
+            }
+        }
+    }
+    // Test 5: Accumulate sum
+    println("--- sum ---");
+    let v5: Vec<int> = Vec::new();
+    v5.push(1);
+    v5.push(2);
+    v5.push(3);
+    v5.push(4);
+    v5.push(5);
+    var sum = 0;
+    var j = 0;
+    while j < v5.len() {
+        sum = sum + v5.get(j);
+        j = j + 1;
+    }
+    if sum == 15 {
+        println("PASS: sum");
+        passed = passed + 1;
+    }
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

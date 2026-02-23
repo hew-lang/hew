@@ -1,0 +1,9 @@
+=== Test: Lambda Patterns ===
+PASS: lambda_basic
+PASS: lambda_no_params
+PASS: lambda_multi_params
+PASS: lambda_capture
+PASS: higher_order
+PASS: lambda_in_loop
+
+Passed: 6/6

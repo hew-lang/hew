@@ -1,0 +1,49 @@
+//! Markdown to HTML conversion.
+//!
+//! Convert Markdown text to HTML. Supports CommonMark syntax with an
+//! optional sanitized mode that strips potentially dangerous HTML.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::markdown;
+//!
+//! fn main() {
+//!     let html = markdown.to_html("# Hello\n\nWorld");
+//!     println(html);  // "<h1>Hello</h1>\n<p>World</p>\n"
+//! }
+//! ```
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Convert a Markdown string to HTML.
+///
+/// # Examples
+///
+/// ```
+/// let html = markdown.to_html("**bold** text");
+/// ```
+pub fn to_html(md: String) -> String {
+    hew_markdown_to_html(md)
+}
+
+/// Convert a Markdown string to sanitized HTML.
+///
+/// Strips raw HTML tags and potentially dangerous content from the
+/// output, making it safe to embed in web pages.
+///
+/// # Examples
+///
+/// ```
+/// let safe = markdown.to_html_safe("Click <script>alert(1)</script>");
+/// ```
+pub fn to_html_safe(md: String) -> String {
+    hew_markdown_to_html_safe(md)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_markdown_to_html(md: String) -> String;
+    fn hew_markdown_to_html_safe(md: String) -> String;
+}

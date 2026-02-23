@@ -1,0 +1,12 @@
+import std::os;
+
+import std::string;
+
+import std::fs;
+
+fn main() {
+    let count = hew_args_count();
+    let s = string.from_int(count);
+    println(s);
+    println("multi-import ok");
+}

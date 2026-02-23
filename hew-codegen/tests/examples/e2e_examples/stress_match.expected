@@ -1,0 +1,7 @@
+=== Stress Match Test ===
+Triple(5,10,15) = 750
+Single(42) = 84
+Text(100) analyzed = 52
+Binary(750) analyzed = 750
+Structured(5,5) analyzed = 6
+=== Done ===

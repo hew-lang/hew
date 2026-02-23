@@ -1,0 +1,22 @@
+[package]
+name = "hew-std-misc-uuid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::misc::uuid — UUID generation"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[features]
+export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+uuid = { version = "1", features = ["v4", "v7"] }
+libc = "0.2"
+hew-export-macro = { path = "../../../hew-export-macro", optional = true }
+hew-export-types = { path = "../../../hew-export-types", optional = true }
+
+[lints]
+workspace = true

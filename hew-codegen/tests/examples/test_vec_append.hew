@@ -1,0 +1,23 @@
+fn main() {
+    // Test Vec .append() — bulk add from another Vec
+    let a: Vec<i32> = Vec::new();
+    a.push(1);
+    a.push(2);
+    a.push(3);
+    let b: Vec<i32> = Vec::new();
+    b.push(4);
+    b.push(5);
+    a.append(b);
+    println(a.len());
+    println(a.get(0));
+    println(a.get(3));
+    println(a.get(4));
+
+    // Append to empty
+    let empty: Vec<i32> = Vec::new();
+    let src: Vec<i32> = Vec::new();
+    src.push(99);
+    empty.append(src);
+    println(empty.len());
+    println(empty.get(0));
+}

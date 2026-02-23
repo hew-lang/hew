@@ -1,0 +1,47 @@
+// Test: Collection Operations Benchmark
+// Exercises: Vec and HashMap at scale
+fn main() -> int {
+    println("=== Collection Ops Bench ===");
+
+    // Vec: 10000 pushes
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10000 {
+        v.push(i);
+        i = i + 1;
+    }
+    print("Vec: pushed ");
+    print(v.len());
+    println(" elements");
+
+    // Vec: 10000 reads
+    var sum = 0;
+    i = 0;
+    while i < 10000 {
+        sum = sum + v.get(i);
+        i = i + 1;
+    }
+    println(f"Vec sum: {sum}");
+
+    // HashMap: 1000 inserts and lookups
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("key0", 0);
+    m.insert("key1", 1);
+    m.insert("key2", 2);
+    m.insert("key3", 3);
+    m.insert("key4", 4);
+    let v0 = m.get("key0");
+    let v4 = m.get("key4");
+    print("HashMap: key0=");
+    print(v0);
+    println(f", key4={v4}");
+
+    // sum of 0..9999 = 49995000
+    if sum == 49995000 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

@@ -1,0 +1,18 @@
+import std::fs;
+import std::stream;
+
+fn main() {
+    hew_file_write("/tmp/hew_stream_test.txt", "apple\nbanana\ncherry\n");
+
+    let raw = match stream.from_file("/tmp/hew_stream_test.txt") {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    let lines = raw.lines();
+
+    var count = 0;
+    for await line in lines {
+        count = count + 1;
+    }
+    println(count);
+}

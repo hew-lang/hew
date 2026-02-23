@@ -1,0 +1,45 @@
+//! Base64 encoding and decoding.
+//!
+//! Encode binary data to Base64 strings and decode Base64 strings back
+//! to binary data. Supports both standard and URL-safe alphabets.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::base64;
+//!
+//! fn main() {
+//!     let data: bytes = bytes::new();
+//!     data.push(72);   // H
+//!     data.push(105);  // i
+//!     let s = base64.encode(data);
+//!     println(s);   // "SGk="
+//!     let back = base64.decode(s);
+//!     println(back.len());  // 2
+//! }
+//! ```
+
+/// Encode binary data to a standard Base64 string.
+pub fn encode(data: bytes) -> String {
+    hew_base64_encode_hew(data)
+}
+
+/// Encode binary data to a URL-safe Base64 string (no padding).
+pub fn encode_url(data: bytes) -> String {
+    hew_base64_encode_url_hew(data)
+}
+
+/// Decode a Base64 string to binary data.
+///
+/// Returns an empty `bytes` buffer if the input is not valid Base64.
+pub fn decode(s: String) -> bytes {
+    hew_base64_decode_hew(s)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_base64_encode_hew(data: bytes) -> String;
+    fn hew_base64_encode_url_hew(data: bytes) -> String;
+    fn hew_base64_decode_hew(s: String) -> bytes;
+}

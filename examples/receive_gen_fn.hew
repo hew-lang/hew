@@ -1,0 +1,31 @@
+// requires: generator-functions (receive gen fn, yield)
+//
+// This example demonstrates the intended generator function syntax
+// for actors. It cannot compile until generator support is implemented.
+//
+// actor NumberStream {
+//     let max: i32;
+//     receive gen fn numbers() -> i32 {
+//         var i: i32 = 0;
+//         while i < self.max {
+//             yield i;
+//             i = i + 1;
+//         }
+//     }
+// }
+
+// Equivalent using a receive fn that returns one value at a time
+actor NumberStream {
+    let max: i32;
+    receive fn numbers() -> i32 {
+
+        // Without generators, just return max as a placeholder
+        self.max
+    }
+}
+
+fn main() {
+    let stream = spawn NumberStream;
+    stream.numbers();
+    sleep_ms(200);
+}

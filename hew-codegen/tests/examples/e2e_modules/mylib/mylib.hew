@@ -1,0 +1,14 @@
+/// A helper function in a user module.
+pub fn greet(name: String) -> String {
+    "hello " + name
+}
+
+/// Add two integers.
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+/// This is private and should NOT be accessible.
+fn secret() -> i32 {
+    42
+}

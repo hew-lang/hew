@@ -1,0 +1,21 @@
+fn main() {
+    let hello = "Hello";
+    let world = "World";
+    // Test string length
+    let len = string_length(hello);
+    println(len);
+
+    // Test char_at
+    let ch = hello.char_at(0);
+    println(ch);
+
+    // Test string equality
+    let eq = string_equals(hello, hello);
+    println(eq);
+    let neq = string_equals(hello, world);
+    println(neq);
+
+    // Test concat
+    let combined = string_concat(hello, world);
+    println(combined);
+}

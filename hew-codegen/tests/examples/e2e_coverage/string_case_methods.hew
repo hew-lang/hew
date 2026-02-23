@@ -1,0 +1,21 @@
+// Tests StringMethodOp for to_lowercase and to_uppercase — zero E2E coverage.
+// These methods are only available via method-call syntax.
+fn main() {
+    let s = "Hello World";
+
+    let lower = s.to_lower();
+    println(lower);
+
+    let upper = s.to_upper();
+    println(upper);
+
+    // Edge cases
+    let already_lower = "abc".to_lower();
+    println(already_lower);
+
+    let already_upper = "XYZ".to_upper();
+    println(already_upper);
+
+    let mixed = "aBcDeF".to_upper();
+    println(mixed);
+}

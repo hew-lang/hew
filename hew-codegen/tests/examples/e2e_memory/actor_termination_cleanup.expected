@@ -1,0 +1,6 @@
+=== Actor Termination ===
+TempWorker 1 processing 10
+TempWorker 2 processing 20
+TempWorker 3 processing 30
+All actors processed
+PASS

@@ -1,0 +1,50 @@
+// Test: GCD and LCM (Euclidean algorithm)
+// Exercises: Recursion, arithmetic, modulo
+fn gcd(a: int, b: int) -> int {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+fn lcm(a: int, b: int) -> int {
+    a / gcd(a, b) * b
+}
+
+fn main() -> int {
+    println("=== GCD and LCM ===");
+    print("gcd(12, 8) = ");
+    println(gcd(12, 8));
+    print("gcd(100, 75) = ");
+    println(gcd(100, 75));
+    print("gcd(17, 13) = ");
+    println(gcd(17, 13));
+    print("lcm(4, 6) = ");
+    println(lcm(4, 6));
+    print("lcm(12, 18) = ");
+    println(lcm(12, 18));
+    var passed = 0;
+    if gcd(12, 8) == 4 {
+        passed = passed + 1;
+    }
+    if gcd(100, 75) == 25 {
+        passed = passed + 1;
+    }
+    if gcd(17, 13) == 1 {
+        passed = passed + 1;
+    }
+    if lcm(4, 6) == 12 {
+        passed = passed + 1;
+    }
+    if lcm(12, 18) == 36 {
+        passed = passed + 1;
+    }
+    if passed == 5 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

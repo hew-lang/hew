@@ -1,0 +1,9 @@
+async fn print_message(msg: i32) {
+    println(msg);
+    println(42);
+}
+
+fn main() {
+    await print_message(100);
+    println(999);
+}

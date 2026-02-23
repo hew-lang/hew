@@ -1,0 +1,11 @@
+[package]
+name = "hew-export-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared types for the hew-export-macro proc macro"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+
+[lints]
+workspace = true

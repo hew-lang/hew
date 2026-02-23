@@ -1,0 +1,12 @@
+=== Vec Operations ===
+--- push and get ---
+PASS: push/get
+--- length ---
+PASS: length
+--- pop ---
+PASS: pop
+--- many elements ---
+PASS: 1000 elements
+--- sum ---
+PASS: sum
+Passed: 5/5

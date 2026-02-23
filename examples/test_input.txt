@@ -1,0 +1,3 @@
+Hello from HEW!
+This file was read by the HEW language.
+Line 3 of the test input.

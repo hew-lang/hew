@@ -1,0 +1,11 @@
+// Minimal scope test
+fn main() {
+    println("Testing scope expressions");
+    let result = scope {
+        let x = 42;
+        println("Inside scope");
+        x
+    };
+    println(f"Scope result: {result}");
+    println("Scope completed");
+}

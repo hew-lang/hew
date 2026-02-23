@@ -1,0 +1,17 @@
+// Test: String Concatenation Benchmark
+// Exercises: String creation at scale
+fn main() {
+    println("=== String Concat Bench ===");
+
+    // Print many lines
+    var i = 0;
+    while i < 100 {
+        print(".");
+        i = i + 1;
+    }
+    println("");
+    print("Printed ");
+    print(100);
+    println(" chars");
+    println("PASS");
+}

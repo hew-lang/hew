@@ -1,0 +1,10 @@
+=== Test: Float Arithmetic ===
+PASS: test_float_add
+PASS: test_float_sub
+PASS: test_float_mul
+PASS: test_float_div
+PASS: test_float_comparisons
+PASS: test_float_negation
+PASS: test_float_complex_expr
+
+Passed: 7/7

@@ -1,0 +1,21 @@
+// Test: JSON round-trip — encode, then decode via from_json, then re-encode.
+// Both JSON strings must be identical.
+extern "C" {
+    fn Order_to_json(order_id: i32, quantity: i32, note: String) -> String;
+    fn Order_from_json(json: String) -> Order;
+}
+
+#[json(camelCase)]
+wire type Order {
+    order_id: i32 @1;
+    quantity: i32 @2;
+    note: String @3;
+}
+
+fn main() {
+    let json1 = Order_to_json(99, 3, "urgent");
+    println(json1);
+    let o = Order_from_json(json1);
+    let json2 = Order_to_json(o.order_id, o.quantity, o.note);
+    println(json2);
+}

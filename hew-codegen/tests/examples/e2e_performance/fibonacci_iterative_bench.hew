@@ -1,0 +1,48 @@
+// Test: Fibonacci Iterative Benchmark
+// Exercises: CPU-bound iterative computation
+fn fib_iterative(n: int) -> int {
+    if n <= 1 {
+        return n;
+    }
+    var prev = 0;
+    var curr = 1;
+    var i = 2;
+    while i <= n {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+        i = i + 1;
+    }
+    curr
+}
+
+fn main() -> int {
+    println("=== Fibonacci Iterative Bench ===");
+    let r10 = fib_iterative(10);
+    println(f"fib(10) = {r10}");
+    let r20 = fib_iterative(20);
+    println(f"fib(20) = {r20}");
+    let r30 = fib_iterative(30);
+    println(f"fib(30) = {r30}");
+
+    // Compute many fibs as a benchmark
+    var i = 0;
+    var total = 0;
+    while i < 1000 {
+        total = total + fib_iterative(20);
+        i = i + 1;
+    }
+    println(f"1000 x fib(20) sum = {total}");
+    if r10 == 55 {
+        if r20 == 6765 {
+            println("PASS");
+            0
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

@@ -1,0 +1,6 @@
+// Tests CooperateOpLowering — zero E2E coverage.
+// cooperate() yields the current thread to the scheduler.
+fn main() {
+    cooperate();
+    println("cooperated");
+}

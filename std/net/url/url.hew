@@ -1,0 +1,95 @@
+//! URL parsing.
+//!
+//! Parse URLs into their components (scheme, host, port, path, query,
+//! fragment) and reconstruct or join them.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::url;
+//!
+//! fn main() {
+//!     let u = url.parse("https://example.com:8080/path?key=val#frag");
+//!     println(u.host());
+//!     println(u.port());
+//!     u.free();
+//! }
+//! ```
+
+/// A parsed URL.
+///
+/// Created by `url.parse(s)`. Must be freed with `free()` when
+/// no longer needed to avoid leaking memory.
+type Url {}
+
+/// Methods available on a parsed `Url`.
+trait UrlMethods {
+    // Return the URL scheme (e.g. "https").
+    fn scheme(self: Url) -> String;
+
+    // Return the host name.
+    fn host(self: Url) -> String;
+
+    // Return the port number, or -1 if not specified.
+    fn port(self: Url) -> i32;
+
+    // Return the path component.
+    fn path(self: Url) -> String;
+
+    // Return the query string (without the leading `?`).
+    fn query(self: Url) -> String;
+
+    // Return the fragment (without the leading `#`).
+    fn fragment(self: Url) -> String;
+
+    // Return the full URL as a string.
+    fn to_string(self: Url) -> String;
+
+    // Resolve a relative path onto this URL, returning a new `Url`.
+    fn resolve(self: Url, path: String) -> Url;
+
+    // Release the parsed URL resources.
+    fn free(self: Url);
+}
+
+impl UrlMethods for Url {
+    fn scheme(self: Url) -> String { hew_url_scheme(self) }
+    fn host(self: Url) -> String { hew_url_host(self) }
+    fn port(self: Url) -> i32 { hew_url_port(self) }
+    fn path(self: Url) -> String { hew_url_path(self) }
+    fn query(self: Url) -> String { hew_url_query(self) }
+    fn fragment(self: Url) -> String { hew_url_fragment(self) }
+    fn to_string(self: Url) -> String { hew_url_to_string(self) }
+    fn resolve(self: Url, path: String) -> Url { hew_url_join(self, path) }
+    fn free(self: Url) { hew_url_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Parse a URL string.
+///
+/// Panics if the string is not a valid URL.
+///
+/// # Examples
+///
+/// ```
+/// let u = url.parse("https://example.com/api/v1");
+/// ```
+pub fn parse(s: String) -> Url {
+    hew_url_parse(s)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_url_parse(s: String) -> Url;
+    fn hew_url_scheme(url: Url) -> String;
+    fn hew_url_host(url: Url) -> String;
+    fn hew_url_port(url: Url) -> i32;
+    fn hew_url_path(url: Url) -> String;
+    fn hew_url_query(url: Url) -> String;
+    fn hew_url_fragment(url: Url) -> String;
+    fn hew_url_to_string(url: Url) -> String;
+    fn hew_url_join(base: Url, path: String) -> Url;
+    fn hew_url_free(url: Url);
+}

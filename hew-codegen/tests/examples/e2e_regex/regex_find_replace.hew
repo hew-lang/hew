@@ -1,0 +1,16 @@
+fn main() {
+    let re = re"[0-9]+";
+
+    let found = re.find("abc123def");
+    println(found);
+
+    let replaced = re.replace("a1b2c3", "X");
+    println(replaced);
+
+    let re2 = re"hello";
+    let replaced2 = re2.replace("hello world, hello!", "hi");
+    println(replaced2);
+
+    re.free();
+    re2.free();
+}

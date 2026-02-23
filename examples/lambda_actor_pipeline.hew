@@ -1,0 +1,52 @@
+// Lambda Actor Pipeline Example
+// Demonstrates chaining lambda actors for data processing
+fn main() {
+    println("=== Lambda Actor Pipeline ===");
+
+    // Final stage - printer
+    let printer = spawn (x: i32) => {
+        println(f"Final result: {x}");
+    };
+    // Middle stage - doubler that sends to printer
+    let doubler = spawn (x: i32) => {
+        let doubled = x * 2;
+        print("Doubled: ");
+        print(doubled);
+        print(" -> ");
+        printer.send(doubled);
+    };
+    // First stage - adder that sends to doubler
+    let adder = spawn (x: i32) => {
+        let added = x + 5;
+        print("Added 5: ");
+        print(added);
+        print(" -> ");
+        doubler.send(added);
+    };
+    // Start the pipeline
+    println("Starting pipeline with input: 10");
+    adder.send(10); // 10 + 5 = 15, then 15 * 2 = 30
+    sleep_ms(100);
+
+    // Another pipeline run
+    println("Starting pipeline with input: 3");
+    adder.send(3); // 3 + 5 = 8, then 8 * 2 = 16
+    sleep_ms(100);
+
+    // More complex pipeline - 3 stage transformation
+    let formatter = spawn (x: i32) => {
+        println(f"[FORMATTED] {x}");
+    };
+    let squarer = spawn (x: i32) => {
+        let squared = x * x;
+        formatter.send(squared);
+    };
+    let incrementer = spawn (x: i32) => {
+        squarer.send(x + 1);
+    };
+    println("Complex pipeline: increment -> square -> format");
+    incrementer.send(4); // 4+1=5, 5*5=25, format 25
+    incrementer.send(9); // 9+1=10, 10*10=100, format 100
+    sleep_ms(100);
+    println("=== Pipeline Done ===");
+}

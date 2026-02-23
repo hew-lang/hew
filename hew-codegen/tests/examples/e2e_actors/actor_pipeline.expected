@@ -1,0 +1,8 @@
+=== Actor Pipeline ===
+Doubler: 5 -> 10
+Adder(+10): 5 -> 15
+Doubler: 10 -> 20
+Adder(+10): 10 -> 20
+Doubler: 25 -> 50
+Adder(+10): 25 -> 35
+Done

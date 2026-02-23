@@ -1,0 +1,26 @@
+// Test: Actor Spawn Rate
+// Exercises: Rapid actor creation
+actor Ephemeral {
+    let id: int;
+    receive fn ping(n: int) {
+
+        // Minimal work
+    }
+}
+
+fn main() {
+    println("=== Actor Spawn Rate ===");
+
+    // Spawn 100 actors
+    var i = 0;
+    while i < 100 {
+        let a = spawn Ephemeral(id: i);
+        a.ping(0);
+        i = i + 1;
+    }
+    sleep_ms(500);
+    print("Spawned ");
+    print(100);
+    println(" actors");
+    println("PASS");
+}

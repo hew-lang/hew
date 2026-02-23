@@ -1,0 +1,19 @@
+fn main() {
+    var found = 0;
+    var i = 0;
+    @outer: while i < 5 {
+        var j = 0;
+        while j < 5 {
+            if i == 2 {
+                if j == 3 {
+                    found = 1;
+                    break @outer;
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    println(i);
+    println(found);
+}

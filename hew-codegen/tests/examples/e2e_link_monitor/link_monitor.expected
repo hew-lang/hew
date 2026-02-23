@@ -1,0 +1,8 @@
+=== Link/Monitor Test ===
+Linked to w1
+Monitoring w2, ref_id = 0
+Unlinked from w1
+Demonitored w2
+Worker 1 pinged
+Worker 2 pinged
+Done

@@ -1,0 +1,48 @@
+// String operations test
+// Exercises string methods and operators
+fn main() {
+    println("=== String Basics ===");
+    let s = "hello world";
+    let len = s.len();
+    println(len); // 11
+    let ch = s.char_at(0);
+    println(ch); // 104 (ASCII 'h')
+    let eq = s == "hello world";
+    println(eq); // true
+    let cat = "foo" + "bar";
+    println(cat); // foobar
+    println("=== Slice ===");
+    let sub = s.slice(0, 5);
+    println(sub); // hello
+    let sub2 = s.slice(6, 11);
+    println(sub2); // world
+    println("=== Find ===");
+    let idx = s.find("world");
+    println(idx); // 6
+    let not_found = s.find("xyz");
+    println(not_found); // -1
+    println("=== Starts/Ends/Contains ===");
+    let sw = s.starts_with("hello");
+    println(sw); // true
+    let ew = s.ends_with("world");
+    println(ew); // true
+    let ct = s.contains("lo wo");
+    println(ct); // true
+    let no_ct = s.contains("xyz");
+    println(no_ct); // false
+    println("=== Conversions ===");
+    let num_str = int_to_string(42);
+    println(num_str); // 42
+    let num = string_to_int("123");
+    println(num); // 123
+    println("=== Trim/Replace ===");
+    let trimmed = "  hello  ".trim();
+    println(trimmed); // hello
+    let replaced = "aabbcc".replace("bb", "XX");
+    println(replaced); // aaXXcc
+    println("=== Char ===");
+    let code = "ABC".char_at(0);
+    println(code); // 65 (ASCII 'A')
+    let is_a = code == 65;
+    println(is_a); // true
+}

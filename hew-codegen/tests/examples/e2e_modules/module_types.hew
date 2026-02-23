@@ -1,0 +1,7 @@
+import "types_lib.hew";
+
+fn main() {
+    let p = new_point(3, 4);
+    let s = point_sum(p);
+    println(s);
+}

@@ -1,0 +1,32 @@
+import std::encoding::hex;
+
+fn main() {
+    // Encode known bytes
+    let data: bytes = bytes::new();
+    data.push(0xDE);
+    data.push(0xAD);
+    data.push(0xBE);
+    data.push(0xEF);
+    let s = hex.encode(data);
+    println(s);
+
+    // Uppercase
+    let u = hex.encode_upper(data);
+    println(u);
+
+    // Round-trip decode
+    let back = hex.decode(s);
+    println(back.len());
+    println(back.get(0));
+    println(back.get(3));
+
+    // Empty encode
+    let empty: bytes = bytes::new();
+    let es = hex.encode(empty);
+    println(es);
+
+    // Single byte
+    let one: bytes = bytes::new();
+    one.push(0xF);
+    println(hex.encode(one));
+}

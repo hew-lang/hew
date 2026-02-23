@@ -1,0 +1,144 @@
+// Hew Syntax Highlighting Test File
+// Tests all syntax constructs for the VS Code extension
+
+/// This is a doc comment
+/* This is a block comment */
+
+// === Imports ===
+// std::io and std::collections are not yet implemented
+// import std::io;
+// import std::collections::{Vec, HashMap};
+// import std::net::*;
+
+// === Constants ===
+pub const MAX_RETRIES: i32 = 5;
+
+const TIMEOUT: i32 = 1000;
+
+// === Type Declarations ===
+type Point {
+    x: i32;
+    y: i32;
+}
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+    Custom(i32, i32, i32);
+}
+
+// === Trait ===
+trait Drawable {
+    fn draw(d: i32) -> bool;
+    type Canvas;
+}
+
+impl Drawable for Point {
+    fn draw(d: i32) -> bool {
+        true
+    }
+}
+
+// === Wire Types ===
+wire type UserMessage {
+    name: String @1;
+    age: u32 @2 optional;
+    email: String @3 deprecated;
+}
+
+wire enum Command {
+    Start;
+    Stop;
+    Pause;
+}
+
+// === Actor ===
+actor Counter {
+    let count: i32;
+    receive fn increment() {
+        self.count = self.count + 1;
+    }
+    receive fn get() -> i32 {
+        self.count
+    }
+    receive fn add(n: i32) -> i32 {
+        self.count = self.count + n;
+        self.count
+    }
+}
+
+// === Supervisor ===
+supervisor CounterSupervisor {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 30;
+}
+
+// === Functions ===
+pub fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn factorial(n: i32) -> i32 {
+    var result: i32 = 1;
+    var i: i32 = 1;
+    while i <= n {
+        result = result * i;
+        i = i + 1;
+    }
+    return result;
+}
+
+// === Pattern Matching ===
+fn describe(c: Color) -> i32 {
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+        Color::Custom(r, g, b) => r + g + b,
+        _ => 0,
+    }
+}
+
+// === Control Flow ===
+fn control_flow_demo() -> i32 {
+    // If-else
+    let x = 42;
+    if x > 0 {
+        x
+    } else if x == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+// === Numeric Literals ===
+fn numeric_demo() -> i32 {
+    let dec: i32 = 1000000;
+    let hex: i32 = 255;
+    let float_val: f64 = 3.14159;
+    dec
+}
+
+// === String Literals ===
+fn string_demo() -> i32 {
+    let regular = "hello world";
+    let escaped = "tab here";
+    0
+}
+
+// === Extern FFI ===
+extern "C" {
+    fn custom_print(s: i32) -> i32;
+}
+
+// === Main ===
+fn main() {
+    let result = fibonacci(10);
+}

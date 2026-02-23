@@ -1,0 +1,5 @@
+=== Sieve of Eratosthenes ===
+Primes below 10: 4
+Primes below 30: 10
+Primes below 100: 25
+PASS

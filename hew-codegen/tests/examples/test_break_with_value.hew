@@ -1,0 +1,15 @@
+fn main() {
+    var result = 0;
+    var i = 0;
+    loop {
+        if i >= 10 {
+            break;
+        }
+        if i == 7 {
+            result = i;
+            break result;
+        }
+        i = i + 1;
+    }
+    println(result);
+}

@@ -1,0 +1,12 @@
+// Test reading a mutable variable through a closure after outer mutation.
+// Outer scope mutations are visible when the closure reads the variable.
+
+fn main() {
+    var x = 10;
+    let get_x = () -> int => {
+        x
+    };
+    println(get_x());
+    x = 42;
+    println(get_x());
+}

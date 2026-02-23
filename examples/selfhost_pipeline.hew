@@ -1,0 +1,314 @@
+// selfhost_pipeline.hew - Data processing pipeline using actors
+// Tests: multi-actor pipeline, message passing chains, structured concurrency
+// Purpose: Validate Hew can implement multi-stage compiler pipelines for self-hosting
+
+// ========================================
+// Pipeline stages as actors
+// ========================================
+
+// Reader actor: reads source lines from a file
+actor Reader {
+    let lines_read: i32;
+    receive fn read_source(path: String) -> i32 {
+
+        // Read file and count lines
+        let contents = read_file(path);
+        print(contents);
+        0
+    }
+}
+
+// Transform actor: processes lines (uppercase, filter, transform)
+actor Transformer {
+    let lines_processed: i32;
+    let lines_filtered: i32;
+    receive fn transform_line(line_num: i32, value: i32) -> i32 {
+
+        // Simulate transformation: double the value
+        value * 2
+    }
+    receive fn filter_line(line_num: i32, value: i32) -> i32 {
+        // Simulate filter: keep only even values
+        // Returns 1 if kept, 0 if filtered
+        if value % 2 == 0 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+// Writer actor: collects results and prints summary
+actor Writer {
+    let total_lines: i32;
+    let total_value: i32;
+    receive fn write_result(line_num: i32, value: i32) -> i32 {
+
+        // Accumulate results
+        value
+    }
+    receive fn get_summary(unused: i32) -> i32 {
+        0
+    }
+}
+
+// ========================================
+// Pipeline simulation functions
+// Since actor spawn and self.field assignment don't codegen yet,
+// we simulate the pipeline with regular functions
+// ========================================
+
+// Stage 1: Read - simulate reading lines as integer values
+fn pipeline_read(line_num: i32) -> i32 {
+    // Simulate reading line N from a source file
+    // Returns a "value" representing that line's data
+    line_num * 10 + 5
+}
+
+// Stage 2: Transform - apply transformation to each value
+fn pipeline_transform(value: i32) -> i32 {
+    // Double the value (simulates e.g. uppercasing, tokenizing)
+    value * 2
+}
+
+// Stage 3: Filter - decide if a value passes through
+fn pipeline_filter(value: i32) -> i32 {
+    // Keep values that are divisible by 4
+    if value % 4 == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+// Stage 4: Write - format and output results
+fn pipeline_write(line_num: i32, value: i32) -> i32 {
+    print("  Line ");
+    print(line_num);
+    print(": value=");
+    print(value);
+    print(" (transformed=");
+    let transformed = pipeline_transform(value);
+    print(transformed);
+    println(")");
+    transformed
+}
+
+// ========================================
+// Run the complete pipeline
+// ========================================
+fn run_pipeline(num_lines: i32) -> i32 {
+    println("--- Pipeline Execution ---");
+    var total_read = 0;
+    var total_transformed = 0;
+    var total_passed_filter = 0;
+    var total_output_value = 0;
+    for i in 0..num_lines {
+        // Stage 1: Read
+        let value = pipeline_read(i);
+        total_read = total_read + 1;
+
+        // Stage 2: Transform
+        let transformed = pipeline_transform(value);
+        total_transformed = total_transformed + 1;
+
+        // Stage 3: Filter
+        let passes = pipeline_filter(transformed);
+        if passes == 1 {
+            // Stage 4: Write (only values that pass filter)
+            total_output_value = total_output_value + transformed;
+            total_passed_filter = total_passed_filter + 1;
+            print("  [PASS] line ");
+            print(i);
+            print(": ");
+            print(value);
+            println(f" -> {transformed}");
+        } else {
+            print("  [SKIP] line ");
+            print(i);
+            print(": ");
+            print(value);
+            println(f" -> {transformed}");
+        }
+    }
+    println("");
+    println("--- Pipeline Summary ---");
+    println(f"Lines read:        {total_read}");
+    println(f"Lines transformed: {total_transformed}");
+    println(f"Lines passed filter: {total_passed_filter}");
+    println(f"Total output value:  {total_output_value}");
+    total_output_value
+}
+
+// ========================================
+// Multi-stage compiler pipeline simulation
+// This mirrors the actual Hew compiler pipeline:
+// Source -> Lexer -> Parser -> TypeChecker -> Codegen
+// ========================================
+fn compiler_pipeline_stage(stage: i32, input: i32) -> i32 {
+    // Each stage transforms the input and may produce errors
+    // stage 0: lexer - tokenize (multiply by prime to simulate hash)
+    // stage 1: parser - parse (add structure)
+    // stage 2: typechecker - validate (check constraints)
+    // stage 3: codegen - generate (final transform)
+    if stage == 0 {
+        // Lexer: break input into tokens (simulate with multiplication)
+        input * 7
+    } else if stage == 1 {
+        // Parser: build AST (simulate with addition)
+        input + 100
+    } else if stage == 2 {
+        // Type checker: validate types (simulate with modular check)
+        if input % 3 == 0 {
+            input
+        } else {
+            input + 1
+        }
+    } else if stage == 3 {
+        // Codegen: generate output (simulate with final transform)
+        input / 2
+    } else {
+        input
+    }
+}
+
+fn run_compiler_pipeline(source_value: i32) -> i32 {
+    println("--- Compiler Pipeline Simulation ---");
+    println(f"Source input: {source_value}");
+
+    // Stage 0: Lexer
+    let after_lexer = compiler_pipeline_stage(0, source_value);
+    println(f"After lexer:       {after_lexer}");
+
+    // Stage 1: Parser
+    let after_parser = compiler_pipeline_stage(1, after_lexer);
+    println(f"After parser:      {after_parser}");
+
+    // Stage 2: Type Checker
+    let after_types = compiler_pipeline_stage(2, after_parser);
+    println(f"After type check:  {after_types}");
+
+    // Stage 3: Codegen
+    let after_codegen = compiler_pipeline_stage(3, after_types);
+    println(f"After codegen:     {after_codegen}");
+    after_codegen
+}
+
+// ========================================
+// Test the file reading capability
+// ========================================
+fn test_file_reading() -> i32 {
+    println("--- File Reading Test ---");
+    let contents = read_file("examples/test_input.txt");
+    print("File contents: ");
+    print(contents);
+    println("(end of file)");
+    1
+}
+
+// ========================================
+// Tests
+// ========================================
+fn test_pipeline_stages() -> i32 {
+    var passed = 0;
+    // Test read stage
+    let v1 = pipeline_read(0);
+    if v1 == 5 {
+        passed = passed + 1;
+    }
+    let v2 = pipeline_read(3);
+    if v2 == 35 {
+        passed = passed + 1;
+    }
+    // Test transform stage
+    let t1 = pipeline_transform(10);
+    if t1 == 20 {
+        passed = passed + 1;
+    }
+    let t2 = pipeline_transform(25);
+    if t2 == 50 {
+        passed = passed + 1;
+    }
+    // Test filter stage
+    let f1 = pipeline_filter(20);
+    if f1 == 1 {
+        passed = passed + 1;
+    } // 20 % 4 == 0
+    let f2 = pipeline_filter(30);
+    if f2 == 0 {
+        passed = passed + 1;
+    } // 30 % 4 != 0
+    passed
+}
+
+fn test_compiler_pipeline() -> i32 {
+    var passed = 0;
+    // Test each stage independently
+    let l = compiler_pipeline_stage(0, 10);
+    if l == 70 {
+        passed = passed + 1;
+    } // 10 * 7
+    let p = compiler_pipeline_stage(1, 70);
+    if p == 170 {
+        passed = passed + 1;
+    } // 70 + 100
+
+    // 170 % 3 != 0, so 170 + 1 = 171
+    let t = compiler_pipeline_stage(2, 170);
+    if t == 171 {
+        passed = passed + 1;
+    }
+    let c = compiler_pipeline_stage(3, 171);
+    if c == 85 {
+        passed = passed + 1;
+    } // 171 / 2 = 85 (integer)
+    passed
+}
+
+fn main() {
+    println("=== Hew Self-Hosting Pipeline Test ===");
+    println("");
+
+    // Test individual pipeline stages
+    println("--- Pipeline Stage Tests ---");
+    let stage_passed = test_pipeline_stages();
+    print("Stage tests passed: ");
+    print(stage_passed);
+    println(" / 6");
+    println("");
+
+    // Run the data processing pipeline
+    let pipeline_result = run_pipeline(10);
+    println("");
+
+    // Run the compiler pipeline simulation
+    let compiler_result = run_compiler_pipeline(42);
+    println("");
+
+    // Test compiler pipeline
+    println("--- Compiler Pipeline Tests ---");
+    let compiler_passed = test_compiler_pipeline();
+    print("Compiler pipeline tests passed: ");
+    print(compiler_passed);
+    println(" / 4");
+    println("");
+
+    // Test file reading
+    test_file_reading();
+    println("");
+
+    // Summary
+    let total = stage_passed + compiler_passed;
+    print("Total tests passed: ");
+    print(total);
+    println(" / 10");
+    println("");
+    println("=== Self-Hosting Gaps Identified ===");
+    println("1. Actor spawn not in codegen - cannot create pipeline actors at runtime");
+    println("2. No actor message send/receive - pipeline uses functions instead of actors");
+    println("3. self.field assignment is TODO in codegen");
+    println("4. No string length/iteration - cannot process file contents line by line");
+    println("5. No array/Vec for collecting pipeline results");
+    println("6. No structured concurrency (scope/spawn) in codegen");
+    println("7. No for loops in codegen - must use while loops");
+}

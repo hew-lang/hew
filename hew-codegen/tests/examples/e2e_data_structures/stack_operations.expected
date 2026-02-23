@@ -1,0 +1,8 @@
+=== Stack Operations ===
+After push 10,20,30 - len: 3
+Top: 30
+Popped: 30
+After pop - len: 2
+Popped: 20, 10
+Final len: 0
+PASS

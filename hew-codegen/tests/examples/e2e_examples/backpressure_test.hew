@@ -1,0 +1,26 @@
+// Backpressure test - bounded mailbox demo
+// Demonstrates that actors with bounded mailboxes apply backpressure
+actor SlowWorker {
+    let id: int;
+
+    mailbox 4;
+    receive fn process(value: int) {
+        print("SlowWorker ");
+        print(self.id);
+        println(f": processing {value}");
+        sleep_ms(50);
+    }
+}
+
+fn main() {
+    println("=== Backpressure Test ===");
+    let worker = spawn SlowWorker(id: 1);
+    // Send multiple messages - bounded mailbox (capacity 4) will apply backpressure
+    var i = 0;
+    while i < 8 {
+        worker.process(i);
+        i = i + 1;
+    }
+    sleep_ms(500);
+    println("=== Done ===");
+}

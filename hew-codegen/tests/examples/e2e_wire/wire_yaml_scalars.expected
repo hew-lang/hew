@@ -1,0 +1,5 @@
+flag: true
+count: -7
+big: 1000000
+ratio: 1.5
+label: hello

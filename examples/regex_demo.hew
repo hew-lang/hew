@@ -1,0 +1,46 @@
+// Regex Demo — showcases Hew's built-in regex support.
+//
+// Features demonstrated:
+//   re"pattern"     — regex literal syntax
+//   string =~ re""  — regex match (returns bool)
+//   string !~ re""  — regex non-match
+//
+// Usage: hew build regex_demo.hew -o regex_demo && ./regex_demo
+fn main() {
+    println("=== Regex Demo ===");
+
+    // Basic match with =~
+    let email = "user@example.com";
+    if email =~ re"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$" {
+        println(f"'{email}' is a valid email");
+    }
+    // URL detection
+    let url = "https://hew.sh";
+    if url =~ re"^https?://" {
+        println(f"'{url}' is a URL");
+    }
+    // Negation with !~
+    let code = "let x = 42;";
+    if code !~ re"^//" {
+        println(f"'{code}' is code, not a comment");
+    }
+    // Phone number validation
+    let phone = "555-123-4567";
+    if phone =~ re"^[0-9]{3}-[0-9]{3}-[0-9]{4}$" {
+        println(f"'{phone}' is a valid phone number");
+    }
+    // Combining match and non-match
+    let name = "Alice";
+    if name =~ re"^[A-Z][a-z]+$" {
+        println(f"'{name}' is a capitalized name");
+    }
+    if name !~ re"[0-9]" {
+        println(f"'{name}' contains no digits");
+    }
+    // Pattern matching in conditions
+    let input = "GET /api/users HTTP/1.1";
+    if input =~ re"^(GET|POST|PUT|DELETE) " {
+        println(f"'{input}' is an HTTP request line");
+    }
+    println("All regex demos passed!");
+}

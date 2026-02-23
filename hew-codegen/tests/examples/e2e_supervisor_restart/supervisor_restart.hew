@@ -1,0 +1,40 @@
+// E2E test: supervisor restarts a crashed child actor.
+// After crash, the child gets fresh state (reset to init values).
+actor Counter {
+    let value: i32;
+    receive fn tick() {
+        self.value = self.value + 1;
+        print("tick ");
+        println(self.value);
+    }
+    receive fn crash_now() {
+        println("crashing");
+        panic("");
+    }
+}
+
+supervisor CounterSup {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child c: Counter(0);
+}
+
+fn main() {
+    let sup = spawn CounterSup;
+    sleep_ms(50);
+    let c = supervisor_child(sup, 0);
+    c.tick();
+    sleep_ms(20);
+
+    // Crash the child actor
+    c.crash_now();
+    sleep_ms(200);
+
+    // After restart, state is fresh (value resets to 0)
+    let c2 = supervisor_child(sup, 0);
+    c2.tick();
+    sleep_ms(20);
+    println("done");
+}

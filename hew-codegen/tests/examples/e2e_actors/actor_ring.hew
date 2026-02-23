@@ -1,0 +1,38 @@
+// Test: Actor Ring (Token passing)
+// Exercises: Chain of actors forwarding messages
+actor Node {
+    let id: int;
+    receive fn token(value: int) {
+        print("Node ");
+        print(self.id);
+        println(f" received token {value}");
+    }
+}
+
+fn main() {
+    println("=== Actor Ring ===");
+    let n1 = spawn Node(id: 1);
+    let n2 = spawn Node(id: 2);
+    let n3 = spawn Node(id: 3);
+    let n4 = spawn Node(id: 4);
+    // Simulate token passing around the ring
+    n1.token(42);
+    sleep_ms(50);
+    n2.token(42);
+    sleep_ms(50);
+    n3.token(42);
+    sleep_ms(50);
+    n4.token(42);
+    sleep_ms(50);
+
+    // Second round with incremented token
+    n1.token(43);
+    sleep_ms(50);
+    n2.token(43);
+    sleep_ms(50);
+    n3.token(43);
+    sleep_ms(50);
+    n4.token(43);
+    sleep_ms(100);
+    println("Done");
+}

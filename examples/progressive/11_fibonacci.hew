@@ -1,0 +1,16 @@
+// Test 11: Fibonacci function
+// Testing recursion
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    println(fib(0));
+    println(fib(1));
+    println(fib(5));
+    println(fib(10));
+}

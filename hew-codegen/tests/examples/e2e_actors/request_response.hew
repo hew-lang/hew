@@ -1,0 +1,22 @@
+// Test: Request Response Pattern
+// Exercises: Actor with typed response
+actor Calculator {
+    let last_result: int;
+    receive fn compute(a: int) {
+        let result = a * a + 1;
+        self.last_result = result;
+        print("Computed: ");
+        print(a);
+        println(f"^2 + 1 = {result}");
+    }
+}
+
+fn main() {
+    println("=== Request Response ===");
+    let calc = spawn Calculator(last_result: 0);
+    calc.compute(3);
+    calc.compute(5);
+    calc.compute(10);
+    sleep_ms(200);
+    println("Done");
+}

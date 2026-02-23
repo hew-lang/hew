@@ -1,0 +1,32 @@
+// Type inference example: bidirectional type inference for lambdas
+fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+    f(a, b)
+}
+
+fn transform(f: fn(i32) -> i32, x: i32) -> i32 {
+    f(x)
+}
+
+fn main() {
+    // Arrow lambda with types inferred from apply's signature
+    let sum = apply((x, y) => x + y, 3, 4);
+    let product = apply((x, y) => x * y, 3, 4);
+    println(sum);
+    println(product);
+
+    // Arrow lambda with single param
+    let doubled = transform((x) => x * 2, 21);
+    println(doubled);
+
+    // Arrow lambda with explicit types
+    let diff = apply((x: i32, y: i32) -> i32 => {
+        x - y
+    }, 10, 3);
+    println(diff);
+
+    // Arrow lambda with inferred types
+    let modulo = apply((x, y) => {
+        x - y * (x / y)
+    }, 17, 5);
+    println(modulo);
+}

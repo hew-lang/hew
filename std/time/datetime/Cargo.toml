@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-time-datetime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::time::datetime — date and time operations"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+libc = "0.2"
+
+[lints]
+workspace = true

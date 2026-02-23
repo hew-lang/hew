@@ -1,0 +1,79 @@
+// Test: Chaining error-like patterns with enums
+// Exercises: sequential fallible operations, error code propagation,
+// match-based control flow, multiple error sources.
+enum OpResult {
+    Success(int);
+    Failure(int);
+}
+
+fn parse_digit(c: int) -> OpResult {
+    // ASCII '0' = 48, '9' = 57
+    if c >= 48 {
+        if c <= 57 {
+            Success(c - 48)
+        } else {
+            Failure(1)
+        }
+    } else {
+        Failure(1)
+    }
+}
+
+fn double_if_small(x: int) -> OpResult {
+    if x > 100 {
+        Failure(2)
+    } else {
+        Success(x * 2)
+    }
+}
+
+fn chain_ops(c: int) -> OpResult {
+    let r1 = parse_digit(c);
+    match r1 {
+        Success(digit) => double_if_small(digit),
+        Failure(e) => Failure(e),
+    }
+}
+
+fn main() {
+    // '5' = 53 => digit 5 => doubled = 10
+    let r1 = chain_ops(53);
+    match r1 {
+        Success(val) => {
+            println(f"chain ok: {val}");
+        },
+        Failure(e) => {
+            println(f"chain err: {e}");
+        },
+    }
+    // 'a' = 97 => not a digit => parse error
+    let r2 = chain_ops(97);
+    match r2 {
+        Success(val) => {
+            println(val);
+        },
+        Failure(e) => {
+            println(f"parse err: {e}");
+        },
+    }
+    // Direct parse: '0' = 48 => digit 0
+    let r3 = parse_digit(48);
+    match r3 {
+        Success(d) => {
+            println(f"digit 0: {d}");
+        },
+        Failure(_) => {
+            println("unexpected error");
+        },
+    }
+    // Direct parse: '9' = 57 => digit 9
+    let r4 = parse_digit(57);
+    match r4 {
+        Success(d) => {
+            println(f"digit 9: {d}");
+        },
+        Failure(_) => {
+            println("unexpected error");
+        },
+    }
+}

@@ -1,0 +1,36 @@
+// Tests StringMethodOp method-call syntax for contains, starts_with,
+// ends_with, trim, replace — these are tested via free functions but
+// NOT via method-call syntax which uses a different MLIRGen path.
+fn main() {
+    let s = "Hello World";
+
+    // .contains()
+    if s.contains("World") {
+        println("contains: yes");
+    }
+    if !s.contains("xyz") {
+        println("not contains: yes");
+    }
+
+    // .starts_with()
+    if s.starts_with("Hello") {
+        println("starts_with: yes");
+    }
+
+    // .ends_with()
+    if s.ends_with("World") {
+        println("ends_with: yes");
+    }
+
+    // .trim()
+    let padded = "  hello  ";
+    let trimmed = padded.trim();
+    println(trimmed);
+
+    // .replace()
+    let replaced = s.replace("World", "Hew");
+    println(replaced);
+
+    // .len()
+    println(s.len());
+}

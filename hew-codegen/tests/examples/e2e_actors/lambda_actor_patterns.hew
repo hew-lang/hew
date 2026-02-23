@@ -1,0 +1,15 @@
+// Test: Lambda Actor Patterns
+// Exercises: Lambda actor spawn, capture, messaging
+fn main() {
+    println("=== Lambda Actor Patterns ===");
+
+    // Simple lambda actor
+    let printer = spawn (x: int) => {
+        println(f"Received: {x}");
+    };
+    printer.send(42);
+    printer.send(100);
+    printer.send(7);
+    sleep_ms(200);
+    println("Done");
+}

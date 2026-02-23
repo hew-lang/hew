@@ -1,0 +1,99 @@
+//! Operating system interfaces.
+//!
+//! Access command-line arguments, environment variables, and system
+//! information.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::os;
+//!
+//! fn main() {
+//!     let n = os.args_count();
+//!     let first = os.args(0);
+//!     let home = os.home_dir();
+//!     println(home);
+//! }
+//! ```
+
+/// Returns the number of command-line arguments.
+pub fn args_count() -> i32 {
+    hew_args_count()
+}
+
+/// Returns the command-line argument at the given index.
+///
+/// Index 0 is the program name. Panics if `index` is out of range.
+///
+/// # Examples
+///
+/// ```
+/// let program = os.args(0);
+/// let first_arg = os.args(1);
+/// ```
+pub fn args(index: i32) -> String {
+    hew_args_get(index)
+}
+
+/// Get the value of an environment variable.
+///
+/// Returns an empty string if the variable is not set.
+///
+/// # Examples
+///
+/// ```
+/// let path = os.env("PATH");
+/// ```
+pub fn env(name: String) -> String {
+    hew_env_get(name)
+}
+
+/// Set an environment variable for the current process.
+pub fn set_env(name: String, value: String) {
+    hew_env_set(name, value);
+}
+
+/// Remove an environment variable.
+pub fn remove_env(name: String) {
+    hew_env_remove(name);
+}
+
+/// Check whether an environment variable is set.
+pub fn has_env(name: String) -> bool {
+    hew_env_has(name)
+}
+
+/// Returns the current working directory.
+pub fn cwd() -> String {
+    hew_cwd()
+}
+
+/// Returns the user's home directory.
+pub fn home_dir() -> String {
+    hew_home_dir()
+}
+
+/// Returns the system hostname.
+pub fn hostname() -> String {
+    hew_hostname()
+}
+
+/// Returns the current process ID.
+pub fn pid() -> i32 {
+    hew_pid()
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_args_count() -> i32;
+    fn hew_args_get(index: i32) -> String;
+    fn hew_env_get(name: String) -> String;
+    fn hew_env_set(name: String, value: String);
+    fn hew_env_remove(name: String);
+    fn hew_env_has(name: String) -> bool;
+    fn hew_cwd() -> String;
+    fn hew_home_dir() -> String;
+    fn hew_hostname() -> String;
+    fn hew_pid() -> i32;
+}

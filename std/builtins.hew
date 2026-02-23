@@ -1,0 +1,211 @@
+//! Built-in functions available in every Hew program.
+//!
+//! These functions are always in scope — no `import` is needed.
+//! They cover I/O, assertions, math, String operations, and
+//! program control flow.
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+/// Print a value followed by a newline.
+///
+/// Accepts any type that implements `Display`.
+///
+/// # Examples
+///
+/// ```
+/// println(42);
+/// println("hello");
+/// println(true);
+/// ```
+fn println(value: dyn Display) {}
+
+/// Print a value without a trailing newline.
+///
+/// # Examples
+///
+/// ```
+/// print("Enter name: ");
+/// ```
+fn print(value: dyn Display) {}
+
+// ---------------------------------------------------------------------------
+// Assertions
+// ---------------------------------------------------------------------------
+
+/// Assert that a condition is true. Panics if `condition` is false.
+///
+/// # Examples
+///
+/// ```
+/// assert(x > 0);
+/// ```
+fn assert(condition: bool) {}
+
+/// Assert that two values are equal. Panics with a diff if they differ.
+///
+/// Both arguments must be the same type.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq(add(1, 2), 3);
+/// ```
+fn assert_eq(left: dyn Display, right: dyn Display) {}
+
+/// Assert that two values are not equal. Panics if they are the same.
+///
+/// Both arguments must be the same type.
+///
+/// # Examples
+///
+/// ```
+/// assert_ne(a, b);
+/// ```
+fn assert_ne(left: dyn Display, right: dyn Display) {}
+
+// ---------------------------------------------------------------------------
+// Math
+// ---------------------------------------------------------------------------
+
+/// Returns the absolute value of an integer.
+///
+/// # Examples
+///
+/// ```
+/// let x = abs(-5);  // 5
+/// ```
+fn abs(x: i32) -> i32 {}
+
+/// Returns the square root of a floating-point number.
+///
+/// # Examples
+///
+/// ```
+/// let r = sqrt(9.0);  // 3.0
+/// ```
+fn sqrt(x: f64) -> f64 {}
+
+/// Returns the smaller of two integers.
+fn min(a: i32, b: i32) -> i32 {}
+
+/// Returns the larger of two integers.
+fn max(a: i32, b: i32) -> i32 {}
+
+/// Convert an integer to a floating-point number.
+///
+/// # Examples
+///
+/// ```
+/// let f = to_float(42);  // 42.0
+/// ```
+fn to_float(x: i32) -> f64 {}
+
+// ---------------------------------------------------------------------------
+// String operations
+// ---------------------------------------------------------------------------
+
+/// Concatenate two strings, returning a new string.
+///
+/// # Examples
+///
+/// ```
+/// let full = string_concat("hello ", "world");
+/// ```
+fn string_concat(a: String, b: String) -> String {}
+
+/// Returns the byte length of a string.
+fn string_length(s: String) -> i32 {}
+
+/// Convert any value to its string representation.
+///
+/// # Examples
+///
+/// ```
+/// let s = to_string(42);  // "42"
+/// ```
+fn to_string(value: dyn Display) -> String {}
+
+/// Returns the length of a collection or string.
+fn len(value: dyn Display) -> i32 {}
+
+/// Returns the character (as a `char`) at the given byte index.
+fn string_char_at(s: String, index: i32) -> char {}
+
+/// Test whether two strings are equal.
+fn string_equals(a: String, b: String) -> bool {}
+
+/// Convert an integer to a string.
+///
+/// # Examples
+///
+/// ```
+/// let s = string_from_int(42);  // "42"
+/// ```
+fn string_from_int(n: i32) -> String {}
+
+/// Test whether `haystack` contains `needle`.
+fn string_contains(haystack: String, needle: String) -> bool {}
+
+/// Test whether a string starts with the given prefix.
+fn string_starts_with(s: String, prefix: String) -> bool {}
+
+/// Extract a substring by byte indices `[start, end)`.
+///
+/// # Examples
+///
+/// ```
+/// let s = substring("hello", 0, 3);  // "hel"
+/// ```
+fn substring(s: String, start: i32, end: i32) -> String {}
+
+/// Strip leading and trailing whitespace.
+fn string_trim(s: String) -> String {}
+
+/// Parse a string as an integer. Returns 0 on failure.
+fn string_to_int(s: String) -> i32 {}
+
+/// Find the first occurrence of `needle` in `haystack`.
+///
+/// Returns the byte offset, or -1 if not found.
+fn string_find(haystack: String, needle: String) -> i32 {}
+
+// ---------------------------------------------------------------------------
+// File I/O  (convenience wrappers — see also `import std::fs;`)
+// ---------------------------------------------------------------------------
+
+/// Read the entire contents of a file as a string.
+fn read_file(path: String) -> String {}
+
+/// Write a string to a file, creating or overwriting it.
+fn write_file(path: String, content: String) {}
+
+// ---------------------------------------------------------------------------
+// Program control
+// ---------------------------------------------------------------------------
+
+/// Pause execution for the given number of milliseconds.
+fn sleep_ms(ms: i32) {}
+
+/// Pause execution for the given number of seconds.
+fn sleep(seconds: i32) {}
+
+/// Stop an actor gracefully.
+fn stop(target: dyn Display) {}
+
+/// Terminate the program with the given exit code.
+///
+/// This function never returns.
+fn exit(code: i32) {}
+
+/// Terminate the program with an error message.
+///
+/// This function never returns.
+///
+/// # Examples
+///
+/// ```
+/// panic("something went wrong");
+/// ```
+fn panic(message: String) {}

@@ -1,0 +1,156 @@
+// Test: Collections
+// Exercises: Vec<T>, HashMap<K,V> with push, len, get, pop, insert, contains_key, remove
+fn test_vec_basic() -> i32 {
+    println("--- test_vec_basic ---");
+    let v: Vec<i32> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    let len = v.len();
+    let first = v.get(0);
+    let second = v.get(1);
+    let third = v.get(2);
+    if len == 3 {
+        if first == 10 {
+            if second == 20 {
+                if third == 30 {
+                    println("PASS: vec basic ops");
+                    1
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_vec_pop() -> i32 {
+    println("--- test_vec_pop ---");
+    let v: Vec<i32> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let popped = v.pop();
+    let len_after = v.len();
+    if popped == 3 {
+        if len_after == 2 {
+            println("PASS: vec pop");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_vec_many_elements() -> i32 {
+    println("--- test_vec_many_elements ---");
+    let v: Vec<i32> = Vec::new();
+    for i in 0..100 {
+        v.push(i);
+    }
+    let len = v.len();
+    let last = v.get(99);
+    if len == 100 {
+        if last == 99 {
+            println("PASS: vec 100 elements");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_basic() -> i32 {
+    println("--- test_hashmap_basic ---");
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("one", 1);
+    m.insert("two", 2);
+    m.insert("three", 3);
+    let one = match m.get("one") {
+        Some(v) => v,
+        None => -1,
+    };
+    let two = match m.get("two") {
+        Some(v) => v,
+        None => -1,
+    };
+    let len = m.len();
+    if one == 1 {
+        if two == 2 {
+            if len == 3 {
+                println("PASS: hashmap basic ops");
+                1
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_contains() -> i32 {
+    println("--- test_hashmap_contains ---");
+    let m: HashMap<String, i32> = HashMap::new();
+    m.insert("key1", 10);
+    let has_key1 = m.contains_key("key1");
+    let has_key2 = m.contains_key("key2");
+    if has_key1 == 1 {
+        if has_key2 == 0 {
+            println("PASS: hashmap contains_key");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_hashmap_remove() -> i32 {
+    println("--- test_hashmap_remove ---");
+    let m: HashMap<String, i32> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let before = m.len();
+    m.remove("a");
+    let after = m.len();
+    if before == 2 {
+        if after == 1 {
+            println("PASS: hashmap remove");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn main() {
+    println("=== Test: Collections ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_vec_basic();
+    passed = passed + test_vec_pop();
+    passed = passed + test_vec_many_elements();
+    passed = passed + test_hashmap_basic();
+    passed = passed + test_hashmap_contains();
+    passed = passed + test_hashmap_remove();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+}

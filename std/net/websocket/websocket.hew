@@ -1,0 +1,85 @@
+//! WebSocket client for bidirectional communication.
+//!
+//! Provides a blocking WebSocket client that can send and receive
+//! text messages over a persistent connection.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::websocket;
+//!
+//! fn main() {
+//!     let ws = websocket.connect("ws://localhost:8080/ws");
+//!     ws.send_text("hello");
+//!     let msg = ws.recv();
+//!     msg.free();
+//!     ws.close();
+//! }
+//! ```
+
+/// An open WebSocket connection handle.
+///
+/// Created by calling `websocket.connect(url)`. Use `send_text()` to
+/// send messages and `recv()` to receive them.
+type Conn {}
+
+/// An incoming WebSocket message handle.
+///
+/// Obtained from `conn.recv()`. Must be freed with `free()` when no
+/// longer needed.
+type Message {}
+
+// ── Conn methods ──────────────────────────────────────────────────────
+
+/// Methods available on a WebSocket `Conn`.
+trait ConnMethods {
+    // Send a text message over the connection. Returns 0 on success.
+    fn send_text(self: Conn, msg: String) -> i32;
+
+    // Block until a message is received and return it.
+    fn recv(self: Conn) -> Message;
+
+    // Close the WebSocket connection.
+    fn close(self: Conn);
+}
+
+impl ConnMethods for Conn {
+    fn send_text(self: Conn, msg: String) -> i32 { hew_ws_send_text(self, msg) }
+    fn recv(self: Conn) -> Message { hew_ws_recv(self) }
+    fn close(self: Conn) { hew_ws_close(self); }
+}
+
+// ── Message methods ───────────────────────────────────────────────────
+
+/// Methods available on a WebSocket `Message`.
+trait MessageMethods {
+    // Release the message resources.
+    fn free(self: Message);
+}
+
+impl MessageMethods for Message {
+    fn free(self: Message) { hew_ws_message_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Open a WebSocket connection to the given URL.
+///
+/// # Examples
+///
+/// ```
+/// let ws = websocket.connect("ws://localhost:8080/ws");
+/// ```
+pub fn connect(url: String) -> Conn {
+    hew_ws_connect(url)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_ws_connect(url: String) -> Conn;
+    fn hew_ws_send_text(ws: Conn, msg: String) -> i32;
+    fn hew_ws_recv(ws: Conn) -> Message;
+    fn hew_ws_close(ws: Conn);
+    fn hew_ws_message_free(msg: Message);
+}

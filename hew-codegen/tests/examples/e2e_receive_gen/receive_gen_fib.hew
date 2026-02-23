@@ -1,0 +1,21 @@
+actor Fibonacci {
+    let limit: int;
+
+    receive gen fn sequence() -> int {
+        var a = 0;
+        var b = 1;
+        while a < self.limit {
+            yield a;
+            let next = a + b;
+            a = b;
+            b = next;
+        }
+    }
+}
+
+fn main() {
+    let fib = spawn Fibonacci(limit: 100);
+    for await val in fib.sequence() {
+        println(val);
+    }
+}

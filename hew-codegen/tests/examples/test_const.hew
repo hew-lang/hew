@@ -1,0 +1,16 @@
+const PI: f64 = 3.14159;
+
+const MAX_SIZE: int = 100;
+
+const GREETING: int = 42;
+
+fn double_it(x: int) -> int {
+    x * 2
+}
+
+fn main() {
+    println(MAX_SIZE);
+    println(GREETING);
+    println(double_it(MAX_SIZE));
+    println(PI);
+}

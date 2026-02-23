@@ -1,0 +1,17 @@
+actor Calculator {
+    receive fn add(a: int, b: int) -> int {
+        a + b
+    }
+
+    receive fn multiply(a: int, b: int) -> int {
+        a * b
+    }
+}
+
+fn main() {
+    let calc = spawn Calculator;
+    let sum = await calc.add(3, 4);
+    let product = await calc.multiply(5, 6);
+    println(sum);
+    println(product);
+}

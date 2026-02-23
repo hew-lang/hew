@@ -1,0 +1,18 @@
+// Test: scope launch returning bool — validates Task<bool> await
+fn check() -> bool {
+    return true;
+}
+
+fn main() {
+    let result = scope |s| {
+        let t = s.launch {
+            check()
+        };
+        let ok = await t;
+        if ok {
+            println(1);
+        } else {
+            println(0);
+        }
+    };
+}

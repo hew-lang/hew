@@ -1,0 +1,10 @@
+=== Actor Ring ===
+Node 1 received token 42
+Node 2 received token 42
+Node 3 received token 42
+Node 4 received token 42
+Node 1 received token 43
+Node 2 received token 43
+Node 3 received token 43
+Node 4 received token 43
+Done

@@ -1,0 +1,5 @@
+// Junior dev test 1: Hello World
+// Just trying to say hello and see if anything works
+fn main() {
+    println("Hello, I'm trying Hew!");
+}

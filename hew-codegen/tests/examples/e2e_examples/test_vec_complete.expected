@@ -1,0 +1,10 @@
+=== Test: Vec Complete ===
+PASS: test_vec_push_get
+PASS: test_vec_pop
+PASS: test_vec_len
+PASS: test_vec_set
+PASS: test_vec_is_empty
+PASS: test_vec_string
+PASS: test_vec_multiple_ops
+
+Passed: 7/7

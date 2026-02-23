@@ -1,0 +1,90 @@
+//! Regular expression matching.
+//!
+//! Compile patterns once and match against multiple strings.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::text::regex;
+//!
+//! fn main() {
+//!     let re = regex.new("[0-9]+");
+//!     if re.is_match("abc123") {
+//!         let m = re.find("abc123");
+//!         println(m);  // "123"
+//!     }
+//!     re.free();
+//! }
+//! ```
+
+/// A compiled regular expression pattern.
+///
+/// Created by `regex.new(pattern)`. Must be freed with `free()` when
+/// no longer needed to avoid leaking memory.
+type Pattern {}
+
+/// Methods available on a compiled `Pattern`.
+trait PatternMethods {
+    // Test whether the pattern matches anywhere in the input string.
+    //
+    // # Examples
+    //
+    // ```
+    // let re = regex.new("^[a-z]+$");
+    // assert(re.is_match("hello"));
+    // ```
+    fn is_match(self: Pattern, input: String) -> bool;
+
+    // Find the first match of the pattern in the input string.
+    //
+    // Returns the matched substring, or an empty string if no match.
+    fn find(self: Pattern, input: String) -> String;
+
+    // Replace all occurrences of the pattern with the replacement string.
+    //
+    // # Examples
+    //
+    // ```
+    // let re = regex.new("[0-9]+");
+    // let result = re.replace("abc123def456", "N");
+    // // result == "abcNdefN"
+    // ```
+    fn replace(self: Pattern, input: String, replacement: String) -> String;
+
+    // Release the compiled pattern resources.
+    fn free(self: Pattern);
+}
+
+impl PatternMethods for Pattern {
+    fn is_match(self: Pattern, input: String) -> bool { hew_regex_is_match(self, input) }
+    fn find(self: Pattern, input: String) -> String { hew_regex_find(self, input) }
+    fn replace(self: Pattern, input: String, replacement: String) -> String {
+        hew_regex_replace(self, input, replacement)
+    }
+    fn free(self: Pattern) { hew_regex_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Compile a regular expression pattern.
+///
+/// Panics if the pattern syntax is invalid.
+///
+/// # Examples
+///
+/// ```
+/// let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
+/// ```
+pub fn new(pattern: String) -> Pattern {
+    hew_regex_new(pattern)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_regex_new(pattern: String) -> Pattern;
+    fn hew_regex_is_match(re: Pattern, input: String) -> bool;
+    fn hew_regex_find(re: Pattern, input: String) -> String;
+    fn hew_regex_replace(re: Pattern, input: String, replacement: String) -> String;
+    fn hew_regex_free(re: Pattern);
+}

@@ -1,0 +1,35 @@
+// Type system test: structs, enums, traits, impl blocks
+type Point {
+    x: i32;
+    y: i32;
+}
+
+fn make_point(x: i32, y: i32) -> Point {
+    Point { x: x, y: y }
+}
+
+fn point_sum(p: Point) -> i32 {
+    p.x + p.y
+}
+
+fn test_struct() {
+    let p: Point = make_point(3, 4);
+    let sum = point_sum(p);
+    if sum == 7 {
+        println("PASS: struct creation and field access")
+    }
+}
+
+fn test_direct_init() {
+    let p = Point { x: 10, y: 20 };
+    if p.x == 10 {
+        println("PASS: direct struct init")
+    }
+}
+
+fn main() {
+    println("=== Types and Traits ===");
+    test_struct();
+    test_direct_init();
+    println("=== Done ===");
+}

@@ -1,0 +1,148 @@
+//! TCP networking.
+//!
+//! Create TCP servers and clients for bidirectional byte-stream
+//! communication. Handle types (`Listener`, `Connection`) provide
+//! type-safe wrappers over raw file descriptors.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net;
+//!
+//! fn main() {
+//!     let listener = net.listen(":9000");
+//!     let conn = listener.accept();
+//!     let data = conn.read();
+//!     conn.write(data);
+//!     conn.close();
+//! }
+//! ```
+
+/// A TCP listener bound to an address, waiting for connections.
+///
+/// Created by `net.listen(addr)`. Returns a negative value (as i32)
+/// on failure when cast; use comparison to check success.
+type Listener {}
+
+/// An established TCP connection for reading and writing.
+///
+/// Obtained from `listener.accept()` or `net.connect(addr)`.
+type Connection {}
+
+// ── Listener methods ──────────────────────────────────────────────────
+
+/// Methods available on a TCP `Listener`.
+trait ListenerMethods {
+    /// Block until a client connects and return the new `Connection`.
+    fn accept(self: Listener) -> Connection;
+}
+
+impl ListenerMethods for Listener {
+    fn accept(self: Listener) -> Connection {
+        hew_tcp_accept(self)
+    }
+}
+
+// ── Connection methods ────────────────────────────────────────────────
+
+/// Methods available on a TCP `Connection`.
+trait ConnectionMethods {
+    /// Read raw bytes from the connection.
+    ///
+    /// Blocks until data is available. Returns an empty bytes buffer on EOF
+    /// or disconnect.
+    fn read(self: Connection) -> bytes;
+
+    /// Read a UTF-8 string from the connection.
+    ///
+    /// Convenience wrapper that reads bytes and converts to String.
+    fn read_string(self: Connection) -> String;
+
+    /// Write raw bytes to the connection.
+    fn write(self: Connection, data: bytes);
+
+    /// Write a UTF-8 string to the connection.
+    ///
+    /// Convenience wrapper that converts the string to bytes before sending.
+    fn write_string(self: Connection, data: String);
+
+    /// Close the connection and release resources.
+    fn close(self: Connection) -> i32;
+
+    /// Set the read timeout in milliseconds.
+    ///
+    /// Pass 0 to disable the timeout.
+    fn set_read_timeout(self: Connection, ms: i32) -> i32;
+
+    /// Set the write timeout in milliseconds.
+    fn set_write_timeout(self: Connection, ms: i32) -> i32;
+}
+
+impl ConnectionMethods for Connection {
+    fn read(self: Connection) -> bytes { hew_tcp_read(self) }
+    fn read_string(self: Connection) -> String { hew_bytes_to_string(hew_tcp_read(self)) }
+    fn write(self: Connection, data: bytes) { hew_tcp_write(self, data) }
+    fn write_string(self: Connection, data: String) { hew_tcp_write(self, hew_string_to_bytes(data)) }
+    fn close(self: Connection) -> i32 { hew_tcp_close(self) }
+    fn set_read_timeout(self: Connection, ms: i32) -> i32 { hew_tcp_set_read_timeout(self, ms) }
+    fn set_write_timeout(self: Connection, ms: i32) -> i32 { hew_tcp_set_write_timeout(self, ms) }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a TCP listener bound to the given address.
+///
+/// The address format is `"host:port"` or `":port"`.
+///
+/// # Examples
+///
+/// ```
+/// let listener = net.listen(":9000");
+/// ```
+pub fn listen(addr: String) -> Listener {
+    hew_tcp_listen(addr)
+}
+
+/// Connect to a TCP server at the given address.
+///
+/// Blocks until the connection is established.
+///
+/// # Examples
+///
+/// ```
+/// let conn = net.connect("localhost:9000");
+/// ```
+pub fn connect(addr: String) -> Connection {
+    hew_tcp_connect(addr)
+}
+
+/// Connect to a TCP server with a timeout.
+///
+/// `timeout_sec` and `timeout_usec` specify the deadline.
+pub fn connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection {
+    hew_tcp_connect_timeout(addr, timeout_sec, timeout_usec)
+}
+
+/// Broadcast a message to all connections except the sender.
+///
+/// Used in chat-server patterns to fan out messages.
+pub fn broadcast_except(sender: Connection, message: bytes) -> i32 {
+    hew_tcp_broadcast_except(sender, message)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_tcp_listen(addr: String) -> Listener;
+    fn hew_tcp_accept(listener: Listener) -> Connection;
+    fn hew_tcp_connect(addr: String) -> Connection;
+    fn hew_tcp_connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection;
+    fn hew_tcp_read(conn: Connection) -> bytes;
+    fn hew_tcp_write(conn: Connection, data: bytes);
+    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_tcp_close(conn: Connection) -> i32;
+    fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;
+    fn hew_tcp_set_write_timeout(conn: Connection, ms: i32) -> i32;
+    fn hew_tcp_broadcast_except(sender: Connection, message: bytes) -> i32;
+}

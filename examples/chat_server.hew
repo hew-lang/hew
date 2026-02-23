@@ -1,0 +1,93 @@
+// TCP Chat Server — idiomatic Hew actor-based design.
+//
+// Architecture:
+//   main          — accepts TCP connections, spawns a ClientHandler per client
+//   ChatRoom      — holds Vec<ActorRef<ClientHandler>>, broadcasts via actor dispatch
+//   ClientHandler — reads from one TCP connection, forwards messages to ChatRoom
+//
+// All inter-component communication uses actor messages (receive fn calls).
+// TCP I/O is confined to ClientHandler; ChatRoom never touches sockets directly.
+// The ChatRoom broadcasts by calling h.deliver(msg) on each handler actor —
+// pure actor-to-actor communication with no raw socket I/O leaking out.
+import std::net;
+
+import std::os;
+
+actor ChatRoom {
+    let handlers: Vec<ActorRef<ClientHandler>>;
+    let names: Vec<String>;
+    receive fn register(handler: ActorRef<ClientHandler>, name: String) {
+        self.handlers.push(handler);
+        self.names.push(name);
+        println(f"{name} joined the chat");
+    }
+    receive fn unregister(name: String) {
+        var new_handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
+        var new_names: Vec<String> = Vec::new();
+        for i in 0..self.names.len() {
+            if self.names.get(i) != name {
+                new_handlers.push(self.handlers.get(i));
+                new_names.push(self.names.get(i));
+            }
+        }
+        self.handlers = new_handlers;
+        self.names = new_names;
+        println(f"{name} left the chat");
+    }
+    receive fn broadcast(sender_name: String, msg: String) {
+        for i in 0..self.names.len() {
+            if self.names.get(i) != sender_name {
+                self.handlers.get(i).deliver(msg);
+            }
+        }
+    }
+}
+
+actor ClientHandler {
+    let conn: Connection;
+    let name: String;
+    let room: ActorRef<ChatRoom>;
+    receive fn start(unused: i32) {
+        self.conn.write_string(f"[server] welcome {self.name}");
+        var running = true;
+        while running {
+            let data = self.conn.read_string();
+            if data.contains("__HEW_TCP_DISCONNECT__") {
+                self.room.unregister(self.name);
+                let _ = self.conn.close();
+                running = false;
+            } else {
+                let line = f"{self.name}: {data}";
+                println(line);
+                self.room.broadcast(self.name, line);
+            }
+        }
+    }
+    receive fn deliver(msg: String) {
+        self.conn.write_string(msg);
+    }
+}
+
+fn main() {
+    var port: String = "9000";
+    let argc = os.args_count();
+    if argc > 1 {
+        port = os.args(1);
+    }
+    let addr = f"0.0.0.0:{port}";
+    let listener = net.listen(addr);
+    println("=== Hew TCP Chat Server ===");
+    println(f"Listening on {addr}");
+    let handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
+    let names: Vec<String> = Vec::new();
+    let room = spawn ChatRoom(handlers: handlers, names: names);
+    var next_id: i32 = 1;
+    var accepting = 1;
+    while accepting == 1 {
+        let conn = listener.accept();
+        let handler = spawn ClientHandler(conn: conn, name: f"client-{next_id}", room: room);
+        room.register(handler, f"client-{next_id}");
+        handler.start(0);
+        next_id = next_id + 1;
+    }
+}

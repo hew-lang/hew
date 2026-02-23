@@ -1,0 +1,20 @@
+[package]
+name = "hew-std-encoding-csv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::encoding::csv — CSV parsing"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+csv = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

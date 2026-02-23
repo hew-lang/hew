@@ -1,0 +1,15 @@
+[package]
+name = "hew-std-encoding-protobuf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::encoding::protobuf — Protocol Buffers wire-format encoding"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

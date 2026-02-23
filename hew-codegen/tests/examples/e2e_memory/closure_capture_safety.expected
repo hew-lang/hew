@@ -1,0 +1,6 @@
+=== Closure Capture Safety ===
+adder(3)(10) = 13
+adder(7)(10) = 17
+multiplier(4)(5) = 20
+multiplier(6)(5) = 30
+PASS

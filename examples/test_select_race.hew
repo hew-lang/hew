@@ -1,0 +1,33 @@
+actor FastWorker {
+    receive fn compute(x: i32) -> i32 {
+        x * 2
+    }
+}
+
+actor SlowWorker {
+    receive fn compute(x: i32) -> i32 {
+        x * 3
+    }
+}
+
+fn main() {
+    let fast = spawn FastWorker;
+    let slow = spawn SlowWorker;
+    // Test select - fast should win
+    let result = select {
+        r from fast.compute(5) => r,
+        r from slow.compute(5) => r,
+        after 2000 => -1,
+    };
+    println("select result:");
+    println(result);
+
+    // Test join - both results
+    let results = join {
+        fast.compute(10),
+        slow.compute(10),
+    };
+    println("join results:");
+    println(results.0);
+    println(results.1);
+}

@@ -1,0 +1,22 @@
+actor PriceTracker {
+    let symbol: int;
+    let price: int;
+
+    mailbox 2 overflow coalesce(symbol);
+
+    receive fn update_price(symbol: int, price: int) -> int {
+        self.symbol = symbol;
+        self.price = price;
+        price
+    }
+}
+
+fn main() {
+    let tracker = spawn PriceTracker(symbol: 0, price: 0);
+    let r1 = await tracker.update_price(1, 100);
+    println(r1);
+    let r2 = await tracker.update_price(1, 200);
+    println(r2);
+    let r3 = await tracker.update_price(2, 300);
+    println(r3);
+}

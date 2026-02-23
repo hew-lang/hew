@@ -1,0 +1,24 @@
+type Point {
+    x: f64;
+    y: f64;
+}
+
+impl PointMethods for Point {
+    fn translate(self: Point, dx: f64, dy: f64) -> Point {
+        return Point { x: self.x + dx, y: self.y + dy };
+    }
+    fn distance(self: Point) -> f64 {
+        return self.x * self.x + self.y * self.y;
+    }
+    fn scale(self: Point, factor: f64) -> Point {
+        return Point { x: self.x * factor, y: self.y * factor };
+    }
+}
+
+fn main() {
+    let p1 = Point { x: 3.0, y: 4.0 };
+    // Test method chaining through variables
+    let p2 = p1.translate(1.0, 1.0);
+    let p3 = p2.scale(2.0);
+    let d = p3.distance();
+}

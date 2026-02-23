@@ -1,0 +1,19 @@
+fn main() {
+    // bytes::from creates a byte buffer from an array literal
+    let buf = bytes::from([72, 101, 108, 108, 111]);
+    println(buf.len());
+    println(buf.get(0));
+    println(buf.get(1));
+    println(buf.get(4));
+
+    // Single-element bytes::from
+    let one = bytes::from([42]);
+    println(one.len());
+    println(one.get(0));
+
+    // bytes::from with hex literals
+    let pkt = bytes::from([0x20, 2, 0, 0]);
+    println(pkt.len());
+    println(pkt.get(0));
+    println(pkt.get(1));
+}

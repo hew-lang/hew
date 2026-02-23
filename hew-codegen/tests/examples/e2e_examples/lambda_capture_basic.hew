@@ -1,0 +1,15 @@
+// Test: Lambda with Captured Variable
+// Exercises: Lambda capturing an immutable variable from enclosing scope
+fn make_multiplier(factor: int, x: int) -> int {
+    let mul = (y) => y * factor;
+    mul(x)
+}
+
+fn main() {
+    let r1 = make_multiplier(3, 7);
+    println(r1);
+    let r2 = make_multiplier(5, 4);
+    println(r2);
+    let r3 = make_multiplier(2, 10);
+    println(r3);
+}

@@ -1,0 +1,9 @@
+// Test: For-Loop Range Patterns
+// Exercises: for-in range loop with accumulation
+fn main() {
+    var sum: int = 0;
+    for i in 0 .. 10 {
+        sum = sum + i;
+    }
+    println(sum);
+}

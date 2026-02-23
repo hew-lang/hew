@@ -1,0 +1,6 @@
+pub const MAX_SIZE: int = 100;
+pub const OFFSET: int = 5;
+
+pub fn shifted(x: int) -> int {
+    x + OFFSET
+}

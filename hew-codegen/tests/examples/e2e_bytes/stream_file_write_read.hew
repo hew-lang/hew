@@ -1,0 +1,27 @@
+import std::fs;
+import std::stream;
+
+fn main() {
+    let sink = match stream.to_file("/tmp/hew_stream_wr_test.txt") {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    sink.write("aaa");
+    sink.write("bbb");
+    sink.write("ccc");
+    sink.flush();
+    sink.close();
+
+    let raw = match stream.from_file("/tmp/hew_stream_wr_test.txt") {
+        Ok(s) => s,
+        Err(e) => { panic(e); },
+    };
+    let chunked = raw.chunks(3);
+
+    var count = 0;
+    for await chunk in chunked {
+        println(chunk);
+        count = count + 1;
+    }
+    println(count);
+}

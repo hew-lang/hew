@@ -1,0 +1,26 @@
+// Test 5: Writing functions
+// Testing function definitions and calling them
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+
+fn is_positive(x: i32) -> i32 {
+    if x > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+fn main() {
+    let result = add(5, 3);
+    println(result);
+    let prod = multiply(4, 7);
+    println(prod);
+    let pos = is_positive(-10);
+    println(pos);
+}

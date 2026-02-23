@@ -1,0 +1,65 @@
+//! Cryptographic hashing and utilities.
+//!
+//! Provides SHA-2 hash functions (SHA-256, SHA-384, SHA-512),
+//! HMAC-SHA-256 message authentication, secure random byte generation,
+//! and constant-time comparison.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::crypto::crypto;
+//! import std::encoding::hex;
+//!
+//! fn main() {
+//!     let data: bytes = bytes::new();
+//!     data.push(65);  // 'A'
+//!     let hash = crypto.sha256(data);
+//!     println(hex.encode(hash));
+//! }
+//! ```
+
+/// Compute the SHA-256 hash of `data`, returning a 32-byte `bytes` value.
+pub fn sha256(data: bytes) -> bytes {
+    hew_sha256_hew(data)
+}
+
+/// Compute the SHA-384 hash of `data`, returning a 48-byte `bytes` value.
+pub fn sha384(data: bytes) -> bytes {
+    hew_sha384_hew(data)
+}
+
+/// Compute the SHA-512 hash of `data`, returning a 64-byte `bytes` value.
+pub fn sha512(data: bytes) -> bytes {
+    hew_sha512_hew(data)
+}
+
+/// Compute HMAC-SHA-256 with the given `key` and `data`.
+///
+/// Returns a 32-byte `bytes` value.
+pub fn hmac_sha256(key: bytes, data: bytes) -> bytes {
+    hew_hmac_sha256_hew(key, data)
+}
+
+/// Generate `len` cryptographically random bytes.
+pub fn random_bytes(len: i64) -> bytes {
+    hew_random_bytes_hew(len)
+}
+
+/// Compare two `bytes` values in constant time.
+///
+/// Returns `true` if they are equal (same length and same content).
+/// Always runs in time proportional to the length to avoid timing leaks.
+pub fn constant_time_eq(a: bytes, b: bytes) -> bool {
+    hew_constant_time_eq_hew(a, b) == 1
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_sha256_hew(data: bytes) -> bytes;
+    fn hew_sha384_hew(data: bytes) -> bytes;
+    fn hew_sha512_hew(data: bytes) -> bytes;
+    fn hew_hmac_sha256_hew(key: bytes, data: bytes) -> bytes;
+    fn hew_random_bytes_hew(len: i64) -> bytes;
+    fn hew_constant_time_eq_hew(a: bytes, b: bytes) -> i32;
+}

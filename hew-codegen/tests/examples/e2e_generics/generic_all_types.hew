@@ -1,0 +1,44 @@
+type Box<T> {
+    value: T;
+}
+
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+type Point {
+    x: i32;
+    y: i32;
+}
+
+fn box_new<T>(v: T) -> Box<T> {
+    Box { value: v }
+}
+
+fn make_pair<T>(a: T, b: T) -> Pair<T> {
+    Pair { first: a, second: b }
+}
+
+fn main() {
+    // String type arg
+    let bs = box_new<String>("hello");
+    println(bs.value);
+
+    // User-defined struct type arg
+    let p = Point { x: 10, y: 20 };
+    let bp = box_new<Point>(p);
+    println(bp.value.x);
+    println(bp.value.y);
+
+    // Bool type arg
+    let pb = make_pair<bool>(true, false);
+    if pb.first {
+        println("first is true");
+    }
+    if pb.second {
+        println("second is true");
+    } else {
+        println("second is false");
+    }
+}

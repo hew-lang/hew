@@ -1,0 +1,48 @@
+// String operations test
+// Exercises all string builtins
+import std::string;
+
+fn main() {
+    println("=== String Basics ===");
+    let s = "hello world";
+    let len = string_length(s);
+    println(len); // 11
+    let ch = s.char_at(0);
+    println(ch); // 104 (ASCII 'h')
+    let eq = string_equals(s, "hello world");
+    println(eq); // 1 (true)
+    let cat = string_concat("foo", "bar");
+    println(cat); // foobar
+    println("=== Slice ===");
+    let sub = s.slice(0, 5);
+    println(sub); // hello
+    let sub2 = s.slice(6, 11);
+    println(sub2); // world
+    println("=== Find ===");
+    let idx = s.find("world");
+    println(idx); // 6
+    let not_found = s.find("xyz");
+    println(not_found); // -1
+    println("=== Starts/Ends/Contains ===");
+    let sw = s.starts_with("hello");
+    println(sw); // 1
+    let ew = s.ends_with("world");
+    println(ew); // 1
+    let ct = s.contains("lo wo");
+    println(ct); // 1
+    let no_ct = s.contains("xyz");
+    println(no_ct); // 0
+    println("=== Conversions ===");
+    let num_str = string_from_int(42);
+    println(num_str); // 42
+    let num = string_to_int("123");
+    println(num); // 123
+    println("=== Trim/Replace ===");
+    let trimmed = "  hello  ".trim();
+    println(trimmed); // hello
+    let replaced = "aabbcc".replace("bb", "XX");
+    println(replaced); // aaXXcc
+    println("=== Char ===");
+    let c = string.from_char(65);
+    println(c);
+} // A

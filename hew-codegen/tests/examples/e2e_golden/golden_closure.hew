@@ -1,0 +1,36 @@
+// Golden test: lambda capture, function pointer
+// Exercises: ClosureCreateOp, ClosureGetEnvOp, ClosureGetFnOp, FuncPtrOp
+
+// Non-capturing lambda
+fn test_no_capture() -> int {
+    let twice = (x) => x * 2;
+    twice(21)
+}
+
+// Single variable capture
+fn test_single_capture() -> int {
+    let x: int = 10;
+    let add_x = (y) => x + y;
+    add_x(5)
+}
+
+// Multi-variable capture
+fn test_multi_capture() -> int {
+    let a: int = 3;
+    let b: int = 7;
+    let sum_with = (c) => a + b + c;
+    sum_with(10)
+}
+
+// Closure as factory
+fn make_adder(n: int) -> int {
+    let add = (x) => n + x;
+    add(100)
+}
+
+fn main() {
+    println(test_no_capture());
+    println(test_single_capture());
+    println(test_multi_capture());
+    println(make_adder(42));
+}

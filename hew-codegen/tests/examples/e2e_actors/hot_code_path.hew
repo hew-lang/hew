@@ -1,0 +1,38 @@
+// Test: Hot Code Path
+// Exercises: Actor processing many message types via match
+actor Router {
+    let processed: int;
+    receive fn route(msg_type: int) {
+        self.processed = self.processed + 1;
+        if msg_type == 1 {
+            println("Route: login");
+        } else {
+            if msg_type == 2 {
+                println("Route: logout");
+            } else {
+                if msg_type == 3 {
+                    println("Route: query");
+                } else {
+                    if msg_type == 4 {
+                        println("Route: update");
+                    } else {
+                        println("Route: unknown");
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    println("=== Hot Code Path ===");
+    let router = spawn Router(processed: 0);
+    router.route(1);
+    router.route(3);
+    router.route(2);
+    router.route(4);
+    router.route(1);
+    router.route(99);
+    sleep_ms(200);
+    println("Done");
+}

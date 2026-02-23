@@ -1,0 +1,51 @@
+[package]
+name = "hew-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure Rust runtime for the Hew actor language (libhew_rt)"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "programming-language", "runtime", "actors"]
+categories = ["compilers", "concurrency"]
+
+[lib]
+crate-type = ["lib", "staticlib"]
+
+[features]
+default = ["full"]
+# Everything — backwards compatible, same as before features existed
+full = ["encryption", "profiler"]
+# Remaining features (most ecosystem modules extracted to standalone packages)
+encryption = ["dep:snow"]
+
+# Built-in profiler (dashboard, pprof export)
+profiler = ["dep:tiny_http", "dep:flate2"]
+# Emit __hew_export_meta_* companion functions for stdlib code generation
+export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
+
+[dependencies]
+# Core dependencies — always linked (collections, print, string, etc.)
+hew-cabi = { path = "../hew-cabi" }
+libc = "0.2"
+
+# Threading/networking deps — not available on wasm32
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossbeam-deque = "0.8"
+crossbeam-utils = "0.8"
+socket2 = "0.6"
+
+# Optional ecosystem dependencies
+snow = { version = "0.10", optional = true }
+flate2 = { version = "1", optional = true }
+tiny_http = { version = "0.12", optional = true }
+hew-export-macro = { path = "../hew-export-macro", optional = true }
+hew-export-types = { path = "../hew-export-types", optional = true }
+
+[dev-dependencies]
+# For unit tests
+rand = "0.10"
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+// Test: Actor Termination Cleanup
+// Exercises: Actors clean up after processing
+actor TempWorker {
+    let id: int;
+    receive fn process(n: int) {
+        print("TempWorker ");
+        print(self.id);
+        println(f" processing {n}");
+    }
+}
+
+fn main() {
+    println("=== Actor Termination ===");
+
+    // Spawn and use actors, then let them terminate
+    let w1 = spawn TempWorker(id: 1);
+    let w2 = spawn TempWorker(id: 2);
+    let w3 = spawn TempWorker(id: 3);
+    w1.process(10);
+    sleep_ms(100);
+    w2.process(20);
+    sleep_ms(100);
+    w3.process(30);
+    sleep_ms(200);
+
+    // Actors should have processed and be idle
+    println("All actors processed");
+    println("PASS");
+}

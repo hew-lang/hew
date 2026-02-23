@@ -1,0 +1,36 @@
+fn double(x: i32) -> i32 {
+    x * 2
+}
+
+fn triple(x: i32) -> i32 {
+    x * 3
+}
+
+fn dispatch(path: string) -> i32 {
+    match path {
+        "/" => 200,
+        "/about" => 301,
+        _ => 404,
+    }
+}
+
+fn main() {
+    let op = "double";
+    let val = 5;
+    let result = match op {
+        "double" => double(val),
+        "triple" => triple(val),
+        _ => val,
+    };
+    println(result);
+
+    let r2 = match op {
+        "triple" => triple(val),
+        _ => 0,
+    };
+    println(r2);
+
+    println(dispatch("/"));
+    println(dispatch("/about"));
+    println(dispatch("/missing"));
+}

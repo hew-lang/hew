@@ -1,0 +1,85 @@
+// Resilient Worker Pool
+//
+// Demonstrates the fundamental supervision pattern: a pool of worker actors
+// that process tasks independently. If any worker crashes, only that worker
+// is restarted by the supervisor — the rest continue processing uninterrupted.
+//
+// This is the same pattern used by Erlang/OTP GenServer pools, Akka router
+// pools, and every production actor system. In Hew, it's a first-class
+// language construct — not a library.
+//
+// Compare with Erlang:
+//   -module(worker_pool).
+//   init([]) ->
+//     Children = [{worker, {worker, start_link, [I]}, permanent, 5000, worker, [worker]}
+//                 || I <- lists:seq(1,3)],
+//     {ok, {{one_for_one, 5, 60}, Children}}.
+//
+// In Hew, the same thing is 5 lines:
+actor Worker {
+    let id: i32;
+    let processed: i32;
+    receive fn process(item: i32) {
+        self.processed = self.processed + 1;
+        print("worker ");
+        print(self.id);
+        print(" processed item ");
+        print(item);
+        print(" (total: ");
+        print(self.processed);
+        println(")");
+    }
+    receive fn crash_on(bad_item: i32) {
+        // Simulates a bug: worker panics on bad input
+        print("worker ");
+        print(self.id);
+        print(" hit bad item ");
+        println(bad_item);
+        panic("bad input");
+    }
+}
+
+// The supervisor declaration IS the pool definition.
+// No boilerplate, no factory functions, no lifecycle hooks.
+supervisor WorkerPool {
+    strategy: one_for_one;
+    max_restarts: 10;
+    window: 60;
+
+    child w1: Worker(1, 0);
+    child w2: Worker(2, 0);
+    child w3: Worker(3, 0);
+}
+
+fn main() {
+    let pool = spawn WorkerPool;
+    sleep_ms(30);
+
+    // Get worker handles (typed — the compiler knows these are Worker actors)
+    let w1 = supervisor_child(pool, 0);
+    let w2 = supervisor_child(pool, 1);
+    let w3 = supervisor_child(pool, 2);
+    // Round-robin some work
+    w1.process(100);
+    w2.process(200);
+    w3.process(300);
+    sleep_ms(30);
+    w1.process(101);
+    w2.process(201);
+    sleep_ms(30);
+    println("");
+    println("--- worker 2 crashes on bad input ---");
+    w2.crash_on(666);
+    sleep_ms(200);
+
+    // Workers 1 and 3 are unaffected.
+    // Worker 2 has been restarted with fresh state (processed=0).
+    println("--- after restart, all workers operational ---");
+    let w2_new = supervisor_child(pool, 1);
+    w1.process(102);
+    w2_new.process(202);
+    w3.process(301);
+    sleep_ms(50);
+    println("");
+    println("Pool survived the crash. That's supervision.");
+}

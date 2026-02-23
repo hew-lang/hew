@@ -1,0 +1,70 @@
+// Test: pure-Hew Result stdlib helpers
+// Verifies that std::result functions produce the same results
+// as inline match expressions on the built-in Result type.
+import std::result;
+
+fn main() {
+    // ── is_ok / is_err ──────────────────────────────────────────
+    let ok_val: Result<int, int> = Ok(42);
+    let err_val: Result<int, int> = Err(7);
+
+    println(result.is_ok_int(ok_val));
+    println(result.is_ok_int(err_val));
+    println(result.is_err_int(ok_val));
+    println(result.is_err_int(err_val));
+
+    // ── unwrap / unwrap_or ──────────────────────────────────────
+    println(result.unwrap_int(ok_val));
+    println(result.unwrap_or_int(ok_val, -1));
+    println(result.unwrap_or_int(err_val, -1));
+    println(result.unwrap_err_int(err_val));
+
+    // ── map ─────────────────────────────────────────────────────
+    let doubled = result.map_int(ok_val, (x) => x * 2);
+    let mapped_err = result.map_int(err_val, (x) => x * 2);
+
+    match doubled {
+        Ok(v) => println(v),
+        Err(_) => println("FAIL"),
+    }
+    match mapped_err {
+        Ok(_) => println("FAIL"),
+        Err(e) => println(e),
+    }
+
+    // ── map_err ─────────────────────────────────────────────────
+    let mapped_e = result.map_err_int(err_val, (e) => e + 10);
+    match mapped_e {
+        Ok(_) => println("FAIL"),
+        Err(e) => println(e),
+    }
+
+    // ── contains ────────────────────────────────────────────────
+    println(result.contains_int(ok_val, 42));
+    println(result.contains_int(ok_val, 99));
+    println(result.contains_int(err_val, 42));
+
+    // ── Cross-check: inline match vs stdlib ─────────────────────
+    let inline_unwrap_or = match err_val {
+        Ok(v) => v,
+        Err(_) => -1,
+    };
+    let stdlib_unwrap_or = result.unwrap_or_int(err_val, -1);
+    if inline_unwrap_or == stdlib_unwrap_or {
+        println("PASS: unwrap_or matches");
+    } else {
+        println("FAIL: unwrap_or mismatch");
+    }
+
+    let inline_is_ok = match ok_val {
+        Ok(_) => true,
+        Err(_) => false,
+    };
+    if inline_is_ok == result.is_ok_int(ok_val) {
+        println("PASS: is_ok matches");
+    } else {
+        println("FAIL: is_ok mismatch");
+    }
+
+    println("=== Done ===");
+}

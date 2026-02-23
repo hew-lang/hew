@@ -1,0 +1,379 @@
+// MQTT 3.1.1 broker — pure Hew actor implementation
+// Listens on port 1883. Uses bytes type for all TCP I/O.
+//
+// Architecture:
+//   Listener     — accept loop; spawns ClientHandler per connection
+//   ClientHandler — reads MQTT frames, calls router methods
+//   Router       — tracks clients and subscriptions, fans out publishes
+import std::net;
+
+import std::string;
+
+// ── Bytes helpers ─────────────────────────────────────────────────────────────
+fn bytes_slice(data: bytes, start: i32, end: i32) -> _ {
+    let result = bytes::new();
+    for i in start..end {
+        result.push(data.get(i));
+    }
+    result
+}
+
+// Read big-endian uint16 at offset.
+fn read_u16(data: bytes, offset: i32) -> i32 {
+    data.get(offset) * 256 + data.get(offset + 1)
+}
+
+fn push_u16(buf: bytes, val: i32) {
+    buf.push(val / 256);
+    buf.push(val % 256);
+}
+
+fn push_varint(buf: bytes, val: i32) {
+    var remaining = val;
+    loop {
+        let digit = remaining % 128;
+        remaining = remaining / 128;
+        if remaining > 0 {
+            buf.push(digit + 128);
+        } else {
+            buf.push(digit);
+            break;
+        }
+    }
+}
+
+fn read_varint_value(data: bytes, offset: i32) -> i32 {
+    var value = 0;
+    var multiplier = 1;
+    var i = offset;
+    loop {
+        let b = data.get(i);
+        value = value + b % 128 * multiplier;
+        multiplier = multiplier * 128;
+        i = i + 1;
+        if b < 128 {
+            break;
+        }
+    }
+    value
+}
+
+fn read_varint_len(data: bytes, offset: i32) -> i32 {
+    var i = offset;
+    loop {
+        let b = data.get(i);
+        i = i + 1;
+        if b < 128 {
+            break;
+        }
+    }
+    i - offset
+}
+
+// Push length-prefixed MQTT string.
+fn push_mqtt_str(buf: bytes, s: String) {
+    push_u16(buf, string_length(s));
+    for i in 0..string_length(s) {
+        buf.push(s.char_at(i));
+    }
+}
+
+// Read length-prefixed MQTT string at offset.
+fn read_mqtt_str(data: bytes, offset: i32) -> String {
+    let len = read_u16(data, offset);
+    let s = bytes::new();
+    let start = offset + 2;
+    for i in start..start + len {
+        s.push(data.get(i));
+    }
+    s.to_string()
+}
+
+// ── Packet builders ───────────────────────────────────────────────────────────
+fn build_connack(session_present: i32, return_code: i32) -> _ {
+    bytes::from([0x20, 2, session_present, return_code])
+}
+
+fn build_puback(packet_id: i32) -> _ {
+    let buf = bytes::from([0x40, 2]);
+    push_u16(buf, packet_id);
+    buf
+}
+
+fn build_suback(packet_id: i32, return_codes: bytes) -> _ {
+    let body = bytes::new();
+    push_u16(body, packet_id);
+    body.append(return_codes);
+    let buf = bytes::from([0x90]);
+    push_varint(buf, body.len());
+    buf.append(body);
+    buf
+}
+
+fn build_unsuback(packet_id: i32) -> _ {
+    let buf = bytes::from([0xB0, 2]);
+    push_u16(buf, packet_id);
+    buf
+}
+
+fn build_pingresp() -> _ {
+    bytes::from([0xD0, 0])
+}
+
+// Build a PUBLISH packet. payload is raw bytes (not a string).
+fn build_publish(topic: String, payload: bytes, qos: i32, packet_id: i32) -> bytes {
+    let body: bytes = bytes::new();
+    push_mqtt_str(body, topic);
+    if qos > 0 {
+        push_u16(body, packet_id);
+    }
+    body.append(payload);
+    let flags = 0x30 + qos * 2;
+    let buf = bytes::from([flags]);
+    push_varint(buf, body.len());
+    buf.append(body);
+    buf
+}
+
+// ── Actors ────────────────────────────────────────────────────────────────────
+
+// ClientHandler — one per TCP connection.
+actor ClientHandler {
+    let conn: Connection;
+    let client_id: String;
+    let router: ActorRef<Router>;
+    receive fn start() {
+        var buf = bytes::new();
+        var connected = true;
+        loop {
+            let chunk = self.conn.read();
+            if chunk.is_empty() {
+                break;
+            }
+            buf.append(chunk);
+            loop {
+                let buf_len = buf.len();
+                if buf_len < 2 {
+                    break;
+                }
+                let vl = read_varint_len(buf, 1);
+                if 1 + vl > buf_len {
+                    break;
+                }
+                let remaining_len = read_varint_value(buf, 1);
+                let total = 1 + vl + remaining_len;
+                if buf_len < total {
+                    break;
+                }
+                let ptype = buf.get(0) / 16;
+                let pflags = buf.get(0) % 16;
+                let var_off = 1 + vl;
+                match ptype {
+                    1 => {
+                        // CONNECT
+                        let proto_name_len = read_u16(buf, var_off);
+                        let payload_off = var_off + proto_name_len + 6;
+                        self.client_id = read_mqtt_str(buf, payload_off);
+                        println(f"[mqtt] CONNECT client_id={self.client_id}");
+                        self.conn.write(build_connack(0, 0));
+                    },
+                    3 => {
+                        // PUBLISH
+                        let qos = pflags / 2 % 4;
+                        let topic_wire_len = 2 + read_u16(buf, var_off);
+                        let topic = read_mqtt_str(buf, var_off);
+                        var pid_off = var_off + topic_wire_len;
+                        var packet_id = 0;
+                        if qos > 0 {
+                            packet_id = read_u16(buf, pid_off);
+                            pid_off = pid_off + 2;
+                            self.conn.write(build_puback(packet_id));
+                        }
+                        let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
+                        println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
+                        self.router.publish(topic, payload_bytes, qos, packet_id);
+                    },
+                    8 => {
+                        // SUBSCRIBE
+                        let sub_packet_id = read_u16(buf, var_off);
+                        let payload_end = var_off + remaining_len;
+                        var topic_off = var_off + 2;
+                        var return_codes: bytes = bytes::new();
+                        while topic_off < payload_end {
+                            let tw = 2 + read_u16(buf, topic_off);
+                            let stopic = read_mqtt_str(buf, topic_off);
+                            let req_qos = buf.get(topic_off + tw);
+                            let granted = if req_qos > 1 {
+                                1
+                            } else {
+                                req_qos
+                            };
+                            self.router.subscribe(stopic, self.conn, granted);
+                            return_codes.push(granted);
+                            topic_off = topic_off + tw + 1;
+                        }
+                        self.conn.write(build_suback(sub_packet_id, return_codes));
+                        println("[mqtt] SUBSCRIBE processed");
+                    },
+                    10 => {
+                        // UNSUBSCRIBE
+                        let unsub_packet_id = read_u16(buf, var_off);
+                        let payload_end = var_off + remaining_len;
+                        var topic_off = var_off + 2;
+                        while topic_off < payload_end {
+                            let tw = 2 + read_u16(buf, topic_off);
+                            let utopic = read_mqtt_str(buf, topic_off);
+                            self.router.unsubscribe(utopic, self.conn);
+                            topic_off = topic_off + tw;
+                        }
+                        self.conn.write(build_unsuback(unsub_packet_id));
+                        println(f"[mqtt] UNSUBSCRIBE {self.client_id}");
+                    },
+                    12 => {
+                        // PINGREQ
+                        self.conn.write(build_pingresp());
+                    },
+                    14 => {
+                        // DISCONNECT
+                        connected = false;
+                        println(f"[mqtt] DISCONNECT {self.client_id}");
+                    },
+                    _ => {},
+                }
+                if connected {
+                    buf = bytes_slice(buf, total, buf_len);
+                } else {
+                    break;
+                }
+            }
+            if !connected {
+                break;
+            }
+        }
+        self.router.client_disconnect(self.conn);
+        self.conn.close();
+        println(f"[mqtt] connection closed for {self.client_id}");
+    }
+    receive fn deliver(packet: bytes) {
+        self.conn.write(packet);
+    }
+}
+
+// Router — tracks clients and subscriptions; fans out publishes directly.
+//
+// Parallel arrays: client_conns[i] <-> client_actors[i]
+// Parallel arrays: sub_topics[i] <-> sub_conns[i] <-> sub_qos[i]
+actor Router {
+    let client_conns: Vec<Connection>;
+    let client_actors: Vec<ActorRef<ClientHandler>>;
+    let sub_topics: Vec<String>;
+    let sub_conns: Vec<Connection>;
+    let sub_qos: Vec<i32>;
+    receive fn register_client(conn: Connection, handler: ActorRef<ClientHandler>) {
+        self.client_conns.push(conn);
+        self.client_actors.push(handler);
+        println("[router] client registered");
+    }
+    receive fn subscribe(topic: String, conn: Connection, qos: i32) {
+        self.sub_topics.push(topic);
+        self.sub_conns.push(conn);
+        self.sub_qos.push(qos);
+        println(f"[router] subscribed qos={qos}");
+    }
+    receive fn publish(topic: String, payload: bytes, qos: i32, packet_id: i32) {
+        // Fan out to all matching subscribers. Inline build_publish so the
+        // expressions passed to deliver() are Expr::Call (not Identifier),
+        // which avoids the move-at-actor-boundary rule.
+        for i in 0..self.sub_topics.len() {
+            if self.sub_topics.get(i) == topic {
+                let sub_conn = self.sub_conns.get(i);
+                let sub_q = self.sub_qos.get(i);
+                for j in 0..self.client_conns.len() {
+                    if self.client_conns.get(j) == sub_conn {
+                        let target = self.client_actors.get(j);
+                        target.deliver(build_publish(topic, payload, sub_q, packet_id));
+                        break;
+                    }
+                }
+            }
+        }
+        println(f"[router] publish topic={topic}");
+    }
+    receive fn unsubscribe(topic: String, conn: Connection) {
+        var new_topics: Vec<String> = Vec::new();
+        var new_conns: Vec<Connection> = Vec::new();
+        var new_qos: Vec<i32> = Vec::new();
+        for i in 0..self.sub_topics.len() {
+            if self.sub_conns.get(i) == conn {
+                if self.sub_topics.get(i) == topic {
+                    continue;
+                }
+            }
+            new_topics.push(self.sub_topics.get(i));
+            new_conns.push(self.sub_conns.get(i));
+            new_qos.push(self.sub_qos.get(i));
+        }
+        self.sub_topics = new_topics;
+        self.sub_conns = new_conns;
+        self.sub_qos = new_qos;
+        println(f"[router] unsubscribed topic={topic}");
+    }
+    receive fn client_disconnect(conn: Connection) {
+        // Remove from client registry
+        var new_conns: Vec<Connection> = Vec::new();
+        var new_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
+        for i in 0..self.client_conns.len() {
+            if self.client_conns.get(i) != conn {
+                new_conns.push(self.client_conns.get(i));
+                new_actors.push(self.client_actors.get(i));
+            }
+        }
+        self.client_conns = new_conns;
+        self.client_actors = new_actors;
+        // Remove subscriptions for this conn
+        var new_sub_topics: Vec<String> = Vec::new();
+        var new_sub_conns: Vec<Connection> = Vec::new();
+        var new_sub_qos: Vec<i32> = Vec::new();
+        for j in 0..self.sub_conns.len() {
+            if self.sub_conns.get(j) != conn {
+                new_sub_topics.push(self.sub_topics.get(j));
+                new_sub_conns.push(self.sub_conns.get(j));
+                new_sub_qos.push(self.sub_qos.get(j));
+            }
+        }
+        self.sub_topics = new_sub_topics;
+        self.sub_conns = new_sub_conns;
+        self.sub_qos = new_sub_qos;
+        println("[router] client disconnected");
+    }
+}
+
+// Listener — accept loop; spawns a ClientHandler for each new connection.
+actor Listener {
+    let router: ActorRef<Router>;
+    receive fn start() {
+        let lst = net.listen(":1883");
+        println("[listener] MQTT broker ready on :1883");
+        loop {
+            let conn = lst.accept();
+            let pending_id: String = "__pending__";
+            let handler = spawn ClientHandler(conn: conn, name: pending_id, room: self.router);
+            self.router.register_client(conn, handler);
+            handler.start();
+        }
+    }
+}
+
+fn main() {
+    let empty_conns: Vec<Connection> = Vec::new();
+    let empty_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
+    let empty_sub_topics: Vec<String> = Vec::new();
+    let empty_sub_conns: Vec<Connection> = Vec::new();
+    let empty_sub_qos: Vec<i32> = Vec::new();
+    let router = spawn Router(client_conns: empty_conns, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_conns: empty_sub_conns, sub_qos: empty_sub_qos);
+    let listener = spawn Listener(router: router);
+    listener.start();
+    loop {
+        sleep_ms(1000);
+    }
+}

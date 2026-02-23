@@ -1,0 +1,7 @@
+fn main() {
+    let printer = spawn (x: int) => {
+        println(x);
+    };
+    printer.send(42);
+    printer.send(100);
+}

@@ -1,0 +1,14 @@
+pub enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+pub fn color_name(c: Color) -> String {
+    match c {
+        Red => "red",
+        Green => "green",
+        Blue => "blue",
+        _ => "unknown",
+    }
+}

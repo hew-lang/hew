@@ -1,0 +1,17 @@
+[package]
+name = "hew-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Recursive-descent parser for Hew language"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "programming-language", "parser"]
+categories = ["compilers", "parser-implementations"]
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-lexer = { path = "../hew-lexer" }
+serde = { version = "1", features = ["derive"] }

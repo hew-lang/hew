@@ -1,0 +1,61 @@
+// Test: Queue via Two Stacks (LeetCode #232)
+// Exercises: Two Vecs simulating FIFO queue
+fn main() -> int {
+    println("=== Queue via Stacks ===");
+
+    // in_stack for enqueue, out_stack for dequeue
+    let in_stack: Vec<int> = Vec::new();
+    let out_stack: Vec<int> = Vec::new();
+    // Enqueue 1, 2, 3
+    in_stack.push(1);
+    in_stack.push(2);
+    in_stack.push(3);
+    println("Enqueued: 1, 2, 3");
+
+    // Transfer to out_stack for dequeue (reverses order)
+    while in_stack.len() > 0 {
+        out_stack.push(in_stack.pop());
+    }
+    // Dequeue (should be FIFO: 1, 2, 3)
+    let d1 = out_stack.pop();
+    println(f"Dequeue: {d1}");
+
+    // Enqueue 4
+    in_stack.push(4);
+    println("Enqueued: 4");
+
+    // Dequeue remaining from out_stack first
+    let d2 = out_stack.pop();
+    println(f"Dequeue: {d2}");
+    let d3 = out_stack.pop();
+    println(f"Dequeue: {d3}");
+
+    // Now transfer in_stack again
+    while in_stack.len() > 0 {
+        out_stack.push(in_stack.pop());
+    }
+    let d4 = out_stack.pop();
+    println(f"Dequeue: {d4}");
+    if d1 == 1 {
+        if d2 == 2 {
+            if d3 == 3 {
+                if d4 == 4 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

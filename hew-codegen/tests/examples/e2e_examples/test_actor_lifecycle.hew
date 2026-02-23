@@ -1,0 +1,57 @@
+// Test: Actor Lifecycle
+// Exercises: spawn, send (fire-and-forget), ask (await), multiple actors
+actor Counter {
+    let count: int;
+    receive fn increment() {
+        self.count = self.count + 1;
+    }
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+actor Accumulator {
+    let total: int;
+    receive fn add(n: int) {
+        self.total = self.total + n;
+    }
+    receive fn get_total() -> int {
+        self.total
+    }
+}
+
+fn main() {
+    println("=== Test: Actor Lifecycle ===");
+
+    // Test 1: spawn and verify initial state
+    let c = spawn Counter(count: 0);
+    let val1 = await c.get_count();
+    println(val1);
+
+    // Test 2: send increment 3 times, then ask
+    c.increment();
+    c.increment();
+    c.increment();
+    sleep_ms(50);
+    let val2 = await c.get_count();
+    println(val2);
+
+    // Test 3: spawn a different actor type
+    let acc = spawn Accumulator(total: 0);
+    acc.add(10);
+    acc.add(20);
+    acc.add(30);
+    sleep_ms(50);
+    let total = await acc.get_total();
+    println(total);
+
+    // Test 4: multiple actors of same type
+    let c2 = spawn Counter(count: 100);
+    let val3 = await c2.get_count();
+    println(val3);
+    c2.increment();
+    sleep_ms(50);
+    let val4 = await c2.get_count();
+    println(val4);
+    println("done");
+}

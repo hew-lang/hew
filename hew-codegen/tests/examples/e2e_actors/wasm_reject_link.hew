@@ -1,0 +1,12 @@
+// Negative test: link() should be rejected on WASM
+actor Worker {
+    receive fn ping() {
+        println("pong");
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    link(w);
+    w.ping();
+}

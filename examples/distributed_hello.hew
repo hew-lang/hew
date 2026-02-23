@@ -1,0 +1,22 @@
+// FUTURE FEATURE — Distributed actors are not yet implemented.
+// This example demonstrates the intended API for multi-node actor systems.
+// It compiles as a local actor demo today; the distributed Node API is commented out.
+actor Counter {
+    let count: i32;
+    receive fn increment(n: i32) {
+        self.count = self.count + n;
+        println(self.count);
+    }
+}
+
+fn main() {
+    // Distributed API not yet implemented:
+    // Node::start("counter@localhost:9000");
+    // Node::register("counter", counter);
+    // Node::shutdown();
+    let counter = spawn Counter;
+    counter.increment(5);
+    counter.increment(3);
+    sleep_ms(200);
+    println("Counter node demo complete");
+}

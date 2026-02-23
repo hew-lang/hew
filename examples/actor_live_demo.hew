@@ -1,0 +1,26 @@
+actor Counter {
+    let count: i32;
+
+    receive fn increment(amount: i32) -> i32 {
+        self.count = self.count + amount;
+        println("  [actor] count is now:");
+        println(self.count);
+        self.count
+    }
+}
+
+fn main() {
+    println("=== Live Actor Runtime Test ===");
+    println("Spawning Counter actor on its own thread...");
+    let counter = spawn Counter;
+    println("[main] Sending increment(10)");
+    counter.increment(10);
+    println("[main] Sending increment(20)");
+    counter.increment(20);
+    println("[main] Sending increment(12)");
+    counter.increment(12);
+    sleep_ms(50);
+    println("[main] All messages processed. Stopping actor.");
+    stop(counter);
+    println("[main] Done. Expected final count: 42");
+}

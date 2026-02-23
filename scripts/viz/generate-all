@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# hew-viz — Generate all visualizations for a Hew source file.
+#
+# Usage:
+#   hew-viz <file.hew> [output-dir]
+#   hew-viz <file.hew> [output-dir] --function <name>
+#
+# Generates into output-dir (default: ./viz/):
+#   ast-overview.svg      Source-level overview (actors, functions, edges)
+#   ir-overview.svg       MLIR-level overview (ops, message flows)
+#   actor-topology.svg    Actor system topology (spawn + message edges)
+#   cfg-<function>.svg    Control flow graph per public function
+#   system-explorer.html  Interactive HTML explorer (open in browser)
+#
+# Options:
+#   --function, -fn NAME  Also generate a focused CFG for this function
+#   --format, -f FMT      Image format: svg (default), png, pdf
+#   --help, -h            Show this help
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Find the hew binary
+HEW="${HEW:-}"
+if [[ -z "$HEW" ]]; then
+    _debug="$SCRIPT_DIR/../../target/debug/hew"
+    _release="$SCRIPT_DIR/../../target/release/hew"
+    if command -v hew &>/dev/null; then
+        HEW="hew"
+    elif [[ -x "$_debug" && -x "$_release" ]]; then
+        if [[ "$_debug" -nt "$_release" ]]; then HEW="$_debug"; else HEW="$_release"; fi
+    elif [[ -x "$_debug" ]]; then
+        HEW="$_debug"
+    elif [[ -x "$_release" ]]; then
+        HEW="$_release"
+    else
+        echo "Error: 'hew' not found. Set HEW= or add to PATH." >&2
+        exit 1
+    fi
+fi
+
+INPUT=""
+OUTDIR=""
+FUNCTION=""
+FMT="svg"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            sed -n '3,16p' "$0" | sed 's/^# \?//'
+            exit 0
+            ;;
+        -fn|--function)
+            FUNCTION="$2"; shift 2 ;;
+        -f|--format)
+            FMT="$2"; shift 2 ;;
+        -*)
+            echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            if [[ -z "$INPUT" ]]; then
+                INPUT="$1"
+            elif [[ -z "$OUTDIR" ]]; then
+                OUTDIR="$1"
+            else
+                echo "Unexpected argument: $1" >&2; exit 1
+            fi
+            shift ;;
+    esac
+done
+
+if [[ -z "$INPUT" ]]; then
+    echo "Usage: hew-viz <file.hew> [output-dir] [--function name]" >&2
+    exit 1
+fi
+
+if [[ ! -f "$INPUT" ]]; then
+    echo "Error: $INPUT not found" >&2
+    exit 1
+fi
+
+OUTDIR="${OUTDIR:-./viz}"
+BASENAME="$(basename "${INPUT%.hew}")"
+mkdir -p "$OUTDIR"
+
+echo "Generating visualizations for $INPUT → $OUTDIR/"
+
+# 1. AST overview (source-level)
+echo "  → ast-overview.$FMT"
+if ! "$HEW" build --emit-ast "$INPUT" 2>/dev/null \
+    | python3 "$SCRIPT_DIR/ast.py" -f "$FMT" -o "$OUTDIR/ast-overview.$FMT" 2>/dev/null; then
+    echo "    (skipped — ast generation failed)"
+fi
+
+# 2. MLIR overview (dialect-level)
+MLIR=$("$HEW" build --emit-mlir "$INPUT" 2>/dev/null) || {
+    echo "Error: failed to compile $INPUT" >&2
+    exit 1
+}
+
+echo "  → ir-overview.$FMT"
+echo "$MLIR" | python3 "$SCRIPT_DIR/ir.py" -f "$FMT" -o "$OUTDIR/ir-overview.$FMT"
+
+# 3. Actor topology (only if actors exist)
+if echo "$MLIR" | grep -q 'hew.actor_spawn'; then
+    echo "  → actor-topology.$FMT"
+    echo "$MLIR" | python3 "$SCRIPT_DIR/actor-topo.py" -f "$FMT" -o "$OUTDIR/actor-topology.$FMT"
+fi
+
+# 4. Function CFGs
+FUNCTIONS=$(echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" --list 2>/dev/null \
+    | grep -v '(private)' | awk '{print $1}')
+
+for fn in $FUNCTIONS; do
+    echo "  → cfg-${fn}.$FMT"
+    echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" -fn "$fn" -f "$FMT" -o "$OUTDIR/cfg-${fn}.$FMT"
+done
+
+# 4b. Focused function CFG if requested
+if [[ -n "$FUNCTION" ]]; then
+    echo "  → cfg-${FUNCTION}.$FMT (focused)"
+    echo "$MLIR" | python3 "$SCRIPT_DIR/cfg.py" -fn "$FUNCTION" -f "$FMT" -o "$OUTDIR/cfg-${FUNCTION}.$FMT"
+fi
+
+# 5. Interactive HTML explorer
+echo "  → system-explorer.html"
+echo "$MLIR" | python3 "$SCRIPT_DIR/system-explorer.py" -o "$OUTDIR/system-explorer.html" 2>/dev/null
+
+echo "Done. Open $OUTDIR/system-explorer.html in a browser for interactive view."

@@ -1,0 +1,13 @@
+// test_collision.hew
+// We need two modules ending in the same name.
+// Since we can't easily create multi-file modules in this environment without a build system,
+// I'll try to simulate it if I can, or at least reason about it.
+
+// Ideally I would do:
+// import std::string
+// import my::string
+// string.foo() -> ambiguous or wrong
+
+fn main() {
+  // This is a placeholder as I verify the logic.
+}

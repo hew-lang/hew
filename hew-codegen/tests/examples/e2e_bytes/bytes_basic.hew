@@ -1,0 +1,32 @@
+fn main() {
+    // Create a bytes buffer
+    let buf: bytes = bytes::new();
+    // Test is_empty on fresh buffer
+    println(buf.is_empty());
+
+    // Push ASCII codes for "Hello"
+    buf.push(72); // H
+    buf.push(101); // e
+    buf.push(108); // l
+    buf.push(108); // l
+    buf.push(111); // o
+
+    // Length after pushes
+    println(buf.len());
+
+    // Not empty anymore
+    println(buf.is_empty());
+
+    // get individual bytes
+    println(buf.get(0));
+    println(buf.get(4));
+
+    // set overwrites a byte
+    buf.set(1, 97); // 'a'
+    println(buf.get(1));
+
+    // pop removes and returns last byte
+    let last = buf.pop();
+    println(last);
+    println(buf.len());
+}

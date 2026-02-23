@@ -1,0 +1,14 @@
+// Negative test: scope/launch should be rejected on WASM
+fn compute() -> int {
+    42
+}
+
+fn main() {
+    let result = scope |s| {
+        let t = s.launch {
+            compute()
+        };
+        let r = await t;
+        println(r);
+    };
+}

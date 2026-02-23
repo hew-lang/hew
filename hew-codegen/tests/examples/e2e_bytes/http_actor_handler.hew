@@ -1,0 +1,48 @@
+// Test: Actor-per-request HTTP handler pattern
+// Demonstrates spawning one Handler actor per request.
+// Each actor receives a simulated Request and responds through a Sink.
+// The Request is automatically freed (via Drop) when handle() returns.
+import std::stream;
+
+type HttpReq {
+    path: String;
+}
+
+impl Drop for HttpReq {
+    fn drop(self: HttpReq) {
+        println(f"drop {self.path}");
+    }
+}
+
+actor Handler {
+    receive fn handle(req: HttpReq, sink: Sink) {
+        let path = req.path;
+        sink.write(f"handled: {path}");
+        sink.close();
+        // req is automatically freed by Drop here
+    }
+}
+
+fn main() {
+    let (sink1, resp1) = stream.channel(4);
+    let (sink2, resp2) = stream.channel(4);
+    let (sink3, resp3) = stream.channel(4);
+
+    let h1 = spawn Handler;
+    h1.handle(HttpReq { path: "/api/users" }, sink1);
+
+    let h2 = spawn Handler;
+    h2.handle(HttpReq { path: "/api/items" }, sink2);
+
+    let h3 = spawn Handler;
+    h3.handle(HttpReq { path: "/health" }, sink3);
+
+    for await r in resp1 { println(r); }
+    resp1.close();
+
+    for await r in resp2 { println(r); }
+    resp2.close();
+
+    for await r in resp3 { println(r); }
+    resp3.close();
+}

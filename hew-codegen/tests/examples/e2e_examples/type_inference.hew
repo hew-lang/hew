@@ -1,0 +1,40 @@
+// Type inference test: verifies let bindings without type annotations
+// compile and run correctly through the Rust type checker → C++ codegen pipeline.
+fn add(a: int, b: int) -> int {
+    a + b
+}
+
+fn multiply(a: int, b: int) -> int {
+    a * b
+}
+
+fn main() {
+    // Integer literal inference
+    let x = 42;
+    println(x);
+
+    // Expression inference
+    let y = x + 8;
+    println(y);
+
+    // Function return type inference
+    let sum = add(x, y);
+    println(sum);
+
+    // Chained inference
+    let product = multiply(sum, 2);
+    println(product);
+
+    // Boolean inference
+    let flag = true;
+    if flag {
+        println("flag is true");
+    }
+    // String inference
+    let msg = "hello world";
+    println(msg);
+
+    // Nested expression inference
+    let complex = add(multiply(2, 3), multiply(4, 5));
+    println(complex);
+}

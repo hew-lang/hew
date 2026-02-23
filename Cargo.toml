@@ -1,0 +1,83 @@
+[workspace]
+members = [
+  "adze-cli",
+  "hew-cabi",
+  "std/encoding/base64",
+  "std/encoding/csv",
+  "std/encoding/json",
+  "std/encoding/markdown",
+  "std/encoding/msgpack",
+  "std/encoding/protobuf",
+  "std/encoding/toml",
+  "std/encoding/yaml",
+  "std/crypto/crypto",
+  "std/crypto/jwt",
+  "std/crypto/password",
+  "std/net/http",
+  "std/net/ipnet",
+  "std/net/smtp",
+  "std/net/url",
+  "std/net/websocket",
+  "std/time/cron",
+  "std/time/datetime",
+  "std/text/regex",
+  "std/text/semver",
+  "std/encoding/compress",
+  "std/misc/uuid",
+  "std/misc/log",
+  "hew-export-macro",
+  "hew-export-types",
+  "hew-cli",
+  "hew-serialize",
+  "hew-lexer",
+  "hew-lsp",
+  "hew-parser",
+  "hew-runtime",
+  "hew-stdlib-gen",
+  "hew-types",
+  "hew-observe",
+  "hew-wasm",
+  "hew-astgen",
+]
+exclude = ["hew-parser/fuzz"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Stephen Olesen <slepp@slepp.ca>"]
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+# Remaining duplicates (bitflags, fallible-iterator, getrandom, hashbrown,
+# rand_core, tower, winnow) are transitive — latest upstream versions still
+# pull conflicting majors and we cannot resolve them.
+multiple_crate_versions = "allow"
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

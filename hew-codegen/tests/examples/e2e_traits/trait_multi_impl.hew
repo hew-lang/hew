@@ -1,0 +1,31 @@
+trait Area {
+    fn area(self: Self) -> int;
+}
+
+type Circle {
+    radius: int;
+}
+
+type Rect {
+    width: int;
+    height: int;
+}
+
+impl Area for Circle {
+    fn area(self: Circle) -> int {
+        3 * self.radius * self.radius
+    }
+}
+
+impl Area for Rect {
+    fn area(self: Rect) -> int {
+        self.width * self.height
+    }
+}
+
+fn main() {
+    let c = Circle { radius: 5 };
+    let r = Rect { width: 4, height: 6 };
+    println(c.area());
+    println(r.area());
+}

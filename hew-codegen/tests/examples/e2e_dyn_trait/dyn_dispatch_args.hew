@@ -1,0 +1,34 @@
+trait Scalable {
+    fn scale(self: Self, factor: int) -> int;
+}
+
+type Circle {
+    radius: int;
+}
+
+type Square {
+    side: int;
+}
+
+impl Scalable for Circle {
+    fn scale(self: Circle, factor: int) -> int {
+        self.radius * factor
+    }
+}
+
+impl Scalable for Square {
+    fn scale(self: Square, factor: int) -> int {
+        self.side * factor
+    }
+}
+
+fn apply_scale(obj: dyn Scalable, factor: int) -> int {
+    return obj.scale(factor);
+}
+
+fn main() {
+    let c = Circle { radius: 5 };
+    let s = Square { side: 4 };
+    println(apply_scale(c, 3));
+    println(apply_scale(s, 2));
+}

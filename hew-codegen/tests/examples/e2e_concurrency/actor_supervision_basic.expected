@@ -1,0 +1,8 @@
+=== Actor Supervision ===
+Worker 1: task completed
+Guardian: child OK
+Worker 1: task too hard, reporting failure
+Guardian: child failed, restarts = 1
+Worker 1: task completed
+Guardian: child OK
+Done

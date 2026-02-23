@@ -1,0 +1,97 @@
+//! Process execution.
+//!
+//! Run external commands and manage child processes.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::process;
+//!
+//! fn main() {
+//!     // Run a command and capture output
+//!     let output = process.run("ls -la");
+//!     println(output);
+//!
+//!     // Spawn a long-running process
+//!     let child = process.start("sleep 10");
+//!     let status = child.wait();
+//!     println(status);
+//! }
+//! ```
+
+/// A handle to a running child process.
+///
+/// Created by `process.start(cmd)`. Use `wait()` to block until
+/// the process exits, or `kill()` to terminate it.
+type Child {}
+
+/// Methods available on a `Child` process.
+trait ChildMethods {
+    // Block until the child process exits and return its exit code.
+    //
+    // Returns 0 for success, non-zero for failure.
+    fn wait(self: Child) -> i32;
+
+    // Terminate the child process.
+    //
+    // Returns 0 on success, non-zero on error.
+    fn kill(self: Child) -> i32;
+}
+
+impl ChildMethods for Child {
+    fn wait(self: Child) -> i32 { hew_process_wait(self) }
+    fn kill(self: Child) -> i32 { hew_process_kill(self) }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Run a shell command synchronously and return its stdout as a string.
+///
+/// Blocks until the command completes. The command is executed via
+/// the system shell.
+///
+/// # Examples
+///
+/// ```
+/// let output = process.run("echo hello");
+/// assert_eq(string_trim(output), "hello");
+/// ```
+pub fn run(command: String) -> String {
+    hew_process_run(command)
+}
+
+/// Run a command with explicit arguments.
+///
+/// `args` is a space-separated argument string. `arg_count` is the
+/// number of arguments.
+pub fn run_args(command: String, args: String, arg_count: i32) -> String {
+    hew_process_run_args(command, args, arg_count)
+}
+
+/// Start a child process without blocking.
+///
+/// Returns a `Child` handle that can be waited on or killed.
+///
+/// Note: This function is called `start` rather than `spawn` because
+/// `spawn` is a reserved keyword in Hew (used for spawning actors).
+///
+/// # Examples
+///
+/// ```
+/// let child = process.start("sleep 5");
+/// // ... do other work ...
+/// let status = child.wait();
+/// ```
+pub fn start(command: String) -> Child {
+    hew_process_spawn(command)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_process_run(command: String) -> String;
+    fn hew_process_run_args(command: String, args: String, arg_count: i32) -> String;
+    fn hew_process_spawn(command: String) -> Child;
+    fn hew_process_wait(handle: Child) -> i32;
+    fn hew_process_kill(handle: Child) -> i32;
+}

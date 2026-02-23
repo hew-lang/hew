@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "21"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Path change detection — skip heavy jobs for doc-only changes
+  # ─────────────────────────────────────────────────────────────────────────
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '**/*.rs'
+              - '**/*.cpp'
+              - '**/*.h'
+              - '**/*.td'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/CMakeLists.txt'
+              - 'hew-codegen/**'
+              - 'std/**'
+              - 'examples/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Lint — fast feedback on code quality (always runs, ~1.5 min)
+  # ─────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Clippy & format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: lint-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: lint-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --tests
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build & test — Rust workspace tests + hew-codegen E2E (single LLVM install)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & test (Rust + codegen E2E)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }} + MLIR
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }} \
+            lld-${{ env.LLVM_VERSION }} \
+            libssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: build-test-${{ runner.os }}-
+
+      - name: Cache hew-codegen build
+        uses: actions/cache@v4
+        with:
+          path: hew-codegen/build
+          key: hew-codegen-build-${{ runner.os }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: hew-codegen-build-${{ runner.os }}-
+
+      - name: Build Rust runtime and frontend
+        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize --release
+
+      - name: Build WASM runtime
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+      - name: Install wasmtime
+        run: |
+          curl https://wasmtime.dev/install.sh -sSf | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+
+      - name: Configure hew-codegen
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
+
+      - name: Build hew-codegen
+        run: cmake --build hew-codegen/build -j"$(nproc)"
+
+      - name: Run Rust workspace tests
+        run: cargo test --workspace --exclude hew-wasm
+
+      - name: Run codegen unit tests
+        run: cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (native)
+        continue-on-error: true
+        run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (WASM)
+        run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -L wasm

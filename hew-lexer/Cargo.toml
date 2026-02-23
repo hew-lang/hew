@@ -1,0 +1,19 @@
+[package]
+name = "hew-lexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tokenizer for Hew language"
+repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "programming-language", "lexer", "tokenizer"]
+categories = ["compilers", "parser-implementations"]
+
+[lints]
+workspace = true
+
+[dependencies]
+logos = "0.16"
+
+[dev-dependencies]
+serde_json = "1"

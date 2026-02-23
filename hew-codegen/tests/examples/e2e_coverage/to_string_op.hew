@@ -1,0 +1,20 @@
+// Tests ToStringOp via int_to_string and string_from_int free functions.
+// Both names map to the same ToStringOp in the Hew dialect.
+fn main() {
+    let s1 = int_to_string(42);
+    println(s1);
+
+    let s2 = int_to_string(-7);
+    println(s2);
+
+    let s3 = int_to_string(0);
+    println(s3);
+
+    // string_from_int is an alias for the same op
+    let s4 = string_from_int(999);
+    println(s4);
+
+    // Use in string concatenation
+    let msg = "count: " + int_to_string(5);
+    println(msg);
+}

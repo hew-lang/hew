@@ -1,0 +1,21 @@
+[package]
+name = "hew-std-net-smtp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::net::smtp — SMTP email sending"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+lettre = { version = "0.11", default-features = false, features = [
+  "builder",
+  "smtp-transport",
+  "rustls-tls",
+] }
+libc = "0.2"
+
+[lints]
+workspace = true

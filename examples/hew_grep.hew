@@ -1,0 +1,63 @@
+// hew_grep.hew — A grep-like search tool
+// Searches for a pattern in files and prints matching lines.
+//
+// Usage: hew_grep <pattern> <file1> [file2...]
+import std::os;
+
+import std::fs;
+
+import std::string;
+
+fn search_file(filename: String, pattern: String, nl: String) -> i32 {
+    if !fs.exists(filename) {
+        println(f"hew_grep: {filename}: No such file");
+        return 0;
+    }
+    let content = fs.read(filename);
+    let total_len = content.len();
+    var matches = 0;
+    var pos = 0;
+    var linenum = 1;
+    while pos <= total_len {
+        let rest = content.slice(pos, total_len);
+        let nl_offset = rest.find(nl);
+        var line_end = total_len;
+        if nl_offset >= 0 {
+            line_end = pos + nl_offset;
+        }
+        let line = content.slice(pos, line_end);
+        let found = line.find(pattern);
+        if found >= 0 {
+            let num_str = string_from_int(linenum);
+            println(f"{filename}:{num_str}: {line}");
+            matches = matches + 1;
+        }
+        if nl_offset >= 0 {
+            pos = line_end + 1;
+        } else {
+            pos = total_len + 1;
+        }
+        linenum = linenum + 1;
+    }
+    matches
+}
+
+fn main() -> i32 {
+    let argc = os.args_count();
+    if argc < 3 {
+        println("Usage: hew_grep <pattern> <file1> [file2...]");
+        return 1;
+    }
+    let nl = string.from_char(10);
+    let pattern = os.args(1);
+    var total_matches = 0;
+    for fi in 2..argc {
+        let filename = os.args(fi);
+        let count = search_file(filename, pattern, nl);
+        total_matches = total_matches + count;
+    }
+    if total_matches > 0 {
+        return 0;
+    }
+    1
+}

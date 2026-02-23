@@ -1,0 +1,34 @@
+// Test: Select with timeout — caller times out waiting for a slow actor
+actor Slow {
+    let value: int;
+    receive fn get() -> int {
+        sleep_ms(200);
+        self.value
+    }
+}
+
+actor Fast {
+    let value: int;
+    receive fn get() -> int {
+        self.value
+    }
+}
+
+fn main() {
+    // Test 1: select with timeout where the timeout fires
+    let slow = spawn Slow(value: 999);
+    let result = select {
+        x from await slow.get() => x,
+        after 100 => -1,
+    };
+    println(result);
+
+    // Test 2: select with timeout where the reply arrives first
+    let fast = spawn Fast(value: 42);
+    let result2 = select {
+        x from await fast.get() => x,
+        after 2000 => -1,
+    };
+    println(result2);
+    sleep_ms(100);
+}

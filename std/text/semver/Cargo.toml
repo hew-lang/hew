@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-text-semver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::text::semver — semantic versioning"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+semver = "1"
+libc = "0.2"
+
+[lints]
+workspace = true

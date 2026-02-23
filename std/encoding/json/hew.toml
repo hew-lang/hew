@@ -1,0 +1,6 @@
+[package]
+name = "std::encoding::json"
+version = "0.1.0"
+description = "Hew std::encoding::json package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

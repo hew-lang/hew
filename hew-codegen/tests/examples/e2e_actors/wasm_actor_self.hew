@@ -1,0 +1,24 @@
+// Test: Self field mutation across receives
+// Exercises: self.field mutation, multiple fields, print from handler
+actor Accumulator {
+    let total: int;
+    let count: int;
+
+    receive fn add(x: int) {
+        self.total = self.total + x;
+        self.count = self.count + 1;
+    }
+
+    receive fn report() {
+        println(self.total);
+        println(self.count);
+    }
+}
+
+fn main() {
+    let a = spawn Accumulator(total: 0, count: 0);
+    a.add(10);
+    a.add(20);
+    a.add(30);
+    a.report();
+}

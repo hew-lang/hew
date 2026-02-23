@@ -1,0 +1,30 @@
+// Test: Actor Lifecycle
+// Exercises: Actor init, message processing, state evolution
+actor Accumulator {
+    let total: int;
+    receive fn add(n: int) {
+        self.total = self.total + n;
+        print("Added ");
+        print(n);
+        println(f", total = {self.total}");
+    }
+    receive fn multiply(n: int) {
+        self.total = self.total * n;
+        print("Multiplied by ");
+        print(n);
+        println(f", total = {self.total}");
+    }
+}
+
+fn main() {
+    println("=== Actor Lifecycle ===");
+    let acc = spawn Accumulator(total: 0);
+    acc.add(5);
+    acc.add(3);
+    acc.multiply(2);
+    acc.add(4);
+    acc.multiply(3);
+    sleep_ms(200);
+    // Expected: 0 + 5 = 5, + 3 = 8, * 2 = 16, + 4 = 20, * 3 = 60
+    println("Done");
+}

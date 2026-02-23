@@ -1,0 +1,10 @@
+=== Test: Match Patterns ===
+PASS: test_match_int_literal
+PASS: test_match_wildcard
+PASS: test_match_block_body
+PASS: test_match_enum
+PASS: test_match_enum_payload
+PASS: test_match_or_pattern
+PASS: test_match_nested
+
+Passed: 7/7

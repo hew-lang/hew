@@ -1,0 +1,21 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    sink.write("one");
+    sink.write("two");
+    sink.write("three");
+    sink.close();
+
+    var count = 0;
+    for await item in input {
+        println(item);
+        count = count + 1;
+        if count == 2 {
+            break;
+        }
+    }
+    println(count);
+    input.close();
+}

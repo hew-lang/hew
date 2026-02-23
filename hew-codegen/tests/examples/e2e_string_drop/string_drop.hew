@@ -1,0 +1,20 @@
+// Test: String Drop (RAII cleanup)
+// Exercises: Heap-allocated strings are freed at scope exit via hew_string_drop
+fn main() {
+    println("=== String Drop ===");
+
+    // string_concat returns a heap-allocated string — should be auto-freed
+    let cat = string_concat("hello", " world");
+    println(cat);
+
+    // String interpolation also heap-allocates
+    let x = 42;
+    let interp = f"value is {x}";
+    println(interp);
+
+    // Multiple allocations in same scope
+    let a = string_concat("foo", "bar");
+    let b = string_concat(a, "baz");
+    println(b);
+    println("PASS");
+}

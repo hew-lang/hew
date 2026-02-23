@@ -1,0 +1,45 @@
+// Test: Closure Capture Safety
+// Exercises: Closures capturing variables with correct lifetime
+fn make_adder(x: int) -> int {
+    let add = (y) => x + y;
+    add(10)
+}
+
+fn make_multiplier(x: int) -> int {
+    let mul = (y) => x * y;
+    mul(5)
+}
+
+fn main() -> int {
+    println("=== Closure Capture Safety ===");
+    let r1 = make_adder(3);
+    println(f"adder(3)(10) = {r1}");
+    let r2 = make_adder(7);
+    println(f"adder(7)(10) = {r2}");
+    let r3 = make_multiplier(4);
+    println(f"multiplier(4)(5) = {r3}");
+    let r4 = make_multiplier(6);
+    println(f"multiplier(6)(5) = {r4}");
+    if r1 == 13 {
+        if r2 == 17 {
+            if r3 == 20 {
+                if r4 == 30 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

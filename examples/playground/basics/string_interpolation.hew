@@ -1,0 +1,15 @@
+//! @name String Interpolation
+//! @description Format strings with embedded expressions
+
+fn greet(name: String, age: int) -> String {
+    f"Hello, {name}! You are {age} years old."
+}
+
+fn main() {
+    let msg = greet("Alice", 30);
+    println(msg);
+
+    let x = 42;
+    println(f"The answer is {x}");
+    println(f"Double: {x + x}");
+}

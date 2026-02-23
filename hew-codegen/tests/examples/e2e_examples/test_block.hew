@@ -1,0 +1,8 @@
+// Test simple block without scope
+fn main() {
+    println("Testing basic syntax");
+    {
+        println("Inside block");
+    };
+    println("Block completed");
+}

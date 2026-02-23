@@ -1,0 +1,76 @@
+#!/usr/bin/make -f
+# Debian rules — binary-only packaging from GitHub releases.
+# Usage: dpkg-buildpackage -b -us -uc
+#   or:  debian/rules binary HEW_VERSION=0.1.0
+
+DEB_HOST_ARCH     ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+HEW_VERSION       ?= $(shell cat debian/hew-version)
+GITHUB_ORG        := hew-lang
+GITHUB_REPO       := hew
+
+# Map Debian arch to Hew release arch
+ifeq ($(DEB_HOST_ARCH),amd64)
+  HEW_ARCH := x86_64
+else ifeq ($(DEB_HOST_ARCH),arm64)
+  HEW_ARCH := aarch64
+else
+  $(error Unsupported architecture: $(DEB_HOST_ARCH))
+endif
+
+ARCHIVE := hew-v$(HEW_VERSION)-linux-$(HEW_ARCH).tar.gz
+URL     := https://github.com/$(GITHUB_ORG)/$(GITHUB_REPO)/releases/download/v$(HEW_VERSION)/$(ARCHIVE)
+DESTDIR := debian/hew
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	@if [ ! -f "$(ARCHIVE)" ]; then \
+		echo "Downloading $(ARCHIVE)..."; \
+		curl -fsSL -o "$(ARCHIVE)" "$(URL)"; \
+	else \
+		echo "Using local $(ARCHIVE)"; \
+	fi
+	tar -xzf "$(ARCHIVE)"
+
+override_dh_auto_install:
+	install -d $(DESTDIR)/usr/bin
+	install -d $(DESTDIR)/usr/lib/hew
+	install -d $(DESTDIR)/usr/share/hew/std
+	install -d $(DESTDIR)/usr/share/bash-completion/completions
+	install -d $(DESTDIR)/usr/share/zsh/site-functions
+	install -d $(DESTDIR)/usr/share/fish/vendor_completions.d
+	install -d $(DESTDIR)/usr/share/doc/hew
+
+	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew          $(DESTDIR)/usr/bin/hew
+	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/adze         $(DESTDIR)/usr/bin/adze
+	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-codegen  $(DESTDIR)/usr/bin/hew-codegen
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew_runtime.a \
+	              $(DESTDIR)/usr/lib/hew/libhew_runtime.a
+	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.bash \
+	   $(DESTDIR)/usr/share/bash-completion/completions/hew 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.zsh \
+	   $(DESTDIR)/usr/share/zsh/site-functions/_hew 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/hew.fish \
+	   $(DESTDIR)/usr/share/fish/vendor_completions.d/hew.fish 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.bash \
+	   $(DESTDIR)/usr/share/bash-completion/completions/adze 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.zsh \
+	   $(DESTDIR)/usr/share/zsh/site-functions/_adze 2>/dev/null || true
+	cp hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/completions/adze.fish \
+	   $(DESTDIR)/usr/share/fish/vendor_completions.d/adze.fish 2>/dev/null || true
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-MIT \
+	              $(DESTDIR)/usr/share/doc/hew/LICENSE-MIT
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/LICENSE-APACHE \
+	              $(DESTDIR)/usr/share/doc/hew/LICENSE-APACHE
+	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/NOTICE \
+	              $(DESTDIR)/usr/share/doc/hew/NOTICE
+
+# Pre-built binaries — skip automatic shared-library dependency detection.
+# hew-codegen links against LLVM/MLIR shared libs; the Rust binaries are
+# fully static. We list runtime deps manually in debian/control.
+override_dh_shlibdeps:
+
+override_dh_auto_clean:
+	rm -rf hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/ $(ARCHIVE) || true

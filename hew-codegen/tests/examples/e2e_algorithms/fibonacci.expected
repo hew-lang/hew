@@ -1,0 +1,7 @@
+=== Fibonacci ===
+fib(0) = 0
+fib(1) = 1
+fib(5) = 5
+fib(10) = 55
+fib(15) = 610
+PASS

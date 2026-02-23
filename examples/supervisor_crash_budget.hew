@@ -1,0 +1,78 @@
+// Crash Cascade Prevention
+//
+// The supervisor's (max_restarts, window) setting prevents infinite restart
+// loops. When a child crashes more than max_restarts times within the window,
+// the supervisor stops — it won't keep restarting a fundamentally broken actor.
+//
+// This is the "let it crash" philosophy with a safety valve: crash and restart
+// is fine for transient failures, but persistent failures need human attention.
+actor Fragile {
+    let id: i32;
+    let lives: i32;
+    receive fn work() {
+        print("fragile ");
+        print(self.id);
+        print(" working (lives left: ");
+        print(self.lives);
+        println(")");
+    }
+    receive fn break_it() {
+        print("fragile ");
+        print(self.id);
+        println(" crashing!");
+        panic("actor failure");
+    }
+}
+
+// Only allow 3 restarts in 60 seconds — after that, stop escalating
+supervisor FragilePool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child f1: Fragile(1, 3);
+    child f2: Fragile(2, 3);
+}
+
+fn main() {
+    let pool = spawn FragilePool;
+    sleep_ms(30);
+    let f1 = supervisor_child(pool, 0);
+    let f2 = supervisor_child(pool, 1);
+    // Both workers operational
+    f1.work();
+    sleep_ms(10);
+    f2.work();
+    sleep_ms(30);
+
+    // Crash f1 — first restart
+    println("");
+    println("--- crash 1 ---");
+    f1.break_it();
+    sleep_ms(200);
+    let f1 = supervisor_child(pool, 0);
+    f1.work();
+    sleep_ms(20);
+
+    // Crash again — second restart
+    println("");
+    println("--- crash 2 ---");
+    f1.break_it();
+    sleep_ms(200);
+    let f1 = supervisor_child(pool, 0);
+    f1.work();
+    sleep_ms(20);
+
+    // Crash again — third restart (at the budget limit)
+    println("");
+    println("--- crash 3 (budget exhausted) ---");
+    f1.break_it();
+    sleep_ms(200);
+
+    // f2 should still work — supervision budget is per-supervisor but
+    // f2 never crashed
+    f2.work();
+    sleep_ms(50);
+    println("");
+    println("Restart budget prevented infinite crash loop.");
+}

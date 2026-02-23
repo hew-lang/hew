@@ -1,0 +1,6 @@
+[package]
+name = "std::misc::log"
+version = "0.1.0"
+description = "Hew std::misc::log package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

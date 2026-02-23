@@ -1,0 +1,50 @@
+// Test: Scope Cleanup
+// Exercises: Variables allocated and freed at scope exit
+fn allocate_vec(size: int) -> int {
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < size {
+        v.push(i);
+        i = i + 1;
+    }
+    let len = v.len();
+    // v goes out of scope here
+    len
+}
+
+fn main() -> int {
+    println("=== Scope Cleanup ===");
+
+    // Allocate in nested scopes
+    let r1 = allocate_vec(100);
+    print("Scope 1: allocated ");
+    print(r1);
+    println(" elements");
+    let r2 = allocate_vec(500);
+    print("Scope 2: allocated ");
+    print(r2);
+    println(" elements");
+    let r3 = allocate_vec(1000);
+    print("Scope 3: allocated ");
+    print(r3);
+    println(" elements");
+
+    // If we get here without crash, cleanup worked
+    if r1 == 100 {
+        if r2 == 500 {
+            if r3 == 1000 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

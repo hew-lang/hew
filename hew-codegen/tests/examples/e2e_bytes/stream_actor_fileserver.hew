@@ -1,0 +1,30 @@
+import std::stream;
+import std::fs;
+
+actor FileServer {
+    receive fn serve(path: string, sink: Sink) {
+        let raw = match stream.from_file(path) {
+            Ok(s) => s,
+            Err(e) => { panic(e); },
+        };
+        let lines = raw.lines();
+        for await line in lines {
+            sink.write(line);
+        }
+        sink.close();
+    }
+}
+
+fn main() {
+    hew_file_write("/tmp/hew_serve_test.txt", "alpha\nbeta\ngamma\n");
+
+    let (sink, input) = stream.channel(8);
+
+    let server = spawn FileServer;
+    server.serve("/tmp/hew_serve_test.txt", sink);
+
+    for await line in input {
+        println(line);
+    }
+    input.close();
+}

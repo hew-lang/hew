@@ -1,0 +1,101 @@
+// Test: Enum State Machine
+// Exercises: Enum variants, match, state transitions
+enum State {
+    Idle;
+    Running;
+    Paused;
+    Done;
+}
+
+fn state_name(s: State) -> int {
+    match s {
+        Idle => {
+            println("Idle");
+            0
+        },
+        Running => {
+            println("Running");
+            1
+        },
+        Paused => {
+            println("Paused");
+            2
+        },
+        Done => {
+            println("Done");
+            3
+        },
+    }
+}
+
+fn transition(s: State, event: int) -> State {
+    // Events: 0=start, 1=pause, 2=resume, 3=finish
+    match s {
+        Idle => {
+            if event == 0 {
+                Running
+            } else {
+                Idle
+            }
+        },
+        Running => {
+            if event == 1 {
+                Paused
+            } else {
+                if event == 3 {
+                    Done
+                } else {
+                    Running
+                }
+            }
+        },
+        Paused => {
+            if event == 2 {
+                Running
+            } else {
+                if event == 3 {
+                    Done
+                } else {
+                    Paused
+                }
+            }
+        },
+        Done => {
+            Done
+        },
+    }
+}
+
+fn main() -> int {
+    println("=== Enum State Machine ===");
+    var state = Idle;
+    print("Initial: ");
+    state_name(state);
+
+    // Start
+    state = transition(state, 0);
+    print("After start: ");
+    state_name(state);
+
+    // Pause
+    state = transition(state, 1);
+    print("After pause: ");
+    state_name(state);
+
+    // Resume
+    state = transition(state, 2);
+    print("After resume: ");
+    state_name(state);
+
+    // Finish
+    state = transition(state, 3);
+    print("After finish: ");
+    let final_state = state_name(state);
+    if final_state == 3 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

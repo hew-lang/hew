@@ -1,0 +1,26 @@
+// E2E test: value struct field assignment
+type Point {
+    x: int;
+    y: int;
+}
+
+fn main() {
+    // Basic field assignment on mutable variable
+    var p = Point { x: 1, y: 2 };
+    println(p.x);
+    println(p.y);
+    p.x = 10;
+    p.y = 20;
+    println(p.x);
+    println(p.y);
+
+    // Compound assignment (+=)
+    p.x += 5;
+    println(p.x);
+
+    // Multiple assignments
+    p.x = 100;
+    p.y = 200;
+    let sum = p.x + p.y;
+    println(sum);
+}

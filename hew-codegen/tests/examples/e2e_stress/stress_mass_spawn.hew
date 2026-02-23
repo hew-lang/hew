@@ -1,0 +1,33 @@
+// Stress test: Mass actor spawn
+// Spawns 500 worker actors, each sends done() to a collector.
+// Exercises: high actor count, fan-in message pattern, scheduler load.
+actor Collector {
+    let count: int;
+    receive fn done() {
+        self.count = self.count + 1;
+    }
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+actor Worker {
+    let id: int;
+    let collector: Collector;
+    receive fn work() {
+        self.collector.done();
+    }
+}
+
+fn main() {
+    let collector = spawn Collector(count: 0);
+    var i = 0;
+    while i < 500 {
+        let w = spawn Worker(id: i, collector: collector);
+        w.work();
+        i = i + 1;
+    }
+    sleep_ms(500);
+    let count = await collector.get_count();
+    println(count);
+}

@@ -1,0 +1,64 @@
+//! UUID generation and validation.
+//!
+//! Generate universally unique identifiers (v4 random, v7 timestamp-based)
+//! and validate UUID strings.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::misc::uuid;
+//!
+//! fn main() {
+//!     let id = uuid.v4();
+//!     println(id);
+//!
+//!     if uuid.is_valid(id) {
+//!         println("valid UUID");
+//!     }
+//! }
+//! ```
+
+/// Generate a random (v4) UUID string.
+///
+/// # Examples
+///
+/// ```
+/// let id = uuid.v4();
+/// // e.g. "550e8400-e29b-41d4-a716-446655440000"
+/// ```
+pub fn v4() -> String {
+    hew_uuid_v4()
+}
+
+/// Generate a timestamp-based (v7) UUID string.
+///
+/// UUIDs generated close together are sortable by creation time.
+///
+/// # Examples
+///
+/// ```
+/// let id = uuid.v7();
+/// ```
+pub fn v7() -> String {
+    hew_uuid_v7()
+}
+
+/// Test whether a string is a valid UUID.
+///
+/// # Examples
+///
+/// ```
+/// uuid.is_valid("550e8400-e29b-41d4-a716-446655440000")  // true
+/// uuid.is_valid("not-a-uuid")                             // false
+/// ```
+pub fn is_valid(s: String) -> bool {
+    hew_uuid_parse(s)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_uuid_v4() -> String;
+    fn hew_uuid_v7() -> String;
+    fn hew_uuid_parse(s: String) -> bool;
+}

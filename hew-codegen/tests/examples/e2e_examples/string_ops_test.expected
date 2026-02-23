@@ -1,0 +1,24 @@
+=== String Basics ===
+11
+104
+true
+foobar
+=== Slice ===
+hello
+world
+=== Find ===
+6
+-1
+=== Starts/Ends/Contains ===
+true
+true
+true
+false
+=== Conversions ===
+42
+123
+=== Trim/Replace ===
+hello
+aaXXcc
+=== Char ===
+A

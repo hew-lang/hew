@@ -1,0 +1,17 @@
+enum Option {
+    Some(int);
+    None;
+}
+
+fn main() {
+    let a = Some(42);
+    let b = None;
+    match a {
+        Some(x) => println(x),
+        None => println(0),
+    }
+    match b {
+        Some(x) => println(x),
+        None => println(-1),
+    }
+}

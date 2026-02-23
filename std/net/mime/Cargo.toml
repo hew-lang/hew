@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-net-mime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::net::mime — MIME type detection"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+mime_guess = "2"
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+// Test 7: Enums and pattern matching
+// Testing enum definitions and match expressions
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+enum Status {
+    Active;
+    Inactive;
+    Pending;
+}
+
+fn color_to_int(c: Color) -> i32 {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+    }
+}
+
+fn status_to_int(s: Status) -> i32 {
+    match s {
+        Active => 100,
+        Inactive => 200,
+        Pending => 300,
+    }
+}
+
+fn main() {
+    let c1 = Red;
+    let c2 = Green;
+    let c3 = Blue;
+    println(color_to_int(c1));
+    println(color_to_int(c2));
+    println(color_to_int(c3));
+    let s1 = Active;
+    println(status_to_int(s1));
+}

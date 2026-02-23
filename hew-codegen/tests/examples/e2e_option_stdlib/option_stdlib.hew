@@ -1,0 +1,65 @@
+// Test: pure-Hew Option stdlib helpers
+// Verifies that std::option functions produce the same results
+// as inline match expressions on the built-in Option type.
+import std::option;
+
+fn main() {
+    // ── is_some / is_none ───────────────────────────────────────
+    let some_val = Some(42);
+    let none_val: Option<int> = None;
+
+    // Pure-Hew helpers
+    println(option.is_some_int(some_val));
+    println(option.is_some_int(none_val));
+    println(option.is_none_int(some_val));
+    println(option.is_none_int(none_val));
+
+    // ── unwrap / unwrap_or ──────────────────────────────────────
+    println(option.unwrap_int(some_val));
+    println(option.unwrap_or_int(some_val, -1));
+    println(option.unwrap_or_int(none_val, -1));
+
+    // ── map ─────────────────────────────────────────────────────
+    let doubled = option.map_int(some_val, (x) => x * 2);
+    let mapped_none = option.map_int(none_val, (x) => x * 2);
+
+    // Verify mapped Some
+    match doubled {
+        Some(v) => println(v),
+        None => println("FAIL"),
+    }
+    // Verify mapped None stays None
+    match mapped_none {
+        Some(v) => println("FAIL"),
+        None => println("none"),
+    }
+
+    // ── contains ────────────────────────────────────────────────
+    println(option.contains_int(some_val, 42));
+    println(option.contains_int(some_val, 99));
+    println(option.contains_int(none_val, 42));
+
+    // ── Cross-check: inline match vs stdlib ─────────────────────
+    let inline_unwrap_or = match none_val {
+        Some(v) => v,
+        None => -1,
+    };
+    let stdlib_unwrap_or = option.unwrap_or_int(none_val, -1);
+    if inline_unwrap_or == stdlib_unwrap_or {
+        println("PASS: unwrap_or matches");
+    } else {
+        println("FAIL: unwrap_or mismatch");
+    }
+
+    let inline_is_some = match some_val {
+        Some(_) => true,
+        None => false,
+    };
+    if inline_is_some == option.is_some_int(some_val) {
+        println("PASS: is_some matches");
+    } else {
+        println("FAIL: is_some mismatch");
+    }
+
+    println("=== Done ===");
+}

@@ -1,0 +1,13 @@
+import std::os;
+
+fn main() {
+    let argc = hew_args_count();
+    // Compiled binary has at least 1 arg (the binary name)
+    if argc >= 1 {
+        println("args ok");
+    }
+    let pid = hew_pid();
+    if pid > 0 {
+        println("pid ok");
+    }
+}

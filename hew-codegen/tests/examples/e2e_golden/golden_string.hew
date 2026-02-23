@@ -1,0 +1,42 @@
+// Golden test: string operations, interpolation, concat
+// Exercises: StringConcatOp, StringMethodOp, GlobalStringOp, ToStringOp
+
+fn main() {
+    // String concat
+    let cat = "foo" + "bar";
+    println(cat);
+
+    // String length
+    let s = "hello world";
+    println(s.len());
+
+    // char_at
+    println(s.char_at(0));
+
+    // slice
+    println(s.slice(0, 5));
+    println(s.slice(6, 11));
+
+    // find
+    println(s.find("world"));
+    println(s.find("xyz"));
+
+    // starts_with / ends_with / contains
+    println(s.starts_with("hello"));
+    println(s.ends_with("world"));
+    println(s.contains("lo wo"));
+
+    // trim
+    println("  hi  ".trim());
+
+    // replace
+    println("aabbcc".replace("bb", "XX"));
+
+    // String interpolation
+    let x = 42;
+    println(f"x is {x}");
+
+    // int_to_string
+    let num_str = int_to_string(123);
+    println(num_str);
+}

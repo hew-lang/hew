@@ -1,0 +1,42 @@
+import std::net::http;
+
+// Expert HTTP server — synchronous match-dispatch pattern.
+//
+// This intentionally uses synchronous request handling in the main loop
+// rather than spawning an actor per request or routing through a shared
+// actor. Request owns a native handle that is Copy at the ABI level, so
+// sending it across an actor boundary causes a double-free: Drop fires
+// in both the sender scope and the receiver scope. The synchronous
+// pattern avoids this entirely and benchmarks at ~37k req/s, matching
+// an equivalent pure-Rust server.
+//
+// When the runtime gains move-only send semantics (transferring
+// ownership without copying the handle), the actor-router pattern
+// below will become safe:
+//
+//   actor Router {
+//       receive fn route(req: Request) {
+//           match req.path() {
+//               "/" => { req.respond_text(200, "Hello from Hew!"); },
+//               _ => { req.respond_text(404, "Not Found"); },
+//           };
+//       }
+//   }
+//   let router = spawn Router;
+//   loop { router.route(server.accept()); }
+
+fn main() {
+    let addr = "0.0.0.0:18080";
+    let server = http.listen(addr);
+    println("Listening on " + addr);
+
+    loop {
+        let req = server.accept();
+        let path = req.path();
+        match path {
+            "/" => { req.respond_text(200, "Hello from Hew!"); },
+            "/health" => { req.respond_text(200, "OK"); },
+            _ => { req.respond_text(404, "Not Found"); },
+        };
+    }
+}

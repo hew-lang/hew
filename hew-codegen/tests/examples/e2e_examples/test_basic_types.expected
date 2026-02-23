@@ -1,0 +1,10 @@
+=== Test: Basic Types ===
+PASS: integers
+PASS: f64 compiles
+PASS: strings
+PASS: bool
+PASS: var mutation + compound assignment
+PASS: let immutable
+PASS: type inference
+
+Passed: 7/7

@@ -1,0 +1,42 @@
+// Test: Scheduler Throughput
+// Exercises: N actors x M messages
+actor Sink {
+    let id: int;
+    receive fn absorb(n: int) {
+
+        // Minimal processing
+    }
+}
+
+fn main() {
+    println("=== Scheduler Throughput ===");
+
+    // 10 actors x 100 messages each
+    let s1 = spawn Sink(id: 1);
+    let s2 = spawn Sink(id: 2);
+    let s3 = spawn Sink(id: 3);
+    let s4 = spawn Sink(id: 4);
+    let s5 = spawn Sink(id: 5);
+    let s6 = spawn Sink(id: 6);
+    let s7 = spawn Sink(id: 7);
+    let s8 = spawn Sink(id: 8);
+    let s9 = spawn Sink(id: 9);
+    let s10 = spawn Sink(id: 10);
+    var i = 0;
+    while i < 100 {
+        s1.absorb(i);
+        s2.absorb(i);
+        s3.absorb(i);
+        s4.absorb(i);
+        s5.absorb(i);
+        s6.absorb(i);
+        s7.absorb(i);
+        s8.absorb(i);
+        s9.absorb(i);
+        s10.absorb(i);
+        i = i + 1;
+    }
+    sleep_ms(500);
+    println("Sent 1000 messages across 10 actors");
+    println("PASS");
+}

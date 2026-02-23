@@ -1,0 +1,10 @@
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() {
+    let a = identity<int>(42);
+    println(a);
+    let s = identity<String>("hello");
+    println(s);
+}

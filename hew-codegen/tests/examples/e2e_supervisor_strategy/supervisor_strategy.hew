@@ -1,0 +1,33 @@
+// E2E test: Supervisor with different strategies and restart policies
+//
+// Verifies:
+// 1. one_for_all strategy compiles and runs
+// 2. Transient and temporary restart policies compile
+// 3. max_restarts and window params are properly passed
+actor Logger {
+    let tag: i32;
+    init() {
+        print("init:");
+        println(self.tag);
+    }
+    receive fn log() {
+        print("log:");
+        println(self.tag);
+    }
+}
+
+supervisor AllForOne {
+    strategy: one_for_all;
+    max_restarts: 10;
+    window: 30;
+
+    child a: Logger(100);
+    child b: Logger(200);
+    child c: Logger(300);
+}
+
+fn main() {
+    println("begin");
+    let sup = spawn AllForOne;
+    println("end");
+}

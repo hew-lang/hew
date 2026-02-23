@@ -1,0 +1,5 @@
+=== Scope Cleanup ===
+Scope 1: allocated 100 elements
+Scope 2: allocated 500 elements
+Scope 3: allocated 1000 elements
+PASS

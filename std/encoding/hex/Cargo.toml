@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-encoding-hex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::encoding::hex — hexadecimal encoding/decoding"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+hex = "0.4"
+libc = "0.2"
+
+[lints]
+workspace = true

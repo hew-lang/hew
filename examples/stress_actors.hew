@@ -1,0 +1,230 @@
+// stress_actors.hew - Complex actor system with supervisor tree
+// This program tests the compiler's ability to handle multiple actor types,
+// complex supervision hierarchies, and message passing patterns.
+
+// Main coordinator actor that manages the entire system
+actor SystemCoordinator {
+    let active_workers: i32;
+    let total_tasks: i32;
+    receive fn start_system(num_workers: i32) -> i32 {
+        self.active_workers = num_workers;
+        self.total_tasks = 0;
+        // Spawn worker pool
+        // for i in 0..num_workers {
+        //     spawn WorkerActor;
+        // }
+        0
+    }
+    receive fn task_completed(worker_id: i32) -> i32 {
+        self.total_tasks = self.total_tasks + 1;
+        0
+    }
+    receive fn worker_failed(worker_id: i32) -> i32 {
+        self.active_workers = self.active_workers - 1;
+        // Restart worker
+        // spawn WorkerActor;
+        self.active_workers = self.active_workers + 1;
+        0
+    }
+}
+
+// Worker actor that processes individual tasks
+actor WorkerActor {
+    let worker_id: i32;
+    let tasks_processed: i32;
+    receive fn process_task(task_data: i32) -> i32 {
+
+        // Simulate work by doing some computation
+        let result = compute_fibonacci(task_data);
+        self.tasks_processed = self.tasks_processed + 1;
+        result
+    }
+    receive fn get_stats() -> i32 {
+        self.tasks_processed
+    }
+}
+
+// Database actor that manages persistent state
+actor DatabaseActor {
+    let connection_count: i32;
+    let query_count: i32;
+    receive fn execute_query(query: i32) -> i32 {
+        self.query_count = self.query_count + 1;
+        // Simulate database operation
+        query * 2
+    }
+    receive fn get_connection() -> i32 {
+        self.connection_count = self.connection_count + 1;
+        self.connection_count
+    }
+    receive fn release_connection() -> i32 {
+        if self.connection_count > 0 {
+            self.connection_count = self.connection_count - 1;
+        }
+        self.connection_count
+    }
+}
+
+// Cache actor for fast data access
+actor CacheActor {
+    let cache_hits: i32;
+    let cache_misses: i32;
+    receive fn get_cached_value(key: i32) -> i32 {
+
+        // Simulate cache lookup
+        if key % 2 == 0 {
+            self.cache_hits = self.cache_hits + 1;
+            key * 10 // Cache hit
+        } else {
+            self.cache_misses = self.cache_misses + 1;
+            -1 // Cache miss
+        }
+    }
+    receive fn put_cached_value(key: i32, value: i32) -> i32 {
+        // Simulate cache storage
+        key + value
+    }
+    receive fn clear_cache() -> i32 {
+        self.cache_hits = 0;
+        self.cache_misses = 0;
+        0
+    }
+}
+
+// Logger actor for system-wide logging
+actor LoggerActor {
+    let log_count: i32;
+    let error_count: i32;
+    receive fn log_message(level: i32, message: i32) -> i32 {
+        self.log_count = self.log_count + 1;
+        if level > 3 { // Error level
+            self.error_count = self.error_count + 1;
+        }
+        0
+    }
+    receive fn get_log_stats() -> i32 {
+        self.log_count * 1000 + self.error_count
+    }
+}
+
+// Monitor actor that watches other actors
+actor MonitorActor {
+    let monitored_actors: i32;
+    let restart_count: i32;
+    receive fn monitor_actor(actor_id: i32) -> i32 {
+        self.monitored_actors = self.monitored_actors + 1;
+        0
+    }
+    receive fn actor_died(actor_id: i32, reason: i32) -> i32 {
+        self.restart_count = self.restart_count + 1;
+        // Handle actor failure
+        if reason == 1 { // Critical error
+            // Shutdown system
+            -1
+        } else {
+            // Restart actor
+            0
+        }
+    }
+    receive fn get_monitor_stats() -> i32 {
+        self.monitored_actors * 100 + self.restart_count
+    }
+}
+
+// Main supervisor that orchestrates the entire system
+supervisor MainSupervisor {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 10;
+}
+
+// Helper function used by WorkerActor
+fn compute_fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        compute_fibonacci(n - 1) + compute_fibonacci(n - 2)
+    }
+}
+
+// Helper functions for the actor system
+fn initialize_system() -> i32 {
+    // This would normally spawn the supervisor and child actors
+    // let coordinator = spawn SystemCoordinator;
+    // let workers = spawn_worker_pool(5);
+    // let database = spawn DatabaseActor;
+    // let cache = spawn CacheActor;
+    // let logger = spawn LoggerActor;
+    // let monitor = spawn MonitorActor;
+    0
+}
+
+fn stress_test_actors() -> i32 {
+    // Simulate heavy actor interaction
+    var total_operations = 0;
+    // Simulate 1000 operations across all actors
+    for i in 0..1000 {
+        let operation_type = i % 6;
+        if operation_type == 0 {
+            total_operations = total_operations + process_worker_task(i);
+        } else if operation_type == 1 {
+            total_operations = total_operations + execute_database_query(i);
+        } else if operation_type == 2 {
+            total_operations = total_operations + access_cache(i);
+        } else if operation_type == 3 {
+            total_operations = total_operations + log_system_event(i);
+        } else if operation_type == 4 {
+            total_operations = total_operations + monitor_system_health(i);
+        } else {
+            total_operations = total_operations + coordinate_system(i);
+        }
+    }
+    total_operations
+}
+
+fn process_worker_task(task_id: i32) -> i32 {
+    // Simulate sending task to worker
+    task_id * 2
+}
+
+fn execute_database_query(query_id: i32) -> i32 {
+    // Simulate database operation
+    query_id + 100
+}
+
+fn access_cache(key: i32) -> i32 {
+    // Simulate cache access
+    if key % 3 == 0 {
+        key * 5
+    } else {
+        key + 10
+    }
+}
+
+fn log_system_event(event_id: i32) -> i32 {
+    // Simulate logging
+    event_id / 2
+}
+
+fn monitor_system_health(check_id: i32) -> i32 {
+    // Simulate health check
+    if check_id % 10 == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+fn coordinate_system(coord_id: i32) -> i32 {
+    // Simulate coordination task
+    coord_id * 3 + 1
+}
+
+fn main() -> i32 {
+    // Initialize the actor system
+    let init_result = initialize_system();
+    // Run stress test
+    let stress_result = stress_test_actors();
+    // Return combined result
+    init_result + stress_result
+}

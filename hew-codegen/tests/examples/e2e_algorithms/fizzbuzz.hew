@@ -1,0 +1,29 @@
+// Test: FizzBuzz
+// Exercises: Modulo, String output, control flow
+fn fizzbuzz(n: int) {
+    var i = 1;
+    while i <= n {
+        let by3 = i % 3;
+        let by5 = i % 5;
+        if by3 == 0 {
+            if by5 == 0 {
+                println("FizzBuzz");
+            } else {
+                println("Fizz");
+            }
+        } else {
+            if by5 == 0 {
+                println("Buzz");
+            } else {
+                println(i);
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn main() {
+    println("=== FizzBuzz ===");
+    fizzbuzz(20);
+    println("PASS");
+}

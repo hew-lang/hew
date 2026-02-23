@@ -1,0 +1,17 @@
+// Test: per-field json("key") overrides take precedence over struct-level naming.
+// struct-level is camelCase; two fields have explicit overrides.
+#[json(camelCase)]
+wire type Audit {
+    internal_ref: String @1 json("ref");
+    created_by: i32 @2 json("owner");
+    version: i32 @3;
+}
+
+extern "C" {
+    fn Audit_to_json(internal_ref: String, created_by: i32, version: i32) -> String;
+}
+
+fn main() {
+    let json = Audit_to_json("item-123", 42, 7);
+    println(json);
+}

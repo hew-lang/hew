@@ -1,0 +1,18 @@
+// Documentation: https://www.sublimetext.com/docs/color_schemes.html
+// Hew language comment preferences for Sublime Text
+{
+    "shell_variables": [
+        {
+            "name": "TM_COMMENT_START",
+            "value": "// "
+        },
+        {
+            "name": "TM_COMMENT_START_2",
+            "value": "/* "
+        },
+        {
+            "name": "TM_COMMENT_END_2",
+            "value": " */"
+        }
+    ]
+}

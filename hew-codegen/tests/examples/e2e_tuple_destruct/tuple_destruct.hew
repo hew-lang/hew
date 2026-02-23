@@ -1,0 +1,25 @@
+// E2E test: tuple destructuring in let bindings
+fn make_pair(a: int, b: int) -> (int, int) {
+    (a, b)
+}
+
+fn make_triple(x: int) -> (int, int, int) {
+    (x, x * 2, x * 3)
+}
+
+fn main() {
+    // Basic tuple destructuring
+    let (a, b) = make_pair(10, 20);
+    println(a);
+    println(b);
+
+    // Triple destructuring
+    let (x, y, z) = make_triple(5);
+    println(x);
+    println(y);
+    println(z);
+
+    // Destructuring with wildcard
+    let (first, _) = make_pair(42, 99);
+    println(first);
+}

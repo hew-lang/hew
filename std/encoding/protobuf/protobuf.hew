@@ -1,0 +1,102 @@
+//! Protocol Buffers message construction.
+//!
+//! Build and inspect Protocol Buffers messages using a field-number
+//! based API. Supports string and varint (integer) fields.
+//!
+//! **Note:** Encoding/decoding to wire format and byte-typed field
+//! operations (`set_bytes`, `get_bytes`) require byte array support
+//! not yet available in Hew.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::protobuf;
+//!
+//! fn main() {
+//!     let msg = protobuf.new();
+//!     msg.set_varint(1, 42);
+//!     msg.set_string(2, "hello");
+//!     let val = msg.get_string(2);
+//!     println(val);
+//!     msg.free();
+//! }
+//! ```
+
+/// An opaque Protocol Buffers message.
+///
+/// Created by `protobuf.new()`. Fields are accessed by their field
+/// number. Must be freed with `free()` when no longer needed.
+type Message {}
+
+/// Methods available on a protobuf `Message`.
+trait MessageMethods {
+    // Set a string field by field number.
+    fn set_string(self: Message, field_number: i32, value: String);
+
+    // Get a string field by field number.
+    //
+    // Returns an empty string if the field is not set.
+    fn get_string(self: Message, field_number: i32) -> String;
+
+    // Set a varint (integer) field by field number.
+    fn set_varint(self: Message, field_number: i32, value: i64);
+
+    // Get a varint (integer) field by field number.
+    //
+    // Returns `fallback` if the field is not set.
+    fn get_varint(self: Message, field_number: i32, fallback: i64) -> i64;
+
+    // Test whether a field is present in the message.
+    fn has_field(self: Message, field_number: i32) -> bool;
+
+    // Release the message resources.
+    fn free(self: Message);
+}
+
+impl MessageMethods for Message {
+    fn set_string(self: Message, field_number: i32, value: String) {
+        hew_proto_msg_set_string(self, field_number, value);
+    }
+    fn get_string(self: Message, field_number: i32) -> String {
+        hew_proto_msg_get_string(self, field_number)
+    }
+    fn set_varint(self: Message, field_number: i32, value: i64) {
+        hew_proto_msg_set_varint(self, field_number, value);
+    }
+    fn get_varint(self: Message, field_number: i32, fallback: i64) -> i64 {
+        hew_proto_msg_get_varint(self, field_number, fallback)
+    }
+    fn has_field(self: Message, field_number: i32) -> bool {
+        hew_proto_msg_has_field(self, field_number)
+    }
+    fn free(self: Message) { hew_proto_msg_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a new empty Protocol Buffers message.
+///
+/// # Examples
+///
+/// ```
+/// let msg = protobuf.new();
+/// msg.set_varint(1, 100);
+/// msg.free();
+/// ```
+pub fn new() -> Message {
+    hew_proto_msg_new()
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_proto_msg_new() -> Message;
+    fn hew_proto_msg_set_string(msg: Message, field_number: i32, s: String);
+    fn hew_proto_msg_get_string(msg: Message, field_number: i32) -> String;
+    fn hew_proto_msg_set_varint(msg: Message, field_number: i32, value: i64);
+    fn hew_proto_msg_get_varint(msg: Message, field_number: i32, fallback: i64) -> i64;
+    fn hew_proto_msg_has_field(msg: Message, field_number: i32) -> i32;
+    fn hew_proto_msg_free(msg: Message);
+    // Note: encode, decode, set_bytes, and get_bytes require byte array
+    // support not yet available in Hew.
+}

@@ -1,0 +1,19 @@
+fn compute_a() -> int {
+    return 10;
+}
+
+fn compute_b() -> int {
+    return 20;
+}
+
+fn main() {
+    scope |s| {
+        let task1 = s.launch {
+            compute_a()
+        };
+        let task2 = s.launch {
+            compute_b()
+        };
+        println(30);
+    }
+}

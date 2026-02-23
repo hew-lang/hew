@@ -1,0 +1,61 @@
+// Test: Nested supervisor hierarchy
+// Parent supervisor contains a child supervisor which manages workers.
+// Workers crash, child supervisor restarts them.
+actor Worker {
+    let id: i32;
+    let value: i32;
+    receive fn tick() {
+        self.value = self.value + 1;
+        print("worker ");
+        print(self.id);
+        print(" value=");
+        println(self.value);
+    }
+    receive fn crash() {
+        print("worker ");
+        print(self.id);
+        println(" crashing!");
+        panic("");
+    }
+}
+
+supervisor Inner {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker(1, 0);
+    child w2: Worker(2, 0);
+}
+
+supervisor Root {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child pool: Inner;
+}
+
+fn main() {
+    println("=== Nested Supervisor ===");
+    let root = spawn Root;
+    sleep_ms(100);
+
+    // Access inner supervisor's children
+    let inner = supervisor_child(root, 0);
+    sleep_ms(50);
+    let w1 = supervisor_child(inner, 0);
+    let w2 = supervisor_child(inner, 1);
+    w1.tick();
+    sleep_ms(30);
+    w2.tick();
+    sleep_ms(50);
+
+    // Crash w1 — inner supervisor restarts it
+    w1.crash();
+    sleep_ms(500);
+    let w1b = supervisor_child(inner, 0);
+    w1b.tick();
+    sleep_ms(50);
+    println("nested supervision works");
+}

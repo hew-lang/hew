@@ -1,0 +1,54 @@
+// demo_four_pillars.hew — Overview of Hew's four pillars
+// Demonstrates functions, actors, wire types, and supervision.
+actor Counter {
+    let count: i32;
+    receive fn increment(amount: i32) {
+        self.count = self.count + amount;
+    }
+    receive fn get_count() {
+        println(self.count);
+    }
+}
+
+wire type StatusUpdate {
+    actor_id: u32 @1;
+    count: i32 @2;
+    message: String @3;
+}
+
+supervisor CounterPool {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+}
+
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn main() {
+    println("=== Hew Language Demo ===");
+    println("");
+    println("1. Functions:");
+    let fib10 = fibonacci(10);
+    println(f"   fibonacci(10) = {fib10}");
+    println("2. Actors with isolated state (compile-time enforced)");
+    println("   Counter actor with receive handlers");
+    println("   increment(amount) mutates state safely");
+    println("3. Wire types for network contracts:");
+    println("   StatusUpdate { actor_id @1, count @2, message @3 }");
+    println("   Compile-time schema evolution checking");
+    println("4. Supervision trees:");
+    println("   CounterPool supervises Counter actors");
+    println("   strategy: one_for_one, max_restarts: 5");
+    println("5. String operations:");
+    let greeting = "Hello, " + "Hew!";
+    println(f"   {greeting}");
+    let len = greeting.len();
+    println(f"   length = {len}");
+    println("=== All four pillars in one language ===");
+}

@@ -1,0 +1,14 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    sink.write("alpha");
+    sink.write("beta");
+    sink.close();
+
+    for await item in input {
+        println(item);
+    }
+    input.close();
+}

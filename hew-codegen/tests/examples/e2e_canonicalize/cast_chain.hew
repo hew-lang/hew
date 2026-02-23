@@ -1,0 +1,9 @@
+// Test: basic numeric types used in cast-related contexts
+fn main() {
+    let a: i32 = 42;
+    let b: i64 = 42;
+    let c: f64 = 42.0;
+    println(a);
+    println(b);
+    println(c);
+}

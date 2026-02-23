@@ -1,0 +1,28 @@
+// File reader via message-passing actors
+// Reads an input file and prints contents to console via actor messages
+actor Printer {
+    let lines_printed: i32;
+    receive fn print_line(text: i32) {
+        self.lines_printed = self.lines_printed + 1;
+    }
+    receive fn print_content() {
+        println("Printer: printing complete");
+    }
+}
+
+actor FileReader {
+    let done: i32;
+    receive fn read(path: i32) {
+        println("FileReader: reading file...");
+        self.done = 1;
+    }
+}
+
+fn main() {
+    println("=== File Reader via Actors ===");
+    let content = read_file("examples/actor_fib.hew");
+    println("--- File Contents ---");
+    println(content);
+    println("--- End Contents ---");
+    println("=== Done ===");
+}

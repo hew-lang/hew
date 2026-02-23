@@ -1,0 +1,6 @@
+{
+    "name": "Hew",
+    "scope": "source.hew",
+    "file_extensions": ["hew"],
+    "hidden": false
+}

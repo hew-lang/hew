@@ -1,0 +1,36 @@
+// Benchmark harness demo
+// Shows how to use std::bench to measure function performance.
+
+import std::bench;
+
+fn fibonacci(n: i32) -> i64 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn sum_to(n: i64) -> i64 {
+    var total: i64 = 0;
+    for i in 0..n {
+        total = total + i;
+    }
+    total
+}
+
+fn main() {
+    let s = bench.suite("Demo Benchmarks");
+
+    s.add("fibonacci(20)", 100, () => {
+        fibonacci(20);
+    });
+
+    s.add("sum_to(1000)", 1000, () => {
+        sum_to(1000);
+    });
+
+    s.report();
+    println("---");
+    s.report_json();
+}

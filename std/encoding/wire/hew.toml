@@ -1,0 +1,6 @@
+[package]
+name = "std::encoding::wire"
+version = "0.1.0"
+description = "Hew std::encoding::wire package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

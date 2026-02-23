@@ -1,0 +1,150 @@
+//! MIME type detection.
+//!
+//! Determine the MIME content type of a file by its path or extension.
+//! Useful for HTTP servers that need to set `Content-Type` headers.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::mime;
+//!
+//! fn main() {
+//!     let ct = mime.from_path("index.html");
+//!     println(ct);  // "text/html"
+//!
+//!     if mime.is_text(ct) {
+//!         println("text file");
+//!     }
+//! }
+//! ```
+
+/// Detect the MIME type from a file path.
+///
+/// Uses the file extension to determine the type. Returns
+/// `"application/octet-stream"` for unknown extensions.
+///
+/// # Examples
+///
+/// ```
+/// mime.from_path("photo.jpg")   // "image/jpeg"
+/// mime.from_path("style.css")   // "text/css"
+/// mime.from_path("data.json")   // "application/json"
+/// ```
+pub fn from_path(path: String) -> String {
+    let ext = extract_extension(path);
+    from_ext(ext)
+}
+
+/// Detect the MIME type from a file extension (without the dot).
+///
+/// # Examples
+///
+/// ```
+/// mime.from_ext("html")  // "text/html"
+/// mime.from_ext("png")   // "image/png"
+/// ```
+pub fn from_ext(ext: String) -> String {
+    // Text
+    if ext == "html" { "text/html" }
+    else if ext == "htm" { "text/html" }
+    else if ext == "css" { "text/css" }
+    else if ext == "js" { "text/javascript" }
+    else if ext == "mjs" { "text/javascript" }
+    else if ext == "json" { "application/json" }
+    else if ext == "xml" { "application/xml" }
+    else if ext == "svg" { "image/svg+xml" }
+    else if ext == "txt" { "text/plain" }
+    else if ext == "csv" { "text/csv" }
+    else if ext == "md" { "text/markdown" }
+    // Images
+    else if ext == "png" { "image/png" }
+    else if ext == "jpg" { "image/jpeg" }
+    else if ext == "jpeg" { "image/jpeg" }
+    else if ext == "gif" { "image/gif" }
+    else if ext == "webp" { "image/webp" }
+    else if ext == "ico" { "image/x-icon" }
+    else if ext == "bmp" { "image/bmp" }
+    else if ext == "tiff" { "image/tiff" }
+    else if ext == "avif" { "image/avif" }
+    // Audio
+    else if ext == "mp3" { "audio/mpeg" }
+    else if ext == "ogg" { "audio/ogg" }
+    else if ext == "wav" { "audio/wav" }
+    else if ext == "flac" { "audio/flac" }
+    else if ext == "aac" { "audio/aac" }
+    else if ext == "m4a" { "audio/mp4" }
+    // Video
+    else if ext == "mp4" { "video/mp4" }
+    else if ext == "webm" { "video/webm" }
+    else if ext == "avi" { "video/x-msvideo" }
+    else if ext == "mov" { "video/quicktime" }
+    else if ext == "mkv" { "video/x-matroska" }
+    // Archives / binary
+    else if ext == "pdf" { "application/pdf" }
+    else if ext == "zip" { "application/zip" }
+    else if ext == "gz" { "application/gzip" }
+    else if ext == "tar" { "application/x-tar" }
+    else if ext == "bz2" { "application/x-bzip2" }
+    else if ext == "xz" { "application/x-xz" }
+    else if ext == "7z" { "application/x-7z-compressed" }
+    else if ext == "rar" { "application/vnd.rar" }
+    // Fonts
+    else if ext == "woff" { "font/woff" }
+    else if ext == "woff2" { "font/woff2" }
+    else if ext == "ttf" { "font/ttf" }
+    else if ext == "otf" { "font/otf" }
+    else if ext == "eot" { "application/vnd.ms-fontobject" }
+    // Code / config
+    else if ext == "wasm" { "application/wasm" }
+    else if ext == "map" { "application/json" }
+    else if ext == "yaml" { "text/yaml" }
+    else if ext == "yml" { "text/yaml" }
+    else if ext == "toml" { "application/toml" }
+    else if ext == "ini" { "text/plain" }
+    else if ext == "sh" { "application/x-sh" }
+    else if ext == "py" { "text/x-python" }
+    else if ext == "rs" { "text/x-rust" }
+    else if ext == "ts" { "text/typescript" }
+    else if ext == "tsx" { "text/tsx" }
+    else if ext == "jsx" { "text/jsx" }
+    else { "application/octet-stream" }
+}
+
+/// Test whether a MIME type is a text type (e.g. `text/*`).
+pub fn is_text(mime_type: String) -> bool {
+    mime_type.starts_with("text/")
+}
+
+/// Test whether a MIME type is an image type (e.g. `image/*`).
+pub fn is_image(mime_type: String) -> bool {
+    mime_type.starts_with("image/")
+}
+
+/// Test whether a MIME type is an audio type (e.g. `audio/*`).
+pub fn is_audio(mime_type: String) -> bool {
+    mime_type.starts_with("audio/")
+}
+
+/// Test whether a MIME type is a video type (e.g. `video/*`).
+pub fn is_video(mime_type: String) -> bool {
+    mime_type.starts_with("video/")
+}
+
+fn extract_extension(path: String) -> String {
+    let dot_pos = path.find(".");
+    if dot_pos < 0 {
+        return "";
+    }
+    // Find the LAST dot by scanning forward
+    var last_dot = dot_pos;
+    var search_from = dot_pos + 1;
+    while search_from < path.len() {
+        let next = path.slice(search_from, path.len()).find(".");
+        if next < 0 {
+            return path.slice(last_dot + 1, path.len());
+        }
+        last_dot = search_from + next;
+        search_from = last_dot + 1;
+    }
+    path.slice(last_dot + 1, path.len())
+}

@@ -1,0 +1,14 @@
+fn main() {
+    // Single-pattern replace: every digit run → "N"
+    let digits = re"[0-9]+";
+    let r1 = digits.replace("abc123def456", "N");
+    println(r1);
+
+    // Multi-word replace: "foo" → "bar"
+    let word = re"foo";
+    let r2 = word.replace("foo fighters foo", "bar");
+    println(r2);
+
+    digits.free();
+    word.free();
+}

@@ -1,0 +1,18 @@
+// Test: YAML serialization of all scalar wire field types.
+// YAML preserves insertion (declaration) order; keys are field names as-is.
+wire type YScalars {
+    flag: bool @1;
+    count: i32 @2;
+    big: i64 @3;
+    ratio: f64 @4;
+    label: String @5;
+}
+
+extern "C" {
+    fn YScalars_to_yaml(flag: i32, count: i32, big: i64, ratio: f64, label: String) -> String;
+}
+
+fn main() {
+    let yaml = YScalars_to_yaml(1, -7, 1000000, 1.5, "hello");
+    print(yaml);
+}

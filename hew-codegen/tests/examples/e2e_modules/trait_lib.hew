@@ -1,0 +1,19 @@
+pub trait Describable {
+    fn describe(self: Self) -> String;
+}
+
+pub type Circle {
+    name: String;
+}
+
+pub type Square {
+    name: String;
+}
+
+pub fn new_circle(n: String) -> Circle {
+    Circle { name: n }
+}
+
+pub fn new_square(n: String) -> Square {
+    Square { name: n }
+}

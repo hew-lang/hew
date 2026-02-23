@@ -1,0 +1,22 @@
+type Widget {
+    id: int;
+}
+
+trait Describable {
+    fn describe(self: Widget) -> int;
+    fn default_value(self: Widget) -> int {
+        42
+    }
+}
+
+impl Describable for Widget {
+    fn describe(self: Widget) -> int {
+        self.id
+    }
+}
+
+fn main() {
+    let w = Widget { id: 10 };
+    println(w.describe());
+    println(w.default_value());
+}

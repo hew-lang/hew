@@ -1,0 +1,18 @@
+type Entry<K, V> {
+    key: K;
+    value: V;
+}
+
+fn make_entry<K, V>(k: K, v: V) -> Entry<K, V> {
+    Entry { key: k, value: v }
+}
+
+fn main() {
+    let e1 = make_entry<int, float>(42, 3.14);
+    println(e1.key);
+    println(e1.value);
+
+    let e2 = make_entry<float, int>(2.5, 100);
+    println(e2.key);
+    println(e2.value);
+}

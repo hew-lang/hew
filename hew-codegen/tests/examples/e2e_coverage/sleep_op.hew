@@ -1,0 +1,7 @@
+// Tests SleepOp — zero E2E coverage.
+// sleep_ms(ms) pauses execution for the given milliseconds.
+fn main() {
+    println("before");
+    sleep_ms(1);
+    println("after");
+}

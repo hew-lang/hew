@@ -1,0 +1,15 @@
+fn main() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    println(v.len());
+    let _ = v.remove(20);
+    println(v.len());
+    print(v.get(0));
+    print(" ");
+    println(v.get(1));
+    v.clear();
+    println(v.len());
+    println("done");
+}

@@ -1,0 +1,7 @@
+import mylib;
+
+fn main() {
+    // This should fail -- secret() is not pub
+    let x = mylib.secret();
+    println(x);
+}

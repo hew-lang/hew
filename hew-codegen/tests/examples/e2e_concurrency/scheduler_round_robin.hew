@@ -1,0 +1,34 @@
+// Test: Scheduler Round Robin (Fairness)
+// Exercises: Multiple actors all getting CPU time
+actor Worker {
+    let id: int;
+    receive fn work(n: int) {
+
+        // Do some computation
+        var sum = 0;
+        var i = 0;
+        while i < n {
+            sum = sum + i;
+            i = i + 1;
+        }
+        // Print result atomically (single println to avoid interleaving)
+        println(sum);
+    }
+}
+
+fn main() {
+    println("=== Scheduler Fairness ===");
+    let w1 = spawn Worker(id: 1);
+    let w2 = spawn Worker(id: 2);
+    let w3 = spawn Worker(id: 3);
+    let w4 = spawn Worker(id: 4);
+    // Give each worker equal work
+    w1.work(100);
+    w2.work(100);
+    w3.work(100);
+    w4.work(100);
+    sleep_ms(300);
+
+    // Verify all completed (4950 = sum of 0..99)
+    println("All workers completed");
+}

@@ -1,0 +1,16 @@
+// Test: wire type JSON serialization
+// Exercises: _to_json with struct-level camelCase naming convention
+#[json(camelCase)]
+wire type Event {
+    event_id: i32 @1;
+    user_age: i32 @2;
+}
+
+extern "C" {
+    fn Event_to_json(event_id: i32, user_age: i32) -> String;
+}
+
+fn main() {
+    let json = Event_to_json(42, 30);
+    println(json);
+}

@@ -1,0 +1,21 @@
+=== Hew Comprehensive Test Suite ===
+
+Test Arithmetic ... PASS
+Test Variables ... PASS
+Test If/Else ... PASS
+Test While Loops ... PASS
+Test Match ... PASS
+Test Functions ... PASS
+Test Strings ... PASS
+Test Nested Calls ... PASS
+Test Comparisons ... PASS
+Test Boolean Logic ... PASS
+Test Returns ... PASS
+Test Complex Expression ... PASS
+
+=== Test Summary ===
+Passed: 
+12
+Total: 
+12
+All tests passed!

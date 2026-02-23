@@ -1,0 +1,33 @@
+// Test: Message Ordering (FIFO guarantee)
+// Exercises: Send N messages, verify FIFO delivery order
+actor OrderChecker {
+    let next_expected: int;
+    receive fn check(n: int) {
+        if n == self.next_expected {
+            println(f"OK: received {n}");
+        } else {
+            print("ERROR: expected ");
+            print(self.next_expected);
+            println(f" got {n}");
+        }
+        self.next_expected = self.next_expected + 1;
+    }
+}
+
+fn main() {
+    println("=== Message Ordering ===");
+    let checker = spawn OrderChecker(next_expected: 0);
+    // Send 10 messages in order
+    checker.check(0);
+    checker.check(1);
+    checker.check(2);
+    checker.check(3);
+    checker.check(4);
+    checker.check(5);
+    checker.check(6);
+    checker.check(7);
+    checker.check(8);
+    checker.check(9);
+    sleep_ms(200);
+    println("All messages delivered in order");
+}

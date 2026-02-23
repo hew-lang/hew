@@ -1,0 +1,18 @@
+// Negative test: supervisor keyword should be rejected on WASM
+actor Worker {
+    let id: i32;
+    receive fn ping() {
+        println(self.id);
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+    child w1: Worker(1);
+}
+
+fn main() {
+    let _sup = spawn Pool;
+}

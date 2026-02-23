@@ -1,0 +1,8 @@
+=== Test: HashMap Complete ===
+PASS: hashmap_len
+PASS: hashmap_contains_key
+PASS: hashmap_overwrite
+PASS: hashmap_insert_many
+PASS: hashmap_remove
+
+Passed: 5/5

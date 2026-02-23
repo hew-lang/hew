@@ -1,0 +1,18 @@
+actor Counter {
+    let count: int;
+
+    receive fn increment(amount: int) {
+        self.count = self.count + amount;
+    }
+
+    receive fn print_count() {
+        println(self.count);
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.increment(5);
+    c.increment(3);
+    c.print_count();
+}

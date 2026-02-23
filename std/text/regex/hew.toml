@@ -1,0 +1,6 @@
+[package]
+name = "std::text::regex"
+version = "0.1.0"
+description = "Hew std::text::regex package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

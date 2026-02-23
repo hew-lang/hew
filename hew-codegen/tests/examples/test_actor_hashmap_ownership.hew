@@ -1,0 +1,35 @@
+actor Holder {
+    let data: HashMap<String, i64>;
+
+    receive fn set(m: HashMap<String, i64>) {
+        self.data = m;
+    }
+
+    receive fn print_spawned() {
+        println(self.data.contains_key("spawned"));
+    }
+
+    receive fn print_sent() {
+        println(self.data.contains_key("sent"));
+    }
+}
+
+fn make_spawn_map() -> HashMap<String, i64> {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("spawned", 11);
+    m
+}
+
+fn main() {
+    let holder = spawn Holder(data: make_spawn_map());
+    holder.print_spawned();
+    sleep_ms(100);
+    {
+        let m: HashMap<String, i64> = HashMap::new();
+        m.insert("sent", 22);
+        holder.set(m);
+    };
+    sleep_ms(100);
+    holder.print_sent();
+    sleep_ms(100);
+}

@@ -1,0 +1,21 @@
+enum Direction {
+    North;
+    South;
+    East;
+    West;
+}
+
+fn main() {
+    let d = East;
+    match d {
+        North => println(1),
+        South => println(2),
+        East => println(3),
+        West => println(4),
+    }
+    let d2 = North;
+    match d2 {
+        North => println(10),
+        _ => println(99),
+    }
+}

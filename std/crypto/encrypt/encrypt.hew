@@ -1,0 +1,37 @@
+//! Symmetric encryption and decryption.
+//!
+//! Encrypt and decrypt data using AES-256-GCM.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::crypto::encrypt;
+//!
+//! fn main() {
+//!     let key = crypto.random_bytes(32);
+//!     let ciphertext = encrypt.seal(key, "hello world");
+//!     let plaintext = encrypt.open(key, ciphertext);
+//!     println(plaintext);
+//! }
+//! ```
+
+/// Encrypt plaintext using AES-256-GCM with the given key.
+///
+/// Returns the ciphertext (nonce + encrypted data) as bytes.
+pub fn seal(key: bytes, plaintext: String) -> bytes {
+    hew_encrypt_seal(key, plaintext)
+}
+
+/// Decrypt ciphertext using AES-256-GCM with the given key.
+///
+/// Returns the decrypted plaintext string.
+pub fn open(key: bytes, ciphertext: bytes) -> String {
+    hew_encrypt_open(key, ciphertext)
+}
+
+// -- FFI bindings --
+
+extern "C" {
+    fn hew_encrypt_seal(key: bytes, plaintext: String) -> bytes;
+    fn hew_encrypt_open(key: bytes, ciphertext: bytes) -> String;
+}

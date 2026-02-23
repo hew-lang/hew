@@ -1,0 +1,23 @@
+// Concurrent counter with actors
+// Demonstrates spawn, receive handlers, and message passing.
+//
+// Three increment messages are sent to a Counter actor.
+// Expected output: 42
+actor Counter {
+    let count: i32;
+    receive fn increment(n: i32) {
+        self.count = self.count + n;
+    }
+    receive fn print_total() {
+        println(self.count);
+    }
+}
+
+fn main() {
+    let c = spawn Counter;
+    c.increment(10);
+    c.increment(20);
+    c.increment(12);
+    c.print_total();
+    sleep_ms(200);
+}

@@ -1,0 +1,8 @@
+// Test: Rc<T> smart pointer — reference counting
+fn main() {
+    let rc: Rc<int> = Rc::new(42);
+    println(rc.get());
+    let rc2 = rc.clone();
+    println(rc2.get());
+    println(rc.strong_count());
+}

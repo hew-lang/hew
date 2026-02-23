@@ -1,0 +1,16 @@
+// Test: Vec<f64> operations
+// Exercises: Vec creation, push, get, set, pop, len for f64
+fn main() {
+    var v: Vec<f64> = Vec::new();
+    v.push(3.14);
+    v.push(2.71);
+    v.push(1.41);
+    println(v.get(0));
+    println(v.get(1));
+    v.set(1, 9.99);
+    println(v.get(1));
+    println(v.len());
+    let popped = v.pop();
+    println(popped);
+    println(v.len());
+}

@@ -1,0 +1,78 @@
+// Test: Roman to Integer (LeetCode #13)
+// Exercises: HashMap, conditionals, sequential processing
+fn roman_val(c: int) -> int {
+    // Encode: I=1, V=5, X=10, L=50, C=100, D=500, M=1000
+    // We'll pass pre-encoded values
+    c
+}
+
+fn roman_to_int(digits: Vec<int>) -> int {
+    var result = 0;
+    var i = 0;
+    let len = digits.len();
+    while i < len {
+        let curr = digits.get(i);
+        if i + 1 < len {
+            let next = digits.get(i + 1);
+            if curr < next {
+                result = result + (next - curr);
+                i = i + 2;
+            } else {
+                result = result + curr;
+                i = i + 1;
+            }
+        } else {
+            result = result + curr;
+            i = i + 1;
+        }
+    }
+    result
+}
+
+fn main() -> int {
+    println("=== Roman to Integer ===");
+
+    // III = 3 -> [1, 1, 1]
+    let r1: Vec<int> = Vec::new();
+    r1.push(1);
+    r1.push(1);
+    r1.push(1);
+    let v1 = roman_to_int(r1);
+    println(f"III = {v1}");
+
+    // IV = 4 -> [1, 5]
+    let r2: Vec<int> = Vec::new();
+    r2.push(1);
+    r2.push(5);
+    let v2 = roman_to_int(r2);
+    println(f"IV = {v2}");
+
+    // MCMXCIV = 1994 -> [1000, 100, 1000, 10, 100, 1, 5]
+    let r3: Vec<int> = Vec::new();
+    r3.push(1000);
+    r3.push(100);
+    r3.push(1000);
+    r3.push(10);
+    r3.push(100);
+    r3.push(1);
+    r3.push(5);
+    let v3 = roman_to_int(r3);
+    println(f"MCMXCIV = {v3}");
+    if v1 == 3 {
+        if v2 == 4 {
+            if v3 == 1994 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

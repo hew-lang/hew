@@ -1,0 +1,7 @@
+contains: yes
+not contains: yes
+starts_with: yes
+ends_with: yes
+hello
+Hello Hew
+11

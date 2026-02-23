@@ -1,0 +1,18 @@
+trait Greetable {
+    fn greet(self: Self) -> String;
+}
+
+type Person {
+    name: String;
+}
+
+impl Greetable for Person {
+    fn greet(self: Person) -> String {
+        string_concat("Hello, ", self.name)
+    }
+}
+
+fn main() {
+    let p = Person { name: "Alice" };
+    println(p.greet());
+}

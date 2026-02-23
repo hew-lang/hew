@@ -1,0 +1,30 @@
+type Point {
+    x: f64;
+    y: f64;
+}
+
+trait PointOps {
+    fn sum(self: Point) -> f64;
+    fn scale(self: Point, factor: f64) -> Point;
+}
+
+impl PointOps for Point {
+    fn sum(self: Point) -> f64 {
+        self.x + self.y
+    }
+
+    fn scale(self: Point, factor: f64) -> Point {
+        Point { x: self.x * factor, y: self.y * factor }
+    }
+}
+
+fn main() {
+    let p = Point { x: 3.0, y: 4.0 };
+    println(p.x);
+    println(p.y);
+    let s = p.sum();
+    println(s);
+    let p2 = p.scale(2.0);
+    println(p2.x);
+    println(p2.y);
+}

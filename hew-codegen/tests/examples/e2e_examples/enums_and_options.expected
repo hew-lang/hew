@@ -1,0 +1,10 @@
+=== Enums and Options ===
+PASS: enum declaration
+PASS: Some pattern
+42
+PASS: None pattern
+PASS: Ok pattern
+99
+PASS: Err pattern
+42
+=== Done ===

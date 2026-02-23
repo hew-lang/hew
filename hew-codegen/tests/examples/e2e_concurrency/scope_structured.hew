@@ -1,0 +1,24 @@
+// Test: Scope Structured Concurrency
+// Exercises: scope block, actors waited on at exit
+actor ScopeWorker {
+    let id: int;
+    receive fn run(n: int) {
+
+        // Print result atomically (single println to avoid interleaving)
+        println(n);
+    }
+}
+
+fn main() {
+    println("=== Scope Structured ===");
+    println("Before scope");
+    scope {
+        let w1 = spawn ScopeWorker(id: 1);
+        let w2 = spawn ScopeWorker(id: 2);
+        w1.run(10);
+        sleep_ms(50);
+        w2.run(20);
+    };
+    println("After scope");
+    println("PASS");
+}

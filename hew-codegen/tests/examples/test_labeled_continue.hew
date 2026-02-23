@@ -1,0 +1,16 @@
+fn main() {
+    var sum = 0;
+    var i = 0;
+    @outer: while i < 5 {
+        i = i + 1;
+        var j = 0;
+        while j < 5 {
+            if j == 3 {
+                continue @outer;
+            }
+            sum = sum + 1;
+            j = j + 1;
+        }
+    }
+    println(sum);
+}

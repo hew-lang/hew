@@ -1,0 +1,34 @@
+// E2E test: Supervisor spawns children with init blocks and correct state
+//
+// Verifies:
+// 1. Supervisor creates all children
+// 2. Children receive correct constructor arguments
+// 3. Children's init() blocks execute
+// 4. Multiple children with different args work
+actor Worker {
+    let id: i32;
+    init() {
+        print("worker:");
+        println(self.id);
+    }
+    receive fn ping() {
+        print("ping:");
+        println(self.id);
+    }
+}
+
+supervisor WorkerPool {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child w1: Worker(1);
+    child w2: Worker(2);
+    child w3: Worker(3);
+}
+
+fn main() {
+    println("start");
+    let sup = spawn WorkerPool;
+    println("done");
+}

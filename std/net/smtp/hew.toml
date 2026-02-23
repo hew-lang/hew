@@ -1,0 +1,6 @@
+[package]
+name = "std::net::smtp"
+version = "0.1.0"
+description = "Hew std::net::smtp package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

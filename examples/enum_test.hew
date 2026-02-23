@@ -1,0 +1,39 @@
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+enum Shape {
+    Circle(i32);
+    Rectangle(i32);
+}
+
+fn describe_color(tag: i32) -> i32 {
+    match tag {
+        0 => {
+            println("Red");
+            0
+        },
+        1 => {
+            println("Green");
+            1
+        },
+        2 => {
+            println("Blue");
+            2
+        },
+        _ => {
+            println("Unknown");
+            -1
+        },
+    }
+}
+
+fn main() {
+    println("=== Enum Test ===");
+    describe_color(0);
+    describe_color(1);
+    describe_color(2);
+    describe_color(99);
+}

@@ -1,0 +1,17 @@
+[package]
+name = "hew-std-net-ipnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::net::ipnet — IP network utilities"
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+ipnet = "2"
+libc = "0.2"
+
+[lints]
+workspace = true

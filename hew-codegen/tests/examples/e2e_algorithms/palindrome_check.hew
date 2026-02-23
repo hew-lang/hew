@@ -1,0 +1,63 @@
+// Test: Palindrome Check (LeetCode #125)
+// Exercises: Vec iteration, comparison, two-pointer technique
+fn is_palindrome(arr: Vec<int>) -> int {
+    let len = arr.len();
+    if len <= 1 {
+        return 1;
+    }
+    var left = 0;
+    var right = len - 1;
+    while left < right {
+        if arr.get(left) != arr.get(right) {
+            return 0;
+        }
+        left = left + 1;
+        right = right - 1;
+    }
+    1
+}
+
+fn main() -> int {
+    println("=== Palindrome Check ===");
+
+    // [1, 2, 3, 2, 1] -> palindrome
+    let p1: Vec<int> = Vec::new();
+    p1.push(1);
+    p1.push(2);
+    p1.push(3);
+    p1.push(2);
+    p1.push(1);
+    let r1 = is_palindrome(p1);
+    println(f"[1,2,3,2,1] -> {r1}");
+
+    // [1, 2, 3, 4] -> not palindrome
+    let p2: Vec<int> = Vec::new();
+    p2.push(1);
+    p2.push(2);
+    p2.push(3);
+    p2.push(4);
+    let r2 = is_palindrome(p2);
+    println(f"[1,2,3,4] -> {r2}");
+
+    // [5] -> palindrome
+    let p3: Vec<int> = Vec::new();
+    p3.push(5);
+    let r3 = is_palindrome(p3);
+    println(f"[5] -> {r3}");
+
+    // [] -> palindrome
+    let p4: Vec<int> = Vec::new();
+    let r4 = is_palindrome(p4);
+    println(f"[] -> {r4}");
+    var passed = r1 + r3 + r4;
+    if r2 == 0 {
+        passed = passed + 1;
+    }
+    if passed == 4 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

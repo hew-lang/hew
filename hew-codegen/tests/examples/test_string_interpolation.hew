@@ -1,0 +1,6 @@
+fn main() {
+    let name = "world";
+    let x = 42;
+    let msg = f"hello {name}, x is {x}";
+    println(msg);
+}

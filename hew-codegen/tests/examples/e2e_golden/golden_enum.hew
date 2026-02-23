@@ -1,0 +1,52 @@
+// Golden test: enum definition, variant construction, match
+// Exercises: EnumConstructOp, EnumExtractTagOp, EnumExtractPayloadOp
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+enum Shape {
+    Circle(int);
+    Rectangle(int);
+}
+
+fn color_to_int(c: Color) -> int {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+        _ => 0,
+    }
+}
+
+fn shape_area(s: Shape) -> int {
+    match s {
+        Circle(r) => r * r,
+        Rectangle(side) => side * side,
+        _ => 0,
+    }
+}
+
+fn main() {
+    // Unit variants
+    println(color_to_int(Red));
+    println(color_to_int(Green));
+    println(color_to_int(Blue));
+
+    // Payload variants + destructuring
+    let c = Circle(5);
+    println(shape_area(c));
+
+    let r = Rectangle(4);
+    println(shape_area(r));
+
+    // Match as expression
+    let s = Circle(3);
+    let val = match s {
+        Circle(r) => r * 10,
+        Rectangle(side) => side,
+        _ => -1,
+    };
+    println(val);
+}

@@ -1,0 +1,952 @@
+// selfhost_lexer_v2.hew - Enhanced Hew lexer using string methods
+// Uses: s.len(), s.char_at(), == operator, while, break, continue, var
+
+// Token type constants
+// 0 = EOF, 1 = Identifier, 2 = Integer, 3 = String
+// 4 = Plus, 5 = Minus, 6 = Star, 7 = Slash
+// 8 = LeftParen, 9 = RightParen, 10 = LeftBrace, 11 = RightBrace
+// 12 = Semicolon, 13 = Comma, 14 = Equal, 15 = Colon
+// 16 = Arrow (->), 17 = FatArrow (=>), 18 = EqualEqual (==)
+// 19 = NotEqual (!=), 20 = Less (<), 21 = Greater (>)
+// 22 = LessEqual (<=), 23 = GreaterEqual (>=), 24 = Bang (!)
+// 25 = Dot (.)
+// 30 = KW_fn, 31 = KW_let, 32 = KW_var, 33 = KW_actor
+// 34 = KW_supervisor, 35 = KW_receive, 36 = KW_if, 37 = KW_else
+// 38 = KW_match, 39 = KW_while, 40 = KW_for, 41 = KW_return
+// 42 = KW_type, 43 = KW_wire, 44 = KW_trait, 45 = KW_impl
+// 46 = KW_spawn, 47 = KW_break, 48 = KW_continue
+// 100 = Error
+
+// --- Character classification ---
+fn is_alpha(ch: i32) -> i32 {
+    if ch >= 97 {
+        if ch <= 122 {
+            1
+        } else {
+            if ch == 95 {
+                1
+            } else {
+                0
+            }
+        }
+    } else if ch >= 65 {
+        if ch <= 90 {
+            1
+        } else {
+            if ch == 95 {
+                1
+            } else {
+                0
+            }
+        }
+    } else {
+        if ch == 95 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+fn is_digit(ch: i32) -> i32 {
+    if ch >= 48 {
+        if ch <= 57 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn is_alnum(ch: i32) -> i32 {
+    if is_alpha(ch) == 1 {
+        1
+    } else if is_digit(ch) == 1 {
+        1
+    } else {
+        0
+    }
+}
+
+fn is_whitespace(ch: i32) -> i32 {
+    if ch == 32 {
+        1
+    } else if ch == 9 {
+        1
+    } else if ch == 10 {
+        1
+    } else if ch == 13 {
+        1
+    } else {
+        0
+    }
+}
+
+// --- Keyword matching using == operator ---
+fn classify_keyword_str(word: String) -> i32 {
+    if word == "fn" {
+        30
+    } else if word == "let" {
+        31
+    } else if word == "var" {
+        32
+    } else if word == "actor" {
+        33
+    } else if word == "supervisor" {
+        34
+    } else if word == "receive" {
+        35
+    } else if word == "if" {
+        36
+    } else if word == "else" {
+        37
+    } else if word == "match" {
+        38
+    } else if word == "while" {
+        39
+    } else if word == "for" {
+        40
+    } else if word == "return" {
+        41
+    } else if word == "type" {
+        42
+    } else if word == "wire" {
+        43
+    } else if word == "trait" {
+        44
+    } else if word == "impl" {
+        45
+    } else if word == "spawn" {
+        46
+    } else if word == "break" {
+        47
+    } else if word == "continue" {
+        48
+    } else {
+        1
+    }
+}
+
+// --- Token type name printing ---
+fn print_token_name(t: i32) -> i32 {
+    if t == 0 {
+        print("EOF");
+        0
+    } else if t == 1 {
+        print("IDENT");
+        0
+    } else if t == 2 {
+        print("INT");
+        0
+    } else if t == 3 {
+        print("STRING");
+        0
+    } else if t == 4 {
+        print("PLUS");
+        0
+    } else if t == 5 {
+        print("MINUS");
+        0
+    } else if t == 6 {
+        print("STAR");
+        0
+    } else if t == 7 {
+        print("SLASH");
+        0
+    } else if t == 8 {
+        print("LPAREN");
+        0
+    } else if t == 9 {
+        print("RPAREN");
+        0
+    } else if t == 10 {
+        print("LBRACE");
+        0
+    } else if t == 11 {
+        print("RBRACE");
+        0
+    } else if t == 12 {
+        print("SEMI");
+        0
+    } else if t == 13 {
+        print("COMMA");
+        0
+    } else if t == 14 {
+        print("EQ");
+        0
+    } else if t == 15 {
+        print("COLON");
+        0
+    } else if t == 16 {
+        print("ARROW");
+        0
+    } else if t == 17 {
+        print("FAT_ARROW");
+        0
+    } else if t == 18 {
+        print("EQ_EQ");
+        0
+    } else if t == 19 {
+        print("NOT_EQ");
+        0
+    } else if t == 20 {
+        print("LT");
+        0
+    } else if t == 21 {
+        print("GT");
+        0
+    } else if t == 22 {
+        print("LT_EQ");
+        0
+    } else if t == 23 {
+        print("GT_EQ");
+        0
+    } else if t == 24 {
+        print("BANG");
+        0
+    } else if t == 25 {
+        print("DOT");
+        0
+    } else if t == 30 {
+        print("KW_fn");
+        0
+    } else if t == 31 {
+        print("KW_let");
+        0
+    } else if t == 32 {
+        print("KW_var");
+        0
+    } else if t == 33 {
+        print("KW_actor");
+        0
+    } else if t == 34 {
+        print("KW_supervisor");
+        0
+    } else if t == 35 {
+        print("KW_receive");
+        0
+    } else if t == 36 {
+        print("KW_if");
+        0
+    } else if t == 37 {
+        print("KW_else");
+        0
+    } else if t == 38 {
+        print("KW_match");
+        0
+    } else if t == 39 {
+        print("KW_while");
+        0
+    } else if t == 40 {
+        print("KW_for");
+        0
+    } else if t == 41 {
+        print("KW_return");
+        0
+    } else if t == 42 {
+        print("KW_type");
+        0
+    } else if t == 43 {
+        print("KW_wire");
+        0
+    } else if t == 44 {
+        print("KW_trait");
+        0
+    } else if t == 45 {
+        print("KW_impl");
+        0
+    } else if t == 46 {
+        print("KW_spawn");
+        0
+    } else if t == 47 {
+        print("KW_break");
+        0
+    } else if t == 48 {
+        print("KW_continue");
+        0
+    } else if t == 100 {
+        print("ERROR");
+        0
+    } else {
+        print("???");
+        0
+    }
+}
+
+// --- Lexer: tokenize a source string ---
+// Returns the number of tokens found.
+// Prints each token as "TYPE value" on its own line.
+// Uses global-ish state via var for position tracking.
+fn lex(source: String) -> i32 {
+    var pos = 0;
+    var token_count = 0;
+    let len = source.len();
+    while pos < len {
+        let ch = source.char_at(pos);
+        // Skip whitespace
+        if is_whitespace(ch) == 1 {
+            pos = pos + 1;
+            continue;
+        }
+        // Skip line comments: //
+        if ch == 47 {
+            if pos + 1 < len {
+                let ch2 = source.char_at(pos + 1);
+                if ch2 == 47 {
+                    // consume until newline
+                    pos = pos + 2;
+                    while pos < len {
+                        let cc = source.char_at(pos);
+                        if cc == 10 {
+                            break;
+                        }
+                        pos = pos + 1;
+                    }
+                    continue;
+                }
+            }
+        }
+        // Identifiers and keywords
+        if is_alpha(ch) == 1 {
+            var word = "";
+            while pos < len {
+                let c = source.char_at(pos);
+                if is_alnum(c) == 1 {
+                    // Build the word character by character
+                    // Convert char code to single-char string via concat trick
+                    var char_s = "";
+                    if c == 95 {
+                        char_s = "_";
+                    } else if c == 97 {
+                        char_s = "a";
+                    } else if c == 98 {
+                        char_s = "b";
+                    } else if c == 99 {
+                        char_s = "c";
+                    } else if c == 100 {
+                        char_s = "d";
+                    } else if c == 101 {
+                        char_s = "e";
+                    } else if c == 102 {
+                        char_s = "f";
+                    } else if c == 103 {
+                        char_s = "g";
+                    } else if c == 104 {
+                        char_s = "h";
+                    } else if c == 105 {
+                        char_s = "i";
+                    } else if c == 106 {
+                        char_s = "j";
+                    } else if c == 107 {
+                        char_s = "k";
+                    } else if c == 108 {
+                        char_s = "l";
+                    } else if c == 109 {
+                        char_s = "m";
+                    } else if c == 110 {
+                        char_s = "n";
+                    } else if c == 111 {
+                        char_s = "o";
+                    } else if c == 112 {
+                        char_s = "p";
+                    } else if c == 113 {
+                        char_s = "q";
+                    } else if c == 114 {
+                        char_s = "r";
+                    } else if c == 115 {
+                        char_s = "s";
+                    } else if c == 116 {
+                        char_s = "t";
+                    } else if c == 117 {
+                        char_s = "u";
+                    } else if c == 118 {
+                        char_s = "v";
+                    } else if c == 119 {
+                        char_s = "w";
+                    } else if c == 120 {
+                        char_s = "x";
+                    } else if c == 121 {
+                        char_s = "y";
+                    } else if c == 122 {
+                        char_s = "z";
+                    } else if c == 65 {
+                        char_s = "A";
+                    } else if c == 66 {
+                        char_s = "B";
+                    } else if c == 67 {
+                        char_s = "C";
+                    } else if c == 68 {
+                        char_s = "D";
+                    } else if c == 69 {
+                        char_s = "E";
+                    } else if c == 70 {
+                        char_s = "F";
+                    } else if c == 71 {
+                        char_s = "G";
+                    } else if c == 72 {
+                        char_s = "H";
+                    } else if c == 73 {
+                        char_s = "I";
+                    } else if c == 74 {
+                        char_s = "J";
+                    } else if c == 75 {
+                        char_s = "K";
+                    } else if c == 76 {
+                        char_s = "L";
+                    } else if c == 77 {
+                        char_s = "M";
+                    } else if c == 78 {
+                        char_s = "N";
+                    } else if c == 79 {
+                        char_s = "O";
+                    } else if c == 80 {
+                        char_s = "P";
+                    } else if c == 81 {
+                        char_s = "Q";
+                    } else if c == 82 {
+                        char_s = "R";
+                    } else if c == 83 {
+                        char_s = "S";
+                    } else if c == 84 {
+                        char_s = "T";
+                    } else if c == 85 {
+                        char_s = "U";
+                    } else if c == 86 {
+                        char_s = "V";
+                    } else if c == 87 {
+                        char_s = "W";
+                    } else if c == 88 {
+                        char_s = "X";
+                    } else if c == 89 {
+                        char_s = "Y";
+                    } else if c == 90 {
+                        char_s = "Z";
+                    } else if c == 48 {
+                        char_s = "0";
+                    } else if c == 49 {
+                        char_s = "1";
+                    } else if c == 50 {
+                        char_s = "2";
+                    } else if c == 51 {
+                        char_s = "3";
+                    } else if c == 52 {
+                        char_s = "4";
+                    } else if c == 53 {
+                        char_s = "5";
+                    } else if c == 54 {
+                        char_s = "6";
+                    } else if c == 55 {
+                        char_s = "7";
+                    } else if c == 56 {
+                        char_s = "8";
+                    } else if c == 57 {
+                        char_s = "9";
+                    } else {
+                        char_s = "?";
+                    }
+                    word = word + char_s;
+                    pos = pos + 1;
+                } else {
+                    break;
+                }
+            }
+            let tok = classify_keyword_str(word);
+            print_token_name(tok);
+            println(f" {word}");
+            token_count = token_count + 1;
+            continue;
+        }
+        // Integer literals
+        if is_digit(ch) == 1 {
+            var num_str = "";
+            while pos < len {
+                let c = source.char_at(pos);
+                if is_digit(c) == 1 {
+                    var ds = "";
+                    if c == 48 {
+                        ds = "0";
+                    } else if c == 49 {
+                        ds = "1";
+                    } else if c == 50 {
+                        ds = "2";
+                    } else if c == 51 {
+                        ds = "3";
+                    } else if c == 52 {
+                        ds = "4";
+                    } else if c == 53 {
+                        ds = "5";
+                    } else if c == 54 {
+                        ds = "6";
+                    } else if c == 55 {
+                        ds = "7";
+                    } else if c == 56 {
+                        ds = "8";
+                    } else if c == 57 {
+                        ds = "9";
+                    } else {
+                        ds = "?";
+                    }
+                    num_str = num_str + ds;
+                    pos = pos + 1;
+                } else {
+                    break;
+                }
+            }
+            print_token_name(2);
+            println(f" {num_str}");
+            token_count = token_count + 1;
+            continue;
+        }
+        // String literals (double-quoted)
+        if ch == 34 {
+            pos = pos + 1;
+            var str_val = "";
+            while pos < len {
+                let c = source.char_at(pos);
+                if c == 34 {
+                    pos = pos + 1;
+                    break;
+                }
+                // Not reconstructing string content for simplicity
+                pos = pos + 1;
+            }
+            print_token_name(3);
+            println(" \"...\"");
+            token_count = token_count + 1;
+            continue;
+        }
+        // Two-character operators: check next char
+        if pos + 1 < len {
+            let ch2 = source.char_at(pos + 1);
+            // -> arrow
+            if ch == 45 {
+                if ch2 == 62 {
+                    print_token_name(16);
+                    println(" ->");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+            // => fat arrow
+            if ch == 61 {
+                if ch2 == 62 {
+                    print_token_name(17);
+                    println(" =>");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+            // == equal equal
+            if ch == 61 {
+                if ch2 == 61 {
+                    print_token_name(18);
+                    println(" ==");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+            // != not equal
+            if ch == 33 {
+                if ch2 == 61 {
+                    print_token_name(19);
+                    println(" !=");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+            // <= less equal
+            if ch == 60 {
+                if ch2 == 61 {
+                    print_token_name(22);
+                    println(" <=");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+            // >= greater equal
+            if ch == 62 {
+                if ch2 == 61 {
+                    print_token_name(23);
+                    println(" >=");
+                    pos = pos + 2;
+                    token_count = token_count + 1;
+                    continue;
+                }
+            }
+        }
+        // Single-character tokens
+        if ch == 43 {
+            print_token_name(4);
+            println(" +");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 45 {
+            print_token_name(5);
+            println(" -");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 42 {
+            print_token_name(6);
+            println(" *");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 47 {
+            print_token_name(7);
+            println(" /");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 40 {
+            print_token_name(8);
+            println(" (");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 41 {
+            print_token_name(9);
+            println(" )");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 123 {
+            print_token_name(10);
+            println(" {");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 125 {
+            print_token_name(11);
+            println(" }");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 59 {
+            print_token_name(12);
+            println(" ;");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 44 {
+            print_token_name(13);
+            println(" ,");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 61 {
+            print_token_name(14);
+            println(" =");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 58 {
+            print_token_name(15);
+            println(" :");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 60 {
+            print_token_name(20);
+            println(" <");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 62 {
+            print_token_name(21);
+            println(" >");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 33 {
+            print_token_name(24);
+            println(" !");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        if ch == 46 {
+            print_token_name(25);
+            println(" .");
+            pos = pos + 1;
+            token_count = token_count + 1;
+            continue;
+        }
+        // Unknown character - skip
+        print_token_name(100);
+        println(f" ?{ch}");
+        pos = pos + 1;
+        token_count = token_count + 1;
+    }
+    token_count
+}
+
+// === Tests ===
+fn test_char_classification() -> i32 {
+    var passed = 0;
+    if is_alpha(97) == 1 {
+        passed = passed + 1;
+    }
+    if is_alpha(122) == 1 {
+        passed = passed + 1;
+    }
+    if is_alpha(65) == 1 {
+        passed = passed + 1;
+    }
+    if is_alpha(90) == 1 {
+        passed = passed + 1;
+    }
+    if is_alpha(95) == 1 {
+        passed = passed + 1;
+    }
+    if is_alpha(48) == 0 {
+        passed = passed + 1;
+    }
+    if is_alpha(32) == 0 {
+        passed = passed + 1;
+    }
+    if is_digit(48) == 1 {
+        passed = passed + 1;
+    }
+    if is_digit(57) == 1 {
+        passed = passed + 1;
+    }
+    if is_digit(97) == 0 {
+        passed = passed + 1;
+    }
+    if is_whitespace(32) == 1 {
+        passed = passed + 1;
+    }
+    if is_whitespace(10) == 1 {
+        passed = passed + 1;
+    }
+    if is_whitespace(97) == 0 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn test_string_builtins() -> i32 {
+    var passed = 0;
+    // s.len()
+    if "hello".len() == 5 {
+        passed = passed + 1;
+    }
+    if "".len() == 0 {
+        passed = passed + 1;
+    }
+    if "fn".len() == 2 {
+        passed = passed + 1;
+    }
+    // s.char_at()
+    if "abc".char_at(0) == 97 {
+        passed = passed + 1;
+    }
+    if "abc".char_at(1) == 98 {
+        passed = passed + 1;
+    }
+    if "abc".char_at(2) == 99 {
+        passed = passed + 1;
+    }
+    // string == operator
+    if "fn" == "fn" {
+        passed = passed + 1;
+    }
+    if "fn" != "let" {
+        passed = passed + 1;
+    }
+    if "" == "" {
+        passed = passed + 1;
+    }
+    // string + operator
+    let ab = "a" + "b";
+    if ab == "ab" {
+        passed = passed + 1;
+    }
+    let empty = "" + "x";
+    if empty == "x" {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn test_keyword_matching() -> i32 {
+    var passed = 0;
+    if classify_keyword_str("fn") == 30 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("let") == 31 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("var") == 32 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("actor") == 33 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("supervisor") == 34 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("receive") == 35 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("if") == 36 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("else") == 37 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("match") == 38 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("while") == 39 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("for") == 40 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("return") == 41 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("type") == 42 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("wire") == 43 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("trait") == 44 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("impl") == 45 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("spawn") == 46 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("break") == 47 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("continue") == 48 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("foo") == 1 {
+        passed = passed + 1;
+    }
+    if classify_keyword_str("main") == 1 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn test_lex_simple() -> i32 {
+    var passed = 0;
+    // Test: count tokens from a simple expression
+    let count1 = lex("fn main");
+    if count1 == 2 {
+        passed = passed + 1;
+    }
+    let count2 = lex("42 + 7");
+    if count2 == 3 {
+        passed = passed + 1;
+    }
+    let count3 = lex("x = 10;");
+    if count3 == 4 {
+        passed = passed + 1;
+    }
+    let count4 = lex("-> =>");
+    if count4 == 2 {
+        passed = passed + 1;
+    }
+    let count5 = lex("== != <= >=");
+    if count5 == 4 {
+        passed = passed + 1;
+    }
+    let count6 = lex("let x = 0; while x < 10 { x = x + 1; }");
+    if count6 == 17 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn main() {
+    println("=== Hew Self-Hosting Lexer v2 ===");
+    println("Uses: s.len(), s.char_at(), == operator, + operator");
+    println("");
+
+    // Test 1: Character classification (13 tests)
+    println("--- Test: Character Classification ---");
+    let t1 = test_char_classification();
+    print("Passed: ");
+    print(t1);
+    println(" / 13");
+
+    // Test 2: String builtins (11 tests)
+    println("--- Test: String Builtins ---");
+    let t2 = test_string_builtins();
+    print("Passed: ");
+    print(t2);
+    println(" / 11");
+
+    // Test 3: Keyword matching (21 tests)
+    println("--- Test: Keyword Matching ---");
+    let t3 = test_keyword_matching();
+    print("Passed: ");
+    print(t3);
+    println(" / 21");
+
+    // Test 4: Lexer on real Hew-like source
+    println("");
+    println("--- Lexer Output: fn main() { return 0; } ---");
+    let count = lex("fn main() { return 0; }");
+    println(f"Tokens: {count}");
+
+    // Test 5: Operators
+    println("");
+    println("--- Lexer Output: x == y != z ---");
+    let count_ops = lex("x == y != z");
+    println(f"Tokens: {count_ops}");
+
+    // Test 6: Lex token count tests (6 tests)
+    println("");
+    println("--- Test: Lex Token Counts ---");
+    let t4 = test_lex_simple();
+    print("Passed: ");
+    print(t4);
+    println(" / 6");
+
+    // Summary
+    println("");
+    println("=== Summary ===");
+    let total = t1 + t2 + t3 + t4;
+    let expected = 51;
+    print("Total passed: ");
+    print(total);
+    println(f" / {expected}");
+    if total == expected {
+        println("ALL TESTS PASSED");
+    } else {
+        println("SOME TESTS FAILED");
+    }
+}

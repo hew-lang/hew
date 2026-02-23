@@ -1,0 +1,53 @@
+// Test: Stack Operations
+// Exercises: Vec as stack, push/pop/peek, empty checks
+fn main() -> int {
+    println("=== Stack Operations ===");
+    let stack: Vec<int> = Vec::new();
+    // Push elements
+    stack.push(10);
+    stack.push(20);
+    stack.push(30);
+    print("After push 10,20,30 - len: ");
+    println(stack.len());
+
+    // Peek (get last element)
+    let top = stack.get(stack.len() - 1);
+    println(f"Top: {top}");
+
+    // Pop
+    let popped = stack.pop();
+    println(f"Popped: {popped}");
+    print("After pop - len: ");
+    println(stack.len());
+
+    // Pop all
+    let p2 = stack.pop();
+    let p3 = stack.pop();
+    print("Popped: ");
+    print(p2);
+    println(f", {p3}");
+    print("Final len: ");
+    println(stack.len());
+    if top == 30 {
+        if popped == 30 {
+            if p2 == 20 {
+                if p3 == 10 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

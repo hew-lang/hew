@@ -1,0 +1,9 @@
+=== Option Tests ===
+42
+-1
+=== Result Tests ===
+5
+-1
+=== Try Operator Tests ===
+10
+-999

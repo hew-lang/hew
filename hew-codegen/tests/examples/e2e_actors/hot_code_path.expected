@@ -1,0 +1,8 @@
+=== Hot Code Path ===
+Route: login
+Route: query
+Route: logout
+Route: update
+Route: login
+Route: unknown
+Done

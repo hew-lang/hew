@@ -1,0 +1,14 @@
+// Struct instantiation and function test
+type Point {
+    x: int;
+    y: int;
+}
+
+fn distance_squared(px: int, py: int) -> int {
+    px * px + py * py
+}
+
+fn main() {
+    let d = distance_squared(3, 4);
+    println(d);
+}

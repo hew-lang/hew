@@ -1,0 +1,80 @@
+//! SMTP client for sending email.
+//!
+//! Provides functions for connecting to an SMTP server and sending
+//! plain-text or HTML email messages.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::smtp;
+//!
+//! fn main() {
+//!     let conn = smtp.connect_tls("smtp.example.com", 587, "user", "pass");
+//!     conn.send("from@example.com", "to@example.com", "Subject", "Body");
+//!     conn.close();
+//! }
+//! ```
+
+/// An open SMTP connection handle.
+///
+/// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`.
+/// Use `send()` or `send_html()` to deliver messages.
+type Conn {}
+
+// ── Conn methods ──────────────────────────────────────────────────────
+
+/// Methods available on an SMTP `Conn`.
+trait ConnMethods {
+    // Send a plain-text email. Returns 0 on success.
+    fn send(self: Conn, from: String, to: String, subject: String, body: String) -> i32;
+
+    // Send an HTML email. Returns 0 on success.
+    fn send_html(self: Conn, from: String, to: String, subject: String, html: String) -> i32;
+
+    // Close the SMTP connection.
+    fn close(self: Conn);
+}
+
+impl ConnMethods for Conn {
+    fn send(self: Conn, from: String, to: String, subject: String, body: String) -> i32 {
+        hew_smtp_send(self, from, to, subject, body)
+    }
+    fn send_html(self: Conn, from: String, to: String, subject: String, html: String) -> i32 {
+        hew_smtp_send_html(self, from, to, subject, html)
+    }
+    fn close(self: Conn) { hew_smtp_close(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Connect to an SMTP server without TLS.
+///
+/// # Examples
+///
+/// ```
+/// let conn = smtp.connect("localhost", 25, "", "");
+/// ```
+pub fn connect(host: String, port: i32, username: String, password: String) -> Conn {
+    hew_smtp_connect(host, port, username, password)
+}
+
+/// Connect to an SMTP server with TLS encryption.
+///
+/// # Examples
+///
+/// ```
+/// let conn = smtp.connect_tls("smtp.example.com", 587, "user", "pass");
+/// ```
+pub fn connect_tls(host: String, port: i32, username: String, password: String) -> Conn {
+    hew_smtp_connect_tls(host, port, username, password)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_smtp_connect(host: String, port: i32, username: String, password: String) -> Conn;
+    fn hew_smtp_connect_tls(host: String, port: i32, username: String, password: String) -> Conn;
+    fn hew_smtp_send(conn: Conn, from: String, to: String, subject: String, body: String) -> i32;
+    fn hew_smtp_send_html(conn: Conn, from: String, to: String, subject: String, html: String) -> i32;
+    fn hew_smtp_close(conn: Conn);
+}

@@ -1,0 +1,11 @@
+=== Hew Full Validation ===
+PASS: bool operators
+PASS: pattern match
+PASS: lambda
+PASS: loops
+PASS: strings
+PASS: nested calls
+PASS: fibonacci
+PASS: comparisons
+PASS: unary/negative
+=== All Tests Passed ===

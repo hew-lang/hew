@@ -1,0 +1,31 @@
+import std::encoding::base64;
+
+fn main() {
+    // Encode "Hi"
+    let data: bytes = bytes::new();
+    data.push(72); // H
+    data.push(105); // i
+    let s = base64.encode(data);
+    println(s);
+
+    // Round-trip
+    let back = base64.decode(s);
+    println(back.len());
+    println(back.get(0));
+    println(back.get(1));
+
+    // URL-safe encode "Hi"
+    let u = base64.encode_url(data);
+    println(u);
+
+    // Empty encode
+    let empty: bytes = bytes::new();
+    println(base64.encode(empty));
+
+    // Known value: "\x00\x00\x00" -> "AAAA"
+    let zeros: bytes = bytes::new();
+    zeros.push(0);
+    zeros.push(0);
+    zeros.push(0);
+    println(base64.encode(zeros));
+}

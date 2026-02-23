@@ -1,0 +1,12 @@
+// Test: await expression with actor method call (blocking ask)
+actor Adder {
+    receive fn add(a: int, b: int) -> int {
+        a + b
+    }
+}
+
+fn main() {
+    let calc = spawn Adder;
+    let result = await calc.add(3, 4);
+    println(result);
+}

@@ -1,0 +1,16 @@
+pub type Point {
+    x: int;
+    y: int;
+}
+
+pub fn new_point(x: int, y: int) -> Point {
+    Point { x: x, y: y }
+}
+
+pub fn point_sum(p: Point) -> int {
+    p.x + p.y
+}
+
+fn internal_helper() -> int {
+    42
+}

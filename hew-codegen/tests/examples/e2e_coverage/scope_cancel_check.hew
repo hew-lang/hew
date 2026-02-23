@@ -1,0 +1,12 @@
+// Test: scope cancel — exercises generateScopeCancelExpr
+fn main() {
+    scope |s| {
+        let t = s.launch {
+            42
+        };
+        let result = await t;
+        println(result);
+        s.cancel();
+    };
+    println("scope done");
+}

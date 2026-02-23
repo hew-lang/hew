@@ -1,0 +1,18 @@
+fn main() {
+    // Test bytes .append() — bulk add from another bytes buffer
+    let a = bytes::from([1, 2, 3]);
+    let b = bytes::from([4, 5, 6]);
+    a.append(b);
+    println(a.len());
+    println(a.get(0));
+    println(a.get(3));
+    println(a.get(5));
+
+    // Append to empty
+    let empty: bytes = bytes::new();
+    let src = bytes::from([10, 20]);
+    empty.append(src);
+    println(empty.len());
+    println(empty.get(0));
+    println(empty.get(1));
+}

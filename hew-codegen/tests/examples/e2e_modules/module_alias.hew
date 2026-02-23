@@ -1,0 +1,8 @@
+import mylib::{greet as hello, add as sum};
+
+fn main() {
+    let msg = hello("alias");
+    println(msg);
+    let x = sum(10, 20);
+    println(x);
+}

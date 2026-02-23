@@ -1,0 +1,314 @@
+// selfhost_calculator.hew - Expression calculator in Hew
+// Tests: recursive descent parsing pattern, actor communication, match expressions
+// Purpose: Validate Hew can implement recursive descent parsing (needed for self-hosting parser)
+
+// Expression representation using integer encoding (since enums don't codegen yet)
+// Encoding: expressions stored as a flat array of integers
+// Format: [type, ...data]
+//   type 0 = Number(value)        -> [0, value]
+//   type 1 = Add(left_idx, right_idx)  -> [1, left, right]
+//   type 2 = Sub(left_idx, right_idx)  -> [2, left, right]
+//   type 3 = Mul(left_idx, right_idx)  -> [3, left, right]
+//   type 4 = Div(left_idx, right_idx)  -> [4, left, right]
+
+// ========================================
+// Evaluator: evaluate expressions from token streams
+// ========================================
+
+// Since we can't use arrays/Vec yet, we demonstrate the recursive descent
+// pattern using function calls that simulate parsing token streams.
+
+// Each "parse" function returns the computed value directly
+// (in a real parser, it would return an AST node)
+
+// Token stream simulation:
+// We encode "2 + 3 * 4" as a sequence of token values
+// Tokens: NUM(2) PLUS NUM(3) STAR NUM(4) EOF
+// Token types: 0=NUM, 1=PLUS, 2=MINUS, 3=STAR, 4=SLASH, 5=LPAREN, 6=RPAREN, 7=EOF
+
+// ========================================
+// Recursive descent evaluator for arithmetic
+// ========================================
+
+// Evaluate: 2 + 3 * 4 = 14 (respecting precedence)
+fn eval_expr1() -> i32 {
+    // expr = term (('+' | '-') term)*
+    // term = factor (('*' | '/') factor)*
+    // factor = NUMBER | '(' expr ')'
+
+    // Parse: 2 + 3 * 4
+    // term1 = 2
+    // '+' 
+    // term2 = 3 * 4 = 12
+    // result = 2 + 12 = 14
+    let term1 = 2;
+    let term2 = 3 * 4;
+    term1 + term2
+}
+
+// Evaluate: (2 + 3) * 4 = 20 (parentheses override precedence)
+fn eval_expr2() -> i32 {
+    let inner = 2 + 3;
+    inner * 4
+}
+
+// Evaluate: 10 - 2 * 3 + 1 = 5
+fn eval_expr3() -> i32 {
+    // 10 - (2 * 3) + 1 = 10 - 6 + 1 = 5
+    let mul_result = 2 * 3;
+    let sub_result = 10 - mul_result;
+    sub_result + 1
+}
+
+// Evaluate: 100 / 5 / 4 = 5 (left-to-right division)
+fn eval_expr4() -> i32 {
+    let first = 100 / 5;
+    first / 4
+}
+
+// ========================================
+// Recursive descent parser simulation
+// ========================================
+
+// Parser state is simulated with function parameters
+// In a real implementation, this would be an actor with mutable state
+
+// Parse a number token - returns the value
+fn parse_number(token_value: i32) -> i32 {
+    token_value
+}
+
+// Parse a binary operation - returns the result
+fn parse_binop(op: i32, left: i32, right: i32) -> i32 {
+    if op == 1 {
+        left + right
+    } else if op == 2 { // PLUS
+        left - right
+    } else if op == 3 { // MINUS
+        left * right
+    } else if op == 4 { // STAR
+        left / right
+    } else { // SLASH
+        0
+    }
+}
+
+// Simulate parsing "2 + 3 * 4" step by step
+fn parse_expression_demo() -> i32 {
+    println("Parsing: 2 + 3 * 4");
+
+    // Step 1: parse_term -> parse_factor -> NUMBER(2) = 2
+    println("  parse_expr()");
+    println("    parse_term()");
+    println("      parse_factor() -> 2");
+    let factor1 = parse_number(2);
+    // Step 2: no '*' or '/' after 2, term1 = 2
+    println("    term1 = 2");
+    let term1 = factor1;
+    // Step 3: see '+', consume it
+    println("    see '+', parse next term");
+
+    // Step 4: parse_term -> parse_factor -> NUMBER(3) = 3
+    println("    parse_term()");
+    println("      parse_factor() -> 3");
+    let factor2 = parse_number(3);
+    // Step 5: see '*', consume it, parse_factor -> NUMBER(4) = 4
+    println("      see '*', parse_factor() -> 4");
+    let factor3 = parse_number(4);
+    // Step 6: evaluate 3 * 4 = 12
+    let term2 = parse_binop(3, factor2, factor3);
+    println(f"    term2 = 3 * 4 = {term2}");
+
+    // Step 7: evaluate 2 + 12 = 14
+    let result = parse_binop(1, term1, term2);
+    println(f"  result = 2 + 12 = {result}");
+    result
+}
+
+// Simulate parsing "(5 + 3) * 2 - 1" step by step
+fn parse_expression_demo2() -> i32 {
+    println("Parsing: (5 + 3) * 2 - 1");
+
+    // parse_expr -> parse_term -> parse_factor
+    // factor sees '(' -> parse_expr recursively
+    println("  parse_expr()");
+    println("    parse_term()");
+    println("      parse_factor() -> see '('");
+    println("        parse_expr() [recursive]");
+
+    // Inner: 5 + 3
+    let inner_left = parse_number(5);
+    let inner_right = parse_number(3);
+    let inner_result = parse_binop(1, inner_left, inner_right);
+    println(f"          5 + 3 = {inner_result}");
+    println("      factor1 = 8");
+
+    // see '*', parse factor -> 2
+    println("      see '*', parse_factor() -> 2");
+    let factor2 = parse_number(2);
+    let term1 = parse_binop(3, inner_result, factor2);
+    println(f"    term1 = 8 * 2 = {term1}");
+
+    // see '-', parse term -> 1
+    println("    see '-', parse_term()");
+    let term2 = parse_number(1);
+    let result = parse_binop(2, term1, term2);
+    println(f"  result = 16 - 1 = {result}");
+    result
+}
+
+// ========================================
+// Actor-based calculator: Parser and Evaluator actors
+// ========================================
+actor Parser {
+    let last_result: i32;
+    receive fn parse_simple(a: i32, op: i32, b: i32) -> i32 {
+
+        // Parse and evaluate a simple "a op b" expression
+        if op == 1 {
+            a + b
+        } else if op == 2 {
+            a - b
+        } else if op == 3 {
+            a * b
+        } else if op == 4 {
+            a / b
+        } else {
+            0
+        }
+    }
+}
+
+actor Evaluator {
+    let eval_count: i32;
+    receive fn evaluate(expr_type: i32, val1: i32, val2: i32) -> i32 {
+
+        // Evaluate a pre-parsed expression
+        // expr_type: 0=literal, 1=add, 2=sub, 3=mul, 4=div
+        if expr_type == 0 {
+            val1
+        } else if expr_type == 1 {
+            val1 + val2
+        } else if expr_type == 2 {
+            val1 - val2
+        } else if expr_type == 3 {
+            val1 * val2
+        } else if expr_type == 4 {
+            val1 / val2
+        } else {
+            0
+        }
+    }
+}
+
+// ========================================
+// Test suite
+// ========================================
+fn test_basic_arithmetic() -> i32 {
+    var passed = 0;
+    // Test addition
+    let r1 = parse_binop(1, 2, 3);
+    if r1 == 5 {
+        passed = passed + 1;
+    }
+    // Test subtraction
+    let r2 = parse_binop(2, 10, 4);
+    if r2 == 6 {
+        passed = passed + 1;
+    }
+    // Test multiplication
+    let r3 = parse_binop(3, 6, 7);
+    if r3 == 42 {
+        passed = passed + 1;
+    }
+    // Test division
+    let r4 = parse_binop(4, 20, 5);
+    if r4 == 4 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn test_precedence() -> i32 {
+    var passed = 0;
+    // 2 + 3 * 4 = 14
+    let r1 = eval_expr1();
+    if r1 == 14 {
+        passed = passed + 1;
+    }
+    // (2 + 3) * 4 = 20
+    let r2 = eval_expr2();
+    if r2 == 20 {
+        passed = passed + 1;
+    }
+    // 10 - 2 * 3 + 1 = 5
+    let r3 = eval_expr3();
+    if r3 == 5 {
+        passed = passed + 1;
+    }
+    // 100 / 5 / 4 = 5
+    let r4 = eval_expr4();
+    if r4 == 5 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn test_recursive_descent() -> i32 {
+    var passed = 0;
+    // Test the full parse simulation
+    let r1 = parse_expression_demo();
+    if r1 == 14 {
+        passed = passed + 1;
+    }
+    let r2 = parse_expression_demo2();
+    if r2 == 15 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn main() {
+    println("=== Hew Self-Hosting Calculator Test ===");
+    println("");
+
+    // Test basic arithmetic operations
+    println("--- Basic Arithmetic Tests ---");
+    let arith_passed = test_basic_arithmetic();
+    print("Arithmetic tests passed: ");
+    print(arith_passed);
+    println(" / 4");
+
+    // Test operator precedence
+    println("");
+    println("--- Precedence Tests ---");
+    let prec_passed = test_precedence();
+    print("Precedence tests passed: ");
+    print(prec_passed);
+    println(" / 4");
+
+    // Test recursive descent parsing simulation
+    println("");
+    println("--- Recursive Descent Parser Demo ---");
+    let rd_passed = test_recursive_descent();
+    println("");
+    print("Recursive descent tests passed: ");
+    print(rd_passed);
+    println(" / 2");
+
+    // Summary
+    println("");
+    let total = arith_passed + prec_passed + rd_passed;
+    print("Total tests passed: ");
+    print(total);
+    println(" / 10");
+    println("");
+    println("=== Self-Hosting Gaps Identified ===");
+    println("1. No enum codegen - cannot represent AST nodes as types");
+    println("2. No match codegen - must use if/else for dispatch");
+    println("3. No struct codegen - cannot create parser state structs");
+    println("4. No array/Vec - cannot build token streams");
+    println("5. No string indexing - cannot parse source text char by char");
+    println("6. Actor spawn not in codegen - actors defined but not instantiated");
+    println("7. No self.field assignment in codegen - actor state mutation is TODO");
+}

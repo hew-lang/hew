@@ -1,0 +1,36 @@
+//! @name Collections
+//! @description Vec and HashMap usage
+
+fn main() {
+    // Vec
+    let v: Vec<i32> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+
+    print("Vec length: ");
+    println(v.len());
+    print("First: ");
+    println(v.get(0));
+
+    let popped = v.pop();
+    print("Popped: ");
+    println(popped);
+
+    // HashMap
+    let m: HashMap<string, i32> = HashMap::new();
+    m.insert("one", 1);
+    m.insert("two", 2);
+    m.insert("three", 3);
+
+    print("Map length: ");
+    println(m.len());
+    print("get(one): ");
+    println(m.get("one"));
+    print("has three: ");
+    println(m.contains_key("three"));
+
+    m.remove("two");
+    print("After remove, length: ");
+    println(m.len());
+}

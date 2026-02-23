@@ -1,0 +1,21 @@
+// Test: Join expression - waits for all async results
+actor Worker {
+    let id: int;
+    receive fn compute() -> int {
+        self.id * 10
+    }
+}
+
+fn main() {
+    let w1 = spawn Worker(id: 1);
+    let w2 = spawn Worker(id: 2);
+    let w3 = spawn Worker(id: 3);
+    let results = join {
+        await w1.compute(),
+        await w2.compute(),
+        await w3.compute(),
+    };
+    let sum = results.0 + results.1 + results.2;
+    println(sum);
+    sleep_ms(100);
+}

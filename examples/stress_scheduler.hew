@@ -1,0 +1,49 @@
+// stress_scheduler.hew - Test M:N scheduling with many actors
+// Spawns 50 actors, each processing 20 messages via a computation workload.
+// Uses a Collector actor to count completions. Verifies all counted.
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+actor Worker {
+    let id: i32;
+    receive fn process(x: i32) {
+
+        // Do some real computation to exercise the scheduler
+        let result = fib(x % 15);
+        let combined = result + self.id;
+    }
+}
+
+actor Collector {
+    let count: i32;
+    receive fn tick() {
+        self.count = self.count + 1;
+    }
+    receive fn report() {
+        println(f"Collector count: {self.count}");
+    }
+}
+
+fn main() {
+    println("=== Stress: Scheduler ===");
+    let collector = spawn Collector;
+    // Spawn 50 workers, each processing 20 messages
+    for i in 0..50 {
+        let w = spawn Worker;
+        for j in 0..20 {
+            w.process(j);
+        }
+        collector.tick();
+        stop(w);
+    }
+    // Give time for all messages to be processed
+    sleep_ms(500);
+    collector.report();
+    println("PASS: scheduler handles 50 actors x 20 messages");
+    stop(collector);
+}

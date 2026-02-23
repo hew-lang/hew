@@ -1,0 +1,10 @@
+import "consts_lib.hew";
+import mylib::{greet};
+
+fn main() {
+    let msg = greet("multi");
+    println(msg);
+    println(MAX_SIZE);
+    let y = shifted(10);
+    println(y);
+}

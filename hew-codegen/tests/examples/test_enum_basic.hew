@@ -1,0 +1,23 @@
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+fn color_to_int(c: Color) -> int {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+        _ => 0,
+    }
+}
+
+fn main() {
+    let r = Red;
+    let g = Green;
+    let b = Blue;
+    println(color_to_int(r));
+    println(color_to_int(g));
+    println(color_to_int(b));
+}

@@ -1,0 +1,52 @@
+// Test first-class closures: lambdas with captures passed as function parameters.
+// This tests the closure conversion (fat pointer) implementation.
+fn apply(f: fn(int) -> int, x: int) -> int {
+    f(x)
+}
+
+fn apply2(f: fn(int, int) -> int, a: int, b: int) -> int {
+    f(a, b)
+}
+
+fn compose(f: fn(int) -> int, g: fn(int) -> int, x: int) -> int {
+    f(g(x))
+}
+
+fn double(x: int) -> int {
+    x * 2
+}
+
+fn main() {
+    // Test 1: Non-capturing lambda passed as parameter
+    let result1 = apply((x) => x + 10, 5);
+    println(result1); // 15
+
+    // Test 2: Top-level function passed as closure value
+    let result2 = apply(double, 21);
+    println(result2); // 42
+
+    // Test 3: Capturing lambda passed as parameter
+    let offset = 100;
+    let result3 = apply((x) => x + offset, 5);
+    println(result3); // 105
+
+    // Test 4: Multiple captures
+    let a = 10;
+    let b = 20;
+    let result4 = apply((x) => x + a + b, 5);
+    println(result4); // 35
+
+    // Test 5: Compose two functions
+    let result5 = compose(double, (x) => x + 3, 7);
+    println(result5); // (7+3)*2 = 20
+
+    // Test 6: Two-argument lambda with captures
+    let scale = 3;
+    let result6 = apply2((x, y) => (x + y) * scale, 4, 6);
+    println(result6); // (4+6)*3 = 30
+
+    // Test 7: Closure stored in variable, then passed
+    let add_offset = (x: int) -> int => x + offset;
+    let result7 = apply(add_offset, 50);
+    println(result7);
+} // 150

@@ -1,0 +1,20 @@
+//! @name Counter Actor
+//! @description A simple actor that counts messages
+
+actor Counter {
+    let count: int;
+
+    receive fn increment(n: int) {
+        self.count = self.count + n;
+        print("Count is now: ");
+        println(self.count);
+    }
+}
+
+fn main() {
+    let c = spawn Counter;
+    c.increment(5);
+    c.increment(3);
+    c.increment(12);
+    sleep_ms(200);
+}

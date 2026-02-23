@@ -1,0 +1,30 @@
+//! @name Supervisor
+//! @description Supervision tree for fault-tolerant actors
+
+actor Worker {
+    let id: int;
+
+    receive fn work(x: int) {
+        print("Worker ");
+        print(self.id);
+        print(" processing ");
+        println(x);
+    }
+}
+
+supervisor WorkerPool {
+    strategy: one_for_one,
+    max_restarts: 5,
+    window: 10,
+    children: [Worker]
+}
+
+fn main() {
+    let w1 = spawn Worker;
+    let w2 = spawn Worker;
+
+    w1.work(10);
+    w2.work(20);
+    w1.work(30);
+    sleep_ms(200);
+}

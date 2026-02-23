@@ -1,0 +1,11 @@
+=== Test: Operators Comprehensive ===
+PASS: test_unary_negation
+PASS: test_logical_not
+PASS: test_compound_assignment
+PASS: test_compound_bitwise
+PASS: test_operator_precedence
+PASS: test_comparison_chain
+PASS: test_logical_short_circuit
+PASS: test_mixed_arithmetic
+
+Passed: 8/8

@@ -1,0 +1,30 @@
+fn test_basic() {
+    println("start");
+    defer println("deferred");
+    println("end");
+}
+
+fn test_lifo() {
+    defer println("third");
+    defer println("second");
+    defer println("first");
+}
+
+fn test_early_return() -> i32 {
+    defer println("cleanup");
+    if 1 == 1 {
+        println("early");
+        return 42;
+    }
+    println("unreachable");
+    return 0;
+}
+
+fn main() {
+    test_basic();
+    println("---");
+    test_lifo();
+    println("---");
+    let r = test_early_return();
+    println(r);
+}

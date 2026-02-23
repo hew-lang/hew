@@ -1,0 +1,242 @@
+// Test: Operators Comprehensive
+// Exercises: unary negation, logical not, compound assignment, bitwise compound,
+// operator precedence, all comparisons, logical short-circuit, mixed arithmetic
+fn test_unary_negation() -> int {
+    let x = 42;
+    let neg = -x;
+    let double_neg = --5;
+    if neg == -42 {
+        if double_neg == 5 {
+            println("PASS: test_unary_negation");
+            1
+        } else {
+            println("FAIL: test_unary_negation");
+            0
+        }
+    } else {
+        println("FAIL: test_unary_negation");
+        0
+    }
+}
+
+fn test_logical_not() -> int {
+    let a = !true;
+    let b = !false;
+    let c = !!true;
+    let d = !(1 > 2);
+    if a == false {
+        if b == true {
+            if c == true {
+                if d == true {
+                    println("PASS: test_logical_not");
+                    1
+                } else {
+                    println("FAIL: test_logical_not");
+                    0
+                }
+            } else {
+                println("FAIL: test_logical_not");
+                0
+            }
+        } else {
+            println("FAIL: test_logical_not");
+            0
+        }
+    } else {
+        println("FAIL: test_logical_not");
+        0
+    }
+}
+
+fn test_compound_assignment() -> int {
+    var x = 100;
+    x += 50;
+    x -= 30;
+    x *= 2;
+    x /= 6;
+    x %= 7;
+    if x == 5 {
+        println("PASS: test_compound_assignment");
+        1
+    } else {
+        println("FAIL: test_compound_assignment");
+        0
+    }
+}
+
+fn test_compound_bitwise() -> int {
+    var x = 255;
+    x &= 15;
+    var ok1 = x == 15;
+    x |= 240;
+    let ok2 = x == 255;
+    x ^= 255;
+    let ok3 = x == 0;
+    var y = 1;
+    y <<= 4;
+    let ok4 = y == 16;
+    y >>= 2;
+    let ok5 = y == 4;
+    if ok1 {
+        if ok2 {
+            if ok3 {
+                if ok4 {
+                    if ok5 {
+                        println("PASS: test_compound_bitwise");
+                        1
+                    } else {
+                        println("FAIL: test_compound_bitwise");
+                        0
+                    }
+                } else {
+                    println("FAIL: test_compound_bitwise");
+                    0
+                }
+            } else {
+                println("FAIL: test_compound_bitwise");
+                0
+            }
+        } else {
+            println("FAIL: test_compound_bitwise");
+            0
+        }
+    } else {
+        println("FAIL: test_compound_bitwise");
+        0
+    }
+}
+
+fn test_operator_precedence() -> int {
+    let mul_before_add = 2 + 3 * 4;
+    let parens_override = (2 + 3) * 4;
+    let left_assoc = 10 - 2 - 3;
+    if mul_before_add == 14 {
+        if parens_override == 20 {
+            if left_assoc == 5 {
+                println("PASS: test_operator_precedence");
+                1
+            } else {
+                println("FAIL: test_operator_precedence");
+                0
+            }
+        } else {
+            println("FAIL: test_operator_precedence");
+            0
+        }
+    } else {
+        println("FAIL: test_operator_precedence");
+        0
+    }
+}
+
+fn test_comparison_chain() -> int {
+    let a = 10;
+    let b = 20;
+    let c = 10;
+    let eq = a == c;
+    let ne = a != b;
+    let lt = a < b;
+    let gt = b > a;
+    let le = a <= c;
+    let ge = b >= a;
+    if eq {
+        if ne {
+            if lt {
+                if gt {
+                    if le {
+                        if ge {
+                            println("PASS: test_comparison_chain");
+                            1
+                        } else {
+                            println("FAIL: test_comparison_chain");
+                            0
+                        }
+                    } else {
+                        println("FAIL: test_comparison_chain");
+                        0
+                    }
+                } else {
+                    println("FAIL: test_comparison_chain");
+                    0
+                }
+            } else {
+                println("FAIL: test_comparison_chain");
+                0
+            }
+        } else {
+            println("FAIL: test_comparison_chain");
+            0
+        }
+    } else {
+        println("FAIL: test_comparison_chain");
+        0
+    }
+}
+
+fn test_logical_short_circuit() -> int {
+    let r1 = true || false;
+    let r2 = false && true;
+    let r3 = 1 < 2 && 3 > 1;
+    let r4 = 1 > 2 || 3 < 4;
+    if r1 == true {
+        if r2 == false {
+            if r3 == true {
+                if r4 == true {
+                    println("PASS: test_logical_short_circuit");
+                    1
+                } else {
+                    println("FAIL: test_logical_short_circuit");
+                    0
+                }
+            } else {
+                println("FAIL: test_logical_short_circuit");
+                0
+            }
+        } else {
+            println("FAIL: test_logical_short_circuit");
+            0
+        }
+    } else {
+        println("FAIL: test_logical_short_circuit");
+        0
+    }
+}
+
+fn test_mixed_arithmetic() -> int {
+    // ((10 + 5) * 2 - 7) / 3 % 4
+    // = (15 * 2 - 7) / 3 % 4
+    // = (30 - 7) / 3 % 4
+    // = 23 / 3 % 4
+    // = 7 % 4
+    // = 3
+    let result = ((10 + 5) * 2 - 7) / 3 % 4;
+    if result == 3 {
+        println("PASS: test_mixed_arithmetic");
+        1
+    } else {
+        println("FAIL: test_mixed_arithmetic");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: Operators Comprehensive ===");
+    var passed = 0;
+    let total = 8;
+    passed = passed + test_unary_negation();
+    passed = passed + test_logical_not();
+    passed = passed + test_compound_assignment();
+    passed = passed + test_compound_bitwise();
+    passed = passed + test_operator_precedence();
+    passed = passed + test_comparison_chain();
+    passed = passed + test_logical_short_circuit();
+    passed = passed + test_mixed_arithmetic();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

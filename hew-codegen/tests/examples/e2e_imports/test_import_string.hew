@@ -1,0 +1,10 @@
+import std::string;
+
+fn main() {
+    let s = string.from_int(42);
+    println(s);
+    let n = string.to_int("123");
+    println(n);
+    let trimmed = "  hello  ".trim();
+    println(trimmed);
+}

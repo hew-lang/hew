@@ -1,0 +1,26 @@
+// Test 4: If/else conditionals
+// Testing boolean logic and branching
+fn main() {
+    let x = 15;
+    if x < 10 {
+        println("x is less than 10");
+    } else {
+        println("x is 10 or more");
+    }
+    if x % 2 == 0 {
+        println("x is even");
+    } else {
+        println("x is odd");
+    }
+    // Try else if
+    let y = 50;
+    if y < 25 {
+        println("y is small");
+    } else {
+        if y < 75 {
+            println("y is medium");
+        } else {
+            println("y is large");
+        }
+    }
+}

@@ -1,0 +1,58 @@
+// Scope expressions demo - structured concurrency
+//
+// Scope blocks create a concurrency boundary: any actors spawned inside
+// a scope are automatically waited on when the scope exits.
+actor Worker {
+    let id: i32;
+    receive fn compute(n: i32) {
+        let result = fib(n);
+        print("Worker ");
+        print(self.id);
+        print(": fib(");
+        print(n);
+        println(f") = {result}");
+    }
+}
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() {
+    println("=== Scope Expressions Demo ===");
+
+    // Demo 1: Basic scope as expression
+    let result = scope {
+        let x = 10;
+        let y = 20;
+        x + y
+    };
+    println(f"Basic scope result: {result}");
+
+    // Demo 2: Scope with actors - structured concurrency
+    // Actors spawned inside the scope are waited on at scope exit
+    println("Spawning actors in scope...");
+    scope {
+        let w1 = spawn Worker;
+        let w2 = spawn Worker;
+        w1.compute(8);
+        w2.compute(10);
+        0
+    };
+    println("Scope exited - all actors complete.");
+
+    // Demo 3: Sequential scopes
+    let a = scope {
+        42
+    };
+    let b = scope {
+        58
+    };
+    print("Sequential scopes: ");
+    println(a + b);
+    println("All scope demos completed!");
+}

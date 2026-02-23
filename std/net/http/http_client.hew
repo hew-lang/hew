@@ -1,0 +1,83 @@
+//! HTTP client for making outbound requests.
+//!
+//! Provides functions for performing HTTP GET and POST requests and
+//! reading the response.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::http;
+//!
+//! fn main() {
+//!     let body = http_client.get_string("https://example.com");
+//!     println(body);
+//! }
+//! ```
+
+/// An opaque HTTP response handle.
+///
+/// Obtained from `http_client.get(url)` or `http_client.post(...)`.
+/// Must be freed with `free()` when no longer needed.
+type Response {}
+
+// ── Response methods ──────────────────────────────────────────────────
+
+/// Methods available on an HTTP `Response`.
+trait ResponseMethods {
+    // Release the response resources.
+    fn free(self: Response);
+}
+
+impl ResponseMethods for Response {
+    fn free(self: Response) { hew_http_response_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Perform an HTTP GET request and return a `Response` handle.
+///
+/// # Examples
+///
+/// ```
+/// let resp = http_client.get("https://example.com");
+/// resp.free();
+/// ```
+pub fn get(url: String) -> Response {
+    hew_http_get(url)
+}
+
+/// Perform an HTTP POST request and return a `Response` handle.
+///
+/// # Examples
+///
+/// ```
+/// let resp = http_client.post("https://api.example.com/data", "application/json", "{}", 2);
+/// resp.free();
+/// ```
+pub fn post(url: String, content_type: String, body: String, body_len: i64) -> Response {
+    hew_http_post(url, content_type, body, body_len)
+}
+
+/// Perform an HTTP GET request and return the response body as a string.
+///
+/// This is a convenience function that combines the request and body
+/// extraction in a single call.
+///
+/// # Examples
+///
+/// ```
+/// let body = http_client.get_string("https://example.com");
+/// println(body);
+/// ```
+pub fn get_string(url: String) -> String {
+    hew_http_get_string(url)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_http_get(url: String) -> Response;
+    fn hew_http_post(url: String, content_type: String, body: String, body_len: i64) -> Response;
+    fn hew_http_response_free(resp: Response);
+    fn hew_http_get_string(url: String) -> String;
+}

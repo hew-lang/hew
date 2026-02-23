@@ -1,0 +1,107 @@
+// Supervisor Showcase: Demonstrates supervised actor trees in Hew
+//
+// Features shown:
+// - Supervisor declarations with one_for_one and one_for_all strategies
+// - supervisor_child() for typed access to supervised children
+// - panic() for actor crash + automatic supervisor restart
+// - Children run init blocks on startup
+actor Counter {
+    let value: i32;
+    init() {
+        print("Counter started at ");
+        println(self.value);
+        self.value = self.value + 10;
+        print("Counter computed ");
+        println(self.value);
+    }
+    receive fn tick() {
+        self.value = self.value + 1;
+        println(self.value);
+    }
+    receive fn crash_me() {
+        println("Counter crashing!");
+        panic("counter failure");
+    }
+}
+
+actor Logger {
+    let level: i32;
+    init() {
+        print("Logger level=");
+        println(self.level);
+    }
+    receive fn log() {
+        print("[LOG ");
+        print(self.level);
+        println("] event");
+    }
+}
+
+// ── Supervisor with one_for_one strategy ──
+// If any child crashes, only that child restarts.
+supervisor ServiceTree {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child counter: Counter(100);
+    child debug_log: Logger(1);
+    child error_log: Logger(3);
+}
+
+// ── Supervisor with one_for_all strategy ──
+// If any child crashes, ALL children restart.
+supervisor StrictPool {
+    strategy: one_for_all;
+    max_restarts: 3;
+    window: 30;
+
+    child a: Counter(0);
+    child b: Counter(0);
+}
+
+fn main() {
+    println("=== Supervisor Showcase ===");
+    println("");
+
+    // ── Part 1: ServiceTree with one_for_one ──
+    println("--- ServiceTree (one_for_one) ---");
+    let svc = spawn ServiceTree;
+    sleep_ms(50);
+    println("");
+
+    // Get supervised children and send messages
+    let c = supervisor_child(svc, 0);
+    c.tick();
+    sleep_ms(10);
+    let dlog = supervisor_child(svc, 1);
+    dlog.log();
+    sleep_ms(10);
+    let elog = supervisor_child(svc, 2);
+    elog.log();
+    sleep_ms(50);
+    println("");
+
+    // ── Part 2: Crash and restart ──
+    println("--- Crash and Restart ---");
+    c.crash_me();
+    sleep_ms(200);
+
+    // After restart, the counter has fresh state (value=100 from init → 110)
+    let c2 = supervisor_child(svc, 0);
+    c2.tick();
+    sleep_ms(50);
+    println("");
+
+    // ── Part 3: StrictPool with one_for_all ──
+    println("--- StrictPool (one_for_all) ---");
+    let pool = spawn StrictPool;
+    sleep_ms(50);
+    let a = supervisor_child(pool, 0);
+    a.tick();
+    sleep_ms(10);
+    a.tick();
+    sleep_ms(50);
+    println("");
+    println("=== All supervisors running ===");
+}

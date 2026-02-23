@@ -1,0 +1,114 @@
+// cli_argparse.hew — Command-line argument parser
+// Demonstrates string processing, extern functions, and Vec<String> usage.
+//
+// Usage:
+//   cli_argparse --verbose --output=result.txt --port=8080 file1.txt file2.txt
+//   cli_argparse --help
+//   cli_argparse -v -h
+import std::os;
+
+fn print_help() -> i32 {
+    println("Usage: cli_argparse [OPTIONS] [FILES...]");
+    println("");
+    println("Options:");
+    println("  -h, --help       Show this help message");
+    println("  -v, --verbose    Enable verbose output");
+    println("  --output=FILE    Set output file");
+    println("  --port=PORT      Set port number");
+    println("");
+    println("Positional arguments are collected as input files.");
+    0
+}
+
+fn print_flags(flags: Vec<String>) -> i32 {
+    println("Flags:");
+    for i in 0..flags.len() {
+        print("  ");
+        println(flags.get(i));
+    }
+    0
+}
+
+fn print_options(opt_keys: Vec<String>, opt_vals: Vec<String>) -> i32 {
+    println("Options:");
+    for i in 0..opt_keys.len() {
+        print("  ");
+        print(opt_keys.get(i));
+        print(" = ");
+        println(opt_vals.get(i));
+    }
+    0
+}
+
+fn print_positional(positional: Vec<String>) -> i32 {
+    println("Positional:");
+    for i in 0..positional.len() {
+        print("  ");
+        println(positional.get(i));
+    }
+    0
+}
+
+fn main() {
+    let argc = os.args_count();
+    // No arguments: print usage
+    if argc <= 1 {
+        println("No arguments provided.");
+        print_help();
+        return;
+    }
+    let flags: Vec<String> = Vec::new();
+    let opt_keys: Vec<String> = Vec::new();
+    let opt_vals: Vec<String> = Vec::new();
+    let positional: Vec<String> = Vec::new();
+    var show_help = 0;
+    // Parse arguments (skip argv[0] which is the program name)
+    for i in 1..argc {
+        let arg = os.args(i);
+        if arg.starts_with("--") {
+            // Long option: check for "=" to distinguish flag from key=value
+            let eq_pos = arg.find("=");
+            if eq_pos >= 0 {
+                // Key-value option: --key=value
+                let key = arg.slice(2, eq_pos);
+                let val = arg.slice(eq_pos + 1, arg.len());
+                opt_keys.push(key);
+                opt_vals.push(val);
+            } else {
+                // Flag: --verbose, --help
+                if arg == "--help" {
+                    show_help = 1;
+                } else {
+                    flags.push(arg);
+                }
+            }
+        } else if arg.starts_with("-") {
+            // Short flag: -v, -h
+            if arg == "-h" {
+                show_help = 1;
+            } else {
+                // Keep the short flag as-is
+                flags.push(arg);
+            }
+        } else {
+            // Positional argument
+            positional.push(arg);
+        }
+    }
+    // Handle help
+    if show_help == 1 {
+        print_help();
+        return;
+    }
+    // Print summary
+    println("=== Parsed Arguments ===");
+    if flags.len() > 0 {
+        print_flags(flags);
+    }
+    if opt_keys.len() > 0 {
+        print_options(opt_keys, opt_vals);
+    }
+    if positional.len() > 0 {
+        print_positional(positional);
+    }
+}

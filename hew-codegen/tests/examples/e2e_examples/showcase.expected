@@ -1,0 +1,25 @@
+=== Hew Language Showcase ===
+
+1. Struct types:
+  Vec2 created with x=3, y=4
+2. Enums:
+  A circle
+3. Pattern matching:
+  The answer!
+4. Lambdas:
+  Lambda defined
+5. Fibonacci:
+  fib(10) = 55
+6. Error handling:
+  divide(10,3) = 3
+  divide(10,0) = -1
+7. String basics:
+  Hew
+8. Arrays:
+  primes[3] = 7
+9. Actors:
+  Counter after 3 increments: 3
+10. Boolean operators:
+  Compound boolean: PASS
+
+=== All Features Working ===

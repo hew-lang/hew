@@ -1,0 +1,11 @@
+fn apply(f: fn(int) -> int, x: int) -> int {
+    f(x)
+}
+
+fn main() {
+    let double = (x) => x * 2;
+    let result = apply(double, 10);
+    println(result);
+    let add_five = (x) => x + 5;
+    println(apply(add_five, 7));
+}

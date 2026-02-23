@@ -1,0 +1,39 @@
+type Box<T> {
+    value: T;
+}
+
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+fn box_new<T>(v: T) -> Box<T> {
+    Box { value: v }
+}
+
+fn box_get<T>(b: Box<T>) -> T {
+    b.value
+}
+
+fn make_pair<T>(a: T, b: T) -> Pair<T> {
+    Pair { first: a, second: b }
+}
+
+fn main() {
+    // Box<Pair<int>> — nested generic
+    let inner = make_pair<int>(10, 20);
+    let outer = box_new<Pair<int>>(inner);
+    println(outer.value.first);
+    println(outer.value.second);
+
+    // Box<Pair<String>> — nested with String
+    let sp = make_pair<String>("hello", "world");
+    let sb = box_new<Pair<String>>(sp);
+    println(sb.value.first);
+    println(sb.value.second);
+
+    // Box<Box<int>> — doubly nested
+    let b1 = box_new<int>(42);
+    let b2 = box_new<Box<int>>(b1);
+    println(b2.value.value);
+}

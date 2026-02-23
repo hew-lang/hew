@@ -1,0 +1,21 @@
+fn find_first_positive(a: int, b: int, c: int, d: int) -> int {
+    var arr: Vec<int> = Vec::new();
+    arr.push(a);
+    arr.push(b);
+    arr.push(c);
+    arr.push(d);
+    var i: int = 0;
+    while i < 4 {
+        let val = arr.get(i);
+        if val > 0 {
+            return val;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+fn main() {
+    println(find_first_positive(-5, -3, 7, 2));
+    println(find_first_positive(-1, -2, -3, -4));
+}

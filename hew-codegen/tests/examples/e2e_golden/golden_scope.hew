@@ -1,0 +1,33 @@
+// Golden test: structured concurrency
+// Exercises: ScopeCreateOp, ScopeLaunchOp, ScopeAwaitOp, ScopeDestroyOp
+
+fn compute_a() -> int {
+    return 10;
+}
+
+fn compute_b() -> int {
+    return 20;
+}
+
+fn main() {
+    // Basic scope as expression
+    let result = scope {
+        let x = 42;
+        x
+    };
+    println(result);
+
+    // Scope with launch + await
+    let sum = scope |s| {
+        let t1 = s.launch {
+            compute_a()
+        };
+        let t2 = s.launch {
+            compute_b()
+        };
+        let r1 = await t1;
+        let r2 = await t2;
+        r1 + r2
+    };
+    println(sum);
+}

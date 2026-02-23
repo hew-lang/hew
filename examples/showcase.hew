@@ -1,0 +1,135 @@
+// Hew Language Showcase - All Core Features
+// Demonstrates: types, actors, pattern matching, enums, options, interpolation
+type Vec2 {
+    x: f64;
+    y: f64;
+}
+
+fn vec2_length(v: Vec2) -> f64 {
+    v.x * v.x + v.y * v.y
+}
+
+enum Shape {
+    Circle;
+    Square;
+    Triangle;
+}
+
+fn describe_shape(s: Shape) {
+    match s {
+        Circle => {
+            println("  A circle")
+        },
+        Square => {
+            println("  A square")
+        },
+        Triangle => {
+            println("  A triangle")
+        },
+    }
+}
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn divide(a: i32, b: i32) -> Result<i32, String> {
+    if b == 0 {
+        Err("division by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+actor Counter {
+    let count: i32;
+    receive fn increment() {
+        self.count = self.count + 1;
+    }
+    receive fn get_count() {
+        println(self.count);
+    }
+}
+
+fn main() {
+    println("=== Hew Language Showcase ===");
+    println("");
+
+    // 1. Struct types
+    let p = Vec2 { x: 3.0, y: 4.0 };
+    println("1. Struct types:");
+    println("  Vec2 created with x=3, y=4");
+
+    // 2. Enums
+    println("2. Enums:");
+    let s = Circle;
+    describe_shape(s);
+
+    // 3. Pattern matching
+    println("3. Pattern matching:");
+    let x = 42;
+    match x {
+        0 => {
+            println("  zero")
+        },
+        42 => {
+            println("  The answer!")
+        },
+        _ => {
+            println("  something else")
+        },
+    }
+    // 4. Lambdas
+    println("4. Lambdas:");
+    let square = (n) => n * n;
+    println("  Lambda defined");
+
+    // 5. Fibonacci
+    println("5. Fibonacci:");
+    let f10 = fib(10);
+    println(f"  fib(10) = {f10}");
+
+    // 6. Result type
+    println("6. Result type:");
+    let r1 = divide(10, 3);
+    let r2 = divide(10, 0);
+    println("  divide(10,3) and divide(10,0) computed");
+
+    // 7. String interpolation
+    println("7. String interpolation:");
+    let name = "Hew";
+    let version = 1;
+    let msg = f"{name} v{version} is running!";
+    println(f"  {msg}");
+
+    // 8. Arrays
+    println("8. Arrays:");
+    let primes = [2, 3, 5, 7, 11];
+    print("  primes[3] = ");
+    println(primes[3]);
+
+    // 9. Actors
+    println("9. Actors:");
+    let c = spawn Counter;
+    c.increment();
+    c.increment();
+    c.increment();
+    sleep_ms(50);
+    print("  Counter after 3 increments: ");
+    c.get_count();
+    sleep_ms(50);
+
+    // 10. Boolean operators
+    println("10. Boolean operators:");
+    let a = true;
+    let b = false;
+    if a && !b || false {
+        println("  Compound boolean: PASS")
+    }
+    println("");
+    println("=== All Features Working ===");
+}

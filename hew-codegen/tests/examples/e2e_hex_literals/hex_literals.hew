@@ -1,0 +1,49 @@
+// Test hex, octal, and binary integer literals
+fn main() {
+    // Hex literals
+    let a = 0xFF;
+    println(a);
+    let b = 0x1A;
+    println(b);
+
+    // Hex with underscores
+    let c = 0xFFFF;
+    println(c);
+
+    // Octal literals
+    let d = 0o77;
+    println(d);
+    let e = 0o755;
+    println(e);
+
+    // Binary literals
+    let f = 0b1010;
+    println(f);
+    let g = 0b11110000;
+    println(g);
+
+    // Arithmetic with hex
+    let h = 0xFF + 1;
+    println(h);
+
+    // Bitwise ops with hex
+    let i = 0xFF & 0xF;
+    println(i);
+    let j = 0xA0 | 0xB;
+    println(j);
+
+    // Mixed bases in expression
+    let k = 0b1100 ^ 0o17;
+    println(k);
+
+    // Comparison
+    if 255 == 0xFF {
+        println("hex equals decimal");
+    }
+    if 0o10 == 8 {
+        println("octal equals decimal");
+    }
+    if 0b1010 == 10 {
+        println("binary equals decimal");
+    }
+}

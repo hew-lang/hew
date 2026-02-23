@@ -1,0 +1,10 @@
+import "color_lib.hew";
+
+fn main() {
+    let r = Red;
+    let g = Green;
+    let b = Blue;
+    println(color_name(r));
+    println(color_name(g));
+    println(color_name(b));
+}

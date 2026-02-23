@@ -1,0 +1,481 @@
+# Release workflow — builds the Hew compiler for multiple platforms and creates
+# a GitHub Release with signed/notarized binaries and checksums.
+#
+# Triggers on tag push matching `v*` (e.g. v0.1.0).
+#
+# Artifacts per platform:
+#   bin/hew           — compiler driver
+#   bin/adze          — package manager
+#   bin/hew-codegen   — C++ MLIR compiler (statically linked)
+#   lib/libhew_runtime.a — Rust actor runtime static library
+#   std/              — standard library sources
+#   completions/      — shell completions (bash, zsh, fish)
+#
+# Required secrets for macOS code signing (optional — skipped if absent):
+#   APPLE_CERTIFICATE_P12       — Base64-encoded .p12 signing certificate
+#   APPLE_CERTIFICATE_PASSWORD  — Password for the .p12 file
+#   APPLE_ID                    — Apple ID email for notarization
+#   APPLE_ID_PASSWORD           — App-specific password for notarization
+#   APPLE_TEAM_ID               — Apple Developer Team ID
+#
+# Required secrets for Homebrew tap updates (optional — skipped if absent):
+#   HOMEBREW_TAP_TOKEN           — GitHub PAT with repo scope for hew-lang/homebrew-hew
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  LLVM_VERSION: "21"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build — one job per platform target
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            os: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - target: linux-aarch64
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+          - target: darwin-x86_64
+            os: macos-13
+            rust_target: x86_64-apple-darwin
+          - target: darwin-aarch64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+          - target: windows-x86_64
+            os: windows-2022
+            rust_target: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.os }}
+    # Windows MLIR builds can be flaky — don't block the release
+    continue-on-error: ${{ startsWith(matrix.target, 'windows') }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── LLVM/MLIR installation ──────────────────────────────────────────
+
+      - name: Install LLVM/MLIR (Linux)
+        if: startsWith(matrix.target, 'linux')
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }} \
+            libssl-dev pkg-config
+
+      - name: Install LLVM/MLIR (macOS)
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          # Expose the brew LLVM prefix for later steps
+          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+
+      - name: Install LLVM/MLIR (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          choco install ninja cmake -y
+          choco install llvm --version=${{ env.LLVM_VERSION }}.1.0 -y
+        shell: pwsh
+
+      # ── Rust toolchain ──────────────────────────────────────────────────
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: release-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-${{ matrix.target }}-cargo-
+
+      # ── Rust builds ─────────────────────────────────────────────────────
+
+      - name: Build hew-runtime
+        run: cargo build -p hew-runtime --release --target ${{ matrix.rust_target }}
+
+      - name: Build hew and adze
+        run: cargo build -p hew-cli -p adze-cli --release --target ${{ matrix.rust_target }}
+
+      # ── hew-codegen (CMake + MLIR) ───────────────────────────────────────────
+
+      - name: Configure hew-codegen (Linux)
+        if: startsWith(matrix.target, 'linux')
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHEW_STATIC_LINK=ON \
+            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
+            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
+
+      - name: Configure hew-codegen (macOS)
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DHEW_STATIC_LINK=ON \
+            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+
+      - name: Configure hew-codegen (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DHEW_STATIC_LINK=ON `
+            -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm" `
+            -DMLIR_DIR="C:/Program Files/LLVM/lib/cmake/mlir"
+        shell: pwsh
+
+      - name: Build hew-codegen
+        run: cmake --build hew-codegen/build --config Release
+
+      # ── Package archive ─────────────────────────────────────────────────
+
+      - name: Package archive (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
+
+          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
+                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+
+          # Binaries
+          cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
+          cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
+          cp "hew-codegen/build/src/hew-codegen"                            "${ARCHIVE_NAME}/bin/"
+          chmod +x "${ARCHIVE_NAME}/bin/"*
+
+          # Runtime library
+          cp "target/${{ matrix.rust_target }}/release/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
+
+          # Standard library sources
+          cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+
+          # Shell completions
+          cp completions/hew.bash completions/hew.zsh completions/hew.fish \
+             "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+
+          # Licenses and docs
+          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+
+          # Strip binaries
+          for b in hew adze hew-codegen; do
+            strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+          done
+
+          echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
+
+      - name: Package archive (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          $Version = "${{ github.ref_name }}".TrimStart("v")
+          $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
+
+          New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std" -Force | Out-Null
+
+          Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
+          Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
+          Copy-Item "hew-codegen/build/src/hew-codegen.exe"                           "${ArchiveName}/bin/"
+          Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
+
+          # Standard library sources
+          Copy-Item "std/*.hew" "${ArchiveName}/std/" -ErrorAction SilentlyContinue
+
+          # Licenses
+          Copy-Item "LICENSE-MIT" "${ArchiveName}/"
+          Copy-Item "LICENSE-APACHE" "${ArchiveName}/"
+          Copy-Item "NOTICE" "${ArchiveName}/"
+          Copy-Item "README.md" "${ArchiveName}/"
+
+          echo "ARCHIVE_NAME=${ArchiveName}" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      # ── macOS code signing & notarization ───────────────────────────────
+
+      - name: Code sign binaries (macOS)
+        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Import signing certificate into a temporary keychain
+          echo "${APPLE_CERTIFICATE_P12}" | base64 --decode > certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+
+          # Sign with hardened runtime
+          IDENTITY="Developer ID Application: ${APPLE_TEAM_ID}"
+          for bin in hew adze hew-codegen; do
+            codesign --force --options runtime --sign "${IDENTITY}" \
+              "${ARCHIVE_NAME}/bin/${bin}" 2>/dev/null || true
+          done
+
+          rm -f certificate.p12
+
+      - name: Notarize archive (macOS)
+        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ditto -c -k --keepParent "${ARCHIVE_NAME}" "${ARCHIVE_NAME}-notarize.zip"
+          xcrun notarytool submit "${ARCHIVE_NAME}-notarize.zip" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_ID_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          rm -f "${ARCHIVE_NAME}-notarize.zip"
+
+      # ── Create final archive ────────────────────────────────────────────
+
+      - name: Create tar.gz (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+
+      - name: Create zip (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: Compress-Archive -Path "${env:ARCHIVE_NAME}" -DestinationPath "${env:ARCHIVE_NAME}.zip"
+        shell: pwsh
+
+      # ── Upload artifact ─────────────────────────────────────────────────
+
+      - name: Upload artifact (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_NAME }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_NAME }}.zip
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Linux packages — build .deb, .rpm, .pkg.tar.zst, .apk from tarballs
+  # ─────────────────────────────────────────────────────────────────────────
+  linux-packages:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+            artifact_pattern: "hew-v*-linux-x86_64"
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+            artifact_pattern: "hew-v*-linux-aarch64"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux tarball
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ matrix.artifact_pattern }}
+          path: dist/
+          merge-multiple: true
+
+      - name: Build Linux packages
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          installers/build-packages.sh \
+            --version "${VERSION}" \
+            --arch "${{ matrix.arch }}" \
+            --skip-build \
+            --only debian,rpm,arch,alpine
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/*.apk
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Release — download all artifacts, generate checksums, publish
+  # ─────────────────────────────────────────────────────────────────────────
+  release:
+    needs: [build, linux-packages]
+    runs-on: ubuntu-24.04
+    # Don't skip release if linux-packages fails — tarballs are the primary artifacts
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum \
+            hew-v*-*.tar.gz hew-v*-*.zip \
+            hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst hew-*.apk \
+            2>/dev/null | tee checksums.txt
+          VERSION="${GITHUB_REF_NAME#v}"
+          mv checksums.txt "hew-v${VERSION}-checksums.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/hew-v*-*.tar.gz
+            artifacts/hew-v*-*.zip
+            artifacts/hew_*.deb
+            artifacts/hew-*.rpm
+            artifacts/hew-bin-*.pkg.tar.zst
+            artifacts/hew-*.apk
+            artifacts/hew-v*-checksums.txt
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Docker — multi-arch image pushed to ghcr.io/hew-lang/hew
+  # ─────────────────────────────────────────────────────────────────────────
+  docker:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "hew-v*-linux-*"
+          path: docker-ctx/
+          merge-multiple: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-ctx/
+          file: installers/docker/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/hew-lang/hew:${{ steps.version.outputs.version }}
+            ghcr.io/hew-lang/hew:latest
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Homebrew — update the hew-lang/homebrew-hew tap with new version + hashes
+  # ─────────────────────────────────────────────────────────────────────────
+  homebrew:
+    needs: release
+    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Download release tarballs to compute SHA256
+          for target in darwin-x86_64 darwin-aarch64 linux-x86_64 linux-aarch64; do
+            curl -fsSL -o "hew-v${VERSION}-${target}.tar.gz" \
+              "https://github.com/hew-lang/hew/releases/download/v${VERSION}/hew-v${VERSION}-${target}.tar.gz" \
+              || echo "warn: ${target} tarball not available"
+          done
+
+          SHA_DARWIN_X86_64=$(sha256sum "hew-v${VERSION}-darwin-x86_64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_DARWIN_X86_64__")
+          SHA_DARWIN_AARCH64=$(sha256sum "hew-v${VERSION}-darwin-aarch64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_DARWIN_AARCH64__")
+          SHA_LINUX_X86_64=$(sha256sum "hew-v${VERSION}-linux-x86_64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_X86_64__")
+          SHA_LINUX_AARCH64=$(sha256sum "hew-v${VERSION}-linux-aarch64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_AARCH64__")
+
+          # Clone the tap repo and copy fresh template from main repo
+          gh repo clone hew-lang/homebrew-hew tap-repo
+          cp installers/homebrew/hew.rb tap-repo/Formula/hew.rb
+
+          cd tap-repo
+          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/hew.rb
+          sed -i "s/__SHA256_DARWIN_X86_64__/${SHA_DARWIN_X86_64}/" Formula/hew.rb
+          sed -i "s/__SHA256_DARWIN_AARCH64__/${SHA_DARWIN_AARCH64}/" Formula/hew.rb
+          sed -i "s/__SHA256_LINUX_X86_64__/${SHA_LINUX_X86_64}/" Formula/hew.rb
+          sed -i "s/__SHA256_LINUX_AARCH64__/${SHA_LINUX_AARCH64}/" Formula/hew.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/hew.rb
+          git diff --cached --quiet || git commit -m "Update hew to v${VERSION}"
+          git push

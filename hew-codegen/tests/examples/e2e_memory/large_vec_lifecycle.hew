@@ -1,0 +1,41 @@
+// Test: Large Vec Lifecycle
+// Exercises: Create/destroy large collections
+fn main() -> int {
+    println("=== Large Vec Lifecycle ===");
+
+    // Create a large vec
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10000 {
+        v.push(i);
+        i = i + 1;
+    }
+    print("Created vec with ");
+    print(v.len());
+    println(" elements");
+
+    // Verify integrity
+    let first = v.get(0);
+    let mid = v.get(5000);
+    let last = v.get(9999);
+    println(f"First: {first}");
+    println(f"Mid: {mid}");
+    println(f"Last: {last}");
+    if first == 0 {
+        if mid == 5000 {
+            if last == 9999 {
+                println("PASS");
+                0
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

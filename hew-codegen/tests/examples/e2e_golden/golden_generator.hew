@@ -1,0 +1,29 @@
+// Golden test: generator function with yield
+// Exercises: GenCtxCreateOp, GenYieldOp, GenNextOp, GenWrapValueOp,
+//            GenWrapDoneOp, GenFreeOp
+
+gen fn count_up() -> int {
+    yield 10;
+    yield 20;
+    yield 30;
+}
+
+gen fn squares() -> int {
+    yield 1;
+    yield 4;
+    yield 9;
+    yield 16;
+}
+
+fn main() {
+    // Manual .next() calls
+    let g = count_up();
+    println(g.next());
+    println(g.next());
+    println(g.next());
+
+    // for-in over generator
+    for x in squares() {
+        println(x);
+    }
+}

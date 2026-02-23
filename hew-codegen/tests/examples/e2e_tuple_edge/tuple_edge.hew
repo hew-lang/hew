@@ -1,0 +1,15 @@
+// E2E test: tuple edge cases
+fn main() {
+    // Tuple with all same types
+    let same = (1, 2, 3);
+    println(same.0);
+    println(same.1);
+    println(same.2);
+    let total = same.0 + same.1 + same.2;
+    println(total);
+
+    // Pair of booleans
+    let bools = (true, false);
+    println(bools.0);
+    println(bools.1);
+}

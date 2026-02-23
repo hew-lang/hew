@@ -1,0 +1,46 @@
+# Rust
+target/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+build/
+dist/
+
+# Worktrees
+.worktrees/
+
+# Compiled test binaries
+.tmp/
+
+# Python
+__pycache__/
+
+# Fuzz artifacts
+hew-parser/fuzz/corpus/
+hew-parser/fuzz/artifacts/
+node_modules/
+.claude/
+Testing/
+
+# Local git-hook overrides (per-developer, not tracked)
+lefthook-local.yml
+
+# AI assistant configs (machine-specific)
+CLAUDE.md
+.github/copilot-instructions.md
+
+# Internal planning docs (kept locally, not in public repo)
+docs/tasks.md
+docs/plans/
+docs/archive/

@@ -1,0 +1,11 @@
+fn main() {
+    let s = "Hello, World!";
+    let len = string_length(s);
+    println(f"length: {len}");
+
+    let upper = s.to_upper();
+    println(upper);
+
+    let contains = string_contains(s, "World");
+    println(f"contains World: {contains}");
+}

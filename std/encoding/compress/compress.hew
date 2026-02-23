@@ -1,0 +1,63 @@
+//! Compression and decompression (gzip, deflate, zlib).
+//!
+//! Compress and decompress binary data using gzip, raw deflate, or
+//! zlib formats. All functions take and return `bytes` values.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::compress;
+//!
+//! fn main() {
+//!     let data: bytes = bytes::new();
+//!     data.push(72);
+//!     data.push(101);
+//!     data.push(108);
+//!     data.push(108);
+//!     data.push(111);
+//!     let compressed = compress.gzip_compress(data);
+//!     let decompressed = compress.gzip_decompress(compressed);
+//!     println(decompressed.len());  // 5
+//! }
+//! ```
+
+/// Gzip-compress `data`, returning compressed bytes.
+pub fn gzip_compress(data: bytes) -> bytes {
+    hew_gzip_compress_hew(data)
+}
+
+/// Gzip-decompress `data`, returning uncompressed bytes.
+pub fn gzip_decompress(data: bytes) -> bytes {
+    hew_gzip_decompress_hew(data)
+}
+
+/// Deflate-compress `data` (raw DEFLATE), returning compressed bytes.
+pub fn deflate_compress(data: bytes) -> bytes {
+    hew_deflate_compress_hew(data)
+}
+
+/// Deflate-decompress `data` (raw DEFLATE), returning uncompressed bytes.
+pub fn deflate_decompress(data: bytes) -> bytes {
+    hew_deflate_decompress_hew(data)
+}
+
+/// Zlib-compress `data`, returning compressed bytes.
+pub fn zlib_compress(data: bytes) -> bytes {
+    hew_zlib_compress_hew(data)
+}
+
+/// Zlib-decompress `data`, returning uncompressed bytes.
+pub fn zlib_decompress(data: bytes) -> bytes {
+    hew_zlib_decompress_hew(data)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_gzip_compress_hew(data: bytes) -> bytes;
+    fn hew_gzip_decompress_hew(data: bytes) -> bytes;
+    fn hew_deflate_compress_hew(data: bytes) -> bytes;
+    fn hew_deflate_decompress_hew(data: bytes) -> bytes;
+    fn hew_zlib_compress_hew(data: bytes) -> bytes;
+    fn hew_zlib_decompress_hew(data: bytes) -> bytes;
+}

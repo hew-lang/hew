@@ -1,0 +1,10 @@
+import "diamond_left.hew";
+import "diamond_right.hew";
+
+fn main() {
+    let l = left_value();
+    let r = right_value();
+    println(f"{l}");
+    println(f"{r}");
+    println(f"{l + r}");
+}

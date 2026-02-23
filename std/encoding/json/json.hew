@@ -1,0 +1,116 @@
+//! JSON parsing and manipulation.
+//!
+//! Parse JSON strings into values, inspect their types, extract fields,
+//! and convert back to JSON text.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::json;
+//!
+//! fn main() {
+//!     let val = json.parse("{\"name\": \"Hew\", \"version\": 1}");
+//!     let name = val.get_field("name");
+//!     println(name.get_string());
+//!     name.free();
+//!     val.free();
+//! }
+//! ```
+
+/// An opaque JSON value.
+///
+/// Represents any JSON type: null, bool, integer, float, String, array,
+/// or object. Created by `json.parse(s)` or by navigating into a
+/// parsed value. Must be freed with `free()` when no longer needed.
+type Value {}
+
+/// Methods available on a JSON `Value`.
+trait ValueMethods {
+    // Serialize the value back to a JSON string.
+    fn stringify(self: Value) -> String;
+
+    // Return the type tag of this value.
+    //
+    // 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
+    // 5 = array, 6 = object.
+    fn type_of(self: Value) -> i32;
+
+    // Extract the boolean value (0 or 1).
+    fn get_bool(self: Value) -> i32;
+
+    // Extract the integer value.
+    fn get_int(self: Value) -> i64;
+
+    // Extract the floating-point value.
+    fn get_float(self: Value) -> f64;
+
+    // Extract the string value.
+    fn get_string(self: Value) -> String;
+
+    // Look up a field by key in a JSON object.
+    //
+    // Returns a new `Value` that must be freed separately.
+    fn get_field(self: Value, key: String) -> Value;
+
+    // Return the number of elements in a JSON array.
+    fn array_len(self: Value) -> i32;
+
+    // Return the element at the given index in a JSON array.
+    //
+    // Returns a new `Value` that must be freed separately.
+    fn array_get(self: Value, index: i32) -> Value;
+
+    // Return a JSON array of the object's keys.
+    //
+    // Returns a new `Value` that must be freed separately.
+    fn keys(self: Value) -> Value;
+
+    // Release the value resources.
+    fn free(self: Value);
+}
+
+impl ValueMethods for Value {
+    fn stringify(self: Value) -> String { hew_json_stringify(self) }
+    fn type_of(self: Value) -> i32 { hew_json_type(self) }
+    fn get_bool(self: Value) -> i32 { hew_json_get_bool(self) }
+    fn get_int(self: Value) -> i64 { hew_json_get_int(self) }
+    fn get_float(self: Value) -> f64 { hew_json_get_float(self) }
+    fn get_string(self: Value) -> String { hew_json_get_string(self) }
+    fn get_field(self: Value, key: String) -> Value { hew_json_get_field(self, key) }
+    fn array_len(self: Value) -> i32 { hew_json_array_len(self) }
+    fn array_get(self: Value, index: i32) -> Value { hew_json_array_get(self, index) }
+    fn keys(self: Value) -> Value { hew_json_object_keys(self) }
+    fn free(self: Value) { hew_json_free(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Parse a JSON string into a `Value`.
+///
+/// Panics if the input is not valid JSON.
+///
+/// # Examples
+///
+/// ```
+/// let obj = json.parse("{\"key\": [1, 2, 3]}");
+/// ```
+pub fn parse(s: String) -> Value {
+    hew_json_parse(s)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_json_parse(json_str: String) -> Value;
+    fn hew_json_stringify(val: Value) -> String;
+    fn hew_json_type(val: Value) -> i32;
+    fn hew_json_get_bool(val: Value) -> i32;
+    fn hew_json_get_int(val: Value) -> i64;
+    fn hew_json_get_float(val: Value) -> f64;
+    fn hew_json_get_string(val: Value) -> String;
+    fn hew_json_get_field(val: Value, key: String) -> Value;
+    fn hew_json_array_len(val: Value) -> i32;
+    fn hew_json_array_get(val: Value, index: i32) -> Value;
+    fn hew_json_object_keys(val: Value) -> Value;
+    fn hew_json_free(val: Value);
+}

@@ -1,0 +1,76 @@
+fn main() {
+    println("=== Lambda Actors ===");
+
+    // Basic lambda actor
+    let doubler = spawn (x: i32) => {
+        println(x * 2);
+    };
+    doubler.send(21);
+    sleep_ms(50);
+
+    // Multiple lambda actors running concurrently
+    let printer = spawn (msg: i32) => {
+        println(f"Got: {msg}");
+    };
+    let multiplier = spawn (x: i32) => {
+        print("Triple: ");
+        println(x * 3);
+    };
+    let adder = spawn (x: i32) => {
+        print("Plus 10: ");
+        println(x + 10);
+    };
+    // Send to all concurrently
+    printer.send(100);
+    multiplier.send(7);
+    adder.send(5);
+    printer.send(200);
+    sleep_ms(50);
+
+    // Lambda actors within scope blocks
+    {
+        let scoped_actor = spawn (msg: i32) => {
+            println(f"Scoped: {msg}");
+        };
+        scoped_actor.send(42);
+        sleep_ms(30);
+    };
+    // Multiple sends to same actor
+    let counter = spawn (x: i32) => {
+        println(f"Count: {x}");
+    };
+    counter.send(1);
+    counter.send(2);
+    counter.send(3);
+    sleep_ms(50);
+
+    // Lambda actor with complex body (if/else, function calls)
+    let complex_actor = spawn (n: i32) => {
+        if n > 10 {
+            println(f"Large number: {n}");
+        } else {
+            println(f"Small number: {n}");
+        }
+        let result = n * 2 + 1;
+        println(f"Formula result: {result}");
+    };
+    complex_actor.send(5);
+    complex_actor.send(15);
+    sleep_ms(50);
+
+    // Test actor factory pattern
+    let factory_actor = make_multiplier_actor(4);
+    factory_actor.send(10); // should print 40
+    sleep_ms(30);
+    println("=== Done ===");
+}
+
+// Actor factory pattern - return lambda actor from function  
+fn make_multiplier_actor(factor: i32) -> Actor<i32> {
+    spawn (x: i32) => {
+        print("Multiplied by ");
+        print(factor);
+        print(": ");
+        println(x * factor);
+    }
+}

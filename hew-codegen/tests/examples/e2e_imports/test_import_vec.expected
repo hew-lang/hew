@@ -1,0 +1,16 @@
+=== vec.contains_i32 ===
+true
+true
+false
+false
+=== vec.contains_i64 ===
+true
+false
+=== vec.contains_f64 ===
+true
+false
+=== vec.contains_str ===
+true
+true
+false
+false

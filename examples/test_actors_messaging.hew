@@ -1,0 +1,115 @@
+// Test: Actors and Messaging
+// Exercises: actor definition, receive fn, spawn, message send, actor state, stop
+actor Counter {
+    let count: i32;
+    receive fn increment(amount: i32) {
+        self.count = self.count + amount;
+    }
+    receive fn get_count() -> i32 {
+        self.count
+    }
+    receive fn reset() {
+        self.count = 0;
+    }
+}
+
+actor Printer {
+    let prefix: i32;
+    receive fn print_msg(value: i32) {
+        print("  [Printer ");
+        print(self.prefix);
+        println(f"] got: {value}");
+    }
+}
+
+fn test_basic_actor() -> i32 {
+    println("--- test_basic_actor ---");
+    let counter = spawn Counter;
+    counter.increment(10);
+    counter.increment(20);
+    counter.increment(12);
+    sleep_ms(50);
+    println("PASS: basic actor spawn + messaging");
+    stop(counter);
+    1
+}
+
+fn test_multiple_actors() -> i32 {
+    println("--- test_multiple_actors ---");
+    let p1 = spawn Printer;
+    let p2 = spawn Printer;
+    p1.print_msg(100);
+    p2.print_msg(200);
+    p1.print_msg(300);
+    sleep_ms(50);
+    println("PASS: multiple actors");
+    stop(p1);
+    stop(p2);
+    1
+}
+
+fn test_lambda_actor() -> i32 {
+    println("--- test_lambda_actor ---");
+    let doubler = spawn (x: i32) => {
+        print("  doubled: ");
+        println(x * 2);
+    };
+    doubler.send(21);
+    doubler.send(5);
+    sleep_ms(50);
+    println("PASS: lambda actor");
+    1
+}
+
+fn test_actor_factory() -> i32 {
+    println("--- test_actor_factory ---");
+    let m = make_multiplier(3);
+    m.send(10);
+    m.send(7);
+    sleep_ms(50);
+    println("PASS: actor factory");
+    1
+}
+
+fn make_multiplier(factor: i32) -> Actor<i32> {
+    spawn (x: i32) => {
+        print("  multiplied: ");
+        println(x * factor);
+    }
+}
+
+fn test_complex_lambda() -> i32 {
+    println("--- test_complex_lambda ---");
+    let processor = spawn (n: i32) => {
+        if n > 10 {
+            println(f"  large: {n}");
+        } else {
+            println(f"  small: {n}");
+        }
+    };
+    processor.send(5);
+    processor.send(15);
+    sleep_ms(50);
+    println("PASS: complex lambda actor");
+    1
+}
+
+fn main() -> i32 {
+    println("=== Test: Actors & Messaging ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_actor();
+    passed = passed + test_multiple_actors();
+    passed = passed + test_lambda_actor();
+    passed = passed + test_actor_factory();
+    passed = passed + test_complex_lambda();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

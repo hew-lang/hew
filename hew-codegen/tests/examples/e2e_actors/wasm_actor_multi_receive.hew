@@ -1,0 +1,27 @@
+// Test: Multiple receive handlers with interleaved dispatch
+// Exercises: 3+ receive handlers, state mutation across handlers
+actor Store {
+    let value: int;
+
+    receive fn set(x: int) {
+        self.value = x;
+    }
+
+    receive fn add(x: int) {
+        self.value = self.value + x;
+    }
+
+    receive fn print() {
+        println(self.value);
+    }
+}
+
+fn main() {
+    let s = spawn Store(value: 0);
+    s.set(10);
+    s.add(5);
+    s.add(3);
+    s.print();
+    s.set(100);
+    s.print();
+}

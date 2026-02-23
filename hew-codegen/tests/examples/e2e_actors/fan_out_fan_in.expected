@@ -1,0 +1,8 @@
+=== Fan Out Fan In ===
+Worker 1: 2^2 = 4
+Worker 2: 3^2 = 9
+Worker 3: 4^2 = 16
+Worker 1: 5^2 = 25
+Worker 2: 6^2 = 36
+Worker 3: 7^2 = 49
+Done

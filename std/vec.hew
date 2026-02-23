@@ -1,0 +1,108 @@
+//! Vec utility functions.
+//!
+//! Pure Hew implementations for common vector operations.
+//! These replace the equivalent Rust FFI functions for simple linear scans.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::vec;
+//!
+//! fn main() {
+//!     let v: Vec<i32> = Vec::new();
+//!     v.push(1);
+//!     v.push(2);
+//!     v.push(3);
+//!     println(vec.contains_i32(v, 2));   // true
+//!     println(vec.contains_i32(v, 9));   // false
+//! }
+//! ```
+
+/// Check if a `Vec<i32>` contains `val`. Returns `true` if found.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i32> = Vec::new();
+/// v.push(10);
+/// v.push(20);
+/// println(vec.contains_i32(v, 10));  // true
+/// println(vec.contains_i32(v, 99));  // false
+/// ```
+pub fn contains_i32(v: Vec<i32>, val: i32) -> bool {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+/// Check if a `Vec<i64>` contains `val`. Returns `true` if found.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<i64> = Vec::new();
+/// v.push(100);
+/// println(vec.contains_i64(v, 100));  // true
+/// println(vec.contains_i64(v, 999));  // false
+/// ```
+pub fn contains_i64(v: Vec<i64>, val: i64) -> bool {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+/// Check if a `Vec<f64>` contains `val`. Uses exact equality.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<f64> = Vec::new();
+/// v.push(3.14);
+/// println(vec.contains_f64(v, 3.14));  // true
+/// println(vec.contains_f64(v, 0.0));   // false
+/// ```
+pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+/// Check if a `Vec<String>` contains `val`. Uses string equality.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<String> = Vec::new();
+/// v.push("hello");
+/// println(vec.contains_str(v, "hello"));  // true
+/// println(vec.contains_str(v, "world"));  // false
+/// ```
+pub fn contains_str(v: Vec<String>, val: String) -> bool {
+    var i = 0;
+    let n = v.len();
+    while i < n {
+        if v.get(i) == val {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}

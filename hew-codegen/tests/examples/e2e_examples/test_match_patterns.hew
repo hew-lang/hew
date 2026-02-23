@@ -1,0 +1,209 @@
+// Test: Match Patterns
+// Exercises: literal patterns, wildcard, block bodies, enum matching,
+// enum payloads, or-patterns, nested match expressions
+enum Direction {
+    North;
+    South;
+    East;
+    West;
+}
+
+enum Shape {
+    Circle(int);
+    Rect(int, int);
+}
+
+fn direction_value(d: Direction) -> int {
+    match d {
+        North => 1,
+        South => 2,
+        East => 3,
+        West => 4,
+        _ => 0,
+    }
+}
+
+fn classify(n: int) -> int {
+    match n {
+        1 | 2 | 3 => 1,
+        4 | 5 | 6 => 2,
+        _ => 0,
+    }
+}
+
+fn test_match_int_literal() -> int {
+    let result = match 2 {
+        1 => 10,
+        2 => 20,
+        3 => 30,
+        _ => 0,
+    };
+    if result == 20 {
+        println("PASS: test_match_int_literal");
+        1
+    } else {
+        println("FAIL: test_match_int_literal");
+        0
+    }
+}
+
+fn test_match_wildcard() -> int {
+    let result = match 99 {
+        1 => 10,
+        _ => 999,
+    };
+    if result == 999 {
+        println("PASS: test_match_wildcard");
+        1
+    } else {
+        println("FAIL: test_match_wildcard");
+        0
+    }
+}
+
+fn test_match_block_body() -> int {
+    let result = match 1 {
+        1 => {
+            let a = 10;
+            let b = 20;
+            a + b
+        },
+        _ => 0,
+    };
+    if result == 30 {
+        println("PASS: test_match_block_body");
+        1
+    } else {
+        println("FAIL: test_match_block_body");
+        0
+    }
+}
+
+fn test_match_enum() -> int {
+    let n = direction_value(North);
+    let s = direction_value(South);
+    let e = direction_value(East);
+    let w = direction_value(West);
+    if n == 1 {
+        if s == 2 {
+            if e == 3 {
+                if w == 4 {
+                    println("PASS: test_match_enum");
+                    1
+                } else {
+                    println("FAIL: test_match_enum");
+                    0
+                }
+            } else {
+                println("FAIL: test_match_enum");
+                0
+            }
+        } else {
+            println("FAIL: test_match_enum");
+            0
+        }
+    } else {
+        println("FAIL: test_match_enum");
+        0
+    }
+}
+
+fn test_match_enum_payload() -> int {
+    let c = Circle(5);
+    let radius = match c {
+        Circle(r) => r,
+        Rect(w, h) => 0,
+        _ => -1,
+    };
+    let r = Rect(3, 4);
+    let area = match r {
+        Circle(r) => 0,
+        Rect(w, h) => w * h,
+        _ => -1,
+    };
+    if radius == 5 {
+        if area == 12 {
+            println("PASS: test_match_enum_payload");
+            1
+        } else {
+            println("FAIL: test_match_enum_payload");
+            0
+        }
+    } else {
+        println("FAIL: test_match_enum_payload");
+        0
+    }
+}
+
+fn test_match_or_pattern() -> int {
+    let small = classify(2);
+    let medium = classify(5);
+    let other = classify(9);
+    if small == 1 {
+        if medium == 2 {
+            if other == 0 {
+                println("PASS: test_match_or_pattern");
+                1
+            } else {
+                println("FAIL: test_match_or_pattern");
+                0
+            }
+        } else {
+            println("FAIL: test_match_or_pattern");
+            0
+        }
+    } else {
+        println("FAIL: test_match_or_pattern");
+        0
+    }
+}
+
+fn test_match_nested() -> int {
+    let category = 1;
+    let value = 2;
+    let result = match category {
+        1 => {
+            match value {
+                1 => 10,
+                2 => 20,
+                _ => 0,
+            }
+        },
+        2 => {
+            match value {
+                1 => 100,
+                2 => 200,
+                _ => 0,
+            }
+        },
+        _ => -1,
+    };
+    if result == 20 {
+        println("PASS: test_match_nested");
+        1
+    } else {
+        println("FAIL: test_match_nested");
+        0
+    }
+}
+
+fn main() -> int {
+    println("=== Test: Match Patterns ===");
+    var passed = 0;
+    let total = 7;
+    passed = passed + test_match_int_literal();
+    passed = passed + test_match_wildcard();
+    passed = passed + test_match_block_body();
+    passed = passed + test_match_enum();
+    passed = passed + test_match_enum_payload();
+    passed = passed + test_match_or_pattern();
+    passed = passed + test_match_nested();
+    println("");
+    print("Passed: ");
+    println(f"{passed}/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

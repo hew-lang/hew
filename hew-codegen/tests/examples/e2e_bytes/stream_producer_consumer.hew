@@ -1,0 +1,19 @@
+import std::stream;
+
+fn produce(sink: Sink) {
+    sink.write("item1");
+    sink.write("item2");
+    sink.write("item3");
+    sink.close();
+}
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    produce(sink);
+
+    for await item in input {
+        println(item);
+    }
+    input.close();
+}

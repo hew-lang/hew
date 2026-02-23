@@ -1,0 +1,23 @@
+// Stress test: Message burst
+// One producer sends 1000 messages to one consumer, then awaits the total.
+// Exercises: mailbox pressure, FIFO ordering, single-actor throughput.
+actor Consumer {
+    let total: int;
+    receive fn add(x: int) {
+        self.total = self.total + x;
+    }
+    receive fn get_total() -> int {
+        self.total
+    }
+}
+
+fn main() {
+    let consumer = spawn Consumer(consumed: 0);
+    var i = 0;
+    while i < 1000 {
+        consumer.add(1);
+        i = i + 1;
+    }
+    let total = await consumer.get_total();
+    println(total);
+}

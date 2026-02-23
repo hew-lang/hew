@@ -1,0 +1,58 @@
+//! MessagePack serialization.
+//!
+//! Encode and decode values using the MessagePack binary format.
+//! Supports conversion between JSON strings and MessagePack bytes,
+//! as well as encoding individual typed values.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::encoding::msgpack;
+//! import std::encoding::hex;
+//!
+//! fn main() {
+//!     let packed = msgpack.from_json("{\"x\": 1}");
+//!     println(packed.len());
+//!     let json = msgpack.to_json(packed);
+//!     println(json);
+//! }
+//! ```
+
+/// Encode a JSON string to MessagePack binary.
+///
+/// Returns an empty `bytes` buffer on invalid JSON.
+pub fn from_json(json: String) -> bytes {
+    hew_msgpack_from_json_hew(json)
+}
+
+/// Decode a MessagePack `bytes` buffer to a JSON string.
+///
+/// Returns an empty string on error.
+pub fn to_json(data: bytes) -> String {
+    hew_msgpack_to_json_hew(data)
+}
+
+/// Encode an integer as a MessagePack varint.
+pub fn encode_int(val: i64) -> bytes {
+    hew_msgpack_encode_int_hew(val)
+}
+
+/// Encode a string as MessagePack str.
+pub fn encode_string(s: String) -> bytes {
+    hew_msgpack_encode_string_hew(s)
+}
+
+/// Encode binary data as a MessagePack bin.
+pub fn encode_bytes(data: bytes) -> bytes {
+    hew_msgpack_encode_bytes_hew(data)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_msgpack_from_json_hew(json: String) -> bytes;
+    fn hew_msgpack_to_json_hew(data: bytes) -> String;
+    fn hew_msgpack_encode_int_hew(val: i64) -> bytes;
+    fn hew_msgpack_encode_string_hew(s: String) -> bytes;
+    fn hew_msgpack_encode_bytes_hew(data: bytes) -> bytes;
+}

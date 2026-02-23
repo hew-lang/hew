@@ -1,0 +1,74 @@
+// Test: Binary Search (LeetCode #704)
+// Exercises: While loops, Vec indexing, comparison operators
+fn binary_search(arr: Vec<int>, target: int) -> int {
+    var low = 0;
+    var high = arr.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let val = arr.get(mid);
+        if val == target {
+            return mid;
+        }
+        if val < target {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return 999;
+}
+
+fn main() -> int {
+    println("=== Binary Search ===");
+    let arr: Vec<int> = Vec::new();
+    arr.push(1);
+    arr.push(3);
+    arr.push(5);
+    arr.push(7);
+    arr.push(9);
+    arr.push(11);
+    arr.push(13);
+
+    // Search for existing element
+    let idx1 = binary_search(arr, 7);
+    println(f"Search 7: index {idx1}");
+
+    // Search for first element
+    let idx2 = binary_search(arr, 1);
+    println(f"Search 1: index {idx2}");
+
+    // Search for last element
+    let idx3 = binary_search(arr, 13);
+    println(f"Search 13: index {idx3}");
+
+    // Search for missing element
+    let idx4 = binary_search(arr, 6);
+    print("Search 6: ");
+    if idx4 == 999 {
+        println("not found");
+    } else {
+        println(f"index {idx4}");
+    }
+    if idx1 == 3 {
+        if idx2 == 0 {
+            if idx3 == 6 {
+                if idx4 == 999 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

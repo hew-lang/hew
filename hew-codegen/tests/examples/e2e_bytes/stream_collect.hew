@@ -1,0 +1,12 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    sink.write("hello ");
+    sink.write("world");
+    sink.close();
+
+    let result = input.collect();
+    println(result);
+}

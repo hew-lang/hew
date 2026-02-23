@@ -1,0 +1,32 @@
+type Point {
+    x: f64;
+    y: f64;
+}
+
+trait PointMethods {
+    fn distance(self: Point) -> f64;
+    fn translate(self: Point, dx: f64, dy: f64) -> Point;
+    fn magnitude(self: Point) -> f64;
+}
+
+impl PointMethods for Point {
+    fn distance(self: Point) -> f64 {
+        self.x * self.x + self.y * self.y
+    }
+
+    fn translate(self: Point, dx: f64, dy: f64) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+
+    fn magnitude(self: Point) -> f64 {
+        let d = self.distance();
+        d * 2.0
+    }
+}
+
+fn main() {
+    let p1 = Point { x: 3.0, y: 4.0 };
+    let dist = p1.distance();
+    let p2 = p1.translate(1.0, 2.0);
+    let mag = p2.magnitude();
+}

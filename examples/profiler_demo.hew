@@ -1,0 +1,34 @@
+// Profiler demo — run with HEW_PPROF=:6060 to see the dashboard.
+//
+// This program spawns an actor that processes messages, giving the
+// profiler something interesting to display. While it runs, open
+// http://localhost:6060/ in a browser to see live scheduler, memory,
+// and message rate charts.
+//
+// Usage:
+//   HEW_PPROF=:6060 hew run profiler_demo.hew
+actor Counter {
+    let count: i32;
+    receive fn tick() {
+        self.count = self.count + 1;
+    }
+    receive fn report() {
+        println(f"Counter: {self.count}");
+    }
+}
+
+fn main() {
+    println("=== Profiler Demo ===");
+    println("Open http://localhost:6060/ to see the dashboard");
+    println("(run with HEW_PPROF=:6060)");
+    println("");
+    let counter = spawn Counter;
+    // Send 3000 messages.
+    for i in 0..3000 {
+        counter.tick();
+    }
+    // Give actors time to process.
+    sleep_ms(2000);
+    counter.report();
+    println("=== Done ===");
+}

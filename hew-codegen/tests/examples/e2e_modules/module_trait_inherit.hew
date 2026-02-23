@@ -1,0 +1,31 @@
+import "trait_base_lib.hew";
+
+trait Pet: Animal {
+    fn name(self: Self) -> int;
+}
+
+type Dog {
+    leg_count: int;
+    name_id: int;
+}
+
+impl Animal for Dog {
+    fn legs(self: Dog) -> int {
+        return self.leg_count;
+    }
+}
+
+impl Pet for Dog {
+    fn name(self: Dog) -> int {
+        return self.name_id;
+    }
+}
+
+fn describe(p: dyn Pet) -> int {
+    return p.legs() + p.name();
+}
+
+fn main() {
+    let d = Dog { leg_count: 4, name_id: 10 };
+    println(describe(d));
+}

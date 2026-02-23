@@ -1,0 +1,6 @@
+[package]
+name = "std::encoding::base64"
+version = "0.1.0"
+description = "Hew std::encoding::base64 package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

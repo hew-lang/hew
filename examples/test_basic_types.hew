@@ -1,0 +1,143 @@
+// Test: Basic Types and Variables
+// Exercises: i32, f64, String, bool, let/var, compound assignment, arithmetic
+fn test_integers() -> i32 {
+    let x: i32 = 42;
+    let y: i32 = -10;
+    let sum = x + y; // 32
+    let diff = x - y; // 52
+    let prod = x * 2; // 84
+    let div = x / 7; // 6
+    let modulo = x % 10; // 2
+    if sum == 32 {
+        if diff == 52 {
+            if prod == 84 {
+                if div == 6 {
+                    if modulo == 2 {
+                        println("PASS: integers");
+                        1
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_float() -> i32 {
+    let y: f64 = 3.14;
+    // f64 is supported but println truncates to int
+    // Just verify it compiles and doesn't crash
+    println("PASS: f64 compiles");
+    1
+}
+
+fn test_string() -> i32 {
+    let name: String = "hello";
+    let world: String = "world";
+    let combined = name + world;
+    let len = name.len();
+    let eq = name == name;
+    if len == 5 {
+        if eq {
+            println("PASS: strings");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_bool() -> i32 {
+    let flag: bool = true;
+    let other: bool = false;
+    let r1 = if flag {
+        1
+    } else {
+        0
+    };
+    let r2 = if other {
+        0
+    } else {
+        1
+    };
+    if r1 == 1 {
+        if r2 == 1 {
+            println("PASS: bool");
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+fn test_var_mutation() -> i32 {
+    var counter: i32 = 0;
+    counter = counter + 1; // 1
+    counter += 10; // 11
+    counter -= 1; // 10
+    counter *= 3; // 30
+    if counter == 30 {
+        println("PASS: var mutation + compound assignment");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_let_immutable() -> i32 {
+    let x = 42;
+    // x = 10; // would be compile error: immutable binding
+    if x == 42 {
+        println("PASS: let immutable");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_type_inference() -> i32 {
+    let a = 100; // inferred i32
+    let b = "inferred"; // inferred String
+    let c = true; // inferred bool
+    if a == 100 {
+        println("PASS: type inference");
+        1
+    } else {
+        0
+    }
+}
+
+fn main() -> i32 {
+    println("=== Test: Basic Types ===");
+    var passed = 0;
+    let total = 7;
+    passed = passed + test_integers();
+    passed = passed + test_float();
+    passed = passed + test_string();
+    passed = passed + test_bool();
+    passed = passed + test_var_mutation();
+    passed = passed + test_let_immutable();
+    passed = passed + test_type_inference();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

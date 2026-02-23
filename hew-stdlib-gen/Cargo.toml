@@ -1,0 +1,26 @@
+[package]
+name = "hew-stdlib-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build-time tool: generates .hew stubs and stdlib.rs entries from #[hew_export] metadata"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+
+[[bin]]
+name = "hew-stdlib-gen"
+path = "src/main.rs"
+
+[dependencies]
+hew-runtime = { path = "../hew-runtime", features = ["export-meta"] }
+hew-export-types = { path = "../hew-export-types" }
+
+# Individual packages with export-meta support
+hew-std-misc-uuid = { path = "../std/misc/uuid", features = ["export-meta"] }
+hew-std-misc-log = { path = "../std/misc/log", features = ["export-meta"] }
+hew-std-encoding-markdown = { path = "../std/encoding/markdown", features = [
+  "export-meta",
+] }
+
+[lints]
+workspace = true

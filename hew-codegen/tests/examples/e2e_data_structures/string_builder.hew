@@ -1,0 +1,23 @@
+// Test: String Operations
+// Exercises: String output, concatenation via print
+fn main() {
+    println("=== String Builder ===");
+
+    // Test basic string output
+    println("hello world");
+
+    // Test multiple prints forming a line
+    print("foo");
+    print("bar");
+    print("baz");
+    println("");
+
+    // Test mixed string and int output
+    print("value=");
+    println(42);
+
+    // Test empty string
+    print("");
+    println("after empty");
+    println("PASS");
+}

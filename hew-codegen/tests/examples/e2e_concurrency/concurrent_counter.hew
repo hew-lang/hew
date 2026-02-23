@@ -1,0 +1,23 @@
+// Test: Concurrent Counter
+// Exercises: Multiple senders to single actor
+actor SharedCounter {
+    let value: int;
+    receive fn inc(amount: int) {
+        self.value = self.value + amount;
+        println(f"Counter: {self.value}");
+    }
+}
+
+fn main() {
+    println("=== Concurrent Counter ===");
+    let counter = spawn SharedCounter(value: 0);
+    // Multiple increments
+    counter.inc(1);
+    counter.inc(2);
+    counter.inc(3);
+    counter.inc(4);
+    counter.inc(5);
+    sleep_ms(200);
+    // Total should be 1+2+3+4+5 = 15
+    println("Done");
+}

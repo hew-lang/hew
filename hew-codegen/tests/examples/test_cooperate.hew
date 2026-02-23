@@ -1,0 +1,5 @@
+fn main() {
+    println("before cooperate");
+    cooperate();
+    println("after cooperate");
+}

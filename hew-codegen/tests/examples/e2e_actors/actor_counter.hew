@@ -1,0 +1,29 @@
+// Test: Actor Counter
+// Exercises: Named actor with mutable state, multiple message types
+actor Counter {
+    let value: int;
+    receive fn increment(amount: int) {
+        self.value = self.value + amount;
+        print("Incremented by ");
+        print(amount);
+        println(f", now {self.value}");
+    }
+    receive fn decrement(amount: int) {
+        self.value = self.value - amount;
+        print("Decremented by ");
+        print(amount);
+        println(f", now {self.value}");
+    }
+}
+
+fn main() {
+    println("=== Actor Counter ===");
+    let c = spawn Counter(count: 0);
+    c.increment(5);
+    c.increment(3);
+    c.decrement(2);
+    c.increment(10);
+    c.decrement(1);
+    sleep_ms(200);
+    println("Done");
+}

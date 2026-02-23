@@ -1,0 +1,77 @@
+// Test: Option and Result Chaining
+// Exercises: Search, safe division, chaining patterns
+fn find_in_vec(v: Vec<int>, target: int) -> int {
+    var i = 0;
+    while i < v.len() {
+        if v.get(i) == target {
+            return i;
+        }
+        i = i + 1;
+    }
+    return 999;
+}
+
+fn safe_divide(a: int, b: int) -> int {
+    if b == 0 {
+        return 0;
+    }
+    a / b
+}
+
+fn main() -> int {
+    println("=== Option/Result Chain ===");
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.push(40);
+
+    // Find existing
+    let idx1 = find_in_vec(v, 30);
+    println(f"Find 30: index {idx1}");
+
+    // Find missing
+    let idx2 = find_in_vec(v, 99);
+    print("Find 99: ");
+    if idx2 == 999 {
+        println("not found");
+    } else {
+        println(f"index {idx2}");
+    }
+    // Safe divide
+    let d1 = safe_divide(100, 5);
+    println(f"100/5 = {d1}");
+    let d2 = safe_divide(100, 0);
+    println(f"100/0 = {d2}");
+
+    // Chain: find element, then divide by it
+    let target_idx = find_in_vec(v, 20);
+    var chain_result = 0;
+    if target_idx != 999 {
+        let val = v.get(target_idx);
+        chain_result = safe_divide(100, val);
+    }
+    println(f"Chain result: {chain_result}");
+    if idx1 == 2 {
+        if idx2 == 999 {
+            if d1 == 20 {
+                if chain_result == 5 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

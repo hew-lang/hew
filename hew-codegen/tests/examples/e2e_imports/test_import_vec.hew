@@ -1,0 +1,38 @@
+import std::vec;
+
+fn main() {
+    println("=== vec.contains_i32 ===");
+    let v1: Vec<i32> = Vec::new();
+    v1.push(10);
+    v1.push(20);
+    v1.push(30);
+    println(vec.contains_i32(v1, 10));
+    println(vec.contains_i32(v1, 20));
+    println(vec.contains_i32(v1, 99));
+    let empty1: Vec<i32> = Vec::new();
+    println(vec.contains_i32(empty1, 0));
+
+    println("=== vec.contains_i64 ===");
+    let v2: Vec<i64> = Vec::new();
+    v2.push(100);
+    v2.push(200);
+    println(vec.contains_i64(v2, 100));
+    println(vec.contains_i64(v2, 999));
+
+    println("=== vec.contains_f64 ===");
+    let v3: Vec<f64> = Vec::new();
+    v3.push(3.14);
+    v3.push(2.71);
+    println(vec.contains_f64(v3, 3.14));
+    println(vec.contains_f64(v3, 0.0));
+
+    println("=== vec.contains_str ===");
+    let v4: Vec<String> = Vec::new();
+    v4.push("hello");
+    v4.push("world");
+    println(vec.contains_str(v4, "hello"));
+    println(vec.contains_str(v4, "world"));
+    println(vec.contains_str(v4, "missing"));
+    let empty4: Vec<String> = Vec::new();
+    println(vec.contains_str(empty4, "x"));
+}

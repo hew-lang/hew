@@ -1,0 +1,9 @@
+// Test 3: Mutable variables and while loops
+// Trying var instead of let, and testing a simple loop
+fn main() {
+    println("Counting to 5:");
+    for counter in 0..5 {
+        println(counter);
+    }
+    println("Done!");
+}

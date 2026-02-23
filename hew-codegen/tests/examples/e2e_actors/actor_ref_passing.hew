@@ -1,0 +1,39 @@
+// Test: Actor Reference Passing
+// Exercises: Passing actor refs as fields, actor-to-actor communication
+actor Printer {
+    receive fn print_result(n: int) {
+        println(f"Result: {n}");
+    }
+}
+
+actor Adder {
+    let amount: int;
+    let target: Printer;
+    receive fn add(n: int) {
+        let result = n + self.amount;
+        self.target.print_result(result);
+    }
+}
+
+actor Doubler {
+    let target: Adder;
+    receive fn process(n: int) {
+        let result = n * 2;
+        self.target.add(result);
+    }
+}
+
+fn main() {
+    println("=== Actor Ref Passing ===");
+    let printer = spawn Printer;
+    let adder = spawn Adder(amount: 10, target: printer);
+    let doubler = spawn Doubler(target: adder);
+    // Pipeline: 5 -> double(5)=10 -> add(10,10)=20 -> print(20)
+    doubler.process(5);
+    sleep_ms(100);
+
+    // Pipeline: 3 -> double(3)=6 -> add(6,10)=16 -> print(16)
+    doubler.process(3);
+    sleep_ms(100);
+    println("Done");
+}

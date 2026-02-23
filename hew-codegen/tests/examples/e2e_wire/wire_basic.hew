@@ -1,0 +1,8 @@
+wire type Point {
+    x: int @1;
+    y: int @2;
+}
+
+fn main() {
+    println("wire types compile");
+}

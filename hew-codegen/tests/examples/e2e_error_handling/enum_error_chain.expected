@@ -1,0 +1,4 @@
+chain ok: 10
+parse err: 1
+digit 0: 0
+digit 9: 9

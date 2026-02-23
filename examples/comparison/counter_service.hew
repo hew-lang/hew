@@ -1,0 +1,59 @@
+// Hew: Counter Service
+// The compiler enforces that actor state is never shared.
+
+actor Counter {
+    let count: i32;
+
+    receive fn increment(amount: i32) {
+        self.count = self.count + amount;
+    }
+
+    receive fn get_count() -> i32 {
+        self.count
+    }
+}
+
+// Supervision is a language construct, not a library choice.
+supervisor CounterPool {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 60;
+
+    child c1: Counter;
+    child c2: Counter;
+}
+
+// Wire types are first-class.
+// Schema evolution rules enforced at compile time.
+wire type CounterUpdate {
+    counter_id: u32 @1;
+    new_count: i32 @2;
+    timestamp: u64 @3;
+}
+
+fn main() {
+    // All four pillars demonstrated:
+    // 1. Actor isolation (Counter)
+    // 2. Supervision trees (CounterPool)
+    // 3. Wire contracts (CounterUpdate)
+    // 4. Compiled to native code (no VM, no GC)
+
+    println("=== Hew Counter Service ===");
+
+    // Spawn the supervisor — it starts and monitors the Counter children.
+    let pool = spawn CounterPool;
+    let c1 = supervisor_child(pool, 0);
+    let c2 = supervisor_child(pool, 1);
+
+    // Increment each independently — no shared state.
+    c1.increment(10);
+    c1.increment(5);
+    c2.increment(100);
+    sleep_ms(100); // Give actors time to process messages.
+
+    // Read back the counts.
+    println(f"Counter 1: {await c1.get_count()}");
+    println(f"Counter 2: {await c2.get_count()}");
+
+    println("=== Done ===");
+}

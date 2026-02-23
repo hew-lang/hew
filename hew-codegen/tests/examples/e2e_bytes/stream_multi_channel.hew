@@ -1,0 +1,25 @@
+import std::stream;
+
+fn main() {
+    let (sink_a, a) = stream.channel(4);
+
+    let (sink_b, b) = stream.channel(4);
+
+    sink_a.write("alpha");
+    sink_b.write("beta");
+    sink_a.write("gamma");
+    sink_a.close();
+    sink_b.close();
+
+    println("A:");
+    for await item in a {
+        println(item);
+    }
+
+    println("B:");
+    for await item in b {
+        println(item);
+    }
+    a.close();
+    b.close();
+}

@@ -1,0 +1,40 @@
+// Golden test: Vec operations
+// Exercises: VecNewOp, VecPushOp, VecGetOp, VecSetOp, VecLenOp, VecPopOp,
+//            VecIsEmptyOp, VecFreeOp
+fn main() {
+    // new + push + len + get
+    let v: Vec<int> = Vec::new();
+    println(v.is_empty());
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    println(v.len());
+    println(v.get(0));
+    println(v.get(1));
+    println(v.get(2));
+    println(v.is_empty());
+
+    // set
+    v.set(1, 99);
+    println(v.get(1));
+
+    // pop
+    let last = v.pop();
+    println(last);
+    println(v.len());
+
+    // sum via loop
+    let v2: Vec<int> = Vec::new();
+    v2.push(1);
+    v2.push(2);
+    v2.push(3);
+    v2.push(4);
+    v2.push(5);
+    var sum = 0;
+    var i = 0;
+    while i < v2.len() {
+        sum = sum + v2.get(i);
+        i = i + 1;
+    }
+    println(sum);
+}

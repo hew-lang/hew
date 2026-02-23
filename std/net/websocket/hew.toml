@@ -1,0 +1,6 @@
+[package]
+name = "std::net::websocket"
+version = "0.1.0"
+description = "Hew std::net::websocket package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,89 @@
+// stress_match.hew - Complex pattern matching stress test
+// Exercises advanced pattern matching with enum variants, data payloads, and nested logic
+enum ComplexData {
+    Empty;
+    Single(int);
+    Pair(int, int);
+    Triple(int, int, int);
+    Tagged(int, int);
+}
+
+enum MessageType {
+    Text(int);
+    Binary(int);
+    Structured(int, int);
+}
+
+enum ProcessingResult {
+    Success(int);
+    Warning(int, int);
+    Error(int);
+}
+
+fn process_complex_data(data: ComplexData) -> int {
+    match data {
+        Empty => 0,
+        Single(x) => x * 2,
+        Pair(x, y) => x + y,
+        Triple(x, y, z) => x * y * z,
+        Tagged(name, value) => value,
+        _ => -1,
+    }
+}
+
+fn process_message(msg: MessageType) -> ProcessingResult {
+    match msg {
+        Text(content) => Success(42),
+        Binary(data) => {
+            if data > 1000 {
+                Error(1)
+            } else if data > 500 {
+                Warning(data, 2)
+            } else {
+                Success(data)
+            }
+        },
+        Structured(header, payload) => {
+            if header == payload {
+                Success(header)
+            } else {
+                Error(3)
+            }
+        },
+        _ => Error(99),
+    }
+}
+
+fn analyze_result(result: ProcessingResult, context: int) -> int {
+    match result {
+        Success(value) => value + context,
+        Warning(code, msg) => code,
+        Error(msg) => -1,
+        _ => 0,
+    }
+}
+
+fn main() {
+    // Test complex data processing
+    let data1 = Triple(5, 10, 15);
+    let result1 = process_complex_data(data1);
+    let data2 = Single(42);
+    let result2 = process_complex_data(data2);
+    // Test message processing
+    let msg1 = Text(100);
+    let processed1 = process_message(msg1);
+    let analyzed1 = analyze_result(processed1, 10);
+    let msg2 = Binary(750);
+    let processed2 = process_message(msg2);
+    let analyzed2 = analyze_result(processed2, 5);
+    let msg3 = Structured(5, 5);
+    let processed3 = process_message(msg3);
+    let analyzed3 = analyze_result(processed3, 1);
+    println("=== Stress Match Test ===");
+    println(f"Triple(5,10,15) = {result1}");
+    println(f"Single(42) = {result2}");
+    println(f"Text(100) analyzed = {analyzed1}");
+    println(f"Binary(750) analyzed = {analyzed2}");
+    println(f"Structured(5,5) analyzed = {analyzed3}");
+    println("=== Done ===");
+}

@@ -1,0 +1,35 @@
+// Test: Fibonacci (LeetCode #509)
+// Exercises: Recursion, function calls, integer arithmetic
+fn fib(n: int) -> int {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() -> int {
+    println("=== Fibonacci ===");
+
+    // Test known values
+    print("fib(0) = ");
+    println(fib(0));
+    print("fib(1) = ");
+    println(fib(1));
+    print("fib(5) = ");
+    println(fib(5));
+    print("fib(10) = ");
+    println(fib(10));
+    print("fib(15) = ");
+    println(fib(15));
+
+    // Assertion
+    let result = fib(10);
+    if result == 55 {
+        println("PASS");
+        0
+    } else {
+        println("FAIL");
+        1
+    }
+}

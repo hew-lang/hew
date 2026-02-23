@@ -1,0 +1,6 @@
+[package]
+name = "std::encoding::protobuf"
+version = "0.1.0"
+description = "Hew std::encoding::protobuf package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

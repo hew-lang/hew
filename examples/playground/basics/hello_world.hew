@@ -1,0 +1,6 @@
+//! @name Hello World
+//! @description Your first Hew program
+
+fn main() {
+    println("Hello, World!");
+}

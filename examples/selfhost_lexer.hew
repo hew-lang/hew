@@ -1,0 +1,524 @@
+// selfhost_lexer.hew - Simplified Hew lexer written in Hew
+// Tests: String processing, pattern matching, loops, actor message passing
+// Purpose: Validate Hew can implement its own lexer for self-hosting
+
+// Token type constants
+// 0 = EOF, 1 = Identifier, 2 = Integer, 3 = String
+// 4 = Plus, 5 = Minus, 6 = Star, 7 = Slash
+// 8 = LeftParen, 9 = RightParen, 10 = LeftBrace, 11 = RightBrace
+// 12 = Semicolon, 13 = Comma, 14 = Equal, 15 = Colon
+// 16 = Arrow (->), 17 = FatArrow (=>)
+// 20 = KW_fn, 21 = KW_let, 22 = KW_actor, 23 = KW_if
+// 24 = KW_else, 25 = KW_match, 26 = KW_return, 27 = KW_while
+// 100 = Error
+
+// Check if a character code is a letter (a-z, A-Z) or underscore
+fn is_alpha(ch: i32) -> i32 {
+    if ch >= 97 {
+        if ch <= 122 {
+            1
+        } else {
+            if ch == 95 {
+                1
+            } else {
+                0
+            }
+        }
+    } else if ch >= 65 {
+        if ch <= 90 {
+            1
+        } else {
+            if ch == 95 {
+                1
+            } else {
+                0
+            }
+        }
+    } else {
+        if ch == 95 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+// Check if a character code is a digit (0-9)
+fn is_digit(ch: i32) -> i32 {
+    if ch >= 48 {
+        if ch <= 57 {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+// Check if a character code is alphanumeric or underscore
+fn is_alnum(ch: i32) -> i32 {
+    if is_alpha(ch) == 1 {
+        1
+    } else if is_digit(ch) == 1 {
+        1
+    } else {
+        0
+    }
+}
+
+// Check if a character is whitespace (space, tab, newline, carriage return)
+fn is_whitespace(ch: i32) -> i32 {
+    if ch == 32 {
+        1
+    } else if ch == 9 { // space
+        1
+    } else if ch == 10 { // tab
+        1
+    } else if ch == 13 { // newline
+        1
+    } else { // carriage return
+        0
+    }
+}
+
+// Classify a keyword from its length and first few character codes
+// This simulates keyword lookup without hash maps or string comparison
+// Returns keyword token type, or 1 (Identifier) if not a keyword
+fn classify_keyword(len: i32, c0: i32, c1: i32, c2: i32, c3: i32, c4: i32, c5: i32) -> i32 {
+    // fn
+    if len == 2 {
+        if c0 == 102 {
+            if c1 == 110 {
+                20
+            } else {
+                1
+            }
+        } else if c0 == 105 {
+            if c1 == 102 {
+                23
+            } else {
+                1
+            } // if
+        } else {
+            1
+        }
+    } else if len == 3 {
+        // let
+        if c0 == 108 {
+            if c1 == 101 {
+                if c2 == 116 {
+                    21
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else if len == 4 {
+        // else
+        if c0 == 101 {
+            if c1 == 108 {
+                if c2 == 115 {
+                    if c3 == 101 {
+                        24
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else if len == 5 {
+        // actor, match, while
+        if c0 == 97 { // 'a' for actor
+            if c1 == 99 {
+                if c2 == 116 {
+                    if c3 == 111 {
+                        if c4 == 114 {
+                            22
+                        } else {
+                            1
+                        }
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else if c0 == 109 { // 'm' for match
+            if c1 == 97 {
+                if c2 == 116 {
+                    if c3 == 99 {
+                        if c4 == 104 {
+                            25
+                        } else {
+                            1
+                        }
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else if c0 == 119 { // 'w' for while
+            if c1 == 104 {
+                if c2 == 105 {
+                    if c3 == 108 {
+                        if c4 == 101 {
+                            27
+                        } else {
+                            1
+                        }
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else if len == 6 {
+        // return
+        if c0 == 114 {
+            if c1 == 101 {
+                if c2 == 116 {
+                    if c3 == 117 {
+                        if c4 == 114 {
+                            if c5 == 110 {
+                                26
+                            } else {
+                                1
+                            }
+                        } else {
+                            1
+                        }
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            } else {
+                1
+            }
+        } else {
+            1
+        }
+    } else {
+        1
+    }
+}
+
+// Print a token type name
+fn print_token_type(token_type: i32) -> i32 {
+    if token_type == 0 {
+        print("EOF");
+        0
+    } else if token_type == 1 {
+        print("Identifier");
+        0
+    } else if token_type == 2 {
+        print("Integer");
+        0
+    } else if token_type == 3 {
+        print("String");
+        0
+    } else if token_type == 4 {
+        print("Plus");
+        0
+    } else if token_type == 5 {
+        print("Minus");
+        0
+    } else if token_type == 6 {
+        print("Star");
+        0
+    } else if token_type == 7 {
+        print("Slash");
+        0
+    } else if token_type == 8 {
+        print("LeftParen");
+        0
+    } else if token_type == 9 {
+        print("RightParen");
+        0
+    } else if token_type == 10 {
+        print("LeftBrace");
+        0
+    } else if token_type == 11 {
+        print("RightBrace");
+        0
+    } else if token_type == 12 {
+        print("Semicolon");
+        0
+    } else if token_type == 13 {
+        print("Comma");
+        0
+    } else if token_type == 14 {
+        print("Equal");
+        0
+    } else if token_type == 15 {
+        print("Colon");
+        0
+    } else if token_type == 16 {
+        print("Arrow");
+        0
+    } else if token_type == 17 {
+        print("FatArrow");
+        0
+    } else if token_type == 20 {
+        print("KW_fn");
+        0
+    } else if token_type == 21 {
+        print("KW_let");
+        0
+    } else if token_type == 22 {
+        print("KW_actor");
+        0
+    } else if token_type == 23 {
+        print("KW_if");
+        0
+    } else if token_type == 24 {
+        print("KW_else");
+        0
+    } else if token_type == 25 {
+        print("KW_match");
+        0
+    } else if token_type == 26 {
+        print("KW_return");
+        0
+    } else if token_type == 27 {
+        print("KW_while");
+        0
+    } else if token_type == 100 {
+        print("Error");
+        0
+    } else {
+        print("Unknown");
+        0
+    }
+}
+
+// Actor that receives source code and tokenizes it
+actor Lexer {
+    let position: i32;
+    let token_count: i32;
+    receive fn tokenize(source: String) -> i32 {
+
+        // For now, demonstrate the tokenization concept
+        // Real implementation would iterate over source characters
+        // This tests actor message passing with string data
+        println(f"Tokenizing source: {source}");
+        0
+    }
+}
+
+// Simulate tokenizing a small hardcoded program
+// Since we lack character-at-index and string length, we demonstrate
+// the tokenization logic with integer character codes
+fn tokenize_demo() -> i32 {
+    // Simulate: "fn main() { let x = 42; return x; }"
+    // We process character codes to identify tokens
+    var token_count = 0;
+    // Token 1: "fn" (keyword)
+    let t1 = classify_keyword(2, 102, 110, 0, 0, 0, 0);
+    print_token_type(t1);
+    println(" fn");
+    token_count = token_count + 1;
+
+    // Token 2: "main" (identifier)
+    let t2 = classify_keyword(4, 109, 97, 105, 110, 0, 0);
+    print_token_type(t2);
+    println(" main");
+    token_count = token_count + 1;
+
+    // Token 3: "(" 
+    print_token_type(8);
+    println(" (");
+    token_count = token_count + 1;
+
+    // Token 4: ")"
+    print_token_type(9);
+    println(" )");
+    token_count = token_count + 1;
+
+    // Token 5: "->"
+    print_token_type(16);
+    println(" ->");
+    token_count = token_count + 1;
+
+    // Token 6: "i32" (identifier)
+    let t6 = classify_keyword(3, 105, 51, 50, 0, 0, 0);
+    print_token_type(t6);
+    println(" i32");
+    token_count = token_count + 1;
+
+    // Token 7: "{"
+    print_token_type(10);
+    println(" {");
+    token_count = token_count + 1;
+
+    // Token 8: "let" (keyword)
+    let t8 = classify_keyword(3, 108, 101, 116, 0, 0, 0);
+    print_token_type(t8);
+    println(" let");
+    token_count = token_count + 1;
+
+    // Token 9: "x" (identifier)
+    let t9 = classify_keyword(1, 120, 0, 0, 0, 0, 0);
+    print_token_type(t9);
+    println(" x");
+    token_count = token_count + 1;
+
+    // Token 10: "="
+    print_token_type(14);
+    println(" =");
+    token_count = token_count + 1;
+
+    // Token 11: "42" (integer)
+    print_token_type(2);
+    println(" 42");
+    token_count = token_count + 1;
+
+    // Token 12: ";"
+    print_token_type(12);
+    println(" ;");
+    token_count = token_count + 1;
+
+    // Token 13: "return" (keyword)
+    let t13 = classify_keyword(6, 114, 101, 116, 117, 114, 110);
+    print_token_type(t13);
+    println(" return");
+    token_count = token_count + 1;
+
+    // Token 14: "x" (identifier)
+    print_token_type(1);
+    println(" x");
+    token_count = token_count + 1;
+
+    // Token 15: ";"
+    print_token_type(12);
+    println(" ;");
+    token_count = token_count + 1;
+
+    // Token 16: "}"
+    print_token_type(11);
+    println(" }");
+    token_count = token_count + 1;
+
+    // Token 17: EOF
+    print_token_type(0);
+    println("");
+    token_count = token_count + 1;
+    token_count
+}
+
+// Test helper functions
+fn test_char_classification() -> i32 {
+    var passed = 0;
+    // Test is_alpha
+    if is_alpha(97) == 1 {
+        passed = passed + 1;
+    } // 'a'
+    if is_alpha(122) == 1 {
+        passed = passed + 1;
+    } // 'z'
+    if is_alpha(65) == 1 {
+        passed = passed + 1;
+    } // 'A'
+    if is_alpha(90) == 1 {
+        passed = passed + 1;
+    } // 'Z'
+    if is_alpha(95) == 1 {
+        passed = passed + 1;
+    } // '_'
+    if is_alpha(48) == 0 {
+        passed = passed + 1;
+    } // '0' not alpha
+    if is_alpha(32) == 0 {
+        passed = passed + 1;
+    } // space not alpha
+
+    // Test is_digit
+    if is_digit(48) == 1 {
+        passed = passed + 1;
+    } // '0'
+    if is_digit(57) == 1 {
+        passed = passed + 1;
+    } // '9'
+    if is_digit(97) == 0 {
+        passed = passed + 1;
+    } // 'a' not digit
+
+    // Test is_whitespace
+    if is_whitespace(32) == 1 {
+        passed = passed + 1;
+    } // space
+    if is_whitespace(10) == 1 {
+        passed = passed + 1;
+    } // newline
+    if is_whitespace(97) == 0 {
+        passed = passed + 1;
+    } // 'a' not ws
+    passed
+}
+
+fn main() {
+    println("=== Hew Self-Hosting Lexer Test ===");
+    println("");
+
+    // Test character classification functions
+    println("--- Character Classification Tests ---");
+    let test_results = test_char_classification();
+    println(f"Tests passed: {test_results}");
+    print("Expected: ");
+    println(13);
+    println("");
+
+    // Test keyword classification
+    println("--- Keyword Classification Tests ---");
+    let kw_fn = classify_keyword(2, 102, 110, 0, 0, 0, 0);
+    println(f"classify 'fn': {kw_fn}");
+    let kw_let = classify_keyword(3, 108, 101, 116, 0, 0, 0);
+    println(f"classify 'let': {kw_let}");
+    let kw_return = classify_keyword(6, 114, 101, 116, 117, 114, 110);
+    println(f"classify 'return': {kw_return}");
+    let kw_foo = classify_keyword(3, 102, 111, 111, 0, 0, 0);
+    println(f"classify 'foo' (should be 1=ident): {kw_foo}");
+    println("");
+
+    // Run tokenization demo
+    println("--- Tokenization Demo ---");
+    println("Source: fn main() { let x = 42; return x; }");
+    println("");
+    let num_tokens = tokenize_demo();
+    println("");
+    println(f"Total tokens: {num_tokens}");
+    println("");
+    println("=== Self-Hosting Gaps Identified ===");
+    println("1. No string indexing (str[i]) - cannot iterate chars");
+    println("2. No string length function - cannot determine bounds");
+    println("3. No char type - must use i32 for character codes");
+    println("4. No array/Vec type in codegen - cannot collect tokens");
+    println("5. No enum codegen - cannot use Token enum type");
+    println("6. No match codegen - must use if/else chains");
+    println("7. No struct codegen - cannot create Token structs");
+}

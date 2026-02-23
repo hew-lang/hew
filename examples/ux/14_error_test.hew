@@ -1,0 +1,22 @@
+// Error handling with Result types
+
+enum Result {
+    Ok(i32);
+    Err;
+}
+
+fn parse_number(s: str) -> Result {
+    if s == "42" {
+        Ok(42)
+    } else {
+        Err
+    }
+}
+
+fn main() {
+    let result = parse_number("42");
+    match result {
+        Ok(n) => println(n),
+        Err => println("Invalid number"),
+    }
+}

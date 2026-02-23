@@ -1,0 +1,80 @@
+//! Option helper functions — pure Hew alternatives to the Rust FFI runtime.
+//!
+//! These functions provide idiomatic Hew wrappers for common `Option<T>`
+//! operations.  They use `match` on the built-in `Option` type and avoid
+//! FFI calls entirely for the supported element types.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::option;
+//!
+//! fn main() {
+//!     let x = Some(42);
+//!     println(option.is_some_int(x));        // true
+//!     println(option.unwrap_or_int(x, 0));   // 42
+//!
+//!     let y: Option<int> = None;
+//!     println(option.is_none_int(y));         // true
+//!     println(option.unwrap_or_int(y, -1));   // -1
+//! }
+//! ```
+
+// ── Predicates ──────────────────────────────────────────────────────
+
+/// Returns `true` if the option contains a value.
+pub fn is_some_int(opt: Option<int>) -> bool {
+    match opt {
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Returns `true` if the option is `None`.
+pub fn is_none_int(opt: Option<int>) -> bool {
+    match opt {
+        Some(_) => false,
+        None => true,
+    }
+}
+
+// ── Unwrap ──────────────────────────────────────────────────────────
+
+/// Unwrap the `int` value.  Panics if the option is `None`.
+pub fn unwrap_int(opt: Option<int>) -> int {
+    match opt {
+        Some(v) => v,
+        None => {
+            panic("option: unwrap called on None");
+            0
+        },
+    }
+}
+
+/// Unwrap the `int` value, or return `fallback` if `None`.
+pub fn unwrap_or_int(opt: Option<int>, fallback: int) -> int {
+    match opt {
+        Some(v) => v,
+        None => fallback,
+    }
+}
+
+// ── Map ─────────────────────────────────────────────────────────────
+
+/// Apply `f` to the contained `int` value, or return `None` if empty.
+pub fn map_int(opt: Option<int>, f: fn(int) -> int) -> Option<int> {
+    match opt {
+        Some(v) => Some(f(v)),
+        None => None,
+    }
+}
+
+// ── Contains ────────────────────────────────────────────────────────
+
+/// Returns `true` if the option contains `needle`.
+pub fn contains_int(opt: Option<int>, needle: int) -> bool {
+    match opt {
+        Some(v) => v == needle,
+        None => false,
+    }
+}

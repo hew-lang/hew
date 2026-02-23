@@ -1,0 +1,5 @@
+=== Collection Ops Bench ===
+Vec: pushed 10000 elements
+Vec sum: 49995000
+HashMap: key0=0, key4=4
+PASS

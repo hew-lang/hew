@@ -1,0 +1,24 @@
+// Test: Actor stop/close prevents message processing
+// Exercises: stop(ref) and close(ref) on WASM
+actor Worker {
+    receive fn greet(label: String) {
+        println(label);
+    }
+}
+
+fn main() {
+    // Test stop: messages after stop should not be processed
+    let w1 = spawn Worker;
+    stop(w1);
+    w1.greet("should not print 1");
+
+    // Test close: messages after close should not be processed
+    let w2 = spawn Worker;
+    close(w2);
+    w2.greet("should not print 2");
+
+    // Test that a non-stopped actor DOES process messages
+    let w3 = spawn Worker;
+    w3.greet("hello from w3");
+    println("done");
+}

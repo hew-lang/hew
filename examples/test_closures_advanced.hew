@@ -1,0 +1,122 @@
+// Test: Closures and Lambdas
+// Exercises: closure definition, capture, multi-capture, factory pattern
+fn test_basic_lambda() -> i32 {
+    println("--- test_basic_lambda ---");
+    let dbl = (x) => x * 2;
+    let result = dbl(21);
+    if result == 42 {
+        println("PASS: basic lambda");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_single_capture() -> i32 {
+    println("--- test_single_capture ---");
+    let x: i32 = 10;
+    let add_x = (y) => x + y;
+    let result = add_x(5);
+    if result == 15 {
+        println("PASS: single capture");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_multi_capture() -> i32 {
+    println("--- test_multi_capture ---");
+    let a: i32 = 3;
+    let b: i32 = 7;
+    let sum_with = (c) => a + b + c;
+    let result = sum_with(10);
+    if result == 20 {
+        println("PASS: multi capture");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_closure_factory() -> i32 {
+    println("--- test_closure_factory ---");
+    let result = make_adder(42);
+    if result == 142 {
+        println("PASS: closure factory");
+        1
+    } else {
+        0
+    }
+}
+
+fn make_adder(n: i32) -> i32 {
+    let add = (x) => n + x;
+    add(100)
+}
+
+fn test_no_capture() -> i32 {
+    println("--- test_no_capture ---");
+    let twice = (x) => x * 2;
+    if twice(21) == 42 {
+        println("PASS: no capture lambda");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_closure_with_block() -> i32 {
+    println("--- test_closure_with_block ---");
+    let compute = (x) => {
+        let doubled = x * 2;
+        let added = doubled + 10;
+        added
+    };
+    let result = compute(5);
+    // 5 * 2 + 10 = 20
+    if result == 20 {
+        println("PASS: closure with block body");
+        1
+    } else {
+        0
+    }
+}
+
+fn test_nested_closure_calls() -> i32 {
+    println("--- test_nested_closure_calls ---");
+    let f = (x) => x + 1;
+    let g = (x) => x * 2;
+    let result = f(g(10));
+    // g(10) = 20, f(20) = 21
+    if result == 21 {
+        println("PASS: nested closure calls");
+        1
+    } else {
+        0
+    }
+}
+
+// TODO: Closures as function parameters (Fn type syntax not yet supported)
+// fn apply(f: Fn(i32) -> i32, x: i32) -> i32 { f(x) }
+fn main() -> i32 {
+    println("=== Test: Closures & Lambdas ===");
+    var passed = 0;
+    let total = 7;
+    passed = passed + test_basic_lambda();
+    passed = passed + test_single_capture();
+    passed = passed + test_multi_capture();
+    passed = passed + test_closure_factory();
+    passed = passed + test_no_capture();
+    passed = passed + test_closure_with_block();
+    passed = passed + test_nested_closure_calls();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total {
+        0
+    } else {
+        1
+    }
+}

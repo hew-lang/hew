@@ -1,0 +1,34 @@
+// Test: Producer Consumer
+// Exercises: Actor coordination, buffering
+actor Consumer {
+    let consumed: int;
+    receive fn consume(item: int) {
+        self.consumed = self.consumed + 1;
+        println(f"Consumed item {item}");
+    }
+}
+
+actor Producer {
+    let produced: int;
+    receive fn produce(count: int) {
+        var i = 0;
+        while i < count {
+            self.produced = self.produced + 1;
+            println(f"Produced item {self.produced}");
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    println("=== Producer Consumer ===");
+    let producer = spawn Producer(produced: 0);
+    let consumer = spawn Consumer(consumed: 0);
+    producer.produce(3);
+    sleep_ms(100);
+    consumer.consume(1);
+    consumer.consume(2);
+    consumer.consume(3);
+    sleep_ms(200);
+    println("Done");
+}

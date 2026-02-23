@@ -1,0 +1,97 @@
+// Test: HashMap Frequency Count (LeetCode #347 simplified)
+// Exercises: HashMap insert/get/update, counting
+fn main() -> int {
+    println("=== HashMap Frequency ===");
+
+    // Count frequency of values in array
+    // Values: [1, 2, 2, 3, 3, 3, 4, 4, 4, 4]
+    let data: Vec<int> = Vec::new();
+    data.push(1);
+    data.push(2);
+    data.push(2);
+    data.push(3);
+    data.push(3);
+    data.push(3);
+    data.push(4);
+    data.push(4);
+    data.push(4);
+    data.push(4);
+
+    // Use separate counters since HashMap keys are strings
+    var count1 = 0;
+    var count2 = 0;
+    var count3 = 0;
+    var count4 = 0;
+    var i = 0;
+    while i < data.len() {
+        let val = data.get(i);
+        if val == 1 {
+            count1 = count1 + 1;
+        }
+        if val == 2 {
+            count2 = count2 + 1;
+        }
+        if val == 3 {
+            count3 = count3 + 1;
+        }
+        if val == 4 {
+            count4 = count4 + 1;
+        }
+        i = i + 1;
+    }
+    print("1 appears ");
+    print(count1);
+    println(" times");
+    print("2 appears ");
+    print(count2);
+    println(" times");
+    print("3 appears ");
+    print(count3);
+    println(" times");
+    print("4 appears ");
+    print(count4);
+    println(" times");
+
+    // Most frequent
+    var max_count = count1;
+    var max_val = 1;
+    if count2 > max_count {
+        max_count = count2;
+        max_val = 2;
+    }
+    if count3 > max_count {
+        max_count = count3;
+        max_val = 3;
+    }
+    if count4 > max_count {
+        max_count = count4;
+        max_val = 4;
+    }
+    print("Most frequent: ");
+    print(max_val);
+    print(" (");
+    print(max_count);
+    println(" times)");
+    if count1 == 1 {
+        if count2 == 2 {
+            if count3 == 3 {
+                if count4 == 4 {
+                    println("PASS");
+                    0
+                } else {
+                    println("FAIL");
+                    1
+                }
+            } else {
+                println("FAIL");
+                1
+            }
+        } else {
+            println("FAIL");
+            1
+        }
+    } else {
+        println("FAIL");
+        1
+    }
+}

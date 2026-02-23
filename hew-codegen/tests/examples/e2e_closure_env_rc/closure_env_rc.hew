@@ -1,0 +1,49 @@
+// Test closure environment memory management via Rc-based RAII.
+// Exercises: basic closure with captures, variable alias, non-capturing
+// closure, closure passed as function parameter, and closure returned
+// from function.
+fn apply(f: fn(int) -> int, x: int) -> int {
+    f(x)
+}
+
+fn make_adder(n: int) -> fn(int) -> int {
+    let adder = (x: int) -> int => x + n;
+    adder
+}
+
+fn main() {
+    // Test 1: Basic closure with captures — env freed at scope exit
+    let offset = 100;
+    let f = (x: int) -> int => x + offset;
+    let r1 = apply(f, 5);
+    println(r1); // 105
+
+    // Test 2: Non-capturing closure — null env, no-op drop
+    let g = (x: int) -> int => x * 2;
+    let r2 = apply(g, 21);
+    println(r2); // 42
+
+    // Test 3: Closure alias — refcount keeps env alive
+    let base = 50;
+    let h = (x: int) -> int => x + base;
+    let h2 = h;
+    let r3 = apply(h, 10);
+    let r4 = apply(h2, 20);
+    println(r3); // 60
+    println(r4); // 70
+
+    // Test 4: Closure returned from function — ownership transfers
+    let add10 = make_adder(10);
+    let r5 = apply(add10, 7);
+    println(r5); // 17
+
+    // Test 5: Multiple closures with different captures
+    let a = 1;
+    let b = 2;
+    let c1 = (x: int) -> int => x + a;
+    let c2 = (x: int) -> int => x + b;
+    let r6 = apply(c1, 100);
+    let r7 = apply(c2, 100);
+    println(r6); // 101
+    println(r7);
+} // 102

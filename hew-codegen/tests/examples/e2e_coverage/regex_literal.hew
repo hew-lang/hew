@@ -1,0 +1,11 @@
+// E2E test: re"pattern" literal exercises generateRegexLiteral.
+fn main() {
+    let re = re"[0-9]+";
+    if re.is_match("hello123world") {
+        println("matched");
+    }
+    let found = re.find("abc456def");
+    println(found);
+    re.free();
+    println("done");
+}

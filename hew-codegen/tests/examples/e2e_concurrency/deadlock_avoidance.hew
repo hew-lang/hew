@@ -1,0 +1,41 @@
+// Test: Deadlock Avoidance (Resource ordering)
+// Exercises: Multiple actors with ordered resource access
+actor Resource {
+    let id: int;
+    receive fn acquire(requester: int) {
+        print("Resource ");
+        print(self.id);
+        println(f" acquired by {requester}");
+    }
+    receive fn release(requester: int) {
+        print("Resource ");
+        print(self.id);
+        println(f" released by {requester}");
+    }
+}
+
+fn main() {
+    println("=== Deadlock Avoidance ===");
+    let r1 = spawn Resource(id: 1);
+    let r2 = spawn Resource(id: 2);
+    // Philosopher 1: acquire r1 then r2 (ordered)
+    r1.acquire(1);
+    sleep_ms(50);
+    r2.acquire(1);
+    sleep_ms(50);
+    r2.release(1);
+    sleep_ms(50);
+    r1.release(1);
+    sleep_ms(50);
+
+    // Philosopher 2: acquire r1 then r2 (same order = no deadlock)
+    r1.acquire(2);
+    sleep_ms(50);
+    r2.acquire(2);
+    sleep_ms(50);
+    r2.release(2);
+    sleep_ms(50);
+    r1.release(2);
+    sleep_ms(100);
+    println("No deadlock");
+}

@@ -1,0 +1,18 @@
+actor Counter {
+    let max: int;
+
+    receive gen fn count_up() -> int {
+        var i = 0;
+        while i < self.max {
+            yield i;
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 5);
+    for await val in c.count_up() {
+        println(val);
+    }
+}

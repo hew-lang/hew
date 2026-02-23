@@ -1,0 +1,288 @@
+// selfhost_echo_server.hew - Simple echo server using Hew actors
+// Tests: network I/O, actor supervision for connection handling
+// Purpose: Validate Hew can handle network I/O patterns needed for self-hosting tooling (LSP, etc.)
+
+// ========================================
+// Echo server actors
+// ========================================
+
+// Connection handler actor: handles a single client connection
+actor ConnectionHandler {
+    let connection_id: i32;
+    let bytes_received: i32;
+    let bytes_sent: i32;
+    receive fn handle_message(msg_value: i32) -> i32 {
+
+        // Echo the message back (simulate by returning same value)
+        msg_value
+    }
+    receive fn get_stats(unused: i32) -> i32 {
+        0
+    }
+}
+
+// Server actor: accepts connections and spawns handlers
+actor EchoServer {
+    let port: i32;
+    let connection_count: i32;
+    let active_connections: i32;
+    receive fn accept_connection(client_id: i32) -> i32 {
+
+        // Would spawn a ConnectionHandler actor for this client
+        // spawn ConnectionHandler;
+        client_id
+    }
+    receive fn connection_closed(client_id: i32) -> i32 {
+        0
+    }
+}
+
+// Supervisor for the echo server
+supervisor ServerSupervisor {
+}
+
+// ========================================
+// Network I/O simulation
+// Since Hew's network primitives aren't in codegen yet,
+// we simulate the echo server pattern with functions
+// ========================================
+
+// Simulate accepting a connection
+fn accept_connection(server_id: i32, client_id: i32) -> i32 {
+    print("Server ");
+    print(server_id);
+    println(f" accepted connection from client {client_id}");
+    client_id
+}
+
+// Simulate receiving a message from a client
+fn receive_message(client_id: i32, message: i32) -> i32 {
+    print("  Client ");
+    print(client_id);
+    println(f" sent: {message}");
+    message
+}
+
+// Simulate echoing a message back to a client
+fn send_echo(client_id: i32, message: i32) -> i32 {
+    print("  Echo to client ");
+    print(client_id);
+    println(f": {message}");
+    message
+}
+
+// Simulate closing a connection
+fn close_connection(server_id: i32, client_id: i32) -> i32 {
+    print("Server ");
+    print(server_id);
+    println(f" closed connection from client {client_id}");
+    0
+}
+
+// ========================================
+// Echo server simulation
+// ========================================
+fn simulate_echo_session(server_id: i32, client_id: i32, num_messages: i32) -> i32 {
+    // Accept the connection
+    accept_connection(server_id, client_id);
+
+    // Exchange messages
+    var total_echoed = 0;
+    for i in 0..num_messages {
+        let msg = client_id * 100 + i;
+        let received = receive_message(client_id, msg);
+        let echoed = send_echo(client_id, received);
+        // Verify echo matches original
+        if echoed == msg {
+            total_echoed = total_echoed + 1;
+        }
+    }
+    // Close the connection
+    close_connection(server_id, client_id);
+    total_echoed
+}
+
+// Simulate multiple concurrent clients
+fn simulate_multi_client(server_id: i32, num_clients: i32, msgs_per_client: i32) -> i32 {
+    println("--- Multi-Client Echo Server ---");
+    println(f"Server ID: {server_id}");
+    println(f"Clients: {num_clients}");
+    println(f"Messages per client: {msgs_per_client}");
+    println("");
+    var total_successful = 0;
+    for client in 0..num_clients {
+        let session_result = simulate_echo_session(server_id, client + 1, msgs_per_client);
+        total_successful = total_successful + session_result;
+        println("");
+    }
+    total_successful
+}
+
+// ========================================
+// Connection error handling simulation
+// ========================================
+
+// Simulate error types: 0=ok, 1=timeout, 2=disconnect, 3=invalid_data
+fn handle_connection_error(error_type: i32, client_id: i32) -> i32 {
+    if error_type == 0 {
+        // No error
+        0
+    } else if error_type == 1 {
+        println(f"  TIMEOUT: Client {client_id}");
+        1
+    } else if error_type == 2 {
+        println(f"  DISCONNECT: Client {client_id}");
+        2
+    } else if error_type == 3 {
+        println(f"  INVALID DATA: Client {client_id}");
+        3
+    } else {
+        println(f"  UNKNOWN ERROR: Client {client_id}");
+        -1
+    }
+}
+
+fn simulate_error_handling() -> i32 {
+    println("--- Error Handling Simulation ---");
+    var errors_handled = 0;
+    // Simulate various error conditions
+    let e1 = handle_connection_error(0, 1);
+    if e1 == 0 {
+        errors_handled = errors_handled + 1;
+    }
+    let e2 = handle_connection_error(1, 2);
+    if e2 == 1 {
+        errors_handled = errors_handled + 1;
+    }
+    let e3 = handle_connection_error(2, 3);
+    if e3 == 2 {
+        errors_handled = errors_handled + 1;
+    }
+    let e4 = handle_connection_error(3, 4);
+    if e4 == 3 {
+        errors_handled = errors_handled + 1;
+    }
+    print("Errors handled correctly: ");
+    print(errors_handled);
+    println(" / 4");
+    errors_handled
+}
+
+// ========================================
+// Supervision simulation
+// ========================================
+
+// Simulate supervisor restart logic
+fn supervisor_restart(actor_id: i32, failure_count: i32, max_restarts: i32) -> i32 {
+    // Returns: 0=restart, 1=stop, 2=escalate
+    if failure_count <= max_restarts {
+        print("  Restarting actor ");
+        print(actor_id);
+        print(" (failure ");
+        print(failure_count);
+        print("/");
+        print(max_restarts);
+        println(")");
+        0
+    } else {
+        print("  Stopping actor ");
+        print(actor_id);
+        println(" (max restarts exceeded)");
+        1
+    }
+}
+
+fn simulate_supervision() -> i32 {
+    println("--- Supervision Simulation ---");
+    var correct_decisions = 0;
+    // Should restart (under limit)
+    let d1 = supervisor_restart(1, 1, 3);
+    if d1 == 0 {
+        correct_decisions = correct_decisions + 1;
+    }
+    let d2 = supervisor_restart(1, 2, 3);
+    if d2 == 0 {
+        correct_decisions = correct_decisions + 1;
+    }
+    let d3 = supervisor_restart(1, 3, 3);
+    if d3 == 0 {
+        correct_decisions = correct_decisions + 1;
+    }
+    // Should stop (over limit)
+    let d4 = supervisor_restart(1, 4, 3);
+    if d4 == 1 {
+        correct_decisions = correct_decisions + 1;
+    }
+    print("Supervision decisions correct: ");
+    print(correct_decisions);
+    println(" / 4");
+    correct_decisions
+}
+
+// ========================================
+// Tests
+// ========================================
+fn test_echo() -> i32 {
+    var passed = 0;
+    // Test single echo
+    let msg = 42;
+    let echo = send_echo(1, receive_message(1, msg));
+    if echo == msg {
+        passed = passed + 1;
+    }
+    // Test echo preserves values
+    let msg2 = 999;
+    let echo2 = send_echo(2, receive_message(2, msg2));
+    if echo2 == msg2 {
+        passed = passed + 1;
+    }
+    // Test echo with zero
+    let msg3 = 0;
+    let echo3 = send_echo(3, receive_message(3, msg3));
+    if echo3 == msg3 {
+        passed = passed + 1;
+    }
+    passed
+}
+
+fn main() {
+    println("=== Hew Self-Hosting Echo Server Test ===");
+    println("");
+
+    // Test basic echo functionality
+    println("--- Echo Tests ---");
+    let echo_passed = test_echo();
+    print("Echo tests passed: ");
+    print(echo_passed);
+    println(" / 3");
+    println("");
+
+    // Run multi-client simulation
+    let multi_result = simulate_multi_client(1, 3, 2);
+    println(f"Total successful echoes: {multi_result}");
+    println("");
+
+    // Test error handling
+    let error_result = simulate_error_handling();
+    println("");
+
+    // Test supervision
+    let supervision_result = simulate_supervision();
+    println("");
+
+    // Summary
+    let total = echo_passed + error_result + supervision_result;
+    print("Total tests passed: ");
+    print(total);
+    println(" / 11");
+    println("");
+    println("=== Self-Hosting Gaps Identified ===");
+    println("1. No network I/O primitives in codegen (tcp_listen, tcp_accept, etc.)");
+    println("2. Actor spawn not in codegen - cannot spawn connection handlers");
+    println("3. No supervisor codegen - supervision tree is parsed but not compiled");
+    println("4. No async/await in codegen - cannot do non-blocking I/O");
+    println("5. self.field assignment is TODO in codegen");
+    println("6. No structured concurrency (scope) in codegen");
+    println("7. No Result/Option codegen - cannot handle connection errors properly");
+    println("8. No byte/buffer types - cannot handle raw network data");
+}

@@ -1,0 +1,17 @@
+import std::misc::log;
+
+fn main() {
+    log.setup();
+
+    // These should appear (INFO level and above)
+    log.info("info message");
+    log.warn("warn message");
+    log.error("error message");
+
+    // These should NOT appear (below INFO)
+    log.debug("debug hidden");
+    log.trace("trace hidden");
+
+    // Confirm stdout still works
+    println("log test done");
+}

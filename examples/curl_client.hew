@@ -1,0 +1,167 @@
+// Simple HTTP downloader (curl-like client) in Hew
+//
+// Demonstrates: TCP networking, string manipulation, file I/O,
+// lambda actors for concurrent progress reporting, and f-strings.
+//
+// Usage:
+//   curl_client <url> [output_file]
+//
+// Examples:
+//   curl_client http://example.com
+//   curl_client http://example.com page.html
+import std::net;
+
+import std::fs;
+
+import std::os;
+
+extern "C" {
+    fn hew_string_to_bytes(s: String) -> bytes;
+    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_vec_len(v: bytes) -> i32;
+}
+
+// Parse host and path from an http:// URL.
+// Returns "host" via the first call, "path" via the second.
+fn parse_host(url: String) -> String {
+    // Strip "http://"
+    var s = url;
+    let prefix_pos = s.find("http://");
+    if prefix_pos == 0 {
+        s = s.slice(7, s.len());
+    }
+    // Strip trailing path
+    let slash = s.find("/");
+    if slash >= 0 {
+        s = s.slice(0, slash);
+    }
+    // Strip port if present
+    let colon = s.find(":");
+    if colon >= 0 {
+        s = s.slice(0, colon);
+    }
+    s
+}
+
+fn parse_port(url: String) -> String {
+    var s = url;
+    let prefix_pos = s.find("http://");
+    if prefix_pos == 0 {
+        s = s.slice(7, s.len());
+    }
+    let slash = s.find("/");
+    if slash >= 0 {
+        s = s.slice(0, slash);
+    }
+    let colon = s.find(":");
+    if colon >= 0 {
+        s.slice(colon + 1, s.len())
+    } else {
+        "80"
+    }
+}
+
+fn parse_path(url: String) -> String {
+    var s = url;
+    let prefix_pos = s.find("http://");
+    if prefix_pos == 0 {
+        s = s.slice(7, s.len());
+    }
+    let slash = s.find("/");
+    if slash >= 0 {
+        s.slice(slash, s.len())
+    } else {
+        "/"
+    }
+}
+
+fn main() {
+    // Parse arguments
+    var url = "http://example.com";
+    var outfile = "";
+    let argc = os.args_count();
+    if argc > 1 {
+        url = os.args(1);
+    }
+    if argc > 2 {
+        outfile = os.args(2);
+    }
+    let host = parse_host(url);
+    let port = parse_port(url);
+    let path = parse_path(url);
+    // Default output file from host
+    if outfile.len() == 0 {
+        outfile = f"{host}.html";
+    }
+    println(f"  URL:    {url}");
+    println(f"  Host:   {host}");
+    println(f"  Port:   {port}");
+    println(f"  Path:   {path}");
+    println(f"  Output: {outfile}");
+    println("");
+
+    // Connect
+    let addr = f"{host}:{port}";
+    println(f"  Connecting to {addr}...");
+    let conn = net.connect(addr);
+    // Build and send HTTP request
+    let req_str = f"GET {path} HTTP/1.0
+Host: {host}
+User-Agent: hew-curl/1.0
+Accept: */*
+Connection: close
+
+";
+    let req_bytes = hew_string_to_bytes(req_str);
+    conn.write(req_bytes);
+    println("  Request sent");
+    println("");
+
+    // Spawn a progress reporter actor
+    let reporter = spawn (bytes_so_far: i32) => {
+        print(f"  Progress: {bytes_so_far} bytes received");
+    };
+    // Read response in chunks
+    var total_bytes = 0;
+    var full_response: String = "";
+    var reading = true;
+    while reading {
+        let chunk_bytes = conn.read();
+        let chunk_len = hew_vec_len(chunk_bytes);
+        if chunk_len == 0 {
+            reading = false;
+        } else {
+            total_bytes = total_bytes + chunk_len;
+            let chunk = hew_bytes_to_string(chunk_bytes);
+            full_response = full_response + chunk;
+            reporter.send(total_bytes);
+        }
+    }
+    println("");
+    println(f"  Total: {total_bytes} bytes received");
+
+    // Separate headers from body
+    let header_end = full_response.find("\r\n\r\n");
+    var body = full_response;
+    if header_end >= 0 {
+        let headers = full_response.slice(0, header_end);
+        body = full_response.slice(header_end + 4, full_response.len());
+        // Print status line
+        let first_newline = headers.find("\r\n");
+        if first_newline >= 0 {
+            let status_line = headers.slice(0, first_newline);
+            println(f"  Status: {status_line}");
+        }
+    }
+    // Write body to file
+    let write_result = fs.write(outfile, body);
+    if write_result == 0 {
+        let body_len = body.len();
+        println(f"  Saved {body_len} bytes to {outfile}");
+    } else {
+        println(f"  Error: failed to write {outfile}");
+    }
+    conn.close();
+    sleep_ms(50);
+    println("  Done!");
+}

@@ -1,0 +1,17 @@
+actor Adder {
+    let base: int;
+
+    receive fn add(x: int) -> int {
+        self.base + x
+    }
+}
+
+fn main() {
+    let a = spawn Adder(base: 10);
+    let b = spawn Adder(base: 20);
+    let r1 = await a.add(5);
+    let r2 = await b.add(5);
+    println(r1);
+    println(r2);
+    println(r1 + r2);
+}

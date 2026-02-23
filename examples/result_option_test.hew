@@ -1,0 +1,80 @@
+// Result and Option type test
+// Exercises construction, pattern matching, and ? operator
+fn test_option_some() -> i64 {
+    let x = Some(42);
+    match x {
+        Some(val) => val,
+        None => -1,
+    }
+}
+
+fn test_option_none() -> i64 {
+    let x: Option<i64> = None;
+    match x {
+        Some(val) => val,
+        None => -1,
+    }
+}
+
+fn divide(a: i64, b: i64) -> Result<i64, String> {
+    if b == 0 {
+        Err("division by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+fn test_result_ok() -> i64 {
+    let result = divide(10, 2);
+    match result {
+        Ok(val) => val,
+        Err(_) => -1,
+    }
+}
+
+fn test_result_err() -> i64 {
+    let result = divide(10, 0);
+    match result {
+        Ok(val) => val,
+        Err(_) => -1,
+    }
+}
+
+fn try_divide(a: i64, b: i64) -> Result<i64, String> {
+    let x = divide(a, b)?;
+    Ok(x * 2)
+}
+
+fn test_try_operator() -> i64 {
+    let result = try_divide(10, 2);
+    match result {
+        Ok(val) => val,
+        Err(_) => -999,
+    }
+}
+
+fn test_try_operator_error() -> i64 {
+    let result = try_divide(10, 0);
+    match result {
+        Ok(val) => val,
+        Err(_) => -999,
+    }
+}
+
+fn main() {
+    println("=== Option Tests ===");
+    let some_val = test_option_some();
+    println(some_val); // 42
+    let none_val = test_option_none();
+    println(none_val); // -1
+    println("=== Result Tests ===");
+    let ok_val = test_result_ok();
+    println(ok_val); // 5
+    let err_val = test_result_err();
+    println(err_val); // -1
+    println("=== Try Operator Tests ===");
+    let try_ok = test_try_operator();
+    println(try_ok); // 10
+    let try_err = test_try_operator_error();
+    println(try_err); // -999
+}

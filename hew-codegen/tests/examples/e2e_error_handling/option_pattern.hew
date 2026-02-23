@@ -1,0 +1,84 @@
+// Test: Option-like error handling patterns using enums
+// Exercises: enum with no-payload variant, payload variant,
+// if/else as expression for enum construction, match destructuring.
+enum MaybeInt {
+    Found(int);
+    NotFound;
+}
+
+fn find_positive(a: int, b: int, c: int) -> MaybeInt {
+    if a > 0 {
+        Found(a)
+    } else {
+        if b > 0 {
+            Found(b)
+        } else {
+            if c > 0 {
+                Found(c)
+            } else {
+                NotFound
+            }
+        }
+    }
+}
+
+fn safe_divide_opt(a: int, b: int) -> MaybeInt {
+    if b == 0 {
+        NotFound
+    } else {
+        Found(a / b)
+    }
+}
+
+fn main() {
+    // Find first positive among negatives and positives
+    let r1 = find_positive(-5, -2, 3);
+    match r1 {
+        Found(val) => {
+            println(f"found: {val}");
+        },
+        NotFound => {
+            println("not found");
+        },
+    }
+    // All negative
+    let r2 = find_positive(-1, -2, -3);
+    match r2 {
+        Found(val) => {
+            println(val);
+        },
+        NotFound => {
+            println("none found");
+        },
+    }
+    // First arg is positive
+    let r3 = find_positive(7, -2, -3);
+    match r3 {
+        Found(val) => {
+            println(f"first: {val}");
+        },
+        NotFound => {
+            println("not found");
+        },
+    }
+    // Safe divide: success
+    let r4 = safe_divide_opt(20, 4);
+    match r4 {
+        Found(val) => {
+            println(f"20/4 = {val}");
+        },
+        NotFound => {
+            println("div by zero");
+        },
+    }
+    // Safe divide: failure
+    let r5 = safe_divide_opt(20, 0);
+    match r5 {
+        Found(val) => {
+            println(val);
+        },
+        NotFound => {
+            println("div by zero");
+        },
+    }
+}

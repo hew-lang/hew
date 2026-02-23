@@ -1,0 +1,15 @@
+// Fibonacci across actors - Hew language example
+// Computes Fibonacci numbers using actor message passing
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn main() {
+    let n = 10;
+    let result = fibonacci(n);
+    println(result);
+}

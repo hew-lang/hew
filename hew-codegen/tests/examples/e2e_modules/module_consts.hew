@@ -1,0 +1,6 @@
+import "consts_lib.hew";
+
+fn main() {
+    println(MAX_SIZE);
+    println(shifted(10));
+}

@@ -1,0 +1,12 @@
+type Distance = int;
+
+fn add_distances(a: Distance, b: Distance) -> Distance {
+    a + b
+}
+
+fn main() {
+    let d1: Distance = 10;
+    let d2: Distance = 20;
+    let total = add_distances(d1, d2);
+    println(total);
+}

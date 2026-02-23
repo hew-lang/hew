@@ -1,0 +1,37 @@
+// Test tail recursion optimization
+// This computes factorial using tail recursion.
+// Without TCO, deep recursion would stack overflow.
+fn factorial_tail(n: i64, acc: i64) -> i64 {
+    if n <= 1 {
+        return acc;
+    }
+    return factorial_tail(n - 1, n * acc);
+}
+
+fn sum_tail(n: i64, acc: i64) -> i64 {
+    if n <= 0 {
+        return acc;
+    }
+    return sum_tail(n - 1, acc + n);
+}
+
+fn count_down(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    return count_down(n - 1);
+}
+
+fn main() {
+    // Basic tail recursive factorial
+    println(factorial_tail(10, 1));
+
+    // Tail recursive sum
+    println(sum_tail(100, 0));
+
+    // Larger recursion depth to test TCO works
+    println(factorial_tail(20, 1));
+
+    // Deep recursion - would stack overflow without TCO
+    println(count_down(10000000));
+}

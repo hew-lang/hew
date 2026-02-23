@@ -1,0 +1,13 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(4);
+
+    sink.close();
+
+    var count = 0;
+    for await item in input {
+        count = count + 1;
+    }
+    println(count);
+}

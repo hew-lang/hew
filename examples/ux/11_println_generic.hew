@@ -1,0 +1,6 @@
+// Can I use println() for different types?
+
+fn main() {
+    println(42);
+    println("Hello");
+}

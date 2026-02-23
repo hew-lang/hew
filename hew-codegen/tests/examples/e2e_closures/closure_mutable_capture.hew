@@ -1,0 +1,13 @@
+// Test mutable variable capture in closures.
+// Mutations inside the closure are visible in the outer scope and vice versa.
+
+fn main() {
+    var count = 0;
+    let inc = () => {
+        count = count + 1;
+    };
+    inc();
+    inc();
+    inc();
+    println(count);
+}

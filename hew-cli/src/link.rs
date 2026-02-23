@@ -61,6 +61,13 @@ pub fn link_executable(
         if !debug {
             cmd.arg("-Wl,--strip-all");
         }
+        // When linking stdlib package staticlibs alongside the runtime, both
+        // archives contain embedded copies of shared dependencies (e.g.
+        // hew_cabi) because Cargo bakes all transitive deps into each
+        // staticlib. Allow the linker to pick one copy and discard the rest.
+        if !extra_libs.is_empty() {
+            cmd.arg("-Wl,--allow-multiple-definition");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -68,6 +75,13 @@ pub fn link_executable(
         cmd.arg("-Wl,-dead_strip");
         if !debug {
             cmd.arg("-Wl,-x");
+        }
+        // Same rationale as the Linux `--allow-multiple-definition` above:
+        // Cargo staticlibs embed shared dependencies, producing duplicate
+        // symbols when linked together. `-Wl,-multiply_defined,suppress`
+        // tells ld64 to silently pick one definition.
+        if !extra_libs.is_empty() {
+            cmd.arg("-Wl,-multiply_defined,suppress");
         }
     }
 

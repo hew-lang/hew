@@ -2535,9 +2535,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto end = generateExpression(ast::callArgExpr(mc.args[1]).value);
         if (!start || !end)
           return nullptr;
-        // Coerce integer args to i64 (runtime functions expect i64)
-        start = coerceType(start, builder.getI64Type(), location);
-        end = coerceType(end, builder.getI64Type(), location);
+        // Coerce integer args to i32 (runtime functions expect i32)
+        start = coerceType(start, i32Type, location);
+        end = coerceType(end, i32Type, location);
         return builder
             .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
                                          builder.getStringAttr("slice"), receiver,
@@ -2548,7 +2548,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto n = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!n)
           return nullptr;
-        n = coerceType(n, builder.getI64Type(), location);
+        n = coerceType(n, i32Type, location);
         return builder
             .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
                                          builder.getStringAttr("repeat"), receiver,
@@ -2559,7 +2559,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto idx = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!idx)
           return nullptr;
-        idx = coerceType(idx, builder.getI64Type(), location);
+        idx = coerceType(idx, i32Type, location);
         auto charCode = builder.create<hew::StringMethodOp>(
             location, i32Type, builder.getStringAttr("char_at"), receiver, mlir::ValueRange{idx});
         auto conv = builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context),
@@ -2627,7 +2627,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto sub = generateExpression(ast::callArgExpr(mc.args[0]).value);
         if (!sub)
           return nullptr;
-        auto startIdx = createIntConstant(builder, location, builder.getI64Type(), 0);
+        auto startIdx = createIntConstant(builder, location, i32Type, 0);
         return builder
             .create<hew::StringMethodOp>(location, i32Type, builder.getStringAttr("index_of"),
                                          receiver, mlir::ValueRange{sub, startIdx})

@@ -1,5 +1,5 @@
 {
-  "version": "0.7.0",
+  "version": "0.9.0",
   "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
   "keywords": {
     "control_flow": [
@@ -33,7 +33,8 @@
       "enum",
       "trait",
       "impl",
-      "as"
+      "as",
+      "struct"
     ],
     "actors": [
       "actor",
@@ -65,7 +66,7 @@
     ],
     "logical": ["true", "false"],
     "other": ["dyn", "unsafe", "pure"],
-    "reserved_unused": ["struct", "try", "catch", "race", "foreign"]
+    "reserved_unused": ["try", "catch", "race", "foreign"]
   },
   "all_keywords": [
     "let",
@@ -192,7 +193,15 @@
       "usize"
     ],
     "float": ["f32", "f64"],
-    "primitive": ["bool", "char", "string", "void", "never"],
+    "primitive": [
+      "bool",
+      "char",
+      "string",
+      "bytes",
+      "void",
+      "never",
+      "duration"
+    ],
     "collections": ["Vec", "HashMap"],
     "option_result": ["Option", "Result", "Ok", "Err", "Some", "None"],
     "concurrency": [

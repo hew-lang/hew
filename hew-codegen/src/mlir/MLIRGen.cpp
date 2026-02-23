@@ -1104,6 +1104,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto idx = generateExpression(ast::callArgExpr(args[1]).value);
     if (!s || !idx)
       return nullptr;
+    // Coerce idx to i32 (runtime function expects i32)
+    idx = coerceType(idx, builder.getI32Type(), location);
     return builder
         .create<hew::StringMethodOp>(location, builder.getI32Type(),
                                      builder.getStringAttr("char_at"), s, mlir::ValueRange{idx})
@@ -1119,6 +1121,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto end = generateExpression(ast::callArgExpr(args[2]).value);
     if (!s || !start || !end)
       return nullptr;
+    // Coerce start/end to i32 (runtime function expects i32)
+    start = coerceType(start, builder.getI32Type(), location);
+    end = coerceType(end, builder.getI32Type(), location);
     return builder
         .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
                                      builder.getStringAttr("slice"), s,

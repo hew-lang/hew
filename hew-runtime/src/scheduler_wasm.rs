@@ -142,18 +142,33 @@ pub extern "C" fn hew_sched_init() {
 
 /// Shut down the cooperative scheduler.
 ///
-/// Drains the run queue and resets all state. Safe to call if the
+/// Process all pending actors and then reset state. On WASM the
+/// scheduler is cooperative, so we must drain the run queue (just like
+/// [`hew_sched_run`]) before tearing down. Safe to call if the
 /// scheduler was never initialized.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_shutdown() {
+    // Process all pending messages before shutting down.
+    hew_sched_run();
+
     // SAFETY: Single-threaded on WASM.
     unsafe {
-        if let Some(ref mut q) = RUN_QUEUE {
-            q.clear();
-        }
         RUN_QUEUE = None;
         INITIALIZED = false;
     }
+}
+
+/// Clean up all remaining runtime resources after shutdown.
+///
+/// WASM counterpart of the native `hew_runtime_cleanup()`. Frees any
+/// actors not explicitly freed by user code and clears the registry.
+#[cfg_attr(not(test), no_mangle)]
+pub extern "C" fn hew_runtime_cleanup() {
+    // Free all tracked actors.
+    // SAFETY: Single-threaded on WASM, called after hew_sched_shutdown.
+    unsafe { crate::actor::cleanup_all_actors() };
+    // Clear the name registry.
+    crate::registry::hew_registry_clear();
 }
 
 /// Run all enqueued actors to completion.

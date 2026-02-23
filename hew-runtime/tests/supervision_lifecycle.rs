@@ -292,10 +292,16 @@ fn monitor_detects_crash() {
         let target_id = (*target).id;
         hew_fault_inject_crash(target_id, 1);
         hew_actor_send(target, 1, std::ptr::null_mut(), 0);
-        std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // Target should be crashed
-        let state = (*target).actor_state.load(Ordering::Acquire);
+        // Wait for the target to enter Crashed state (poll to avoid CI flakiness)
+        let mut state = 0i32;
+        for _ in 0..50 {
+            state = (*target).actor_state.load(Ordering::Acquire);
+            if state == HewActorState::Crashed as i32 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         assert_eq!(
             state,
             HewActorState::Crashed as i32,

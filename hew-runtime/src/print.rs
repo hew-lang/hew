@@ -35,7 +35,8 @@ pub unsafe extern "C" fn hew_println_i32(x: i32) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_print_i64(x: i64) {
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain i64.
-    unsafe { libc::printf(c"%ld".as_ptr(), x) };
+    // Use %lld (long long) because `long` is 32-bit on wasm32.
+    unsafe { libc::printf(c"%lld".as_ptr(), x) };
 }
 
 /// Print an `i64` followed by a newline.
@@ -46,7 +47,8 @@ pub unsafe extern "C" fn hew_print_i64(x: i64) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_println_i64(x: i64) {
     // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain i64.
-    unsafe { libc::printf(c"%ld\n".as_ptr(), x) };
+    // Use %lld (long long) because `long` is 32-bit on wasm32.
+    unsafe { libc::printf(c"%lld\n".as_ptr(), x) };
 }
 
 /// Print an `f64` without trailing newline.

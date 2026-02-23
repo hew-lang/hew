@@ -194,7 +194,7 @@ pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
         libc::snprintf(
             buf.as_mut_ptr().cast::<c_char>(),
             buf.len(),
-            c"%ld".as_ptr(),
+            c"%lld".as_ptr(),
             n,
         )
     };

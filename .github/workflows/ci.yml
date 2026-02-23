@@ -148,6 +148,22 @@ jobs:
       - name: Build hew-codegen
         run: cmake --build hew-codegen/build -j"$(nproc)"
 
+      - name: Build standard library packages
+        run: |
+          cargo build \
+            -p hew-std-encoding-base64 -p hew-std-encoding-compress \
+            -p hew-std-encoding-csv -p hew-std-encoding-json \
+            -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
+            -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
+            -p hew-std-encoding-yaml \
+            -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
+            -p hew-std-crypto-password \
+            -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-smtp \
+            -p hew-std-net-url -p hew-std-net-websocket \
+            -p hew-std-time-cron -p hew-std-time-datetime \
+            -p hew-std-text-regex -p hew-std-text-semver \
+            -p hew-std-misc-uuid -p hew-std-misc-log
+
       - name: Run Rust workspace tests
         run: cargo test --workspace --exclude hew-wasm
 
@@ -155,7 +171,6 @@ jobs:
         run: cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (native)
-        continue-on-error: true
         run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (WASM)

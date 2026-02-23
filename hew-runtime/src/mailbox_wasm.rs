@@ -442,6 +442,22 @@ wasm_no_mangle! {
     }
 }
 
+// ── Close ───────────────────────────────────────────────────────────────
+
+wasm_no_mangle! {
+    /// Close the mailbox, rejecting future sends.
+    ///
+    /// # Safety
+    ///
+    /// `mb` must be a valid mailbox pointer.
+    pub unsafe extern "C" fn hew_mailbox_close(mb: *mut HewMailboxWasm) {
+        if !mb.is_null() {
+            // SAFETY: Caller guarantees `mb` is valid.
+            unsafe { (*mb).closed = true };
+        }
+    }
+}
+
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
 wasm_no_mangle! {

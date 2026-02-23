@@ -161,6 +161,8 @@ pub mod actor_group;
 pub mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
+#[cfg(target_arch = "wasm32")]
+pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scope;
 #[cfg(not(target_arch = "wasm32"))]

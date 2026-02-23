@@ -226,11 +226,11 @@ mod tests {
 // HewVec-ABI wrappers (used by std/base64.hew)
 // ---------------------------------------------------------------------------
 
-/// Encode a `bytes` HewVec to a standard Base64 string.
+/// Encode a `bytes` `HewVec` to a standard Base64 string.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_base64_encode_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -239,11 +239,11 @@ pub unsafe extern "C" fn hew_base64_encode_hew(v: *mut hew_cabi::vec::HewVec) ->
     unsafe { hew_base64_encode(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Encode a `bytes` HewVec to a URL-safe Base64 string.
+/// Encode a `bytes` `HewVec` to a URL-safe Base64 string.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_base64_encode_url_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -252,9 +252,9 @@ pub unsafe extern "C" fn hew_base64_encode_url_hew(v: *mut hew_cabi::vec::HewVec
     unsafe { hew_base64_encode_url(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Decode a Base64 string to a `bytes` HewVec.
+/// Decode a Base64 string to a `bytes` `HewVec`.
 ///
-/// Returns an empty HewVec on invalid input.
+/// Returns an empty `HewVec` on invalid input.
 ///
 /// # Safety
 ///
@@ -267,7 +267,7 @@ pub unsafe extern "C" fn hew_base64_decode_hew(s: *const c_char) -> *mut hew_cab
     }
     let mut out_len: usize = 0;
     // SAFETY: s is a valid C string; out_len is a writable usize.
-    let ptr = unsafe { hew_base64_decode(s, &mut out_len) };
+    let ptr = unsafe { hew_base64_decode(s, &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };

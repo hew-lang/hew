@@ -20,7 +20,7 @@ pub struct Binding {
     pub moved_at: Option<Span>,
     /// Whether the variable has been read since definition
     pub is_used: bool,
-    /// Count of read accesses (incremented by lookup, decremented by unmark_used).
+    /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
     /// Whether the variable has been reassigned after initial definition
     pub is_written: bool,
@@ -239,7 +239,7 @@ impl TypeEnv {
             .flat_map(|scope| scope.keys().map(String::as_str))
     }
 
-    /// Undo the is_used mark on a variable (used for plain assignment LHS).
+    /// Undo the `is_used` mark on a variable (used for plain assignment LHS).
     /// Decrements the read count so that write-only variables are still detected.
     pub fn unmark_used(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {

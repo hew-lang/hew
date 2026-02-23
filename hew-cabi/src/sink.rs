@@ -17,6 +17,7 @@ pub fn set_last_error(msg: String) {
 }
 
 /// Take and clear the last error, if any.
+#[must_use]
 pub fn take_last_error() -> Option<String> {
     LAST_ERROR.with(|e| e.borrow_mut().take())
 }

@@ -109,7 +109,7 @@ pub struct HewSupervisor {
 
     /// Child supervisors managed by this supervisor.
     child_supervisors: Vec<*mut HewSupervisor>,
-    /// Init specs for child supervisors (parallel to child_supervisors vec).
+    /// Init specs for child supervisors (parallel to `child_supervisors` vec).
     child_supervisor_specs: Vec<SupervisorChildSpec>,
 
     restart_times: [u64; MAX_RESTARTS_TRACK],
@@ -580,6 +580,7 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
             // SAFETY: sup was alive when we captured its address, and we
             // check running before touching it.
             let sup_ptr = sup_addr as *mut HewSupervisor;
+            // SAFETY: sup was alive when we captured its address; running flag checked below.
             unsafe {
                 let s = &mut *sup_ptr;
                 if s.running.load(Ordering::Acquire) != 0 {
@@ -1065,7 +1066,7 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 /// Free a supervisor struct without stopping actors or spin-waiting.
 ///
 /// Used during post-shutdown cleanup when worker threads are already
-/// joined. Nulls the self_actor's state pointer to prevent a double-free
+/// joined. Nulls the `self_actor`'s state pointer to prevent a double-free
 /// in [`crate::actor::cleanup_all_actors`], then drops the Box to free
 /// child spec resources via their Drop impls.
 ///
@@ -1079,6 +1080,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
     if !s.self_actor.is_null() {
         // Null out state so cleanup_all_actors won't libc::free it
         // (state points to the supervisor Box, not malloc'd memory).
+        // SAFETY: self_actor is non-null (checked above) and valid for the supervisor's lifetime.
         unsafe {
             (*s.self_actor).state = ptr::null_mut();
             (*s.self_actor).state_size = 0;
@@ -1088,11 +1090,13 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
     // Recursively free child supervisors.
     for child_sup in &s.child_supervisors {
         if !child_sup.is_null() {
+            // SAFETY: child_sup is non-null (checked above) and was allocated by us.
             unsafe { free_supervisor_resources(*child_sup) };
         }
     }
 
     // Drop the Box — child spec Drop impls free names + init_state.
+    // SAFETY: sup was allocated with Box::into_raw and is valid per caller contract.
     drop(unsafe { Box::from_raw(sup) });
 }
 
@@ -1198,6 +1202,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
     p.child_supervisors.push(child);
     p.child_supervisor_specs
         .push(SupervisorChildSpec { init_fn });
+    // SAFETY: child and parent are valid pointers per caller contract.
     unsafe {
         (*child).parent = parent;
         (*child).index_in_parent = idx;

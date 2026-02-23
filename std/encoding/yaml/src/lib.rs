@@ -341,6 +341,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_bool(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
             serde_yaml::Value::String(key_str),
@@ -368,6 +369,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_int(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
             serde_yaml::Value::String(key_str),
@@ -395,6 +397,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_float(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
             serde_yaml::Value::String(key_str),
@@ -423,10 +426,12 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: val is non-null (checked above) and valid per caller contract.
     let val_str = unsafe { CStr::from_ptr(val) }
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
             serde_yaml::Value::String(key_str),

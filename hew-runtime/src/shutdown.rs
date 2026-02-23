@@ -129,7 +129,7 @@ pub unsafe extern "C" fn hew_shutdown_unregister_supervisor(
 /// Called by [`crate::scheduler::hew_runtime_cleanup`] **after** worker
 /// threads have been joined.  At that point no actor processing can
 /// happen, so we simply drop the supervisor structs to release child
-/// spec resources (names, init_state).  Actors themselves are freed
+/// spec resources (names, `init_state`).  Actors themselves are freed
 /// separately by [`crate::actor::cleanup_all_actors`].
 pub(crate) unsafe fn free_registered_supervisors() {
     if let Ok(mut sups) = TOP_LEVEL_SUPERVISORS.lock() {

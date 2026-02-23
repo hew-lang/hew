@@ -377,7 +377,7 @@ pub enum Literal {
     String(String),
     Bool(bool),
     Char(char),
-    /// Duration literal in nanoseconds (e.g. `100ns` → 100, `5s` → 5_000_000_000).
+    /// Duration literal in nanoseconds (e.g. `100ns` → 100, `5s` → `5_000_000_000`).
     Duration(i64),
 }
 

@@ -23,11 +23,13 @@ pub struct ModuleId {
 }
 
 impl ModuleId {
+    #[must_use]
     pub fn new(path: Vec<String>) -> Self {
         Self { path }
     }
 
     /// Create a root module id (empty path).
+    #[must_use]
     pub fn root() -> Self {
         Self { path: Vec::new() }
     }
@@ -107,6 +109,7 @@ pub struct ModuleGraph {
 }
 
 impl ModuleGraph {
+    #[must_use]
     pub fn new(root: ModuleId) -> Self {
         Self {
             modules: HashMap::new(),
@@ -119,6 +122,7 @@ impl ModuleGraph {
         self.modules.insert(module.id.clone(), module);
     }
 
+    #[must_use]
     pub fn get_module(&self, id: &ModuleId) -> Option<&Module> {
         self.modules.get(id)
     }
@@ -128,6 +132,7 @@ impl ModuleGraph {
     }
 
     /// Return the direct dependencies (import targets) of a module.
+    #[must_use]
     pub fn dependencies(&self, id: &ModuleId) -> Vec<&ModuleId> {
         self.modules
             .get(id)
@@ -151,7 +156,7 @@ impl ModuleGraph {
         let ids: Vec<ModuleId> = self.modules.keys().cloned().collect();
 
         for id in &ids {
-            if marks.get(id).is_none() {
+            if !marks.contains_key(id) {
                 visit(id, &self.modules, &mut marks, &mut order, &mut Vec::new())?;
             }
         }

@@ -7,6 +7,8 @@ description = "TUI actor observer for debugging Hew actor systems"
 
 readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "debugging"]
+categories = ["development-tools::debugging"]
 
 [[bin]]
 name = "hew-observe"

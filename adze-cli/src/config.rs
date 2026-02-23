@@ -76,7 +76,7 @@ pub fn discover_registry() -> RegistryEndpoints {
     RegistryEndpoints {
         api: DEFAULT_REGISTRY_API.to_string(),
         cdn: DEFAULT_REGISTRY_CDN.to_string(),
-        fallback_api: DEFAULT_FALLBACK_API.map(|s| s.to_string()),
+        fallback_api: DEFAULT_FALLBACK_API.map(std::string::ToString::to_string),
     }
 }
 

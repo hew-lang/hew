@@ -1,4 +1,4 @@
-use crate::model::*;
+use crate::model::{EnumVariant, FieldDef, RustType, SimpleEnum, StructDef, TaggedEnum, TypeDef};
 
 /// Parse a Rust source file and extract serializable type definitions.
 pub fn extract_types(source: &str) -> Vec<TypeDef> {
@@ -107,7 +107,11 @@ fn extract_struct(s: &syn::ItemStruct) -> StructDef {
 }
 
 fn extract_field(f: &syn::Field) -> FieldDef {
-    let name = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
+    let name = f
+        .ident
+        .as_ref()
+        .map(std::string::ToString::to_string)
+        .unwrap_or_default();
 
     let mut serde_skip = false;
     let mut serde_default = false;
@@ -131,7 +135,9 @@ fn extract_field(f: &syn::Field) -> FieldDef {
                     // during deserialization, so treat as default
                     serde_default = true;
                     // consume the value
-                    let _ = meta.value().and_then(|v| v.parse::<syn::LitStr>());
+                    let _ = meta
+                        .value()
+                        .and_then(syn::parse::ParseBuffer::parse::<syn::LitStr>);
                 }
                 Ok(())
             });
@@ -147,7 +153,7 @@ fn extract_field(f: &syn::Field) -> FieldDef {
     }
 }
 
-/// Parse a syn Type into our RustType representation.
+/// Parse a syn Type into our `RustType` representation.
 fn parse_type(ty: &syn::Type) -> RustType {
     match ty {
         syn::Type::Path(tp) => parse_type_path(tp),

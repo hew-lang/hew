@@ -481,6 +481,7 @@ fn activate_actor(actor: *mut HewActor) {
                 let is_normal_path = if jmp_buf_ptr.is_null() {
                     true
                 } else {
+                    // SAFETY: jmp_buf_ptr is non-null (checked above) and valid per-thread.
                     let ret = unsafe { crate::signal::sigsetjmp(jmp_buf_ptr, 1) };
                     if ret == 0 {
                         crate::signal::mark_recovery_active();

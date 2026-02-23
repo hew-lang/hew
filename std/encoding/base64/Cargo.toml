@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Hew std::encoding::base64 — Base64 encoding and decoding"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
 
 [lib]
 crate-type = ["staticlib", "lib"]

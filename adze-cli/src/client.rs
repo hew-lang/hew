@@ -4,6 +4,7 @@
 //! searching, namespace management, and key registration.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -340,12 +341,9 @@ impl RegistryClient {
         per_page: u32,
     ) -> Result<SearchResult, ApiError> {
         self.try_with_fallback(|base_url| {
-            let mut url = format!(
-                "{}/search?q={}&page={}&per_page={}",
-                base_url, query, page, per_page
-            );
+            let mut url = format!("{base_url}/search?q={query}&page={page}&per_page={per_page}");
             if let Some(cat) = category {
-                url.push_str(&format!("&category={cat}"));
+                let _ = write!(url, "&category={cat}");
             }
 
             let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
@@ -416,7 +414,7 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn get_namespace(&self, prefix: &str) -> Result<NamespaceInfo, ApiError> {
         self.try_with_fallback(|base_url| {
-            let url = format!("{}/namespaces/{}", base_url, prefix);
+            let url = format!("{base_url}/namespaces/{prefix}");
 
             let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
 
@@ -575,7 +573,7 @@ impl RegistryClient {
         // base64 chars like `/` and `+` must be encoded.
         let encoded_fp = percent_encode(fingerprint);
         self.try_with_fallback(|base_url| {
-            let url = format!("{}/keys/{}", base_url, encoded_fp);
+            let url = format!("{base_url}/keys/{encoded_fp}");
             let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
@@ -595,7 +593,7 @@ impl RegistryClient {
     /// Returns [`ApiError`] if the registry has no key configured or on HTTP failures.
     pub fn get_registry_key(&self) -> Result<RegistryKeyResponse, ApiError> {
         self.try_with_fallback(|base_url| {
-            let url = format!("{}/registry-key", base_url);
+            let url = format!("{base_url}/registry-key");
             let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {

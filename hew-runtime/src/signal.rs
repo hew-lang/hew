@@ -354,7 +354,7 @@ mod platform {
 
     /// Prepare the recovery context for a dispatch call WITHOUT calling
     /// `sigsetjmp`. The caller must call `sigsetjmp` directly in its own
-    /// stack frame (to keep the jmp_buf valid for the duration of dispatch).
+    /// stack frame (to keep the `jmp_buf` valid for the duration of dispatch).
     ///
     /// Returns the `jmp_buf` pointer for the caller's `sigsetjmp`, or null
     /// if no recovery context is available.
@@ -397,7 +397,7 @@ mod platform {
         &raw mut ctx.jmp_buf
     }
 
-    /// Mark the jmp_buf as valid after `sigsetjmp` returns 0 (normal path).
+    /// Mark the `jmp_buf` as valid after `sigsetjmp` returns 0 (normal path).
     pub(crate) fn mark_recovery_active() {
         // SAFETY: called from a worker thread with a valid recovery context.
         let ctx = unsafe { get_recovery_ctx() };

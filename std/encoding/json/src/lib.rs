@@ -351,6 +351,7 @@ pub unsafe extern "C" fn hew_json_object_set_bool(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::Bool(val != 0));
     }
@@ -375,6 +376,7 @@ pub unsafe extern "C" fn hew_json_object_set_int(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(
             key,
@@ -402,6 +404,7 @@ pub unsafe extern "C" fn hew_json_object_set_float(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         if let Some(n) = serde_json::Number::from_f64(val) {
             map.insert(key, serde_json::Value::Number(n));
@@ -429,10 +432,12 @@ pub unsafe extern "C" fn hew_json_object_set_string(
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: val is non-null (checked above) and valid per caller contract.
     let val = unsafe { CStr::from_ptr(val) }
         .to_str()
         .unwrap_or("")
         .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
     if let serde_json::Value::Object(map) = &mut unsafe { &mut *obj }.inner {
         map.insert(key, serde_json::Value::String(val));
     }

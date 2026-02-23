@@ -1,4 +1,4 @@
-//! MessagePack serialization for the Hew AST.
+//! `MessagePack` serialization for the Hew AST.
 //!
 //! Provides a compact binary serialization of the parsed (and optionally
 //! type-enriched) AST using `rmp-serde`. The C++ codegen backend
@@ -28,7 +28,7 @@ pub struct ExprTypeEntry {
 /// Top-level serialization wrapper: the program AST plus the resolved
 /// expression type map from the type checker.
 ///
-/// Serialized as a MessagePack map with three keys: `"items"`,
+/// Serialized as a `MessagePack` map with three keys: `"items"`,
 /// `"module_doc"`, and `"expr_types"`. The C++ reader treats
 /// `"expr_types"` as optional for backward compatibility.
 #[derive(Debug, Serialize)]
@@ -48,7 +48,7 @@ struct TypedProgram<'a> {
     module_graph: Option<&'a ModuleGraph>,
 }
 
-/// Serialize a [`Program`](hew_parser::ast::Program) to MessagePack bytes,
+/// Serialize a [`Program`](hew_parser::ast::Program) to `MessagePack` bytes,
 /// including the resolved expression type map.
 ///
 /// Uses named fields (`to_vec_named`) so the format is self-describing and
@@ -130,7 +130,7 @@ pub fn serialize_to_json(
     serde_json::to_string_pretty(&typed).expect("AST JSON serialization failed")
 }
 
-/// Deserialize a [`Program`](hew_parser::ast::Program) from MessagePack bytes.
+/// Deserialize a [`Program`](hew_parser::ast::Program) from `MessagePack` bytes.
 ///
 /// # Errors
 ///

@@ -21,6 +21,7 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
+    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
     unsafe {
         libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
     }
@@ -38,6 +39,7 @@ pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
+    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
     unsafe {
         libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
     }
@@ -55,6 +57,7 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
         tv_sec: 0,
         tv_nsec: 0,
     };
+    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
     unsafe {
         libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
     }
@@ -83,11 +86,11 @@ fn epoch_ms_to_components(epoch_ms: i64) -> (i32, i32, i32, i32, i32, i32) {
     }
 
     // Civil date from day count (algorithm from Howard Hinnant)
-    days += 719468; // shift to 0000-03-01
-    let era = if days >= 0 { days } else { days - 146096 } / 146097;
-    let doe = (days - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = (yoe as i64) + era * 400;
+    days += 719_468; // shift to 0000-03-01
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let doe = (days - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = i64::from(yoe) + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
@@ -148,13 +151,13 @@ pub extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
 /// Add `days` to an epoch-millisecond timestamp.
 #[no_mangle]
 pub extern "C" fn hew_datetime_add_days(epoch_ms: i64, days: i32) -> i64 {
-    epoch_ms + (days as i64) * SECS_PER_DAY * 1000
+    epoch_ms + i64::from(days) * SECS_PER_DAY * 1000
 }
 
 /// Add `hours` to an epoch-millisecond timestamp.
 #[no_mangle]
 pub extern "C" fn hew_datetime_add_hours(epoch_ms: i64, hours: i32) -> i64 {
-    epoch_ms + (hours as i64) * 3600 * 1000
+    epoch_ms + i64::from(hours) * 3600 * 1000
 }
 
 /// Return difference in seconds between two epoch-millisecond timestamps.
@@ -193,6 +196,7 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
     if fmt.is_null() {
         return ptr::null_mut();
     }
+    // SAFETY: fmt is non-null (checked above) and caller guarantees valid C string.
     let fmt_str = unsafe { std::ffi::CStr::from_ptr(fmt) };
     let Ok(fmt_str) = fmt_str.to_str() else {
         return ptr::null_mut();
@@ -225,6 +229,7 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, _fmt: *const c_cha
     if s.is_null() {
         return 0;
     }
+    // SAFETY: s is non-null (checked above) and caller guarantees valid C string.
     let s_str = unsafe { std::ffi::CStr::from_ptr(s) };
     let Ok(s_str) = s_str.to_str() else {
         return 0;
@@ -254,7 +259,7 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, _fmt: *const c_cha
 /// Convert date components to epoch milliseconds (UTC).
 fn components_to_epoch_ms(y: i32, m: i32, d: i32, h: i32, min: i32, s: i32) -> i64 {
     // Inverse of epoch_ms_to_components using the same civil calendar algorithm
-    let y = y as i64;
+    let y = i64::from(y);
     let (y_adj, m_adj) = if m <= 2 {
         (y - 1, (m + 9) as u32)
     } else {
@@ -264,6 +269,6 @@ fn components_to_epoch_ms(y: i32, m: i32, d: i32, h: i32, min: i32, s: i32) -> i
     let yoe = (y_adj - era * 400) as u32;
     let doy = (153 * m_adj + 2) / 5 + (d as u32) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + (doe as i64) - 719468;
-    (days * SECS_PER_DAY + (h as i64) * 3600 + (min as i64) * 60 + (s as i64)) * 1000
+    let days = era * 146_097 + i64::from(doe) - 719_468;
+    (days * SECS_PER_DAY + i64::from(h) * 3600 + i64::from(min) * 60 + i64::from(s)) * 1000
 }

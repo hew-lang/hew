@@ -1037,8 +1037,6 @@ fn find_let_keyword(source: &str, diag_range: Range, var_name: Option<&str>) -> 
     None
 }
 
-/// Extract the text at a given LSP range from source.
-
 // ── Folding Ranges ───────────────────────────────────────────────────
 
 /// Build folding ranges from the AST.
@@ -2240,7 +2238,7 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
 
 // ── Find all references ──────────────────────────────────────────────
 
-/// Find the simple identifier name at the given byte offset (no dot/:: qualifiers).
+/// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
 fn simple_word_at_offset(source: &str, offset: usize) -> Option<(String, Span)> {
     if offset >= source.len() {
         return None;

@@ -1587,13 +1587,10 @@ fn cmd_namespace_info(prefix: &str) {
 
 fn cmd_namespace_register(prefix: &str) {
     let cred_path = credentials::credentials_path();
-    let token = match credentials::get_token(&cred_path) {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("adze namespace register: not logged in");
-            eprintln!("Run `adze login` first.");
-            std::process::exit(1);
-        }
+    let Ok(token) = credentials::get_token(&cred_path) else {
+        eprintln!("adze namespace register: not logged in");
+        eprintln!("Run `adze login` first.");
+        std::process::exit(1);
     };
 
     let api_client = client::RegistryClient::new().with_token(token);
@@ -1634,12 +1631,9 @@ fn cmd_yank(version: &str, reason: Option<&str>, undo: bool) {
     };
 
     let cred_path = credentials::credentials_path();
-    let token = match credentials::get_token(&cred_path) {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("adze yank: not logged in");
-            std::process::exit(1);
-        }
+    let Ok(token) = credentials::get_token(&cred_path) else {
+        eprintln!("adze yank: not logged in");
+        std::process::exit(1);
     };
 
     let yanked = !undo;
@@ -1684,12 +1678,9 @@ fn cmd_deprecate(
     };
 
     let cred_path = credentials::credentials_path();
-    let token = match credentials::get_token(&cred_path) {
-        Ok(t) => t,
-        Err(_) => {
-            eprintln!("adze deprecate: not logged in");
-            std::process::exit(1);
-        }
+    let Ok(token) = credentials::get_token(&cred_path) else {
+        eprintln!("adze deprecate: not logged in");
+        std::process::exit(1);
     };
 
     let api_client = client::RegistryClient::new().with_token(token);

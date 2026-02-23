@@ -21,7 +21,7 @@ pub fn literal_parser() -> &'static str {
 }"#
 }
 
-/// Hard-coded C++ parser for ExprTypeEntry (C++-only type from serialization layer).
+/// Hard-coded C++ parser for `ExprTypeEntry` (C++-only type from serialization layer).
 pub fn expr_type_entry_parser() -> &'static str {
     r#"static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   ast::ExprTypeEntry entry;
@@ -32,7 +32,7 @@ pub fn expr_type_entry_parser() -> &'static str {
 }"#
 }
 
-/// Hard-coded C++ parser for ModuleGraph (HashMap<ModuleId, Module> with custom hasher).
+/// Hard-coded C++ parser for `ModuleGraph` (`HashMap`<`ModuleId`, Module> with custom hasher).
 pub fn module_graph_parser() -> &'static str {
     r#"static ast::ModuleGraph parseModuleGraph(const msgpack::object &obj) {
   ast::ModuleGraph mg;
@@ -51,7 +51,7 @@ pub fn module_graph_parser() -> &'static str {
 }"#
 }
 
-/// Hard-coded C++ parser for Program (wraps TypedProgram with extra fields).
+/// Hard-coded C++ parser for Program (wraps `TypedProgram` with extra fields).
 pub fn program_parser() -> &'static str {
     r#"static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
@@ -90,7 +90,7 @@ pub fn program_parser() -> &'static str {
 }"#
 }
 
-/// Hard-coded parser for TypeDecl (has method_storage ownership pattern).
+/// Hard-coded parser for `TypeDecl` (has `method_storage` ownership pattern).
 pub fn type_decl_parser() -> &'static str {
     r#"static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   ast::TypeDecl td;
@@ -135,7 +135,7 @@ pub fn type_decl_parser() -> &'static str {
 
 /// Public API functions at the end of the file.
 pub fn public_api() -> &'static str {
-    r#"ast::Program parseMsgpackAST(const uint8_t *data, size_t size) {
+    r"ast::Program parseMsgpackAST(const uint8_t *data, size_t size) {
   msgpack::object_handle oh = msgpack::unpack(reinterpret_cast<const char *>(data), size);
   return parseProgram(oh.get());
 }
@@ -145,7 +145,7 @@ ast::Program parseJsonAST(const uint8_t *data, size_t size) {
   auto j = nlohmann::json::parse(data, data + size);
   auto msgpackBytes = nlohmann::json::to_msgpack(j);
   return parseMsgpackAST(msgpackBytes.data(), msgpackBytes.size());
-}"#
+}"
 }
 
 /// File header (includes and namespace).

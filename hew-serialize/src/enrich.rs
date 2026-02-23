@@ -19,6 +19,7 @@ use crate::msgpack::ExprTypeEntry;
 /// Converts every entry in `tco.expr_types` (span → [`Ty`]) into an
 /// [`ExprTypeEntry`] (start, end, [`TypeExpr`]) that can be serialized
 /// alongside the AST.
+#[must_use]
 pub fn build_expr_type_map(tco: &TypeCheckOutput) -> Vec<ExprTypeEntry> {
     tco.expr_types
         .iter()
@@ -461,7 +462,12 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
                 normalize_expr_types(val);
             }
         }
-        Stmt::Expression(ref mut expr) | Stmt::Return(Some(ref mut expr)) => {
+        Stmt::Expression(ref mut expr)
+        | Stmt::Return(Some(ref mut expr))
+        | Stmt::Break {
+            value: Some(ref mut expr),
+            ..
+        } => {
             normalize_expr_types(expr);
         }
         Stmt::If {
@@ -506,19 +512,13 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
         Stmt::Defer(ref mut expr) => {
             normalize_expr_types(expr);
         }
-        Stmt::Break {
-            value: Some(ref mut expr),
-            ..
-        } => {
-            normalize_expr_types(expr);
-        }
         _ => {}
     }
 }
 
 fn normalize_expr_types(expr: &mut Spanned<Expr>) {
     stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
-        normalize_expr_types_inner(expr)
+        normalize_expr_types_inner(expr);
     });
 }
 
@@ -608,7 +608,7 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             normalize_expr_types(target);
             normalize_expr_types(message);
         }
-        Expr::Await(inner) | Expr::PostfixTry(inner) => {
+        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
             normalize_expr_types(inner);
         }
         Expr::Timeout {
@@ -634,9 +634,6 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             for arm in arms.iter_mut() {
                 normalize_expr_types(&mut arm.body);
             }
-        }
-        Expr::Yield(Some(inner)) => {
-            normalize_expr_types(inner);
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
@@ -742,7 +739,12 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) {
         Stmt::Loop { body, .. } => {
             enrich_block(body, tco);
         }
-        Stmt::Expression(ref mut expr) | Stmt::Return(Some(ref mut expr)) => {
+        Stmt::Expression(ref mut expr)
+        | Stmt::Return(Some(ref mut expr))
+        | Stmt::Break {
+            value: Some(ref mut expr),
+            ..
+        } => {
             enrich_expr(expr, tco);
         }
         Stmt::Defer(ref mut expr) => {
@@ -751,12 +753,6 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) {
         Stmt::Assign { target, value, .. } => {
             enrich_expr(target, tco);
             enrich_expr(value, tco);
-        }
-        Stmt::Break {
-            value: Some(ref mut expr),
-            ..
-        } => {
-            enrich_expr(expr, tco);
         }
         _ => {}
     }
@@ -792,7 +788,7 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 enrich_expr(&mut arm.body, tco);
             }
         }
-        Expr::Lambda { body, .. } => {
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             enrich_expr(body, tco);
         }
         Expr::MethodCall {
@@ -899,7 +895,10 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
             enrich_expr(left, tco);
             enrich_expr(right, tco);
         }
-        Expr::Unary { operand: inner, .. } => {
+        Expr::Unary { operand: inner, .. }
+        | Expr::Await(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Yield(Some(inner)) => {
             enrich_expr(inner, tco);
         }
         Expr::FieldAccess { object, .. } => {
@@ -920,15 +919,9 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 enrich_expr(val, tco);
             }
         }
-        Expr::SpawnLambdaActor { body, .. } => {
-            enrich_expr(body, tco);
-        }
         Expr::Send { target, message } => {
             enrich_expr(target, tco);
             enrich_expr(message, tco);
-        }
-        Expr::Await(inner) | Expr::PostfixTry(inner) => {
-            enrich_expr(inner, tco);
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
@@ -964,9 +957,6 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
             for arm in arms.iter_mut() {
                 enrich_expr(&mut arm.body, tco);
             }
-        }
-        Expr::Yield(Some(inner)) => {
-            enrich_expr(inner, tco);
         }
         _ => {}
     }

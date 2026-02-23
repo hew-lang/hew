@@ -344,8 +344,27 @@ mod tests {
     use super::super::discovery;
     use super::*;
 
+    /// Ensure the `hew` binary is built before tests that need it.
+    ///
+    /// `cargo test` only builds test harness binaries, not the regular
+    /// `target/debug/hew` binary that `find_hew_binary()` resolves to.
+    /// Build it once per test run so the runner tests work in a clean
+    /// checkout (where `cargo build` hasn't been run separately).
+    fn ensure_hew_binary() {
+        use std::sync::Once;
+        static BUILD: Once = Once::new();
+        BUILD.call_once(|| {
+            let status = Command::new(env!("CARGO"))
+                .args(["build", "--bin", "hew"])
+                .status()
+                .expect("failed to invoke cargo build");
+            assert!(status.success(), "cargo build --bin hew failed");
+        });
+    }
+
     /// Helper to run tests from inline source.
     fn run_inline(source: &str) -> TestSummary {
+        ensure_hew_binary();
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
         // Write source to a unique temp file so the runner can read it.

@@ -150,7 +150,7 @@ jobs:
 
       - name: Build standard library packages
         run: |
-          cargo build \
+          cargo build --release \
             -p hew-std-encoding-base64 -p hew-std-encoding-compress \
             -p hew-std-encoding-csv -p hew-std-encoding-json \
             -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \

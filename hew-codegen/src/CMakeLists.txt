@@ -45,7 +45,6 @@ if(HEW_STATIC_LINK)
     MC MCParser MCDisassembler
     OrcJIT
     native
-    NativeCodeGen
     CodeGen AsmPrinter SelectionDAG GlobalISel
   )
 

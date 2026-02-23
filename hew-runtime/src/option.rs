@@ -3,7 +3,7 @@
 //! Tagged union for `Option<T>` — either `None` (tag=0) or `Some(value)` (tag=1).
 //! Layout-compatible with the C runtime representation used by MLIR codegen.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 /// ABI-stable `Option<T>` representation.
 ///
@@ -271,11 +271,11 @@ pub extern "C" fn hew_option_contains_i32(opt: HewOption, needle: i32) -> i32 {
 ///
 /// Both the stored pointer and `needle` must be valid C strings (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_option_contains_str(opt: HewOption, needle: *const i8) -> i32 {
+pub unsafe extern "C" fn hew_option_contains_str(opt: HewOption, needle: *const c_char) -> i32 {
     if opt.tag == 0 {
         return 0;
     }
-    let stored = opt.value as *const i8;
+    let stored = opt.value as *const c_char;
     if stored.is_null() || needle.is_null() {
         return i32::from(stored.is_null() && needle.is_null());
     }

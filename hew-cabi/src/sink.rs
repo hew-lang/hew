@@ -26,13 +26,13 @@ pub fn take_last_error() -> Option<String> {
 ///
 /// Clears the error after reading. Callers must free the returned string.
 #[no_mangle]
-pub extern "C" fn hew_stream_last_error() -> *mut i8 {
+pub extern "C" fn hew_stream_last_error() -> *mut std::ffi::c_char {
     match take_last_error() {
         Some(msg) => {
             let c = std::ffi::CString::new(msg).unwrap_or_default();
             let len = c.as_bytes_with_nul().len();
             // SAFETY: allocating len bytes via malloc.
-            let ptr = unsafe { libc::malloc(len) }.cast::<i8>();
+            let ptr = unsafe { libc::malloc(len) }.cast::<std::ffi::c_char>();
             if ptr.is_null() {
                 return std::ptr::null_mut();
             }

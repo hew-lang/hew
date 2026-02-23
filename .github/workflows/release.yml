@@ -26,6 +26,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Git tag to release (e.g. v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -33,6 +39,8 @@ permissions:
 
 env:
   LLVM_VERSION: "21"
+  # Resolve tag from push event or manual dispatch input
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
@@ -67,6 +75,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       # ── LLVM/MLIR installation ──────────────────────────────────────────
 
@@ -171,7 +181,7 @@ jobs:
       - name: Package archive (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
@@ -320,6 +330,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download Linux tarball
         uses: actions/download-artifact@v4
@@ -330,7 +342,7 @@ jobs:
 
       - name: Build Linux packages
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           installers/build-packages.sh \
             --version "${VERSION}" \
             --arch "${{ matrix.arch }}" \
@@ -369,12 +381,13 @@ jobs:
             hew-v*-*.tar.gz hew-v*-*.zip \
             hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst hew-*.apk \
             2>/dev/null | tee checksums.txt
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           mv checksums.txt "hew-v${VERSION}-checksums.txt"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           generate_release_notes: true
           files: |
             artifacts/hew-v*-*.tar.gz
@@ -396,6 +409,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download Linux tarballs
         uses: actions/download-artifact@v4
@@ -419,7 +434,7 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
@@ -444,12 +459,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Update Homebrew tap
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
 
           # Download release tarballs to compute SHA256
           for target in darwin-x86_64 darwin-aarch64 linux-x86_64 linux-aarch64; do

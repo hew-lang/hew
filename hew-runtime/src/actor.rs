@@ -13,9 +13,14 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
-use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
+use crate::internal::types::HewActorState;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::internal::types::{HewDispatchFn, HewOverflowPolicy};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::reply_channel::{self, HewReplyChannel};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 
 // ── Thread-local current actor ──────────────────────────────────────────
@@ -198,7 +203,11 @@ pub struct HewActor {
 
     /// Per-actor arena bump allocator. Set as thread-local during dispatch
     /// so `hew_arena_malloc` routes through it. Reset after each activation.
+    #[cfg(not(target_arch = "wasm32"))]
     pub arena: *mut crate::arena::ActorArena,
+    /// WASM stub: arena is not used on WASM (allocations go through libc directly).
+    #[cfg(target_arch = "wasm32")]
+    pub arena: *mut c_void,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -364,6 +373,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
 ///
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn free_actor_resources(actor: *mut HewActor) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
@@ -395,7 +405,29 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     drop(unsafe { Box::from_raw(actor) });
 }
 
+/// Free an actor's resources (WASM version — no arena or mailbox cleanup).
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live `HewActor` that is not
+/// currently being dispatched.
+#[cfg(target_arch = "wasm32")]
+unsafe fn free_actor_resources(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+
+    // SAFETY: State was malloc'd by deep_copy_state.
+    unsafe {
+        libc::free(a.state);
+        libc::free(a.init_state);
+    }
+
+    // SAFETY: Actor was allocated with Box::new / Box::into_raw.
+    drop(unsafe { Box::from_raw(actor) });
+}
+
 /// Actor spawn options for [`hew_actor_spawn_opts`].
+#[cfg(not(target_arch = "wasm32"))]
 #[repr(C)]
 #[derive(Debug)]
 pub struct HewActorOpts {
@@ -417,6 +449,7 @@ pub struct HewActorOpts {
     pub budget: i32,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
     match policy {
         x if x == HewOverflowPolicy::Block as i32 => HewOverflowPolicy::Block,
@@ -428,6 +461,8 @@ fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
 }
 
 // ── Spawn ───────────────────────────────────────────────────────────────
+// All spawn functions use native mailbox/scheduler and are not available on WASM.
+// WASM actors are created through the bridge module instead.
 
 /// Deep-copy `src` into a new malloc'd buffer.
 ///
@@ -436,6 +471,7 @@ fn parse_overflow_policy(policy: i32) -> HewOverflowPolicy {
 /// # Safety
 ///
 /// `src` must point to at least `size` readable bytes.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
     if src.is_null() || size == 0 {
         return ptr::null_mut();
@@ -460,6 +496,7 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
 ///   null when `state_size` is 0.
 /// - `dispatch` will be called from worker threads with the actor's
 ///   state pointer.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn(
     state: *mut c_void,
@@ -523,6 +560,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
 /// - `opts` must be a valid pointer to a [`HewActorOpts`].
 /// - Same state/dispatch requirements as [`hew_actor_spawn`].
 ///
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor {
     if opts.is_null() {
@@ -598,6 +636,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_spawn`].
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn_bounded(
     state: *mut c_void,
@@ -654,6 +693,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
+// Send functions use native mailbox/scheduler. WASM sends go through bridge.
 
 /// Send a message to an actor (fire-and-forget).
 ///
@@ -665,6 +705,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 /// - `actor` must be a valid pointer returned by a spawn function.
 /// - `data` must point to at least `size` readable bytes, or be null
 ///   when `size` is 0.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send(
     actor: *mut HewActor,
@@ -683,6 +724,7 @@ pub unsafe extern "C" fn hew_actor_send(
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_send`].
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_try_send(
     actor: *mut HewActor,
@@ -725,6 +767,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
@@ -754,6 +797,7 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // Close the mailbox to reject new messages and transition to STOPPED if idle.
@@ -782,6 +826,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 ///
 /// - `actor` must have been returned by a spawn function.
 /// - The actor must not be used after this call.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
     if actor.is_null() {
@@ -998,6 +1043,7 @@ pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_send`].
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_internal(
     actor: *mut HewActor,
     msg_type: i32,
@@ -1041,6 +1087,7 @@ unsafe fn actor_send_internal(
 }
 
 // ── Ask (request-response) ──────────────────────────────────────────────
+// Ask functions use native reply channels and are not available on WASM.
 
 /// Send a synchronous request and block until a reply arrives.
 ///
@@ -1056,6 +1103,7 @@ unsafe fn actor_send_internal(
 /// - `actor` must be a valid actor pointer.
 /// - `data` must point to at least `size` readable bytes, or be null.
 ///
+#[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
@@ -1121,6 +1169,7 @@ pub unsafe extern "C" fn hew_actor_ask(
 ///
 /// Same requirements as [`hew_actor_ask`].
 ///
+#[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
@@ -1197,6 +1246,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 /// - `data` must point to at least `size` readable bytes, or be null.
 /// - `ch` must be a valid reply channel pointer.
 ///
+#[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::cast_ptr_alignment,
     reason = "packed buffer is allocated via malloc which guarantees suitable alignment for any built-in type"
@@ -1243,6 +1293,7 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
 /// # Safety
 ///
 /// `actor` must be a valid pointer returned by a spawn function.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     if actor.is_null() {
@@ -1460,9 +1511,10 @@ pub extern "C" fn hew_actor_self_stop() {
 
 /// Self-stop: the currently running actor requests its own shutdown.
 ///
-/// Closes the mailbox and CAS transitions from `Running` to `Stopping`.
+/// CAS transitions from `Running` to `Stopping`.
 /// The WASM scheduler will handle the final transition to `Stopped` after
-/// dispatch returns.
+/// dispatch returns. No mailbox close needed — WASM is cooperative
+/// single-threaded, so no concurrent sends can race.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub extern "C" fn hew_actor_self_stop() {
@@ -1474,15 +1526,7 @@ pub extern "C" fn hew_actor_self_stop() {
     // SAFETY: The static is only set to a valid actor during dispatch.
     let a = unsafe { &*actor };
 
-    // Close the mailbox to reject new messages.
-    let mb = a.mailbox.cast::<HewMailbox>();
-    if !mb.is_null() {
-        // SAFETY: mailbox is valid for actor's lifetime.
-        unsafe { mailbox::mailbox_close(mb) };
-    }
-
-    // CAS Running → Stopping. Only the dispatching worker can be in Running
-    // for this actor, so this CAS should succeed.
+    // CAS Running → Stopping.
     let _ = a.actor_state.compare_exchange(
         HewActorState::Running as i32,
         HewActorState::Stopping as i32,

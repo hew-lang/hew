@@ -5,16 +5,17 @@
 //! all behave correctly.
 
 use hew_parser::ast::{
-    FnDecl, ImportDecl, ImportName, ImportSpec, Item, Program, Spanned, TypeDecl, TypeDeclKind,
-    TypeExpr,
+    ActorDecl, Block, FnDecl, ImportDecl, ImportName, ImportSpec, Item, Param, Program,
+    ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
+use hew_types::check::TypeDefKind;
 use hew_types::Checker;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn make_pub_fn(name: &str) -> FnDecl {
-    use hew_parser::ast::{Block, Expr, IntRadix, Literal};
+    use hew_parser::ast::{Expr, IntRadix, Literal};
     FnDecl {
         attributes: vec![],
         is_async: false,
@@ -404,6 +405,261 @@ fn test_two_modules_same_fn_no_collision() {
         "no errors expected: {:?}",
         output.errors
     );
+}
+
+// ── actor import helpers ─────────────────────────────────────────────────────
+
+/// Create a minimal actor declaration with optional receive functions.
+fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
+    ActorDecl {
+        is_pub: true,
+        name: name.to_string(),
+        super_traits: None,
+        init: None,
+        fields: vec![],
+        receive_fns,
+        methods: vec![],
+        mailbox_capacity: None,
+        overflow_policy: None,
+        is_isolated: false,
+        doc_comment: None,
+    }
+}
+
+/// Create a minimal receive fn declaration.
+fn make_receive_fn(name: &str, params: Vec<(&str, &str)>, ret: Option<&str>) -> ReceiveFnDecl {
+    ReceiveFnDecl {
+        is_generator: false,
+        is_pure: false,
+        name: name.to_string(),
+        type_params: None,
+        params: params
+            .iter()
+            .map(|(pname, ptype)| Param {
+                name: pname.to_string(),
+                ty: (
+                    TypeExpr::Named {
+                        name: ptype.to_string(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+                is_mutable: false,
+            })
+            .collect(),
+        return_type: ret.map(|r| {
+            (
+                TypeExpr::Named {
+                    name: r.to_string(),
+                    type_args: None,
+                },
+                0..0,
+            )
+        }),
+        where_clause: None,
+        body: Block {
+            stmts: vec![],
+            trailing_expr: None,
+        },
+        span: 0..0,
+    }
+}
+
+// ── actor in module tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_actor_bare_import_registers_type_and_methods() {
+    // `import mymod;` with an actor → should register qualified type + methods
+    let recv_ping = make_receive_fn("ping", vec![("msg", "String")], Some("String"));
+    let actor = make_actor("MyActor", vec![recv_ping]);
+
+    let import = make_user_import(
+        vec!["app", "mymod"],
+        None, // bare import
+        vec![(Item::Actor(actor), 0..0)],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "actor import should not produce errors: {:?}",
+        output.errors
+    );
+
+    // Actor type should be registered (both qualified and unqualified)
+    assert!(
+        output.type_defs.contains_key("MyActor"),
+        "actor type 'MyActor' should be registered"
+    );
+    assert!(
+        output.type_defs.contains_key("mymod.MyActor"),
+        "qualified 'mymod.MyActor' should be registered"
+    );
+
+    // Actor type should have the Actor kind
+    let def = output.type_defs.get("MyActor").unwrap();
+    assert!(
+        matches!(def.kind, TypeDefKind::Actor),
+        "MyActor should be TypeDefKind::Actor, got {:?}",
+        def.kind
+    );
+
+    // Receive fn should be registered as "MyActor::ping"
+    assert!(
+        output.fn_sigs.contains_key("MyActor::ping"),
+        "receive fn should be registered as 'MyActor::ping'"
+    );
+}
+
+#[test]
+fn test_actor_glob_import_registers_unqualified() {
+    // `import mymod::*;` → actor should be accessible unqualified
+    let recv_greet = make_receive_fn("greet", vec![("name", "String")], Some("String"));
+    let actor = make_actor("Greeter", vec![recv_greet]);
+
+    let import = make_user_import(
+        vec!["app", "mymod"],
+        Some(ImportSpec::Glob),
+        vec![(Item::Actor(actor), 0..0)],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "glob actor import should not produce errors: {:?}",
+        output.errors
+    );
+
+    // Both qualified and unqualified access
+    assert!(output.type_defs.contains_key("Greeter"));
+    assert!(output.type_defs.contains_key("mymod.Greeter"));
+    assert!(output.fn_sigs.contains_key("Greeter::greet"));
+}
+
+#[test]
+fn test_actor_named_import_selective() {
+    // `import mymod::{Counter};` → only Counter accessible unqualified
+    let recv_inc = make_receive_fn("increment", vec![], Some("i32"));
+    let actor_counter = make_actor("Counter", vec![recv_inc]);
+    let actor_timer = make_actor("Timer", vec![]);
+
+    let import = make_user_import(
+        vec!["app", "mymod"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Counter".to_string(),
+            alias: None,
+        }])),
+        vec![
+            (Item::Actor(actor_counter), 0..0),
+            (Item::Actor(actor_timer), 0..0),
+        ],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "named actor import should not produce errors: {:?}",
+        output.errors
+    );
+
+    // Counter should be accessible qualified and unqualified
+    assert!(output.type_defs.contains_key("Counter"));
+    assert!(output.type_defs.contains_key("mymod.Counter"));
+    assert!(output.fn_sigs.contains_key("Counter::increment"));
+
+    // Timer should be qualified only (not named in import spec)
+    assert!(output.type_defs.contains_key("mymod.Timer"));
+    assert!(output.type_defs.contains_key("Timer"));
+}
+
+#[test]
+fn test_actor_multiple_receive_fns() {
+    // Actor with multiple receive fns — all should be registered
+    let recv_get = make_receive_fn("get", vec![("key", "String")], Some("String"));
+    let recv_set = make_receive_fn("set", vec![("key", "String"), ("val", "String")], None);
+    let recv_del = make_receive_fn("delete", vec![("key", "String")], Some("bool"));
+    let actor = make_actor("Cache", vec![recv_get, recv_set, recv_del]);
+
+    let import = make_user_import(
+        vec!["app", "cache"],
+        Some(ImportSpec::Glob),
+        vec![(Item::Actor(actor), 0..0)],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "multi-receive actor import should not produce errors: {:?}",
+        output.errors
+    );
+
+    assert!(output.fn_sigs.contains_key("Cache::get"));
+    assert!(output.fn_sigs.contains_key("Cache::set"));
+    assert!(output.fn_sigs.contains_key("Cache::delete"));
+}
+
+#[test]
+fn test_actor_and_function_coexist_in_module() {
+    // Module with both actors and functions — both should register
+    let recv_run = make_receive_fn("run", vec![], None);
+    let actor = make_actor("Worker", vec![recv_run]);
+    let func = make_pub_fn("create_worker");
+
+    let import = make_user_import(
+        vec!["app", "workers"],
+        Some(ImportSpec::Glob),
+        vec![(Item::Actor(actor), 0..0), (Item::Function(func), 0..0)],
+    );
+
+    let program = Program {
+        items: vec![(Item::Import(import), 0..0)],
+        module_doc: None,
+        module_graph: None,
+    };
+    let mut checker = Checker::new();
+    let output = checker.check_program(&program);
+
+    assert!(
+        output.errors.is_empty(),
+        "mixed actor+function import should not produce errors: {:?}",
+        output.errors
+    );
+
+    // Actor registered
+    assert!(output.type_defs.contains_key("Worker"));
+    assert!(output.fn_sigs.contains_key("Worker::run"));
+
+    // Function registered
+    assert!(output.fn_sigs.contains_key("create_worker"));
+    assert!(output.fn_sigs.contains_key("workers.create_worker"));
 }
 
 #[test]

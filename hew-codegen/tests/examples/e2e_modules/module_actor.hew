@@ -1,0 +1,13 @@
+import "counter_actor_lib.hew";
+
+fn main() {
+    let c = spawn Counter();
+    let val1 = await c.increment();
+    println(val1);
+    let val2 = await c.increment();
+    println(val2);
+    let val3 = await c.add(10);
+    println(val3);
+    let val4 = await c.get_count();
+    println(val4);
+}

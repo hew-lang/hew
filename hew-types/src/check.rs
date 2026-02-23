@@ -103,9 +103,9 @@ pub struct Checker {
     trait_defs: HashMap<String, Vec<hew_parser::ast::TraitMethod>>,
     /// Maps trait name → list of super-trait names (e.g., "Pet" → ["Animal"])
     trait_super: HashMap<String, Vec<String>>,
-    /// Set of (type_name, trait_name) pairs for concrete impl registrations
+    /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     trait_impls_set: HashSet<(String, String)>,
-    /// Maps supervisor name → list of child actor type names (for supervisor_child)
+    /// Maps supervisor name → list of child actor type names (for `supervisor_child`)
     supervisor_children: HashMap<String, Vec<String>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
@@ -319,7 +319,7 @@ impl Checker {
         None
     }
 
-    /// Try to resolve a method call on a named type via type_defs and fn_sigs.
+    /// Try to resolve a method call on a named type via `type_defs` and `fn_sigs`.
     ///
     /// Used as a fallback from hardcoded handle-type dispatch tables so that
     /// methods added via `.hew` impl blocks work without updating the tables.
@@ -1438,11 +1438,7 @@ impl Checker {
                     }
                     self.known_types.insert(td.name.clone());
                 }
-                Item::TypeAlias(ta) => {
-                    if !ta.is_pub {
-                        continue;
-                    }
-                }
+                Item::TypeAlias(_) => {}
                 Item::Trait(tr) => {
                     if !tr.is_pub {
                         continue;
@@ -1725,7 +1721,7 @@ impl Checker {
         self.check_function_as(fd, &fd.name.clone());
     }
 
-    /// Check a function body using `fn_name` for the fn_sigs lookup.
+    /// Check a function body using `fn_name` for the `fn_sigs` lookup.
     ///
     /// Impl methods are registered under qualified names (e.g. `Connection::close`)
     /// but `FnDecl::name` is bare (e.g. `close`). Using the qualified name prevents
@@ -2323,7 +2319,6 @@ impl Checker {
     fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
         let ty = match expr {
             // Literals
-            Expr::Literal(Literal::Integer { .. }) => Ty::I64,
             Expr::Literal(Literal::Float(_)) => Ty::F64,
             Expr::Literal(Literal::String(_)) => Ty::String,
             Expr::RegexLiteral(_) => Ty::Named {
@@ -2340,7 +2335,7 @@ impl Checker {
             }
             Expr::Literal(Literal::Bool(_)) => Ty::Bool,
             Expr::Literal(Literal::Char(_)) => Ty::Char,
-            Expr::Literal(Literal::Duration(_)) => Ty::I64,
+            Expr::Literal(Literal::Integer { .. }) | Expr::Literal(Literal::Duration(_)) => Ty::I64,
 
             // Identifier lookup
             Expr::Identifier(name) => {
@@ -3204,10 +3199,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::PurityViolation,
                     span,
-                    format!(
-                        "cannot call impure function `{}` from a pure function",
-                        func_name
-                    ),
+                    format!("cannot call impure function `{func_name}` from a pure function"),
                 );
             }
             self.called_functions.insert(func_name.clone());
@@ -3619,8 +3611,7 @@ impl Checker {
                     }
                     Ty::Unit
                 }
-                "pop" => Ty::I32,
-                "len" => Ty::I32,
+                "pop" | "len" => Ty::I32,
                 "get" => {
                     if let Some(idx) = args.first() {
                         let (expr, sp) = idx.expr();
@@ -3820,7 +3811,7 @@ impl Checker {
                 },
                 "close" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -3874,7 +3865,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -3894,7 +3885,7 @@ impl Checker {
                 },
                 "close" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -3935,7 +3926,7 @@ impl Checker {
                     Ty::I32
                 }
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -3976,7 +3967,7 @@ impl Checker {
                 }
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -3993,7 +3984,7 @@ impl Checker {
                 "wait" | "kill" => Ty::I32,
                 "free" => Ty::Unit,
                 _ => {
-                    if let Some(ty) = self.try_resolve_named_method(name, method, args, &span) {
+                    if let Some(ty) = self.try_resolve_named_method(name, method, args, span) {
                         ty
                     } else {
                         self.report_error(
@@ -4080,12 +4071,13 @@ impl Checker {
                 }
             }
             // Generator methods: .next() returns the yielded type
-            (Ty::Generator { yields, .. }, "next") => (**yields).clone(),
-            (Ty::AsyncGenerator { yields }, "next") => (**yields).clone(),
+            (Ty::Generator { yields, .. }, "next") | (Ty::AsyncGenerator { yields }, "next") => {
+                (**yields).clone()
+            }
 
             // Stream<T> methods
             (Ty::Stream(inner), "next") => Ty::Option(inner.clone()),
-            (Ty::Stream(_), "close") | (Ty::Sink(_), "flush") | (Ty::Sink(_), "close") => Ty::Unit,
+            (Ty::Stream(_) | Ty::Sink(_), "close") | (Ty::Sink(_), "flush") => Ty::Unit,
             (Ty::Stream(_), "lines") => Ty::Stream(Box::new(Ty::String)),
             (Ty::Stream(_), "collect") => Ty::String,
             (Ty::Stream(inner), "chunks") => {
@@ -4323,15 +4315,14 @@ impl Checker {
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
-                        if !type_arg_map.contains_key(tp) {
-                            if *declared_ty
+                        if !type_arg_map.contains_key(tp)
+                            && *declared_ty
                                 == (Ty::Named {
                                     name: tp.clone(),
                                     args: vec![],
                                 })
-                            {
-                                type_arg_map.insert(tp.clone(), actual.clone());
-                            }
+                        {
+                            type_arg_map.insert(tp.clone(), actual.clone());
                         }
                     }
                 } else {
@@ -4731,7 +4722,7 @@ impl Checker {
     }
 
     /// Look up a method on a trait, walking super-traits if needed.
-    /// Returns a FnSig with self filtered out.
+    /// Returns a `FnSig` with self filtered out.
     fn lookup_trait_method(&self, trait_name: &str, method: &str) -> Option<FnSig> {
         // Check the trait's own methods
         if let Some(methods) = self.trait_defs.get(trait_name) {
@@ -5068,11 +5059,10 @@ impl Checker {
                     false
                 }
             }
-            // Method calls that return Unit are side-effectful (push, send, stop, etc.)
-            // Value-returning method calls (len, get, etc.) should still warn
-            Expr::MethodCall { .. } => false,
             // Assignments, spawns, and control flow are side effects
             Expr::Spawn { .. } | Expr::Block(_) | Expr::If { .. } | Expr::Scope { .. } => true,
+            // Method calls that return Unit are side-effectful (push, send, stop, etc.)
+            // Value-returning method calls (len, get, etc.) should still warn
             _ => false,
         }
     }

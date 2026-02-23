@@ -60,6 +60,7 @@ pub extern "C" fn hew_actor_current_id() -> i64 {
             // SAFETY: ptr is non-null and points to a valid HewActor set by the scheduler.
             #[expect(clippy::cast_possible_wrap, reason = "actor IDs fit in i64")]
             {
+                // SAFETY: ptr is non-null and valid (checked above, set by scheduler).
                 unsafe { &*ptr }.id as i64
             }
         }
@@ -368,7 +369,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     #[cfg(feature = "profiler")]
     // SAFETY: `actor` is valid.
     unsafe {
-        crate::profiler::actor_registry::unregister(actor)
+        crate::profiler::actor_registry::unregister(actor);
     };
 
     // SAFETY: Caller guarantees `actor` is valid.
@@ -509,7 +510,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
     unsafe {
-        crate::profiler::actor_registry::register(raw)
+        crate::profiler::actor_registry::register(raw);
     };
     raw
 }
@@ -588,7 +589,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
     unsafe {
-        crate::profiler::actor_registry::register(raw)
+        crate::profiler::actor_registry::register(raw);
     };
     raw
 }
@@ -648,7 +649,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     #[cfg(feature = "profiler")]
     // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
     unsafe {
-        crate::profiler::actor_registry::register(raw)
+        crate::profiler::actor_registry::register(raw);
     };
     raw
 }
@@ -1375,6 +1376,7 @@ pub extern "C" fn hew_panic() {
 #[no_mangle]
 pub unsafe extern "C" fn hew_panic_msg(msg: *const std::ffi::c_char) {
     if !msg.is_null() {
+        // SAFETY: msg is non-null (checked above) and caller guarantees valid C string.
         let s = unsafe { std::ffi::CStr::from_ptr(msg) };
         if let Ok(text) = s.to_str() {
             if !text.is_empty() {

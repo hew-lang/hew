@@ -365,7 +365,7 @@ unsafe fn compress_op(
     let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
     let mut out_len: usize = 0;
     // SAFETY: input slice is valid; out_len is writable.
-    let ptr = unsafe { f(input.as_ptr(), input.len(), &mut out_len) };
+    let ptr = unsafe { f(input.as_ptr(), input.len(), &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };
@@ -379,11 +379,11 @@ unsafe fn compress_op(
     result
 }
 
-/// Gzip-compress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Gzip-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_gzip_compress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -392,11 +392,11 @@ pub unsafe extern "C" fn hew_gzip_compress_hew(
     unsafe { compress_op(v, hew_gzip_compress) }
 }
 
-/// Gzip-decompress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Gzip-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_gzip_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -405,11 +405,11 @@ pub unsafe extern "C" fn hew_gzip_decompress_hew(
     unsafe { compress_op(v, hew_gzip_decompress) }
 }
 
-/// Deflate-compress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Deflate-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_deflate_compress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -418,11 +418,11 @@ pub unsafe extern "C" fn hew_deflate_compress_hew(
     unsafe { compress_op(v, hew_deflate_compress) }
 }
 
-/// Deflate-decompress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Deflate-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_deflate_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -431,11 +431,11 @@ pub unsafe extern "C" fn hew_deflate_decompress_hew(
     unsafe { compress_op(v, hew_deflate_decompress) }
 }
 
-/// Zlib-compress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Zlib-compress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_zlib_compress_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -444,11 +444,11 @@ pub unsafe extern "C" fn hew_zlib_compress_hew(
     unsafe { compress_op(v, hew_zlib_compress) }
 }
 
-/// Zlib-decompress a `bytes` HewVec, returning a new `bytes` HewVec.
+/// Zlib-decompress a `bytes` `HewVec`, returning a new `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_zlib_decompress_hew(
     v: *mut hew_cabi::vec::HewVec,

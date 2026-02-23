@@ -245,9 +245,8 @@ fn find_runtime_lib(name: &str) -> Result<String, String> {
 /// `std::encoding::hex` → `libhew_std_encoding_hex.a`), searches
 /// the standard candidate directories and returns the found paths.
 pub fn find_package_libs(modules: &[String]) -> Vec<String> {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return vec![],
+    let Ok(exe) = std::env::current_exe() else {
+        return vec![];
     };
     let exe_dir = exe.parent().expect("exe should have a parent directory");
 

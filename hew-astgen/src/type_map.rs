@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 /// Configuration for mapping Rust enum variant names to C++ struct names.
 pub struct TypeMap {
-    /// enum_name → variant naming strategy
+    /// `enum_name` → variant naming strategy
     variant_prefix: HashMap<String, VariantNaming>,
-    /// (enum_name, variant_name) → C++ struct name overrides
+    /// (`enum_name`, `variant_name`) → C++ struct name overrides
     variant_overrides: HashMap<(String, String), String>,
     /// Types that need forward declarations (recursive types).
     pub forward_declared: Vec<String>,
@@ -13,9 +13,9 @@ pub struct TypeMap {
 }
 
 enum VariantNaming {
-    /// Prefix + variant name: e.g., "Expr" + "Binary" → "ExprBinary"
+    /// Prefix + variant name: e.g., "Expr" + "Binary" → "`ExprBinary`"
     Prefix(String),
-    /// Use the inner newtype's type name: e.g., Item::Import(ImportDecl) → "ImportDecl"
+    /// Use the inner newtype's type name: e.g., `Item::Import(ImportDecl)` → "`ImportDecl`"
     InnerTypeName,
 }
 
@@ -131,19 +131,17 @@ impl TypeMap {
     }
 }
 
-/// Map a RustType to a C++ type string.
+/// Map a `RustType` to a C++ type string.
 pub fn cpp_type(ty: &crate::model::RustType) -> String {
     use crate::model::RustType;
     match ty {
-        RustType::String => "std::string".to_string(),
         RustType::Bool => "bool".to_string(),
         RustType::I64 => "int64_t".to_string(),
-        RustType::U64 => "uint64_t".to_string(),
+        RustType::U64 | RustType::Usize => "uint64_t".to_string(),
         RustType::U32 => "uint32_t".to_string(),
         RustType::F64 => "double".to_string(),
         RustType::Char => "char".to_string(),
-        RustType::Usize => "uint64_t".to_string(),
-        RustType::PathBuf => "std::string".to_string(),
+        RustType::String | RustType::PathBuf => "std::string".to_string(),
         RustType::Vec(inner) => format!("std::vector<{}>", cpp_type(inner)),
         RustType::Option(inner) => {
             match inner.as_ref() {

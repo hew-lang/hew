@@ -256,11 +256,11 @@ mod tests {
 // HewVec-ABI wrappers (used by std/crypto.hew)
 // ---------------------------------------------------------------------------
 
-/// Compute SHA-256 of a `bytes` HewVec, returning a 32-byte `bytes` HewVec.
+/// Compute SHA-256 of a `bytes` `HewVec`, returning a 32-byte `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha256_hew(
     data: *mut hew_cabi::vec::HewVec,
@@ -274,11 +274,11 @@ pub unsafe extern "C" fn hew_sha256_hew(
     unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
 }
 
-/// Compute SHA-384 of a `bytes` HewVec, returning a 48-byte `bytes` HewVec.
+/// Compute SHA-384 of a `bytes` `HewVec`, returning a 48-byte `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha384_hew(
     data: *mut hew_cabi::vec::HewVec,
@@ -292,11 +292,11 @@ pub unsafe extern "C" fn hew_sha384_hew(
     unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
 }
 
-/// Compute SHA-512 of a `bytes` HewVec, returning a 64-byte `bytes` HewVec.
+/// Compute SHA-512 of a `bytes` `HewVec`, returning a 64-byte `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `data` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_sha512_hew(
     data: *mut hew_cabi::vec::HewVec,
@@ -310,11 +310,11 @@ pub unsafe extern "C" fn hew_sha512_hew(
     unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
 }
 
-/// Compute HMAC-SHA-256 with key/data HewVecs, returning a 32-byte `bytes` HewVec.
+/// Compute HMAC-SHA-256 with key/data `HewVecs`, returning a 32-byte `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// Both `key` and `data` must be valid, non-null pointers to HewVecs (i32 elements).
+/// Both `key` and `data` must be valid, non-null pointers to `HewVecs` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_hmac_sha256_hew(
     key: *mut hew_cabi::vec::HewVec,
@@ -322,6 +322,7 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
 ) -> *mut hew_cabi::vec::HewVec {
     // SAFETY: key/data validity forwarded to hwvec_to_u8.
     let key_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(key) };
+    // SAFETY: data validity forwarded to hwvec_to_u8.
     let data_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
     let mut out = [0u8; 32];
     // SAFETY: key_bytes and data_bytes slices are valid; out is a 32-byte buffer.
@@ -332,13 +333,13 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
             data_bytes.as_ptr(),
             data_bytes.len(),
             out.as_mut_ptr(),
-        )
+        );
     };
     // SAFETY: out is valid for 32 bytes.
     unsafe { hew_cabi::vec::u8_to_hwvec(&out) }
 }
 
-/// Fill and return a `bytes` HewVec of `len` cryptographically random bytes.
+/// Fill and return a `bytes` `HewVec` of `len` cryptographically random bytes.
 ///
 /// # Safety
 ///
@@ -355,20 +356,21 @@ pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> *mut hew_cabi::vec::H
     unsafe { hew_cabi::vec::u8_to_hwvec(&buf) }
 }
 
-/// Compare two `bytes` HewVecs in constant time.
+/// Compare two `bytes` `HewVecs` in constant time.
 ///
 /// Returns 1 if equal, 0 if different or different lengths.
 ///
 /// # Safety
 ///
-/// Both `a` and `b` must be valid, non-null pointers to HewVecs (i32 elements).
+/// Both `a` and `b` must be valid, non-null pointers to `HewVecs` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_constant_time_eq_hew(
     a: *mut hew_cabi::vec::HewVec,
     b: *mut hew_cabi::vec::HewVec,
 ) -> i32 {
-    // SAFETY: a/b validity forwarded to hwvec_to_u8.
+    // SAFETY: a validity forwarded to hwvec_to_u8.
     let a_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(a) };
+    // SAFETY: b validity forwarded to hwvec_to_u8.
     let b_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(b) };
     if a_bytes.len() != b_bytes.len() {
         return 0;

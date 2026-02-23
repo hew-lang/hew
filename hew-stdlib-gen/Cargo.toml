@@ -6,6 +6,8 @@ license.workspace = true
 description = "Build-time tool: generates .hew stubs and stdlib.rs entries from #[hew_export] metadata"
 readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "codegen"]
+categories = ["compilers"]
 
 [[bin]]
 name = "hew-stdlib-gen"

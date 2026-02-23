@@ -352,9 +352,9 @@ mod tests {
 // HewVec-ABI wrappers (used by std/msgpack.hew)
 // ---------------------------------------------------------------------------
 
-/// Encode a JSON string to MessagePack bytes, returning a `bytes` HewVec.
+/// Encode a JSON string to `MessagePack` bytes, returning a `bytes` `HewVec`.
 ///
-/// Returns an empty HewVec on invalid JSON.
+/// Returns an empty `HewVec` on invalid JSON.
 ///
 /// # Safety
 ///
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn hew_msgpack_from_json_hew(
     }
     let mut out_len: usize = 0;
     // SAFETY: json is a valid C string; out_len is writable.
-    let ptr = unsafe { hew_msgpack_from_json(json, &mut out_len) };
+    let ptr = unsafe { hew_msgpack_from_json(json, &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };
@@ -383,13 +383,13 @@ pub unsafe extern "C" fn hew_msgpack_from_json_hew(
     result
 }
 
-/// Decode a `bytes` HewVec of MessagePack data to a JSON string.
+/// Decode a `bytes` `HewVec` of `MessagePack` data to a JSON string.
 ///
 /// Returns an empty string on error.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) -> *mut c_char {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -398,7 +398,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) 
     unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) }
 }
 
-/// Encode an i64 integer as a MessagePack varint, returning a `bytes` HewVec.
+/// Encode an i64 integer as a `MessagePack` varint, returning a `bytes` `HewVec`.
 ///
 /// # Safety
 ///
@@ -407,7 +407,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *mut hew_cabi::vec::HewVec) 
 pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> *mut hew_cabi::vec::HewVec {
     let mut out_len: usize = 0;
     // SAFETY: out_len is writable.
-    let ptr = unsafe { hew_msgpack_encode_int(val, &mut out_len) };
+    let ptr = unsafe { hew_msgpack_encode_int(val, &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> *mut hew_cabi::
     result
 }
 
-/// Encode a C string as MessagePack str, returning a `bytes` HewVec.
+/// Encode a C string as `MessagePack` str, returning a `bytes` `HewVec`.
 ///
 /// # Safety
 ///
@@ -436,7 +436,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_string_hew(
     }
     let mut out_len: usize = 0;
     // SAFETY: s is a valid C string; out_len is writable.
-    let ptr = unsafe { hew_msgpack_encode_string(s, &mut out_len) };
+    let ptr = unsafe { hew_msgpack_encode_string(s, &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };
@@ -450,11 +450,11 @@ pub unsafe extern "C" fn hew_msgpack_encode_string_hew(
     result
 }
 
-/// Encode a `bytes` HewVec as a MessagePack bin, returning a `bytes` HewVec.
+/// Encode a `bytes` `HewVec` as a `MessagePack` bin, returning a `bytes` `HewVec`.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(
     v: *mut hew_cabi::vec::HewVec,
@@ -463,7 +463,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(
     let input = unsafe { hew_cabi::vec::hwvec_to_u8(v) };
     let mut out_len: usize = 0;
     // SAFETY: input slice is valid; out_len is writable.
-    let ptr = unsafe { hew_msgpack_encode_bytes(input.as_ptr(), input.len(), &mut out_len) };
+    let ptr = unsafe { hew_msgpack_encode_bytes(input.as_ptr(), input.len(), &raw mut out_len) };
     if ptr.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
         return unsafe { hew_cabi::vec::hew_vec_new() };

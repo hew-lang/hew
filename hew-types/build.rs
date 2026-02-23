@@ -50,9 +50,8 @@ fn main() {
     let mut modules: BTreeMap<String, ModuleData> = BTreeMap::new();
 
     for (dir_path, files) in &dir_files {
-        let rel = match dir_path.strip_prefix(repo_root) {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(rel) = dir_path.strip_prefix(repo_root) else {
+            continue;
         };
         let depth = rel.components().count();
 
@@ -61,9 +60,8 @@ fn main() {
             for file in files {
                 println!("cargo:rerun-if-changed={}", file.display());
 
-                let source = match std::fs::read_to_string(file) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                let Ok(source) = std::fs::read_to_string(file) else {
+                    continue;
                 };
 
                 let stem = file.file_stem().unwrap().to_str().unwrap();
@@ -111,10 +109,8 @@ fn main() {
             }
         } else {
             // Subdirectory: all files merge into one module
-            let module_path = resolve_module_path(dir_path, files, repo_root);
-            let module_path = match module_path {
-                Some(p) => p,
-                None => continue,
+            let Some(module_path) = resolve_module_path(dir_path, files, repo_root) else {
+                continue;
             };
 
             let short_name = module_path
@@ -137,9 +133,8 @@ fn main() {
             for file in files {
                 println!("cargo:rerun-if-changed={}", file.display());
 
-                let source = match std::fs::read_to_string(file) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                let Ok(source) = std::fs::read_to_string(file) else {
+                    continue;
                 };
 
                 let result = hew_parser::parse(&source);
@@ -170,19 +165,19 @@ fn main() {
 struct ModuleData {
     module_path: String,
     short_name: String,
-    /// Extern C function signatures: (c_name, params_code, return_code)
+    /// Extern C function signatures: (`c_name`, `params_code`, `return_code`)
     functions: Vec<(String, Vec<String>, String)>,
-    /// Wrapper `pub fn` signatures: (method_name, params_code, return_code).
+    /// Wrapper `pub fn` signatures: (`method_name`, `params_code`, `return_code`).
     /// These capture the wrapper function's own signature (which may differ from
     /// the underlying extern C function it calls).
     wrapper_fns: Vec<(String, Vec<String>, String)>,
-    /// Clean name mappings: (user_name, c_symbol)
+    /// Clean name mappings: (`user_name`, `c_symbol`)
     clean_names: Vec<(String, String)>,
     /// Handle type names, e.g. "json.Value"
     handle_types: Vec<String>,
     /// Types with `impl Drop` — these are move-only (not Copy)
     drop_types: Vec<String>,
-    /// Handle method mappings: ((qualified_type, method_name), c_symbol)
+    /// Handle method mappings: ((`qualified_type`, `method_name`), `c_symbol`)
     handle_methods: Vec<((String, String), String)>,
 }
 
@@ -190,9 +185,9 @@ struct ModuleData {
 fn collect_hew_files(dir: &Path, dir_files: &mut BTreeMap<PathBuf, Vec<PathBuf>>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .expect("failed to read directory")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     let mut has_hew_files = false;
 
@@ -200,9 +195,9 @@ fn collect_hew_files(dir: &Path, dir_files: &mut BTreeMap<PathBuf, Vec<PathBuf>>
         let path = entry.path();
         if path.is_dir() {
             collect_hew_files(&path, dir_files);
-        } else if path.extension().map_or(false, |e| e == "hew") {
+        } else if path.extension().is_some_and(|e| e == "hew") {
             // Skip builtins.hew
-            if path.file_name().map_or(false, |f| f == "builtins.hew") {
+            if path.file_name().is_some_and(|f| f == "builtins.hew") {
                 continue;
             }
             dir_files.entry(dir.to_path_buf()).or_default().push(path);
@@ -275,7 +270,7 @@ fn extract_import_path(source: &str) -> Option<String> {
     None
 }
 
-/// Parse a .hew program and merge its data into an existing ModuleData.
+/// Parse a .hew program and merge its data into an existing `ModuleData`.
 fn merge_module_data(program: &hew_parser::ast::Program, short_name: &str, data: &mut ModuleData) {
     // Collect extern "C" function signatures
     for (item, _span) in &program.items {
@@ -405,7 +400,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             "i8" => "Ty::I8".to_string(),
             "i16" => "Ty::I16".to_string(),
             "i32" => "Ty::I32".to_string(),
-            "i64" => "Ty::I64".to_string(),
+            "i64" | "int" | "Int" => "Ty::I64".to_string(),
             "u8" => "Ty::U8".to_string(),
             "u16" => "Ty::U16".to_string(),
             "u32" => "Ty::U32".to_string(),
@@ -415,7 +410,6 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             "bool" => "Ty::Bool".to_string(),
             "char" => "Ty::Char".to_string(),
             "bytes" => "Ty::Named { name: \"bytes\".to_string(), args: vec![] }".to_string(),
-            "int" | "Int" => "Ty::I64".to_string(),
             n if n.contains('.') => {
                 let args_code = type_args_to_code(type_args, module_short);
                 format!("Ty::Named {{ name: \"{n}\".to_string(), args: {args_code} }}")
@@ -447,10 +441,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             "Vec" | "HashMap" | "ActorRef" | "Actor" | "Task" | "Stream" | "Sink"
             | "StreamPair" => {
                 let args_code = type_args_to_code(type_args, module_short);
-                format!(
-                    "Ty::Named {{ name: \"{other}\".to_string(), args: {args_code} }}",
-                    other = name
-                )
+                format!("Ty::Named {{ name: \"{name}\".to_string(), args: {args_code} }}")
             }
             other => {
                 let args_code = type_args_to_code(type_args, module_short);
@@ -537,8 +528,9 @@ fn extract_call_target(body: &Block) -> Option<(String, usize)> {
     }
     if let Some((stmt, _)) = body.stmts.last() {
         match stmt {
-            Stmt::Expression(expr) => return call_target_from_expr(&expr.0),
-            Stmt::Return(Some(expr)) => return call_target_from_expr(&expr.0),
+            Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
+                return call_target_from_expr(&expr.0)
+            }
             _ => {}
         }
     }
@@ -823,14 +815,29 @@ fn generate_resolve_handle_method(out: &mut String, modules: &BTreeMap<String, M
     .unwrap();
     writeln!(out, "    match (handle_type, method) {{").unwrap();
 
+    // Group handle methods by (type_name, c_symbol) to merge arms with identical bodies
+    // and avoid clippy::match_same_arms warnings in generated code.
+    let mut grouped: std::collections::BTreeMap<(&str, &str), Vec<&str>> =
+        std::collections::BTreeMap::new();
     for data in modules.values() {
         for ((type_name, method_name), c_symbol) in &data.handle_methods {
-            writeln!(
-                out,
-                "        (\"{type_name}\", \"{method_name}\") => Some(\"{c_symbol}\"),"
-            )
-            .unwrap();
+            grouped
+                .entry((type_name.as_str(), c_symbol.as_str()))
+                .or_default()
+                .push(method_name.as_str());
         }
+    }
+    for ((type_name, c_symbol), methods) in &grouped {
+        let patterns: Vec<String> = methods
+            .iter()
+            .map(|m| format!("(\"{type_name}\", \"{m}\")"))
+            .collect();
+        writeln!(
+            out,
+            "        {} => Some(\"{c_symbol}\"),",
+            patterns.join(" | ")
+        )
+        .unwrap();
     }
 
     writeln!(out, "        _ => None,").unwrap();

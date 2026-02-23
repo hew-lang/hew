@@ -544,6 +544,7 @@ pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void 
             }
             // SAFETY: buf is len+1 bytes allocated above; item.as_ptr() points to len bytes.
             unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            // SAFETY: buf has len+1 bytes allocated; writing the null terminator at offset len.
             unsafe { *buf.cast::<u8>().add(len) = 0 };
             buf.cast::<c_void>()
         }
@@ -671,13 +672,11 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
     }
     // SAFETY: Both pointers are valid per caller contract.
     let s = unsafe { &mut *stream };
+    // SAFETY: sink is non-null (checked above) and valid per caller contract.
     let k = unsafe { &mut *sink };
 
-    loop {
-        match s.inner.next() {
-            Some(item) => k.inner.write_item(&item),
-            None => break,
-        }
+    while let Some(item) = s.inner.next() {
+        k.inner.write_item(&item);
     }
     k.inner.close();
 
@@ -705,10 +704,11 @@ pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStr
     }
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
-    let mut owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
     into_stream_ptr(LinesStream {
         buf: Vec::new(),
-        upstream: unsafe { ptr::read(&mut owned.inner) },
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
         done: false,
     })
 }
@@ -733,11 +733,12 @@ pub unsafe extern "C" fn hew_stream_chunks(
     let size = usize::try_from(chunk_size.max(1)).unwrap_or(1);
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
-    let mut owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
     into_stream_ptr(ChunksStream {
         buf: Vec::new(),
         chunk_size: size,
-        upstream: unsafe { ptr::read(&mut owned.inner) },
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
         done: false,
     })
 }
@@ -831,9 +832,5 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
 
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &*stream };
-    if s.inner.is_closed() {
-        1
-    } else {
-        0
-    }
+    i32::from(s.inner.is_closed())
 }

@@ -13,13 +13,13 @@ use crate::ty::Ty;
 /// All type information extracted from a single `.hew` module file.
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
-    /// C function signatures: (c_name, param_types, return_type).
+    /// C function signatures: (`c_name`, `param_types`, `return_type`).
     pub functions: Vec<(String, Vec<Ty>, Ty)>,
-    /// Clean name mappings: (user_name, c_symbol).
+    /// Clean name mappings: (`user_name`, `c_symbol`).
     pub clean_names: Vec<(String, String)>,
     /// Handle type names, e.g. `"json.Value"`.
     pub handle_types: Vec<String>,
-    /// Handle method mappings: ((type_name, method_name), c_symbol).
+    /// Handle method mappings: ((`type_name`, `method_name`), `c_symbol`).
     pub handle_methods: Vec<((String, String), String)>,
 }
 
@@ -79,6 +79,7 @@ fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf
 }
 
 /// Extract the short module name (last segment) from a module path.
+#[must_use]
 pub fn module_short_name(module_path: &str) -> String {
     module_path
         .rsplit("::")
@@ -252,8 +253,9 @@ fn extract_call_target(body: &Block) -> Option<String> {
     // Check last statement
     if let Some((stmt, _)) = body.stmts.last() {
         match stmt {
-            Stmt::Expression(expr) => return call_target_from_expr(&expr.0),
-            Stmt::Return(Some(expr)) => return call_target_from_expr(&expr.0),
+            Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
+                return call_target_from_expr(&expr.0)
+            }
             _ => {}
         }
     }

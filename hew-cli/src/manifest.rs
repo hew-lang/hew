@@ -48,13 +48,11 @@ pub fn load_dependencies(dir: &Path) -> Option<Vec<String>> {
     if !path.exists() {
         return None;
     }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return None,
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return None;
     };
-    let manifest: TomlManifest = match toml::from_str(&text) {
-        Ok(m) => m,
-        Err(_) => return None,
+    let Ok(manifest) = toml::from_str::<TomlManifest>(&text) else {
+        return None;
     };
     Some(manifest.dependencies.into_keys().collect())
 }

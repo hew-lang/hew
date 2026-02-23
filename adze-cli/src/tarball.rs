@@ -113,7 +113,7 @@ pub fn pack(
 
     // Compress with zstd at maximum level — publish is a one-time cost.
     let compressed = zstd::encode_all(tar_data.as_slice(), 22)
-        .map_err(|e| TarballError::Io(io::Error::new(io::ErrorKind::Other, e)))?;
+        .map_err(|e| TarballError::Io(io::Error::other(e)))?;
 
     if compressed.len() > MAX_TARBALL_SIZE {
         return Err(TarballError::TooLarge {

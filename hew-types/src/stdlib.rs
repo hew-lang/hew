@@ -109,11 +109,13 @@ pub fn is_handle_type(name: &str) -> bool {
 /// Returns `true` if the type has `impl Drop` and should be treated as
 /// move-only (not Copy).  These types own resources and need ownership
 /// transfer semantics when sent to actors.
+#[must_use]
 pub fn is_drop_type(name: &str) -> bool {
     GENERATED_DROP_TYPES.contains(&name)
 }
 
 /// Returns `true` if the unqualified name matches a known drop type.
+#[must_use]
 pub fn is_unqualified_drop_type(name: &str) -> bool {
     if name.contains('.') {
         return false;
@@ -147,6 +149,7 @@ pub fn handle_type_representation(name: &str) -> &'static str {
 /// Returns `true` if the unqualified name (without module prefix) matches
 /// the short name of any known handle type (e.g. `"Connection"` matches
 /// `"net.Connection"`).
+#[must_use]
 pub fn is_unqualified_handle_type(name: &str) -> bool {
     if name.contains('.') {
         return false;
@@ -159,6 +162,7 @@ pub fn is_unqualified_handle_type(name: &str) -> bool {
 /// If `name` is an unqualified handle type (e.g. `"Connection"`), returns
 /// the fully qualified name (e.g. `"net.Connection"`). Returns `None` if
 /// the name doesn't match any known handle type.
+#[must_use]
 pub fn qualify_handle_type(name: &str) -> Option<&'static str> {
     if name.contains('.') {
         return None;

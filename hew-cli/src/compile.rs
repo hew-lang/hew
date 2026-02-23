@@ -1,4 +1,4 @@
-//! Build command: parse, type-check, serialize to MessagePack, invoke
+//! Build command: parse, type-check, serialize to `MessagePack`, invoke
 //! `hew-codegen`, and link the final executable.
 
 use std::collections::HashSet;
@@ -240,7 +240,7 @@ pub fn compile(
         // enriched (type-annotated) items rather than the pre-enrichment clone.
         if let Some(ref mut mg) = program.module_graph {
             if let Some(root_module) = mg.modules.get_mut(&mg.root) {
-                root_module.items = program.items.clone();
+                root_module.items.clone_from(&program.items);
             }
             // Normalize types in non-root modules so that
             // TypeExpr::Named("Option", ..) → TypeExpr::Option(..) etc.
@@ -491,7 +491,7 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     let mut segments: Vec<String> = rel
         .iter()
         .filter_map(|s| s.to_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     if segments.is_empty() {
@@ -891,7 +891,7 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
     // literal syntax and is unambiguous; a false positive (e.g. inside a
     // comment) only adds an unused import — harmless.
     if source.contains("re\"") {
-        let path = vec!["std", "text", "regex"];
+        let path = ["std", "text", "regex"];
         let key = path.join("::");
         if !existing.contains(&key) {
             needed.push(path.iter().map(|s| (*s).to_string()).collect());

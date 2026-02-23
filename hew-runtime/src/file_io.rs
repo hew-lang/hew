@@ -189,9 +189,9 @@ pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     }
 }
 
-/// Read the raw bytes of a file into a `bytes` HewVec (i32 elements).
+/// Read the raw bytes of a file into a `bytes` `HewVec` (i32 elements).
 ///
-/// Returns an empty HewVec on error.
+/// Returns an empty `HewVec` on error.
 ///
 /// # Safety
 ///
@@ -220,14 +220,14 @@ pub unsafe extern "C" fn hew_file_read_bytes(path: *const c_char) -> *mut crate:
     }
 }
 
-/// Write a `bytes` HewVec to a file, overwriting any existing content.
+/// Write a `bytes` `HewVec` to a file, overwriting any existing content.
 ///
 /// Returns 0 on success, -1 on error.
 ///
 /// # Safety
 ///
 /// `path` must be a valid, NUL-terminated C string.
-/// `data` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `data` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_file_write_bytes(
     path: *const c_char,

@@ -2151,8 +2151,7 @@ impl<'src> Parser<'src> {
             } else {
                 let found = self
                     .peek()
-                    .map(|t| format!("{t}"))
-                    .unwrap_or_else(|| "end of input".to_string());
+                    .map_or_else(|| "end of input".to_string(), |t| format!("{t}"));
                 self.error(format!("expected `*` or `{{` after `::`, found {found}"));
                 return None;
             }
@@ -3349,7 +3348,7 @@ impl<'src> Parser<'src> {
                 };
                 // Parse the scope body with the binding active
                 let prev_binding = self.scope_binding.take();
-                self.scope_binding = binding.clone();
+                self.scope_binding.clone_from(&binding);
                 let body = self.parse_block()?;
                 self.scope_binding = prev_binding;
                 Expr::Scope { binding, body }

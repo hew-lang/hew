@@ -253,9 +253,8 @@ pub fn resolve_from_index(
     requirement: &str,
 ) -> Result<Option<IndexEntry>, IndexError> {
     let entries = read_index_entries(index_root, package_name)?;
-    let req = match crate::resolver::VersionReq::parse(requirement) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
+    let Ok(req) = crate::resolver::VersionReq::parse(requirement) else {
+        return Ok(None);
     };
 
     let mut candidates: Vec<_> = entries

@@ -27,7 +27,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// Find names similar to `target` from `candidates`, returning up to 3 suggestions.
 ///
 /// A candidate is considered similar if its Levenshtein distance is at most
-/// max(1, target.len() / 3), which scales with identifier length.
+/// max(1, `target.len()` / 3), which scales with identifier length.
 pub fn find_similar<'a, I>(target: &str, candidates: I) -> Vec<String>
 where
     I: IntoIterator<Item = &'a str>,

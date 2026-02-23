@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Hew std::time::cron — cron expression scheduling"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
 
 [lib]
 crate-type = ["staticlib", "lib"]
@@ -11,7 +15,10 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
 cron = "0.15"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = [
+  "clock",
+  "std",
+] }
 libc = "0.2"
 
 [lints]

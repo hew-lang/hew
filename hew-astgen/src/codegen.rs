@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use crate::model::*;
+use crate::model::{EnumVariant, FieldDef, RustType, SimpleEnum, StructDef, TaggedEnum, TypeDef};
 use crate::special_cases;
 use crate::type_map::{self, TypeMap};
 
@@ -14,12 +14,12 @@ const VEC_PTR_TYPES: &[&str] = &["Expr", "Stmt", "Pattern"];
 /// Transitive dependency closures for forward-declared types.
 ///
 /// For a forward-declared type F (e.g., Expr), `dep_closures[F]` contains all types
-/// that F transitively depends on. If struct S ∈ dep_closures[F], then S is defined
+/// that F transitively depends on. If struct S ∈ `dep_closures`[F], then S is defined
 /// before F in the C++ header, meaning F is incomplete at S's definition point.
 /// Therefore, bare `Spanned<F>` in S's fields must use `unique_ptr`.
 type DepClosures = HashMap<String, HashSet<String>>;
 
-/// Generate the complete msgpack_reader_gen.cpp content.
+/// Generate the complete `msgpack_reader_gen.cpp` content.
 pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
     let mut out = String::with_capacity(64 * 1024);
 
@@ -33,12 +33,12 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
 
     // Forward declarations for recursive types
     write_forward_decls(&mut out, type_map);
-    out.push_str("\n");
+    out.push('\n');
 
     // Forward declarations for special-cased parsers that are emitted late
     // but referenced by auto-generated parsers
     write_special_forward_decls(&mut out);
-    out.push_str("\n");
+    out.push('\n');
 
     // Template helpers (Span, Spanned, Vec, etc.)
     out.push_str(special_cases::template_helpers());
@@ -67,7 +67,7 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
         }
 
         write_parser(&mut out, type_def, type_map, &dep_closures);
-        out.push_str("\n");
+        out.push('\n');
     }
 
     // Special-cased parsers that must appear after their dependencies
@@ -344,34 +344,30 @@ fn write_optional_field_parse(
     current_type: &str,
     dep_closures: &DepClosures,
 ) {
-    match &field.ty {
-        RustType::Option(inner) => {
-            let _ = writeln!(
-                out,
-                "{indent}const auto *{field_name} = mapGet({obj}, \"{key}\");"
-            );
-            let _ = writeln!(out, "{indent}if ({field_name} && !isNil(*{field_name}))");
+    if let RustType::Option(inner) = &field.ty {
+        let _ = writeln!(
+            out,
+            "{indent}const auto *{field_name} = mapGet({obj}, \"{key}\");"
+        );
+        let _ = writeln!(out, "{indent}if ({field_name} && !isNil(*{field_name}))");
 
-            // Generate the assignment based on inner type
-            let parse =
-                gen_parse_expr(inner, &format!("*{field_name}"), current_type, dep_closures);
-            let _ = writeln!(out, "{indent}  {var}.{field_name} = {parse};");
-        }
-        _ => {
-            // serde(default) on a non-Option field
-            let _ = writeln!(
-                out,
-                "{indent}const auto *{field_name}_ = mapGet({obj}, \"{key}\");"
-            );
-            let _ = writeln!(out, "{indent}if ({field_name}_ && !isNil(*{field_name}_))");
-            let parse = gen_parse_expr(
-                &field.ty,
-                &format!("*{field_name}_"),
-                current_type,
-                dep_closures,
-            );
-            let _ = writeln!(out, "{indent}  {var}.{field_name} = {parse};");
-        }
+        // Generate the assignment based on inner type
+        let parse = gen_parse_expr(inner, &format!("*{field_name}"), current_type, dep_closures);
+        let _ = writeln!(out, "{indent}  {var}.{field_name} = {parse};");
+    } else {
+        // serde(default) on a non-Option field
+        let _ = writeln!(
+            out,
+            "{indent}const auto *{field_name}_ = mapGet({obj}, \"{key}\");"
+        );
+        let _ = writeln!(out, "{indent}if ({field_name}_ && !isNil(*{field_name}_))");
+        let parse = gen_parse_expr(
+            &field.ty,
+            &format!("*{field_name}_"),
+            current_type,
+            dep_closures,
+        );
+        let _ = writeln!(out, "{indent}  {var}.{field_name} = {parse};");
     }
 }
 
@@ -395,11 +391,11 @@ fn write_required_field_parse(
 ///
 /// Wrapping rules:
 /// - `Box<Spanned<T>>` → `unique_ptr<Spanned<T>>` (always)
-/// - Bare `Spanned<T>` where T is incomplete at current_type's position → `unique_ptr`
+/// - Bare `Spanned<T>` where T is incomplete at `current_type`'s position → `unique_ptr`
 /// - Bare `Spanned<T>` where T is complete → by-value `Spanned<T>`
-/// - `Named(T)` where T is incomplete at current_type's position → `make_unique<T>`
+/// - `Named(T)` where T is incomplete at `current_type`'s position → `make_unique<T>`
 /// - `Named(T)` where T is complete → by-value `parseT(obj)`
-/// - `Vec<Spanned<T>>` where T ∈ VEC_PTR_TYPES → `vector<unique_ptr<Spanned<T>>>`
+/// - `Vec<Spanned<T>>` where T ∈ `VEC_PTR_TYPES` → `vector<unique_ptr<Spanned<T>>>`
 fn gen_parse_expr(
     ty: &RustType,
     obj: &str,
@@ -407,14 +403,13 @@ fn gen_parse_expr(
     dep_closures: &DepClosures,
 ) -> String {
     match ty {
-        RustType::String => format!("getString({obj})"),
         RustType::Bool => format!("getBool({obj})"),
         RustType::I64 => format!("getInt({obj})"),
         RustType::U64 | RustType::Usize => format!("getUint({obj})"),
         RustType::U32 => format!("static_cast<uint32_t>(getUint({obj}))"),
         RustType::F64 => format!("getFloat({obj})"),
         RustType::Char => format!("({obj}).type == msgpack::type::STR ? (getString({obj}).empty() ? '\\0' : getString({obj})[0]) : '\\0'"),
-        RustType::PathBuf => format!("getString({obj})"),
+        RustType::String | RustType::PathBuf => format!("getString({obj})"),
         RustType::Named(name) => {
             let fn_name = TypeMap::parse_fn_name(name);
             if is_incomplete_at(name, current_type, dep_closures) {
@@ -439,17 +434,14 @@ fn gen_parse_expr(
                 format!("parseSpanned<{cpp_inner}>({obj}, {parse_fn})")
             }
         }
-        RustType::Box(inner) => match inner.as_ref() {
-            RustType::Spanned(t) => {
-                let cpp_t = type_map::cpp_type(t);
-                let parse_fn = gen_parse_fn_ref(t);
-                format!("parseSpannedPtr<{cpp_t}>({obj}, {parse_fn})")
-            }
-            _ => {
-                let cpp_inner = type_map::cpp_type(inner);
-                let parse_expr = gen_parse_expr(inner, obj, current_type, dep_closures);
-                format!("std::make_unique<{cpp_inner}>({parse_expr})")
-            }
+        RustType::Box(inner) => if let RustType::Spanned(t) = inner.as_ref() {
+            let cpp_t = type_map::cpp_type(t);
+            let parse_fn = gen_parse_fn_ref(t);
+            format!("parseSpannedPtr<{cpp_t}>({obj}, {parse_fn})")
+        } else {
+            let cpp_inner = type_map::cpp_type(inner);
+            let parse_expr = gen_parse_expr(inner, obj, current_type, dep_closures);
+            format!("std::make_unique<{cpp_inner}>({parse_expr})")
         },
         RustType::Vec(inner) => gen_vec_parse(inner, obj),
         RustType::Option(inner) => {
@@ -504,13 +496,13 @@ fn gen_parse_fn_ref(ty: &RustType) -> String {
                 "[](const msgpack::object &o) {{ return parseSpanned<{cpp_inner}>(o, {inner_fn}); }}"
             )
         }
-        _ => format!("/* unsupported parse fn ref for {:?} */", ty),
+        _ => format!("/* unsupported parse fn ref for {ty:?} */"),
     }
 }
 
 /// Generate Vec<T> parsing.
 ///
-/// For `Vec<Spanned<T>>` where T ∈ VEC_PTR_TYPES, uses parseVecPtr to produce
+/// For `Vec<Spanned<T>>` where T ∈ `VEC_PTR_TYPES`, uses parseVecPtr to produce
 /// `vector<unique_ptr<Spanned<T>>>`. This is a C++ design choice for heavyweight
 /// variant types (Expr, Stmt, Pattern) — Rust uses bare `Vec<Spanned<T>>` for all.
 fn gen_vec_parse(inner: &RustType, obj: &str) -> String {
@@ -546,20 +538,17 @@ fn gen_vec_parse(inner: &RustType, obj: &str) -> String {
         }
         RustType::Box(boxed_inner) => {
             // Vec<Box<T>> → vector<unique_ptr<T>> using parseVecPtr
-            match boxed_inner.as_ref() {
-                RustType::Spanned(t) => {
-                    let cpp_t = type_map::cpp_type(t);
-                    let parse_fn = gen_parse_fn_ref(t);
-                    let cpp_inner = format!("ast::Spanned<{cpp_t}>");
-                    format!(
-                        "parseVecPtr<{cpp_inner}>({obj}, [](const msgpack::object &o) {{ return parseSpanned<{cpp_t}>(o, {parse_fn}); }})"
-                    )
-                }
-                _ => {
-                    let cpp_inner = type_map::cpp_type(boxed_inner);
-                    let parse_fn = gen_parse_fn_ref(boxed_inner);
-                    format!("parseVecPtr<{cpp_inner}>({obj}, {parse_fn})")
-                }
+            if let RustType::Spanned(t) = boxed_inner.as_ref() {
+                let cpp_t = type_map::cpp_type(t);
+                let parse_fn = gen_parse_fn_ref(t);
+                let cpp_inner = format!("ast::Spanned<{cpp_t}>");
+                format!(
+                    "parseVecPtr<{cpp_inner}>({obj}, [](const msgpack::object &o) {{ return parseSpanned<{cpp_t}>(o, {parse_fn}); }})"
+                )
+            } else {
+                let cpp_inner = type_map::cpp_type(boxed_inner);
+                let parse_fn = gen_parse_fn_ref(boxed_inner);
+                format!("parseVecPtr<{cpp_inner}>({obj}, {parse_fn})")
             }
         }
         RustType::Tuple(elems) if elems.len() == 2 => {
@@ -594,8 +583,8 @@ fn gen_tuple2_parse(
 
 /// Generate a lambda for parsing (A, B) tuples inside parseVec.
 ///
-/// Uses `vec_element_parse_expr` so that `Spanned<T>` where T ∈ VEC_PTR_TYPES
-/// gets unique_ptr wrapping (the C++ header uses unique_ptr in vector elements
+/// Uses `vec_element_parse_expr` so that `Spanned<T>` where T ∈ `VEC_PTR_TYPES`
+/// gets `unique_ptr` wrapping (the C++ header uses `unique_ptr` in vector elements
 /// for heavyweight variant types even when Rust uses bare Spanned).
 fn gen_vec_tuple2_lambda(a: &RustType, b: &RustType) -> String {
     let parse_a = vec_element_parse_expr(a, "arr[0]");
@@ -610,8 +599,8 @@ fn gen_vec_tuple2_lambda(a: &RustType, b: &RustType) -> String {
 
 /// Generate a parse expression for a type used as a vector element.
 ///
-/// Like `gen_parse_expr`, but applies VEC_PTR_TYPES wrapping to `Spanned<T>`:
-/// inside vectors, `Spanned<Expr/Stmt/Pattern>` becomes unique_ptr even when
+/// Like `gen_parse_expr`, but applies `VEC_PTR_TYPES` wrapping to `Spanned<T>`:
+/// inside vectors, `Spanned<Expr/Stmt/Pattern>` becomes `unique_ptr` even when
 /// the Rust type is bare (no Box).
 fn vec_element_parse_expr(ty: &RustType, obj: &str) -> String {
     // Vec element context: VEC_PTR_TYPES handles wrapping, no dep_closures needed.
@@ -634,9 +623,9 @@ fn vec_element_parse_expr(ty: &RustType, obj: &str) -> String {
     }
 }
 
-/// Map a RustType to a C++ type string for use as a vector element.
+/// Map a `RustType` to a C++ type string for use as a vector element.
 ///
-/// Applies VEC_PTR_TYPES wrapping: `Spanned<Expr/Stmt/Pattern>` becomes
+/// Applies `VEC_PTR_TYPES` wrapping: `Spanned<Expr/Stmt/Pattern>` becomes
 /// `unique_ptr<Spanned<T>>` in vector contexts.
 fn vec_element_cpp_type(ty: &RustType) -> String {
     match ty {
@@ -730,7 +719,7 @@ fn collect_type_deps(t: &TypeDef, known_types: &HashSet<String>, deps: &mut Hash
             for v in &e.variants {
                 match v {
                     EnumVariant::Newtype { ty, .. } => {
-                        collect_rust_type_deps(ty, known_types, deps)
+                        collect_rust_type_deps(ty, known_types, deps);
                     }
                     EnumVariant::Struct { fields, .. } => {
                         for f in fields {
@@ -793,7 +782,7 @@ fn collect_rust_type_deps(
 /// or bare `Named(F)` in S's fields must use `unique_ptr`.
 ///
 /// This handles both "big" cycles (Expr↔Stmt↔Block via forward declarations)
-/// and "small" cycles (TypeExpr↔TraitBound via TypeTraitObject).
+/// and "small" cycles (TypeExpr↔TraitBound via `TypeTraitObject`).
 fn compute_dep_closures(types: &[TypeDef], type_map: &TypeMap) -> DepClosures {
     let type_names: HashSet<String> = types.iter().map(|t| t.name().to_string()).collect();
 

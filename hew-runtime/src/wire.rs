@@ -931,7 +931,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
 // HewVec-ABI wrappers (used by std/wire.hew)
 // ---------------------------------------------------------------------------
 
-/// Encode a 10-byte HBF header into a `bytes` HewVec.
+/// Encode a 10-byte HBF header into a `bytes` `HewVec`.
 ///
 /// `payload_len` is the byte length of the message payload.
 /// `flags` controls optional features (e.g. compression).
@@ -945,6 +945,7 @@ pub unsafe extern "C" fn hew_wire_encode_header_hew(
     flags: i32,
 ) -> *mut crate::vec::HewVec {
     #[expect(clippy::cast_sign_loss, reason = "C ABI: values are non-negative")]
+    // SAFETY: hew_wire_encode_header is a pure function that allocates or returns null.
     let raw = unsafe { hew_wire_encode_header(payload_len as u32, flags as u8) };
     if raw.is_null() {
         // SAFETY: hew_vec_new allocates a valid empty HewVec.
@@ -959,13 +960,13 @@ pub unsafe extern "C" fn hew_wire_encode_header_hew(
     result
 }
 
-/// Validate and decode the payload length from a `bytes` HewVec HBF header.
+/// Validate and decode the payload length from a `bytes` `HewVec` HBF header.
 ///
 /// Returns the payload length on success, or -1 if the header is invalid.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_header_hew(v: *mut crate::vec::HewVec) -> i64 {
     // SAFETY: v validity forwarded to hwvec_to_u8.
@@ -978,13 +979,13 @@ pub unsafe extern "C" fn hew_wire_decode_header_hew(v: *mut crate::vec::HewVec) 
     i64::from(hdr.payload_len)
 }
 
-/// Validate that a `bytes` HewVec contains a well-formed HBF header.
+/// Validate that a `bytes` `HewVec` contains a well-formed HBF header.
 ///
 /// Returns 1 if valid, 0 otherwise.
 ///
 /// # Safety
 ///
-/// `v` must be a valid, non-null pointer to a HewVec (i32 elements).
+/// `v` must be a valid, non-null pointer to a `HewVec` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec) -> i32 {
     // SAFETY: v validity forwarded to hwvec_to_u8.

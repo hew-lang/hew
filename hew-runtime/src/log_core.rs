@@ -90,7 +90,6 @@ fn emit_text(level: i32, text: &str) {
     let (level_str, color_code) = match level {
         0 => ("ERROR", "\x1b[31m"),
         1 => ("WARN ", "\x1b[33m"),
-        2 => ("INFO ", "\x1b[32m"),
         3 => ("DEBUG", "\x1b[34m"),
         4 => ("TRACE", "\x1b[2m"),
         _ => ("INFO ", "\x1b[32m"),

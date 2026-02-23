@@ -804,10 +804,10 @@ pub unsafe extern "C" fn hew_tcp_connect_timeout(
     handle
 }
 
-/// Read up to 8192 bytes from a TCP connection into a new HewVec.
+/// Read up to 8192 bytes from a TCP connection into a new `HewVec`.
 ///
-/// Returns a pointer to a heap-allocated HewVec (i32 elements, one per byte).
-/// Returns an empty HewVec (not null) on EOF or error — callers detect
+/// Returns a pointer to a heap-allocated `HewVec` (i32 elements, one per byte).
+/// Returns an empty `HewVec` (not null) on EOF or error — callers detect
 /// disconnect by checking `is_empty()`.
 #[no_mangle]
 pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
@@ -829,7 +829,7 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
     }
 }
 
-/// Write a bytes HewVec to a TCP connection.
+/// Write a bytes `HewVec` to a TCP connection.
 ///
 /// Each i32 element in `vec` is written as one byte (low 8 bits).
 /// Does NOT append a newline.
@@ -837,7 +837,7 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
 ///
 /// # Safety
 ///
-/// `vec` must be a valid, non-null pointer to a HewVec created by
+/// `vec` must be a valid, non-null pointer to a `HewVec` created by
 /// `hew_vec_new` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec) -> c_int {
@@ -873,7 +873,7 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
     }
 }
 
-/// Convert a bytes HewVec (Vec<i32>) to a NUL-terminated C string.
+/// Convert a bytes `HewVec` (Vec<i32>) to a NUL-terminated C string.
 ///
 /// Each i32 element is treated as a byte value (low 8 bits used).
 /// The returned pointer is heap-allocated and must be freed by the caller
@@ -881,7 +881,7 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
 ///
 /// # Safety
 ///
-/// `vec` must be a valid, non-null pointer to a HewVec created by
+/// `vec` must be a valid, non-null pointer to a `HewVec` created by
 /// `hew_vec_new` (i32 elements). The returned pointer is valid until freed.
 #[no_mangle]
 pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *mut c_char {

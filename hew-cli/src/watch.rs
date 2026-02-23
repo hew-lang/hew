@@ -79,7 +79,7 @@ fn watch_loop(
 ) {
     let path = Path::new(input);
     if !path.exists() {
-        eprintln!("Error: '{}' does not exist", input);
+        eprintln!("Error: '{input}' does not exist");
         std::process::exit(1);
     }
 
@@ -126,13 +126,7 @@ fn watch_loop(
             std::process::exit(1);
         });
 
-    loop {
-        // Block until we get an event
-        let event = match rx.recv() {
-            Ok(e) => e,
-            Err(_) => break, // channel closed
-        };
-
+    while let Ok(event) = rx.recv() {
         if !is_relevant_event(&event, is_dir, watched_file.as_deref()) {
             continue;
         }
@@ -199,9 +193,10 @@ fn watch_loop(
 fn is_relevant_event(event: &notify::Event, is_dir: bool, watched_file: Option<&Path>) -> bool {
     // Only react to content modifications and file creation
     match event.kind {
-        EventKind::Modify(notify::event::ModifyKind::Data(_))
-        | EventKind::Create(_)
-        | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {}
+        EventKind::Modify(
+            notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Name(_),
+        )
+        | EventKind::Create(_) => {}
         _ => return false,
     }
 
@@ -291,10 +286,7 @@ fn do_check(
 
         match result {
             Ok(_) => {
-                eprintln!(
-                    "\x1b[32m✓ Build succeeded\x1b[0m \x1b[2m({:.0?})\x1b[0m",
-                    elapsed
-                );
+                eprintln!("\x1b[32m✓ Build succeeded\x1b[0m \x1b[2m({elapsed:.0?})\x1b[0m");
                 eprintln!("\x1b[2m--- program output ---\x1b[0m");
                 let status = std::process::Command::new(&tmp_bin).status();
                 match status {
@@ -311,10 +303,7 @@ fn do_check(
                 }
             }
             Err(_) => {
-                eprintln!(
-                    "\x1b[31m✗ Build failed\x1b[0m \x1b[2m({:.0?})\x1b[0m",
-                    elapsed
-                );
+                eprintln!("\x1b[31m✗ Build failed\x1b[0m \x1b[2m({elapsed:.0?})\x1b[0m");
             }
         }
         drop(tmp_path);
@@ -324,13 +313,10 @@ fn do_check(
 
         match result {
             Ok(_) => {
-                eprintln!("\x1b[32m✓ No errors\x1b[0m \x1b[2m({:.0?})\x1b[0m", elapsed);
+                eprintln!("\x1b[32m✓ No errors\x1b[0m \x1b[2m({elapsed:.0?})\x1b[0m");
             }
             Err(_) => {
-                eprintln!(
-                    "\x1b[31m✗ Check failed\x1b[0m \x1b[2m({:.0?})\x1b[0m",
-                    elapsed
-                );
+                eprintln!("\x1b[31m✗ Check failed\x1b[0m \x1b[2m({elapsed:.0?})\x1b[0m");
             }
         }
     }

@@ -276,8 +276,9 @@ mod platform {
                 sa.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
                 // Fill the mask to block all signals during handler execution.
                 libc::sigfillset(&raw mut sa.sa_mask);
-                sa.sa_sigaction =
-                    crash_signal_handler as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut c_void) as usize;
+                sa.sa_sigaction = crash_signal_handler
+                    as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut c_void)
+                    as usize;
 
                 let ret = sigaction(sig, &raw const sa, ptr::null_mut());
                 assert!(ret == 0, "sigaction({sig}) failed");

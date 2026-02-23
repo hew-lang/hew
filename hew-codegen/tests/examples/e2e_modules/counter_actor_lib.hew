@@ -1,0 +1,17 @@
+pub actor Counter {
+    var count: int = 0;
+
+    receive fn increment() -> int {
+        count = count + 1;
+        count
+    }
+
+    receive fn get_count() -> int {
+        count
+    }
+
+    receive fn add(n: int) -> int {
+        count = count + n;
+        count
+    }
+}

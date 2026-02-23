@@ -1255,6 +1255,18 @@ impl Checker {
                         self.fn_sigs.insert(qualified, sig);
                     }
                 }
+                Item::Actor(ad) => {
+                    self.register_actor_decl(ad);
+                    self.known_types.insert(ad.name.clone());
+                    // Register receive fns and methods
+                    for rf in &ad.receive_fns {
+                        self.register_receive_fn(&ad.name, rf);
+                    }
+                    for method in &ad.methods {
+                        let method_name = format!("{}::{}", ad.name, method.name);
+                        self.register_fn_sig_with_name(&method_name, method);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1308,14 +1320,23 @@ impl Checker {
         }
         // Pass 3: Create qualified type aliases (after impls have been registered)
         for (item, _span) in items {
-            if let Item::TypeDecl(td) = item {
-                if !td.is_pub {
-                    continue;
+            match item {
+                Item::TypeDecl(td) => {
+                    if !td.is_pub {
+                        continue;
+                    }
+                    let qualified = format!("{module_short}.{}", td.name);
+                    if let Some(def) = self.type_defs.get(&td.name).cloned() {
+                        self.type_defs.insert(qualified, def);
+                    }
                 }
-                let qualified = format!("{module_short}.{}", td.name);
-                if let Some(def) = self.type_defs.get(&td.name).cloned() {
-                    self.type_defs.insert(qualified, def);
+                Item::Actor(ad) => {
+                    let qualified = format!("{module_short}.{}", ad.name);
+                    if let Some(def) = self.type_defs.get(&ad.name).cloned() {
+                        self.type_defs.insert(qualified, def);
+                    }
                 }
+                _ => {}
             }
         }
     }
@@ -1361,6 +1382,17 @@ impl Checker {
                         })
                         .collect();
                     self.trait_defs.insert(tr.name.clone(), methods);
+                }
+                Item::Actor(ad) => {
+                    self.register_actor_decl(ad);
+                    self.known_types.insert(ad.name.clone());
+                    for rf in &ad.receive_fns {
+                        self.register_receive_fn(&ad.name, rf);
+                    }
+                    for method in &ad.methods {
+                        let method_name = format!("{}::{}", ad.name, method.name);
+                        self.register_fn_sig_with_name(&method_name, method);
+                    }
                 }
                 _ => {}
             }
@@ -1512,6 +1544,29 @@ impl Checker {
                                 );
                             }
                         }
+                    }
+                }
+                Item::Actor(ad) => {
+                    self.register_actor_decl(ad);
+                    let qualified = format!("{module_short}.{}", ad.name);
+                    if let Some(def) = self.type_defs.get(&ad.name).cloned() {
+                        self.type_defs.insert(qualified, def);
+                    }
+                    self.known_types.insert(ad.name.clone());
+                    // Register receive fns and methods
+                    for rf in &ad.receive_fns {
+                        self.register_receive_fn(&ad.name, rf);
+                    }
+                    for method in &ad.methods {
+                        let method_name = format!("{}::{}", ad.name, method.name);
+                        self.register_fn_sig_with_name(&method_name, method);
+                    }
+                    // If named import or glob, also register unqualified
+                    if Self::should_import_name(&ad.name, spec) {
+                        let binding_name = Self::resolve_import_name(spec, &ad.name)
+                            .unwrap_or_else(|| ad.name.clone());
+                        self.unqualified_to_module
+                            .insert(binding_name, module_short.to_string());
                     }
                 }
                 _ => {}
@@ -4345,6 +4400,18 @@ impl Checker {
     ) -> Ty {
         let actor_name = match &target.0 {
             Expr::Identifier(name) => Some(name.clone()),
+            // Handle module-qualified actor: spawn module.ActorName(args)
+            Expr::FieldAccess { object, field } => {
+                if let Expr::Identifier(module) = &object.0 {
+                    if self.modules.contains(module) {
+                        Some(field.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 

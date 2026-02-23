@@ -42,6 +42,7 @@ pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
 
 /// Set the current actor, returning the previous value.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
     // SAFETY: WASM is single-threaded, no data races possible.
     unsafe {
@@ -234,9 +235,11 @@ impl std::fmt::Debug for HewActor {
 // ── Spawn options ───────────────────────────────────────────────────────
 
 /// Monotonically increasing actor serial counter.
+#[cfg(not(target_arch = "wasm32"))]
 static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// Monotonically increasing actor PID counter.
+#[cfg(not(target_arch = "wasm32"))]
 static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 // ── Live actor tracking ────────────────────────────────────────────────
@@ -254,6 +257,7 @@ unsafe impl Send for ActorPtr {}
 static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 // SAFETY: WASM is single-threaded. Using a static mut with manual access control.
 static mut LIVE_ACTORS_WASM: Option<HashSet<ActorPtr>> = None;
 
@@ -269,6 +273,7 @@ fn track_actor(actor: *mut HewActor) {
 
 /// Register an actor in the live tracking set.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 fn track_actor(actor: *mut HewActor) {
     // SAFETY: WASM is single-threaded, no data races possible.
     unsafe {
@@ -297,6 +302,7 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: WASM is single-threaded, no data races possible.
     unsafe {
@@ -345,6 +351,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
 ///
 /// Must only be called when no dispatch is in progress.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub(crate) unsafe fn cleanup_all_actors() {
     // SAFETY: WASM is single-threaded, no data races possible.
     let actors = unsafe {
@@ -412,6 +419,7 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 /// `actor` must be a valid pointer to a live `HewActor` that is not
 /// currently being dispatched.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };

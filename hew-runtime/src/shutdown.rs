@@ -219,7 +219,8 @@ pub unsafe fn install_shutdown_signal_handlers() {
     // (async-signal-safe) and then calls hew_shutdown_initiate.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = shutdown_signal_handler as usize;
+        sa.sa_sigaction =
+            shutdown_signal_handler as extern "C" fn(c_int, *mut libc::siginfo_t, *mut std::ffi::c_void) as usize;
         sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
         libc::sigemptyset(&raw mut sa.sa_mask);
 

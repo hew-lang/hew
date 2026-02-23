@@ -121,8 +121,11 @@ jobs:
           key: hew-codegen-build-${{ runner.os }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
           restore-keys: hew-codegen-build-${{ runner.os }}-
 
-      - name: Build Rust runtime and frontend
+      - name: Build Rust runtime and frontend (release)
         run: cargo build -p hew-cli -p hew-runtime -p hew-serialize --release
+
+      - name: Build hew binary (debug — needed by test_runner tests)
+        run: cargo build -p hew-cli
 
       - name: Build WASM runtime
         run: |

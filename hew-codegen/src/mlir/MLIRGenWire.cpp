@@ -192,7 +192,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   unsigned fieldIdx = 0;
   for (const auto &field : decl.fields) {
     auto mlirTy = wireTypeToMLIR(builder, field.ty);
-    info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx});
+    info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx, ""});
     fieldTypes.push_back(mlirTy);
     ++fieldIdx;
   }

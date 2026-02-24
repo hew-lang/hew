@@ -215,14 +215,12 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   auto prevActorName = currentActorName;
   currentActorName = actorName;
 
-  size_t ri = 0;
   for (const auto &recv : decl.receive_fns) {
     std::string receiveName = actorName + "_" + recv.name;
 
     if (recv.is_generator && recv.return_type) {
       auto yieldType = convertType(recv.return_type->value);
       if (llvm::isa<mlir::NoneType>(yieldType)) {
-        ++ri;
         continue;
       }
 
@@ -495,7 +493,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         builder.restoreInsertionPoint(savedIP);
       }
 
-      ++ri;
       continue; // Skip normal receive fn generation for generators
     }
 
@@ -577,8 +574,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
     builder.restoreInsertionPoint(savedIP);
-
-    ++ri;
   }
 
   // 2b. Generate init function if the actor has an init block
@@ -905,7 +900,6 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
   // Register with enclosing scope, if any.
   if (currentScopePtr) {
     auto i32Type = builder.getI32Type();
-    auto scopeSpawnType = builder.getFunctionType({ptrType, ptrType}, {i32Type});
     builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
                                        mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
                                        mlir::ValueRange{currentScopePtr, result});
@@ -1122,11 +1116,9 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
                                              mlir::Location location) {
   // Find receive function index by name
   int64_t msgIdx = -1;
-  const ActorReceiveInfo *recvInfo = nullptr;
   for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
     if (actorInfo.receiveFns[i].name == methodName) {
       msgIdx = static_cast<int64_t>(i);
-      recvInfo = &actorInfo.receiveFns[i];
       break;
     }
   }
@@ -1134,7 +1126,6 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
   // Also handle "send" method for lambda actors (msg_type = 0)
   if (msgIdx < 0 && methodName == "send" && !actorInfo.receiveFns.empty()) {
     msgIdx = 0;
-    recvInfo = &actorInfo.receiveFns[0];
   }
 
   if (msgIdx < 0) {

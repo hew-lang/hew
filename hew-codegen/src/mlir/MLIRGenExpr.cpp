@@ -2147,7 +2147,6 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
     if (!handleType.empty()) {
       const auto &method = methodName;
-      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       auto i32Type = builder.getI32Type();
       auto vecType = hew::VecType::get(&context, builder.getIntegerType(32));
 
@@ -3385,7 +3384,6 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
 mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-  auto i64Type = builder.getI64Type();
 
   auto savedIP = builder.saveInsertionPoint();
 

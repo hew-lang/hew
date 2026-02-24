@@ -2719,7 +2719,6 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i32Type = builder.getI32Type();
-  auto i64Type = builder.getI64Type();
 
   // Determine the yield value type from the return type annotation
   mlir::Type yieldType = i32Type; // default

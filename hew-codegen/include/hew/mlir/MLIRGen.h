@@ -129,9 +129,14 @@ private:
   void generateWhileStmt(const ast::StmtWhile &stmt);
   void generateForStmt(const ast::StmtFor &stmt);
   void generateForAwaitStmt(const ast::StmtFor &stmt);
+  void generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &rangeExpr);
   void generateForCollectionStmt(const ast::StmtFor &stmt);
-  void generateForHashMapStmt(const ast::StmtFor &stmt, mlir::Value collection,
-                              const std::string &collType);
+  void generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
+                      const std::string &collType);
+  void generateForString(const ast::StmtFor &stmt, mlir::Value collection,
+                         const std::string &collType);
+  void generateForHashMap(const ast::StmtFor &stmt, mlir::Value collection,
+                          const std::string &collType);
   void generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName);
   void generateReturnStmt(const ast::StmtReturn &stmt);
   void generateExprStmt(const ast::StmtExpression &stmt);
@@ -147,6 +152,9 @@ private:
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr);
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
+  std::optional<mlir::Value> generateBuiltinMethodCall(const ast::ExprMethodCall &expr,
+                                                       mlir::Value receiver,
+                                                       mlir::Location location);
   mlir::Value generateLogCall(const ast::ExprMethodCall &mc);
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
   mlir::Value generateTupleExpr(const ast::ExprTuple &expr);

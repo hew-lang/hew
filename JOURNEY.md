@@ -218,6 +218,11 @@ the Phase 7 codebase. Found critical issues the first round missed:
 - Schema hash validation in handshake (reject incompatible peers).
 - Connection reconnection with exponential backoff.
 - Bounded outbound message queue for backpressure.
+- **Wired remote send routing**: `hew_actor_send_by_id` now falls through to
+  `try_remote_send → hew_node_send` when target PID is non-local, completing the
+  end-to-end distributed message path.
+- Added `hew_node_unregister` C-ABI function.
+- Expanded `cabi_guard!` to 15 more functions across supervisor/transport/wire/encryption.
 
 ### Decisions
 
@@ -227,3 +232,7 @@ the Phase 7 codebase. Found critical issues the first round missed:
   concurrent C-ABI calls don't clobber each other's diagnostics.
 - **Delete over deprecate**: `node.rs` had conflicting symbols with `hew_node.rs` —
   deprecation would have caused linker errors, deletion was the only safe option.
+- **CURRENT_NODE global**: A single `AtomicPtr<HewNode>` set on `hew_node_start` and
+  cleared on `hew_node_stop`. This allows `hew_actor_send_by_id` to route remote PIDs
+  without requiring callers to pass a node handle. One active node per process — matches
+  Erlang/OTP's single-node model.

@@ -137,3 +137,20 @@ Returning `-1` from 34 C-ABI functions with no diagnostic is useless to callers.
 A `thread_local!` last-error string (accessible via `hew_last_error() -> *const c_char`)
 gives callers actionable diagnostics without global lock contention. The pattern mirrors
 `errno`/`GetLastError` but with richer messages.
+
+### 21. Every send path must handle remote PIDs — local-only is a silent failure
+
+`hew_actor_send_by_id` searched only `LIVE_ACTORS` (local set). When a remote PID
+was passed, it returned -1 silently — no error, no network attempt, no diagnostic.
+This is the most dangerous kind of bug: all local tests pass, the API looks correct,
+but distributed sends are dead. The fix is a two-line check: if local lookup fails
+AND `hew_pid_is_local() == false`, forward to `try_remote_send`. Every function that
+accepts a PID must handle both local and remote cases explicitly.
+
+### 22. Global node handles enable location-transparent routing
+
+A `static AtomicPtr<HewNode>` set during `hew_node_start` allows any function in the
+runtime to route messages to remote nodes without requiring callers to pass a node
+handle. This mirrors Erlang's model where `!` (send) works transparently regardless
+of whether the target PID is local or remote. The tradeoff is one-node-per-process,
+which is acceptable for the actor model.

@@ -215,7 +215,7 @@ path = "/custom/packages"
     fn registry_path_falls_back_to_default() {
         let config = AdzeConfig::default();
         let path = registry_path(&config);
-        assert!(path.to_string_lossy().ends_with(".adze/packages"));
+        assert!(path.ends_with(PathBuf::from(".adze").join("packages")));
     }
 
     #[test]

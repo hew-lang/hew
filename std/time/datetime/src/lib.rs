@@ -261,19 +261,11 @@ pub unsafe extern "C" fn hew_datetime_to_iso8601(epoch_ms: i64) -> *mut c_char {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `clock_gettime` with a valid clockid and non-null pointer is always safe.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts);
-    }
-    // Combine seconds and nanoseconds into a single i64 nanosecond count.
-    // i64 can hold ~292 years of nanoseconds, so overflow is not a concern.
-    ts.tv_sec
-        .wrapping_mul(1_000_000_000)
-        .wrapping_add(ts.tv_nsec)
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_nanos() as i64
 }
 
 #[cfg(test)]

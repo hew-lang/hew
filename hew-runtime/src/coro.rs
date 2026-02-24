@@ -6,6 +6,37 @@
 
 use std::cell::RefCell;
 
+// ── Windows virtual memory API ──────────────────────────────────────────────
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn VirtualAlloc(
+        addr: *mut std::ffi::c_void,
+        size: usize,
+        alloc_type: u32,
+        protect: u32,
+    ) -> *mut std::ffi::c_void;
+    fn VirtualProtect(
+        addr: *mut std::ffi::c_void,
+        size: usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> i32;
+    fn VirtualFree(addr: *mut std::ffi::c_void, size: usize, free_type: u32) -> i32;
+}
+
+#[cfg(windows)]
+const MEM_COMMIT: u32 = 0x1000;
+#[cfg(windows)]
+const MEM_RESERVE: u32 = 0x2000;
+#[cfg(windows)]
+const MEM_RELEASE: u32 = 0x8000;
+#[cfg(windows)]
+const PAGE_READWRITE: u32 = 0x04;
+#[cfg(windows)]
+const PAGE_NOACCESS: u32 = 0x01;
+
 // ── CoroStack ────────────────────────────────────────────────────────────────
 
 /// Usable stack size (8 KiB).
@@ -27,44 +58,78 @@ pub struct CoroStack {
 unsafe impl Send for CoroStack {}
 
 impl CoroStack {
-    /// Allocate a new stack via `mmap` with a guard page at the bottom.
+    /// Allocate a new stack with a guard page at the bottom.
+    ///
+    /// On Unix, uses `mmap`/`mprotect`. On Windows, uses `VirtualAlloc`/`VirtualProtect`.
     #[must_use]
     pub fn new() -> Option<Self> {
         let alloc_size = GUARD_SIZE + STACK_SIZE;
 
-        // SAFETY: We request an anonymous, private mapping with read/write
-        // permissions. `MAP_ANONYMOUS` means no file backing, and `fd = -1`
-        // with `offset = 0` is the standard incantation for anonymous maps.
-        let base = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                alloc_size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
+        #[cfg(unix)]
+        let base_ptr = {
+            // SAFETY: We request an anonymous, private mapping with read/write
+            // permissions. `MAP_ANONYMOUS` means no file backing, and `fd = -1`
+            // with `offset = 0` is the standard incantation for anonymous maps.
+            let base = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    alloc_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+
+            if base == libc::MAP_FAILED {
+                return None;
+            }
+
+            // SAFETY: `base` is a valid pointer returned by `mmap` and
+            // `GUARD_SIZE` is within the allocation. We mark the bottom page as
+            // inaccessible so that stack overflow triggers a segfault instead of
+            // silent corruption.
+            let ret = unsafe { libc::mprotect(base, GUARD_SIZE, libc::PROT_NONE) };
+            if ret != 0 {
+                // SAFETY: `base` / `alloc_size` match the preceding `mmap`.
+                unsafe { libc::munmap(base, alloc_size) };
+                return None;
+            }
+
+            base.cast::<u8>()
         };
 
-        if base == libc::MAP_FAILED {
-            return None;
-        }
+        #[cfg(windows)]
+        let base_ptr = {
+            // SAFETY: VirtualAlloc with MEM_COMMIT | MEM_RESERVE allocates
+            // and commits a new region of virtual memory.
+            let base = unsafe {
+                VirtualAlloc(
+                    std::ptr::null_mut(),
+                    alloc_size,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                )
+            };
 
-        // SAFETY: `base` is a valid pointer returned by `mmap` and
-        // `GUARD_SIZE` is within the allocation. We mark the bottom page as
-        // inaccessible so that stack overflow triggers a segfault instead of
-        // silent corruption.
-        let ret = unsafe { libc::mprotect(base, GUARD_SIZE, libc::PROT_NONE) };
-        if ret != 0 {
-            // SAFETY: `base` / `alloc_size` match the preceding `mmap`.
-            unsafe {
-                libc::munmap(base, alloc_size);
+            if base.is_null() {
+                return None;
             }
-            return None;
-        }
+
+            // Set the guard page at the bottom to PAGE_NOACCESS.
+            let mut old_protect: u32 = 0;
+            let ret =
+                unsafe { VirtualProtect(base, GUARD_SIZE, PAGE_NOACCESS, &mut old_protect) };
+            if ret == 0 {
+                unsafe { VirtualFree(base, 0, MEM_RELEASE) };
+                return None;
+            }
+
+            base.cast::<u8>()
+        };
 
         Some(CoroStack {
-            base: base.cast::<u8>(),
+            base: base_ptr,
             alloc_size,
         })
     }
@@ -81,10 +146,20 @@ impl CoroStack {
 
 impl Drop for CoroStack {
     fn drop(&mut self) {
-        // SAFETY: `base` and `alloc_size` correspond to a live `mmap`
-        // allocation that has not yet been unmapped.
-        unsafe {
-            libc::munmap(self.base.cast::<libc::c_void>(), self.alloc_size);
+        #[cfg(unix)]
+        {
+            // SAFETY: `base` and `alloc_size` correspond to a live `mmap`
+            // allocation that has not yet been unmapped.
+            unsafe {
+                libc::munmap(self.base.cast::<libc::c_void>(), self.alloc_size);
+            }
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: `base` was allocated by VirtualAlloc with MEM_COMMIT | MEM_RESERVE.
+            unsafe {
+                VirtualFree(self.base.cast(), 0, MEM_RELEASE);
+            }
         }
     }
 }

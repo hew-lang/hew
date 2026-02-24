@@ -29,6 +29,10 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 static int tests_run = 0;
 static int tests_passed = 0;
 

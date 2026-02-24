@@ -59,6 +59,13 @@ if(NOT HEW_CLI)
   return()
 endif()
 
+# Platform-specific executable suffix
+if(WIN32)
+  set(HEW_EXE_SUFFIX ".exe")
+else()
+  set(HEW_EXE_SUFFIX "")
+endif()
+
 # Helper: compile a .hew file and check output matches expected
 function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
   add_test(
@@ -67,7 +74,7 @@ function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -DHEW_CLI=${HEW_CLI}
       -DHEW_FILE=${CMAKE_CURRENT_SOURCE_DIR}/examples/${HEW_FILE}
       -DEXPECTED=${EXPECTED_OUTPUT}
-      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/e2e_${TEST_NAME}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/e2e_${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test.cmake
   )
   # Each E2E test invokes the full compiler pipeline (parse → MLIR → LLVM → link).
@@ -131,7 +138,7 @@ function(add_e2e_file_test TEST_NAME CATEGORY HEW_NAME)
       -DHEW_CLI=${HEW_CLI}
       -DHEW_FILE=${HEW_FILE}
       -DEXPECTED_FILE=${EXPECTED_FILE}
-      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
   set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
@@ -149,7 +156,7 @@ function(add_e2e_file_test_sorted TEST_NAME CATEGORY HEW_NAME)
       -DHEW_CLI=${HEW_CLI}
       -DHEW_FILE=${HEW_FILE}
       -DEXPECTED_FILE=${EXPECTED_FILE}
-      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_sorted.cmake
   )
   set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
@@ -166,7 +173,7 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -DHEW_CLI=${HEW_CLI}
       -DHEW_FILE=${HEW_FILE}
       -DEXPECTED_ERROR=${EXPECTED_ERROR}
-      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/reject_${CATEGORY}_${HEW_NAME}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/reject_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_reject_test.cmake
   )
   set_tests_properties(reject_${CATEGORY}_${HEW_NAME} PROPERTIES
@@ -585,7 +592,7 @@ function(add_example_test TEST_NAME HEW_FILE_ABS EXPECTED_FILE_ABS)
       -DHEW_CLI=${HEW_CLI}
       -DHEW_FILE=${HEW_FILE_ABS}
       -DEXPECTED_FILE=${EXPECTED_FILE_ABS}
-      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
   set_tests_properties(${TEST_NAME} PROPERTIES
@@ -665,7 +672,7 @@ add_test(
   COMMAND ${CMAKE_COMMAND}
     -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_generator.ll
     -DEXPECTED=1\n2\n3\ndone\n
-    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_generator
+    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_generator${HEW_EXE_SUFFIX}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
 )
 
@@ -674,7 +681,7 @@ add_test(
   COMMAND ${CMAKE_COMMAND}
     -DLL_FILE=${CMAKE_CURRENT_SOURCE_DIR}/test_coro_fib_generator.ll
     -DEXPECTED=0\n1\n1\n2\n3\n5\n8\n13\n
-    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_fib_generator
+    -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/test_coro_fib_generator${HEW_EXE_SUFFIX}
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coro_test.cmake
 )
 

@@ -175,3 +175,38 @@ jobs:
 
       - name: Run codegen E2E tests (WASM)
         run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -L wasm
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build & test — Windows (LLVM provisioning deferred)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-test-windows:
+    name: Build & test (Windows)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: choco install ninja cmake -y
+        shell: pwsh
+
+      # TODO: LLVM+MLIR provisioning (build from source, pre-built artifact, or installer)
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry\
+            ~\.cargo\git\
+            target\
+          key: build-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: build-test-${{ runner.os }}-
+
+      - name: Build Rust crates
+        run: cargo build -p hew-cli -p adze-cli -p hew-runtime --release
+
+      - name: Run Rust workspace tests (no codegen)
+        run: cargo test --workspace --exclude hew-wasm

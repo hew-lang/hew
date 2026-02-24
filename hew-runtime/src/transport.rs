@@ -1241,6 +1241,6 @@ mod unix_transport {
     /// Stub for non-Unix platforms.
     #[no_mangle]
     pub unsafe extern "C" fn hew_transport_unix_new() -> *mut HewTransport {
-        ptr::null_mut()
+        std::ptr::null_mut()
     }
 }

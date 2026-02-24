@@ -45,7 +45,6 @@ if(HEW_STATIC_LINK)
     MC MCParser MCDisassembler
     OrcJIT
     native
-    NativeCodeGen
     CodeGen AsmPrinter SelectionDAG GlobalISel
   )
 
@@ -99,7 +98,12 @@ target_include_directories(hew-codegen PRIVATE
 )
 
 if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
-  if(NOT MSVC)
+  if(NOT MSVC AND NOT APPLE)
     target_link_options(hew-codegen PRIVATE -s)
+  endif()
+  if(APPLE)
+    add_custom_command(TARGET hew-codegen POST_BUILD
+      COMMAND strip $<TARGET_FILE:hew-codegen>
+      COMMENT "Stripping hew-codegen (macOS)")
   endif()
 endif()

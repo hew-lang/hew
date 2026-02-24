@@ -36,7 +36,7 @@
 //! other stream types are single-owner and may not be shared across threads.
 
 use std::collections::VecDeque;
-use std::ffi::{c_void, CStr};
+use std::ffi::{c_char, c_void, CStr};
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::mem::ManuallyDrop;
@@ -440,7 +440,7 @@ pub unsafe extern "C" fn hew_stream_pair_free(pair: *mut HewStreamPair) {
 ///
 /// `path` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_from_file_read(path: *const i8) -> *mut HewStream {
+pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut HewStream {
     if path.is_null() {
         return ptr::null_mut();
     }
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const i8) -> *mut HewS
 ///
 /// `path` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_from_file_write(path: *const i8) -> *mut HewSink {
+pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut HewSink {
     if path.is_null() {
         return ptr::null_mut();
     }
@@ -750,7 +750,7 @@ pub unsafe extern "C" fn hew_stream_chunks(
 /// Returns a malloc-allocated null-terminated string. The caller must free it.
 /// Consumes the stream.
 #[no_mangle]
-pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut i8 {
+pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut c_char {
     if stream.is_null() {
         return ptr::null_mut();
     }
@@ -775,7 +775,7 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
 
     // SAFETY: ptr is len bytes allocated above; buffer.as_ptr() points to len bytes.
     unsafe { ptr::copy_nonoverlapping(buffer.as_ptr(), ptr.cast::<u8>(), len) };
-    ptr.cast::<i8>()
+    ptr.cast::<c_char>()
 }
 
 /// Count remaining items in a stream.
@@ -803,7 +803,7 @@ pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
 ///
 /// `sink` must be a valid pointer. `data` must be a valid null-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const i8) {
+pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const c_char) {
     if sink.is_null() || data.is_null() {
         return;
     }

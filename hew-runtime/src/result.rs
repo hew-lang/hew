@@ -4,7 +4,7 @@
 //! Layout-compatible with the C runtime representation used by MLIR codegen.
 //! Error payloads carry both a numeric code and a heap-allocated message string.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::ptr;
 
 /// ABI-stable `Result<T, E>` representation.
@@ -23,7 +23,7 @@ pub struct HewResult {
     /// Ok payload (interpreted based on element type).
     pub value: u64,
     /// Error message (heap-allocated C string, only when `tag == 1`).
-    pub error_msg: *mut i8,
+    pub error_msg: *mut c_char,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_result_ok_ptr(val: *mut c_void) -> HewResult {
 ///
 /// `msg` must be a valid null-terminated C string (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_result_err(code: i32, msg: *const i8) -> HewResult {
+pub unsafe extern "C" fn hew_result_err(code: i32, msg: *const c_char) -> HewResult {
     let owned_msg = if msg.is_null() {
         ptr::null_mut()
     } else {
@@ -274,7 +274,7 @@ pub extern "C" fn hew_result_error_code(res: *const HewResult) -> i32 {
     clippy::not_unsafe_ptr_arg_deref,
     reason = "C ABI function — caller guarantees pointer validity"
 )]
-pub extern "C" fn hew_result_error_msg(res: *const HewResult) -> *const i8 {
+pub extern "C" fn hew_result_error_msg(res: *const HewResult) -> *const c_char {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
     if r.tag == 0 {

@@ -272,7 +272,12 @@ fn do_check(
 
     if run {
         // Compile to a temp binary and execute it.
-        let tmp_path = match tempfile::Builder::new().prefix("hew_watch_").tempfile() {
+        let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let tmp_path = match tempfile::Builder::new()
+            .prefix("hew_watch_")
+            .suffix(exe_suffix)
+            .tempfile()
+        {
             Ok(f) => f.into_temp_path(),
             Err(e) => {
                 eprintln!("\x1b[31m✗ Cannot create temp file: {e}\x1b[0m");

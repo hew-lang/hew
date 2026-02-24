@@ -38,6 +38,7 @@ lefthook-local.yml
 
 # AI assistant configs (machine-specific)
 CLAUDE.md
+.claude.local.md
 .github/copilot-instructions.md
 
 # Internal planning docs (kept locally, not in public repo)

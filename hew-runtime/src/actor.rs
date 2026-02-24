@@ -722,6 +722,52 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
+/// Send a message to an actor by actor ID.
+///
+/// Returns 0 on success, -1 if the actor ID is not currently live.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when
+/// `size` is 0.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_by_id(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    let actor = {
+        let guard = match LIVE_ACTORS.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        guard.as_ref().and_then(|set| {
+            set.iter().find_map(|ptr| {
+                let actor = ptr.0;
+                if actor.is_null() {
+                    return None;
+                }
+                // SAFETY: `actor` pointers in LIVE_ACTORS originate from spawn
+                // functions and are removed on free.
+                let matches = unsafe { (&*actor).id == actor_id };
+                if matches {
+                    Some(actor)
+                } else {
+                    None
+                }
+            })
+        })
+    };
+
+    let Some(actor) = actor else { return -1 };
+    // SAFETY: pointer was discovered in LIVE_ACTORS and `data` validity is
+    // guaranteed by the caller contract.
+    unsafe { actor_send_internal(actor, msg_type, data, size) };
+    0
+}
+
 /// Try to send a message, returning an error code on failure.
 ///
 /// Returns `0` on success, or a negative error code (see [`HewError`]).

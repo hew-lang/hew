@@ -37,9 +37,12 @@
 //! - [`hew_cluster_process_message`] — Handle an incoming SWIM message.
 //! - [`hew_cluster_tick`] — Advance the protocol (call periodically).
 //! - [`hew_cluster_set_callback`] — Register membership change callback.
+//! - [`hew_cluster_set_membership_callback`] — Register event callback with user data.
+//! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
+//! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
 use std::collections::VecDeque;
-use std::ffi::{c_char, c_int, CStr};
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Mutex;
 
 // ── Member states ──────────────────────────────────────────────────────
@@ -52,6 +55,15 @@ pub const MEMBER_SUSPECT: i32 = 1;
 pub const MEMBER_DEAD: i32 = 2;
 /// Member has gracefully left the cluster.
 pub const MEMBER_LEFT: i32 = 3;
+
+/// Membership callback event: node joined or became alive.
+pub const HEW_MEMBERSHIP_EVENT_NODE_JOINED: u8 = 1;
+/// Membership callback event: node became suspect.
+pub const HEW_MEMBERSHIP_EVENT_NODE_SUSPECT: u8 = 2;
+/// Membership callback event: node declared dead.
+pub const HEW_MEMBERSHIP_EVENT_NODE_DEAD: u8 = 3;
+/// Membership callback event: node left gracefully.
+pub const HEW_MEMBERSHIP_EVENT_NODE_LEFT: u8 = 4;
 
 // ── SWIM message types ─────────────────────────────────────────────────
 
@@ -137,6 +149,11 @@ impl Default for ClusterConfig {
 /// Signature: `fn(node_id: u16, new_state: i32, incarnation: u64)`
 type MemberChangeCallback = unsafe extern "C" fn(u16, i32, u64);
 
+/// Callback for connection-lifecycle-integrated membership notifications.
+///
+/// Signature: `fn(node_id: u16, event: u8, user_data: *mut c_void)`.
+pub type HewMembershipCallback = extern "C" fn(u16, u8, *mut c_void);
+
 /// The cluster membership manager.
 #[derive(Debug)]
 pub struct HewCluster {
@@ -150,6 +167,10 @@ pub struct HewCluster {
     local_incarnation: u64,
     /// Membership change callback.
     callback: Option<MemberChangeCallback>,
+    /// Membership event callback.
+    membership_callback: Option<HewMembershipCallback>,
+    /// User data for [`HewMembershipCallback`].
+    membership_callback_user_data: *mut c_void,
     /// Monotonic timestamp of last tick.
     last_tick_ms: u64,
     /// Index for round-robin ping target selection.
@@ -170,6 +191,8 @@ impl HewCluster {
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: 1,
             callback: None,
+            membership_callback: None,
+            membership_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: 0,
             ping_index: 0,
         }
@@ -187,6 +210,7 @@ impl HewCluster {
             if incarnation > existing.incarnation
                 || (incarnation == existing.incarnation && state > existing.state)
             {
+                let old_state = existing.state;
                 existing.state = state;
                 existing.incarnation = incarnation;
                 if !addr.is_empty() {
@@ -196,6 +220,7 @@ impl HewCluster {
                 }
                 self.emit_event(node_id, state, incarnation);
                 self.notify_callback(node_id, state, incarnation);
+                self.notify_membership_callback(node_id, state, false, Some(old_state));
             }
         } else {
             let mut member = ClusterMember {
@@ -210,6 +235,7 @@ impl HewCluster {
             members.push(member);
             self.emit_event(node_id, state, incarnation);
             self.notify_callback(node_id, state, incarnation);
+            self.notify_membership_callback(node_id, state, true, None);
         }
     }
 
@@ -238,6 +264,35 @@ impl HewCluster {
         if let Some(cb) = self.callback {
             // SAFETY: callback is a valid function pointer per caller contract.
             unsafe { cb(node_id, state, incarnation) };
+        }
+    }
+
+    /// Notify event callback if registered.
+    fn notify_membership_callback(
+        &self,
+        node_id: u16,
+        state: i32,
+        is_new_member: bool,
+        old_state: Option<i32>,
+    ) {
+        let Some(cb) = self.membership_callback else {
+            return;
+        };
+        let event = match state {
+            MEMBER_ALIVE => {
+                if is_new_member || matches!(old_state, Some(prev) if prev != MEMBER_ALIVE) {
+                    Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)
+                } else {
+                    None
+                }
+            }
+            MEMBER_SUSPECT => Some(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+            MEMBER_DEAD => Some(HEW_MEMBERSHIP_EVENT_NODE_DEAD),
+            MEMBER_LEFT => Some(HEW_MEMBERSHIP_EVENT_NODE_LEFT),
+            _ => None,
+        };
+        if let Some(evt) = event {
+            cb(node_id, evt, self.membership_callback_user_data);
         }
     }
 
@@ -340,7 +395,53 @@ impl HewCluster {
         for (node_id, state, incarnation) in state_changes {
             self.emit_event(node_id, state, incarnation);
             self.notify_callback(node_id, state, incarnation);
+            self.notify_membership_callback(node_id, state, false, None);
         }
+    }
+
+    /// Notify SWIM state machine that a connection dropped.
+    fn notify_connection_lost(&self, node_id: u16) {
+        let member = {
+            let members = match self.members.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            members
+                .iter()
+                .find(|m| m.node_id == node_id)
+                .map(|m| (m.state, m.incarnation))
+        };
+
+        if let Some((state, incarnation)) = member {
+            if state == MEMBER_ALIVE {
+                self.upsert_member(node_id, MEMBER_SUSPECT, incarnation, &[]);
+            }
+            return;
+        }
+        self.upsert_member(node_id, MEMBER_SUSPECT, 1, &[]);
+    }
+
+    /// Notify SWIM state machine that a connection was established.
+    fn notify_connection_established(&self, node_id: u16) {
+        let member = {
+            let members = match self.members.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            members
+                .iter()
+                .find(|m| m.node_id == node_id)
+                .map(|m| (m.state, m.incarnation))
+        };
+
+        if matches!(member, Some((MEMBER_ALIVE, _))) {
+            self.update_last_seen(node_id);
+            return;
+        }
+
+        let incarnation = member.map_or(1, |(_, inc)| inc.saturating_add(1));
+        self.upsert_member(node_id, MEMBER_ALIVE, incarnation, &[]);
+        self.update_last_seen(node_id);
     }
 
     /// Get the next ping target (round-robin through members).
@@ -537,6 +638,73 @@ pub unsafe extern "C" fn hew_cluster_set_callback(
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &mut *cluster };
     cluster.callback = callback;
+}
+
+/// Register a callback for membership events with user data.
+///
+/// The callback receives `(node_id, event, user_data)` where `event` is one
+/// of `HEW_MEMBERSHIP_EVENT_NODE_*`.
+///
+/// # Safety
+///
+/// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+/// - `callback` must remain valid for the cluster lifetime.
+/// - `user_data` must remain valid while callback is registered.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_set_membership_callback(
+    cluster: *mut HewCluster,
+    callback: HewMembershipCallback,
+    user_data: *mut c_void,
+) {
+    if cluster.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &mut *cluster };
+    cluster.membership_callback = Some(callback);
+    cluster.membership_callback_user_data = user_data;
+}
+
+/// Notify SWIM membership that a connection to `node_id` has been lost.
+///
+/// Returns 0 on success, -1 on invalid cluster pointer.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_notify_connection_lost(
+    cluster: *mut HewCluster,
+    node_id: u16,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_lost(node_id);
+    0
+}
+
+/// Notify SWIM membership that a connection to `node_id` has been established.
+///
+/// Returns 0 on success, -1 on invalid cluster pointer.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_notify_connection_established(
+    cluster: *mut HewCluster,
+    node_id: u16,
+) -> c_int {
+    if cluster.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    cluster.notify_connection_established(node_id);
+    0
 }
 
 /// Get the number of alive members.
@@ -745,5 +913,67 @@ mod tests {
             assert_eq!(hew_cluster_alive_count(cluster), 0);
             hew_cluster_free(cluster);
         }
+    }
+
+    extern "C" fn collect_membership_events(node_id: u16, event: u8, user_data: *mut c_void) {
+        // SAFETY: test passes a valid pointer to `Vec<(u16, u8)>`.
+        let events = unsafe { &mut *user_data.cast::<Vec<(u16, u8)>>() };
+        events.push((node_id, event));
+    }
+
+    #[test]
+    fn connection_notifications_update_membership() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            let addr = c"10.0.0.1:9000";
+            assert_eq!(hew_cluster_join(cluster, 2, addr.as_ptr()), 0);
+
+            assert_eq!(hew_cluster_notify_connection_lost(cluster, 2), 0);
+            let cluster_ref = &*cluster;
+            {
+                let members = cluster_ref.members.lock().unwrap();
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(member.state, MEMBER_SUSPECT);
+            }
+
+            assert_eq!(hew_cluster_notify_connection_established(cluster, 2), 0);
+            {
+                let members = cluster_ref.members.lock().unwrap();
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(member.state, MEMBER_ALIVE);
+            }
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    fn membership_callback_receives_connection_events() {
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+            let addr = c"10.0.0.1:9000";
+            assert_eq!(hew_cluster_join(cluster, 2, addr.as_ptr()), 0);
+            assert_eq!(hew_cluster_notify_connection_lost(cluster, 2), 0);
+            assert_eq!(hew_cluster_notify_connection_established(cluster, 2), 0);
+            hew_cluster_free(cluster);
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+                (2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
+                (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
+            ]
+        );
     }
 }

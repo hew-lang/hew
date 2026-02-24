@@ -36,7 +36,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::transport::HewTransport;
-use crate::wire::{hew_wire_buf_init_read, hew_wire_decode_envelope, HewWireBuf, HewWireEnvelope};
+use crate::wire::{
+    hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
+    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope,
+};
 
 // ── Connection states ──────────────────────────────────────────────────
 
@@ -49,20 +52,78 @@ pub const CONN_STATE_DRAINING: i32 = 2;
 /// Connection is closed.
 pub const CONN_STATE_CLOSED: i32 = 3;
 
+const HEW_HANDSHAKE_SIZE: usize = 48;
+const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
+const HEW_PROTOCOL_VERSION: u16 = 1;
+
+const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
+const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
+const HEW_FEATURE_SUPPORTS_REMOTE_SPAWN: u32 = 1 << 2;
+
+const NOISE_STATIC_PUBKEY_LEN: usize = 32;
+#[cfg(feature = "encryption")]
+const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
+#[cfg(feature = "encryption")]
+const NOISE_MAX_MSG_SIZE: usize = 65_535;
+
 // ── Connection actor ───────────────────────────────────────────────────
+
+/// Fixed-size protocol handshake exchanged before actor traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HewHandshake {
+    protocol_version: u16,
+    node_id: u16,
+    schema_hash: u32,
+    feature_flags: u32,
+    static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
+}
+
+impl HewHandshake {
+    fn serialize(self) -> [u8; HEW_HANDSHAKE_SIZE] {
+        let mut out = [0u8; HEW_HANDSHAKE_SIZE];
+        out[0..4].copy_from_slice(&HEW_HANDSHAKE_MAGIC);
+        out[4..6].copy_from_slice(&self.protocol_version.to_be_bytes());
+        out[6..8].copy_from_slice(&self.node_id.to_be_bytes());
+        out[8..12].copy_from_slice(&self.schema_hash.to_be_bytes());
+        out[12..16].copy_from_slice(&self.feature_flags.to_be_bytes());
+        out[16..48].copy_from_slice(&self.static_noise_pubkey);
+        out
+    }
+
+    fn deserialize(buf: &[u8]) -> Option<Self> {
+        if buf.len() != HEW_HANDSHAKE_SIZE || buf[0..4] != HEW_HANDSHAKE_MAGIC {
+            return None;
+        }
+        let mut static_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
+        static_noise_pubkey.copy_from_slice(&buf[16..48]);
+        Some(Self {
+            protocol_version: u16::from_be_bytes([buf[4], buf[5]]),
+            node_id: u16::from_be_bytes([buf[6], buf[7]]),
+            schema_hash: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+            feature_flags: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
+            static_noise_pubkey,
+        })
+    }
+}
 
 /// Per-connection actor state.
 ///
 /// Each connection actor owns a transport connection handle and tracks
 /// connection health via heartbeat timestamps.
-#[derive(Debug)]
 struct ConnectionActor {
     /// Transport connection ID (index into transport's internal array).
     conn_id: c_int,
+    /// Remote node identity from handshake.
+    peer_node_id: u16,
+    /// Remote capability bitfield from handshake.
+    peer_feature_flags: u32,
     /// Current connection state.
     state: AtomicI32,
     /// Monotonic timestamp (ms) of last successful send or recv.
     last_activity_ms: Arc<AtomicU64>,
+    /// Optional per-connection Noise transport state.
+    #[cfg(feature = "encryption")]
+    noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
@@ -102,12 +163,31 @@ unsafe impl Sync for HewConnMgr {}
 // parent HewConnMgr's Mutex.
 unsafe impl Send for ConnectionActor {}
 
+impl std::fmt::Debug for ConnectionActor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionActor")
+            .field("conn_id", &self.conn_id)
+            .field("peer_node_id", &self.peer_node_id)
+            .field("peer_feature_flags", &self.peer_feature_flags)
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .field(
+                "last_activity_ms",
+                &self.last_activity_ms.load(Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl ConnectionActor {
     fn new(conn_id: c_int) -> Self {
         Self {
             conn_id,
+            peer_node_id: 0,
+            peer_feature_flags: 0,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
             last_activity_ms: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "encryption")]
+            noise_transport: Arc::new(Mutex::new(None)),
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
         }
@@ -138,6 +218,266 @@ struct SendTransport(*mut HewTransport);
 // which are inherently thread-safe.
 unsafe impl Send for SendTransport {}
 
+fn hew_conn_local_feature_flags() -> u32 {
+    let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN;
+    #[cfg(feature = "encryption")]
+    {
+        flags |= HEW_FEATURE_SUPPORTS_ENCRYPTION;
+    }
+    flags
+}
+
+fn hew_conn_local_schema_hash() -> u32 {
+    // FNV-1a(∅): type schema hash placeholder until codegen metadata is wired.
+    0x811c_9dc5
+}
+
+fn hew_conn_local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) -> HewHandshake {
+    HewHandshake {
+        protocol_version: HEW_PROTOCOL_VERSION,
+        node_id: crate::pid::hew_pid_local_node(),
+        schema_hash: hew_conn_local_schema_hash(),
+        feature_flags: hew_conn_local_feature_flags(),
+        static_noise_pubkey,
+    }
+}
+
+fn hew_conn_version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
+    local.protocol_version == peer.protocol_version
+}
+
+unsafe fn hew_conn_send_frame(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    payload: &[u8],
+) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: transport pointer validity is guaranteed by caller.
+    let t = unsafe { &*transport };
+    // SAFETY: vtable pointer validity is guaranteed by transport construction.
+    let Some(ops) = (unsafe { t.ops.as_ref() }) else {
+        return false;
+    };
+    let Some(send_fn) = ops.send else {
+        return false;
+    };
+    let Ok(expected) = c_int::try_from(payload.len()) else {
+        return false;
+    };
+    // SAFETY: payload pointer is valid for payload.len() bytes.
+    unsafe { send_fn(t.r#impl, conn_id, payload.as_ptr().cast(), payload.len()) == expected }
+}
+
+unsafe fn hew_conn_recv_frame_exact(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    payload: &mut [u8],
+) -> bool {
+    if transport.is_null() {
+        return false;
+    }
+    // SAFETY: transport pointer validity is guaranteed by caller.
+    let t = unsafe { &*transport };
+    // SAFETY: vtable pointer validity is guaranteed by transport construction.
+    let Some(ops) = (unsafe { t.ops.as_ref() }) else {
+        return false;
+    };
+    let Some(recv_fn) = ops.recv else {
+        return false;
+    };
+    let Ok(expected) = c_int::try_from(payload.len()) else {
+        return false;
+    };
+    // SAFETY: payload pointer is valid for payload.len() writable bytes.
+    unsafe {
+        recv_fn(
+            t.r#impl,
+            conn_id,
+            payload.as_mut_ptr().cast(),
+            payload.len(),
+        ) == expected
+    }
+}
+
+unsafe fn hew_conn_handshake_send(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    handshake: HewHandshake,
+) -> c_int {
+    c_int::from(!unsafe { hew_conn_send_frame(transport, conn_id, &handshake.serialize()) }) * -1
+}
+
+unsafe fn hew_conn_handshake_recv(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+) -> Option<HewHandshake> {
+    let mut buf = [0u8; HEW_HANDSHAKE_SIZE];
+    if !unsafe { hew_conn_recv_frame_exact(transport, conn_id, &mut buf) } {
+        return None;
+    }
+    HewHandshake::deserialize(&buf)
+}
+
+unsafe fn hew_conn_handshake_exchange(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    local: HewHandshake,
+) -> Option<HewHandshake> {
+    if unsafe { hew_conn_handshake_send(transport, conn_id, local) } != 0 {
+        return None;
+    }
+    let peer = unsafe { hew_conn_handshake_recv(transport, conn_id) }?;
+    if !hew_conn_version_compatible(&local, &peer) {
+        return None;
+    }
+    Some(peer)
+}
+
+unsafe fn hew_conn_close_transport_conn(transport: *mut HewTransport, conn_id: c_int) {
+    if transport.is_null() {
+        return;
+    }
+    // SAFETY: transport pointer validity is guaranteed by caller.
+    let t = unsafe { &*transport };
+    // SAFETY: vtable pointer validity is guaranteed by transport construction.
+    if let Some(ops) = unsafe { t.ops.as_ref() } {
+        if let Some(close_fn) = ops.close_conn {
+            // SAFETY: conn_id is a transport-provided handle.
+            unsafe { close_fn(t.r#impl, conn_id) };
+        }
+    }
+}
+
+unsafe fn hew_conn_encode_envelope(
+    target_actor_id: u64,
+    msg_type: i32,
+    payload: *mut u8,
+    payload_len: usize,
+) -> Option<Vec<u8>> {
+    #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
+    let env = HewWireEnvelope {
+        target_actor_id,
+        source_actor_id: 0,
+        msg_type,
+        payload_size: payload_len as u32,
+        payload,
+    };
+    // SAFETY: zeroed is valid for HewWireBuf.
+    let mut wire_buf: HewWireBuf = unsafe { std::mem::zeroed() };
+    // SAFETY: wire_buf is a valid stack allocation.
+    unsafe { hew_wire_buf_init(&raw mut wire_buf) };
+    // SAFETY: pointers are valid for the duration of the call.
+    if unsafe { hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // SAFETY: wire_buf was initialised above.
+        unsafe { hew_wire_buf_free(&raw mut wire_buf) };
+        return None;
+    }
+    // SAFETY: wire_buf.data points to wire_buf.len readable bytes until free.
+    let bytes = unsafe { std::slice::from_raw_parts(wire_buf.data, wire_buf.len) }.to_vec();
+    // SAFETY: wire_buf was initialised above.
+    unsafe { hew_wire_buf_free(&raw mut wire_buf) };
+    Some(bytes)
+}
+
+#[cfg(feature = "encryption")]
+fn hew_conn_supports_encryption(flags: u32) -> bool {
+    flags & HEW_FEATURE_SUPPORTS_ENCRYPTION != 0
+}
+
+#[cfg(feature = "encryption")]
+fn hew_conn_noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Option<bool> {
+    if local.node_id != peer.node_id {
+        return Some(local.node_id < peer.node_id);
+    }
+    match local.static_noise_pubkey.cmp(&peer.static_noise_pubkey) {
+        std::cmp::Ordering::Less => Some(true),
+        std::cmp::Ordering::Greater => Some(false),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+#[cfg(feature = "encryption")]
+unsafe fn hew_conn_upgrade_noise(
+    transport: *mut HewTransport,
+    conn_id: c_int,
+    local: &HewHandshake,
+    peer: &HewHandshake,
+    local_private_key: &[u8],
+) -> Option<snow::TransportState> {
+    let initiator = hew_conn_noise_is_initiator(local, peer)?;
+    // SAFETY: transport pointer validity is guaranteed by caller.
+    let t = unsafe { &*transport };
+    // SAFETY: vtable pointer validity is guaranteed by transport construction.
+    let ops = unsafe { t.ops.as_ref() }?;
+    let send_fn = ops.send?;
+    let recv_fn = ops.recv?;
+
+    let builder = snow::Builder::new(NOISE_PATTERN.parse().ok()?);
+    let mut handshake = if initiator {
+        builder
+            .local_private_key(local_private_key)
+            .ok()?
+            .build_initiator()
+            .ok()?
+    } else {
+        builder
+            .local_private_key(local_private_key)
+            .ok()?
+            .build_responder()
+            .ok()?
+    };
+
+    let mut msg = vec![0u8; NOISE_MAX_MSG_SIZE];
+    let mut payload = vec![0u8; NOISE_MAX_MSG_SIZE];
+
+    if initiator {
+        let n = handshake.write_message(&[], &mut msg).ok()?;
+        // SAFETY: msg points to n readable bytes.
+        if unsafe { send_fn(t.r#impl, conn_id, msg.as_ptr().cast(), n) } < 0 {
+            return None;
+        }
+        // SAFETY: msg has NOISE_MAX_MSG_SIZE writable bytes.
+        let n = unsafe { recv_fn(t.r#impl, conn_id, msg.as_mut_ptr().cast(), msg.len()) };
+        if n <= 0 {
+            return None;
+        }
+        #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
+        let n = n as usize;
+        handshake.read_message(&msg[..n], &mut payload).ok()?;
+        let n = handshake.write_message(&[], &mut msg).ok()?;
+        // SAFETY: msg points to n readable bytes.
+        if unsafe { send_fn(t.r#impl, conn_id, msg.as_ptr().cast(), n) } < 0 {
+            return None;
+        }
+    } else {
+        // SAFETY: msg has NOISE_MAX_MSG_SIZE writable bytes.
+        let n = unsafe { recv_fn(t.r#impl, conn_id, msg.as_mut_ptr().cast(), msg.len()) };
+        if n <= 0 {
+            return None;
+        }
+        #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
+        let n = n as usize;
+        handshake.read_message(&msg[..n], &mut payload).ok()?;
+        let n = handshake.write_message(&[], &mut msg).ok()?;
+        // SAFETY: msg points to n readable bytes.
+        if unsafe { send_fn(t.r#impl, conn_id, msg.as_ptr().cast(), n) } < 0 {
+            return None;
+        }
+        // SAFETY: msg has NOISE_MAX_MSG_SIZE writable bytes.
+        let n = unsafe { recv_fn(t.r#impl, conn_id, msg.as_mut_ptr().cast(), msg.len()) };
+        if n <= 0 {
+            return None;
+        }
+        #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
+        let n = n as usize;
+        handshake.read_message(&msg[..n], &mut payload).ok()?;
+    }
+
+    handshake.into_transport_mode().ok()
+}
+
 // ── Reader thread ──────────────────────────────────────────────────────
 
 /// Reader thread: loops calling transport recv, decodes envelopes,
@@ -152,6 +492,7 @@ fn reader_loop(
     stop_flag: Arc<AtomicI32>,
     last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
+    #[cfg(feature = "encryption")] noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
 ) {
     let transport = transport.0;
     let mut buf = vec![0u8; 65536]; // 64KiB read buffer (heap-allocated)
@@ -180,6 +521,25 @@ fn reader_loop(
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
 
+        let mut payload_ptr = buf.as_mut_ptr();
+        let mut payload_len = read_len;
+        #[cfg(feature = "encryption")]
+        {
+            let mut decrypted = vec![0u8; read_len];
+            let mut guard = match noise_transport.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            if let Some(noise) = guard.as_mut() {
+                let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
+                    break;
+                };
+                payload_len = n;
+                buf[..payload_len].copy_from_slice(&decrypted[..payload_len]);
+                payload_ptr = buf.as_mut_ptr();
+            }
+        }
+
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { crate::io_time::hew_now_ms() };
@@ -190,7 +550,7 @@ fn reader_loop(
             // SAFETY: buf contains `read_len` valid bytes from recv.
             unsafe {
                 let mut wire_buf: HewWireBuf = std::mem::zeroed();
-                hew_wire_buf_init_read(&raw mut wire_buf, buf.as_mut_ptr().cast(), read_len);
+                hew_wire_buf_init_read(&raw mut wire_buf, payload_ptr.cast(), payload_len);
 
                 let mut envelope: HewWireEnvelope = std::mem::zeroed();
                 let rc = hew_wire_decode_envelope(&raw mut wire_buf, &raw mut envelope);
@@ -293,17 +653,76 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let mut conns = match mgr.connections.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
+    {
+        let conns = match mgr.connections.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if conns.iter().any(|c| c.conn_id == conn_id) {
+            return -1;
+        }
+    }
+
+    let mut local_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
+    #[cfg(feature = "encryption")]
+    let local_noise_private = {
+        let Ok(pattern) = NOISE_PATTERN.parse() else {
+            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            return -1;
+        };
+        let builder = snow::Builder::new(pattern);
+        let Ok(keypair) = builder.generate_keypair() else {
+            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            return -1;
+        };
+        local_noise_pubkey.copy_from_slice(&keypair.public);
+        keypair.private
     };
 
-    // Check for duplicate.
-    if conns.iter().any(|c| c.conn_id == conn_id) {
+    let local_hs = hew_conn_local_handshake(local_noise_pubkey);
+    let Some(peer_hs) = (unsafe { hew_conn_handshake_exchange(mgr.transport, conn_id, local_hs) })
+    else {
+        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        return -1;
+    };
+
+    #[cfg(feature = "encryption")]
+    let upgraded_noise = if hew_conn_supports_encryption(local_hs.feature_flags)
+        && hew_conn_supports_encryption(peer_hs.feature_flags)
+    {
+        unsafe {
+            hew_conn_upgrade_noise(
+                mgr.transport,
+                conn_id,
+                &local_hs,
+                &peer_hs,
+                &local_noise_private,
+            )
+        }
+    } else {
+        None
+    };
+
+    #[cfg(feature = "encryption")]
+    if hew_conn_supports_encryption(local_hs.feature_flags)
+        && hew_conn_supports_encryption(peer_hs.feature_flags)
+        && upgraded_noise.is_none()
+    {
+        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
         return -1;
     }
 
     let mut actor = ConnectionActor::new(conn_id);
+    actor.peer_node_id = peer_hs.node_id;
+    actor.peer_feature_flags = peer_hs.feature_flags;
+    #[cfg(feature = "encryption")]
+    if let Some(noise) = upgraded_noise {
+        let mut guard = match actor.noise_transport.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *guard = Some(noise);
+    }
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
 
     // SAFETY: hew_now_ms has no preconditions.
@@ -315,16 +734,36 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let transport_send = SendTransport(mgr.transport);
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
+    #[cfg(feature = "encryption")]
+    let noise_transport = Arc::clone(&actor.noise_transport);
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
-        .spawn(move || reader_loop(transport_send, conn_id, stop, activity_send, router));
+        .spawn(move || {
+            reader_loop(
+                transport_send,
+                conn_id,
+                stop,
+                activity_send,
+                router,
+                #[cfg(feature = "encryption")]
+                noise_transport,
+            )
+        });
 
     match handle {
         Ok(h) => actor.reader_handle = Some(h),
         Err(_) => return -1,
     }
 
+    let mut conns = match mgr.connections.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if conns.iter().any(|c| c.conn_id == conn_id) {
+        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        return -1;
+    }
     conns.push(actor);
     0
 }
@@ -395,6 +834,8 @@ pub unsafe extern "C" fn hew_connmgr_send(
     let mgr_ref = unsafe { &*mgr };
 
     // Verify connection exists and is active.
+    #[cfg(feature = "encryption")]
+    let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
         let conns = match mgr_ref.connections.lock() {
             Ok(g) => g,
@@ -402,8 +843,43 @@ pub unsafe extern "C" fn hew_connmgr_send(
         };
         let conn = conns.iter().find(|c| c.conn_id == conn_id);
         match conn {
-            Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {}
+            Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
+                #[cfg(feature = "encryption")]
+                {
+                    maybe_noise = Some(Arc::clone(&c.noise_transport));
+                }
+            }
             _ => return -1,
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    if let Some(noise_transport) = maybe_noise {
+        let encoded =
+            match unsafe { hew_conn_encode_envelope(target_actor_id, msg_type, data, size) } {
+                Some(b) => b,
+                None => return -1,
+            };
+        let mut maybe_ciphertext = None;
+        {
+            let mut guard = match noise_transport.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            if let Some(noise) = guard.as_mut() {
+                let mut ciphertext = vec![0u8; encoded.len() + 16];
+                let Ok(n) = noise.write_message(&encoded, &mut ciphertext) else {
+                    return -1;
+                };
+                ciphertext.truncate(n);
+                maybe_ciphertext = Some(ciphertext);
+            }
+        }
+        if let Some(ciphertext) = maybe_ciphertext {
+            if unsafe { hew_conn_send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
+                return 0;
+            }
+            return -1;
         }
     }
 
@@ -595,5 +1071,35 @@ mod tests {
             let mgr = hew_connmgr_new(std::ptr::null_mut(), None);
             assert!(mgr.is_null());
         }
+    }
+
+    #[test]
+    fn handshake_round_trip() {
+        let hs = HewHandshake {
+            protocol_version: HEW_PROTOCOL_VERSION,
+            node_id: 42,
+            schema_hash: 0x1234_5678,
+            feature_flags: HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN,
+            static_noise_pubkey: [7; NOISE_STATIC_PUBKEY_LEN],
+        };
+        let encoded = hs.serialize();
+        let decoded = HewHandshake::deserialize(&encoded).expect("valid handshake");
+        assert_eq!(decoded, hs);
+    }
+
+    #[test]
+    fn handshake_rejects_invalid_magic() {
+        let mut bytes = [0u8; HEW_HANDSHAKE_SIZE];
+        bytes.copy_from_slice(&hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]).serialize());
+        bytes[0] = b'X';
+        assert!(HewHandshake::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn protocol_version_mismatch_rejected() {
+        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let mut peer = local;
+        peer.protocol_version = local.protocol_version.wrapping_add(1);
+        assert!(!hew_conn_version_compatible(&local, &peer));
     }
 }

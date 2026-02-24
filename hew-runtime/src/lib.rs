@@ -192,7 +192,7 @@ pub mod timer;
 pub mod timer_wheel;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod node;
+pub mod hew_node;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
@@ -221,6 +221,8 @@ pub mod process;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote_sup;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
 #[cfg(not(target_arch = "wasm32"))]

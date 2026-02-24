@@ -208,19 +208,25 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       return hew::VecType::get(&context, builder.getI32Type());
     // Vec<T>: extract element type from generic args
     if (name == "Vec") {
-      mlir::Type elemType = builder.getI32Type(); // default
-      if (named->type_args && !named->type_args->empty())
-        elemType = convertType((*named->type_args)[0].value);
+      if (!(named->type_args && !named->type_args->empty())) {
+        ++errorCount_;
+        emitError(currentLoc)
+            << "cannot determine element type for Vec; add explicit type annotation";
+        return nullptr;
+      }
+      mlir::Type elemType = convertType((*named->type_args)[0].value);
       return hew::VecType::get(&context, elemType);
     }
     // HashMap<K,V>: extract key/value types from generic args
     if (name == "HashMap") {
-      mlir::Type keyType = builder.getI32Type();
-      mlir::Type valType = builder.getI32Type();
-      if (named->type_args && named->type_args->size() >= 2) {
-        keyType = convertType((*named->type_args)[0].value);
-        valType = convertType((*named->type_args)[1].value);
+      if (!(named->type_args && named->type_args->size() >= 2)) {
+        ++errorCount_;
+        emitError(currentLoc)
+            << "cannot determine key/value types for HashMap; add explicit type annotation";
+        return nullptr;
       }
+      mlir::Type keyType = convertType((*named->type_args)[0].value);
+      mlir::Type valType = convertType((*named->type_args)[1].value);
       return hew::HashMapType::get(&context, keyType, valType);
     }
     if (name == "ActorRef" || name == "Actor")
@@ -520,30 +526,38 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
 }
 
 mlir::Value MLIRGen::coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                              mlir::Location location) {
+                                              mlir::Location location, mlir::Type mapType) {
   mlir::Type targetType;
-  bool valIsStr = collType.find(", string>") != std::string::npos ||
-                  collType.find(",string>") != std::string::npos ||
-                  collType.find(", String>") != std::string::npos ||
-                  collType.find(",String>") != std::string::npos;
-  bool valIsI64 =
-      collType.find(", i64>") != std::string::npos || collType.find(",i64>") != std::string::npos ||
-      collType.find(", int>") != std::string::npos || collType.find(",int>") != std::string::npos ||
-      collType.find(", Int>") != std::string::npos || collType.find(",Int>") != std::string::npos;
-  bool valIsF64 = collType.find(", f64>") != std::string::npos ||
-                  collType.find(",f64>") != std::string::npos ||
-                  collType.find(", float>") != std::string::npos ||
-                  collType.find(",float>") != std::string::npos ||
-                  collType.find(", Float>") != std::string::npos ||
-                  collType.find(",Float>") != std::string::npos;
-  if (valIsStr)
-    targetType = hew::StringRefType::get(&context);
-  else if (valIsI64)
-    targetType = builder.getIntegerType(64);
-  else if (valIsF64)
-    targetType = builder.getF64Type();
-  else
-    targetType = builder.getI32Type();
+  if (auto hmType = mlir::dyn_cast<hew::HashMapType>(mapType))
+    targetType = hmType.getValueType();
+  if (!targetType) {
+    bool valIsStr = collType.find(", string>") != std::string::npos ||
+                    collType.find(",string>") != std::string::npos ||
+                    collType.find(", String>") != std::string::npos ||
+                    collType.find(",String>") != std::string::npos;
+    bool valIsI64 = collType.find(", i64>") != std::string::npos ||
+                    collType.find(",i64>") != std::string::npos ||
+                    collType.find(", int>") != std::string::npos ||
+                    collType.find(",int>") != std::string::npos ||
+                    collType.find(", Int>") != std::string::npos ||
+                    collType.find(",Int>") != std::string::npos;
+    bool valIsF64 = collType.find(", f64>") != std::string::npos ||
+                    collType.find(",f64>") != std::string::npos ||
+                    collType.find(", float>") != std::string::npos ||
+                    collType.find(",float>") != std::string::npos ||
+                    collType.find(", Float>") != std::string::npos ||
+                    collType.find(",Float>") != std::string::npos;
+    if (valIsStr)
+      targetType = hew::StringRefType::get(&context);
+    else if (valIsI64)
+      targetType = builder.getIntegerType(64);
+    else if (valIsF64)
+      targetType = builder.getF64Type();
+  }
+  if (!targetType) {
+    emitError(location) << "cannot resolve HashMap value type from '" << collType << "'";
+    return val;
+  }
   return coerceType(val, targetType, location);
 }
 
@@ -720,8 +734,10 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
     }
 
     mlir::Type resultType = nullptr;
+    mlir::Type semanticResultType = nullptr;
     if (fn.return_type) {
-      resultType = toLLVMStorageType(convertType(fn.return_type->value));
+      semanticResultType = convertType(fn.return_type->value);
+      resultType = toLLVMStorageType(semanticResultType);
     }
 
     auto funcType = resultType ? mlir::FunctionType::get(&context, paramTypes, {resultType})
@@ -730,6 +746,11 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
     // If variadic, we need to use LLVM-level variadic support
     // For now, create a regular extern declaration
     getOrCreateExternFunc(fn.name, funcType);
+    if (semanticResultType && mlir::isa<hew::VecType, hew::HashMapType>(semanticResultType)) {
+      externSemanticReturnTypes[fn.name] = semanticResultType;
+    } else {
+      externSemanticReturnTypes.erase(fn.name);
+    }
   }
 }
 
@@ -796,6 +817,67 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     bool newline = (name == "println_bool");
     builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
     return nullptr;
+  }
+
+  // sqrt(x) -> f64
+  if (name == "sqrt") {
+    if (args.empty())
+      return nullptr;
+    auto arg = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!arg)
+      return nullptr;
+    auto f64Type = builder.getF64Type();
+    arg = coerceType(arg, f64Type, location);
+    auto sqrtType = builder.getFunctionType({f64Type}, {f64Type});
+    auto sqrtFunc = getOrCreateExternFunc("sqrt", sqrtType);
+    return builder.create<mlir::func::CallOp>(location, sqrtFunc, mlir::ValueRange{arg})
+        .getResult(0);
+  }
+
+  // abs(x) -> i64
+  if (name == "abs") {
+    if (args.empty())
+      return nullptr;
+    auto arg = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!arg)
+      return nullptr;
+    auto i64Type = builder.getI64Type();
+    arg = coerceType(arg, i64Type, location);
+    auto zero = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 0);
+    auto neg = builder.create<mlir::arith::SubIOp>(location, zero, arg);
+    auto cmp =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sgt, arg, zero);
+    return builder.create<mlir::arith::SelectOp>(location, cmp, arg, neg).getResult();
+  }
+
+  // min(a, b) -> i64
+  if (name == "min") {
+    if (args.size() < 2)
+      return nullptr;
+    auto a = generateExpression(ast::callArgExpr(args[0]).value);
+    auto b = generateExpression(ast::callArgExpr(args[1]).value);
+    if (!a || !b)
+      return nullptr;
+    auto i64Type = builder.getI64Type();
+    a = coerceType(a, i64Type, location);
+    b = coerceType(b, i64Type, location);
+    auto cmp = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt, a, b);
+    return builder.create<mlir::arith::SelectOp>(location, cmp, a, b).getResult();
+  }
+
+  // max(a, b) -> i64
+  if (name == "max") {
+    if (args.size() < 2)
+      return nullptr;
+    auto a = generateExpression(ast::callArgExpr(args[0]).value);
+    auto b = generateExpression(ast::callArgExpr(args[1]).value);
+    if (!a || !b)
+      return nullptr;
+    auto i64Type = builder.getI64Type();
+    a = coerceType(a, i64Type, location);
+    b = coerceType(b, i64Type, location);
+    auto cmp = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sgt, a, b);
+    return builder.create<mlir::arith::SelectOp>(location, cmp, a, b).getResult();
   }
 
   // string_concat(a, b) -> string_ref
@@ -925,7 +1007,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       vecType = *pendingDeclaredType;
       pendingDeclaredType.reset();
     } else {
-      vecType = hew::VecType::get(&context, builder.getI32Type());
+      emitError(location) << "cannot determine element type for Vec; add explicit type annotation";
+      return nullptr;
     }
     return builder.create<hew::VecNewOp>(location, vecType).getResult();
   }
@@ -937,8 +1020,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       hmType = *pendingDeclaredType;
       pendingDeclaredType.reset();
     } else {
-      hmType =
-          hew::HashMapType::get(&context, hew::StringRefType::get(&context), builder.getI32Type());
+      emitError(location)
+          << "cannot determine key/value types for HashMap; add explicit type annotation";
+      return nullptr;
     }
     return builder.create<hew::HashMapNewOp>(location, hmType).getResult();
   }
@@ -1925,7 +2009,8 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
     if (auto *fieldItem = std::get_if<ast::TypeBodyItemField>(&bodyItem.kind)) {
       StructFieldInfo field;
       field.name = fieldItem->name;
-      field.type = toLLVMStorageType(convertType(fieldItem->ty.value));
+      field.semanticType = convertType(fieldItem->ty.value);
+      field.type = toLLVMStorageType(field.semanticType);
       field.index = idx++;
       // Preserve original type expression for collection dispatch
       // (e.g., Vec<BenchResult> → "Vec<BenchResult>" so struct field
@@ -2392,7 +2477,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     {
       auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
       auto collStr = typeExprToCollectionString(paramTy, resolveAlias);
-      if (!collStr.empty())
+      if (collStr.rfind("HashMap<", 0) == 0)
         collectionVarTypes[paramName] = collStr;
       auto handleStr = typeExprToHandleString(paramTy);
       if (!handleStr.empty())

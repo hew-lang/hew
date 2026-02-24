@@ -59,30 +59,33 @@ inline std::string typeExprToCollectionString(
   if (resolved == "bytes")
     return "bytes";
   if (resolved == "Vec") {
-    std::string elemType = "i32";
-    if (named->type_args && !named->type_args->empty()) {
-      const auto &arg = (*named->type_args)[0].value;
-      if (auto *en = std::get_if<ast::TypeNamed>(&arg.kind)) {
-        elemType = normalizeElemTypeName(resolve(en->name));
-        // Handle nested generics like ActorRef<T>
-        if (en->type_args && !en->type_args->empty()) {
-          elemType += "<";
-          if (auto *inner = std::get_if<ast::TypeNamed>(&(*en->type_args)[0].value.kind))
-            elemType += resolve(inner->name);
-          elemType += ">";
-        }
-      }
+    if (!named->type_args || named->type_args->empty())
+      return "";
+    const auto &arg = (*named->type_args)[0].value;
+    auto *en = std::get_if<ast::TypeNamed>(&arg.kind);
+    if (!en)
+      return "";
+    std::string elemType = normalizeElemTypeName(resolve(en->name));
+    // Handle nested generics like ActorRef<T>
+    if (en->type_args && !en->type_args->empty()) {
+      elemType += "<";
+      if (auto *inner = std::get_if<ast::TypeNamed>(&(*en->type_args)[0].value.kind))
+        elemType += resolve(inner->name);
+      else
+        return "";
+      elemType += ">";
     }
     return "Vec<" + elemType + ">";
   }
   if (resolved == "HashMap") {
-    std::string keyType = "string", valType = "i32";
-    if (named->type_args && named->type_args->size() >= 2) {
-      if (auto *k = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind))
-        keyType = resolve(k->name);
-      if (auto *v = std::get_if<ast::TypeNamed>(&(*named->type_args)[1].value.kind))
-        valType = resolve(v->name);
-    }
+    if (!named->type_args || named->type_args->size() < 2)
+      return "";
+    auto *k = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind);
+    auto *v = std::get_if<ast::TypeNamed>(&(*named->type_args)[1].value.kind);
+    if (!k || !v)
+      return "";
+    std::string keyType = resolve(k->name);
+    std::string valType = resolve(v->name);
     return "HashMap<" + keyType + "," + valType + ">";
   }
   return "";

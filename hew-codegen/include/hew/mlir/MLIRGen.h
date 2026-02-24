@@ -35,6 +35,7 @@ namespace hew {
 struct StructFieldInfo {
   std::string name;
   mlir::Type type;
+  mlir::Type semanticType;
   unsigned index;
   std::string typeExprStr; // Original type expression string for collection dispatch
 };
@@ -223,7 +224,7 @@ private:
 
   /// Coerce a value to the hashmap's declared value type based on collType.
   mlir::Value coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                       mlir::Location location);
+                                       mlir::Location location, mlir::Type mapType = {});
 
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.
@@ -361,7 +362,8 @@ private:
   std::string currentActorName;
 
   // ── Collection type tracking ───────────────────────────────────────
-  // Track collection variables: varName → "Vec<i32>", "Vec<string>", "HashMap<string,i32>"
+  // Track HashMap variables for erased-pointer fallback paths.
+  // Vec/bytes dispatch uses typed hew::VecType and does not use this map.
   std::unordered_map<std::string, std::string> collectionVarTypes;
   // Track collection-typed actor fields: "ActorName.fieldName" → "Vec<i32>", etc.
   std::unordered_map<std::string, std::string> collectionFieldTypes;

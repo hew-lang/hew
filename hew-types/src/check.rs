@@ -1872,6 +1872,9 @@ impl Checker {
             name: type_name, ..
         } = &id.target_type.0
         {
+            let target_is_struct = self
+                .lookup_type_def(type_name)
+                .is_some_and(|td| td.kind == TypeDefKind::Struct);
             // Orphan rule check: if implementing a trait, either the type or the
             // trait must be defined in the current compilation unit.
             if let Some(tb) = &id.trait_bound {
@@ -1896,6 +1899,23 @@ impl Checker {
             }
 
             for method in &id.methods {
+                if target_is_struct {
+                    if let Some(self_param) = method
+                        .params
+                        .iter()
+                        .find(|param| param.name == "self" && param.is_mutable)
+                    {
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::MutabilityError,
+                            &self_param.ty.1,
+                            "`var self` in struct impl methods has no effect — struct methods receive self by value".to_string(),
+                            vec![
+                                "return a modified copy of `self` instead".to_string(),
+                                "convert this type to an actor if you need mutable shared state".to_string(),
+                            ],
+                        );
+                    }
+                }
                 self.env.push_scope();
                 // Bind self for methods that take it
                 let self_ty = Ty::Named {

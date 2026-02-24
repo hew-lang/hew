@@ -345,9 +345,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     // Find the field
     for (const auto &field : info.fields) {
       if (field.name == fieldName) {
-        return builder.create<hew::FieldGetOp>(location, field.type, operandVal,
-                                               builder.getStringAttr(fieldName),
-                                               builder.getI64IntegerAttr(field.index));
+        auto fieldVal = builder
+                            .create<hew::FieldGetOp>(location, field.type, operandVal,
+                                                     builder.getStringAttr(fieldName),
+                                                     builder.getI64IntegerAttr(field.index))
+                            .getResult();
+        if ((mlir::isa<hew::VecType>(field.semanticType) ||
+             mlir::isa<hew::HashMapType>(field.semanticType)) &&
+            field.semanticType != field.type)
+          return coerceType(fieldVal, field.semanticType, location);
+        return fieldVal;
       }
     }
 
@@ -433,36 +440,77 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       return builder.create<mlir::LLVM::LoadOp>(location, arrayType.getElementType(), elemPtr);
     }
 
-    // For Vec (pointer type) — lower to hew_vec_get_i32
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(operandVal.getType())) {
+      auto indexVal = generateExpression(idx->index->value);
+      if (!indexVal)
+        return nullptr;
+      auto i64Type = builder.getI64Type();
+      mlir::Value idx64 = indexVal;
+      if (indexVal.getType() != i64Type)
+        idx64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
+      return builder.create<hew::VecGetOp>(location, vecType.getElementType(), operandVal, idx64);
+    }
+
+    // Fall back to string-based collection tracking when Vec type is erased.
     if (isPointerLikeType(operandVal.getType())) {
       auto indexVal = generateExpression(idx->index->value);
       if (!indexVal)
         return nullptr;
       auto i64Type = builder.getI64Type();
-      auto i32Type = builder.getI32Type();
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       mlir::Value idx64 = indexVal;
       if (indexVal.getType() != i64Type)
         idx64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
 
-      // Determine element type from collection tracking
-      std::string elemType;
+      std::string collType;
       if (auto *ie = std::get_if<ast::ExprIdentifier>(&idx->object->value.kind)) {
         auto cit = collectionVarTypes.find(ie->name);
         if (cit != collectionVarTypes.end())
-          elemType = cit->second;
+          collType = cit->second;
       }
-      if (elemType == "Vec<string>") {
-        return builder.create<hew::VecGetOp>(location, hew::StringRefType::get(&context),
-                                             operandVal, idx64);
+      if (collType.rfind("Vec<", 0) == 0) {
+        auto inner = collType.substr(4);
+        if (!inner.empty() && inner.back() == '>')
+          inner.pop_back();
+        auto start = inner.find_first_not_of(' ');
+        if (start != std::string::npos)
+          inner = inner.substr(start);
+        auto end = inner.find_last_not_of(' ');
+        if (end != std::string::npos)
+          inner = inner.substr(0, end + 1);
+
+        mlir::Type elemType;
+        if (inner == "i32" || inner == "I32")
+          elemType = builder.getI32Type();
+        else if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
+          elemType = builder.getI64Type();
+        else if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
+          elemType = builder.getF64Type();
+        else if (inner == "string" || inner == "String" || inner == "str")
+          elemType = hew::StringRefType::get(&context);
+        else if (inner == "bool")
+          elemType = builder.getI1Type();
+        else if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
+          elemType = ptrType;
+        else {
+          auto stIt = structTypes.find(inner);
+          if (stIt != structTypes.end() && stIt->second.mlirType)
+            elemType = stIt->second.mlirType;
+        }
+
+        if (!elemType) {
+          emitError(location) << "unsupported Vec element type '" << inner << "'";
+          return nullptr;
+        }
+        auto typedVec =
+            builder
+                .create<hew::BitcastOp>(location, hew::VecType::get(&context, elemType), operandVal)
+                .getResult();
+        return builder.create<hew::VecGetOp>(location, elemType, typedVec, idx64);
       }
-      if (elemType == "Vec<f64>") {
-        return builder.create<hew::VecGetOp>(location, builder.getF64Type(), operandVal, idx64);
-      }
-      // Default: i32
-      return builder.create<hew::VecGetOp>(location, i32Type, operandVal, idx64);
     }
 
-    emitWarning(location) << "indexing not supported for this type";
+    emitError(location) << "indexing not supported for this type";
     return nullptr;
   }
 
@@ -1101,6 +1149,10 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                        "print_f64",
                                        "println_bool",
                                        "print_bool",
+                                       "sqrt",
+                                       "abs",
+                                       "min",
+                                       "max",
                                        "string_concat",
                                        "string_length",
                                        "string_equals",
@@ -2219,6 +2271,197 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       }
     }
 
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+    auto i64Type = builder.getI64Type();
+    const auto &method = methodName;
+
+    auto emitVecMethod = [&](mlir::Value vecValue, mlir::Type elemType,
+                             mlir::Value &resultOut) -> bool {
+      if (method == "push") {
+        auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!val)
+          return true;
+        val = coerceType(val, elemType, location);
+        builder.create<hew::VecPushOp>(location, vecValue, val);
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "get") {
+        auto idx = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!idx)
+          return true;
+        if (idx.getType() != i64Type)
+          idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
+        resultOut = builder.create<hew::VecGetOp>(location, elemType, vecValue, idx).getResult();
+        return true;
+      }
+      if (method == "set") {
+        auto idx = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto val = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!idx || !val)
+          return true;
+        if (idx.getType() != i64Type)
+          idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
+        val = coerceType(val, elemType, location);
+        builder.create<hew::VecSetOp>(location, vecValue, idx, val);
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "pop") {
+        resultOut = builder.create<hew::VecPopOp>(location, elemType, vecValue).getResult();
+        return true;
+      }
+      if (method == "remove") {
+        if (!mc.args.empty()) {
+          auto argVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
+          if (!argVal)
+            return true;
+          argVal = coerceType(argVal, elemType, location);
+          builder.create<hew::VecRemoveOp>(location, vecValue, argVal);
+        }
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "len") {
+        resultOut = builder.create<hew::VecLenOp>(location, i64Type, vecValue).getResult();
+        return true;
+      }
+      if (method == "is_empty") {
+        resultOut =
+            builder.create<hew::VecIsEmptyOp>(location, builder.getI1Type(), vecValue).getResult();
+        return true;
+      }
+      if (method == "clear") {
+        builder.create<hew::VecClearOp>(location, vecValue);
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "append" || method == "extend") {
+        if (mc.args.empty()) {
+          emitError(location) << ".append() requires one argument";
+          resultOut = nullptr;
+          return true;
+        }
+        auto src = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!src) {
+          resultOut = nullptr;
+          return true;
+        }
+        auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_vec_append");
+        builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr,
+                                           mlir::ValueRange{vecValue, src});
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "to_string") {
+        auto strType = hew::StringRefType::get(&context);
+        auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_bytes_to_string");
+        resultOut = builder
+                        .create<hew::RuntimeCallOp>(location, mlir::TypeRange{strType}, calleeAttr,
+                                                    mlir::ValueRange{vecValue})
+                        .getResult();
+        return true;
+      }
+      return false;
+    };
+
+    auto emitHashMapMethod = [&](mlir::Value mapValue, mlir::Type keyType, mlir::Type valueType,
+                                 mlir::Value &resultOut) -> bool {
+      if (method == "insert" || method == "set") {
+        auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto val = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!key || !val)
+          return true;
+        key = coerceType(key, keyType, location);
+        val = coerceType(val, valueType, location);
+        builder.create<hew::HashMapInsertOp>(location, mapValue, key, val);
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "get") {
+        auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!key)
+          return true;
+        key = coerceType(key, keyType, location);
+        resultOut =
+            builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
+        return true;
+      }
+      if (method == "remove") {
+        auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!key)
+          return true;
+        key = coerceType(key, keyType, location);
+        builder.create<hew::HashMapRemoveOp>(location, mapValue, key);
+        resultOut = nullptr;
+        return true;
+      }
+      if (method == "contains_key" || method == "contains") {
+        auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!key)
+          return true;
+        key = coerceType(key, keyType, location);
+        auto contains =
+            builder.create<hew::HashMapContainsKeyOp>(location, i32Type, mapValue, key).getResult();
+        auto zero = createIntConstant(builder, location, i32Type, 0);
+        resultOut = builder
+                        .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
+                                                     contains, zero)
+                        .getResult();
+        return true;
+      }
+      if (method == "keys") {
+        auto keysType = hew::VecType::get(&context, keyType);
+        resultOut = builder.create<hew::HashMapKeysOp>(location, keysType, mapValue).getResult();
+        return true;
+      }
+      if (method == "values") {
+        auto keysType = hew::VecType::get(&context, keyType);
+        auto keysVec = builder.create<hew::HashMapKeysOp>(location, keysType, mapValue).getResult();
+        auto valuesType = hew::VecType::get(&context, valueType);
+        auto valuesVec = builder.create<hew::VecNewOp>(location, valuesType).getResult();
+        auto len = builder.create<hew::VecLenOp>(location, i64Type, keysVec).getResult();
+        auto zero = createIntConstant(builder, location, i64Type, 0);
+        auto one = createIntConstant(builder, location, i64Type, 1);
+        auto loop = builder.create<mlir::scf::ForOp>(location, zero, len, one);
+        auto *body = loop.getBody();
+        auto iv = loop.getInductionVar();
+        builder.setInsertionPointToStart(body);
+        auto key = builder.create<hew::VecGetOp>(location, keyType, keysVec, iv).getResult();
+        auto val =
+            builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
+        builder.create<hew::VecPushOp>(location, valuesVec, val);
+        builder.create<mlir::scf::YieldOp>(location);
+        builder.setInsertionPointAfter(loop);
+        resultOut = valuesVec;
+        return true;
+      }
+      if (method == "len") {
+        resultOut = builder.create<hew::HashMapLenOp>(location, i64Type, mapValue).getResult();
+        return true;
+      }
+      return false;
+    };
+
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(receiver.getType())) {
+      mlir::Value vecResult;
+      if (emitVecMethod(receiver, vecType.getElementType(), vecResult))
+        return vecResult;
+      emitError(location) << "unknown method '" << method << "' on collection type '"
+                          << receiver.getType() << "'";
+      return nullptr;
+    }
+
+    if (auto hmType = mlir::dyn_cast<hew::HashMapType>(receiver.getType())) {
+      mlir::Value hmResult;
+      if (emitHashMapMethod(receiver, hmType.getKeyType(), hmType.getValueType(), hmResult))
+        return hmResult;
+      emitError(location) << "unknown method '" << method << "' on collection type '"
+                          << receiver.getType() << "'";
+      return nullptr;
+    }
+
     // Check for collection method calls (Vec, HashMap)
     std::string collType;
     // Prefer resolved type from the type checker
@@ -2267,47 +2510,49 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
 
     if (!collType.empty()) {
-      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-      auto i32Type = builder.getI32Type();
-      auto i64Type = builder.getI64Type();
-      const auto &method = methodName;
-      bool isVecI64 = collType == "Vec<i64>";
-      bool isVecStr =
-          collType == "Vec<string>" || collType == "Vec<String>" || collType == "Vec<str>";
-      bool isVecF64 = collType == "Vec<f64>";
-      bool isVecPtr = collType.find("Vec<ActorRef<") == 0;
       bool isBytes = collType == "bytes";
-      bool isVec = isBytes || collType.substr(0, 4) == "Vec<";
-      bool isHashMap = !isBytes && collType.substr(0, 8) == "HashMap<";
+      bool isVec = isBytes || collType.rfind("Vec<", 0) == 0;
+      bool isHashMap = !isBytes && collType.rfind("HashMap<", 0) == 0;
 
       // Resolve Vec element type to MLIR type, including user struct types.
       auto resolveVecElemType = [&]() -> mlir::Type {
-        if (isVecStr)
-          return hew::StringRefType::get(&context);
-        if (isVecPtr)
-          return ptrType;
-        if (isVecI64)
+        if (isBytes)
+          return i32Type;
+        if (!isVec)
+          return {};
+        auto inner = collType.substr(4);
+        if (!inner.empty() && inner.back() == '>')
+          inner.pop_back();
+        auto start = inner.find_first_not_of(' ');
+        if (start != std::string::npos)
+          inner = inner.substr(start);
+        auto end = inner.find_last_not_of(' ');
+        if (end != std::string::npos)
+          inner = inner.substr(0, end + 1);
+        if (inner == "i32" || inner == "I32")
+          return i32Type;
+        if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
           return i64Type;
-        if (isVecF64)
+        if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
           return builder.getF64Type();
-        if (isVec && !isBytes) {
-          // Parse element type name from "Vec<TypeName>"
-          auto inner = collType.substr(4);
-          if (!inner.empty() && inner.back() == '>')
-            inner.pop_back();
-          // Check for user-defined struct types
-          auto stIt = structTypes.find(inner);
-          if (stIt != structTypes.end() && stIt->second.mlirType)
-            return stIt->second.mlirType;
-        }
-        return i32Type;
+        if (inner == "string" || inner == "String" || inner == "str")
+          return hew::StringRefType::get(&context);
+        if (inner == "bool")
+          return builder.getI1Type();
+        if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
+          return ptrType;
+        auto stIt = structTypes.find(inner);
+        if (stIt != structTypes.end() && stIt->second.mlirType)
+          return stIt->second.mlirType;
+        return {};
       };
-      // Check if the Vec element is a user-defined struct
-      bool isVecStruct = false;
-      mlir::Type vecElemType = i32Type;
-      if (isVec && !isBytes) {
+      mlir::Type vecElemType;
+      if (isVec) {
         vecElemType = resolveVecElemType();
-        isVecStruct = mlir::isa<mlir::LLVM::LLVMStructType>(vecElemType);
+        if (!vecElemType) {
+          emitError(location) << "unsupported Vec element type in '" << collType << "'";
+          return nullptr;
+        }
       }
 
       // If receiver is !llvm.ptr (e.g. from actor state field), bitcast to
@@ -2328,7 +2573,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           auto stIt = structTypes.find(name);
           if (stIt != structTypes.end() && stIt->second.mlirType)
             return stIt->second.mlirType;
-          return i32Type;
+          return {};
         };
         if (isHashMap) {
           // Parse "HashMap<K, V>" into key and value type names
@@ -2339,152 +2584,51 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           if (comma != std::string::npos) {
             auto keyStr = inner.substr(0, comma);
             auto valStr = inner.substr(comma + 1);
+            auto keyStart = keyStr.find_first_not_of(' ');
+            if (keyStart != std::string::npos)
+              keyStr = keyStr.substr(keyStart);
+            auto keyEnd = keyStr.find_last_not_of(' ');
+            if (keyEnd != std::string::npos)
+              keyStr = keyStr.substr(0, keyEnd + 1);
             auto start = valStr.find_first_not_of(' ');
             if (start != std::string::npos)
               valStr = valStr.substr(start);
-            auto hmType =
-                hew::HashMapType::get(&context, resolveCollType(keyStr), resolveCollType(valStr));
-            receiver = builder.create<hew::BitcastOp>(location, hmType, receiver);
+            auto end = valStr.find_last_not_of(' ');
+            if (end != std::string::npos)
+              valStr = valStr.substr(0, end + 1);
+            auto keyType = resolveCollType(keyStr);
+            auto valueType = resolveCollType(valStr);
+            if (!keyType || !valueType) {
+              emitError(location) << "cannot resolve HashMap type from '" << collType << "'";
+              return nullptr;
+            }
+            auto hmType = hew::HashMapType::get(&context, keyType, valueType);
+            receiver = builder.create<hew::BitcastOp>(location, hmType, receiver).getResult();
+          } else {
+            emitError(location) << "cannot parse HashMap type from '" << collType << "'";
+            return nullptr;
           }
         } else if (isVec && !isBytes) {
           auto vecType = hew::VecType::get(&context, vecElemType);
-          receiver = builder.create<hew::BitcastOp>(location, vecType, receiver);
+          receiver = builder.create<hew::BitcastOp>(location, vecType, receiver).getResult();
         }
       }
 
       if (isVec) {
-        if (method == "push") {
-          auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!val)
-            return nullptr;
-          val = coerceType(val, vecElemType, location);
-          builder.create<hew::VecPushOp>(location, receiver, val);
-          return nullptr;
-        }
-        if (method == "get") {
-          auto idx = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!idx)
-            return nullptr;
-          if (idx.getType() != i64Type)
-            idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
-          auto getOp = builder.create<hew::VecGetOp>(location, vecElemType, receiver, idx);
-          return getOp.getResult();
-        }
-        if (method == "set") {
-          auto idx = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          auto val = generateExpression(ast::callArgExpr(mc.args[1]).value);
-          if (!idx || !val)
-            return nullptr;
-          if (idx.getType() != i64Type)
-            idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
-          val = coerceType(val, vecElemType, location);
-          builder.create<hew::VecSetOp>(location, receiver, idx, val);
-          return nullptr;
-        }
-        if (method == "pop") {
-          auto popOp = builder.create<hew::VecPopOp>(location, vecElemType, receiver);
-          return popOp.getResult();
-        }
-        if (method == "remove") {
-          if (!mc.args.empty()) {
-            auto argVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
-            if (!argVal)
-              return nullptr;
-            builder.create<hew::VecRemoveOp>(location, receiver, argVal);
-          }
-          return nullptr;
-        }
-        if (method == "len") {
-          auto lenOp = builder.create<hew::VecLenOp>(location, i64Type, receiver);
-          return lenOp.getResult();
-        }
-        if (method == "is_empty") {
-          return builder.create<hew::VecIsEmptyOp>(location, builder.getI1Type(), receiver)
-              .getResult();
-        }
-        if (method == "clear") {
-          builder.create<hew::VecClearOp>(location, receiver);
-          return nullptr;
-        }
-        if (method == "append" || method == "extend") {
-          if (mc.args.empty()) {
-            emitError(location) << ".append() requires one argument";
-            return nullptr;
-          }
-          auto src = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!src)
-            return nullptr;
-          auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_vec_append");
-          builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr,
-                                             mlir::ValueRange{receiver, src});
-          return nullptr;
-        }
-        if (method == "to_string") {
-          auto strType = hew::StringRefType::get(&context);
-          auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_bytes_to_string");
-          auto op = builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{strType},
-                                                       calleeAttr, mlir::ValueRange{receiver});
-          return op.getResult();
-        }
+        mlir::Value vecResult;
+        if (emitVecMethod(receiver, vecElemType, vecResult))
+          return vecResult;
       }
 
       if (isHashMap) {
-        if (method == "insert") {
-          auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          auto val = generateExpression(ast::callArgExpr(mc.args[1]).value);
-          if (!key || !val)
-            return nullptr;
-          val = coerceToHashMapValueType(val, collType, location);
-          builder.create<hew::HashMapInsertOp>(location, receiver, key, val);
+        if (auto hmType = mlir::dyn_cast<hew::HashMapType>(receiver.getType())) {
+          mlir::Value hmResult;
+          if (emitHashMapMethod(receiver, hmType.getKeyType(), hmType.getValueType(), hmResult))
+            return hmResult;
+        } else {
+          emitError(location) << "HashMap receiver has unresolved type for method '" << method
+                              << "' on '" << collType << "'";
           return nullptr;
-        }
-        if (method == "get") {
-          auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!key)
-            return nullptr;
-          mlir::Type resultMLIRType = i32Type;
-          bool valIsStr = collType.find(", string>") != std::string::npos ||
-                          collType.find(",string>") != std::string::npos ||
-                          collType.find(", String>") != std::string::npos ||
-                          collType.find(",String>") != std::string::npos;
-          bool valIsI64 = collType.find(", i64>") != std::string::npos ||
-                          collType.find(",i64>") != std::string::npos ||
-                          collType.find(", int>") != std::string::npos ||
-                          collType.find(",int>") != std::string::npos ||
-                          collType.find(", Int>") != std::string::npos ||
-                          collType.find(",Int>") != std::string::npos;
-          bool valIsF64 = collType.find(", f64>") != std::string::npos ||
-                          collType.find(",f64>") != std::string::npos ||
-                          collType.find(", float>") != std::string::npos ||
-                          collType.find(",float>") != std::string::npos ||
-                          collType.find(", Float>") != std::string::npos ||
-                          collType.find(",Float>") != std::string::npos;
-          if (valIsStr)
-            resultMLIRType = hew::StringRefType::get(&context);
-          else if (valIsI64)
-            resultMLIRType = builder.getIntegerType(64);
-          else if (valIsF64)
-            resultMLIRType = builder.getF64Type();
-          return builder.create<hew::HashMapGetOp>(location, resultMLIRType, receiver, key)
-              .getResult();
-        }
-        if (method == "contains_key") {
-          auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!key)
-            return nullptr;
-          auto result = builder.create<hew::HashMapContainsKeyOp>(location, i32Type, receiver, key);
-          return result.getResult();
-        }
-        if (method == "remove") {
-          auto key = generateExpression(ast::callArgExpr(mc.args[0]).value);
-          if (!key)
-            return nullptr;
-          builder.create<hew::HashMapRemoveOp>(location, receiver, key);
-          return nullptr;
-        }
-        if (method == "len") {
-          auto lenResult = builder.create<hew::HashMapLenOp>(location, i64Type, receiver);
-          return lenResult.getResult();
         }
       }
 

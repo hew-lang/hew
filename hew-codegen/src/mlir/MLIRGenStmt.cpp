@@ -516,11 +516,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
-    // Track collection variable types from type annotation (filled by enrich_program)
+    // Track HashMap variable types from type annotation for erased-pointer fallback.
     if (stmt.ty) {
       auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
       auto collStr = typeExprToCollectionString(stmt.ty->value, resolveAlias);
-      if (!collStr.empty())
+      if (collStr.rfind("HashMap<", 0) == 0)
         collectionVarTypes[varName] = collStr;
     }
 
@@ -691,11 +691,11 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
       streamHandleVarTypes[varNameStr] = streamStr;
   }
 
-  // Track collection variable types from type annotation (filled by enrich_program)
+  // Track HashMap variable types from type annotation for erased-pointer fallback.
   if (stmt.ty) {
     auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
     auto collStr = typeExprToCollectionString(stmt.ty->value, resolveAlias);
-    if (!collStr.empty())
+    if (collStr.rfind("HashMap<", 0) == 0)
       collectionVarTypes[varNameStr] = collStr;
   }
 
@@ -894,11 +894,58 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     return;
   }
 
-  // Handle indexed assignment: v[i] = x (for Vec types)
+  // Handle indexed assignment: v[i] = x
   if (auto *idx = std::get_if<ast::ExprIndex>(&stmt.target.value.kind)) {
+    auto collectionVal = generateExpression(idx->object->value);
+    auto indexVal = generateExpression(idx->index->value);
+    mlir::Value rhsVal = generateExpression(stmt.value.value);
+    if (!collectionVal || !indexVal || !rhsVal)
+      return;
+
+    auto i64Type = builder.getI64Type();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    if (indexVal.getType() != i64Type)
+      indexVal = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
+
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(collectionVal.getType())) {
+      rhsVal = coerceType(rhsVal, vecType.getElementType(), location);
+      builder.create<hew::VecSetOp>(location, collectionVal, indexVal, rhsVal);
+      return;
+    }
+
+    if (auto hewArrayType = mlir::dyn_cast<hew::HewArrayType>(collectionVal.getType())) {
+      auto *ie = std::get_if<ast::ExprIdentifier>(&idx->object->value.kind);
+      if (!ie) {
+        emitError(location) << "array indexed assignment requires a variable target";
+        return;
+      }
+      auto varSlot = mutableVars.lookup(intern(ie->name));
+      if (!varSlot) {
+        emitError(location) << "cannot assign index on immutable variable '" << ie->name << "'";
+        return;
+      }
+
+      rhsVal = coerceType(rhsVal, hewArrayType.getElementType(), location);
+      auto llvmArrayType =
+          mlir::LLVM::LLVMArrayType::get(hewArrayType.getElementType(), hewArrayType.getSize());
+      auto llvmArray = builder.create<hew::BitcastOp>(location, llvmArrayType, collectionVal);
+      auto one = builder.create<mlir::arith::ConstantIntOp>(location, 1, 64);
+      auto alloca =
+          builder.create<mlir::LLVM::AllocaOp>(location, ptrType, llvmArrayType, one.getResult());
+      builder.create<mlir::LLVM::StoreOp>(location, llvmArray, alloca);
+      auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
+      auto elemPtr = builder.create<mlir::LLVM::GEPOp>(
+          location, ptrType, llvmArrayType, alloca, mlir::ValueRange{zero.getResult(), indexVal});
+      builder.create<mlir::LLVM::StoreOp>(location, rhsVal, elemPtr);
+      auto updatedArray = builder.create<mlir::LLVM::LoadOp>(location, llvmArrayType, alloca);
+      auto updatedHewArray =
+          builder.create<hew::BitcastOp>(location, hewArrayType, updatedArray.getResult());
+      storeVariable(ie->name, updatedHewArray);
+      return;
+    }
+
     if (auto *ie = std::get_if<ast::ExprIdentifier>(&idx->object->value.kind)) {
       auto varName = ie->name;
-      // Check if the target is a Vec — prefer resolved type from the type checker
       std::string collStr;
       if (auto *typeExpr = resolvedTypeOf(idx->object->span))
         collStr = typeExprToCollectionString(
@@ -908,22 +955,50 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         if (colIt != collectionVarTypes.end())
           collStr = colIt->second;
       }
-      if (collStr.substr(0, 4) == "Vec<") {
-        auto vecPtr = lookupVariable(varName);
-        auto indexVal = generateExpression(idx->index->value);
-        mlir::Value rhsVal = generateExpression(stmt.value.value);
-        if (!vecPtr || !indexVal || !rhsVal)
+      if (collStr.rfind("Vec<", 0) == 0) {
+        auto inner = collStr.substr(4);
+        if (!inner.empty() && inner.back() == '>')
+          inner.pop_back();
+        auto start = inner.find_first_not_of(' ');
+        if (start != std::string::npos)
+          inner = inner.substr(start);
+        auto end = inner.find_last_not_of(' ');
+        if (end != std::string::npos)
+          inner = inner.substr(0, end + 1);
+
+        mlir::Type elemType;
+        if (inner == "i32" || inner == "I32")
+          elemType = builder.getI32Type();
+        else if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
+          elemType = builder.getI64Type();
+        else if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
+          elemType = builder.getF64Type();
+        else if (inner == "string" || inner == "String" || inner == "str")
+          elemType = hew::StringRefType::get(&context);
+        else if (inner == "bool")
+          elemType = builder.getI1Type();
+        else if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
+          elemType = ptrType;
+        else {
+          auto stIt = structTypes.find(inner);
+          if (stIt != structTypes.end() && stIt->second.mlirType)
+            elemType = stIt->second.mlirType;
+        }
+
+        if (!elemType) {
+          emitError(location) << "unsupported Vec element type '" << inner << "'";
           return;
-
-        auto i64Type = builder.getI64Type();
-        if (indexVal.getType() != i64Type)
-          indexVal = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
-
-        builder.create<hew::VecSetOp>(location, vecPtr, indexVal, rhsVal);
+        }
+        auto typedVec = builder
+                            .create<hew::BitcastOp>(location, hew::VecType::get(&context, elemType),
+                                                    collectionVal)
+                            .getResult();
+        rhsVal = coerceType(rhsVal, elemType, location);
+        builder.create<hew::VecSetOp>(location, typedVec, indexVal, rhsVal);
         return;
       }
     }
-    emitWarning(location) << "unsupported indexed assignment target";
+    emitError(location) << "unsupported indexed assignment target";
     return;
   }
 
@@ -1915,18 +1990,72 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   }
 
   // Check if this is a HashMap iteration
-  if (collType.rfind("HashMap<", 0) == 0) {
+  if (mlir::isa<hew::HashMapType>(collection.getType()) || collType.rfind("HashMap<", 0) == 0) {
     generateForHashMapStmt(stmt, collection, collType);
     return;
   }
 
-  bool isVecStr = collType == "Vec<string>" || collType == "Vec<String>" || collType == "Vec<str>";
-  bool isVecI64 = collType == "Vec<i64>";
-  bool isVecF64 = collType == "Vec<f64>";
-  bool isVecPtr = collType.find("Vec<ActorRef<") == 0;
+  mlir::Type typedVecElemType;
+  if (auto vecType = mlir::dyn_cast<hew::VecType>(collection.getType()))
+    typedVecElemType = vecType.getElementType();
+  auto typedArrayType = mlir::dyn_cast<hew::HewArrayType>(collection.getType());
+  mlir::Type typedArrayElemType;
+  if (typedArrayType)
+    typedArrayElemType = typedArrayType.getElementType();
+
+  auto resolveVecElemTypeFromString = [&]() -> mlir::Type {
+    if (collType == "bytes")
+      return i32Type;
+    if (collType.rfind("Vec<", 0) != 0)
+      return {};
+    auto inner = collType.substr(4);
+    if (!inner.empty() && inner.back() == '>')
+      inner.pop_back();
+    auto start = inner.find_first_not_of(' ');
+    if (start != std::string::npos)
+      inner = inner.substr(start);
+    auto end = inner.find_last_not_of(' ');
+    if (end != std::string::npos)
+      inner = inner.substr(0, end + 1);
+    if (inner == "i32" || inner == "I32")
+      return i32Type;
+    if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
+      return i64Type;
+    if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
+      return builder.getF64Type();
+    if (inner == "string" || inner == "String" || inner == "str")
+      return hew::StringRefType::get(&context);
+    if (inner == "bool")
+      return i1Type;
+    if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
+      return ptrType;
+    auto stIt = structTypes.find(inner);
+    if (stIt != structTypes.end() && stIt->second.mlirType)
+      return stIt->second.mlirType;
+    return {};
+  };
+  mlir::Type stringVecElemType;
+  if (!typedVecElemType)
+    stringVecElemType = resolveVecElemTypeFromString();
+  bool isVecPtr = typedVecElemType ? mlir::isa<mlir::LLVM::LLVMPointerType>(typedVecElemType)
+                                   : (collType.find("Vec<ActorRef<") == 0 ||
+                                      collType.find("Vec<TypedActorRef<") == 0);
 
   // Get collection length
-  mlir::Value len = builder.create<hew::VecLenOp>(location, i64Type, collection);
+  mlir::Value len;
+  mlir::Value arrayAlloca;
+  mlir::LLVM::LLVMArrayType arrayStorageType;
+  if (typedArrayType) {
+    len = createIntConstant(builder, location, i64Type, typedArrayType.getSize());
+    arrayStorageType = mlir::LLVM::LLVMArrayType::get(typedArrayElemType, typedArrayType.getSize());
+    auto llvmArray = builder.create<hew::BitcastOp>(location, arrayStorageType, collection);
+    auto one = builder.create<mlir::arith::ConstantIntOp>(location, 1, 64);
+    arrayAlloca =
+        builder.create<mlir::LLVM::AllocaOp>(location, ptrType, arrayStorageType, one.getResult());
+    builder.create<mlir::LLVM::StoreOp>(location, llvmArray, arrayAlloca);
+  } else {
+    len = builder.create<hew::VecLenOp>(location, i64Type, collection);
+  }
 
   // Create index alloca (i64), initialized to 0
   auto memrefI64 = mlir::MemRefType::get({}, i64Type);
@@ -1990,17 +2119,21 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     mlir::Value elem;
     {
       mlir::Type elemType;
-      if (isVecStr)
-        elemType = hew::StringRefType::get(&context);
-      else if (isVecPtr)
-        elemType = ptrType;
-      else if (isVecI64)
-        elemType = builder.getI64Type();
-      else if (isVecF64)
-        elemType = builder.getF64Type();
-      else
-        elemType = i32Type;
-      elem = builder.create<hew::VecGetOp>(location, elemType, collection, idx);
+      if (typedArrayType) {
+        auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
+        auto elemPtr =
+            builder.create<mlir::LLVM::GEPOp>(location, ptrType, arrayStorageType, arrayAlloca,
+                                              mlir::ValueRange{zero.getResult(), idx});
+        elem = builder.create<mlir::LLVM::LoadOp>(location, typedArrayElemType, elemPtr);
+      } else {
+        elemType = typedVecElemType ? typedVecElemType : stringVecElemType;
+        if (!elemType) {
+          emitError(location) << "unsupported for-loop Vec element type for iterable '" << collType
+                              << "'";
+          return;
+        }
+        elem = builder.create<hew::VecGetOp>(location, elemType, collection, idx);
+      }
     }
 
     // Bind element to the pattern variable
@@ -2049,12 +2182,18 @@ void MLIRGen::generateForHashMapStmt(const ast::StmtFor &stmt, mlir::Value colle
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i64Type = builder.getI64Type();
-  auto i32Type = builder.getI32Type();
   auto i1Type = builder.getI1Type();
 
-  // Parse value type from "HashMap<keyType,valueType>"
-  std::string valType;
-  {
+  mlir::Type hmKeyType;
+  mlir::Type hmValType;
+  bool hasTypedHashMap = false;
+  if (auto hmType = llvm::dyn_cast<hew::HashMapType>(collection.getType())) {
+    hasTypedHashMap = true;
+    hmKeyType = hmType.getKeyType();
+    hmValType = hmType.getValueType();
+  } else {
+    hmKeyType = hew::StringRefType::get(&context);
+    std::string valType;
     auto comma = collType.find(',');
     if (comma != std::string::npos) {
       auto rest = collType.substr(comma + 1);
@@ -2065,12 +2204,27 @@ void MLIRGen::generateForHashMapStmt(const ast::StmtFor &stmt, mlir::Value colle
         rest.pop_back();
       valType = rest;
     }
+    if (valType == "string" || valType == "String" || valType == "str") {
+      hmValType = hew::StringRefType::get(&context);
+    } else if (valType == "i64" || valType == "int" || valType == "Int") {
+      hmValType = i64Type;
+    } else if (valType == "f64" || valType == "float" || valType == "Float") {
+      hmValType = builder.getF64Type();
+    } else if (valType == "i32" || valType == "I32") {
+      hmValType = builder.getI32Type();
+    } else if (valType == "bool") {
+      hmValType = i1Type;
+    } else {
+      emitError(location)
+          << "cannot determine HashMap value type for iteration; add explicit type annotation";
+      return;
+    }
   }
 
   // Get keys as a Vec<K> via hew_hashmap_keys(map) -> !hew.vec<K>
   mlir::Type keysResultType = ptrType;
-  if (auto hmType = llvm::dyn_cast<hew::HashMapType>(collection.getType()))
-    keysResultType = hew::VecType::get(&context, hmType.getKeyType());
+  if (hasTypedHashMap)
+    keysResultType = hew::VecType::get(&context, hmKeyType);
   auto keysVec =
       builder.create<hew::HashMapKeysOp>(location, keysResultType, collection).getResult();
 
@@ -2134,25 +2288,10 @@ void MLIRGen::generateForHashMapStmt(const ast::StmtFor &stmt, mlir::Value colle
     mlir::Value idx =
         builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
 
-    // Get key from keys vec (always string)
-    mlir::Value key =
-        builder.create<hew::VecGetOp>(location, hew::StringRefType::get(&context), keysVec, idx);
-
-    // Get value from hashmap using the key
-    mlir::Value val;
-    {
-      mlir::Type hmValType;
-      if (valType == "string" || valType == "String" || valType == "str") {
-        hmValType = hew::StringRefType::get(&context);
-      } else if (valType == "i64" || valType == "int" || valType == "Int") {
-        hmValType = i64Type;
-      } else if (valType == "f64" || valType == "float" || valType == "Float") {
-        hmValType = builder.getF64Type();
-      } else {
-        hmValType = i32Type;
-      }
-      val = builder.create<hew::HashMapGetOp>(location, hmValType, collection, key).getResult();
-    }
+    // Get key and value from hashmap
+    mlir::Value key = builder.create<hew::VecGetOp>(location, hmKeyType, keysVec, idx);
+    mlir::Value val =
+        builder.create<hew::HashMapGetOp>(location, hmValType, collection, key).getResult();
 
     // Bind variables from the pattern
     if (auto *tuplePat = std::get_if<ast::PatTuple>(&stmt.pattern.value.kind)) {

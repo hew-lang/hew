@@ -78,6 +78,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
     for (const auto &field : decl.fields) {
       StructFieldInfo fi;
       fi.name = field.name;
+      fi.semanticType = fieldHewTypes[i];
       fi.type = fieldTypes[i];
       fi.index = i;
       stInfo.fields.push_back(std::move(fi));
@@ -547,11 +548,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           if (!actorName.empty())
             actorVarTypes[param.name] = actorName;
         }
-        // Register collection parameters (bytes, Vec<T>, HashMap<K,V>)
+        // Register HashMap parameters for erased-pointer fallback dispatch.
         {
           auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
           auto collStr = typeExprToCollectionString(param.ty.value, resolveAlias);
-          if (!collStr.empty())
+          if (collStr.rfind("HashMap<", 0) == 0)
             collectionVarTypes[param.name] = collStr;
         }
         ++pi;
@@ -966,6 +967,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     stateFields.push_back(ty);
     StructFieldInfo fi;
     fi.name = capturedVars[i].name;
+    fi.semanticType = capturedVars[i].value.getType();
     fi.type = ty;
     fi.index = static_cast<unsigned>(i);
     stInfo.fields.push_back(std::move(fi));

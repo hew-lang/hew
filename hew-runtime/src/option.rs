@@ -5,6 +5,11 @@
 
 use std::ffi::{c_char, c_void};
 
+use crate::tagged_union::{
+    decode_const_ptr, decode_f64, decode_i32, decode_i64, decode_mut_ptr, encode_f64, encode_i32,
+    encode_i64, encode_ptr, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
+};
+
 /// ABI-stable `Option<T>` representation.
 ///
 /// `tag == 0` → None, `tag == 1` → Some. The `value` field holds the payload
@@ -27,7 +32,7 @@ pub struct HewOption {
 #[no_mangle]
 pub extern "C" fn hew_option_none() -> HewOption {
     HewOption {
-        tag: 0,
+        tag: TAG_VARIANT_0,
         _pad: 0,
         value: 0,
     }
@@ -35,29 +40,21 @@ pub extern "C" fn hew_option_none() -> HewOption {
 
 /// Create a `Some(i32)` option.
 #[no_mangle]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "bit-preserving storage of i32 in u64 union field"
-)]
 pub extern "C" fn hew_option_some_i32(val: i32) -> HewOption {
     HewOption {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         _pad: 0,
-        value: val as u64,
+        value: encode_i32(val),
     }
 }
 
 /// Create a `Some(i64)` option.
 #[no_mangle]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "bit-preserving storage of i64 in u64 union field"
-)]
 pub extern "C" fn hew_option_some_i64(val: i64) -> HewOption {
     HewOption {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         _pad: 0,
-        value: val as u64,
+        value: encode_i64(val),
     }
 }
 
@@ -65,9 +62,9 @@ pub extern "C" fn hew_option_some_i64(val: i64) -> HewOption {
 #[no_mangle]
 pub extern "C" fn hew_option_some_f64(val: f64) -> HewOption {
     HewOption {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         _pad: 0,
-        value: val.to_bits(),
+        value: encode_f64(val),
     }
 }
 
@@ -80,9 +77,9 @@ pub extern "C" fn hew_option_some_f64(val: f64) -> HewOption {
 #[no_mangle]
 pub unsafe extern "C" fn hew_option_some_ptr(val: *mut c_void) -> HewOption {
     HewOption {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         _pad: 0,
-        value: val as u64,
+        value: encode_ptr(val),
     }
 }
 
@@ -93,13 +90,13 @@ pub unsafe extern "C" fn hew_option_some_ptr(val: *mut c_void) -> HewOption {
 /// Returns 1 if the option is `Some`, 0 if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_is_some(opt: HewOption) -> i32 {
-    i32::from(opt.tag == 1)
+    i32::from(is_variant_1(opt.tag))
 }
 
 /// Returns 1 if the option is `None`, 0 if `Some`.
 #[no_mangle]
 pub extern "C" fn hew_option_is_none(opt: HewOption) -> i32 {
-    i32::from(opt.tag == 0)
+    i32::from(is_variant_0(opt.tag))
 }
 
 // ---------------------------------------------------------------------------
@@ -108,40 +105,32 @@ pub extern "C" fn hew_option_is_none(opt: HewOption) -> i32 {
 
 /// Unwrap the i32 value. Aborts if `None`.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "retrieving i32 from u64 union field — was stored as i32"
-)]
 pub extern "C" fn hew_option_unwrap_i32(opt: HewOption) -> i32 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         eprintln!("hew: unwrap called on None");
         std::process::abort();
     }
-    opt.value as i32
+    decode_i32(opt.value)
 }
 
 /// Unwrap the i64 value. Aborts if `None`.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "retrieving i64 from u64 union field — was stored as i64"
-)]
 pub extern "C" fn hew_option_unwrap_i64(opt: HewOption) -> i64 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         eprintln!("hew: unwrap called on None");
         std::process::abort();
     }
-    opt.value as i64
+    decode_i64(opt.value)
 }
 
 /// Unwrap the f64 value. Aborts if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_f64(opt: HewOption) -> f64 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         eprintln!("hew: unwrap called on None");
         std::process::abort();
     }
-    f64::from_bits(opt.value)
+    decode_f64(opt.value)
 }
 
 /// Unwrap the pointer value. Aborts if `None`.
@@ -151,12 +140,12 @@ pub extern "C" fn hew_option_unwrap_f64(opt: HewOption) -> f64 {
 /// Caller must ensure the original pointer is still valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_option_unwrap_ptr(opt: HewOption) -> *mut c_void {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         eprintln!("hew: unwrap called on None");
         std::process::abort();
     }
     // SAFETY: caller guarantees the stored pointer is valid.
-    opt.value as *mut c_void
+    decode_mut_ptr(opt.value)
 }
 
 // ---------------------------------------------------------------------------
@@ -165,39 +154,31 @@ pub unsafe extern "C" fn hew_option_unwrap_ptr(opt: HewOption) -> *mut c_void {
 
 /// Unwrap i32 or return `default` if `None`.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "retrieving i32 from u64 union field — was stored as i32"
-)]
 pub extern "C" fn hew_option_unwrap_or_i32(opt: HewOption, default: i32) -> i32 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         default
     } else {
-        opt.value as i32
+        decode_i32(opt.value)
     }
 }
 
 /// Unwrap i64 or return `default` if `None`.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "retrieving i64 from u64 union field — was stored as i64"
-)]
 pub extern "C" fn hew_option_unwrap_or_i64(opt: HewOption, default: i64) -> i64 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         default
     } else {
-        opt.value as i64
+        decode_i64(opt.value)
     }
 }
 
 /// Unwrap f64 or return `default` if `None`.
 #[no_mangle]
 pub extern "C" fn hew_option_unwrap_or_f64(opt: HewOption, default: f64) -> f64 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         default
     } else {
-        f64::from_bits(opt.value)
+        decode_f64(opt.value)
     }
 }
 
@@ -211,11 +192,11 @@ pub unsafe extern "C" fn hew_option_unwrap_or_ptr(
     opt: HewOption,
     default: *mut c_void,
 ) -> *mut c_void {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         default
     } else {
         // SAFETY: caller guarantees stored pointer validity.
-        opt.value as *mut c_void
+        decode_mut_ptr(opt.value)
     }
 }
 
@@ -229,39 +210,30 @@ pub unsafe extern "C" fn hew_option_unwrap_or_ptr(
 ///
 /// `f` must be a valid function pointer.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "i32 ↔ u64 round-trip through tagged union field"
-)]
 pub unsafe extern "C" fn hew_option_map_i32(
     opt: HewOption,
     f: unsafe extern "C" fn(i32) -> i32,
 ) -> HewOption {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         opt
     } else {
         // SAFETY: caller guarantees `f` is valid.
-        let result = unsafe { f(opt.value as i32) };
+        let result = unsafe { f(decode_i32(opt.value)) };
         HewOption {
-            tag: 1,
+            tag: TAG_VARIANT_1,
             _pad: 0,
-            value: result as u64,
+            value: encode_i32(result),
         }
     }
 }
 
 /// Returns 1 if `Some` and the value equals `needle`, 0 otherwise.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "retrieving i32 from u64 union field — was stored as i32"
-)]
 pub extern "C" fn hew_option_contains_i32(opt: HewOption, needle: i32) -> i32 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         0
     } else {
-        i32::from(opt.value as i32 == needle)
+        i32::from(decode_i32(opt.value) == needle)
     }
 }
 
@@ -272,10 +244,10 @@ pub extern "C" fn hew_option_contains_i32(opt: HewOption, needle: i32) -> i32 {
 /// Both the stored pointer and `needle` must be valid C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_option_contains_str(opt: HewOption, needle: *const c_char) -> i32 {
-    if opt.tag == 0 {
+    if is_variant_0(opt.tag) {
         return 0;
     }
-    let stored = opt.value as *const c_char;
+    let stored = decode_const_ptr::<c_char>(opt.value);
     if stored.is_null() || needle.is_null() {
         return i32::from(stored.is_null() && needle.is_null());
     }
@@ -293,15 +265,14 @@ pub unsafe extern "C" fn hew_option_contains_str(opt: HewOption, needle: *const 
 #[no_mangle]
 #[expect(
     clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_sign_loss,
-    reason = "C ABI function — caller guarantees pointer validity; bit-preserving i32→u64"
+    reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_option_replace_i32(opt: *mut HewOption, new_val: i32) -> HewOption {
     // SAFETY: caller guarantees `opt` points to a valid HewOption.
     let o = unsafe { &mut *opt };
     let old = *o;
-    if o.tag == 1 {
-        o.value = new_val as u64;
+    if is_variant_1(o.tag) {
+        o.value = encode_i32(new_val);
     }
     old
 }
@@ -320,7 +291,7 @@ pub extern "C" fn hew_option_take(opt: *mut HewOption) -> HewOption {
     // SAFETY: caller guarantees `opt` points to a valid HewOption.
     let o = unsafe { &mut *opt };
     let old = *o;
-    o.tag = 0;
+    o.tag = TAG_VARIANT_0;
     o.value = 0;
     old
 }

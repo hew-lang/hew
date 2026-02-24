@@ -28,6 +28,19 @@
 //! - `profiler` — built-in profiler dashboard and pprof export
 //! - `export-meta` — emit `__hew_export_meta_*` companion functions
 
+macro_rules! cabi_guard {
+    ($cond:expr) => {
+        if $cond {
+            return;
+        }
+    };
+    ($cond:expr, $default:expr) => {
+        if $cond {
+            return $default;
+        }
+    };
+}
+
 // Profiler (must be declared before other modules so the global
 // allocator is installed before any allocations occur).
 // Not available on WASM — profiler requires HTTP server for dashboard.
@@ -87,6 +100,7 @@ pub mod string;
 pub mod vec;
 
 pub mod internal;
+mod tagged_union;
 
 // On WASM, provide a minimal arena stub — no per-actor scoping, just malloc.
 #[cfg(target_arch = "wasm32")]

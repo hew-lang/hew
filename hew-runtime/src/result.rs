@@ -7,6 +7,11 @@
 use std::ffi::{c_char, c_void};
 use std::ptr;
 
+use crate::tagged_union::{
+    decode_f64, decode_i32, decode_i64, decode_mut_ptr, encode_f64, encode_i32, encode_i64,
+    encode_ptr, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
+};
+
 /// ABI-stable `Result<T, E>` representation.
 ///
 /// `tag == 0` → Ok, `tag == 1` → Err.
@@ -32,30 +37,22 @@ pub struct HewResult {
 
 /// Create an `Ok(i32)` result.
 #[no_mangle]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "bit-preserving storage of i32 in u64 union field"
-)]
 pub extern "C" fn hew_result_ok_i32(val: i32) -> HewResult {
     HewResult {
-        tag: 0,
+        tag: TAG_VARIANT_0,
         error_code: 0,
-        value: val as u64,
+        value: encode_i32(val),
         error_msg: ptr::null_mut(),
     }
 }
 
 /// Create an `Ok(i64)` result.
 #[no_mangle]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "bit-preserving storage of i64 in u64 union field"
-)]
 pub extern "C" fn hew_result_ok_i64(val: i64) -> HewResult {
     HewResult {
-        tag: 0,
+        tag: TAG_VARIANT_0,
         error_code: 0,
-        value: val as u64,
+        value: encode_i64(val),
         error_msg: ptr::null_mut(),
     }
 }
@@ -64,9 +61,9 @@ pub extern "C" fn hew_result_ok_i64(val: i64) -> HewResult {
 #[no_mangle]
 pub extern "C" fn hew_result_ok_f64(val: f64) -> HewResult {
     HewResult {
-        tag: 0,
+        tag: TAG_VARIANT_0,
         error_code: 0,
-        value: val.to_bits(),
+        value: encode_f64(val),
         error_msg: ptr::null_mut(),
     }
 }
@@ -79,9 +76,9 @@ pub extern "C" fn hew_result_ok_f64(val: f64) -> HewResult {
 #[no_mangle]
 pub unsafe extern "C" fn hew_result_ok_ptr(val: *mut c_void) -> HewResult {
     HewResult {
-        tag: 0,
+        tag: TAG_VARIANT_0,
         error_code: 0,
-        value: val as u64,
+        value: encode_ptr(val),
         error_msg: ptr::null_mut(),
     }
 }
@@ -106,7 +103,7 @@ pub unsafe extern "C" fn hew_result_err(code: i32, msg: *const c_char) -> HewRes
         unsafe { libc::strdup(msg) }
     };
     HewResult {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         error_code: code,
         value: 0,
         error_msg: owned_msg,
@@ -117,7 +114,7 @@ pub unsafe extern "C" fn hew_result_err(code: i32, msg: *const c_char) -> HewRes
 #[no_mangle]
 pub extern "C" fn hew_result_err_code(code: i32) -> HewResult {
     HewResult {
-        tag: 1,
+        tag: TAG_VARIANT_1,
         error_code: code,
         value: 0,
         error_msg: ptr::null_mut(),
@@ -141,7 +138,7 @@ pub extern "C" fn hew_result_err_code(code: i32) -> HewResult {
 pub extern "C" fn hew_result_is_ok(res: *const HewResult) -> i32 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    i32::from(r.tag == 0)
+    i32::from(is_variant_0(r.tag))
 }
 
 /// Returns 1 if the result is `Err`, 0 if `Ok`.
@@ -157,7 +154,7 @@ pub extern "C" fn hew_result_is_ok(res: *const HewResult) -> i32 {
 pub extern "C" fn hew_result_is_err(res: *const HewResult) -> i32 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    i32::from(r.tag == 1)
+    i32::from(is_variant_1(r.tag))
 }
 
 // ---------------------------------------------------------------------------
@@ -172,16 +169,15 @@ pub extern "C" fn hew_result_is_err(res: *const HewResult) -> i32 {
 #[no_mangle]
 #[expect(
     clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_possible_truncation,
-    reason = "C ABI function — caller guarantees pointer validity; retrieving i32 from u64 union field"
+    reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_result_unwrap_i32(res: *const HewResult) -> i32 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 1 {
+    if is_variant_1(r.tag) {
         abort_with_error(r);
     }
-    r.value as i32
+    decode_i32(r.value)
 }
 
 /// Unwrap the i64 value. Aborts with error message if `Err`.
@@ -192,16 +188,15 @@ pub extern "C" fn hew_result_unwrap_i32(res: *const HewResult) -> i32 {
 #[no_mangle]
 #[expect(
     clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_possible_wrap,
-    reason = "C ABI function — caller guarantees pointer validity; retrieving i64 from u64 union field"
+    reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_result_unwrap_i64(res: *const HewResult) -> i64 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 1 {
+    if is_variant_1(r.tag) {
         abort_with_error(r);
     }
-    r.value as i64
+    decode_i64(r.value)
 }
 
 /// Unwrap the f64 value. Aborts with error message if `Err`.
@@ -217,10 +212,10 @@ pub extern "C" fn hew_result_unwrap_i64(res: *const HewResult) -> i64 {
 pub extern "C" fn hew_result_unwrap_f64(res: *const HewResult) -> f64 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 1 {
+    if is_variant_1(r.tag) {
         abort_with_error(r);
     }
-    f64::from_bits(r.value)
+    decode_f64(r.value)
 }
 
 /// Unwrap the pointer value. Aborts with error message if `Err`.
@@ -232,10 +227,10 @@ pub extern "C" fn hew_result_unwrap_f64(res: *const HewResult) -> f64 {
 pub unsafe extern "C" fn hew_result_unwrap_ptr(res: *const HewResult) -> *mut c_void {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 1 {
+    if is_variant_1(r.tag) {
         abort_with_error(r);
     }
-    r.value as *mut c_void
+    decode_mut_ptr(r.value)
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +250,7 @@ pub unsafe extern "C" fn hew_result_unwrap_ptr(res: *const HewResult) -> *mut c_
 pub extern "C" fn hew_result_error_code(res: *const HewResult) -> i32 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 0 {
+    if is_variant_0(r.tag) {
         0
     } else {
         r.error_code
@@ -277,7 +272,7 @@ pub extern "C" fn hew_result_error_code(res: *const HewResult) -> i32 {
 pub extern "C" fn hew_result_error_msg(res: *const HewResult) -> *const c_char {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 0 {
+    if is_variant_0(r.tag) {
         ptr::null()
     } else {
         r.error_msg.cast_const()
@@ -296,14 +291,13 @@ pub extern "C" fn hew_result_error_msg(res: *const HewResult) -> *const c_char {
 #[no_mangle]
 #[expect(
     clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_possible_truncation,
-    reason = "C ABI function — caller guarantees pointer validity; retrieving i32 from u64 union field"
+    reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_result_unwrap_or_i32(res: *const HewResult, default: i32) -> i32 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 0 {
-        r.value as i32
+    if is_variant_0(r.tag) {
+        decode_i32(r.value)
     } else {
         default
     }
@@ -317,14 +311,13 @@ pub extern "C" fn hew_result_unwrap_or_i32(res: *const HewResult, default: i32) 
 #[no_mangle]
 #[expect(
     clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_possible_wrap,
-    reason = "C ABI function — caller guarantees pointer validity; retrieving i64 from u64 union field"
+    reason = "C ABI function — caller guarantees pointer validity"
 )]
 pub extern "C" fn hew_result_unwrap_or_i64(res: *const HewResult, default: i64) -> i64 {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 0 {
-        r.value as i64
+    if is_variant_0(r.tag) {
+        decode_i64(r.value)
     } else {
         default
     }
@@ -363,18 +356,13 @@ pub unsafe extern "C" fn hew_result_free(res: *mut HewResult) {
 ///
 /// `f` must be a valid function pointer.
 #[no_mangle]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "i32 ↔ u64 round-trip through tagged union field"
-)]
 pub unsafe extern "C" fn hew_result_map_i32(
     res: *const HewResult,
     f: unsafe extern "C" fn(i32) -> i32,
 ) -> HewResult {
     // SAFETY: caller guarantees `res` is valid.
     let r = unsafe { &*res };
-    if r.tag == 1 {
+    if is_variant_1(r.tag) {
         // Clone the Err — duplicate the message string.
         let cloned_msg = if r.error_msg.is_null() {
             ptr::null_mut()
@@ -383,18 +371,18 @@ pub unsafe extern "C" fn hew_result_map_i32(
             unsafe { libc::strdup(r.error_msg) }
         };
         HewResult {
-            tag: 1,
+            tag: TAG_VARIANT_1,
             error_code: r.error_code,
             value: 0,
             error_msg: cloned_msg,
         }
     } else {
         // SAFETY: caller guarantees `f` is valid.
-        let mapped = unsafe { f(r.value as i32) };
+        let mapped = unsafe { f(decode_i32(r.value)) };
         HewResult {
-            tag: 0,
+            tag: TAG_VARIANT_0,
             error_code: 0,
-            value: mapped as u64,
+            value: encode_i32(mapped),
             error_msg: ptr::null_mut(),
         }
     }

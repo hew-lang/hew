@@ -422,6 +422,35 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
     }
 }
 
+fn accept_with_optional_timeout(listen_sock: &Socket, timeout_ms: c_int) -> Option<(Socket, bool)> {
+    if timeout_ms >= 0 {
+        let _ = listen_sock.set_nonblocking(true);
+        #[expect(clippy::cast_sign_loss, reason = "guarded by >= 0")]
+        let dur = std::time::Duration::from_millis(timeout_ms as u64);
+        let start = std::time::Instant::now();
+        loop {
+            match listen_sock.accept() {
+                Ok((conn, _)) => {
+                    let _ = listen_sock.set_nonblocking(false);
+                    return Some((conn, true));
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if start.elapsed() >= dur {
+                        let _ = listen_sock.set_nonblocking(false);
+                        return None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(_) => {
+                    let _ = listen_sock.set_nonblocking(false);
+                    return None;
+                }
+            }
+        }
+    }
+    listen_sock.accept().ok().map(|(conn, _)| (conn, false))
+}
+
 // ---- TCP vtable callbacks --------------------------------------------------
 
 unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
@@ -488,43 +517,14 @@ unsafe extern "C" fn tcp_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
         return HEW_CONN_INVALID;
     };
 
-    // Apply timeout via poll.
-    if timeout_ms >= 0 {
-        let _ = listen_sock.set_nonblocking(true);
-        #[expect(clippy::cast_sign_loss, reason = "guarded by >= 0")]
-        let dur = std::time::Duration::from_millis(timeout_ms as u64);
-        let start = std::time::Instant::now();
-        loop {
-            match listen_sock.accept() {
-                Ok((conn, _)) => {
-                    let _ = listen_sock.set_nonblocking(false);
-                    let _ = conn.set_tcp_nodelay(true);
-                    let _ = conn.set_nonblocking(false);
-                    return tcp.store_conn(conn);
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if start.elapsed() >= dur {
-                        let _ = listen_sock.set_nonblocking(false);
-                        return HEW_CONN_INVALID;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(_) => {
-                    let _ = listen_sock.set_nonblocking(false);
-                    return HEW_CONN_INVALID;
-                }
-            }
-        }
+    let Some((conn, used_timeout)) = accept_with_optional_timeout(listen_sock, timeout_ms) else {
+        return HEW_CONN_INVALID;
+    };
+    let _ = conn.set_tcp_nodelay(true);
+    if used_timeout {
+        let _ = conn.set_nonblocking(false);
     }
-
-    // No timeout — blocking accept.
-    match listen_sock.accept() {
-        Ok((conn, _)) => {
-            let _ = conn.set_tcp_nodelay(true);
-            tcp.store_conn(conn)
-        }
-        Err(_) => HEW_CONN_INVALID,
-    }
+    tcp.store_conn(conn)
 }
 
 unsafe extern "C" fn tcp_send(
@@ -1017,8 +1017,8 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
 #[cfg(unix)]
 mod unix_transport {
     use super::{
-        c_char, c_int, c_void, framed_recv, framed_send, CStr, Domain, HewTransport,
-        HewTransportOps, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
+        accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send, CStr,
+        Domain, HewTransport, HewTransportOps, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
     };
 
     /// Internal state for the Unix domain socket transport.
@@ -1149,36 +1149,13 @@ mod unix_transport {
             return HEW_CONN_INVALID;
         };
 
-        if timeout_ms >= 0 {
-            let _ = listen_sock.set_nonblocking(true);
-            #[expect(clippy::cast_sign_loss, reason = "guarded by >= 0")]
-            let dur = std::time::Duration::from_millis(timeout_ms as u64);
-            let start = std::time::Instant::now();
-            loop {
-                match listen_sock.accept() {
-                    Ok((conn, _)) => {
-                        let _ = listen_sock.set_nonblocking(false);
-                        let _ = conn.set_nonblocking(false);
-                        return ut.store_conn(conn);
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if start.elapsed() >= dur {
-                            let _ = listen_sock.set_nonblocking(false);
-                            return HEW_CONN_INVALID;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                    Err(_) => {
-                        let _ = listen_sock.set_nonblocking(false);
-                        return HEW_CONN_INVALID;
-                    }
-                }
+        match accept_with_optional_timeout(listen_sock, timeout_ms) {
+            Some((conn, true)) => {
+                let _ = conn.set_nonblocking(false);
+                ut.store_conn(conn)
             }
-        }
-
-        match listen_sock.accept() {
-            Ok((conn, _)) => ut.store_conn(conn),
-            Err(_) => HEW_CONN_INVALID,
+            Some((conn, false)) => ut.store_conn(conn),
+            None => HEW_CONN_INVALID,
         }
     }
 

@@ -611,9 +611,7 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
 /// `v` must be a valid i32 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_sort_i32(v: *mut HewVec) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid i32 HewVec.
     unsafe {
         let len = (*v).len;
@@ -632,9 +630,7 @@ pub unsafe extern "C" fn hew_vec_sort_i32(v: *mut HewVec) {
 /// `v` must be a valid i64 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_sort_i64(v: *mut HewVec) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid i64 HewVec.
     unsafe {
         let len = (*v).len;
@@ -653,9 +649,7 @@ pub unsafe extern "C" fn hew_vec_sort_i64(v: *mut HewVec) {
 /// `v` must be a valid f64 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid f64 HewVec.
     unsafe {
         let len = (*v).len;
@@ -679,9 +673,7 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
-    if v.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(v.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let src = &*v;
@@ -722,9 +714,7 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
 /// Both `dst` and `src` must be valid `HewVec` pointers (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
-    if dst.is_null() || src.is_null() {
-        return;
-    }
+    cabi_guard!(dst.is_null() || src.is_null());
     // SAFETY: caller guarantees both pointers are valid HewVecs with matching elem_size.
     unsafe {
         let src_len = (*src).len;
@@ -762,9 +752,7 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
 /// `v` must be a valid i32 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_contains_i32(v: *const HewVec, val: i32) -> i32 {
-    if v.is_null() {
-        return 0;
-    }
+    cabi_guard!(v.is_null(), 0);
     // SAFETY: caller guarantees `v` is a valid i32 HewVec.
     unsafe {
         let len = (*v).len;
@@ -786,9 +774,7 @@ pub unsafe extern "C" fn hew_vec_contains_i32(v: *const HewVec, val: i32) -> i32
 /// `v` must be a valid i32 `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_i32(v: *mut HewVec, val: i32) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid i32 HewVec.
     unsafe {
         let len = (*v).len;
@@ -812,9 +798,7 @@ pub unsafe extern "C" fn hew_vec_remove_i32(v: *mut HewVec, val: i32) {
 /// `v` must be a valid i64 `HewVec` pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_i64(v: *mut HewVec, val: i64) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid i64 HewVec.
     unsafe {
         let len = (*v).len;
@@ -838,9 +822,7 @@ pub unsafe extern "C" fn hew_vec_remove_i64(v: *mut HewVec, val: i64) {
 /// `v` must be a valid pointer `HewVec`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid pointer HewVec.
     unsafe {
         let len = (*v).len;
@@ -862,9 +844,7 @@ pub unsafe extern "C" fn hew_vec_remove_ptr(v: *mut HewVec, val: *mut c_void) {
 /// `v` must be a valid i64 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32 {
-    if v.is_null() {
-        return 0;
-    }
+    cabi_guard!(v.is_null(), 0);
     // SAFETY: caller guarantees `v` is a valid i64 HewVec.
     unsafe {
         let len = (*v).len;
@@ -889,9 +869,7 @@ pub unsafe extern "C" fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32
     reason = "C ABI semantics: exact f64 equality match is intentional"
 )]
 pub unsafe extern "C" fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32 {
-    if v.is_null() {
-        return 0;
-    }
+    cabi_guard!(v.is_null(), 0);
     // SAFETY: caller guarantees `v` is a valid f64 HewVec.
     unsafe {
         let len = (*v).len;
@@ -913,9 +891,7 @@ pub unsafe extern "C" fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32
 /// `val` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_contains_str(v: *const HewVec, val: *const c_char) -> i32 {
-    if v.is_null() || val.is_null() {
-        return 0;
-    }
+    cabi_guard!(v.is_null() || val.is_null(), 0);
     // SAFETY: caller guarantees `v` is a valid string HewVec and `val` is valid.
     unsafe {
         let len = (*v).len;
@@ -941,9 +917,7 @@ pub unsafe extern "C" fn hew_vec_contains_str(v: *const HewVec, val: *const c_ch
 /// `v` must be a valid `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let i = i as usize;
@@ -977,9 +951,7 @@ pub unsafe extern "C" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
 /// `v` must be a valid `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let new_len = new_len as usize;
@@ -1126,9 +1098,7 @@ pub unsafe extern "C" fn hew_vec_pop_generic(v: *mut HewVec, out: *mut core::ffi
 /// `v` must be a valid i32 `HewVec` pointer (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
-    if v.is_null() {
-        return;
-    }
+    cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is a valid i32 HewVec.
     unsafe {
         let len = (*v).len;
@@ -1150,9 +1120,7 @@ pub unsafe extern "C" fn hew_vec_reverse_i32(v: *mut HewVec) {
 ///
 /// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
 pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
-    if v.is_null() {
-        return Vec::new();
-    }
+    cabi_guard!(v.is_null(), Vec::new());
     // SAFETY: caller guarantees v is a valid HewVec.
     let len = unsafe { hew_vec_len(v) };
     (0..len)

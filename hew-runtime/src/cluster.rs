@@ -976,4 +976,24 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn cluster_membership_callback_on_connection_lost() {
+        let config = make_config(1);
+        let mut events: Vec<(u16, u8)> = Vec::new();
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            let addr = c"10.0.0.2:9000";
+            assert_eq!(hew_cluster_join(cluster, 2, addr.as_ptr()), 0);
+            hew_cluster_set_membership_callback(
+                cluster,
+                collect_membership_events,
+                (&raw mut events).cast(),
+            );
+            assert_eq!(hew_cluster_notify_connection_lost(cluster, 2), 0);
+            hew_cluster_free(cluster);
+        }
+        assert_eq!(events, vec![(2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT)]);
+    }
 }

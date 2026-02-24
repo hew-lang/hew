@@ -151,6 +151,14 @@ pub unsafe extern "C" fn hew_routing_is_local(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    struct SharedTable(*mut HewRoutingTable);
+    // SAFETY: routing table internals are synchronized by an RwLock.
+    unsafe impl Send for SharedTable {}
+    // SAFETY: routing table internals are synchronized by an RwLock.
+    unsafe impl Sync for SharedTable {}
 
     #[test]
     fn local_lookup_returns_minus_one() {
@@ -182,6 +190,42 @@ mod tests {
             assert_eq!(hew_routing_is_local(table, remote_pid_a), 0);
             hew_routing_remove_route(table, 9);
             assert_eq!(hew_routing_lookup(table, remote_pid_a), -1);
+            hew_routing_table_free(table);
+        }
+    }
+
+    #[test]
+    fn routing_table_concurrent_access() {
+        // SAFETY: pointer lifecycle is bounded to this test.
+        unsafe {
+            let table = hew_routing_table_new(1);
+            assert!(!table.is_null());
+            let shared = Arc::new(SharedTable(table));
+            let mut threads = Vec::new();
+
+            for tid in 0..8usize {
+                let shared = Arc::clone(&shared);
+                threads.push(thread::spawn(move || {
+                    for i in 0..250usize {
+                        let node_id = 2 + ((tid + i) % 6) as u16;
+                        let conn = (tid * 1000 + i) as c_int;
+                        hew_routing_add_route(shared.0, node_id, conn);
+                        let pid = (u64::from(node_id) << PID_SERIAL_BITS) | (i as u64);
+                        let _ = hew_routing_lookup(shared.0, pid);
+                        if i % 3 == 0 {
+                            hew_routing_remove_route(shared.0, node_id);
+                        }
+                    }
+                }));
+            }
+
+            for t in threads {
+                t.join().expect("thread should complete without panic");
+            }
+
+            hew_routing_add_route(table, 42, 4242);
+            let pid = (u64::from(42u16) << PID_SERIAL_BITS) | 7;
+            assert_eq!(hew_routing_lookup(table, pid), 4242);
             hew_routing_table_free(table);
         }
     }

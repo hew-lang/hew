@@ -65,3 +65,38 @@ analysis for code that spawns threads with pointers.
 The 5 HashMap test failures (contains_key returning bool instead of i32)
 existed on main for an unknown duration. Regular CI runs that exclude
 certain test categories can hide regressions.
+
+### 11. Agent-extracted code can re-introduce fixed bugs
+
+When GPT-5.3-Codex extracted `generateBuiltinMethodCall` from the monolithic method-call
+path, it re-introduced a `CmpIOp` for `contains_key` that had been explicitly removed in
+PRs #5-#10. The agent didn't have context about the prior fix. Lesson: always run the full
+test suite after agent-generated refactoring, and cross-check extracted code against recent
+commit history for the same functions.
+
+### 12. Integration layers beat rewrites
+
+Phase 4 succeeded because HewNode was designed as an integration layer — it wires together
+existing transport, cluster, connection, and registry modules rather than rewriting them.
+Each sub-agent worked on a focused piece (handshake, routing, SWIM wiring) independently,
+and they composed cleanly because the integration boundary was explicit.
+
+### 13. Thread safety through ownership, not locks
+
+The dangling pointer fix (Phase 1) and routing table (Phase 4) both succeeded by choosing
+the right ownership model upfront: `Arc<AtomicU64>` for the heartbeat counter shared
+between ConnectionActor and reader thread, `RwLock<HashMap>` for the routing table.
+Fixing ownership is cheaper than adding locks after the fact.
+
+### 14. Fixed-size wire formats eliminate parsing bugs
+
+The 48-byte handshake format has zero variable-length fields, zero TLV parsing, and zero
+ambiguity. It's trivially serializable/deserializable and can be validated in a single
+comparison. This simplicity paid off immediately — the handshake tests are 100% reliable.
+
+### 15. Test expectations must track semantic changes across branches
+
+The HashMap tests expected `1`/`0` (I32) for contains_key, but the codegen now produces
+`true`/`false` (I1) on some branches. Test expectations are branch-sensitive — when
+semantic changes like return type modifications are in flight across branches, expected
+outputs must be updated in the same commit as the semantic change.

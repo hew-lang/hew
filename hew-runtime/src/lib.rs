@@ -217,6 +217,8 @@ pub mod monitor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod pool;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod process;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]

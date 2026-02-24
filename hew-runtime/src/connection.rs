@@ -1117,4 +1117,14 @@ mod tests {
         peer.protocol_version = local.protocol_version.wrapping_add(1);
         assert!(!hew_conn_version_compatible(&local, &peer));
     }
+
+    #[test]
+    fn handshake_rejects_future_protocol_version() {
+        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let peer = HewHandshake {
+            protocol_version: 999,
+            ..local
+        };
+        assert!(!hew_conn_version_compatible(&local, &peer));
+    }
 }

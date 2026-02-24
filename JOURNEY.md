@@ -118,6 +118,68 @@ See plan.md for the detailed task breakdown. The implementation is split into
 
 ---
 
-## Phase 1: Runtime Hardening
+## Phase 1: Critical Safety Fixes
 
-_(To be filled as work progresses)_
+**Commit:** b5d7481
+
+- **Dangling pointer UB fixed** in connection.rs: Replaced raw `AtomicU64` pointer passed
+  to spawned reader thread with `Arc<AtomicU64>`. The original code captured a pointer to a
+  stack-local field, then moved the owning struct, creating a dangling pointer. GPT-5.3-Codex
+  agent identified and fixed this with minimal restructuring.
+- **Hardcoded byte offsets replaced** in bridge.rs: `MAILBOX_OFFSET=48` and
+  `ACTOR_STATE_OFFSET=56` replaced with `std::mem::offset_of!(HewActor, ...)` plus
+  compile-time assertions. Gemini 3 Pro agent handled this cleanly.
+- **Wire send path unified**: Extracted `wire_send_envelope()` in transport.rs, eliminating
+  ~90 LOC of triplicated envelope encode+send logic from node.rs and connection.rs.
+- **SAFETY documentation added** to critical unsafe blocks in string.rs, vec.rs, actor.rs.
+
+## Phase 2: Code Deduplication
+
+**Commit:** 8162756
+
+- **`cabi_guard!` macro** created to replace null-check boilerplate: applied to 43+ sites
+  across vec.rs, string.rs, hashmap.rs.
+- **TCP/Unix accept loops** unified via `accept_with_optional_timeout` helper in transport.rs.
+- **Tagged-union module** created (`tagged_union.rs`) factoring shared Option/Result
+  construction/destruction patterns.
+- Bonus: `cargo fmt` applied across workspace.
+
+## Phase 3: Codegen Cleanup
+
+**Commit:** cc1f1bc
+
+- **Extracted `generateBuiltinMethodCall`** from monolithic method-call path in
+  MLIRGenExpr.cpp. Clean function boundary using `std::optional<mlir::Value>`.
+- **Split `generateForStmt`** into `generateForRange`, `generateForVec`,
+  `generateForString`, `generateForHashMap` helpers in MLIRGenStmt.cpp.
+- **Removed ~270 LOC dead string-based type dispatch** fallbacks superseded by typed MLIR ops.
+- Caught and fixed a regression where the extraction agent re-introduced a `CmpIOp` for
+  contains_key that changed the return type from i32 to i1.
+
+## Phase 4: Unified Node Runtime
+
+**Commit:** 5e00c71
+
+- **HewNode struct** created in `hew_node.rs` — integrates transport, connection manager,
+  SWIM cluster, and registry into a single coherent entry point.
+- **48-byte connection handshake** protocol: magic/version/node_id/schema_hash/feature_flags/
+  noise_key. Automatic Noise XX upgrade when both peers support encryption.
+- **PID-based routing table** in `routing.rs`: thread-safe `RwLock<HashMap<u16, c_int>>`
+  mapping node_id → connection. Messages routed by destination PID, surviving reconnections.
+- **SWIM ↔ connection lifecycle bridge**: connection lost triggers suspect, connection
+  established triggers alive. Membership callbacks for event-driven integration.
+
+## Phases 5-6: Node API, Security & Identity
+
+**Commit:** c03dd10
+
+- **Runtime manifest updated**: 8 `hew_node_*` functions added for codegen integration.
+- **Integration tests**: Node lifecycle, local registry, routing table, two-node connect.
+- **Noise key management**: `hew_noise_keygen/key_save/key_load` with X25519 keypairs,
+  raw 64-byte file format, 0o600 permissions on Unix.
+- **Peer allowlist**: `HewPeerAllowlist` with Open/Strict modes, integrated into Noise
+  handshake for post-authentication peer verification.
+
+## Phase 7: Supervision & Pools
+
+_(In progress — remote supervision, actor pools, distributed tests)_

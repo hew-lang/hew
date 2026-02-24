@@ -41,6 +41,8 @@ use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 
+use crate::actor::HewActor;
+
 /// Single-threaded cell for WASM-only statics.
 ///
 /// SAFETY: Only safe in single-threaded contexts (e.g., WASM modules).
@@ -228,7 +230,10 @@ pub unsafe extern "C" fn hew_wasm_send(
     //  32: state_size (8 bytes, usize)
     //  40: dispatch (8 bytes, Option<fn>)
     //  48: mailbox (8 bytes, *mut c_void)
-    const MAILBOX_OFFSET: usize = 48;
+    const MAILBOX_OFFSET: usize = std::mem::offset_of!(HewActor, mailbox);
+
+    // Verify offsets match expectations (checked at compile time).
+    const _: () = assert!(MAILBOX_OFFSET == 48);
 
     // SAFETY: actor_ptr is a valid HewActor pointer from the registry.
     let mailbox_ptr = unsafe {
@@ -250,7 +255,11 @@ pub unsafe extern "C" fn hew_wasm_send(
     // actor_state is at offset 56 (after mailbox at 48):
     //  48: mailbox (8 bytes)
     //  56: actor_state (4 bytes, AtomicI32)
-    const ACTOR_STATE_OFFSET: usize = 56;
+    const ACTOR_STATE_OFFSET: usize = std::mem::offset_of!(HewActor, actor_state);
+
+    // Verify offsets match expectations (checked at compile time).
+    const _: () = assert!(ACTOR_STATE_OFFSET == 56);
+
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable
 

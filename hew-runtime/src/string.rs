@@ -78,7 +78,7 @@ pub unsafe extern "C" fn hew_string_slice(s: *const c_char, start: i32, end: i32
     }
     let slice_len = (end - start) as usize;
     // SAFETY: start is non-negative and < len, so s + start is within the string;
-    // slice_len bytes are readable because end <= len.
+    // SAFETY: slice_len bytes are readable because end <= len.
     unsafe { malloc_cstring(s.cast::<u8>().add(start as usize), slice_len) }
 }
 
@@ -707,6 +707,8 @@ fn is_static_string(ptr: *const u8) -> bool {
     // SizeOfImage is 80 bytes past the PE signature in a PE32+ (64-bit) image.
     // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
     let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
+    // SAFETY: pe_off was read from the DOS header of a valid mapped image; the SizeOfImage field
+    // SAFETY: lies within the PE optional header for that image.
     let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
     addr >= base && addr < base + image_size
 }
@@ -887,7 +889,7 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
-    // hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
+    // SAFETY: hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
     let v = unsafe { crate::vec::hew_vec_new() };
     if s.is_null() {
         return v;
@@ -896,7 +898,7 @@ pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::ve
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     for &b in bytes {
         // SAFETY: v is a valid HewVec; push each byte as i32 to match
-        // the convention used by hew_tcp_read and hew_bytes_to_string.
+        // SAFETY: the convention used by hew_tcp_read and hew_bytes_to_string.
         unsafe {
             crate::vec::hew_vec_push_i32(v, i32::from(b));
         };

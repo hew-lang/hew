@@ -331,9 +331,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // SAFETY: All workers have been joined, so no actor can be
-        // Running or Runnable. The actor was allocated by a spawn
-        // function and has not been freed yet.
+        // SAFETY: All workers have been joined, so no actor can be Running or Runnable.
+        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
     }
 }
@@ -358,8 +357,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // SAFETY: No dispatch is in progress. The actor was allocated
-        // by a spawn function and has not been freed yet.
+        // SAFETY: No dispatch is in progress.
+        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
     }
 }
@@ -810,8 +809,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     unsafe { hew_actor_close(actor) };
 
-    // SAFETY: Caller guarantees `actor` is valid; pointer remains valid
-    // throughout this function.
+    // SAFETY: Caller guarantees `actor` is valid and remains valid throughout this function.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
 
@@ -1137,7 +1135,7 @@ pub unsafe extern "C" fn hew_actor_ask(
         return ptr::null_mut();
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1203,7 +1201,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         return ptr::null_mut();
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1230,7 +1228,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         // Timeout: mark the channel as cancelled so the late replier
         // handles cleanup instead of us freeing it (which would be UAF).
         // SAFETY: ch is valid; the actor holding the channel pointer will
-        // check this flag in hew_reply and free the channel at that point.
+        // SAFETY: check this flag in hew_reply and free the channel at that point.
         unsafe { (*ch).cancelled.store(true, Ordering::Release) };
     } else {
         // Got a reply — we own the channel and can free it.
@@ -1276,7 +1274,7 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
         return;
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1418,7 +1416,7 @@ pub extern "C" fn hew_panic() {
     // into a trap instruction.
     //
     // SAFETY: Intentional null dereference to trigger SIGSEGV, which the
-    // crash signal handler catches and recovers from via siglongjmp.
+    // SAFETY: crash signal handler catches and recovers from via siglongjmp.
     unsafe {
         core::ptr::write_volatile(core::ptr::null_mut::<i32>(), 0xDEAD_i32);
     }
@@ -1573,7 +1571,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: Caller guarantees `state` validity (second copy for restart).
     let init_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: hew_mailbox_new is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new() };
 
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -1621,8 +1621,11 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
     capacity: i32,
 ) -> *mut HewActor {
+    // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: Caller guarantees `state` validity (second copy for restart).
     let init_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: hew_mailbox_new_bounded is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new_bounded(capacity) };
 
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -1668,16 +1671,21 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     if opts.is_null() {
         return ptr::null_mut();
     }
+    // SAFETY: Caller guarantees `opts` points to a valid HewActorOpts.
     let opts = unsafe { &*opts };
 
+    // SAFETY: Caller guarantees opts.init_state is readable for opts.state_size bytes.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
+    // SAFETY: Same as above (second copy for restart).
     let init_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
         let policy = parse_overflow_policy(opts.overflow);
+        // SAFETY: Trusted FFI constructor; capacity/policy were derived from opts above.
         unsafe { hew_mailbox_new_with_policy(capacity, policy) }
     } else {
+        // SAFETY: Trusted FFI constructor for an unbounded mailbox.
         unsafe { hew_mailbox_new() }
     };
 
@@ -1762,7 +1770,9 @@ pub unsafe extern "C" fn hew_actor_try_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    // SAFETY: Caller guarantees `actor` is a valid pointer.
     let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer for the actor's lifetime.
     let result = unsafe { hew_mailbox_send(a.mailbox, msg_type, data, size) };
     if result != 0 {
         return result;
@@ -1773,6 +1783,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
+        // SAFETY: actor is valid.
         unsafe { hew_wasm_sched_enqueue(actor.cast()) };
     }
 
@@ -1806,9 +1817,12 @@ pub unsafe extern "C" fn hew_actor_ask(
     // SAFETY: malloc for packed buffer.
     let packed = unsafe { libc::malloc(total) };
     if packed.is_null() {
+        // SAFETY: ch was created by hew_reply_channel_new above.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         return ptr::null_mut();
     }
+    // SAFETY: packed is a total-byte malloc allocation; data is readable for size bytes when non-null.
+    // SAFETY: reply channel pointer slot may be unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1818,7 +1832,9 @@ pub unsafe extern "C" fn hew_actor_ask(
     }
 
     // Send the packed message.
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer.
     unsafe { hew_mailbox_send(a.mailbox, msg_type, packed, total) };
     // SAFETY: packed buffer ownership transferred to mailbox (deep-copied).
     unsafe { libc::free(packed) };
@@ -1827,6 +1843,7 @@ pub unsafe extern "C" fn hew_actor_ask(
     if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
         a.actor_state
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor is valid.
         unsafe { hew_wasm_sched_enqueue(actor.cast()) };
     }
 
@@ -1835,7 +1852,9 @@ pub unsafe extern "C" fn hew_actor_ask(
     unsafe { hew_sched_run() };
 
     // Read the reply and free the channel.
+    // SAFETY: ch is a valid reply channel pointer created above.
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
+    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
     unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
 
     reply
@@ -1849,10 +1868,12 @@ pub unsafe extern "C" fn hew_actor_ask(
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Close the mailbox.
     if !a.mailbox.is_null() {
+        // SAFETY: a.mailbox is a valid mailbox pointer.
         unsafe { hew_mailbox_close(a.mailbox) };
     }
 
@@ -1873,12 +1894,15 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
     unsafe { hew_actor_close(actor) };
 
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Send a system shutdown message (-1).
     if !a.mailbox.is_null() {
+        // SAFETY: a.mailbox is a valid mailbox pointer.
         unsafe { hew_mailbox_send_sys(a.mailbox, -1, ptr::null_mut(), 0) };
     }
 }

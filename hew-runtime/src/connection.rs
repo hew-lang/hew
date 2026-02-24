@@ -36,10 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::transport::HewTransport;
-use crate::wire::{
-    hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
-    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope,
-};
+use crate::wire::{hew_wire_buf_init_read, hew_wire_decode_envelope, HewWireBuf, HewWireEnvelope};
 
 // ── Connection states ──────────────────────────────────────────────────
 
@@ -65,7 +62,7 @@ struct ConnectionActor {
     /// Current connection state.
     state: AtomicI32,
     /// Monotonic timestamp (ms) of last successful send or recv.
-    last_activity_ms: AtomicU64,
+    last_activity_ms: Arc<AtomicU64>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
@@ -110,7 +107,7 @@ impl ConnectionActor {
         Self {
             conn_id,
             state: AtomicI32::new(CONN_STATE_CONNECTING),
-            last_activity_ms: AtomicU64::new(0),
+            last_activity_ms: Arc::new(AtomicU64::new(0)),
             reader_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
         }
@@ -141,33 +138,22 @@ struct SendTransport(*mut HewTransport);
 // which are inherently thread-safe.
 unsafe impl Send for SendTransport {}
 
-/// Wrapper to send a `*const AtomicU64` across threads.
-///
-/// # Safety
-///
-/// The `AtomicU64` must outlive the reader thread.
-struct SendAtomicPtr(*const AtomicU64);
-// SAFETY: AtomicU64 is Sync, so a reference across threads is safe.
-// The pointer is valid for the lifetime of the ConnectionActor.
-unsafe impl Send for SendAtomicPtr {}
-
 // ── Reader thread ──────────────────────────────────────────────────────
 
 /// Reader thread: loops calling transport recv, decodes envelopes,
 /// and routes to local actors via the inbound router callback.
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "SendTransport/SendAtomicPtr/Arc are moved into this thread from spawn closure"
+    reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
 fn reader_loop(
     transport: SendTransport,
     conn_id: c_int,
     stop_flag: Arc<AtomicI32>,
-    last_activity: SendAtomicPtr,
+    last_activity: Arc<AtomicU64>,
     router: Option<InboundRouter>,
 ) {
     let transport = transport.0;
-    let last_activity = last_activity.0;
     let mut buf = vec![0u8; 65536]; // 64KiB read buffer (heap-allocated)
 
     while stop_flag.load(Ordering::Acquire) == 0 {
@@ -195,12 +181,9 @@ fn reader_loop(
         let read_len = bytes_read as usize;
 
         // Update heartbeat.
-        // SAFETY: last_activity points to the AtomicU64 in the
-        // ConnectionActor which is alive while this thread runs.
-        unsafe {
-            let now = crate::io_time::hew_now_ms();
-            (*last_activity).store(now, Ordering::Relaxed);
-        }
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { crate::io_time::hew_now_ms() };
+        last_activity.store(now, Ordering::Relaxed);
 
         // Decode envelope and route.
         if let Some(router_fn) = router {
@@ -331,7 +314,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let stop = Arc::clone(&actor.reader_stop);
     let transport_send = SendTransport(mgr.transport);
     let router = mgr.inbound_router;
-    let activity_send = SendAtomicPtr(&raw const actor.last_activity_ms);
+    let activity_send = Arc::clone(&actor.last_activity_ms);
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
@@ -424,49 +407,23 @@ pub unsafe extern "C" fn hew_connmgr_send(
         }
     }
 
-    // Encode envelope.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "wire envelope payload_size is u32; messages > 4GiB are not supported"
-    )]
-    let envelope = HewWireEnvelope {
-        target_actor_id,
-        source_actor_id: 0,
-        msg_type,
-        payload_size: size as u32,
-        payload: data,
+    // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above;
+    //         data is valid for size bytes per caller contract.
+    let rc = unsafe {
+        crate::transport::wire_send_envelope(
+            mgr_ref.transport,
+            conn_id,
+            target_actor_id,
+            0,
+            msg_type,
+            data,
+            size,
+        )
     };
-
-    // SAFETY: envelope fields are valid per caller contract.
-    unsafe {
-        let mut buf: HewWireBuf = std::mem::zeroed();
-        hew_wire_buf_init(&raw mut buf);
-
-        let rc = hew_wire_encode_envelope(&raw mut buf, &raw const envelope);
-        if rc != 0 {
-            hew_wire_buf_free(&raw mut buf);
-            return -1;
-        }
-
-        // Send via transport.
-        let t = &*mgr_ref.transport;
-        let result = if let Some(ops) = t.ops.as_ref() {
-            if let Some(send_fn) = ops.send {
-                send_fn(t.r#impl, conn_id, buf.data.cast(), buf.len)
-            } else {
-                -1
-            }
-        } else {
-            -1
-        };
-
-        hew_wire_buf_free(&raw mut buf);
-
-        if result < 0 {
-            -1
-        } else {
-            0
-        }
+    if rc != 0 {
+        -1
+    } else {
+        0
     }
 }
 

@@ -5,13 +5,11 @@
 //! implementation in `hew-codegen/runtime/src/node.c`.
 
 use std::ffi::{c_char, c_int, c_void};
-use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
-use crate::wire::{self, HewWireBuf, HewWireEnvelope};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -20,8 +18,6 @@ use crate::wire::{self, HewWireBuf, HewWireEnvelope};
 /// Maximum peer connections per node.
 const NODE_MAX_CONNS: usize = 64;
 
-const HEW_OK: c_int = 0;
-const HEW_ERR_SERIALIZE: c_int = -12;
 const HEW_ERR_TRANSPORT: c_int = -14;
 
 // ---------------------------------------------------------------------------
@@ -197,52 +193,17 @@ pub unsafe extern "C" fn hew_node_send_to(
         n.conns[0]
     };
 
-    // Build envelope.
-    let env = HewWireEnvelope {
-        target_actor_id: actor_id,
-        source_actor_id: 0,
-        msg_type,
-        #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
-        payload_size: size as u32,
-        payload: data.cast::<u8>(),
-    };
-
-    let mut buf = MaybeUninit::<HewWireBuf>::uninit();
-    // SAFETY: initialising a wire buffer.
-    unsafe { wire::hew_wire_buf_init(buf.as_mut_ptr()) };
-    let buf_ptr = buf.as_mut_ptr();
-
-    // SAFETY: buf and env are valid stack locals.
-    if unsafe { wire::hew_wire_encode_envelope(buf_ptr, &raw const env) } != 0 {
-        // SAFETY: buf was initialised.
-        unsafe { wire::hew_wire_buf_free(buf_ptr) };
-        return HEW_ERR_SERIALIZE;
-    }
-
-    // SAFETY: transport is valid.
-    // SAFETY: caller guarantees node transport pointer is valid.
-    let t = unsafe { &*n.transport };
-    // SAFETY: transport ops vtable pointer is valid.
-    let ops = unsafe { &*t.ops };
-    let Some(send_fn) = ops.send else {
-        // SAFETY: buf was initialised.
-        unsafe { wire::hew_wire_buf_free(buf_ptr) };
-        return HEW_ERR_TRANSPORT;
-    };
-
-    // SAFETY: buf was successfully encoded.
-    let b = unsafe { &*buf_ptr };
-    // SAFETY: transport impl and connection are valid; `b.data` points to the
-    // encoded buffer with `b.len` bytes produced by a successful encode above.
-    let sent = unsafe { send_fn(t.r#impl, conn, b.data.cast::<c_void>(), b.len) };
-
-    // SAFETY: buf was initialised.
-    unsafe { wire::hew_wire_buf_free(buf_ptr) };
-
-    if sent > 0 {
-        HEW_OK
-    } else {
-        HEW_ERR_TRANSPORT
+    // SAFETY: n.transport and conn are valid; data is valid for size bytes per caller contract.
+    unsafe {
+        crate::transport::wire_send_envelope(
+            n.transport,
+            conn,
+            actor_id,
+            0,
+            msg_type,
+            data.cast::<u8>(),
+            size,
+        )
     }
 }
 

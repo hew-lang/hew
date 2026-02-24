@@ -38,6 +38,7 @@ use core::ptr;
 ///
 /// `msg` must be a valid byte slice. This is safe to call in abort paths.
 unsafe fn write_stderr(msg: &[u8]) {
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
     unsafe {
         #[cfg(not(target_os = "windows"))]
         libc::write(2, msg.as_ptr().cast(), msg.len());
@@ -724,8 +725,7 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
     if dst.is_null() || src.is_null() {
         return;
     }
-    // SAFETY: caller guarantees both pointers are valid HewVecs with matching
-    // elem_size.
+    // SAFETY: caller guarantees both pointers are valid HewVecs with matching elem_size.
     unsafe {
         let src_len = (*src).len;
         if src_len == 0 {
@@ -1159,6 +1159,7 @@ pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
         .map(|i| {
             // SAFETY: i < len.
             #[expect(clippy::cast_sign_loss, reason = "byte values stored as i32 are 0-255")]
+            // SAFETY: i < len, so this read is in-bounds.
             let b = unsafe { hew_vec_get_i32(v, i) } as u8;
             b
         })

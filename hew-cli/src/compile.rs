@@ -39,6 +39,8 @@ pub struct CompileOptions {
     pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
     pub pkg_path: Option<PathBuf>,
+    /// Extra static libraries to pass to the linker (via `--link-lib`).
+    pub extra_link_libs: Vec<String>,
 }
 
 /// Run the full compilation pipeline for a `.hew` source file.
@@ -157,7 +159,8 @@ pub fn compile(
             }
         }
     }
-    let extra_libs = super::link::find_package_libs(&imported_modules);
+    let mut extra_libs = super::link::find_package_libs(&imported_modules);
+    extra_libs.extend(options.extra_link_libs.iter().cloned());
 
     // 3. Type-check
     let tco = if options.no_typecheck {

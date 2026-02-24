@@ -45,7 +45,12 @@ pub struct TestSummary {
 /// Each test is compiled to a native binary via the `hew build` pipeline and
 /// executed as a child process for isolation.
 #[must_use]
-pub fn run_tests(tests: &[TestCase], filter: Option<&str>, include_ignored: bool) -> TestSummary {
+pub fn run_tests(
+    tests: &[TestCase],
+    filter: Option<&str>,
+    include_ignored: bool,
+    ffi_lib: Option<&str>,
+) -> TestSummary {
     let mut results = Vec::new();
     let mut passed = 0;
     let mut failed = 0;
@@ -90,7 +95,7 @@ pub fn run_tests(tests: &[TestCase], filter: Option<&str>, include_ignored: bool
                 continue;
             }
 
-            let result = run_single_test(&source, test);
+            let result = run_single_test(&source, test, ffi_lib);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -158,6 +163,7 @@ fn find_hew_binary() -> Result<PathBuf, String> {
 fn compile_test(
     source: &str,
     test: &TestCase,
+    ffi_lib: Option<&str>,
 ) -> Result<(tempfile::NamedTempFile, tempfile::NamedTempFile), String> {
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
@@ -186,11 +192,15 @@ fn compile_test(
         .tempfile_in(test_dir)
         .map_err(|e| format!("cannot create temp binary: {e}"))?;
 
-    let compile_output = Command::new(&hew_binary)
-        .arg("build")
+    let mut cmd = Command::new(&hew_binary);
+    cmd.arg("build")
         .arg(tmp_source.path())
         .arg("-o")
-        .arg(tmp_binary.path())
+        .arg(tmp_binary.path());
+    if let Some(lib) = ffi_lib {
+        cmd.arg("--link-lib").arg(lib);
+    }
+    let compile_output = cmd
         .output()
         .map_err(|e| format!("cannot invoke hew build: {e}"))?;
 
@@ -210,8 +220,8 @@ fn compile_test(
 
 /// Build a synthetic program that calls the test function, compile it natively,
 /// and execute the resulting binary.
-fn run_single_test(source: &str, test: &TestCase) -> TestResult {
-    let tmp_binary = match compile_test(source, test) {
+fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> TestResult {
+    let tmp_binary = match compile_test(source, test, ffi_lib) {
         Ok((_src, bin)) => bin,
         Err(msg) => {
             let outcome = if test.should_panic {
@@ -390,7 +400,7 @@ mod tests {
                 t
             })
             .collect();
-        run_tests(&tests, None, false)
+        run_tests(&tests, None, false, None)
     }
 
     #[test]

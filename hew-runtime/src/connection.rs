@@ -405,7 +405,7 @@ unsafe fn hew_conn_upgrade_noise(
     local: &HewHandshake,
     peer: &HewHandshake,
     local_private_key: &[u8],
-) -> Option<snow::TransportState> {
+) -> Option<(snow::TransportState, [u8; NOISE_STATIC_PUBKEY_LEN])> {
     let initiator = hew_conn_noise_is_initiator(local, peer)?;
     // SAFETY: transport pointer validity is guaranteed by caller.
     let t = unsafe { &*transport };
@@ -475,7 +475,14 @@ unsafe fn hew_conn_upgrade_noise(
         handshake.read_message(&msg[..n], &mut payload).ok()?;
     }
 
-    handshake.into_transport_mode().ok()
+    let remote_static = handshake.get_remote_static()?;
+    if remote_static.len() != NOISE_STATIC_PUBKEY_LEN {
+        return None;
+    }
+    let mut remote_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
+    remote_pubkey.copy_from_slice(remote_static);
+    let transport = handshake.into_transport_mode().ok()?;
+    Some((transport, remote_pubkey))
 }
 
 // ── Reader thread ──────────────────────────────────────────────────────
@@ -704,13 +711,21 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     #[cfg(feature = "encryption")]
-    if hew_conn_supports_encryption(local_hs.feature_flags)
+    let upgraded_noise = if hew_conn_supports_encryption(local_hs.feature_flags)
         && hew_conn_supports_encryption(peer_hs.feature_flags)
-        && upgraded_noise.is_none()
     {
-        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
-        return -1;
-    }
+        let Some((noise, peer_static_pubkey)) = upgraded_noise else {
+            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            return -1;
+        };
+        if !crate::encryption::hew_allowlist_check_active_peer(&peer_static_pubkey) {
+            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            return -1;
+        }
+        Some(noise)
+    } else {
+        None
+    };
 
     let mut actor = ConnectionActor::new(conn_id);
     actor.peer_node_id = peer_hs.node_id;

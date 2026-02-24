@@ -169,13 +169,19 @@ mod tests {
         // SAFETY: pointers are created and used within test scope.
         unsafe {
             let table = hew_routing_table_new(1);
-            let remote_pid = (u64::from(9u16) << PID_SERIAL_BITS) | 100;
-            assert_eq!(hew_routing_lookup(table, remote_pid), -1);
+            let remote_pid_a = (u64::from(9u16) << PID_SERIAL_BITS) | 100;
+            let remote_pid_b = (u64::from(10u16) << PID_SERIAL_BITS) | 200;
+            let local_pid = (u64::from(1u16) << PID_SERIAL_BITS) | 7;
+            assert_eq!(hew_routing_lookup(table, remote_pid_a), -1);
+            assert_eq!(hew_routing_lookup(table, remote_pid_b), -1);
+            assert_eq!(hew_routing_lookup(table, local_pid), -1);
             hew_routing_add_route(table, 9, 55);
-            assert_eq!(hew_routing_lookup(table, remote_pid), 55);
-            assert_eq!(hew_routing_is_local(table, remote_pid), 0);
+            hew_routing_add_route(table, 10, 77);
+            assert_eq!(hew_routing_lookup(table, remote_pid_a), 55);
+            assert_eq!(hew_routing_lookup(table, remote_pid_b), 77);
+            assert_eq!(hew_routing_is_local(table, remote_pid_a), 0);
             hew_routing_remove_route(table, 9);
-            assert_eq!(hew_routing_lookup(table, remote_pid), -1);
+            assert_eq!(hew_routing_lookup(table, remote_pid_a), -1);
             hew_routing_table_free(table);
         }
     }

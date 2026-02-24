@@ -4,8 +4,14 @@
 //! using the Noise XX handshake pattern (`Noise_XX_25519_ChaChaPoly_BLAKE2s`).
 //! Per-connection `snow::TransportState` objects handle encrypt/decrypt.
 
-use std::ffi::{c_char, c_int, c_void};
+use std::collections::HashSet;
+use std::ffi::{c_char, c_int, c_void, CStr};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::ptr;
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use snow::Builder;
 
@@ -18,8 +24,53 @@ use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 const MAX_CONNS: usize = 64;
 const KEY_LEN: usize = 32;
+const KEYPAIR_FILE_LEN: usize = KEY_LEN * 2;
 /// Maximum Noise message size (64 KiB per snow docs).
 const MAX_MSG_SIZE: usize = 65535;
+const ALLOWLIST_MODE_OPEN: c_int = 0;
+const ALLOWLIST_MODE_STRICT: c_int = 1;
+
+/// Allowlist enforcement mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowlistMode {
+    /// Allow all connections (no verification).
+    Open,
+    /// Only allow peers whose static key is in the allowlist.
+    Strict,
+}
+
+/// Set of allowed peer public keys.
+#[derive(Debug, Clone)]
+pub struct HewPeerAllowlist {
+    keys: HashSet<[u8; 32]>,
+    mode: AllowlistMode,
+}
+
+impl HewPeerAllowlist {
+    fn new(mode: AllowlistMode) -> Self {
+        Self {
+            keys: HashSet::new(),
+            mode,
+        }
+    }
+
+    fn allows(&self, key: &[u8; KEY_LEN]) -> bool {
+        match self.mode {
+            AllowlistMode::Open => true,
+            AllowlistMode::Strict => self.keys.contains(key),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ActiveAllowlist {
+    ptr: usize,
+    list: HewPeerAllowlist,
+}
+
+static ALLOWLIST_OPS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static ACTIVE_ALLOWLIST: LazyLock<RwLock<Option<ActiveAllowlist>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 // ---------------------------------------------------------------------------
 // Encrypted transport state
@@ -514,9 +565,196 @@ static ENC_OPS: HewTransportOps = HewTransportOps {
     destroy: Some(enc_destroy),
 };
 
+fn allowlist_mode_from_c(mode: c_int) -> Option<AllowlistMode> {
+    match mode {
+        ALLOWLIST_MODE_OPEN => Some(AllowlistMode::Open),
+        ALLOWLIST_MODE_STRICT => Some(AllowlistMode::Strict),
+        _ => None,
+    }
+}
+
+unsafe fn allowlist_copy_key(public_key: *const u8) -> Option<[u8; KEY_LEN]> {
+    if public_key.is_null() {
+        return None;
+    }
+    let mut key = [0u8; KEY_LEN];
+    // SAFETY: caller guarantees `public_key` points to at least KEY_LEN bytes.
+    unsafe { ptr::copy_nonoverlapping(public_key, key.as_mut_ptr(), KEY_LEN) };
+    Some(key)
+}
+
+fn allowlist_sync_active(list_ptr: *mut HewPeerAllowlist, list: &HewPeerAllowlist) {
+    let mut active = match ACTIVE_ALLOWLIST.write() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if let Some(current) = active.as_mut() {
+        if current.ptr == list_ptr as usize {
+            current.list = list.clone();
+        }
+    }
+}
+
+pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> bool {
+    let active = match ACTIVE_ALLOWLIST.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    match active.as_ref() {
+        Some(current) => current.list.allows(public_key),
+        None => true,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public C ABI
 // ---------------------------------------------------------------------------
+
+/// Create a new peer allowlist.
+///
+/// `mode`: 0 = Open, 1 = Strict.
+///
+/// # Safety
+///
+/// Returns an owned pointer that must be released with [`hew_allowlist_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist {
+    let Some(mode) = allowlist_mode_from_c(mode) else {
+        return ptr::null_mut();
+    };
+    let list = HewPeerAllowlist::new(mode);
+    let ptr = Box::into_raw(Box::new(list.clone()));
+    #[cfg(not(test))]
+    {
+        let mut active = match ACTIVE_ALLOWLIST.write() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *active = Some(ActiveAllowlist {
+            ptr: ptr as usize,
+            list,
+        });
+    }
+    ptr
+}
+
+/// Add a 32-byte peer static public key to the allowlist.
+///
+/// Returns 0 on success, -1 on invalid inputs.
+///
+/// # Safety
+///
+/// - `list` must be a valid pointer returned by [`hew_allowlist_new`].
+/// - `public_key` must point to at least 32 readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_allowlist_add(
+    list: *mut HewPeerAllowlist,
+    public_key: *const u8,
+) -> c_int {
+    if list.is_null() {
+        return -1;
+    }
+    let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
+        return -1;
+    };
+    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    // SAFETY: list was validated non-null and caller owns this pointer.
+    let list_ref = unsafe { &mut *list };
+    list_ref.keys.insert(key);
+    allowlist_sync_active(list, list_ref);
+    0
+}
+
+/// Remove a 32-byte peer static public key from the allowlist.
+///
+/// Returns 0 on success, -1 on invalid inputs.
+///
+/// # Safety
+///
+/// - `list` must be a valid pointer returned by [`hew_allowlist_new`].
+/// - `public_key` must point to at least 32 readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_allowlist_remove(
+    list: *mut HewPeerAllowlist,
+    public_key: *const u8,
+) -> c_int {
+    if list.is_null() {
+        return -1;
+    }
+    let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
+        return -1;
+    };
+    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    // SAFETY: list was validated non-null and caller owns this pointer.
+    let list_ref = unsafe { &mut *list };
+    list_ref.keys.remove(&key);
+    allowlist_sync_active(list, list_ref);
+    0
+}
+
+/// Check whether a peer static public key is allowed.
+///
+/// Returns 1 when allowed, 0 when denied.
+///
+/// # Safety
+///
+/// - `list` must be a valid pointer returned by [`hew_allowlist_new`].
+/// - `public_key` must point to at least 32 readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_allowlist_check(
+    list: *mut HewPeerAllowlist,
+    public_key: *const u8,
+) -> c_int {
+    if list.is_null() {
+        return 0;
+    }
+    let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
+        return 0;
+    };
+    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    // SAFETY: list was validated non-null and caller owns this pointer.
+    let list_ref = unsafe { &*list };
+    c_int::from(list_ref.allows(&key))
+}
+
+/// Free an allowlist previously created by [`hew_allowlist_new`].
+///
+/// # Safety
+///
+/// `list` must be either null or a valid pointer returned by
+/// [`hew_allowlist_new`] that has not already been freed.
+#[no_mangle]
+pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
+    if list.is_null() {
+        return;
+    }
+    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    {
+        let mut active = match ACTIVE_ALLOWLIST.write() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if let Some(current) = active.as_ref() {
+            if current.ptr == list as usize {
+                *active = None;
+            }
+        }
+    }
+    // SAFETY: ownership is transferred back to Rust and dropped exactly once.
+    let _ = unsafe { Box::from_raw(list) };
+}
 
 /// Create an encrypted transport wrapping an existing transport.
 ///
@@ -538,6 +776,126 @@ pub unsafe extern "C" fn hew_transport_encrypted_new(
         r#impl: Box::into_raw(enc).cast::<c_void>(),
     });
     Box::into_raw(transport)
+}
+
+/// Generate a new X25519 static keypair for Noise XX.
+///
+/// # Safety
+///
+/// - `public_key_out` must point to at least 32 writable bytes.
+/// - `private_key_out` must point to at least 32 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_noise_keygen(
+    public_key_out: *mut u8,
+    private_key_out: *mut u8,
+) -> c_int {
+    if public_key_out.is_null() || private_key_out.is_null() {
+        return -1;
+    }
+
+    let pattern = match NOISE_PATTERN.parse() {
+        Ok(p) => p,
+        Err(_) => return -1,
+    };
+    let builder = Builder::new(pattern);
+    let keypair = match builder.generate_keypair() {
+        Ok(k) => k,
+        Err(_) => return -1,
+    };
+
+    // SAFETY: pointers are validated non-null and caller guarantees writable
+    // buffers of KEY_LEN bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(keypair.public.as_ptr(), public_key_out, KEY_LEN);
+        ptr::copy_nonoverlapping(keypair.private.as_ptr(), private_key_out, KEY_LEN);
+    }
+    0
+}
+
+/// Save a keypair to a raw binary file (`32-byte public || 32-byte private`).
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated C string.
+/// - `public_key` and `private_key` must each point to at least 32 readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_noise_key_save(
+    path: *const c_char,
+    public_key: *const u8,
+    private_key: *const u8,
+) -> c_int {
+    if path.is_null() || public_key.is_null() || private_key.is_null() {
+        return -1;
+    }
+
+    // SAFETY: path is non-null and expected to be valid C string.
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(p) => p,
+        Err(_) => return -1,
+    };
+
+    // SAFETY: pointers are validated non-null and caller guarantees KEY_LEN bytes.
+    let public = unsafe { std::slice::from_raw_parts(public_key, KEY_LEN) };
+    // SAFETY: pointers are validated non-null and caller guarantees KEY_LEN bytes.
+    let private = unsafe { std::slice::from_raw_parts(private_key, KEY_LEN) };
+
+    let mut opts = OpenOptions::new();
+    opts.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+
+    let mut file = match opts.open(path_str) {
+        Ok(f) => f,
+        Err(_) => return -1,
+    };
+    if file.write_all(public).is_err() || file.write_all(private).is_err() {
+        return -1;
+    }
+
+    #[cfg(unix)]
+    if fs::set_permissions(path_str, fs::Permissions::from_mode(0o600)).is_err() {
+        return -1;
+    }
+
+    0
+}
+
+/// Load a Noise keypair from a raw 64-byte file.
+///
+/// # Safety
+///
+/// - `path` must be a valid null-terminated C string.
+/// - `public_key_out` and `private_key_out` must each point to at least 32 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_noise_key_load(
+    path: *const c_char,
+    public_key_out: *mut u8,
+    private_key_out: *mut u8,
+) -> c_int {
+    if path.is_null() || public_key_out.is_null() || private_key_out.is_null() {
+        return -1;
+    }
+
+    // SAFETY: path is non-null and expected to be valid C string.
+    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(p) => p,
+        Err(_) => return -1,
+    };
+    let bytes = match fs::read(path_str) {
+        Ok(b) => b,
+        Err(_) => return -1,
+    };
+    if bytes.len() != KEYPAIR_FILE_LEN {
+        return -1;
+    }
+
+    // SAFETY: output pointers are validated non-null and caller guarantees
+    // writable KEY_LEN-byte buffers.
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), public_key_out, KEY_LEN);
+        ptr::copy_nonoverlapping(bytes.as_ptr().add(KEY_LEN), private_key_out, KEY_LEN);
+    }
+    0
 }
 
 /// Generate a new Noise keypair.
@@ -611,6 +969,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use tempfile::NamedTempFile;
 
     /// Find a free TCP port by briefly binding to `127.0.0.1:0`.
     fn free_port() -> u16 {
@@ -652,8 +1011,121 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Peer allowlist
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn allowlist_open_mode_allows_all_peers() {
+        let key = [0xAA; KEY_LEN];
+        // SAFETY: mode is valid and key points to KEY_LEN bytes.
+        let list = unsafe { hew_allowlist_new(ALLOWLIST_MODE_OPEN) };
+        assert!(!list.is_null());
+        // SAFETY: list is valid and key pointer is valid.
+        let allowed = unsafe { hew_allowlist_check(list, key.as_ptr()) };
+        assert_eq!(allowed, 1);
+        // SAFETY: list was created by hew_allowlist_new.
+        unsafe { hew_allowlist_free(list) };
+    }
+
+    #[test]
+    fn allowlist_strict_mode_only_allows_listed_peers() {
+        let allowed_key = [0x11; KEY_LEN];
+        let denied_key = [0x22; KEY_LEN];
+        // SAFETY: mode is valid.
+        let list = unsafe { hew_allowlist_new(ALLOWLIST_MODE_STRICT) };
+        assert!(!list.is_null());
+
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(
+            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
+            0
+        );
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(unsafe { hew_allowlist_add(list, allowed_key.as_ptr()) }, 0);
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(
+            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
+            1
+        );
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(unsafe { hew_allowlist_check(list, denied_key.as_ptr()) }, 0);
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(
+            unsafe { hew_allowlist_remove(list, allowed_key.as_ptr()) },
+            0
+        );
+        // SAFETY: list and key pointers are valid.
+        assert_eq!(
+            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
+            0
+        );
+
+        // SAFETY: list was created by hew_allowlist_new.
+        unsafe { hew_allowlist_free(list) };
+    }
+
+    // -----------------------------------------------------------------------
     // Key generation
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn noise_keygen_fills_public_and_private_keys() {
+        let mut public = [0u8; KEY_LEN];
+        let mut private = [0u8; KEY_LEN];
+
+        // SAFETY: output buffers are valid and writable.
+        let rc = unsafe { hew_noise_keygen(public.as_mut_ptr(), private.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        assert!(
+            !public.iter().all(|&b| b == 0),
+            "public key must not be all zeros"
+        );
+        assert!(
+            !private.iter().all(|&b| b == 0),
+            "private key must not be all zeros"
+        );
+    }
+
+    #[test]
+    fn noise_key_save_load_round_trip() {
+        let mut public = [0u8; KEY_LEN];
+        let mut private = [0u8; KEY_LEN];
+
+        // SAFETY: output buffers are valid and writable.
+        let rc = unsafe { hew_noise_keygen(public.as_mut_ptr(), private.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+
+        let key_file = NamedTempFile::new().unwrap();
+        let path = CString::new(key_file.path().to_string_lossy().into_owned()).unwrap();
+
+        // SAFETY: path and key pointers are valid.
+        let save_rc =
+            unsafe { hew_noise_key_save(path.as_ptr(), public.as_ptr(), private.as_ptr()) };
+        assert_eq!(save_rc, 0);
+
+        let on_disk = fs::read(key_file.path()).unwrap();
+        assert_eq!(on_disk.len(), KEYPAIR_FILE_LEN);
+
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(key_file.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let mut loaded_public = [0u8; KEY_LEN];
+        let mut loaded_private = [0u8; KEY_LEN];
+        // SAFETY: path and output buffers are valid.
+        let load_rc = unsafe {
+            hew_noise_key_load(
+                path.as_ptr(),
+                loaded_public.as_mut_ptr(),
+                loaded_private.as_mut_ptr(),
+            )
+        };
+        assert_eq!(load_rc, 0);
+        assert_eq!(loaded_public, public);
+        assert_eq!(loaded_private, private);
+    }
 
     #[test]
     fn keypair_generate_returns_non_null() {

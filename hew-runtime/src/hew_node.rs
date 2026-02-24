@@ -583,3 +583,185 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
 
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    static NODE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TestNode(*mut HewNode);
+
+    impl TestNode {
+        unsafe fn new(node_id: u16, bind_addr: &CString) -> Self {
+            Self(unsafe { hew_node_new(node_id, bind_addr.as_ptr()) })
+        }
+
+        fn as_ptr(&self) -> *mut HewNode {
+            self.0
+        }
+    }
+
+    impl Drop for TestNode {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: TestNode owns the pointer returned by hew_node_new.
+                unsafe { hew_node_free(self.0) };
+                self.0 = ptr::null_mut();
+            }
+        }
+    }
+
+    fn reserve_tcp_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local ephemeral port");
+        listener.local_addr().expect("read local address").port()
+    }
+
+    #[test]
+    fn node_lifecycle_start_stop() {
+        let _guard = match NODE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node = unsafe { TestNode::new(101, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        // SAFETY: node pointer is created in this test and valid until drop.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+            assert_eq!(
+                (&*node.as_ptr()).state.load(Ordering::Acquire),
+                NODE_STATE_RUNNING
+            );
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            assert_eq!(
+                (&*node.as_ptr()).state.load(Ordering::Acquire),
+                NODE_STATE_STOPPED
+            );
+        }
+    }
+
+    #[test]
+    fn local_registry_register_and_lookup() {
+        let _guard = match NODE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string for the duration of this test.
+        let node = unsafe { TestNode::new(102, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        let actor_name = CString::new("hew-node-local-registry").expect("valid actor name");
+        let missing_name = CString::new("hew-node-missing-registry").expect("valid actor name");
+        let actor_pid = (u64::from(102u16) << 48) | 0x1234;
+
+        // SAFETY: node and C string pointers are valid for each call.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+            assert_eq!(
+                hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_pid),
+                0
+            );
+            assert_eq!(
+                hew_node_lookup(node.as_ptr(), actor_name.as_ptr()),
+                actor_pid
+            );
+            assert_eq!(hew_node_lookup(node.as_ptr(), missing_name.as_ptr()), 0);
+            assert_eq!(
+                crate::registry::hew_registry_unregister(actor_name.as_ptr()),
+                0
+            );
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    #[ignore = "can be flaky on shared CI networking"]
+    fn two_node_connect_and_handshake() {
+        let _guard = match NODE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+
+        crate::registry::hew_registry_clear();
+
+        let node2_port = reserve_tcp_port();
+        let node1_bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+        let node2_bind = CString::new(format!("127.0.0.1:{node2_port}")).expect("valid bind addr");
+
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node1 = unsafe { TestNode::new(201, &node1_bind) };
+        // SAFETY: bind addresses are valid C strings for the duration of this test.
+        let node2 = unsafe { TestNode::new(202, &node2_bind) };
+        assert!(!node1.as_ptr().is_null());
+        assert!(!node2.as_ptr().is_null());
+
+        // SAFETY: pointers are valid for this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node2.as_ptr()), 0);
+            assert_eq!(hew_node_start(node1.as_ptr()), 0);
+        }
+
+        let connect_addr =
+            CString::new(format!("202@127.0.0.1:{node2_port}")).expect("valid connect addr");
+        let mut connected = false;
+        for _ in 0..20 {
+            // SAFETY: pointers are valid and connect_addr is a valid C string.
+            if unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) } == 0 {
+                connected = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(connected, "node1 failed to connect to node2");
+
+        let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
+        let actor_pid = (u64::from(202u16) << 48) | 99;
+        // SAFETY: pointers are valid in this scope.
+        unsafe {
+            assert_eq!(
+                hew_node_register(node2.as_ptr(), actor_name.as_ptr(), actor_pid),
+                0
+            );
+            assert_eq!(
+                hew_node_lookup(node2.as_ptr(), actor_name.as_ptr()),
+                actor_pid
+            );
+        }
+
+        let handshake_complete = (0..40).any(|_| {
+            // SAFETY: node pointers and conn manager pointers are valid while nodes live.
+            let ready = unsafe {
+                let n1 = &*node1.as_ptr();
+                let n2 = &*node2.as_ptr();
+                connection::hew_connmgr_count(n1.conn_mgr) > 0
+                    && connection::hew_connmgr_count(n2.conn_mgr) > 0
+            };
+            if !ready {
+                thread::sleep(Duration::from_millis(25));
+            }
+            ready
+        });
+        assert!(handshake_complete, "connection handshake did not complete");
+
+        // SAFETY: pointers remain valid until dropped.
+        unsafe {
+            let _ = crate::registry::hew_registry_unregister(actor_name.as_ptr());
+            assert_eq!(hew_node_stop(node1.as_ptr()), 0);
+            assert_eq!(hew_node_stop(node2.as_ptr()), 0);
+        }
+
+        crate::registry::hew_registry_clear();
+    }
+}

@@ -133,12 +133,31 @@ else ifneq ($(LLVM_PREFIX),)
   CMAKE_EXTRA_ARGS += -DMLIR_DIR=$(LLVM_PREFIX)/lib/cmake/mlir
 endif
 
+# macOS requires brew's clang (not Apple Clang) to handle LLVM 21 bitcode
+# in the statically linked MLIR objects, plus the Apple SDK sysroot to fix
+# header conflicts, and brew's libc++ path for ABI compatibility.
+# See docs/cross-platform-build-guide.md for details.
+ifeq ($(shell uname -s),Darwin)
+  ifneq ($(LLVM_PREFIX),)
+    CMAKE_EXTRA_ARGS += -DCMAKE_C_COMPILER=$(LLVM_PREFIX)/bin/clang
+    CMAKE_EXTRA_ARGS += -DCMAKE_CXX_COMPILER=$(LLVM_PREFIX)/bin/clang++
+    CMAKE_EXTRA_ARGS += -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
+    CMAKE_EXTRA_ARGS += -DCMAKE_EXE_LINKER_FLAGS="-L$(LLVM_PREFIX)/lib/c++ -Wl,-rpath,$(LLVM_PREFIX)/lib/c++"
+  endif
+endif
+
 codegen:
+ifeq ($(shell uname -s),Darwin)
+	cmake -B hew-codegen/build -G Ninja \
+		$(CMAKE_EXTRA_ARGS) \
+		-S hew-codegen
+else
 	cmake -B hew-codegen/build -G Ninja \
 		-DCMAKE_C_COMPILER=$(CC) \
 		-DCMAKE_CXX_COMPILER=$(CXX) \
 		$(CMAKE_EXTRA_ARGS) \
 		-S hew-codegen
+endif
 	cmake --build hew-codegen/build
 
 # Create symlinks from build/ into the real output locations.
@@ -175,12 +194,19 @@ release:
 	cargo build -p hew-runtime --release
 	cargo build $(addprefix -p ,$(STDLIB_PACKAGES)) --release
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+ifeq ($(shell uname -s),Darwin)
+	cmake -B hew-codegen/build -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		$(CMAKE_EXTRA_ARGS) \
+		-S hew-codegen
+else
 	cmake -B hew-codegen/build -G Ninja \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_C_COMPILER=$(CC) \
 		-DCMAKE_CXX_COMPILER=$(CXX) \
 		$(CMAKE_EXTRA_ARGS) \
 		-S hew-codegen
+endif
 	cmake --build hew-codegen/build
 	$(MAKE) assemble-release
 

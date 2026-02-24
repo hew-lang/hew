@@ -35,6 +35,11 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use crate::cluster::{
+    hew_cluster_notify_connection_established, hew_cluster_notify_connection_lost, HewCluster,
+};
+use crate::routing::{hew_routing_add_route, hew_routing_remove_route, HewRoutingTable};
+use crate::set_last_error;
 use crate::transport::HewTransport;
 use crate::wire::{
     hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
@@ -145,6 +150,10 @@ pub struct HewConnMgr {
     /// Callback for routing inbound messages to local actors.
     /// Signature: `fn(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize)`.
     inbound_router: Option<InboundRouter>,
+    /// Optional shared routing table for node-id -> connection routes.
+    routing_table: *mut HewRoutingTable,
+    /// Optional cluster handle for SWIM connection notifications.
+    cluster: *mut HewCluster,
 }
 
 /// Inbound message routing callback.
@@ -200,7 +209,9 @@ impl Drop for ConnectionActor {
         self.reader_stop.store(1, Ordering::Release);
         // Wait for it (best-effort).
         if let Some(handle) = self.reader_handle.take() {
-            let _ = handle.join();
+            if handle.thread().id() != thread::current().id() {
+                let _ = handle.join();
+            }
         }
     }
 }
@@ -217,6 +228,16 @@ struct SendTransport(*mut HewTransport);
 // SAFETY: Transport implementations use Mutex or fd-based I/O,
 // which are inherently thread-safe.
 unsafe impl Send for SendTransport {}
+
+/// Wrapper to send a `*mut HewConnMgr` across threads.
+///
+/// # Safety
+///
+/// The manager must remain valid for the lifetime of spawned reader threads.
+struct SendConnMgr(*mut HewConnMgr);
+// SAFETY: manager internals are synchronized and pointer validity is
+// guaranteed by the manager lifecycle contract.
+unsafe impl Send for SendConnMgr {}
 
 fn hew_conn_local_feature_flags() -> u32 {
     let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN;
@@ -494,6 +515,7 @@ unsafe fn hew_conn_upgrade_noise(
     reason = "SendTransport and Arc values are moved into this thread from spawn closure"
 )]
 fn reader_loop(
+    mgr: SendConnMgr,
     transport: SendTransport,
     conn_id: c_int,
     stop_flag: Arc<AtomicI32>,
@@ -501,6 +523,7 @@ fn reader_loop(
     router: Option<InboundRouter>,
     #[cfg(feature = "encryption")] noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
 ) {
+    let mgr = mgr.0;
     let transport = transport.0;
     let mut buf = vec![0u8; 65536]; // 64KiB read buffer (heap-allocated)
 
@@ -521,6 +544,8 @@ fn reader_loop(
         };
 
         if bytes_read <= 0 {
+            // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
+            let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
             // Connection closed or error — stop reading.
             break;
         }
@@ -591,6 +616,8 @@ fn reader_loop(
 pub unsafe extern "C" fn hew_connmgr_new(
     transport: *mut HewTransport,
     router: Option<InboundRouter>,
+    routing_table: *mut HewRoutingTable,
+    cluster: *mut HewCluster,
 ) -> *mut HewConnMgr {
     if transport.is_null() {
         return std::ptr::null_mut();
@@ -599,6 +626,8 @@ pub unsafe extern "C" fn hew_connmgr_new(
         connections: Mutex::new(Vec::with_capacity(16)),
         transport,
         inbound_router: router,
+        routing_table,
+        cluster,
     });
     Box::into_raw(mgr)
 }
@@ -655,6 +684,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
+        set_last_error("hew_connmgr_add: manager is null");
         return -1;
     }
     // SAFETY: caller guarantees `mgr` is valid.
@@ -666,6 +696,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             Err(e) => e.into_inner(),
         };
         if conns.iter().any(|c| c.conn_id == conn_id) {
+            set_last_error(format!(
+                "hew_connmgr_add: connection {conn_id} already exists"
+            ));
             return -1;
         }
     }
@@ -675,11 +708,13 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let local_noise_private = {
         let Ok(pattern) = NOISE_PATTERN.parse() else {
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            set_last_error("hew_connmgr_add: invalid noise pattern");
             return -1;
         };
         let builder = snow::Builder::new(pattern);
         let Ok(keypair) = builder.generate_keypair() else {
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            set_last_error("hew_connmgr_add: failed to generate noise keypair");
             return -1;
         };
         local_noise_pubkey.copy_from_slice(&keypair.public);
@@ -690,6 +725,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let Some(peer_hs) = (unsafe { hew_conn_handshake_exchange(mgr.transport, conn_id, local_hs) })
     else {
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: handshake exchange failed for conn {conn_id}"
+        ));
         return -1;
     };
 
@@ -716,10 +754,16 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     {
         let Some((noise, peer_static_pubkey)) = upgraded_noise else {
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: noise upgrade failed for conn {conn_id}"
+            ));
             return -1;
         };
         if !crate::encryption::hew_allowlist_check_active_peer(&peer_static_pubkey) {
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: peer key not allowlisted for conn {conn_id}"
+            ));
             return -1;
         }
         Some(noise)
@@ -749,6 +793,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let transport_send = SendTransport(mgr.transport);
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
+    let mgr_send = SendConnMgr(mgr as *const HewConnMgr as *mut HewConnMgr);
     #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
@@ -756,6 +801,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         .name(format!("hew-conn-{conn_id}"))
         .spawn(move || {
             reader_loop(
+                mgr_send,
                 transport_send,
                 conn_id,
                 stop,
@@ -768,7 +814,12 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     match handle {
         Ok(h) => actor.reader_handle = Some(h),
-        Err(_) => return -1,
+        Err(_) => {
+            set_last_error(format!(
+                "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
+            ));
+            return -1;
+        }
     }
 
     let mut conns = match mgr.connections.lock() {
@@ -777,9 +828,21 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
     if conns.iter().any(|c| c.conn_id == conn_id) {
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: connection {conn_id} became duplicate during install"
+        ));
         return -1;
     }
     conns.push(actor);
+    drop(conns);
+
+    if peer_hs.node_id != 0 {
+        // SAFETY: pointer validity is checked by the callee.
+        unsafe { hew_routing_add_route(mgr.routing_table, peer_hs.node_id, conn_id) };
+        // SAFETY: pointer validity is checked by the callee.
+        let _ = unsafe { hew_cluster_notify_connection_established(mgr.cluster, peer_hs.node_id) };
+    }
+
     0
 }
 
@@ -793,6 +856,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
+        set_last_error("hew_connmgr_remove: manager is null");
         return -1;
     }
     // SAFETY: caller guarantees `mgr` is valid.
@@ -804,9 +868,16 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     };
 
     let idx = conns.iter().position(|c| c.conn_id == conn_id);
-    let Some(idx) = idx else { return -1 };
+    let Some(idx) = idx else {
+        set_last_error(format!(
+            "hew_connmgr_remove: connection {conn_id} not found"
+        ));
+        return -1;
+    };
 
     let conn = conns.swap_remove(idx);
+    let peer_node_id = conn.peer_node_id;
+    conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
     // Signal reader thread to stop (happens in Drop).
     drop(conn);
 
@@ -819,6 +890,13 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
                 close_fn(t.r#impl, conn_id);
             }
         }
+    }
+
+    if peer_node_id != 0 {
+        // SAFETY: pointer validity is checked by the callee.
+        unsafe { hew_routing_remove_route(mgr.routing_table, peer_node_id) };
+        // SAFETY: pointer validity is checked by the callee.
+        let _ = unsafe { hew_cluster_notify_connection_lost(mgr.cluster, peer_node_id) };
     }
 
     0
@@ -1083,7 +1161,12 @@ mod tests {
     fn mgr_null_transport_rejected() {
         // SAFETY: testing null transport rejection.
         unsafe {
-            let mgr = hew_connmgr_new(std::ptr::null_mut(), None);
+            let mgr = hew_connmgr_new(
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
             assert!(mgr.is_null());
         }
     }

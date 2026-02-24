@@ -61,7 +61,9 @@ pub struct HewMsgNode {
 unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = unsafe { libc::malloc(std::mem::size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
-    assert!(!node.is_null(), "OOM allocating message node");
+    if node.is_null() {
+        return ptr::null_mut();
+    }
 
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
@@ -73,10 +75,10 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
             let buf = libc::malloc(data_size);
-            assert!(
-                !buf.is_null(),
-                "OOM allocating message data ({data_size} bytes)"
-            );
+            if buf.is_null() {
+                libc::free(node.cast());
+                return ptr::null_mut();
+            }
             libc::memcpy(buf, data, data_size);
             (*node).data = buf;
         } else {
@@ -115,7 +117,9 @@ pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
 fn alloc_sentinel() -> *mut HewMsgNode {
     // SAFETY: malloc(sizeof HewMsgNode) — POD-like struct, no drop glue.
     let node = unsafe { libc::malloc(std::mem::size_of::<HewMsgNode>()) }.cast::<HewMsgNode>();
-    assert!(!node.is_null(), "OOM allocating sentinel node");
+    if node.is_null() {
+        return ptr::null_mut();
+    }
     // SAFETY: `node` is non-null, properly aligned, and we own it exclusively.
     unsafe {
         ptr::write(&raw mut (*node).next, AtomicPtr::new(ptr::null_mut()));
@@ -139,12 +143,15 @@ struct MpscQueue {
 }
 
 impl MpscQueue {
-    fn new() -> Self {
+    fn new() -> Option<Self> {
         let sentinel = alloc_sentinel();
-        Self {
+        if sentinel.is_null() {
+            return None;
+        }
+        Some(Self {
             head: AtomicPtr::new(sentinel),
             tail: AtomicPtr::new(sentinel),
-        }
+        })
     }
 
     /// Enqueue a node. Safe for concurrent producers.
@@ -356,9 +363,21 @@ fn update_high_water_mark(mb: &HewMailbox) {
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
+    let user_fast = match MpscQueue::new() {
+        Some(q) => q,
+        None => return ptr::null_mut(),
+    };
+    let sys_queue = match MpscQueue::new() {
+        Some(q) => q,
+        None => {
+            unsafe { user_fast.drain_and_free() };
+            return ptr::null_mut();
+        }
+    };
+
     Box::into_raw(Box::new(HewMailbox {
-        user_fast: MpscQueue::new(),
-        sys_queue: MpscQueue::new(),
+        user_fast,
+        sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
@@ -381,10 +400,22 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailbox {
+    let user_fast = match MpscQueue::new() {
+        Some(q) => q,
+        None => return ptr::null_mut(),
+    };
+    let sys_queue = match MpscQueue::new() {
+        Some(q) => q,
+        None => {
+            unsafe { user_fast.drain_and_free() };
+            return ptr::null_mut();
+        }
+    };
+
     let policy = HewOverflowPolicy::DropNew;
     Box::into_raw(Box::new(HewMailbox {
-        user_fast: MpscQueue::new(),
-        sys_queue: MpscQueue::new(),
+        user_fast,
+        sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
@@ -412,14 +443,26 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
     capacity: usize,
     policy: OverflowPolicy,
 ) -> *mut HewMailbox {
+    let user_fast = match MpscQueue::new() {
+        Some(q) => q,
+        None => return ptr::null_mut(),
+    };
+    let sys_queue = match MpscQueue::new() {
+        Some(q) => q,
+        None => {
+            unsafe { user_fast.drain_and_free() };
+            return ptr::null_mut();
+        }
+    };
+
     let cap = if capacity == 0 {
         -1
     } else {
         i64::try_from(capacity).unwrap_or(i64::MAX)
     };
     Box::into_raw(Box::new(HewMailbox {
-        user_fast: MpscQueue::new(),
-        sys_queue: MpscQueue::new(),
+        user_fast,
+        sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
@@ -443,10 +486,22 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMailbox {
+    let user_fast = match MpscQueue::new() {
+        Some(q) => q,
+        None => return ptr::null_mut(),
+    };
+    let sys_queue = match MpscQueue::new() {
+        Some(q) => q,
+        None => {
+            unsafe { user_fast.drain_and_free() };
+            return ptr::null_mut();
+        }
+    };
+
     let cap = i64::from(capacity);
     Box::into_raw(Box::new(HewMailbox {
-        user_fast: MpscQueue::new(),
-        sys_queue: MpscQueue::new(),
+        user_fast,
+        sys_queue,
         slow_path: Mutex::new(SlowPathQueue {
             user_queue: VecDeque::new(),
         }),
@@ -494,21 +549,24 @@ unsafe fn replace_node_payload(
     msg_type: i32,
     data: *const c_void,
     data_size: usize,
-) {
+) -> bool {
     // SAFETY: `node` is a valid queue node owned while mailbox lock is held.
     unsafe {
-        libc::free((*node).data);
+        let mut new_buf: *mut c_void = ptr::null_mut();
         if data_size > 0 && !data.is_null() {
-            let buf = libc::malloc(data_size);
-            assert!(!buf.is_null(), "OOM allocating coalesced message data");
-            libc::memcpy(buf, data, data_size);
-            (*node).data = buf;
-        } else {
-            (*node).data = ptr::null_mut();
+            new_buf = libc::malloc(data_size);
+            if new_buf.is_null() {
+                return false;
+            }
+            libc::memcpy(new_buf, data, data_size);
         }
+
+        libc::free((*node).data);
+        (*node).data = new_buf;
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
     }
+    true
 }
 
 /// Configure coalescing behavior for a mailbox.
@@ -534,11 +592,8 @@ pub unsafe extern "C" fn hew_mailbox_set_coalesce_config(
 ///
 /// Returns `0` ([`HewError::Ok`]) on success, `-1`
 /// ([`HewError::ErrMailboxFull`]) if bounded and at capacity,
-/// or `-2` ([`HewError::ErrActorStopped`]) if the mailbox is closed.
-///
-/// # Panics
-///
-/// Panics if memory allocation for the message node or coalesced data fails (OOM).
+/// `-2` ([`HewError::ErrActorStopped`]) if the mailbox is closed,
+/// or `-5` ([`HewError::ErrOom`]) if allocation fails.
 ///
 /// # Safety
 ///
@@ -593,6 +648,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                    if node.is_null() {
+                        return HewError::ErrOom as i32;
+                    }
                     q.user_queue.push_back(node);
                     drop(q);
                     mb.count.fetch_add(1, Ordering::Release);
@@ -626,8 +684,11 @@ pub unsafe extern "C" fn hew_mailbox_send(
                         .copied();
                     if let Some(existing) = found {
                         // SAFETY: `existing` is valid; replace its payload.
-                        unsafe {
-                            replace_node_payload(existing, msg_type, data.cast_const(), size);
+                        let ok = unsafe {
+                            replace_node_payload(existing, msg_type, data.cast_const(), size)
+                        };
+                        if !ok {
+                            return HewError::ErrOom as i32;
                         }
                         return HewError::Ok as i32;
                     }
@@ -652,6 +713,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                            if node.is_null() {
+                                return HewError::ErrOom as i32;
+                            }
                             q.user_queue.push_back(node);
                             drop(q);
                             mb.count.fetch_add(1, Ordering::Release);
@@ -667,6 +731,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                            if node.is_null() {
+                                return HewError::ErrOom as i32;
+                            }
                             q.user_queue.push_back(node);
                             mb.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mb);
@@ -689,6 +756,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+                    if node.is_null() {
+                        return HewError::ErrOom as i32;
+                    }
                     q.user_queue.push_back(node);
                     mb.count.fetch_add(1, Ordering::Release);
                     update_high_water_mark(mb);
@@ -702,6 +772,9 @@ pub unsafe extern "C" fn hew_mailbox_send(
     // Fast path: no capacity issue (or unbounded).
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
 
     if mb.use_slow_path {
         let mut q = match mb.slow_path.lock() {
@@ -749,6 +822,9 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
 
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    if node.is_null() {
+        return HewError::ErrOom as i32;
+    }
 
     if mb.use_slow_path {
         let mut q = match mb.slow_path.lock() {
@@ -785,6 +861,9 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
 
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
+    if node.is_null() {
+        return;
+    }
 
     // SAFETY: `node` was just allocated with next == null.
     unsafe { mb.sys_queue.enqueue(node) };
@@ -794,12 +873,8 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
 /// Policy-aware push into the user queue.
 ///
 /// Returns `0` on success, `1` if the message was dropped (`DropNew` policy),
-/// `2` if the oldest message was dropped (`DropOld` policy), or `-1` on
-/// failure (`Fail`/`Block` policy, or closed mailbox).
-///
-/// # Panics
-///
-/// Panics if memory allocation for the message node or coalesced data fails (OOM).
+/// `2` if the oldest message was dropped (`DropOld` policy), `3` if coalesced,
+/// or `-1` on failure (including OOM).
 ///
 /// # Safety
 ///
@@ -832,6 +907,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                 HewOverflowPolicy::DropOld => {
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                    if node.is_null() {
+                        return -1;
+                    }
                     let mut q = match mbr.slow_path.lock() {
                         Ok(g) => g,
                         Err(e) => e.into_inner(),
@@ -881,7 +959,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                     if let Some(existing) = found {
                         // SAFETY: `existing` is a valid node in the queue.
                         // Replace its data with the new payload.
-                        unsafe { replace_node_payload(existing, msg_type, data, data_size) };
+                        if !unsafe { replace_node_payload(existing, msg_type, data, data_size) } {
+                            return -1;
+                        }
                         return 3; // coalesced
                     }
                     // No matching key — use configured fallback policy.
@@ -896,6 +976,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                            if node.is_null() {
+                                return -1;
+                            }
                             q.user_queue.push_back(node);
                             mbr.count.fetch_add(1, Ordering::Release);
                             update_high_water_mark(mbr);
@@ -918,6 +1001,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                            if node.is_null() {
+                                return -1;
+                            }
                             q.user_queue.push_back(node);
                             drop(q);
                             mbr.count.fetch_add(1, Ordering::Release);
@@ -950,6 +1036,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+                    if node.is_null() {
+                        return -1;
+                    }
                     q.user_queue.push_back(node);
                     drop(q);
                     mbr.count.fetch_add(1, Ordering::Release);
@@ -963,6 +1052,9 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
 
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
+    if node.is_null() {
+        return -1;
+    }
 
     if mbr.use_slow_path {
         let mut q = match mbr.slow_path.lock() {

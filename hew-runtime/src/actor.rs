@@ -236,8 +236,7 @@ impl std::fmt::Debug for HewActor {
 /// Monotonically increasing actor serial counter.
 static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
-/// Monotonically increasing actor PID counter.
-static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+// PID is now unified with id — actors use location-transparent IDs everywhere.
 
 // ── Live actor tracking ────────────────────────────────────────────────
 
@@ -520,10 +519,11 @@ pub unsafe extern "C" fn hew_actor_spawn(
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
     }
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id (location-transparent)
         state: actor_state,
         state_size,
         dispatch,
@@ -600,10 +600,11 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         HEW_MSG_BUDGET
     };
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id (location-transparent)
         state: actor_state,
         state_size: opts.state_size,
         dispatch: opts.dispatch,
@@ -661,10 +662,11 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
     }
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id
         state: actor_state,
         state_size,
         dispatch,
@@ -1626,7 +1628,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size,
         dispatch,
@@ -1678,7 +1680,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size,
         dispatch,
@@ -1745,7 +1747,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size: opts.state_size,
         dispatch: opts.dispatch,

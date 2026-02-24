@@ -28,6 +28,36 @@
 //! - `profiler` — built-in profiler dashboard and pprof export
 //! - `export-meta` — emit `__hew_export_meta_*` companion functions
 
+use std::cell::RefCell;
+use std::ffi::{c_char, CString};
+
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+}
+
+/// Set the last error message for the current thread.
+pub(crate) fn set_last_error(msg: impl Into<String>) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = Some(CString::new(msg.into()).unwrap_or_default());
+    });
+}
+
+/// Get a pointer to the last error message. Returns null if no error.
+/// The pointer is valid until the next error is set on this thread.
+#[no_mangle]
+pub extern "C" fn hew_last_error() -> *const c_char {
+    LAST_ERROR.with(|e| match e.borrow().as_ref() {
+        Some(s) => s.as_ptr(),
+        None => std::ptr::null(),
+    })
+}
+
+/// Clear the last error.
+#[no_mangle]
+pub extern "C" fn hew_clear_error() {
+    LAST_ERROR.with(|e| *e.borrow_mut() = None);
+}
+
 macro_rules! cabi_guard {
     ($cond:expr) => {
         if $cond {

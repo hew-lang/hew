@@ -27,6 +27,7 @@ const KEY_LEN: usize = 32;
 const KEYPAIR_FILE_LEN: usize = KEY_LEN * 2;
 /// Maximum Noise message size (64 KiB per snow docs).
 const MAX_MSG_SIZE: usize = 65535;
+const FRAME_HEADER_LEN: usize = 4;
 const ALLOWLIST_MODE_OPEN: c_int = 0;
 const ALLOWLIST_MODE_STRICT: c_int = 1;
 
@@ -85,15 +86,15 @@ struct ConnState {
 /// Internal state for the encrypted transport wrapper.
 struct EncryptedTransport {
     inner: *mut HewTransport,
-    private_key: Option<Vec<u8>>,
+    private_key: [u8; KEY_LEN],
     conns: [Option<ConnState>; MAX_CONNS],
 }
 
 impl EncryptedTransport {
-    fn new(inner: *mut HewTransport) -> Self {
+    fn new(inner: *mut HewTransport, private_key: [u8; KEY_LEN]) -> Self {
         Self {
             inner,
-            private_key: None,
+            private_key,
             conns: std::array::from_fn(|_| None),
         }
     }
@@ -119,14 +120,8 @@ impl EncryptedTransport {
         unsafe { (*self.inner).r#impl }
     }
 
-    fn get_or_generate_key(&self) -> Vec<u8> {
-        if let Some(ref k) = self.private_key {
-            k.clone()
-        } else {
-            let builder = Builder::new(NOISE_PATTERN.parse().expect("valid pattern"));
-            let keypair = builder.generate_keypair().expect("keypair generation");
-            keypair.private
-        }
+    fn private_key(&self) -> &[u8; KEY_LEN] {
+        &self.private_key
     }
 
     fn store_conn(&mut self, state: ConnState) -> c_int {
@@ -197,7 +192,7 @@ unsafe fn do_initiator_handshake(
     impl_ptr: *mut c_void,
     conn: c_int,
     private_key: &[u8],
-) -> Option<snow::TransportState> {
+) -> Option<(snow::TransportState, [u8; KEY_LEN])> {
     let builder = Builder::new(NOISE_PATTERN.parse().ok()?);
     let mut handshake = builder
         .local_private_key(private_key)
@@ -241,7 +236,14 @@ unsafe fn do_initiator_handshake(
         return None;
     }
 
-    handshake.into_transport_mode().ok()
+    let remote_static = handshake.get_remote_static()?;
+    if remote_static.len() != KEY_LEN {
+        return None;
+    }
+    let mut remote_key = [0u8; KEY_LEN];
+    remote_key.copy_from_slice(remote_static);
+    let transport = handshake.into_transport_mode().ok()?;
+    Some((transport, remote_key))
 }
 
 /// Perform the Noise XX handshake as responder using the inner transport.
@@ -254,7 +256,7 @@ unsafe fn do_responder_handshake(
     impl_ptr: *mut c_void,
     conn: c_int,
     private_key: &[u8],
-) -> Option<snow::TransportState> {
+) -> Option<(snow::TransportState, [u8; KEY_LEN])> {
     let builder = Builder::new(NOISE_PATTERN.parse().ok()?);
     let mut handshake = builder
         .local_private_key(private_key)
@@ -308,7 +310,14 @@ unsafe fn do_responder_handshake(
     let n = n as usize;
     handshake.read_message(&buf[..n], &mut payload).ok()?;
 
-    handshake.into_transport_mode().ok()
+    let remote_static = handshake.get_remote_static()?;
+    if remote_static.len() != KEY_LEN {
+        return None;
+    }
+    let mut remote_key = [0u8; KEY_LEN];
+    remote_key.copy_from_slice(remote_static);
+    let transport = handshake.into_transport_mode().ok()?;
+    Some((transport, remote_key))
 }
 
 // ---------------------------------------------------------------------------
@@ -339,10 +348,18 @@ unsafe extern "C" fn enc_connect(impl_ptr: *mut c_void, address: *const c_char) 
     }
 
     // Perform initiator handshake.
-    let key = enc.get_or_generate_key();
+    let key = *enc.private_key();
     // SAFETY: ops and inner_impl are valid.
     let transport_state = unsafe { do_initiator_handshake(&*ops, inner_impl, conn, &key) };
-    if let Some(ts) = transport_state {
+    if let Some((ts, peer_key)) = transport_state {
+        if !hew_allowlist_check_active_peer(&peer_key) {
+            // SAFETY: ops was derived from a valid &HewTransportOps and remains valid for this scope.
+            if let Some(close_fn) = (unsafe { &*ops }).close_conn {
+                // SAFETY: inner_impl is valid.
+                unsafe { close_fn(inner_impl, conn) };
+            }
+            return HEW_CONN_INVALID;
+        }
         enc.store_conn(ConnState {
             inner_conn_id: conn,
             transport: ts,
@@ -397,10 +414,18 @@ unsafe extern "C" fn enc_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
     }
 
     // Perform responder handshake.
-    let key = enc.get_or_generate_key();
+    let key = *enc.private_key();
     // SAFETY: ops and inner_impl are valid.
     let transport_state = unsafe { do_responder_handshake(&*ops, inner_impl, conn, &key) };
-    if let Some(ts) = transport_state {
+    if let Some((ts, peer_key)) = transport_state {
+        if !hew_allowlist_check_active_peer(&peer_key) {
+            // SAFETY: ops was derived from a valid &HewTransportOps and remains valid for this scope.
+            if let Some(close_fn) = (unsafe { &*ops }).close_conn {
+                // SAFETY: inner_impl is valid.
+                unsafe { close_fn(inner_impl, conn) };
+            }
+            return HEW_CONN_INVALID;
+        }
         enc.store_conn(ConnState {
             inner_conn_id: conn,
             transport: ts,
@@ -440,6 +465,10 @@ unsafe extern "C" fn enc_send(
     let Ok(ct_len) = cs.transport.write_message(plaintext, &mut ciphertext) else {
         return -1;
     };
+    let frame_len = FRAME_HEADER_LEN + ct_len;
+    let mut frame = vec![0u8; frame_len];
+    frame[..FRAME_HEADER_LEN].copy_from_slice(&(ct_len as u32).to_le_bytes());
+    frame[FRAME_HEADER_LEN..].copy_from_slice(&ciphertext[..ct_len]);
 
     // Send encrypted data via inner transport.
     let Some(ops) = enc.inner_ops() else {
@@ -448,13 +477,13 @@ unsafe extern "C" fn enc_send(
     let Some(send_fn) = ops.send else {
         return -1;
     };
-    // SAFETY: inner_impl is valid; ciphertext is valid for ct_len bytes.
+    // SAFETY: inner_impl is valid; frame is valid for frame_len bytes.
     let rc = unsafe {
         send_fn(
             enc.inner_impl(),
             inner_conn,
-            ciphertext.as_ptr().cast::<c_void>(),
-            ct_len,
+            frame.as_ptr().cast::<c_void>(),
+            frame_len,
         )
     };
     if rc < 0 {
@@ -481,7 +510,7 @@ unsafe extern "C" fn enc_recv(
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
 
     // Receive encrypted data via inner transport.
-    let mut ciphertext = vec![0u8; buf_size + 64];
+    let mut frame = vec![0u8; FRAME_HEADER_LEN + buf_size + 64];
     let Some(ops) = enc.inner_ops() else {
         return -1;
     };
@@ -493,16 +522,19 @@ unsafe extern "C" fn enc_recv(
     };
     let inner_conn = cs.inner_conn_id;
 
-    // SAFETY: inner_impl is valid; ciphertext buffer is valid.
+    // SAFETY: inner_impl is valid; frame buffer is valid.
     let n = unsafe {
         recv_fn(
             enc.inner_impl(),
             inner_conn,
-            ciphertext.as_mut_ptr().cast::<c_void>(),
-            ciphertext.len(),
+            frame.as_mut_ptr().cast::<c_void>(),
+            frame.len(),
         )
     };
     if n < 0 {
+        return -1;
+    }
+    if n < FRAME_HEADER_LEN as c_int {
         return -1;
     }
 
@@ -515,7 +547,16 @@ unsafe extern "C" fn enc_recv(
     let out_slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
     #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
     let n = n as usize;
-    match cs.transport.read_message(&ciphertext[..n], out_slice) {
+    let mut len_bytes = [0u8; FRAME_HEADER_LEN];
+    len_bytes.copy_from_slice(&frame[..FRAME_HEADER_LEN]);
+    let ct_len = u32::from_le_bytes(len_bytes) as usize;
+    if n != FRAME_HEADER_LEN + ct_len {
+        return -1;
+    }
+    match cs.transport.read_message(
+        &frame[FRAME_HEADER_LEN..FRAME_HEADER_LEN + ct_len],
+        out_slice,
+    ) {
         Ok(pt_len) => {
             #[expect(clippy::cast_possible_truncation, reason = "pt_len fits in c_int")]
             #[expect(clippy::cast_possible_wrap, reason = "C ABI: length fits in i32")]
@@ -762,15 +803,20 @@ pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
 ///
 /// # Safety
 ///
-/// `inner` must be a valid pointer to a [`HewTransport`].
+/// - `inner` must be a valid pointer to a [`HewTransport`].
+/// - `private_key` must point to at least 32 readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_transport_encrypted_new(
     inner: *mut HewTransport,
+    private_key: *const u8,
 ) -> *mut HewTransport {
-    if inner.is_null() {
+    if inner.is_null() || private_key.is_null() {
         return ptr::null_mut();
     }
-    let enc = Box::new(EncryptedTransport::new(inner));
+    let mut local_private_key = [0u8; KEY_LEN];
+    // SAFETY: private_key is non-null and caller guarantees at least KEY_LEN bytes.
+    unsafe { ptr::copy_nonoverlapping(private_key, local_private_key.as_mut_ptr(), KEY_LEN) };
+    let enc = Box::new(EncryptedTransport::new(inner, local_private_key));
     let transport = Box::new(HewTransport {
         ops: &raw const ENC_OPS,
         r#impl: Box::into_raw(enc).cast::<c_void>(),
@@ -935,14 +981,14 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
 ///
 /// - `transport` must be a valid pointer to a [`HewTransport`] created by
 ///   [`hew_transport_encrypted_new`].
-/// - `private_key` must point to at least `key_len` valid bytes.
+/// - `private_key` must point to at least 32 valid bytes.
 #[no_mangle]
 pub unsafe extern "C" fn hew_noise_set_keypair(
     transport: *mut HewTransport,
     private_key: *const u8,
     key_len: usize,
 ) {
-    if transport.is_null() || private_key.is_null() || key_len == 0 {
+    if transport.is_null() || private_key.is_null() || key_len < KEY_LEN {
         return;
     }
     // SAFETY: caller guarantees transport is valid.
@@ -952,9 +998,8 @@ pub unsafe extern "C" fn hew_noise_set_keypair(
     }
     // SAFETY: impl points to a valid EncryptedTransport.
     let enc = unsafe { &mut *t.r#impl.cast::<EncryptedTransport>() };
-    // SAFETY: private_key is valid for key_len bytes.
-    let key = unsafe { std::slice::from_raw_parts(private_key, key_len) };
-    enc.private_key = Some(key.to_vec());
+    // SAFETY: private_key is valid for at least KEY_LEN bytes.
+    unsafe { ptr::copy_nonoverlapping(private_key, enc.private_key.as_mut_ptr(), KEY_LEN) };
 }
 
 #[cfg(test)]
@@ -970,6 +1015,8 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::NamedTempFile;
+
+    const TEST_PRIVATE_KEY: [u8; KEY_LEN] = [7u8; KEY_LEN];
 
     /// Find a free TCP port by briefly binding to `127.0.0.1:0`.
     fn free_port() -> u16 {
@@ -1175,7 +1222,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         assert!(!enc.is_null());
 
         let private_key = [42u8; 32];
@@ -1185,7 +1232,7 @@ mod tests {
         // Verify the key was stored.
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert_eq!(enc_state.private_key.as_deref(), Some(&private_key[..]));
+        assert_eq!(enc_state.private_key, private_key);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1203,15 +1250,15 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
 
         // SAFETY: testing null key.
         unsafe { hew_noise_set_keypair(enc, ptr::null(), 32) };
 
-        // Key should remain None.
+        // Key should remain unchanged.
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert!(enc_state.private_key.is_none());
+        assert_eq!(enc_state.private_key, TEST_PRIVATE_KEY);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1222,7 +1269,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
 
         let key = [1u8; 32];
         // SAFETY: testing zero-length key.
@@ -1230,7 +1277,7 @@ mod tests {
 
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert!(enc_state.private_key.is_none());
+        assert_eq!(enc_state.private_key, TEST_PRIVATE_KEY);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1243,7 +1290,8 @@ mod tests {
     #[test]
     fn encrypted_new_null_returns_null() {
         // SAFETY: testing null handling.
-        let enc = unsafe { hew_transport_encrypted_new(ptr::null_mut()) };
+        let enc =
+            unsafe { hew_transport_encrypted_new(ptr::null_mut(), TEST_PRIVATE_KEY.as_ptr()) };
         assert!(enc.is_null());
     }
 
@@ -1252,7 +1300,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         assert!(!enc.is_null());
 
         // SAFETY: enc is valid.
@@ -1281,7 +1329,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         // SAFETY: enc is valid.
         let impl_ptr = unsafe { (*enc).r#impl };
 
@@ -1306,7 +1354,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         // SAFETY: enc is valid.
         let impl_ptr = unsafe { (*enc).r#impl };
 
@@ -1323,7 +1371,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         // SAFETY: enc is valid.
         let impl_ptr = unsafe { (*enc).r#impl };
         let data = [1u8, 2, 3];
@@ -1347,7 +1395,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         // SAFETY: enc is valid.
         let impl_ptr = unsafe { (*enc).r#impl };
         let mut buf = [0u8; 64];
@@ -1394,7 +1442,7 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: inner is valid.
-        let enc = unsafe { hew_transport_encrypted_new(inner) };
+        let enc = unsafe { hew_transport_encrypted_new(inner, TEST_PRIVATE_KEY.as_ptr()) };
         // SAFETY: enc is valid.
         let impl_ptr = unsafe { (*enc).r#impl };
 
@@ -1445,7 +1493,8 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let server_inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: server_inner is valid.
-        let server = unsafe { hew_transport_encrypted_new(server_inner) };
+        let server =
+            unsafe { hew_transport_encrypted_new(server_inner, TEST_PRIVATE_KEY.as_ptr()) };
 
         // Listen.
         // SAFETY: server is valid.
@@ -1473,7 +1522,8 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let client_inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: client_inner is valid.
-        let client = unsafe { hew_transport_encrypted_new(client_inner) };
+        let client =
+            unsafe { hew_transport_encrypted_new(client_inner, TEST_PRIVATE_KEY.as_ptr()) };
 
         // Connect (handshake runs inside connect).
         // SAFETY: client is valid.
@@ -1738,11 +1788,8 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let server_inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: server_inner is valid.
-        let server = unsafe { hew_transport_encrypted_new(server_inner) };
-        // SAFETY: server is valid, key slice is valid.
-        unsafe {
-            hew_noise_set_keypair(server, server_kp.private.as_ptr(), server_kp.private.len());
-        }
+        let server =
+            unsafe { hew_transport_encrypted_new(server_inner, server_kp.private.as_ptr()) };
 
         let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
         // SAFETY: server is valid.
@@ -1767,11 +1814,8 @@ mod tests {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let client_inner = unsafe { hew_transport_tcp_new() };
         // SAFETY: client_inner is valid.
-        let client = unsafe { hew_transport_encrypted_new(client_inner) };
-        // SAFETY: client is valid, key slice is valid.
-        unsafe {
-            hew_noise_set_keypair(client, client_kp.private.as_ptr(), client_kp.private.len());
-        }
+        let client =
+            unsafe { hew_transport_encrypted_new(client_inner, client_kp.private.as_ptr()) };
 
         // SAFETY: client is valid.
         let c_ops = unsafe { &*(*client).ops };
@@ -1825,7 +1869,7 @@ mod tests {
     fn store_conn_and_get_conn_mut() {
         // SAFETY: hew_transport_tcp_new has no preconditions.
         let inner = unsafe { hew_transport_tcp_new() };
-        let mut enc = EncryptedTransport::new(inner);
+        let mut enc = EncryptedTransport::new(inner, TEST_PRIVATE_KEY);
 
         // No connections initially.
         assert!(enc.get_conn_mut(0).is_none());
@@ -1864,32 +1908,12 @@ mod tests {
     }
 
     #[test]
-    fn get_or_generate_key_without_preset() {
+    fn private_key_returns_configured_key() {
         let enc = EncryptedTransport {
             inner: ptr::null_mut(),
-            private_key: None,
+            private_key: TEST_PRIVATE_KEY,
             conns: std::array::from_fn(|_| None),
         };
-        let key = enc.get_or_generate_key();
-        assert_eq!(key.len(), KEY_LEN);
-
-        // A second call should produce a different ephemeral key.
-        let key2 = enc.get_or_generate_key();
-        assert_ne!(key, key2, "ephemeral keys should differ across calls");
-    }
-
-    #[test]
-    fn get_or_generate_key_with_preset() {
-        let preset = vec![7u8; KEY_LEN];
-        let enc = EncryptedTransport {
-            inner: ptr::null_mut(),
-            private_key: Some(preset.clone()),
-            conns: std::array::from_fn(|_| None),
-        };
-        let key = enc.get_or_generate_key();
-        assert_eq!(key, preset);
-
-        // Should return the same key every time.
-        assert_eq!(enc.get_or_generate_key(), preset);
+        assert_eq!(*enc.private_key(), TEST_PRIVATE_KEY);
     }
 }

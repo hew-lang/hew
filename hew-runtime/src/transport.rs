@@ -18,6 +18,7 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::actor::{self, HewActor};
 use crate::internal::types::HewActorState;
+use crate::set_last_error;
 use crate::wire::{self, HewWireBuf, HewWireEnvelope};
 
 // ---------------------------------------------------------------------------
@@ -373,7 +374,14 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     let mut written = 0usize;
     while written < 4 {
         match (&*sock).write(&header[written..]) {
-            Ok(0) | Err(_) => return -1,
+            Ok(0) => {
+                set_last_error("transport framed_send: peer closed while writing header");
+                return -1;
+            }
+            Err(e) => {
+                set_last_error(format!("transport framed_send: header write failed: {e}"));
+                return -1;
+            }
             Ok(n) => written += n,
         }
     }
@@ -381,7 +389,14 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     written = 0;
     while written < data.len() {
         match (&*sock).write(&data[written..]) {
-            Ok(0) | Err(_) => return -1,
+            Ok(0) => {
+                set_last_error("transport framed_send: peer closed while writing payload");
+                return -1;
+            }
+            Err(e) => {
+                set_last_error(format!("transport framed_send: payload write failed: {e}"));
+                return -1;
+            }
             Ok(n) => written += n,
         }
     }
@@ -399,19 +414,37 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
     let mut read_count = 0usize;
     while read_count < 4 {
         match (&*sock).read(&mut header[read_count..]) {
-            Ok(0) | Err(_) => return -1,
+            Ok(0) => {
+                set_last_error("transport framed_recv: peer closed while reading header");
+                return -1;
+            }
+            Err(e) => {
+                set_last_error(format!("transport framed_recv: header read failed: {e}"));
+                return -1;
+            }
             Ok(n) => read_count += n,
         }
     }
     let frame_len = u32::from_le_bytes(header) as usize;
     if frame_len > buf.len() {
+        set_last_error(format!(
+            "transport framed_recv: frame too large ({frame_len} > {})",
+            buf.len()
+        ));
         return -1;
     }
     // Read payload.
     read_count = 0;
     while read_count < frame_len {
         match (&*sock).read(&mut buf[read_count..frame_len]) {
-            Ok(0) | Err(_) => return -1,
+            Ok(0) => {
+                set_last_error("transport framed_recv: peer closed while reading payload");
+                return -1;
+            }
+            Err(e) => {
+                set_last_error(format!("transport framed_recv: payload read failed: {e}"));
+                return -1;
+            }
             Ok(n) => read_count += n,
         }
     }

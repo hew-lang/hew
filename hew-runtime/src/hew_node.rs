@@ -8,10 +8,13 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crate::set_last_error;
 use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
+use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
 const NODE_STATE_STARTING: u8 = 0;
@@ -51,6 +54,8 @@ pub struct HewNode {
     pub conn_mgr: *mut HewConnMgr,
     /// Cluster membership state
     pub cluster: *mut HewCluster,
+    /// PID routing table for remote node delivery.
+    pub routing_table: *mut HewRoutingTable,
     /// Local + remote registry
     pub registry: *mut HewRegistry,
     /// Node state (starting/running/stopping/stopped)
@@ -158,6 +163,7 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
         transport: ptr::null_mut(),
         conn_mgr: ptr::null_mut(),
         cluster: ptr::null_mut(),
+        routing_table: ptr::null_mut(),
         registry,
         state: AtomicU8::new(NODE_STATE_STOPPED),
         bind_addr_owned: bind_copy,
@@ -177,6 +183,7 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     if node.is_null() {
+        set_last_error("hew_node_start: node is null");
         return -1;
     }
     // SAFETY: caller guarantees node pointer is valid.
@@ -187,6 +194,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         return 0;
     }
     if current != NODE_STATE_STOPPED {
+        set_last_error("hew_node_start: node is not stopped");
         return -1;
     }
     node.state.store(NODE_STATE_STARTING, Ordering::Release);
@@ -198,6 +206,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         node.transport = unsafe { transport::hew_transport_tcp_new() };
         if node.transport.is_null() {
             node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            set_last_error("hew_node_start: failed to create transport");
             return -1;
         }
     }
@@ -207,6 +216,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     node.transport_ops = t.ops;
     if node.transport_ops.is_null() {
         node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+        set_last_error("hew_node_start: transport ops are null");
         return -1;
     }
     // SAFETY: checked non-null above.
@@ -214,22 +224,14 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 
     let Some(listen_fn) = ops.listen else {
         node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+        set_last_error("hew_node_start: transport listen op missing");
         return -1;
     };
     // SAFETY: transport implementation is valid.
     if unsafe { listen_fn(t.r#impl, node.bind_addr) } < 0 {
         node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+        set_last_error("hew_node_start: transport listen failed");
         return -1;
-    }
-
-    if node.conn_mgr.is_null() {
-        // SAFETY: transport pointer valid for manager lifetime.
-        node.conn_mgr =
-            unsafe { connection::hew_connmgr_new(node.transport, Some(node_inbound_router)) };
-        if node.conn_mgr.is_null() {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            return -1;
-        }
     }
 
     if node.cluster.is_null() {
@@ -240,6 +242,33 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         // SAFETY: config pointer is valid for this call.
         node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
         if node.cluster.is_null() {
+            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            set_last_error("hew_node_start: failed to create connection manager");
+            return -1;
+        }
+    }
+
+    if node.routing_table.is_null() {
+        // SAFETY: constructor returns owned routing table pointer or null.
+        node.routing_table = unsafe { routing::hew_routing_table_new(node.node_id) };
+        if node.routing_table.is_null() {
+            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            set_last_error("hew_node_start: failed to create cluster");
+            return -1;
+        }
+    }
+
+    if node.conn_mgr.is_null() {
+        // SAFETY: pointers are valid for manager lifetime.
+        node.conn_mgr = unsafe {
+            connection::hew_connmgr_new(
+                node.transport,
+                Some(node_inbound_router),
+                node.routing_table,
+                node.cluster,
+            )
+        };
+        if node.conn_mgr.is_null() {
             node.state.store(NODE_STATE_STOPPED, Ordering::Release);
             return -1;
         }
@@ -266,6 +295,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         }
         Err(_) => {
             node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            set_last_error("hew_node_start: failed to spawn accept thread");
             return -1;
         }
     }
@@ -282,6 +312,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     if node.is_null() {
+        set_last_error("hew_node_stop: node is null");
         return -1;
     }
     // SAFETY: caller guarantees node pointer is valid.
@@ -302,18 +333,24 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
     }
 
+    if !node.conn_mgr.is_null() {
+        // SAFETY: valid manager pointer from hew_connmgr_new.
+        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
+        node.conn_mgr = ptr::null_mut();
+    }
+
+    if !node.routing_table.is_null() {
+        // SAFETY: valid routing table pointer from hew_routing_table_new.
+        unsafe { routing::hew_routing_table_free(node.routing_table) };
+        node.routing_table = ptr::null_mut();
+    }
+
     if !node.cluster.is_null() {
         // SAFETY: valid cluster pointer.
         unsafe { cluster::hew_cluster_leave(node.cluster) };
         // SAFETY: valid cluster pointer from hew_cluster_new.
         unsafe { cluster::hew_cluster_free(node.cluster) };
         node.cluster = ptr::null_mut();
-    }
-
-    if !node.conn_mgr.is_null() {
-        // SAFETY: valid manager pointer from hew_connmgr_new.
-        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
-        node.conn_mgr = ptr::null_mut();
     }
 
     if !node.transport.is_null() {
@@ -526,11 +563,13 @@ pub unsafe extern "C" fn hew_node_send(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_char) -> c_int {
     if node.is_null() || addr.is_null() {
+        set_last_error("hew_node_connect: node or addr is null");
         return -1;
     }
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &mut *node };
     if node.transport.is_null() || node.conn_mgr.is_null() {
+        set_last_error("hew_node_connect: node is not started");
         return -1;
     }
 
@@ -539,6 +578,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
     let Some((peer_node_id, target_addr)) =
         (unsafe { parse_connect_target(addr, fallback_node_id) })
     else {
+        set_last_error("hew_node_connect: invalid connect target");
         return -1;
     };
 
@@ -546,15 +586,18 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
     let t = unsafe { &*node.transport };
     // SAFETY: valid transport vtable pointer from transport object.
     let Some(ops) = (unsafe { t.ops.as_ref() }) else {
+        set_last_error("hew_node_connect: transport ops are null");
         return -1;
     };
     let Some(connect_fn) = ops.connect else {
+        set_last_error("hew_node_connect: transport connect op missing");
         return -1;
     };
 
     // SAFETY: transport impl and C string are valid.
     let conn_id = unsafe { connect_fn(t.r#impl, target_addr.as_ptr()) };
     if conn_id == HEW_CONN_INVALID {
+        set_last_error("hew_node_connect: transport connect failed");
         return -1;
     }
 
@@ -564,6 +607,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             // SAFETY: transport impl and conn handle are valid here.
             unsafe { close_fn(t.r#impl, conn_id) };
         }
+        set_last_error("hew_node_connect: failed to add connection");
         return -1;
     }
 

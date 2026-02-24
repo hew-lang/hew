@@ -99,7 +99,7 @@ fn add_link(from_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
     let mut shard = LINK_TABLE[shard_index]
         .write()
-        .expect("link table poisoned");
+        .unwrap_or_else(|e| e.into_inner());
 
     shard
         .links
@@ -137,7 +137,7 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
     let linked_actors = {
         let mut shard = LINK_TABLE[shard_index]
             .write()
-            .expect("link table poisoned");
+            .unwrap_or_else(|e| e.into_inner());
         shard.links.remove(&actor_id).unwrap_or_default()
     };
 

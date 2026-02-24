@@ -88,7 +88,7 @@ mod native {
             .to_string_lossy()
             .into_owned();
         let shard = REGISTRY.shard_for(&key);
-        let mut reg = shard.write().expect("registry lock poisoned");
+        let mut reg = shard.write().unwrap_or_else(|e| e.into_inner());
         if reg.0.contains_key(&key) {
             return -1;
         }
@@ -116,7 +116,7 @@ mod native {
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
         let shard = REGISTRY.shard_for(key.as_ref());
-        let reg = shard.read().expect("registry lock poisoned");
+        let reg = shard.read().unwrap_or_else(|e| e.into_inner());
         reg.0
             .get(key.as_ref())
             .copied()
@@ -143,7 +143,7 @@ mod native {
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
         let shard = REGISTRY.shard_for(key.as_ref());
-        let mut reg = shard.write().expect("registry lock poisoned");
+        let mut reg = shard.write().unwrap_or_else(|e| e.into_inner());
         if reg.0.remove(key.as_ref()).is_some() {
             0
         } else {
@@ -160,7 +160,7 @@ mod native {
     pub extern "C" fn hew_registry_count() -> i32 {
         let mut total_count = 0usize;
         for shard in &REGISTRY.shards {
-            let reg = shard.read().expect("registry lock poisoned");
+            let reg = shard.read().unwrap_or_else(|e| e.into_inner());
             total_count += reg.0.len();
         }
         #[expect(
@@ -183,7 +183,7 @@ mod native {
     #[no_mangle]
     pub extern "C" fn hew_registry_clear() {
         for shard in &REGISTRY.shards {
-            let mut reg = shard.write().expect("registry lock poisoned");
+            let mut reg = shard.write().unwrap_or_else(|e| e.into_inner());
             reg.0.clear();
         }
     }

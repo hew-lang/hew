@@ -2217,6 +2217,20 @@
           "returns": "i32"
         },
         {
+          "name": "hew_node_unregister",
+          "params": [
+            {
+              "name": "node",
+              "type": "ptr"
+            },
+            {
+              "name": "name",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i32"
+        },
+        {
           "name": "hew_node_lookup",
           "params": [
             {

@@ -182,4 +182,48 @@ See plan.md for the detailed task breakdown. The implementation is split into
 
 ## Phase 7: Supervision & Pools
 
-_(In progress — remote supervision, actor pools, distributed tests)_
+- **Actor pools**: Round-robin and random routing strategies via `HewPool`.
+- **Remote supervisor**: `remote_sup.rs` wired to unified node lifecycle.
+- **Distributed tests**: Multi-node spawn, supervision tree, pool routing.
+
+## Phase 8: v2 Audit & Hardening (2026-02-25)
+
+### Second-round multi-agent audit
+
+Deployed 4 audit agents (GPT-5.3-Codex, GPT-5.2, Sonnet 4.6, Gemini 3 Pro) against
+the Phase 7 codebase. Found critical issues the first round missed:
+
+**Critical findings:**
+
+- **PID/id dual identity**: `HewActor.pid` was a plain counter while `id` was
+  location-transparent `(node_id<<48|serial)`. `hew_actor_self_pid()` returned the
+  counter, breaking all cross-node routing. Fixed by unifying: `pid = id` at all 6
+  spawn sites.
+- **Noise used ephemeral keys only**: Persistent static key was never bound to the
+  transport session, making Noise XX authentication meaningless. Fixed by threading
+  persistent key through handshake and validating remote static against allowlist.
+- **Allowlist never enforced**: The check function existed but was never called during
+  handshake. Now wired into post-handshake validation.
+- **Connection drops didn't clean up**: Reader loop exit didn't remove routes, notify
+  SWIM, or clean connmgr. Now wired: drop → remove route → SWIM notify → connmgr
+  cleanup.
+
+**High-priority fixes:**
+
+- Deleted orphan `node.rs` (317 LOC dead code with conflicting symbols).
+- Added thread-local `set_last_error`/`hew_last_error` C-ABI error diagnostic API.
+- Converted 20+ panic-in-runtime paths to proper error returns (actor_group, link,
+  mailbox, registry).
+- Synced `runtime_manifest.json` with actual exported functions.
+- Schema hash validation in handshake (reject incompatible peers).
+- Connection reconnection with exponential backoff.
+- Bounded outbound message queue for backpressure.
+
+### Decisions
+
+- **PID unification over PID removal**: Kept both fields but made them identical,
+  minimizing struct layout changes while fixing the routing bug.
+- **Thread-local errors over global**: `set_last_error` uses `thread_local!` so
+  concurrent C-ABI calls don't clobber each other's diagnostics.
+- **Delete over deprecate**: `node.rs` had conflicting symbols with `hew_node.rs` —
+  deprecation would have caused linker errors, deletion was the only safe option.

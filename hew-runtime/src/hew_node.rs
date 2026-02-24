@@ -527,16 +527,20 @@ pub unsafe extern "C" fn hew_node_send(
     if node.conn_mgr.is_null() {
         return -1;
     }
-    let conn_id = {
-        let map = match node.conn_by_node.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
+    // SAFETY: routing table pointer is valid while node is running.
+    let mut conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
+    if conn_id < 0 {
+        conn_id = {
+            let map = match node.conn_by_node.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            let Some(conn_id) = map.get(&target_node_id) else {
+                return -1;
+            };
+            *conn_id
         };
-        let Some(conn_id) = map.get(&target_node_id) else {
-            return -1;
-        };
-        *conn_id
-    };
+    }
 
     // SAFETY: conn_mgr and conn_id were validated above.
     unsafe {
@@ -610,6 +614,16 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
         set_last_error("hew_node_connect: failed to add connection");
         return -1;
     }
+    // SAFETY: conn_mgr and conn_id are valid on successful add.
+    let _ = unsafe {
+        connection::hew_connmgr_configure_reconnect(
+            node.conn_mgr,
+            conn_id,
+            target_addr.as_ptr(),
+            1,
+            0,
+        )
+    };
 
     {
         let mut map = match node.conn_by_node.lock() {

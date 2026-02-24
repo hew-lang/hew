@@ -27,23 +27,30 @@
 //! - [`hew_connmgr_add`] — Add a connection (spawns reader thread).
 //! - [`hew_connmgr_remove`] — Remove and close a connection.
 //! - [`hew_connmgr_send`] — Send a message over a connection.
+//! - [`hew_connmgr_set_outbound_capacity`] — Set per-connection queue size.
 //! - [`hew_connmgr_count`] — Number of active connections.
 //! - [`hew_connmgr_broadcast`] — Send to all connections.
 
-use std::ffi::c_int;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
+use std::ffi::{c_char, c_int, CStr};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+use rand::rng;
+use rand::RngExt;
 
 use crate::cluster::{
     hew_cluster_notify_connection_established, hew_cluster_notify_connection_lost, HewCluster,
 };
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route, HewRoutingTable};
 use crate::set_last_error;
-use crate::transport::HewTransport;
+use crate::transport::{HewTransport, HEW_CONN_INVALID};
 use crate::wire::{
     hew_wire_buf_free, hew_wire_buf_init, hew_wire_buf_init_read, hew_wire_decode_envelope,
-    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope,
+    hew_wire_encode_envelope, HewWireBuf, HewWireEnvelope, HBF_FLAG_COMPRESSED, HBF_MAGIC,
+    HBF_VERSION, HEW_WIRE_FIXED32, HEW_WIRE_LENGTH_DELIMITED, HEW_WIRE_VARINT,
 };
 
 // ── Connection states ──────────────────────────────────────────────────
@@ -60,10 +67,13 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 const HEW_HANDSHAKE_SIZE: usize = 48;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
 const HEW_PROTOCOL_VERSION: u16 = 1;
+const HEW_CONN_OUTBOUND_DEFAULT_CAPACITY: usize = 1024;
 
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 const HEW_FEATURE_SUPPORTS_REMOTE_SPAWN: u32 = 1 << 2;
+const FNV1A32_OFFSET_BASIS: u32 = 2_166_136_261;
+const FNV1A32_PRIME: u32 = 16_777_619;
 
 const NOISE_STATIC_PUBKEY_LEN: usize = 32;
 #[cfg(feature = "encryption")]
@@ -71,7 +81,112 @@ const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 #[cfg(feature = "encryption")]
 const NOISE_MAX_MSG_SIZE: usize = 65_535;
 
+const RECONNECT_DEFAULT_MAX_RETRIES: u32 = 5;
+const RECONNECT_INITIAL_BACKOFF_MS: u64 = 1_000;
+const RECONNECT_MAX_BACKOFF_MS: u64 = 30_000;
+const RECONNECT_SLEEP_SLICE_MS: u64 = 100;
+const RECONNECT_JITTER_MIN_PERCENT: u64 = 90;
+const RECONNECT_JITTER_MAX_PERCENT: u64 = 110;
+
 // ── Connection actor ───────────────────────────────────────────────────
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct OutboundQueue {
+    inner: Mutex<OutboundQueueState>,
+    cv: Condvar,
+}
+
+#[derive(Debug)]
+struct OutboundQueueState {
+    queue: VecDeque<Vec<u8>>,
+    capacity: usize,
+    closed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundQueuePushError {
+    Full,
+    Closed,
+}
+
+#[allow(dead_code)]
+impl OutboundQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(OutboundQueueState {
+                queue: VecDeque::new(),
+                capacity,
+                closed: false,
+            }),
+            cv: Condvar::new(),
+        }
+    }
+
+    fn try_push(&self, payload: Vec<u8>) -> Result<(), OutboundQueuePushError> {
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if inner.closed {
+            return Err(OutboundQueuePushError::Closed);
+        }
+        if inner.queue.len() >= inner.capacity {
+            return Err(OutboundQueuePushError::Full);
+        }
+        inner.queue.push_back(payload);
+        self.cv.notify_one();
+        Ok(())
+    }
+
+    fn pop_blocking(&self, stop_flag: &AtomicI32) -> Option<Vec<u8>> {
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        loop {
+            if let Some(payload) = inner.queue.pop_front() {
+                return Some(payload);
+            }
+            if inner.closed || stop_flag.load(Ordering::Acquire) != 0 {
+                return None;
+            }
+            let waited = self.cv.wait_timeout(inner, Duration::from_millis(50));
+            inner = match waited {
+                Ok((guard, _)) => guard,
+                Err(e) => e.into_inner().0,
+            };
+        }
+    }
+
+    fn set_capacity(&self, capacity: usize) {
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        inner.capacity = capacity;
+        self.cv.notify_all();
+    }
+
+    fn close(&self) {
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        inner.closed = true;
+        self.cv.notify_all();
+    }
+
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        let inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        inner.capacity
+    }
+}
 
 /// Fixed-size protocol handshake exchanged before actor traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,10 +244,18 @@ struct ConnectionActor {
     /// Optional per-connection Noise transport state.
     #[cfg(feature = "encryption")]
     noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
+    /// Bounded queue of outbound wire payloads.
+    outbound_queue: Arc<OutboundQueue>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
+    /// Handle to the writer thread (if running).
+    writer_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
     reader_stop: Arc<AtomicI32>,
+    /// Signal to stop the writer thread.
+    writer_stop: Arc<AtomicI32>,
+    /// Optional reconnect settings for this connection.
+    reconnect: Option<ReconnectSettings>,
 }
 
 // ── Connection manager ─────────────────────────────────────────────────
@@ -154,6 +277,26 @@ pub struct HewConnMgr {
     routing_table: *mut HewRoutingTable,
     /// Optional cluster handle for SWIM connection notifications.
     cluster: *mut HewCluster,
+    /// Whether automatic reconnect attempts are enabled.
+    reconnect_enabled: AtomicBool,
+    /// Default maximum retries for newly configured reconnecting connections.
+    reconnect_max_retries: AtomicU32,
+    /// Global shutdown signal shared with reconnect workers.
+    reconnect_shutdown: Arc<AtomicBool>,
+    /// Background reconnect worker handles.
+    reconnect_workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+#[derive(Clone, Debug)]
+struct ReconnectSettings {
+    target_addr: String,
+    max_retries: u32,
+}
+
+#[derive(Clone, Debug)]
+struct ReconnectPlan {
+    target_addr: String,
+    max_retries: u32,
 }
 
 /// Inbound message routing callback.
@@ -197,8 +340,12 @@ impl ConnectionActor {
             last_activity_ms: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "encryption")]
             noise_transport: Arc::new(Mutex::new(None)),
+            outbound_queue: Arc::new(OutboundQueue::new(HEW_CONN_OUTBOUND_DEFAULT_CAPACITY)),
             reader_handle: None,
+            writer_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
+            writer_stop: Arc::new(AtomicI32::new(0)),
+            reconnect: None,
         }
     }
 }
@@ -207,8 +354,16 @@ impl Drop for ConnectionActor {
     fn drop(&mut self) {
         // Signal reader thread to stop.
         self.reader_stop.store(1, Ordering::Release);
+        // Signal writer thread to stop.
+        self.writer_stop.store(1, Ordering::Release);
+        self.outbound_queue.close();
         // Wait for it (best-effort).
         if let Some(handle) = self.reader_handle.take() {
+            if handle.thread().id() != thread::current().id() {
+                let _ = handle.join();
+            }
+        }
+        if let Some(handle) = self.writer_handle.take() {
             if handle.thread().id() != thread::current().id() {
                 let _ = handle.join();
             }
@@ -239,6 +394,203 @@ struct SendConnMgr(*mut HewConnMgr);
 // guaranteed by the manager lifecycle contract.
 unsafe impl Send for SendConnMgr {}
 
+fn hew_connmgr_normalize_max_retries(max_retries: c_int) -> u32 {
+    if max_retries <= 0 {
+        RECONNECT_DEFAULT_MAX_RETRIES
+    } else {
+        u32::try_from(max_retries).unwrap_or(RECONNECT_DEFAULT_MAX_RETRIES)
+    }
+}
+
+fn hew_connmgr_jittered_backoff_ms(base_ms: u64) -> u64 {
+    let mut rng = rng();
+    let jitter_pct = rng.random_range(RECONNECT_JITTER_MIN_PERCENT..=RECONNECT_JITTER_MAX_PERCENT);
+    let jittered = base_ms.saturating_mul(jitter_pct) / 100;
+    jittered.max(1)
+}
+
+fn hew_connmgr_sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
+    let mut remaining = delay_ms;
+    while remaining > 0 {
+        if shutdown.load(Ordering::Acquire) {
+            return false;
+        }
+        let slice = remaining.min(RECONNECT_SLEEP_SLICE_MS);
+        thread::sleep(Duration::from_millis(slice));
+        remaining -= slice;
+    }
+    !shutdown.load(Ordering::Acquire)
+}
+
+fn hew_connmgr_collect_finished_reconnect_workers(mgr: &HewConnMgr) {
+    let mut workers = match mgr.reconnect_workers.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let mut idx = 0usize;
+    while idx < workers.len() {
+        if workers[idx].is_finished() {
+            let handle = workers.swap_remove(idx);
+            let _ = handle.join();
+        } else {
+            idx += 1;
+        }
+    }
+}
+
+fn hew_connmgr_reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<ReconnectPlan> {
+    if !mgr.reconnect_enabled.load(Ordering::Acquire)
+        || mgr.reconnect_shutdown.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    let conns = match mgr.connections.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
+    let reconnect = conn.reconnect.as_ref()?;
+    Some(ReconnectPlan {
+        target_addr: reconnect.target_addr.clone(),
+        max_retries: reconnect.max_retries.max(1),
+    })
+}
+
+unsafe fn hew_connmgr_connect_addr(
+    mgr: *mut HewConnMgr,
+    target_addr: &CStr,
+) -> Result<c_int, String> {
+    if mgr.is_null() {
+        return Err("manager is null".to_owned());
+    }
+    // SAFETY: caller guarantees `mgr` remains valid for this call.
+    let mgr = unsafe { &*mgr };
+    if mgr.transport.is_null() {
+        return Err("transport is null".to_owned());
+    }
+    // SAFETY: transport pointer is valid per manager contract.
+    let t = unsafe { &*mgr.transport };
+    // SAFETY: vtable pointer validity is guaranteed by transport construction.
+    let Some(ops) = (unsafe { t.ops.as_ref() }) else {
+        return Err("transport ops are null".to_owned());
+    };
+    let Some(connect_fn) = ops.connect else {
+        return Err("transport connect op missing".to_owned());
+    };
+    // SAFETY: transport impl and C string are valid.
+    let conn_id = unsafe { connect_fn(t.r#impl, target_addr.as_ptr()) };
+    if conn_id == HEW_CONN_INVALID {
+        return Err("transport connect failed".to_owned());
+    }
+    Ok(conn_id)
+}
+
+fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan: ReconnectPlan) {
+    if mgr.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid when scheduling workers.
+    let mgr_ref = unsafe { &*mgr };
+    if mgr_ref.reconnect_shutdown.load(Ordering::Acquire) {
+        return;
+    }
+    hew_connmgr_collect_finished_reconnect_workers(mgr_ref);
+    let mgr_send = SendConnMgr(mgr);
+    let shutdown = Arc::clone(&mgr_ref.reconnect_shutdown);
+    let thread_name = format!("hew-reconnect-{conn_id}");
+    let handle = thread::Builder::new().name(thread_name).spawn(move || {
+        hew_connmgr_reconnect_worker_loop(mgr_send, shutdown, conn_id, plan);
+    });
+    match handle {
+        Ok(worker) => {
+            let mut workers = match mgr_ref.reconnect_workers.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            workers.push(worker);
+        }
+        Err(_) => {
+            set_last_error(format!(
+                "hew_connmgr_reconnect: failed to spawn worker for dropped conn {conn_id}"
+            ));
+        }
+    }
+}
+
+fn hew_connmgr_reconnect_worker_loop(
+    mgr: SendConnMgr,
+    shutdown: Arc<AtomicBool>,
+    dropped_conn_id: c_int,
+    plan: ReconnectPlan,
+) {
+    let mgr_ptr = mgr.0;
+    let mut base_backoff_ms = RECONNECT_INITIAL_BACKOFF_MS;
+
+    for attempt in 1..=plan.max_retries {
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        let delay_ms = hew_connmgr_jittered_backoff_ms(base_backoff_ms);
+        if !hew_connmgr_sleep_until_retry(&shutdown, delay_ms) {
+            return;
+        }
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
+        let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
+            set_last_error(format!(
+                "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
+            ));
+            return;
+        };
+        let connect_result = unsafe { hew_connmgr_connect_addr(mgr_ptr, &target_addr) };
+        match connect_result {
+            Ok(new_conn_id) => {
+                // SAFETY: manager pointer is valid until shutdown and join in free.
+                if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } == 0 {
+                    let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
+                    // SAFETY: manager and conn_id are valid after successful add.
+                    let _ = unsafe {
+                        hew_connmgr_configure_reconnect(
+                            mgr_ptr,
+                            new_conn_id,
+                            target_addr.as_ptr(),
+                            1,
+                            retries,
+                        )
+                    };
+                    return;
+                }
+                // SAFETY: connection belongs to this transport and was not installed.
+                unsafe {
+                    let mgr_ref = &*mgr_ptr;
+                    hew_conn_close_transport_conn(mgr_ref.transport, new_conn_id);
+                }
+                set_last_error(format!(
+                    "hew_connmgr_reconnect: failed to install reconnected conn on attempt {attempt}/{}, addr={}",
+                    plan.max_retries, plan.target_addr
+                ));
+            }
+            Err(err) => {
+                set_last_error(format!(
+                    "hew_connmgr_reconnect: attempt {attempt}/{} failed for dropped conn {dropped_conn_id}, addr={}: {err}",
+                    plan.max_retries, plan.target_addr
+                ));
+            }
+        }
+
+        base_backoff_ms = base_backoff_ms
+            .saturating_mul(2)
+            .min(RECONNECT_MAX_BACKOFF_MS);
+    }
+
+    set_last_error(format!(
+        "hew_connmgr_reconnect: giving up after {} attempts for dropped conn {dropped_conn_id}, addr={}",
+        plan.max_retries, plan.target_addr
+    ));
+}
+
 fn hew_conn_local_feature_flags() -> u32 {
     let mut flags = HEW_FEATURE_SUPPORTS_GOSSIP | HEW_FEATURE_SUPPORTS_REMOTE_SPAWN;
     #[cfg(feature = "encryption")]
@@ -249,8 +601,21 @@ fn hew_conn_local_feature_flags() -> u32 {
 }
 
 fn hew_conn_local_schema_hash() -> u32 {
-    // FNV-1a(∅): type schema hash placeholder until codegen metadata is wired.
-    0x811c_9dc5
+    fn fnv1a32_update(mut hash: u32, bytes: &[u8]) -> u32 {
+        for &byte in bytes {
+            hash ^= u32::from(byte);
+            hash = hash.wrapping_mul(FNV1A32_PRIME);
+        }
+        hash
+    }
+
+    let mut hash = FNV1A32_OFFSET_BASIS;
+    hash = fnv1a32_update(hash, &HBF_MAGIC);
+    hash = fnv1a32_update(hash, &[HBF_VERSION]);
+    hash = fnv1a32_update(hash, &[HBF_FLAG_COMPRESSED]);
+    hash = fnv1a32_update(hash, &HEW_WIRE_VARINT.to_le_bytes());
+    hash = fnv1a32_update(hash, &HEW_WIRE_LENGTH_DELIMITED.to_le_bytes());
+    fnv1a32_update(hash, &HEW_WIRE_FIXED32.to_le_bytes())
 }
 
 fn hew_conn_local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) -> HewHandshake {
@@ -265,6 +630,10 @@ fn hew_conn_local_handshake(static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN]) 
 
 fn hew_conn_version_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
     local.protocol_version == peer.protocol_version
+}
+
+fn hew_conn_schema_compatible(local: &HewHandshake, peer: &HewHandshake) -> bool {
+    local.schema_hash == peer.schema_hash
 }
 
 unsafe fn hew_conn_send_frame(
@@ -336,9 +705,18 @@ unsafe fn hew_conn_handshake_recv(
 ) -> Option<HewHandshake> {
     let mut buf = [0u8; HEW_HANDSHAKE_SIZE];
     if !unsafe { hew_conn_recv_frame_exact(transport, conn_id, &mut buf) } {
+        set_last_error(format!(
+            "hew_connmgr_add: failed to receive handshake for conn {conn_id}"
+        ));
         return None;
     }
-    HewHandshake::deserialize(&buf)
+    let Some(handshake) = HewHandshake::deserialize(&buf) else {
+        set_last_error(format!(
+            "hew_connmgr_add: invalid handshake payload for conn {conn_id}"
+        ));
+        return None;
+    };
+    Some(handshake)
 }
 
 unsafe fn hew_conn_handshake_exchange(
@@ -347,10 +725,24 @@ unsafe fn hew_conn_handshake_exchange(
     local: HewHandshake,
 ) -> Option<HewHandshake> {
     if unsafe { hew_conn_handshake_send(transport, conn_id, local) } != 0 {
+        set_last_error(format!(
+            "hew_connmgr_add: failed to send handshake for conn {conn_id}"
+        ));
         return None;
     }
     let peer = unsafe { hew_conn_handshake_recv(transport, conn_id) }?;
     if !hew_conn_version_compatible(&local, &peer) {
+        set_last_error(format!(
+            "hew_connmgr_add: handshake protocol mismatch for conn {conn_id} (local={}, peer={})",
+            local.protocol_version, peer.protocol_version
+        ));
+        return None;
+    }
+    if !hew_conn_schema_compatible(&local, &peer) {
+        set_last_error(format!(
+            "hew_connmgr_add: handshake schema hash mismatch for conn {conn_id} (local={:#010x}, peer={:#010x})",
+            local.schema_hash, peer.schema_hash
+        ));
         return None;
     }
     Some(peer)
@@ -544,8 +936,23 @@ fn reader_loop(
         };
 
         if bytes_read <= 0 {
-            // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
-            let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
+            // Expected shutdown paths set `stop_flag` before closing transport.
+            let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
+            if unexpected_drop {
+                // SAFETY: `mgr` and `conn_id` originate from a live connection manager.
+                let reconnect_plan = unsafe {
+                    if mgr.is_null() {
+                        None
+                    } else {
+                        hew_connmgr_reconnect_plan(&*mgr, conn_id)
+                    }
+                };
+                // SAFETY: manager and conn_id come from active reader state.
+                let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
+                if let Some(plan) = reconnect_plan {
+                    hew_connmgr_spawn_reconnect_worker(mgr, conn_id, plan);
+                }
+            }
             // Connection closed or error — stop reading.
             break;
         }
@@ -599,6 +1006,37 @@ fn reader_loop(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "SendTransport and Arc values are moved into this thread from spawn closure"
+)]
+fn writer_loop(
+    mgr: SendConnMgr,
+    transport: SendTransport,
+    conn_id: c_int,
+    stop_flag: Arc<AtomicI32>,
+    last_activity: Arc<AtomicU64>,
+    outbound_queue: Arc<OutboundQueue>,
+) {
+    let mgr = mgr.0;
+    let transport = transport.0;
+    while stop_flag.load(Ordering::Acquire) == 0 {
+        let Some(payload) = outbound_queue.pop_blocking(&stop_flag) else {
+            break;
+        };
+        // SAFETY: transport pointer and conn_id are valid while connection is active.
+        let sent = unsafe { hew_conn_send_frame(transport, conn_id, &payload) };
+        if !sent {
+            // SAFETY: manager and conn_id originate from this active writer thread.
+            let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
+            break;
+        }
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { crate::io_time::hew_now_ms() };
+        last_activity.store(now, Ordering::Relaxed);
+    }
+}
+
 // ── C ABI ──────────────────────────────────────────────────────────────
 
 /// Create a new connection manager.
@@ -628,6 +1066,10 @@ pub unsafe extern "C" fn hew_connmgr_new(
         inbound_router: router,
         routing_table,
         cluster,
+        reconnect_enabled: AtomicBool::new(false),
+        reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
+        reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+        reconnect_workers: Mutex::new(Vec::new()),
     });
     Box::into_raw(mgr)
 }
@@ -643,6 +1085,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
     if !mgr.is_null() {
         // SAFETY: caller guarantees `mgr` is valid and surrenders ownership.
         let mgr = unsafe { Box::from_raw(mgr) };
+        mgr.reconnect_shutdown.store(true, Ordering::Release);
         let transport = mgr.transport;
 
         // Close all connections via transport. We need to drain the
@@ -668,8 +1111,106 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
             }
             // ConnectionActor::drop signals reader thread to stop.
         }
+        let workers = {
+            let mut guard = match mgr.reconnect_workers.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            guard.drain(..).collect::<Vec<_>>()
+        };
+        for worker in workers {
+            let _ = worker.join();
+        }
         // mgr is dropped here, freeing the HewConnMgr.
     }
+}
+
+/// Configure manager-wide reconnect policy.
+///
+/// Reconnect is disabled by default; call with `enabled=1` to opt in.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_connmgr_set_reconnect_policy(
+    mgr: *mut HewConnMgr,
+    enabled: c_int,
+    max_retries: c_int,
+) -> c_int {
+    if mgr.is_null() {
+        set_last_error("hew_connmgr_set_reconnect_policy: manager is null");
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr = unsafe { &*mgr };
+    mgr.reconnect_enabled.store(enabled != 0, Ordering::Release);
+    mgr.reconnect_max_retries.store(
+        hew_connmgr_normalize_max_retries(max_retries),
+        Ordering::Release,
+    );
+    0
+}
+
+/// Configure per-connection reconnect target and retry policy.
+///
+/// Passing `enabled=0` disables reconnect for `conn_id`.
+///
+/// # Safety
+///
+/// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+/// - `target_addr` must be a valid NUL-terminated C string when enabling.
+#[no_mangle]
+pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    target_addr: *const c_char,
+    enabled: c_int,
+    max_retries: c_int,
+) -> c_int {
+    if mgr.is_null() {
+        set_last_error("hew_connmgr_configure_reconnect: manager is null");
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr = unsafe { &*mgr };
+    let mut conns = match mgr.connections.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
+        set_last_error(format!(
+            "hew_connmgr_configure_reconnect: connection {conn_id} not found"
+        ));
+        return -1;
+    };
+    if enabled == 0 {
+        conn.reconnect = None;
+        return 0;
+    }
+    if target_addr.is_null() {
+        set_last_error("hew_connmgr_configure_reconnect: target_addr is null");
+        return -1;
+    }
+    // SAFETY: caller guarantees target_addr is a valid C string.
+    let Ok(target) = unsafe { CStr::from_ptr(target_addr) }.to_str() else {
+        set_last_error("hew_connmgr_configure_reconnect: target_addr is not valid UTF-8");
+        return -1;
+    };
+    if target.is_empty() {
+        set_last_error("hew_connmgr_configure_reconnect: target_addr is empty");
+        return -1;
+    }
+    let retries = if max_retries > 0 {
+        hew_connmgr_normalize_max_retries(max_retries)
+    } else {
+        mgr.reconnect_max_retries.load(Ordering::Acquire).max(1)
+    };
+    conn.reconnect = Some(ReconnectSettings {
+        target_addr: target.to_owned(),
+        max_retries: retries,
+    });
+    0
 }
 
 /// Add a connection to the manager. Spawns a reader thread for inbound
@@ -725,9 +1266,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let Some(peer_hs) = (unsafe { hew_conn_handshake_exchange(mgr.transport, conn_id, local_hs) })
     else {
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: handshake exchange failed for conn {conn_id}"
-        ));
         return -1;
     };
 
@@ -787,6 +1325,34 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     // SAFETY: hew_now_ms has no preconditions.
     let now = unsafe { crate::io_time::hew_now_ms() };
     actor.last_activity_ms.store(now, Ordering::Relaxed);
+
+    // Spawn writer thread.
+    let writer_stop = Arc::clone(&actor.writer_stop);
+    let writer_transport = SendTransport(mgr.transport);
+    let writer_activity = Arc::clone(&actor.last_activity_ms);
+    let writer_mgr = SendConnMgr(mgr as *const HewConnMgr as *mut HewConnMgr);
+    let outbound_queue = Arc::clone(&actor.outbound_queue);
+    let writer_handle = thread::Builder::new()
+        .name(format!("hew-conn-w-{conn_id}"))
+        .spawn(move || {
+            writer_loop(
+                writer_mgr,
+                writer_transport,
+                conn_id,
+                writer_stop,
+                writer_activity,
+                outbound_queue,
+            )
+        });
+    match writer_handle {
+        Ok(h) => actor.writer_handle = Some(h),
+        Err(_) => {
+            set_last_error(format!(
+                "hew_connmgr_add: failed to spawn writer thread for conn {conn_id}"
+            ));
+            return -1;
+        }
+    }
 
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);
@@ -899,6 +1465,43 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         let _ = unsafe { hew_cluster_notify_connection_lost(mgr.cluster, peer_node_id) };
     }
 
+    0
+}
+
+/// Set outbound queue capacity for a specific connection.
+///
+/// Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    capacity: usize,
+) -> c_int {
+    if mgr.is_null() {
+        set_last_error("hew_connmgr_set_outbound_capacity: manager is null");
+        return -1;
+    }
+    if capacity == 0 {
+        set_last_error("hew_connmgr_set_outbound_capacity: capacity must be > 0");
+        return -1;
+    }
+    // SAFETY: caller guarantees `mgr` is valid.
+    let mgr = unsafe { &*mgr };
+    let conns = match mgr.connections.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let Some(conn) = conns.iter().find(|c| c.conn_id == conn_id) else {
+        set_last_error(format!(
+            "hew_connmgr_set_outbound_capacity: connection {conn_id} not found"
+        ));
+        return -1;
+    };
+    conn.outbound_queue.set_capacity(capacity);
     0
 }
 
@@ -1209,5 +1812,18 @@ mod tests {
             ..local
         };
         assert!(!hew_conn_version_compatible(&local, &peer));
+    }
+
+    #[test]
+    fn schema_hash_mismatch_rejected() {
+        let local = hew_conn_local_handshake([0; NOISE_STATIC_PUBKEY_LEN]);
+        let mut peer = local;
+        peer.schema_hash ^= 0x0100_0000;
+        assert!(!hew_conn_schema_compatible(&local, &peer));
+    }
+
+    #[test]
+    fn local_schema_hash_is_not_placeholder() {
+        assert_ne!(hew_conn_local_schema_hash(), FNV1A32_OFFSET_BASIS);
     }
 }

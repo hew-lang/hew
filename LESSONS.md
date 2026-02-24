@@ -100,3 +100,40 @@ The HashMap tests expected `1`/`0` (I32) for contains_key, but the codegen now p
 `true`/`false` (I1) on some branches. Test expectations are branch-sensitive — when
 semantic changes like return type modifications are in flight across branches, expected
 outputs must be updated in the same commit as the semantic change.
+
+### 16. Dual-identity fields create silent routing failures
+
+Having two identity concepts (`pid` as counter, `id` as location-transparent address)
+in the same struct is a trap. The C-ABI function `hew_actor_self_pid()` returned the
+counter, and `hew_pid_node(counter)` always returned 0, making every actor appear local.
+This is undetectable without cross-node testing — single-node tests pass because local
+routing works with either value.
+
+### 17. Security features must be wired end-to-end to be meaningful
+
+The Noise XX handshake was generating ephemeral keys per-connection but never using the
+node's persistent identity key. The peer allowlist existed but was never called. Both
+features passed unit tests because the tests only checked that the code _existed_, not
+that it was _integrated_. Integration tests that verify actual authentication and
+rejection are essential.
+
+### 18. Connection lifecycle events need explicit cleanup contracts
+
+When a TCP reader loop exits, the connection is "dead" but nothing cleaned up: routing
+table still had stale entries, SWIM still considered the peer alive, connmgr still
+tracked it. Each subsystem needs explicit `on_disconnect` callbacks, and these must be
+tested with simulated drops, not just graceful shutdowns.
+
+### 19. Background agent file changes don't always persist
+
+When dispatching sub-agents in background mode, their SQL database changes persist but
+file modifications may not survive across context boundaries. Always verify file changes
+on disk after agent completion. Trust SQL status for tracking but verify file diffs with
+`git status`.
+
+### 20. Thread-local error APIs are essential for C-ABI libraries
+
+Returning `-1` from 34 C-ABI functions with no diagnostic is useless to callers.
+A `thread_local!` last-error string (accessible via `hew_last_error() -> *const c_char`)
+gives callers actionable diagnostics without global lock contention. The pattern mirrors
+`errno`/`GetLastError` but with richer messages.

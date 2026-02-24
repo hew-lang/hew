@@ -1538,7 +1538,6 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     emitError(location) << "for await: unexpected wrapper type";
     return;
   }
-  auto yieldType = wrapperStructType.getBody()[1];
 
   // Get the actor ref value
   auto actorPtr = generateExpression(mc->receiver->value);
@@ -1827,7 +1826,6 @@ void MLIRGen::generateForStmt(const ast::StmtFor &stmt) {
 
 void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::string &genFuncName) {
   auto location = currentLoc;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i1Type = builder.getI1Type();
 
   // Generate the iterable expression to get the generator pointer

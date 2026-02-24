@@ -98,14 +98,6 @@ static const msgpack::object &mapReq(const msgpack::object &obj, std::string_vie
   return *v;
 }
 
-/// Get a map as an array of key-value pairs.
-static const msgpack::object_kv *mapEntries(const msgpack::object &obj, uint32_t &size) {
-  if (obj.type != msgpack::type::MAP)
-    fail("expected map, got type " + std::to_string(obj.type));
-  size = obj.via.map.size;
-  return obj.via.map.ptr;
-}
-
 /// Get an array from a msgpack object.
 static const msgpack::object *arrayData(const msgpack::object &obj, uint32_t &size) {
   if (obj.type != msgpack::type::ARRAY)
@@ -585,33 +577,33 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
     e.op = parseBinaryOp(mapReq(*payload, "op"));
     e.right = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "right"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Unary") {
     ast::ExprUnary e;
     e.op = parseUnaryOp(mapReq(*payload, "op"));
     e.operand = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "operand"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Literal")
-    return ast::Expr{ast::ExprLiteral{parseLiteral(*payload)}};
+    return ast::Expr{ast::ExprLiteral{parseLiteral(*payload)}, {}};
   if (name == "Identifier")
-    return ast::Expr{ast::ExprIdentifier{getString(*payload)}};
+    return ast::Expr{ast::ExprIdentifier{getString(*payload)}, {}};
   if (name == "Tuple") {
     ast::ExprTuple e;
     e.elements = parseVecPtr<ast::Spanned<ast::Expr>>(
         *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Array") {
     ast::ExprArray e;
     e.elements = parseVecPtr<ast::Spanned<ast::Expr>>(
         *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Block")
-    return ast::Expr{ast::ExprBlock{parseBlock(*payload)}};
+    return ast::Expr{ast::ExprBlock{parseBlock(*payload)}, {}};
   if (name == "If") {
     ast::ExprIf e;
     e.condition = std::make_unique<ast::Spanned<ast::Expr>>(
@@ -623,14 +615,14 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
       e.else_block =
           std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*eb, parseExpr));
     }
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Match") {
     ast::ExprMatch e;
     e.scrutinee = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "scrutinee"), parseExpr));
     e.arms = parseVec<ast::MatchArm>(mapReq(*payload, "arms"), parseMatchArm);
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Lambda") {
     ast::ExprLambda e;
@@ -641,7 +633,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
       e.return_type = parseSpanned<ast::TypeExpr>(*rt, parseTypeExpr);
     e.body = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "body"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Spawn") {
     ast::ExprSpawn e;
@@ -656,7 +648,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
             fail("Spawn arg tuple should have 2 elements");
           return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
         });
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "SpawnLambdaActor") {
     ast::ExprSpawnLambdaActor e;
@@ -667,7 +659,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
       e.return_type = parseSpanned<ast::TypeExpr>(*rt, parseTypeExpr);
     e.body = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "body"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Scope") {
     ast::ExprScope e;
@@ -675,12 +667,12 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
     if (bind && !isNil(*bind))
       e.binding = getString(*bind);
     e.block = parseBlock(mapReq(*payload, "body"));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "InterpolatedString") {
     ast::ExprInterpolatedString e;
     e.parts = parseVec<ast::StringPart>(*payload, parseStringPart);
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Call") {
     ast::ExprCall e;
@@ -702,7 +694,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
       }
     }
     e.is_tail_call = getBool(mapReq(*payload, "is_tail_call"));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "MethodCall") {
     ast::ExprMethodCall e;
@@ -718,7 +710,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         }
       }
     }
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "StructInit") {
     ast::ExprStructInit e;
@@ -732,7 +724,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
             fail("StructInit field tuple should have 2 elements");
           return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
         });
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Send") {
     ast::ExprSend e;
@@ -740,7 +732,7 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
     e.message = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Select") {
     ast::ExprSelect e;
@@ -749,13 +741,13 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
     if (to && !isNil(*to)) {
       e.timeout = std::make_unique<ast::TimeoutClause>(parseTimeoutClause(*to));
     }
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Join") {
     ast::ExprJoin e;
     e.exprs = parseVecPtr<ast::Spanned<ast::Expr>>(
         *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Timeout") {
     ast::ExprTimeout e;
@@ -763,26 +755,26 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
     e.duration = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "duration"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Unsafe")
-    return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}};
+    return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}, {}};
   if (name == "Yield") {
     ast::ExprYield e;
     if (payload && !isNil(*payload)) {
       e.value =
           std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
     }
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Cooperate")
-    return ast::Expr{ast::ExprCooperate{}};
+    return ast::Expr{ast::ExprCooperate{}, {}};
   if (name == "FieldAccess") {
     ast::ExprFieldAccess e;
     e.object = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
     e.field = getString(mapReq(*payload, "field"));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Index") {
     ast::ExprIndex e;
@@ -790,13 +782,13 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
     e.index = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "index"), parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "PostfixTry") {
     ast::ExprPostfixTry e;
     e.inner =
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Range") {
     ast::ExprRange e;
@@ -809,21 +801,21 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
       e.end = std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*en, parseExpr));
     }
     e.inclusive = getBool(mapReq(*payload, "inclusive"));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "Await") {
     ast::ExprAwait e;
     e.inner =
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
-    return ast::Expr{std::move(e)};
+    return ast::Expr{std::move(e), {}};
   }
   if (name == "ScopeLaunch")
-    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}};
+    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
   if (name == "ScopeCancel")
-    return ast::Expr{ast::ExprScopeCancel{}};
+    return ast::Expr{ast::ExprScopeCancel{}, {}};
 
   if (name == "RegexLiteral")
-    return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}};
+    return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
   fail("unknown Expr variant: " + name);
 }
 
@@ -841,7 +833,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     const auto *val = mapGet(*payload, "value");
     if (val && !isNil(*val))
       s.value = parseSpanned<ast::Expr>(*val, parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Var") {
     ast::StmtVar s;
@@ -852,7 +844,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     const auto *val = mapGet(*payload, "value");
     if (val && !isNil(*val))
       s.value = parseSpanned<ast::Expr>(*val, parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Assign") {
     ast::StmtAssign s;
@@ -861,7 +853,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     if (op && !isNil(*op))
       s.op = parseCompoundAssignOp(*op);
     s.value = parseSpanned<ast::Expr>(mapReq(*payload, "value"), parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "If") {
     ast::StmtIf s;
@@ -870,13 +862,13 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     const auto *eb = mapGet(*payload, "else_block");
     if (eb && !isNil(*eb))
       s.else_block = parseElseBlock(*eb);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Match") {
     ast::StmtMatch s;
     s.scrutinee = parseSpanned<ast::Expr>(mapReq(*payload, "scrutinee"), parseExpr);
     s.arms = parseVec<ast::MatchArm>(mapReq(*payload, "arms"), parseMatchArm);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Loop") {
     ast::StmtLoop s;
@@ -884,7 +876,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     if (lbl && !isNil(*lbl))
       s.label = getString(*lbl);
     s.body = parseBlock(mapReq(*payload, "body"));
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "For") {
     ast::StmtFor s;
@@ -892,7 +884,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
     s.iterable = parseSpanned<ast::Expr>(mapReq(*payload, "iterable"), parseExpr);
     s.body = parseBlock(mapReq(*payload, "body"));
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "While") {
     ast::StmtWhile s;
@@ -901,7 +893,7 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
       s.label = getString(*lbl);
     s.condition = parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr);
     s.body = parseBlock(mapReq(*payload, "body"));
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Break") {
     ast::StmtBreak s;
@@ -911,31 +903,31 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     const auto *val = mapGet(*payload, "value");
     if (val && !isNil(*val))
       s.value = parseSpanned<ast::Expr>(*val, parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Continue") {
     ast::StmtContinue s;
     const auto *lbl = mapGet(*payload, "label");
     if (lbl && !isNil(*lbl))
       s.label = getString(*lbl);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Return") {
     ast::StmtReturn s;
     if (payload && !isNil(*payload))
       s.value = parseSpanned<ast::Expr>(*payload, parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Defer") {
     ast::StmtDefer s;
     s.expr =
         std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   if (name == "Expression") {
     ast::StmtExpression s;
     s.expr = parseSpanned<ast::Expr>(*payload, parseExpr);
-    return ast::Stmt{std::move(s)};
+    return ast::Stmt{std::move(s), {}};
   }
   fail("unknown Stmt variant: " + name);
 }
@@ -1121,6 +1113,9 @@ static ast::TypeAliasDecl parseTypeAliasDecl(const msgpack::object &obj) {
 static ast::TraitMethod parseTraitMethod(const msgpack::object &obj) {
   ast::TraitMethod tm;
   tm.name = getString(mapReq(obj, "name"));
+  const auto *isPure = mapGet(obj, "is_pure");
+  if (isPure && !isNil(*isPure))
+    tm.is_pure = getBool(*isPure);
   const auto *tp = mapGet(obj, "type_params");
   if (tp && !isNil(*tp))
     tm.type_params = parseVec<ast::TypeParam>(*tp, parseTypeParam);

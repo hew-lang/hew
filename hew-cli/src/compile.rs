@@ -242,11 +242,13 @@ pub fn compile(
             if let Some(root_module) = mg.modules.get_mut(&mg.root) {
                 root_module.items.clone_from(&program.items);
             }
-            // Normalize types in non-root modules so that
-            // TypeExpr::Named("Option", ..) → TypeExpr::Option(..) etc.
+            // Normalize types and rewrite builtin calls in non-root modules
+            // so that TypeExpr::Named("Option", ..) → TypeExpr::Option(..)
+            // and len(x) → x.len() etc.
             for (id, module) in &mut mg.modules {
                 if *id != mg.root {
                     hew_serialize::normalize_items_types(&mut module.items);
+                    hew_serialize::rewrite_builtin_calls(&mut module.items);
                 }
             }
         }

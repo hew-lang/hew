@@ -6,8 +6,8 @@
 //! can consume without its own type inference.
 
 use hew_parser::ast::{
-    ActorDecl, Block, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param, Program,
-    Span, Spanned, Stmt, TraitBound, TypeExpr,
+    ActorDecl, Block, CallArg, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param,
+    Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;
@@ -374,6 +374,165 @@ fn normalize_all_types(program: &mut Program) {
 pub fn normalize_items_types(items: &mut [Spanned<Item>]) {
     for (item, _span) in items {
         normalize_item_types(item);
+    }
+}
+
+/// Rewrite builtin free-function calls to forms the C++ codegen already
+/// handles. Currently rewrites `len(x)` → `x.len()` (method call).
+///
+/// This must run on every module (root and imported) since the enrichment
+/// pass only processes root items.
+pub fn rewrite_builtin_calls(items: &mut [Spanned<Item>]) {
+    for (item, _span) in items {
+        rewrite_builtin_calls_in_item(item);
+    }
+}
+
+fn rewrite_builtin_calls_in_item(item: &mut Item) {
+    match item {
+        Item::Function(f) => rewrite_builtin_calls_in_block(&mut f.body),
+        Item::Actor(actor) => {
+            if let Some(ref mut init) = actor.init {
+                rewrite_builtin_calls_in_block(&mut init.body);
+            }
+            for recv in &mut actor.receive_fns {
+                rewrite_builtin_calls_in_block(&mut recv.body);
+            }
+        }
+        Item::Impl(imp) => {
+            for method in &mut imp.methods {
+                rewrite_builtin_calls_in_block(&mut method.body);
+            }
+        }
+        Item::Trait(t) => {
+            for trait_item in &mut t.items {
+                if let hew_parser::ast::TraitItem::Method(m) = trait_item {
+                    if let Some(ref mut body) = m.body {
+                        rewrite_builtin_calls_in_block(body);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_builtin_calls_in_block(block: &mut Block) {
+    for stmt in &mut block.stmts {
+        rewrite_builtin_calls_in_stmt(&mut stmt.0);
+    }
+}
+
+fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
+    match stmt {
+        Stmt::Let { value, .. } | Stmt::Var { value, .. } => {
+            if let Some(expr) = value {
+                rewrite_builtin_calls_in_expr(expr);
+            }
+        }
+        Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
+            rewrite_builtin_calls_in_expr(expr);
+        }
+        Stmt::Defer(expr) => {
+            rewrite_builtin_calls_in_expr(expr);
+        }
+        Stmt::For { body, iterable, .. } => {
+            rewrite_builtin_calls_in_expr(iterable);
+            rewrite_builtin_calls_in_block(body);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            rewrite_builtin_calls_in_expr(condition);
+            rewrite_builtin_calls_in_block(body);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            rewrite_builtin_calls_in_expr(condition);
+            rewrite_builtin_calls_in_block(then_block);
+            if let Some(else_b) = else_block {
+                if let Some(ref mut if_stmt) = else_b.if_stmt {
+                    rewrite_builtin_calls_in_stmt(&mut if_stmt.0);
+                }
+                if let Some(ref mut block) = else_b.block {
+                    rewrite_builtin_calls_in_block(block);
+                }
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            rewrite_builtin_calls_in_expr(target);
+            rewrite_builtin_calls_in_expr(value);
+        }
+        Stmt::Match { scrutinee, arms } => {
+            rewrite_builtin_calls_in_expr(scrutinee);
+            for arm in arms {
+                rewrite_builtin_calls_in_expr(&mut arm.body);
+            }
+        }
+        Stmt::Loop { body, .. } => rewrite_builtin_calls_in_block(body),
+        _ => {}
+    }
+}
+
+fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
+    match &mut expr.0 {
+        Expr::Call { function, args, .. } => {
+            for arg in args.iter_mut() {
+                rewrite_builtin_calls_in_expr(arg.expr_mut());
+            }
+            rewrite_builtin_calls_in_expr(function);
+            // len(x) → x.len()
+            if let Expr::Identifier(name) = &function.0 {
+                if name == "len" && args.len() == 1 {
+                    let receiver = match std::mem::take(args).remove(0) {
+                        CallArg::Positional(e) => e,
+                        CallArg::Named { value, .. } => value,
+                    };
+                    expr.0 = Expr::MethodCall {
+                        receiver: Box::new(receiver),
+                        method: "len".to_string(),
+                        args: Vec::new(),
+                    };
+                }
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_builtin_calls_in_expr(receiver);
+            for arg in args.iter_mut() {
+                rewrite_builtin_calls_in_expr(arg.expr_mut());
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            rewrite_builtin_calls_in_expr(left);
+            rewrite_builtin_calls_in_expr(right);
+        }
+        Expr::Unary { operand, .. } => rewrite_builtin_calls_in_expr(operand),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            rewrite_builtin_calls_in_expr(condition);
+            rewrite_builtin_calls_in_expr(then_block);
+            if let Some(e) = else_block {
+                rewrite_builtin_calls_in_expr(e);
+            }
+        }
+        Expr::Block(block) => rewrite_builtin_calls_in_block(block),
+        Expr::Index { object, index } => {
+            rewrite_builtin_calls_in_expr(object);
+            rewrite_builtin_calls_in_expr(index);
+        }
+        Expr::FieldAccess { object, .. } => rewrite_builtin_calls_in_expr(object),
+        Expr::Array(elems) | Expr::Tuple(elems) => {
+            for e in elems {
+                rewrite_builtin_calls_in_expr(e);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -889,6 +1048,22 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
             enrich_expr(function, tco);
             for arg in args.iter_mut() {
                 enrich_expr(arg.expr_mut(), tco);
+            }
+            // Rewrite len(x) → x.len() method call so the C++ codegen
+            // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
+            if let Expr::Identifier(name) = &function.0 {
+                if name == "len" && args.len() == 1 {
+                    let receiver = match std::mem::take(args).remove(0) {
+                        CallArg::Positional(e) => e,
+                        CallArg::Named { value, .. } => value,
+                    };
+                    expr.0 = Expr::MethodCall {
+                        receiver: Box::new(receiver),
+                        method: "len".to_string(),
+                        args: Vec::new(),
+                    };
+                    return;
+                }
             }
         }
         Expr::Binary { left, right, .. } => {

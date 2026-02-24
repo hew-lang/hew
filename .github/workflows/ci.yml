@@ -209,4 +209,31 @@ jobs:
         run: cargo build -p hew-cli -p adze-cli -p hew-runtime --release
 
       - name: Run Rust workspace tests (no codegen)
-        run: cargo test --workspace --exclude hew-wasm
+        # hew-cabi and hew-std-* crates link against C runtime symbols
+        # not available on Windows (codegen is Linux-only for now).
+        run: >-
+          cargo test --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --exclude hew-std-crypto-crypto
+          --exclude hew-std-crypto-jwt
+          --exclude hew-std-encoding-base64
+          --exclude hew-std-encoding-compress
+          --exclude hew-std-encoding-csv
+          --exclude hew-std-encoding-hex
+          --exclude hew-std-encoding-json
+          --exclude hew-std-encoding-markdown
+          --exclude hew-std-encoding-msgpack
+          --exclude hew-std-encoding-toml
+          --exclude hew-std-encoding-yaml
+          --exclude hew-std-misc-log
+          --exclude hew-std-misc-uuid
+          --exclude hew-std-net-http
+          --exclude hew-std-net-ipnet
+          --exclude hew-std-net-mime
+          --exclude hew-std-net-smtp
+          --exclude hew-std-net-url
+          --exclude hew-std-text-regex
+          --exclude hew-std-text-semver
+          --exclude hew-std-time-cron
+          --exclude hew-std-time-datetime

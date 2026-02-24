@@ -544,6 +544,7 @@ fn hew_connmgr_reconnect_worker_loop(
             ));
             return;
         };
+        // SAFETY: mgr_ptr was checked non-null and remains valid for the connection lifetime.
         let connect_result = unsafe { hew_connmgr_connect_addr(mgr_ptr, &target_addr) };
         match connect_result {
             Ok(new_conn_id) => {
@@ -696,6 +697,7 @@ unsafe fn hew_conn_handshake_send(
     conn_id: c_int,
     handshake: HewHandshake,
 ) -> c_int {
+    // SAFETY: transport and conn_id are validated by caller; serialize returns a fixed-size buffer.
     c_int::from(!unsafe { hew_conn_send_frame(transport, conn_id, &handshake.serialize()) }) * -1
 }
 
@@ -704,6 +706,7 @@ unsafe fn hew_conn_handshake_recv(
     conn_id: c_int,
 ) -> Option<HewHandshake> {
     let mut buf = [0u8; HEW_HANDSHAKE_SIZE];
+    // SAFETY: transport and conn_id are validated by caller; buf is stack-allocated with correct size.
     if !unsafe { hew_conn_recv_frame_exact(transport, conn_id, &mut buf) } {
         set_last_error(format!(
             "hew_connmgr_add: failed to receive handshake for conn {conn_id}"
@@ -724,12 +727,14 @@ unsafe fn hew_conn_handshake_exchange(
     conn_id: c_int,
     local: HewHandshake,
 ) -> Option<HewHandshake> {
+    // SAFETY: transport and conn_id validated by caller contract.
     if unsafe { hew_conn_handshake_send(transport, conn_id, local) } != 0 {
         set_last_error(format!(
             "hew_connmgr_add: failed to send handshake for conn {conn_id}"
         ));
         return None;
     }
+    // SAFETY: same contract — transport remains valid through handshake sequence.
     let peer = unsafe { hew_conn_handshake_recv(transport, conn_id) }?;
     if !hew_conn_version_compatible(&local, &peer) {
         set_last_error(format!(

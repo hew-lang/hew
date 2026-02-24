@@ -221,9 +221,7 @@ pub unsafe extern "C" fn hew_actor_ref_send(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    if ref_ptr.is_null() {
-        return HEW_ERR_TRANSPORT;
-    }
+    cabi_guard!(ref_ptr.is_null(), HEW_ERR_TRANSPORT);
     // SAFETY: caller guarantees `ref_ptr` is valid.
     let r = unsafe { &*ref_ptr };
 
@@ -285,9 +283,7 @@ pub unsafe extern "C" fn hew_actor_ref_is_local(ref_ptr: *const HewActorRef) -> 
 /// `ref_ptr` must be a valid pointer to a [`HewActorRef`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> c_int {
-    if ref_ptr.is_null() {
-        return 0;
-    }
+    cabi_guard!(ref_ptr.is_null(), 0);
     // SAFETY: caller guarantees the pointer is valid.
     let r = unsafe { &*ref_ptr };
 

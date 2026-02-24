@@ -692,9 +692,7 @@ pub unsafe extern "C" fn hew_allowlist_add(
     list: *mut HewPeerAllowlist,
     public_key: *const u8,
 ) -> c_int {
-    if list.is_null() {
-        return -1;
-    }
+    cabi_guard!(list.is_null(), -1);
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
@@ -722,9 +720,7 @@ pub unsafe extern "C" fn hew_allowlist_remove(
     list: *mut HewPeerAllowlist,
     public_key: *const u8,
 ) -> c_int {
-    if list.is_null() {
-        return -1;
-    }
+    cabi_guard!(list.is_null(), -1);
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
@@ -752,9 +748,7 @@ pub unsafe extern "C" fn hew_allowlist_check(
     list: *mut HewPeerAllowlist,
     public_key: *const u8,
 ) -> c_int {
-    if list.is_null() {
-        return 0;
-    }
+    cabi_guard!(list.is_null(), 0);
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return 0;
     };
@@ -775,9 +769,7 @@ pub unsafe extern "C" fn hew_allowlist_check(
 /// [`hew_allowlist_new`] that has not already been freed.
 #[no_mangle]
 pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
-    if list.is_null() {
-        return;
-    }
+    cabi_guard!(list.is_null());
     let _guard = match ALLOWLIST_OPS_LOCK.lock() {
         Ok(g) => g,
         Err(e) => e.into_inner(),

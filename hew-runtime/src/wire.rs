@@ -146,9 +146,7 @@ impl HewWireBuf {
 /// `buf` must point to a valid, writable [`HewWireBuf`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees `buf` is valid.
     unsafe {
         (*buf).data = std::ptr::null_mut();
@@ -185,9 +183,7 @@ pub unsafe extern "C" fn hew_wire_buf_new() -> *mut HewWireBuf {
 /// `libc::malloc`/`libc::realloc` (or is null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees the pointer is valid.
     let b = unsafe { &mut *buf };
     if !b.data.is_null() && b.cap > 0 {
@@ -209,9 +205,7 @@ pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
 /// `buf` must be either null or a pointer returned by [`hew_wire_buf_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: `buf` is valid per caller contract.
     unsafe { hew_wire_buf_free(buf) };
     // SAFETY: `buf` was allocated by hew_wire_buf_new via libc::malloc.
@@ -227,9 +221,7 @@ pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
 /// `buf` must point to a valid [`HewWireBuf`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees the pointer is valid.
     unsafe {
         (*buf).len = 0;
@@ -245,9 +237,7 @@ pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
 /// bytes and must outlive the buffer's use.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init_read(buf: *mut HewWireBuf, data: *const u8, len: usize) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees `buf` is valid.
     unsafe {
         (*buf).data = data.cast_mut();

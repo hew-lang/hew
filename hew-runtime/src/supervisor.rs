@@ -855,9 +855,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int {
-    if sup.is_null() {
-        return -1;
-    }
+    cabi_guard!(sup.is_null(), -1);
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &mut *sup };
 
@@ -974,9 +972,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
 /// pointer must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
-    if sup.is_null() {
-        return;
-    }
+    cabi_guard!(sup.is_null());
 
     // Unregister from shutdown list to prevent double-stop.
     // SAFETY: sup is still valid here.
@@ -1270,9 +1266,7 @@ pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> 
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_is_running(sup: *mut HewSupervisor) -> c_int {
-    if sup.is_null() {
-        return 0;
-    }
+    cabi_guard!(sup.is_null(), 0);
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
     s.running.load(Ordering::Acquire)

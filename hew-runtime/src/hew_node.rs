@@ -452,6 +452,43 @@ pub unsafe extern "C" fn hew_node_register(
     0
 }
 
+/// Unregister a named actor from this node.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// - `node` must be valid.
+/// - `name` must be a valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_char) -> c_int {
+    if node.is_null() || name.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees node pointer validity.
+    let node = unsafe { &mut *node };
+    if node.registry.is_null() {
+        return -1;
+    }
+
+    // Also unregister from the global local registry.
+    // SAFETY: name was validated non-null by caller contract.
+    unsafe { crate::registry::hew_registry_unregister(name) };
+
+    // SAFETY: name was checked non-null and is a valid C string by caller contract.
+    let key = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
+    let reg = unsafe { &*node.registry };
+    let mut map = match reg.remote_names.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    map.remove(&key);
+    0
+}
+
 /// Look up an actor ID by name.
 ///
 /// # Safety
@@ -821,5 +858,35 @@ mod tests {
         }
 
         crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn test_node_unregister() {
+        let node = unsafe { hew_node_new(50, c"127.0.0.1:0".as_ptr()) };
+        assert!(!node.is_null());
+        let name = c"test_unreg_actor";
+
+        unsafe {
+            assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
+            assert_eq!(hew_node_lookup(node, name.as_ptr()), 999);
+        }
+
+        unsafe {
+            assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
+            assert_eq!(hew_node_lookup(node, name.as_ptr()), 0);
+        }
+
+        // Idempotent
+        unsafe {
+            assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
+        }
+
+        // Null safety
+        unsafe {
+            assert_eq!(hew_node_unregister(std::ptr::null_mut(), name.as_ptr()), -1);
+            assert_eq!(hew_node_unregister(node, std::ptr::null()), -1);
+        }
+
+        unsafe { hew_node_free(node) };
     }
 }

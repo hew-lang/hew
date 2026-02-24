@@ -385,6 +385,14 @@ pub fn compile(
         .and_then(|s| s.to_str())
         .unwrap_or("a.out")
         .to_string();
+    // Windows executables need .exe when compiling for native host
+    #[cfg(target_os = "windows")]
+    let default_output =
+        if options.target.is_none() && !default_output.ends_with(".exe") {
+            format!("{default_output}.exe")
+        } else {
+            default_output
+        };
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
@@ -416,11 +424,16 @@ fn find_codegen_binary() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
 
+    let codegen_name = if cfg!(target_os = "windows") {
+        "hew-codegen.exe"
+    } else {
+        "hew-codegen"
+    };
     let candidates = [
-        exe_dir.join("hew-codegen"),
-        exe_dir.join("../lib/hew-codegen"),
-        exe_dir.join("../../hew-codegen/build/src/hew-codegen"),
-        exe_dir.join("../../hew-codegen/build-sanitizer/src/hew-codegen"),
+        exe_dir.join(codegen_name),
+        exe_dir.join(format!("../lib/{codegen_name}")),
+        exe_dir.join(format!("../../hew-codegen/build/src/{codegen_name}")),
+        exe_dir.join(format!("../../hew-codegen/build-sanitizer/src/{codegen_name}")),
     ];
 
     for c in &candidates {

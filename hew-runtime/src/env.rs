@@ -169,7 +169,7 @@ pub unsafe extern "C" fn hew_cwd() -> *mut c_char {
 /// No preconditions. The returned pointer must be freed with `libc::free`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
-    match std::env::var("HOME") {
+    match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
         Ok(home) => string_to_malloc(&home),
         Err(_) => std::ptr::null_mut(),
     }
@@ -183,20 +183,35 @@ pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
 /// No preconditions. The returned pointer must be freed with `libc::free`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
-    let mut buf = [0u8; 256];
-    // SAFETY: gethostname with a valid buffer and size is always safe.
-    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<c_char>(), buf.len()) };
-    if rc != 0 {
-        return std::ptr::null_mut();
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: gethostname with a valid buffer and size is always safe.
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast::<c_char>(), buf.len()) };
+        if rc != 0 {
+            return std::ptr::null_mut();
+        }
+        // Ensure NUL-termination.
+        buf[buf.len() - 1] = 0;
+        // SAFETY: buf is NUL-terminated after gethostname success.
+        let cstr = unsafe { CStr::from_ptr(buf.as_ptr().cast::<c_char>()) };
+        let Ok(s) = cstr.to_str() else {
+            return std::ptr::null_mut();
+        };
+        string_to_malloc(s)
     }
-    // Ensure NUL-termination.
-    buf[buf.len() - 1] = 0;
-    // SAFETY: buf is NUL-terminated after gethostname success.
-    let cstr = unsafe { CStr::from_ptr(buf.as_ptr().cast::<c_char>()) };
-    let Ok(s) = cstr.to_str() else {
-        return std::ptr::null_mut();
-    };
-    string_to_malloc(s)
+    #[cfg(windows)]
+    {
+        // Use COMPUTERNAME environment variable (always set on Windows).
+        match std::env::var("COMPUTERNAME") {
+            Ok(name) => string_to_malloc(&name),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::ptr::null_mut()
+    }
 }
 
 /// Return the current process ID.

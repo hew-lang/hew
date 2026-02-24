@@ -6,4 +6,9 @@ fn main() {
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=m");
     }
+    #[cfg(windows)]
+    {
+        println!("cargo:rustc-link-lib=ws2_32");
+        println!("cargo:rustc-link-lib=userenv");
+    }
 }

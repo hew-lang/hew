@@ -163,20 +163,14 @@ pub unsafe extern "C" fn hew_string_contains(s: *const c_char, substr: *const c_
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
-    // A 32-bit integer is at most 11 characters (including sign) plus NUL.
     let mut buf = [0u8; 32];
-    // SAFETY: buf is a valid 32-byte buffer; format string is a valid C literal.
-    unsafe {
-        libc::snprintf(
-            buf.as_mut_ptr().cast::<c_char>(),
-            buf.len(),
-            c"%d".as_ptr(),
-            n,
-        )
+    let len = {
+        use std::io::Write;
+        let mut w: &mut [u8] = &mut buf;
+        let _ = write!(w, "{n}");
+        32 - w.len()
     };
-    // SAFETY: snprintf NUL-terminates the buffer; we measure the resulting length.
-    let len = unsafe { libc::strlen(buf.as_ptr().cast::<c_char>()) };
-    // SAFETY: buf contains len valid bytes from snprintf output.
+    // SAFETY: buf contains len valid UTF-8 bytes from write!.
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
@@ -187,20 +181,14 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
-    // A 64-bit integer is at most 20 characters (including sign) plus NUL.
     let mut buf = [0u8; 32];
-    // SAFETY: buf is a valid 32-byte buffer; format string is a valid C literal.
-    unsafe {
-        libc::snprintf(
-            buf.as_mut_ptr().cast::<c_char>(),
-            buf.len(),
-            c"%lld".as_ptr(),
-            n,
-        )
+    let len = {
+        use std::io::Write;
+        let mut w: &mut [u8] = &mut buf;
+        let _ = write!(w, "{n}");
+        32 - w.len()
     };
-    // SAFETY: snprintf NUL-terminates the buffer; we measure the resulting length.
-    let len = unsafe { libc::strlen(buf.as_ptr().cast::<c_char>()) };
-    // SAFETY: buf contains len valid bytes from snprintf output.
+    // SAFETY: buf contains len valid UTF-8 bytes from write!.
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
@@ -225,20 +213,20 @@ pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i32 {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
-    // An f64 in %g format is at most ~25 characters plus NUL.
+    // Match C's %g format: compact representation with scientific notation
+    // for very large/small values, trailing zeros trimmed.
+    unsafe extern "C" {
+        fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> i32;
+    }
     let mut buf = [0u8; 64];
-    // SAFETY: buf is a valid 64-byte buffer; format string is a valid C literal.
-    unsafe {
-        libc::snprintf(
-            buf.as_mut_ptr().cast::<c_char>(),
-            buf.len(),
-            c"%g".as_ptr(),
-            f,
-        )
-    };
-    // SAFETY: snprintf NUL-terminates the buffer; we measure the resulting length.
-    let len = unsafe { libc::strlen(buf.as_ptr().cast::<c_char>()) };
-    // SAFETY: buf contains len valid bytes from snprintf output.
+    // SAFETY: buf is large enough for any %g output. snprintf is available
+    // on all platforms (MSVC CRT, glibc, musl).
+    let len = unsafe { snprintf(buf.as_mut_ptr().cast::<c_char>(), buf.len(), c"%g".as_ptr(), f) };
+    if len < 0 {
+        return std::ptr::null_mut();
+    }
+    let len = (len as usize).min(buf.len());
+    // SAFETY: buf contains len valid bytes from snprintf.
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
@@ -676,7 +664,7 @@ pub unsafe extern "C" fn hew_string_index_of(
 // String literals in `.rodata` fall within these bounds — we must not
 // free them.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 unsafe extern "C" {
     #[link_name = "__executable_start"]
     static EXEC_START: u8;
@@ -687,7 +675,7 @@ unsafe extern "C" {
 /// Returns `true` if `ptr` points into the binary's loaded segments
 /// (text, rodata, data, bss).  Such pointers must never be passed to
 /// `free`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 fn is_static_string(ptr: *const u8) -> bool {
     let addr = ptr as usize;
     // SAFETY: These are linker-defined symbols provided by the ELF linker;
@@ -695,6 +683,25 @@ fn is_static_string(ptr: *const u8) -> bool {
     let start = (&raw const EXEC_START) as usize;
     let end = (&raw const EXEC_END) as usize;
     addr >= start && addr < end
+}
+
+/// Windows PE version: checks if the pointer falls within the loaded image.
+#[cfg(windows)]
+fn is_static_string(ptr: *const u8) -> bool {
+    unsafe extern "C" {
+        // MSVC/LLD provide __ImageBase at the DOS header of the loaded executable.
+        #[link_name = "__ImageBase"]
+        static IMAGE_BASE: u8;
+    }
+    let base = (&raw const IMAGE_BASE) as usize;
+    let addr = ptr as usize;
+    // Read SizeOfImage from the PE optional header.
+    // Offset 0x3C in the DOS header is e_lfanew (PE signature offset).
+    // SizeOfImage is 80 bytes past the PE signature in a PE32+ (64-bit) image.
+    // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
+    let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
+    let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
+    addr >= base && addr < base + image_size
 }
 
 /// WASM version: static data lives below `__heap_base` in linear memory.

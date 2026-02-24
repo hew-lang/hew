@@ -8,7 +8,30 @@ use std::cell::Cell;
 use std::os::raw::c_void;
 use std::ptr;
 
-/// Memory chunk allocated via mmap.
+// ── Windows virtual memory API ──────────────────────────────────────────────
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn VirtualAlloc(
+        addr: *mut c_void,
+        size: usize,
+        alloc_type: u32,
+        protect: u32,
+    ) -> *mut c_void;
+    fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
+}
+
+#[cfg(windows)]
+const MEM_COMMIT: u32 = 0x1000;
+#[cfg(windows)]
+const MEM_RESERVE: u32 = 0x2000;
+#[cfg(windows)]
+const MEM_RELEASE: u32 = 0x8000;
+#[cfg(windows)]
+const PAGE_READWRITE: u32 = 0x04;
+
+/// Memory chunk allocated via mmap (Unix) or VirtualAlloc (Windows).
 #[derive(Debug)]
 struct ArenaChunk {
     base: *mut u8,
@@ -18,26 +41,43 @@ struct ArenaChunk {
 impl ArenaChunk {
     /// Create a new chunk with the specified size.
     fn new(size: usize) -> Option<Self> {
-        // SAFETY: mmap with valid flags and no file descriptor
-        let base = unsafe {
-            libc::mmap(
-                ptr::null_mut(),
-                size,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
+        #[cfg(unix)]
+        let base = {
+            // SAFETY: mmap with valid flags and no file descriptor
+            let p = unsafe {
+                libc::mmap(
+                    ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            if p == libc::MAP_FAILED {
+                return None;
+            }
+            p.cast::<u8>()
         };
 
-        if base == libc::MAP_FAILED {
-            return None;
-        }
+        #[cfg(windows)]
+        let base = {
+            // SAFETY: VirtualAlloc with MEM_COMMIT | MEM_RESERVE for rw pages.
+            let p = unsafe {
+                VirtualAlloc(
+                    ptr::null_mut(),
+                    size,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                )
+            };
+            if p.is_null() {
+                return None;
+            }
+            p.cast::<u8>()
+        };
 
-        Some(ArenaChunk {
-            base: base.cast::<u8>(),
-            size,
-        })
+        Some(ArenaChunk { base, size })
     }
 }
 
@@ -134,9 +174,19 @@ impl ActorArena {
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
-        // SAFETY: base and size are valid from successful mmap
-        unsafe {
-            libc::munmap(self.base.cast::<c_void>(), self.size);
+        #[cfg(unix)]
+        {
+            // SAFETY: base and size are valid from successful mmap
+            unsafe {
+                libc::munmap(self.base.cast::<c_void>(), self.size);
+            }
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: base was allocated by VirtualAlloc with MEM_COMMIT | MEM_RESERVE.
+            unsafe {
+                VirtualFree(self.base.cast(), 0, MEM_RELEASE);
+            }
         }
     }
 }

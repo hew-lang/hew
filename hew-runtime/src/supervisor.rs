@@ -246,30 +246,13 @@ unsafe impl Send for DeferredFree {}
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Get the current monotonic time in nanoseconds.
-///
-/// # Safety
-///
-/// No preconditions — delegates to system clock.
+/// Get the current monotonic time in nanoseconds (cross-platform).
 fn monotonic_time_ns() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: clock_gettime with valid clockid and non-null pointer.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts);
-    }
-
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "monotonic clock values are always non-negative"
-    )]
-    {
-        (ts.tv_sec as u64)
-            .wrapping_mul(1_000_000_000)
-            .wrapping_add(ts.tv_nsec as u64)
-    }
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_nanos() as u64
 }
 
 /// Count restarts within the sliding window.

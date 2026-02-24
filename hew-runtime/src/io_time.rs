@@ -99,6 +99,15 @@ pub unsafe extern "C" fn hew_sleep_ms(ms: c_int) {
     }
 }
 
+/// Cross-platform monotonic clock in milliseconds.
+fn monotonic_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_millis() as u64
+}
+
 /// Return the current monotonic clock time in milliseconds.
 ///
 /// When simulated time is enabled (via [`crate::deterministic::hew_simtime_enable`]),
@@ -114,22 +123,7 @@ pub unsafe extern "C" fn hew_now_ms() -> u64 {
         return ms;
     }
 
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `clock_gettime` with a valid clockid and non-null pointer is always safe.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts);
-    }
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "monotonic clock values are always non-negative"
-    )]
-    let result = (ts.tv_sec as u64)
-        .wrapping_mul(1000)
-        .wrapping_add((ts.tv_nsec as u64) / 1_000_000);
-    result
+    monotonic_ms()
 }
 
 // ---------------------------------------------------------------------------

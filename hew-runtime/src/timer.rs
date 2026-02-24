@@ -12,6 +12,55 @@ use std::ptr;
 
 use crate::io_time::hew_now_ms;
 
+// ── Cross-platform mutex for #[repr(C)] structs ─────────────────────────
+
+#[cfg(unix)]
+type PlatformMutex = libc::pthread_mutex_t;
+
+#[cfg(windows)]
+#[repr(C)]
+struct PlatformMutex(*mut std::ffi::c_void);
+
+#[cfg(unix)]
+const MUTEX_INIT: PlatformMutex = libc::PTHREAD_MUTEX_INITIALIZER;
+#[cfg(windows)]
+const MUTEX_INIT: PlatformMutex = PlatformMutex(std::ptr::null_mut());
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AcquireSRWLockExclusive(lock: *mut PlatformMutex);
+    fn ReleaseSRWLockExclusive(lock: *mut PlatformMutex);
+}
+
+unsafe fn mutex_init(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_init(m, std::ptr::null()) };
+    #[cfg(windows)]
+    let _ = m;
+}
+
+unsafe fn mutex_lock(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_lock(m) };
+    #[cfg(windows)]
+    unsafe { AcquireSRWLockExclusive(m) };
+}
+
+unsafe fn mutex_unlock(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_unlock(m) };
+    #[cfg(windows)]
+    unsafe { ReleaseSRWLockExclusive(m) };
+}
+
+unsafe fn mutex_destroy(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_destroy(m) };
+    #[cfg(windows)]
+    let _ = m;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -42,7 +91,7 @@ unsafe impl Send for HewTimer {}
 #[repr(C)]
 pub struct HewTimerList {
     head: *mut HewTimer,
-    lock: libc::pthread_mutex_t,
+    lock: PlatformMutex,
 }
 
 // SAFETY: All access is protected by the internal pthread mutex.
@@ -55,7 +104,7 @@ impl std::fmt::Debug for HewTimerList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewTimerList")
             .field("head", &self.head)
-            .field("lock", &"<pthread_mutex_t>")
+            .field("lock", &"<platform_mutex>")
             .finish()
     }
 }
@@ -77,7 +126,8 @@ pub unsafe extern "C" fn hew_timer_list_init(tl: *mut HewTimerList) {
     // SAFETY: caller guarantees `tl` is valid and writeable.
     unsafe {
         (*tl).head = ptr::null_mut();
-        libc::pthread_mutex_init(&raw mut (*tl).lock, ptr::null());
+        (*tl).lock = MUTEX_INIT;
+        mutex_init(&raw mut (*tl).lock);
     }
 }
 
@@ -94,7 +144,7 @@ pub unsafe extern "C" fn hew_timer_list_destroy(tl: *mut HewTimerList) {
     }
     // SAFETY: caller guarantees `tl` was initialised.
     unsafe {
-        libc::pthread_mutex_lock(&raw mut (*tl).lock);
+        mutex_lock(&raw mut (*tl).lock);
         let mut cur = (*tl).head;
         while !cur.is_null() {
             let next = (*cur).next;
@@ -102,8 +152,8 @@ pub unsafe extern "C" fn hew_timer_list_destroy(tl: *mut HewTimerList) {
             cur = next;
         }
         (*tl).head = ptr::null_mut();
-        libc::pthread_mutex_unlock(&raw mut (*tl).lock);
-        libc::pthread_mutex_destroy(&raw mut (*tl).lock);
+        mutex_unlock(&raw mut (*tl).lock);
+        mutex_destroy(&raw mut (*tl).lock);
     }
 }
 
@@ -137,7 +187,7 @@ pub unsafe extern "C" fn hew_timer_schedule(
 
     // SAFETY: caller guarantees `tl` was initialised.
     unsafe {
-        libc::pthread_mutex_lock(&raw mut (*tl).lock);
+        mutex_lock(&raw mut (*tl).lock);
 
         // Sorted insertion by deadline.
         let mut pp: *mut *mut HewTimer = &raw mut (*tl).head;
@@ -147,7 +197,7 @@ pub unsafe extern "C" fn hew_timer_schedule(
         (*timer).next = *pp;
         *pp = timer;
 
-        libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+        mutex_unlock(&raw mut (*tl).lock);
     }
     timer
 }
@@ -165,9 +215,9 @@ pub unsafe extern "C" fn hew_timer_cancel(tl: *mut HewTimerList, timer: *mut Hew
     }
     // SAFETY: caller guarantees both pointers are valid.
     unsafe {
-        libc::pthread_mutex_lock(&raw mut (*tl).lock);
+        mutex_lock(&raw mut (*tl).lock);
         (*timer).cancelled = 1;
-        libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+        mutex_unlock(&raw mut (*tl).lock);
     }
 }
 
@@ -190,11 +240,11 @@ pub unsafe extern "C" fn hew_timer_tick(tl: *mut HewTimerList) -> c_int {
 
     // SAFETY: caller guarantees `tl` was initialised.
     unsafe {
-        libc::pthread_mutex_lock(&raw mut (*tl).lock);
+        mutex_lock(&raw mut (*tl).lock);
         while !(*tl).head.is_null() && (*(*tl).head).deadline_ms <= now {
             let t = (*tl).head;
             (*tl).head = (*t).next;
-            libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+            mutex_unlock(&raw mut (*tl).lock);
 
             if (*t).cancelled == 0 {
                 if let Some(cb) = (*t).cb {
@@ -205,9 +255,9 @@ pub unsafe extern "C" fn hew_timer_tick(tl: *mut HewTimerList) -> c_int {
             }
             drop(Box::from_raw(t));
 
-            libc::pthread_mutex_lock(&raw mut (*tl).lock);
+            mutex_lock(&raw mut (*tl).lock);
         }
-        libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+        mutex_unlock(&raw mut (*tl).lock);
     }
     fired
 }
@@ -224,14 +274,14 @@ pub unsafe extern "C" fn hew_timer_next_deadline_ms(tl: *mut HewTimerList) -> i6
     }
     // SAFETY: caller guarantees `tl` was initialised.
     unsafe {
-        libc::pthread_mutex_lock(&raw mut (*tl).lock);
+        mutex_lock(&raw mut (*tl).lock);
         if (*tl).head.is_null() {
-            libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+            mutex_unlock(&raw mut (*tl).lock);
             return -1;
         }
         let now = hew_now_ms();
         let deadline = (*(*tl).head).deadline_ms;
-        libc::pthread_mutex_unlock(&raw mut (*tl).lock);
+        mutex_unlock(&raw mut (*tl).lock);
 
         let remaining = deadline.cast_signed() - now.cast_signed();
         if remaining > 0 {

@@ -118,8 +118,10 @@ fn cmd_run(args: &[String]) {
     }
 
     // Compile to a temporary binary
+    let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
     let tmp_path = tempfile::Builder::new()
         .prefix("hew_run_")
+        .suffix(exe_suffix)
         .tempfile()
         .unwrap_or_else(|e| {
             eprintln!("Error: cannot create temp file: {e}");
@@ -194,7 +196,12 @@ fn cmd_debug(args: &[String]) {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let tmp_bin = tmp_dir.path().join("hew_debug_bin");
+    let debug_bin_name = if cfg!(target_os = "windows") {
+        "hew_debug_bin.exe"
+    } else {
+        "hew_debug_bin"
+    };
+    let tmp_bin = tmp_dir.path().join(debug_bin_name);
     let tmp_bin_str = tmp_bin.display().to_string();
 
     match compile::compile(
@@ -254,8 +261,8 @@ fn cmd_debug(args: &[String]) {
 }
 
 fn which_exists(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
+    std::process::Command::new(name)
+        .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()

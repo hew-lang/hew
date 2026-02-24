@@ -10,6 +10,15 @@ use core::ptr;
 // Clock functions
 // ---------------------------------------------------------------------------
 
+/// Return the current wall-clock time as (seconds, nanoseconds) since Unix epoch.
+fn realtime_clock() -> (i64, i64) {
+    use std::time::SystemTime;
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, i64::from(d.subsec_nanos())),
+        Err(_) => (0, 0),
+    }
+}
+
 /// Return the current time as milliseconds since Unix epoch (wall clock).
 ///
 /// # Safety
@@ -17,15 +26,8 @@ use core::ptr;
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
-    }
-    ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000
+    let (secs, nanos) = realtime_clock();
+    secs * 1000 + nanos / 1_000_000
 }
 
 /// Return the current time as seconds since Unix epoch.
@@ -35,15 +37,7 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
-    }
-    ts.tv_sec
+    realtime_clock().0
 }
 
 /// Return the current time as nanoseconds since Unix epoch.
@@ -53,15 +47,8 @@ pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: ts is a valid local timespec; CLOCK_REALTIME is always available.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_REALTIME, &raw mut ts);
-    }
-    ts.tv_sec * 1_000_000_000 + ts.tv_nsec
+    let (secs, nanos) = realtime_clock();
+    secs * 1_000_000_000 + nanos
 }
 
 // ---------------------------------------------------------------------------

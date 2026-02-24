@@ -272,7 +272,11 @@ fn do_check(
 
     if run {
         // Compile to a temp binary and execute it.
-        let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let exe_suffix = if cfg!(target_os = "windows") {
+            ".exe"
+        } else {
+            ""
+        };
         let tmp_path = match tempfile::Builder::new()
             .prefix("hew_watch_")
             .suffix(exe_suffix)

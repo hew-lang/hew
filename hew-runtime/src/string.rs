@@ -221,7 +221,14 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     let mut buf = [0u8; 64];
     // SAFETY: buf is large enough for any %g output. snprintf is available
     // on all platforms (MSVC CRT, glibc, musl).
-    let len = unsafe { snprintf(buf.as_mut_ptr().cast::<c_char>(), buf.len(), c"%g".as_ptr(), f) };
+    let len = unsafe {
+        snprintf(
+            buf.as_mut_ptr().cast::<c_char>(),
+            buf.len(),
+            c"%g".as_ptr(),
+            f,
+        )
+    };
     if len < 0 {
         return std::ptr::null_mut();
     }

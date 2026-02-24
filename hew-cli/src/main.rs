@@ -532,6 +532,19 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
                     s.strip_prefix("--pkg-path=").unwrap(),
                 ));
             }
+            "--link-lib" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --link-lib requires an argument");
+                    std::process::exit(1);
+                }
+                options.extra_link_libs.push(args[i].clone());
+            }
+            s if s.starts_with("--link-lib=") => {
+                options
+                    .extra_link_libs
+                    .push(s.strip_prefix("--link-lib=").unwrap().to_string());
+            }
             _ => {
                 if input.is_none() {
                     input = Some(args[i].clone());
@@ -597,6 +610,7 @@ Build/check options:
   --emit-llvm                     Emit LLVM IR instead of linking
   --emit-obj                      Emit object code instead of linking
   --pkg-path <dir>                Override package search directory (default: .adze/packages/)
+  --link-lib <path>               Extra static library to pass to the linker
 
 Fmt options:
   --check                         Check formatting without writing (exit 1 if unformatted)

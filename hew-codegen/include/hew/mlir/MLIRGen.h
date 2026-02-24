@@ -367,6 +367,8 @@ private:
   std::unordered_map<std::string, std::string> collectionVarTypes;
   // Track collection-typed actor fields: "ActorName.fieldName" → "Vec<i32>", etc.
   std::unordered_map<std::string, std::string> collectionFieldTypes;
+  // Extern function semantic return types before LLVM ABI erasure.
+  std::unordered_map<std::string, mlir::Type> externSemanticReturnTypes;
 
   // ── Declared type context ─────────────────────────────────────────
   // Set before generating a let/var initializer expression.  Carries

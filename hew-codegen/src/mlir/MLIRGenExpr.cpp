@@ -279,7 +279,13 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
             auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
                 location, ptrType, structType, operandVal,
                 llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
-            return builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr);
+            auto fieldVal =
+                builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr).getResult();
+            if ((mlir::isa<hew::VecType>(field.semanticType) ||
+                 mlir::isa<hew::HashMapType>(field.semanticType)) &&
+                field.semanticType != field.type)
+              return coerceType(fieldVal, field.semanticType, location);
+            return fieldVal;
           }
         }
       }
@@ -1430,8 +1436,16 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       }
     }
 
-    if (callOp.getNumResults() > 0)
-      return callOp.getResult(0);
+    if (callOp.getNumResults() > 0) {
+      auto result = callOp.getResult(0);
+      auto externRetIt = externSemanticReturnTypes.find(callee.getSymName().str());
+      if (externRetIt != externSemanticReturnTypes.end() &&
+          mlir::isa<mlir::LLVM::LLVMPointerType>(result.getType()) &&
+          result.getType() != externRetIt->second) {
+        result = builder.create<hew::BitcastOp>(location, externRetIt->second, result);
+      }
+      return result;
+    }
     return nullptr;
   }
 

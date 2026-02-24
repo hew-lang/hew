@@ -763,7 +763,15 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
         })
     };
 
-    let Some(actor) = actor else { return -1 };
+    let Some(actor) = actor else {
+        // Actor not found locally. If the PID belongs to a remote node,
+        // route through the distributed node infrastructure.
+        if crate::pid::hew_pid_is_local(actor_id) == 0 {
+            // SAFETY: data validity is guaranteed by caller contract.
+            return unsafe { crate::hew_node::try_remote_send(actor_id, msg_type, data, size) };
+        }
+        return -1;
+    };
     // SAFETY: pointer was discovered in LIVE_ACTORS and `data` validity is
     // guaranteed by the caller contract.
     unsafe { actor_send_internal(actor, msg_type, data, size) };

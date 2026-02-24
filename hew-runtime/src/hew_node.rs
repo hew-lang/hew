@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::set_last_error;
@@ -21,6 +21,27 @@ const NODE_STATE_STARTING: u8 = 0;
 const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
+
+/// Global reference to the active node for remote message routing.
+static CURRENT_NODE: AtomicPtr<HewNode> = AtomicPtr::new(ptr::null_mut());
+
+/// Route a message to a remote actor via the current node.
+///
+/// # Safety
+/// `data` must be valid for `size` bytes (or null when size is 0).
+pub(crate) unsafe fn try_remote_send(
+    target_pid: u64,
+    msg_type: c_int,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    let node = CURRENT_NODE.load(Ordering::Acquire);
+    if node.is_null() {
+        return -1;
+    }
+    // SAFETY: CURRENT_NODE is only set to a valid, live node pointer.
+    unsafe { hew_node_send(node, target_pid, msg_type, data.cast::<u8>(), size) }
+}
 
 /// Node-local distributed registry state.
 #[repr(C)]
@@ -301,6 +322,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
+    CURRENT_NODE.store(ptr::from_mut(node), Ordering::Release);
     0
 }
 
@@ -322,6 +344,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
+    CURRENT_NODE
+        .compare_exchange(
+            ptr::from_mut(node),
+            ptr::null_mut(),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .ok();
     node.accept_stop.store(true, Ordering::Release);
     {
         let mut guard = match node.accept_thread.lock() {

@@ -3605,8 +3605,8 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &key_ty);
                         }
-                        // Returns i32 (0/1) per language spec, not bool
-                        Ty::I32
+                        // Returns bool
+                        Ty::Bool
                     }
                     "len" => Ty::I32,
                     "is_empty" => Ty::Bool,

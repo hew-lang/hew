@@ -24,8 +24,8 @@ fn test_hashmap_contains_key() -> int {
     m.insert("x", 10);
     let has_x = m.contains_key("x");
     let has_y = m.contains_key("y");
-    if has_x == 1 {
-        if has_y == 0 {
+    if has_x == true {
+        if has_y == false {
             println("PASS: hashmap_contains_key");
             1
         } else {
@@ -62,9 +62,9 @@ fn test_hashmap_insert_many() -> int {
     let has_e = m.contains_key("e");
     let has_z = m.contains_key("z");
     if len == 5 {
-        if has_a == 1 {
-            if has_e == 1 {
-                if has_z == 0 {
+        if has_a == true {
+            if has_e == true {
+                if has_z == false {
                     println("PASS: hashmap_insert_many");
                     1
                 } else {
@@ -91,8 +91,8 @@ fn test_hashmap_remove() -> int {
     let has_a = m.contains_key("a");
     let has_b = m.contains_key("b");
     if len == 2 {
-        if has_a == 1 {
-            if has_b == 0 {
+        if has_a == true {
+            if has_b == false {
                 println("PASS: hashmap_remove");
                 1
             } else {

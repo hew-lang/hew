@@ -2416,13 +2416,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         if (!key)
           return true;
         key = coerceType(key, keyType, location);
-        auto contains =
-            builder.create<hew::HashMapContainsKeyOp>(location, i32Type, mapValue, key).getResult();
-        auto zero = createIntConstant(builder, location, i32Type, 0);
-        resultOut = builder
-                        .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
-                                                     contains, zero)
-                        .getResult();
+        resultOut =
+            builder.create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, key)
+                .getResult();
         return true;
       }
       if (method == "keys") {

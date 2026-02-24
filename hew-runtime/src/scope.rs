@@ -11,6 +11,62 @@ use crate::actor::{self, HewActor};
 use crate::internal::types::HewActorState;
 use crate::mailbox;
 
+// ── Cross-platform mutex for #[repr(C)] structs ─────────────────────────
+
+#[cfg(unix)]
+pub type PlatformMutex = libc::pthread_mutex_t;
+
+#[cfg(windows)]
+#[repr(C)]
+pub struct PlatformMutex(*mut std::ffi::c_void);
+
+#[cfg(windows)]
+impl std::fmt::Debug for PlatformMutex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<srwlock>")
+    }
+}
+
+#[cfg(unix)]
+const MUTEX_INIT: PlatformMutex = libc::PTHREAD_MUTEX_INITIALIZER;
+#[cfg(windows)]
+const MUTEX_INIT: PlatformMutex = PlatformMutex(std::ptr::null_mut());
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AcquireSRWLockExclusive(lock: *mut PlatformMutex);
+    fn ReleaseSRWLockExclusive(lock: *mut PlatformMutex);
+}
+
+unsafe fn mutex_init(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_init(m, std::ptr::null()) };
+    #[cfg(windows)]
+    let _ = m;
+}
+
+unsafe fn mutex_lock(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_lock(m) };
+    #[cfg(windows)]
+    unsafe { AcquireSRWLockExclusive(m) };
+}
+
+unsafe fn mutex_unlock(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_unlock(m) };
+    #[cfg(windows)]
+    unsafe { ReleaseSRWLockExclusive(m) };
+}
+
+unsafe fn mutex_destroy(m: *mut PlatformMutex) {
+    #[cfg(unix)]
+    unsafe { libc::pthread_mutex_destroy(m) };
+    #[cfg(windows)]
+    let _ = m;
+}
+
 /// Maximum number of actors a scope can hold.
 pub const HEW_SCOPE_MAX_ACTORS: usize = 64;
 
@@ -24,8 +80,8 @@ pub struct HewScope {
     pub actors: [*mut c_void; HEW_SCOPE_MAX_ACTORS],
     /// Number of actors currently tracked.
     pub actor_count: i32,
-    /// Mutex protecting the actor list.
-    pub lock: libc::pthread_mutex_t,
+    /// Mutex protecting the actor list (SRWLOCK on Windows, pthread on Unix).
+    pub lock: PlatformMutex,
     /// Cooperative cancellation flag.
     pub cancelled: AtomicBool,
 }
@@ -56,12 +112,12 @@ pub unsafe extern "C" fn hew_scope_new() -> HewScope {
     let mut scope = HewScope {
         actors: [std::ptr::null_mut(); HEW_SCOPE_MAX_ACTORS],
         actor_count: 0,
-        lock: libc::PTHREAD_MUTEX_INITIALIZER,
+        lock: MUTEX_INIT,
         cancelled: AtomicBool::new(false),
     };
-    // SAFETY: `scope.lock` is a valid, uninitialised pthread mutex.
+    // SAFETY: `scope.lock` is a valid mutex ready for initialisation.
     unsafe {
-        libc::pthread_mutex_init(&raw mut scope.lock, std::ptr::null());
+        mutex_init(&raw mut scope.lock);
     }
     scope
 }
@@ -84,11 +140,11 @@ pub unsafe extern "C" fn hew_scope_spawn(scope: *mut HewScope, actor: *mut c_voi
     let s = unsafe { &mut *scope };
 
     // SAFETY: `s.lock` was initialised by `hew_scope_new`.
-    unsafe { libc::pthread_mutex_lock(&raw mut s.lock) };
+    unsafe { mutex_lock(&raw mut s.lock) };
 
     if s.actor_count as usize >= HEW_SCOPE_MAX_ACTORS {
         // SAFETY: Lock is held.
-        unsafe { libc::pthread_mutex_unlock(&raw mut s.lock) };
+        unsafe { mutex_unlock(&raw mut s.lock) };
         return -1;
     }
 
@@ -96,7 +152,7 @@ pub unsafe extern "C" fn hew_scope_spawn(scope: *mut HewScope, actor: *mut c_voi
     s.actor_count += 1;
 
     // SAFETY: Lock is held.
-    unsafe { libc::pthread_mutex_unlock(&raw mut s.lock) };
+    unsafe { mutex_unlock(&raw mut s.lock) };
     0
 }
 
@@ -119,7 +175,7 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
 
     // Phase 1: Wait until all mailboxes are drained.
     // SAFETY: `s.lock` was initialised by `hew_scope_new`.
-    unsafe { libc::pthread_mutex_lock(&raw mut s.lock) };
+    unsafe { mutex_lock(&raw mut s.lock) };
     for i in 0..s.actor_count as usize {
         let actor_ptr = s.actors[i].cast::<HewActor>();
         if actor_ptr.is_null() {
@@ -133,11 +189,10 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         // SAFETY: mb is valid for the actor's lifetime.
         while unsafe { mailbox::hew_mailbox_has_messages(mb) } != 0 {
             // SAFETY: Lock is held.
-            unsafe { libc::pthread_mutex_unlock(&raw mut s.lock) };
-            // SAFETY: usleep(1000) is always safe.
-            unsafe { libc::usleep(1000) };
+            unsafe { mutex_unlock(&raw mut s.lock) };
+            std::thread::sleep(std::time::Duration::from_micros(1000));
             // SAFETY: Lock was initialised.
-            unsafe { libc::pthread_mutex_lock(&raw mut s.lock) };
+            unsafe { mutex_lock(&raw mut s.lock) };
         }
     }
 
@@ -149,7 +204,7 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         }
     }
     // SAFETY: Lock is held.
-    unsafe { libc::pthread_mutex_unlock(&raw mut s.lock) };
+    unsafe { mutex_unlock(&raw mut s.lock) };
 
     // Phase 3: Wait for all actors to reach STOPPED.
     for i in 0..s.actor_count as usize {
@@ -163,8 +218,7 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
             let state = a.actor_state.load(Ordering::Acquire);
             state == HewActorState::Running as i32 || state == HewActorState::Runnable as i32
         } {
-            // SAFETY: usleep is always safe.
-            unsafe { libc::usleep(100) };
+            std::thread::sleep(std::time::Duration::from_micros(100));
         }
         // CAS to STOPPED if not already.
         let state = a.actor_state.load(Ordering::Acquire);
@@ -202,7 +256,7 @@ pub unsafe extern "C" fn hew_scope_destroy(scope: *mut HewScope) {
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &mut *scope };
     // SAFETY: Lock was initialised by hew_scope_new.
-    unsafe { libc::pthread_mutex_destroy(&raw mut s.lock) };
+    unsafe { mutex_destroy(&raw mut s.lock) };
     s.actors = [std::ptr::null_mut(); HEW_SCOPE_MAX_ACTORS];
     s.actor_count = 0;
 }

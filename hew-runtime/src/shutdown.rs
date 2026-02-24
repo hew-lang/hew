@@ -214,6 +214,7 @@ pub extern "C" fn hew_shutdown_wait() -> c_int {
 ///
 /// Must be called from the main thread before any other signal
 /// handlers are installed for these signals.
+#[cfg(unix)]
 pub unsafe fn install_shutdown_signal_handlers() {
     // SAFETY: We install a simple handler that only performs an atomic store
     // (async-signal-safe) and then calls hew_shutdown_initiate.
@@ -230,32 +231,51 @@ pub unsafe fn install_shutdown_signal_handlers() {
     }
 }
 
-/// Signal handler for SIGTERM/SIGINT.
+/// Windows shutdown handler using `SetConsoleCtrlHandler`.
+///
+/// Handles CTRL_C_EVENT, CTRL_BREAK_EVENT, and CTRL_CLOSE_EVENT by
+/// transitioning the runtime to the QUIESCE phase, mirroring the Unix
+/// SIGTERM/SIGINT handler behavior.
+#[cfg(windows)]
+pub unsafe fn install_shutdown_signal_handlers() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+
+    unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
+        // CTRL_C_EVENT = 0, CTRL_BREAK_EVENT = 1, CTRL_CLOSE_EVENT = 2
+        if ctrl_type <= 2 {
+            // Only set the pending flag. The phase transition is done by
+            // hew_shutdown_initiate (called from check_signal_shutdown).
+            SIGNAL_SHUTDOWN_PENDING.store(true, Ordering::Release);
+            return 1; // Handled
+        }
+        0 // Not handled
+    }
+
+    unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), 1) };
+}
+
+/// Signal handler for SIGTERM/SIGINT (Unix only).
 ///
 /// Only performs async-signal-safe operations: an atomic store.
 /// The actual shutdown work is done by the orchestration thread
 /// spawned in `hew_shutdown_initiate`.
+#[cfg(unix)]
 extern "C" fn shutdown_signal_handler(
     _sig: c_int,
     _info: *mut libc::siginfo_t,
     _ctx: *mut std::ffi::c_void,
 ) {
-    // Use a relaxed CAS to avoid re-triggering if already shutting down.
-    // This is async-signal-safe (just an atomic compare-exchange).
-    if SHUTDOWN_PHASE
-        .compare_exchange(
-            PHASE_RUNNING,
-            PHASE_QUIESCE,
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        // We can't spawn a thread from a signal handler (not async-signal-safe).
-        // Set a flag that workers will notice during their park phase.
-        // The first worker to detect it spawns the orchestration thread.
-        SIGNAL_SHUTDOWN_PENDING.store(true, Ordering::Release);
-    }
+    // We can't spawn a thread from a signal handler (not async-signal-safe).
+    // Set a flag that workers will notice during their park phase.
+    // The first worker to detect it calls hew_shutdown_initiate which
+    // performs the RUNNING → QUIESCE phase transition.
+    SIGNAL_SHUTDOWN_PENDING.store(true, Ordering::Release);
 }
 
 /// Flag set by the signal handler to indicate a signal-initiated shutdown.

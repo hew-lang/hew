@@ -297,17 +297,25 @@ impl ReplSession {
 fn find_hew_binary() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate self: {e}"))?;
 
-    // If the current binary is named "hew", use it directly.
-    if exe.file_name().is_some_and(|n| n == "hew") {
+    // If the current binary is named "hew" (or "hew.exe" on Windows), use it directly.
+    if exe
+        .file_name()
+        .is_some_and(|n| n == "hew" || n == "hew.exe")
+    {
         return Ok(exe);
     }
 
     // Otherwise, search relative to the current binary.
     let exe_dir = exe.parent().expect("exe should have a parent directory");
+    let hew_name = if cfg!(target_os = "windows") {
+        "hew.exe"
+    } else {
+        "hew"
+    };
     let candidates = [
-        exe_dir.join("../hew"),          // target/debug/deps/../hew
-        exe_dir.join("hew"),             // same dir
-        exe_dir.join("../../debug/hew"), // fallback
+        exe_dir.join(format!("../{hew_name}")),          // target/debug/deps/../hew
+        exe_dir.join(hew_name),                          // same dir
+        exe_dir.join(format!("../../debug/{hew_name}")), // fallback
     ];
 
     for c in &candidates {
@@ -333,7 +341,12 @@ fn compile_and_execute(source: &str) -> Result<String, String> {
     let src_path = tmp_dir.path().join("eval.hew");
     std::fs::write(&src_path, source).map_err(|e| format!("cannot write temp source: {e}"))?;
 
-    let bin_path = tmp_dir.path().join("eval_bin");
+    let bin_name = if cfg!(target_os = "windows") {
+        "eval_bin.exe"
+    } else {
+        "eval_bin"
+    };
+    let bin_path = tmp_dir.path().join(bin_name);
 
     // Compile.
     let compile = Command::new(&hew_binary)

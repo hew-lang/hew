@@ -2,6 +2,14 @@
 //! the final binary from the object file emitted by `hew-codegen` and the Hew
 //! runtime library.
 
+fn runtime_lib_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "hew_runtime.lib"
+    } else {
+        "libhew_runtime.a"
+    }
+}
+
 /// Link an object file with the Hew runtime into a native executable (or `.wasm`
 /// binary when the target triple indicates a WASM platform).
 ///
@@ -22,7 +30,7 @@ pub fn link_executable(
         return link_wasm(object_path, output_path, target.unwrap());
     }
 
-    let runtime_lib = find_runtime_lib("libhew_runtime.a")?;
+    let runtime_lib = find_runtime_lib(runtime_lib_name())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
     let safe_output = if output_path.starts_with('-') {
@@ -32,12 +40,25 @@ pub fn link_executable(
     };
 
     // Prefer clang (consistent with the LLVM/MLIR toolchain), fall back to cc.
+    #[cfg(not(target_os = "windows"))]
     let compiler = if has_tool("clang") { "clang" } else { "cc" };
+    #[cfg(target_os = "windows")]
+    let compiler = if has_tool("clang") {
+        "clang"
+    } else {
+        return Err("Error: clang not found. Install LLVM to link Hew programs.".into());
+    };
+
     let mut cmd = std::process::Command::new(compiler);
 
     // Use lld when available — ~20x faster than GNU ld for large static libs
+    #[cfg(not(target_os = "windows"))]
     if has_tool("ld.lld") {
         cmd.arg("-fuse-ld=lld");
+    }
+    #[cfg(target_os = "windows")]
+    if has_tool("lld-link") {
+        cmd.arg("-fuse-ld=lld-link");
     }
 
     cmd.arg(object_path).arg(&runtime_lib);
@@ -85,6 +106,14 @@ pub fn link_executable(
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        // MSVC-style dead-code elimination via clang → lld-link/link.exe
+        if !extra_libs.is_empty() {
+            cmd.arg("-Wl,/FORCE:MULTIPLE");
+        }
+    }
+
     // Platform-specific libraries
     #[cfg(target_os = "linux")]
     cmd.args(["-lpthread", "-lm", "-ldl", "-lrt"]);
@@ -98,6 +127,9 @@ pub fn link_executable(
         "-framework",
         "Security",
     ]);
+
+    #[cfg(target_os = "windows")]
+    cmd.args(["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll", "-ladvapi32"]);
 
     let output = cmd
         .output()
@@ -320,7 +352,11 @@ fn module_to_staticlib_name(module_path: &str) -> Option<String> {
         "ecosystem::misc::glob" => "hew_ecosystem_misc_glob",
         _ => return None,
     };
-    Some(format!("lib{crate_name}.a"))
+    if cfg!(target_os = "windows") {
+        Some(format!("{crate_name}.lib"))
+    } else {
+        Some(format!("lib{crate_name}.a"))
+    }
 }
 
 /// Parse linker stderr for unresolved `hew_*` symbols and return human-readable
@@ -362,6 +398,15 @@ fn extract_undefined_hew_symbol(line: &str) -> Option<&str> {
         let start = pos + "\"_".len();
         let rest = &line[start..];
         let end = rest.find('"').unwrap_or(rest.len());
+        return Some(&rest[..end]);
+    }
+    // MSVC lld-link: unresolved external symbol hew_foo_bar
+    if let Some(pos) = line.find("unresolved external symbol hew_") {
+        let start = pos + "unresolved external symbol ".len();
+        let rest = &line[start..];
+        let end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
         return Some(&rest[..end]);
     }
     None
@@ -410,6 +455,15 @@ fn find_wasm_ld() -> Result<String, String> {
         let path = format!("/usr/lib/llvm-{version}/bin/wasm-ld");
         if std::path::Path::new(&path).exists() {
             return Ok(path);
+        }
+    }
+
+    // Try Windows LLVM installation
+    #[cfg(target_os = "windows")]
+    {
+        let path = "C:/Program Files/LLVM/bin/wasm-ld.exe";
+        if std::path::Path::new(path).exists() {
+            return Ok(path.to_string());
         }
     }
 

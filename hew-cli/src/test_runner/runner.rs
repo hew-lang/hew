@@ -116,17 +116,25 @@ pub fn run_tests(tests: &[TestCase], filter: Option<&str>, include_ignored: bool
 fn find_hew_binary() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate self: {e}"))?;
 
-    // If the current binary is named "hew", use it directly.
-    if exe.file_name().is_some_and(|n| n == "hew") {
+    // If the current binary is named "hew" (or "hew.exe" on Windows), use it directly.
+    if exe
+        .file_name()
+        .is_some_and(|n| n == "hew" || n == "hew.exe")
+    {
         return Ok(exe);
     }
 
     // Otherwise, search relative to the current binary.
     let exe_dir = exe.parent().expect("exe should have a parent directory");
+    let hew_name = if cfg!(target_os = "windows") {
+        "hew.exe"
+    } else {
+        "hew"
+    };
     let candidates = [
-        exe_dir.join("../hew"),          // target/debug/deps/../hew
-        exe_dir.join("hew"),             // same dir
-        exe_dir.join("../../debug/hew"), // fallback
+        exe_dir.join(format!("../{hew_name}")),          // target/debug/deps/../hew
+        exe_dir.join(hew_name),                          // same dir
+        exe_dir.join(format!("../../debug/{hew_name}")), // fallback
     ];
 
     for c in &candidates {
@@ -171,9 +179,10 @@ fn compile_test(
     std::fs::write(tmp_source.path(), &synthetic)
         .map_err(|e| format!("cannot write temp file: {e}"))?;
 
+    let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
     let tmp_binary = tempfile::Builder::new()
         .prefix("hew_test_bin_")
-        .suffix("")
+        .suffix(exe_suffix)
         .tempfile_in(test_dir)
         .map_err(|e| format!("cannot create temp binary: {e}"))?;
 
@@ -368,10 +377,11 @@ mod tests {
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
         // Write source to a unique temp file so the runner can read it.
-        let tmp = std::env::temp_dir().join(format!(
-            "hew_test_inline_{}.hew",
-            std::thread::current().name().unwrap_or("unknown")
-        ));
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .replace("::", "_");
+        let tmp = std::env::temp_dir().join(format!("hew_test_inline_{thread_name}.hew"));
         std::fs::write(&tmp, source).unwrap();
         let tests: Vec<TestCase> = tests
             .into_iter()

@@ -3972,7 +3972,11 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
   llvm::Triple hostTriple(llvm::sys::getDefaultTargetTriple());
 
   // When cross-compiling, try <triple>-gcc as the linker
+#ifdef _WIN32
+  std::string linkerName = "clang";
+#else
   std::string linkerName = "cc";
+#endif
   bool crossCompiling = (targetTriple.str() != hostTriple.str());
   if (crossCompiling) {
     linkerName = targetTriple.str() + "-gcc";
@@ -3985,7 +3989,11 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
                    << "Hint: install a cross-compilation toolchain, or use "
                    << "--emit-obj to produce an object file for manual linking.\n";
     } else {
+#ifdef _WIN32
+      llvm::errs() << "Error: could not find 'clang' linker in PATH\n";
+#else
       llvm::errs() << "Error: could not find 'cc' linker in PATH\n";
+#endif
     }
     return 1;
   }
@@ -3994,7 +4002,11 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
   // Find the Rust runtime library
   std::string rtLibPath;
   if (!runtimeLibDir.empty()) {
+#ifdef _WIN32
+    auto candidate = std::filesystem::path(runtimeLibDir) / "hew_runtime.lib";
+#else
     auto candidate = std::filesystem::path(runtimeLibDir) / "libhew_runtime.a";
+#endif
     if (std::filesystem::exists(candidate))
       rtLibPath = candidate.string();
   }
@@ -4006,10 +4018,15 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
   // Use lld if available — significantly faster than GNU ld for large archives
   std::string fuseLinker;
   if (!crossCompiling) {
+#ifdef _WIN32
+    if (llvm::sys::findProgramByName("lld-link"))
+      fuseLinker = "-fuse-ld=lld-link";
+#else
     if (llvm::sys::findProgramByName("ld.lld"))
       fuseLinker = "-fuse-ld=lld";
     else if (llvm::sys::findProgramByName("ld.mold"))
       fuseLinker = "-fuse-ld=mold";
+#endif
   }
   if (!fuseLinker.empty())
     args.push_back(fuseLinker);
@@ -4026,6 +4043,8 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
   } else if (targetTriple.isOSDarwin()) {
     args.push_back("-Wl,-dead_strip");
     args.push_back("-Wl,-x");
+  } else if (targetTriple.isOSWindows()) {
+    args.push_back("-Wl,/OPT:REF");
   }
 
   // Add platform-specific system libraries
@@ -4046,6 +4065,7 @@ int Codegen::linkExecutable(const std::string &objectPath, const std::string &ou
     args.push_back("-luserenv");
     args.push_back("-lbcrypt");
     args.push_back("-lntdll");
+    args.push_back("-ladvapi32");
   } else {
     // Generic Unix-like fallback
     args.push_back("-lpthread");

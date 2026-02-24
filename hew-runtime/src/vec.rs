@@ -32,6 +32,20 @@ use core::ptr;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Write a message to stderr (fd 2) in a signal-safe, cross-platform manner.
+///
+/// # Safety
+///
+/// `msg` must be a valid byte slice. This is safe to call in abort paths.
+unsafe fn write_stderr(msg: &[u8]) {
+    unsafe {
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+    }
+}
+
 /// Ensure `v` can hold at least `needed` elements, growing if necessary.
 ///
 /// # Safety
@@ -51,14 +65,14 @@ unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
             } else {
                 // SAFETY: writing to stderr and aborting is always safe.
                 let msg = b"PANIC: Vec capacity overflow\n\0";
-                libc::write(2, msg.as_ptr().cast(), msg.len() - 1);
+                write_stderr(&msg[..msg.len() - 1]);
                 libc::abort();
             };
         }
         let Some(alloc_size) = new_cap.checked_mul(vec.elem_size) else {
             // SAFETY: writing to stderr and aborting is always safe.
             let msg = b"PANIC: Vec allocation size overflow\n\0";
-            libc::write(2, msg.as_ptr().cast(), msg.len() - 1);
+            write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         };
         let new_data = libc::realloc(vec.data.cast(), alloc_size);
@@ -75,7 +89,7 @@ unsafe fn abort_oob(index: usize, len: usize) -> ! {
     // SAFETY: writing to stderr and aborting is always safe.
     unsafe {
         let msg = b"PANIC: Vec index out of bounds\n\0";
-        libc::write(2, msg.as_ptr().cast(), msg.len() - 1);
+        write_stderr(&msg[..msg.len() - 1]);
         let _ = (index, len); // avoid unused warnings
         libc::abort();
     }
@@ -86,7 +100,7 @@ unsafe fn abort_pop_empty() -> ! {
     // SAFETY: writing to stderr and aborting is always safe.
     unsafe {
         let msg = b"PANIC: Vec pop on empty vector\n\0";
-        libc::write(2, msg.as_ptr().cast(), msg.len() - 1);
+        write_stderr(&msg[..msg.len() - 1]);
         libc::abort();
     }
 }

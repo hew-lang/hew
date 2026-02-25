@@ -625,9 +625,10 @@ fn activate_actor(actor: *mut HewActor) {
     }
 
     // Hibernation: track idle activations.
-    if msgs_processed == 0 && a.hibernation_threshold.load(Ordering::Relaxed) > 0 {
+    let hib_threshold = a.hibernation_threshold.load(Ordering::Relaxed);
+    if msgs_processed == 0 && hib_threshold > 0 {
         let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
-        if prev_idle + 1 >= a.hibernation_threshold.load(Ordering::Relaxed) {
+        if prev_idle + 1 >= hib_threshold {
             a.hibernating.store(1, Ordering::Relaxed);
         }
     } else if msgs_processed > 0 {

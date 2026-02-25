@@ -905,11 +905,14 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
-    // Wait until actor reaches a terminal state (with timeout).
+    // Wait until actor reaches a terminal or idle state (with timeout).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let state = a.actor_state.load(Ordering::Acquire);
-        if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
+        if state == HewActorState::Stopped as i32
+            || state == HewActorState::Crashed as i32
+            || state == HewActorState::Idle as i32
+        {
             break;
         }
         if std::time::Instant::now() >= deadline {

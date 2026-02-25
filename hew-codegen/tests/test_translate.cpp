@@ -50,25 +50,62 @@
 #include <cassert>
 #include <csignal>
 #include <cstdio>
-#include <unistd.h>
 
+#ifdef _WIN32
+#include <atomic>
+#include <thread>
+#include <chrono>
+#else
+#include <unistd.h>
+#endif
+
+#ifndef _WIN32
 static volatile sig_atomic_t timed_out = 0;
 
 static void alarm_handler(int) {
   timed_out = 1;
 }
+#endif
 
 // Translate with a timeout. Returns true on success, false on hang/failure.
 static bool translateWithTimeout(mlir::ModuleOp module, mlir::MLIRContext &context,
                                  int timeout_sec = 5) {
+  mlir::registerLLVMDialectTranslation(context);
+  mlir::registerBuiltinDialectTranslation(context);
+
+#ifdef _WIN32
+  // Windows: run translation in a thread with a timeout
+  std::atomic<bool> done{false};
+  std::unique_ptr<llvm::Module> result;
+  llvm::LLVMContext llvmContext;
+
+  std::thread worker([&] {
+    result = mlir::translateModuleToLLVMIR(module, llvmContext);
+    done = true;
+  });
+
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_sec);
+  while (!done && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+
+  if (!done) {
+    fprintf(stderr, "  TIMEOUT: translateModuleToLLVMIR hung!\n");
+    worker.detach();
+    return false;
+  }
+  worker.join();
+
+  if (!result) {
+    fprintf(stderr, "  FAILED: translateModuleToLLVMIR returned null\n");
+    return false;
+  }
+#else
   timed_out = 0;
   struct sigaction sa = {};
   sa.sa_handler = alarm_handler;
   sigaction(SIGALRM, &sa, nullptr);
   alarm(timeout_sec);
-
-  mlir::registerLLVMDialectTranslation(context);
-  mlir::registerBuiltinDialectTranslation(context);
 
   llvm::LLVMContext llvmContext;
   auto llvmModule = mlir::translateModuleToLLVMIR(module, llvmContext);
@@ -84,6 +121,7 @@ static bool translateWithTimeout(mlir::ModuleOp module, mlir::MLIRContext &conte
     fprintf(stderr, "  FAILED: translateModuleToLLVMIR returned null\n");
     return false;
   }
+#endif
 
   fprintf(stderr, "  OK: translation succeeded\n");
   return true;

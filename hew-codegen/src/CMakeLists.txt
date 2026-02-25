@@ -29,25 +29,24 @@ if(HEW_STATIC_LINK)
   # Get ALL MLIR static libraries
   get_property(MLIR_ALL_LIBS GLOBAL PROPERTY MLIR_ALL_LIBS)
 
-  # LLVM components needed for codegen across all supported targets
-  llvm_map_components_to_libnames(LLVM_STATIC_LIBS
+  # LLVM components needed for codegen — backends added based on what was built
+  set(HEW_LLVM_COMPONENTS
     Core Support IRReader IRPrinter
     Passes Target TransformUtils Analysis
-    # X86 backend
-    X86CodeGen X86AsmParser X86Desc X86Info
-    # AArch64 backend
-    AArch64CodeGen AArch64AsmParser AArch64Desc AArch64Info
-    # ARM backend
-    ARMCodeGen ARMAsmParser ARMDesc ARMInfo
-    # WebAssembly backend (for future WASM target)
-    WebAssemblyCodeGen WebAssemblyAsmParser WebAssemblyDesc WebAssemblyInfo
-    # Common
     MC MCParser MCDisassembler
-    OrcJIT
-    native
-    NativeCodeGen
+    OrcJIT native
     CodeGen AsmPrinter SelectionDAG GlobalISel
   )
+
+  # Add backends that are available in this LLVM build
+  foreach(_target X86 AArch64 ARM WebAssembly)
+    if("${_target}" IN_LIST LLVM_TARGETS_TO_BUILD)
+      list(APPEND HEW_LLVM_COMPONENTS
+        ${_target}CodeGen ${_target}AsmParser ${_target}Desc ${_target}Info)
+    endif()
+  endforeach()
+
+  llvm_map_components_to_libnames(LLVM_STATIC_LIBS ${HEW_LLVM_COMPONENTS})
 
   target_link_libraries(HewMLIRDialect PUBLIC
     ${MLIR_ALL_LIBS}

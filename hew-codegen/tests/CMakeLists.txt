@@ -1,5 +1,7 @@
-# ── Shared MLIR library (used by all MLIR-based tests) ─────────────────────
-find_library(MLIR_SHARED_LIB MLIR PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+# ── Shared MLIR library (used by tests in non-static builds) ───────────────
+if(NOT HEW_STATIC_LINK)
+  find_library(MLIR_SHARED_LIB MLIR PATHS ${LLVM_LIBRARY_DIR} NO_DEFAULT_PATH)
+endif()
 
 # ── MLIR dialect test ──────────────────────────────────────────────────────
 add_executable(test_mlir_dialect test_mlir_dialect.cpp)
@@ -11,7 +13,7 @@ target_include_directories(test_mlir_dialect PRIVATE
 
 target_link_libraries(test_mlir_dialect PRIVATE
   HewMLIRDialect
-  ${MLIR_SHARED_LIB}
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
 )
 
 add_test(NAME mlir_dialect COMMAND test_mlir_dialect)
@@ -28,7 +30,7 @@ target_include_directories(test_mlirgen PRIVATE
 
 target_link_libraries(test_mlirgen PRIVATE
   HewMLIRDialect
-  ${MLIR_SHARED_LIB}
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
 )
 
 add_test(NAME mlirgen COMMAND test_mlirgen)
@@ -47,7 +49,7 @@ target_include_directories(test_translate PRIVATE
 target_link_libraries(test_translate PRIVATE
   HewCodegen
   HewMLIRDialect
-  ${MLIR_SHARED_LIB}
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
 )
 
 add_test(NAME translate COMMAND test_translate)

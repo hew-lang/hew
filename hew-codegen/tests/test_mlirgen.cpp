@@ -120,7 +120,11 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   // Invoke hew build --emit-json via popen
   static std::string hewCli = findHewCli();
   std::string cmd = hewCli + " build " + tmpPath + " --emit-json 2>/dev/null";
+#ifdef _WIN32
+  FILE *pipe = _popen(cmd.c_str(), "r");
+#else
   FILE *pipe = popen(cmd.c_str(), "r");
+#endif
   if (!pipe) {
     printf("  Failed to start hew CLI\n");
     std::filesystem::remove(tmpPath);
@@ -133,7 +137,11 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
     astData.insert(astData.end(), buf, buf + n);
   }
 
+#ifdef _WIN32
+  int rc = _pclose(pipe);
+#else
   int rc = pclose(pipe);
+#endif
   std::filesystem::remove(tmpPath);
 
   if (rc != 0) {

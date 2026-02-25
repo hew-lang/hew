@@ -59,6 +59,7 @@ pub const CONN_STATE_CONNECTING: i32 = 0;
 /// Connection is active and ready for I/O.
 pub const CONN_STATE_ACTIVE: i32 = 1;
 /// Connection is draining (no new sends, waiting for in-flight).
+/// TODO: reserve for future graceful shutdown semantics once conn draining is implemented.
 pub const CONN_STATE_DRAINING: i32 = 2;
 /// Connection is closed.
 pub const CONN_STATE_CLOSED: i32 = 3;
@@ -1232,6 +1233,8 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     drop(conns);
 
     if peer_hs.node_id != 0 {
+        // TODO: route entries only store bare conn_id (no generation), so conn_id reuse can
+        // cause stale lookups to target a different connection; add generation tokens.
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_hs.node_id, conn_id) };
         // SAFETY: pointer validity is checked by the callee.
@@ -1273,19 +1276,12 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     let conn = conns.swap_remove(idx);
     let peer_node_id = conn.peer_node_id;
     conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
-    // Signal reader thread to stop (happens in Drop).
-    drop(conn);
 
-    // Close the transport connection.
+    // Close the transport connection first so a blocking recv unblocks.
     // SAFETY: transport is valid per manager contract.
-    unsafe {
-        let t = &*mgr.transport;
-        if let Some(ops) = t.ops.as_ref() {
-            if let Some(close_fn) = ops.close_conn {
-                close_fn(t.r#impl, conn_id);
-            }
-        }
-    }
+    unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+    // Now drop/join the reader thread after transport close.
+    drop(conn);
 
     if peer_node_id != 0 {
         // SAFETY: pointer validity is checked by the callee.

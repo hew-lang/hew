@@ -58,7 +58,7 @@ jobs:
             os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
           - target: darwin-x86_64
-            os: macos-13
+            os: macos-15
             rust_target: x86_64-apple-darwin
           - target: darwin-aarch64
             os: macos-14
@@ -68,8 +68,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows MLIR builds can be flaky — don't block the release
-    continue-on-error: ${{ startsWith(matrix.target, 'windows') }}
+    # Windows and macOS x86_64 MLIR builds can be flaky — don't block the release
+    continue-on-error: ${{ startsWith(matrix.target, 'windows') || matrix.target == 'darwin-x86_64' }}
     timeout-minutes: 120
 
     steps:
@@ -320,6 +320,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
     needs: build
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -371,12 +372,14 @@ jobs:
   release:
     needs: [build, linux-packages]
     runs-on: ubuntu-24.04
-    # Don't skip release if linux-packages fails — tarballs are the primary artifacts
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    # Run as long as build didn't hard-fail — linux-packages and continue-on-error
+    # targets (Windows, macOS x86_64) are allowed to fail without blocking release
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: "hew-v*"
           path: artifacts
           merge-multiple: true
 
@@ -410,6 +413,7 @@ jobs:
   docker:
     needs: build
     runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     timeout-minutes: 30
 
     steps:

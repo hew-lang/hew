@@ -376,7 +376,6 @@ static bool test2_build_and_lower() {
   auto loc = builder.getUnknownLoc();
   auto module = mlir::ModuleOp::create(loc);
   auto f64Type = builder.getF64Type();
-  auto i32Type = builder.getI32Type();
 
   auto funcType = builder.getFunctionType({}, {});
   auto funcOp = builder.create<mlir::func::FuncOp>(loc, "main", funcType);
@@ -389,6 +388,7 @@ static bool test2_build_and_lower() {
   auto cst1 = builder.create<mlir::arith::ConstantOp>(loc, builder.getI32IntegerAttr(1));
   auto sitofp = builder.create<mlir::arith::SIToFPOp>(loc, f64Type, cst1);
   auto addf = builder.create<mlir::arith::AddFOp>(loc, cst314, sitofp);
+  (void)addf;
   builder.create<mlir::func::ReturnOp>(loc);
 
   // Verify before passes
@@ -452,6 +452,8 @@ static bool test3_build_llvm_directly() {
   auto cst1i32 = builder.create<mlir::LLVM::ConstantOp>(loc, i32Type, builder.getI32IntegerAttr(1));
   auto cst1f64 = builder.create<mlir::LLVM::ConstantOp>(loc, f64Type, builder.getF64FloatAttr(1.0));
   auto fadd = builder.create<mlir::LLVM::FAddOp>(loc, f64Type, cst1f64, cst314);
+  (void)cst1i32;
+  (void)fadd;
   builder.create<mlir::LLVM::ReturnOp>(loc, mlir::ValueRange{});
 
   fprintf(stderr, "  Module:\n");

@@ -255,7 +255,7 @@ build_debian() {
     _docker_rm "${ctx}"
     mkdir -p "${ctx}/hew-${VERSION}/debian/source"
 
-    # Copy debian packaging files
+    # Copy debian packaging files and patch version
     cp "${SCRIPT_DIR}/debian/control" \
         "${SCRIPT_DIR}/debian/copyright" \
         "${SCRIPT_DIR}/debian/changelog" \
@@ -265,6 +265,8 @@ build_debian() {
     [[ -f "${SCRIPT_DIR}/debian/source/format" ]] &&
         cp "${SCRIPT_DIR}/debian/source/format" "${ctx}/hew-${VERSION}/debian/source/"
     chmod +x "${ctx}/hew-${VERSION}/debian/rules"
+    echo "${VERSION}" >"${ctx}/hew-${VERSION}/debian/hew-version"
+    sed -i "1s/^hew ([^)]*)/hew (${VERSION}-1)/" "${ctx}/hew-${VERSION}/debian/changelog"
 
     # Pre-place the tarball so debian/rules skips the download
     cp "${TARBALL_PATH}" "${ctx}/hew-${VERSION}/"
@@ -316,6 +318,7 @@ build_rpm() {
 
     cp "${TARBALL_PATH}" "${ctx}/"
     cp "${SCRIPT_DIR}/rpm/hew.spec" "${ctx}/"
+    sed -i "s/^Version:.*/Version:        ${VERSION}/" "${ctx}/hew.spec"
 
     info "docker" "fedora:41 -> hew-${VERSION}-1.*.${TARGET_ARCH}.rpm"
     if docker run --rm \
@@ -367,6 +370,7 @@ build_arch() {
     mkdir -p "${ctx}"
 
     cp "${SCRIPT_DIR}/arch/PKGBUILD" "${ctx}/"
+    sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${ctx}/PKGBUILD"
     # Place tarball where makepkg expects it (same dir as PKGBUILD)
     cp "${TARBALL_PATH}" "${ctx}/"
 
@@ -420,6 +424,7 @@ build_alpine() {
     mkdir -p "${ctx}"
 
     cp "${SCRIPT_DIR}/alpine/APKBUILD" "${ctx}/"
+    sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${ctx}/APKBUILD"
     # Place tarball where abuild expects it (same dir as APKBUILD)
     cp "${TARBALL_PATH}" "${ctx}/"
 

@@ -205,8 +205,9 @@ jobs:
           # Standard library sources
           cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
 
-          # Shell completions
+          # Shell completions (hew + adze)
           cp completions/hew.bash completions/hew.zsh completions/hew.fish \
+             completions/adze.bash completions/adze.zsh completions/adze.fish \
              "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
 
           # Licenses and docs
@@ -251,7 +252,6 @@ jobs:
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           # Import signing certificate into a temporary keychain
           echo "${APPLE_CERTIFICATE_P12}" | base64 --decode > certificate.p12
@@ -263,11 +263,27 @@ jobs:
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: -s -k "" build.keychain
 
-          # Sign with hardened runtime
-          IDENTITY="Developer ID Application: ${APPLE_TEAM_ID}"
+          # Find the Developer ID Application identity from the imported cert
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain \
+            | grep "Developer ID Application" \
+            | head -1 \
+            | sed 's/.*"\(.*\)".*/\1/')
+
+          if [ -z "${IDENTITY}" ]; then
+            echo "::error::No Developer ID Application certificate found in keychain"
+            exit 1
+          fi
+          echo "Signing with identity: ${IDENTITY}"
+
+          # Sign each binary with hardened runtime and secure timestamp
           for bin in hew adze hew-codegen; do
-            codesign --force --options runtime --sign "${IDENTITY}" \
-              "${ARCHIVE_NAME}/bin/${bin}" 2>/dev/null || true
+            codesign --force --options runtime --timestamp \
+              --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
+          done
+
+          # Verify signatures
+          for bin in hew adze hew-codegen; do
+            codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           rm -f certificate.p12
@@ -376,12 +392,20 @@ jobs:
     # targets (Windows, macOS x86_64) are allowed to fail without blocking release
     if: ${{ !cancelled() && needs.build.result != 'failure' }}
     steps:
-      - name: Download all artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: "hew-v*"
           path: artifacts
           merge-multiple: true
+
+      - name: Download linux package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "linux-packages-*"
+          path: artifacts
+          merge-multiple: true
+        continue-on-error: true
 
       - name: Generate checksums
         run: |

@@ -2,8 +2,8 @@
 //!
 //! Replaces the global-mutex-protected connection array in [`crate::node`]
 //! with individual actors per connection. Each connection actor owns a
-//! transport connection handle, runs a dedicated reader thread for
-//! inbound messages, and processes outbound sends through its mailbox.
+//! transport connection handle and runs a dedicated reader thread for
+//! inbound messages.
 //!
 //! # Architecture
 //!
@@ -27,14 +27,13 @@
 //! - [`hew_connmgr_add`] — Add a connection (spawns reader thread).
 //! - [`hew_connmgr_remove`] — Remove and close a connection.
 //! - [`hew_connmgr_send`] — Send a message over a connection.
-//! - [`hew_connmgr_set_outbound_capacity`] — Set per-connection queue size.
+//! - [`hew_connmgr_set_outbound_capacity`] — Legacy API (returns error).
 //! - [`hew_connmgr_count`] — Number of active connections.
 //! - [`hew_connmgr_broadcast`] — Send to all connections.
 
-use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -67,8 +66,6 @@ pub const CONN_STATE_CLOSED: i32 = 3;
 const HEW_HANDSHAKE_SIZE: usize = 48;
 const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x01";
 const HEW_PROTOCOL_VERSION: u16 = 1;
-const HEW_CONN_OUTBOUND_DEFAULT_CAPACITY: usize = 1024;
-
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
 const HEW_FEATURE_SUPPORTS_GOSSIP: u32 = 1 << 1;
 const HEW_FEATURE_SUPPORTS_REMOTE_SPAWN: u32 = 1 << 2;
@@ -89,104 +86,6 @@ const RECONNECT_JITTER_MIN_PERCENT: u64 = 90;
 const RECONNECT_JITTER_MAX_PERCENT: u64 = 110;
 
 // ── Connection actor ───────────────────────────────────────────────────
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct OutboundQueue {
-    inner: Mutex<OutboundQueueState>,
-    cv: Condvar,
-}
-
-#[derive(Debug)]
-struct OutboundQueueState {
-    queue: VecDeque<Vec<u8>>,
-    capacity: usize,
-    closed: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutboundQueuePushError {
-    Full,
-    Closed,
-}
-
-#[allow(dead_code)]
-impl OutboundQueue {
-    fn new(capacity: usize) -> Self {
-        Self {
-            inner: Mutex::new(OutboundQueueState {
-                queue: VecDeque::new(),
-                capacity,
-                closed: false,
-            }),
-            cv: Condvar::new(),
-        }
-    }
-
-    fn try_push(&self, payload: Vec<u8>) -> Result<(), OutboundQueuePushError> {
-        let mut inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        if inner.closed {
-            return Err(OutboundQueuePushError::Closed);
-        }
-        if inner.queue.len() >= inner.capacity {
-            return Err(OutboundQueuePushError::Full);
-        }
-        inner.queue.push_back(payload);
-        self.cv.notify_one();
-        Ok(())
-    }
-
-    fn pop_blocking(&self, stop_flag: &AtomicI32) -> Option<Vec<u8>> {
-        let mut inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        loop {
-            if let Some(payload) = inner.queue.pop_front() {
-                return Some(payload);
-            }
-            if inner.closed || stop_flag.load(Ordering::Acquire) != 0 {
-                return None;
-            }
-            let waited = self.cv.wait_timeout(inner, Duration::from_millis(50));
-            inner = match waited {
-                Ok((guard, _)) => guard,
-                Err(e) => e.into_inner().0,
-            };
-        }
-    }
-
-    fn set_capacity(&self, capacity: usize) {
-        let mut inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        inner.capacity = capacity;
-        self.cv.notify_all();
-    }
-
-    fn close(&self) {
-        let mut inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        inner.closed = true;
-        self.cv.notify_all();
-    }
-
-    #[cfg(test)]
-    fn capacity(&self) -> usize {
-        let inner = match self.inner.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        inner.capacity
-    }
-}
 
 /// Fixed-size protocol handshake exchanged before actor traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,16 +143,10 @@ struct ConnectionActor {
     /// Optional per-connection Noise transport state.
     #[cfg(feature = "encryption")]
     noise_transport: Arc<Mutex<Option<snow::TransportState>>>,
-    /// Bounded queue of outbound wire payloads.
-    outbound_queue: Arc<OutboundQueue>,
     /// Handle to the reader thread (if running).
     reader_handle: Option<JoinHandle<()>>,
-    /// Handle to the writer thread (if running).
-    writer_handle: Option<JoinHandle<()>>,
     /// Signal to stop the reader thread.
     reader_stop: Arc<AtomicI32>,
-    /// Signal to stop the writer thread.
-    writer_stop: Arc<AtomicI32>,
     /// Optional reconnect settings for this connection.
     reconnect: Option<ReconnectSettings>,
 }
@@ -340,11 +233,8 @@ impl ConnectionActor {
             last_activity_ms: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "encryption")]
             noise_transport: Arc::new(Mutex::new(None)),
-            outbound_queue: Arc::new(OutboundQueue::new(HEW_CONN_OUTBOUND_DEFAULT_CAPACITY)),
             reader_handle: None,
-            writer_handle: None,
             reader_stop: Arc::new(AtomicI32::new(0)),
-            writer_stop: Arc::new(AtomicI32::new(0)),
             reconnect: None,
         }
     }
@@ -354,16 +244,8 @@ impl Drop for ConnectionActor {
     fn drop(&mut self) {
         // Signal reader thread to stop.
         self.reader_stop.store(1, Ordering::Release);
-        // Signal writer thread to stop.
-        self.writer_stop.store(1, Ordering::Release);
-        self.outbound_queue.close();
         // Wait for it (best-effort).
         if let Some(handle) = self.reader_handle.take() {
-            if handle.thread().id() != thread::current().id() {
-                let _ = handle.join();
-            }
-        }
-        if let Some(handle) = self.writer_handle.take() {
             if handle.thread().id() != thread::current().id() {
                 let _ = handle.join();
             }
@@ -1011,37 +893,6 @@ fn reader_loop(
     }
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "SendTransport and Arc values are moved into this thread from spawn closure"
-)]
-fn writer_loop(
-    mgr: SendConnMgr,
-    transport: SendTransport,
-    conn_id: c_int,
-    stop_flag: Arc<AtomicI32>,
-    last_activity: Arc<AtomicU64>,
-    outbound_queue: Arc<OutboundQueue>,
-) {
-    let mgr = mgr.0;
-    let transport = transport.0;
-    while stop_flag.load(Ordering::Acquire) == 0 {
-        let Some(payload) = outbound_queue.pop_blocking(&stop_flag) else {
-            break;
-        };
-        // SAFETY: transport pointer and conn_id are valid while connection is active.
-        let sent = unsafe { hew_conn_send_frame(transport, conn_id, &payload) };
-        if !sent {
-            // SAFETY: manager and conn_id originate from this active writer thread.
-            let _ = unsafe { hew_connmgr_remove(mgr, conn_id) };
-            break;
-        }
-        // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { crate::io_time::hew_now_ms() };
-        last_activity.store(now, Ordering::Relaxed);
-    }
-}
-
 // ── C ABI ──────────────────────────────────────────────────────────────
 
 /// Create a new connection manager.
@@ -1331,34 +1182,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let now = unsafe { crate::io_time::hew_now_ms() };
     actor.last_activity_ms.store(now, Ordering::Relaxed);
 
-    // Spawn writer thread.
-    let writer_stop = Arc::clone(&actor.writer_stop);
-    let writer_transport = SendTransport(mgr.transport);
-    let writer_activity = Arc::clone(&actor.last_activity_ms);
-    let writer_mgr = SendConnMgr(mgr as *const HewConnMgr as *mut HewConnMgr);
-    let outbound_queue = Arc::clone(&actor.outbound_queue);
-    let writer_handle = thread::Builder::new()
-        .name(format!("hew-conn-w-{conn_id}"))
-        .spawn(move || {
-            writer_loop(
-                writer_mgr,
-                writer_transport,
-                conn_id,
-                writer_stop,
-                writer_activity,
-                outbound_queue,
-            )
-        });
-    match writer_handle {
-        Ok(h) => actor.writer_handle = Some(h),
-        Err(_) => {
-            set_last_error(format!(
-                "hew_connmgr_add: failed to spawn writer thread for conn {conn_id}"
-            ));
-            return -1;
-        }
-    }
-
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);
     let transport_send = SendTransport(mgr.transport);
@@ -1386,6 +1209,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     match handle {
         Ok(h) => actor.reader_handle = Some(h),
         Err(_) => {
+            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
             ));
@@ -1473,7 +1297,7 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     0
 }
 
-/// Set outbound queue capacity for a specific connection.
+/// Legacy API: outbound queue tuning is no longer supported.
 ///
 /// Returns 0 on success, -1 on failure.
 ///
@@ -1483,31 +1307,15 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
     mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    capacity: usize,
+    _conn_id: c_int,
+    _capacity: usize,
 ) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_set_outbound_capacity: manager is null");
         return -1;
     }
-    if capacity == 0 {
-        set_last_error("hew_connmgr_set_outbound_capacity: capacity must be > 0");
-        return -1;
-    }
-    // SAFETY: caller guarantees `mgr` is valid.
-    let mgr = unsafe { &*mgr };
-    let conns = match mgr.connections.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    let Some(conn) = conns.iter().find(|c| c.conn_id == conn_id) else {
-        set_last_error(format!(
-            "hew_connmgr_set_outbound_capacity: connection {conn_id} not found"
-        ));
-        return -1;
-    };
-    conn.outbound_queue.set_capacity(capacity);
-    0
+    set_last_error("hew_connmgr_set_outbound_capacity: outbound queue support was removed; sends are synchronous");
+    -1
 }
 
 /// Send a wire envelope over a specific connection.

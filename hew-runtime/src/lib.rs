@@ -61,12 +61,14 @@ pub extern "C" fn hew_clear_error() {
 macro_rules! cabi_guard {
     ($cond:expr) => {
         if $cond {
+            $crate::set_last_error(&format!("C-ABI guard failed: {}", stringify!($cond)));
             return;
         }
     };
-    ($cond:expr, $default:expr) => {
+    ($cond:expr, $ret:expr) => {
         if $cond {
-            return $default;
+            $crate::set_last_error(&format!("C-ABI guard failed: {}", stringify!($cond)));
+            return $ret;
         }
     };
 }

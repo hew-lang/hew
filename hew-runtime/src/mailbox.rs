@@ -23,6 +23,7 @@ use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
+use crate::set_last_error;
 
 /// Re-export of [`HewOverflowPolicy`] for the public mailbox API.
 pub use crate::internal::types::HewOverflowPolicy as OverflowPolicy;
@@ -862,6 +863,12 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     // SAFETY: `data` validity guaranteed by caller.
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
     if node.is_null() {
+        set_last_error(format!(
+            "hew_mailbox_send_sys: failed to allocate system message (msg_type={msg_type}, size={size})"
+        ));
+        eprintln!(
+            "hew_mailbox_send_sys: failed to enqueue system message (msg_type={msg_type}, size={size})"
+        );
         return;
     }
 

@@ -5,8 +5,8 @@
 //   Client node: connects, looks up "room", sends messages
 //
 // The actor code is identical whether local or distributed.
-// When Node:: API is wired to codegen, uncommenting the Node lines
-// makes this a real two-node system with no other changes.
+// Node::start/shutdown/register/lookup typecheck today. Node::connect is
+// runtime-only for now (not a typechecker builtin yet).
 
 actor ChatRoom {
     let users: Vec<String>;
@@ -48,7 +48,7 @@ fn main() {
     // ── Client side (same process for now) ───────────────────
     // In a distributed setup:
     //   Node::start("0.0.0.0:9001");
-    //   Node::connect("127.0.0.1:9000");
+    //   Node::connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
     //   let room = Node::lookup("room");
 
     // These calls are location-transparent — identical syntax

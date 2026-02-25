@@ -113,8 +113,8 @@ Actor references encode `(node_id, actor_id)`. The node maintains a routing tabl
 
 ### Design iteration 3: Implementation plan
 
-See plan.md for the detailed task breakdown. The implementation is split into
-7 phases, with each phase independently testable and committable.
+The implementation is split into 7 phases, with each phase independently
+testable and committable.
 
 ---
 
@@ -173,7 +173,7 @@ See plan.md for the detailed task breakdown. The implementation is split into
 
 **Commit:** c03dd10
 
-- **Runtime manifest updated**: 8 `hew_node_*` functions added for codegen integration.
+- **Runtime manifest updated**: 9 `hew_node_*` functions added for codegen integration.
 - **Integration tests**: Node lifecycle, local registry, routing table, two-node connect.
 - **Noise key management**: `hew_noise_keygen/key_save/key_load` with X25519 keypairs,
   raw 64-byte file format, 0o600 permissions on Unix.

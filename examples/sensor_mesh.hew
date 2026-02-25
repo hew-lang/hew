@@ -6,6 +6,8 @@
 //   Logger   — writes events to a log
 //
 // In a distributed deployment each would run on its own node.
+// Node::start/shutdown/register/lookup typecheck today; other Node APIs
+// (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
 
 actor Logger {
     let count: i32;

@@ -1,7 +1,8 @@
 // Distributed actors example — demonstrates the Node API.
 // This currently compiles as a local actor demo. The Node API
 // functions are available in the runtime but not yet wired into
-// codegen lowering (Node::start etc. are commented out).
+// codegen lowering. Only Node::start/shutdown/register/lookup are
+// typechecker builtins today.
 actor Counter {
     let count: i32;
     receive fn increment(n: i32) {
@@ -23,14 +24,14 @@ fn main() {
     //
     // On another node:
     //   Node::start("0.0.0.0:9001");
-    //   Node::connect("127.0.0.1:9000");
+    //   Node::connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
     //   let remote = Node::lookup("counter");
     //   remote.increment(42);  // routed cross-node via TCP
     //   Node::shutdown();
     //
     // Security:
-    //   Node::load_keys("node.key");
-    //   Node::allow_peer(peer_public_key);
+    //   Node::load_keys("node.key");      // runtime API, not a typechecker builtin yet
+    //   Node::allow_peer(peer_public_key); // runtime API, not a typechecker builtin yet
 
     println("Counter node demo complete");
 }

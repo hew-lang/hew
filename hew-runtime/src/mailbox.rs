@@ -864,10 +864,10 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
     let node = unsafe { msg_node_alloc(msg_type, data, size) };
     if node.is_null() {
         set_last_error(format!(
-            "hew_mailbox_send_sys: failed to allocate system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
         ));
         eprintln!(
-            "hew_mailbox_send_sys: failed to enqueue system message (msg_type={msg_type}, size={size})"
+            "hew_mailbox_send_sys: failed to deliver system message (msg_type={msg_type}, size={size})"
         );
         return;
     }

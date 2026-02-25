@@ -228,17 +228,8 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         return -1;
     }
 
-    let guard = match CURRENT_NODE.write() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    let make_current = *guard == 0;
-    let current_node_guard = if make_current { Some(guard) } else { None };
+    let make_current = *CURRENT_NODE.read().unwrap_or_else(|e| e.into_inner()) == 0;
     node.state.store(NODE_STATE_STARTING, Ordering::Release);
-
-    if make_current {
-        crate::pid::hew_pid_set_local_node(node.node_id);
-    }
 
     if node.transport.is_null() {
         // SAFETY: constructor returns owned transport pointer or null.
@@ -340,12 +331,14 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
-    if let Some(mut guard) = current_node_guard {
+    if make_current {
+        let mut guard = CURRENT_NODE.write().unwrap_or_else(|e| e.into_inner());
         debug_assert!(
             *guard == 0,
             "CURRENT_NODE must be null before starting a node"
         );
         *guard = ptr::from_mut(node) as usize;
+        crate::pid::hew_pid_set_local_node(node.node_id);
     }
     0
 }

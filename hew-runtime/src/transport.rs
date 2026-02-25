@@ -12,7 +12,7 @@ use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::io::{Read, Write};
 use std::mem;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::{atomic::Ordering, LazyLock, Mutex};
+use std::sync::{atomic::Ordering, LazyLock, Mutex, RwLock};
 
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
@@ -314,19 +314,22 @@ pub unsafe extern "C" fn hew_actor_ref_is_alive(ref_ptr: *const HewActorRef) -> 
 /// Internal state for the TCP transport.
 struct TcpTransport {
     listen_sock: Option<Socket>,
-    conns: [Option<Socket>; MAX_CONNS],
+    conns: RwLock<Vec<Option<Socket>>>,
 }
 
 impl TcpTransport {
     fn new() -> Self {
         Self {
             listen_sock: None,
-            conns: std::array::from_fn(|_| None),
+            conns: RwLock::new((0..MAX_CONNS).map(|_| None).collect()),
         }
     }
 
-    fn store_conn(&mut self, sock: Socket) -> c_int {
-        for (i, slot) in self.conns.iter_mut().enumerate() {
+    fn store_conn(&self, sock: Socket) -> c_int {
+        let Ok(mut conns) = self.conns.write() else {
+            return HEW_CONN_INVALID;
+        };
+        for (i, slot) in conns.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(sock);
                 #[expect(clippy::cast_possible_truncation, reason = "MAX_CONNS fits in c_int")]
@@ -337,21 +340,27 @@ impl TcpTransport {
         HEW_CONN_INVALID
     }
 
-    fn get_conn(&self, id: c_int) -> Option<&Socket> {
+    fn get_conn(&self, id: c_int) -> Option<Socket> {
         if id < 0 {
             return None;
         }
         #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
         let idx = id as usize;
-        self.conns.get(idx).and_then(Option::as_ref)
+        let conns = self.conns.read().ok()?;
+        conns
+            .get(idx)
+            .and_then(Option::as_ref)
+            .and_then(|sock| sock.try_clone().ok())
     }
 
-    fn remove_conn(&mut self, id: c_int) {
+    fn remove_conn(&self, id: c_int) {
         if id >= 0 {
             #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
             let idx = id as usize;
             if idx < MAX_CONNS {
-                self.conns[idx] = None;
+                if let Ok(mut conns) = self.conns.write() {
+                    conns[idx] = None;
+                }
             }
         }
     }
@@ -432,22 +441,9 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
         return -1;
     }
     if frame_len > buf.len() {
-        // Drain oversized payload to keep stream aligned.
-        let mut remaining = frame_len;
-        let mut discard = [0u8; 4096];
-        let mut stream = sock;
-        while remaining > 0 {
-            let to_read = std::cmp::min(remaining, discard.len());
-            if let Err(e) = stream.read_exact(&mut discard[..to_read]) {
-                set_last_error(format!(
-                    "transport framed_recv: oversized frame drain failed: {e}"
-                ));
-                return -1;
-            }
-            remaining -= to_read;
-        }
+        let _ = sock.shutdown(Shutdown::Both);
         set_last_error(format!(
-            "transport framed_recv: frame too large ({frame_len} > {})",
+            "transport framed_recv: frame too large ({frame_len} > {}), closing connection",
             buf.len()
         ));
         return -1;
@@ -526,7 +522,7 @@ unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) 
     let _ = socket.set_tcp_nodelay(true);
 
     // SAFETY: impl_ptr points to a valid TcpTransport.
-    let tcp = unsafe { &mut *impl_ptr.cast::<TcpTransport>() };
+    let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     tcp.store_conn(socket)
 }
 
@@ -564,7 +560,7 @@ unsafe extern "C" fn tcp_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
         return HEW_CONN_INVALID;
     }
     // SAFETY: impl_ptr points to a valid TcpTransport.
-    let tcp = unsafe { &mut *impl_ptr.cast::<TcpTransport>() };
+    let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let Some(listen_sock) = &tcp.listen_sock else {
         return HEW_CONN_INVALID;
     };
@@ -595,7 +591,7 @@ unsafe extern "C" fn tcp_send(
     };
     // SAFETY: data is valid for `len` bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-    framed_send(sock, slice)
+    framed_send(&sock, slice)
 }
 
 unsafe extern "C" fn tcp_recv(
@@ -614,7 +610,7 @@ unsafe extern "C" fn tcp_recv(
     };
     // SAFETY: buf is valid for buf_size bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
-    framed_recv(sock, slice)
+    framed_recv(&sock, slice)
 }
 
 unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
@@ -622,7 +618,7 @@ unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
         return;
     }
     // SAFETY: impl_ptr points to a valid TcpTransport.
-    let tcp = unsafe { &mut *impl_ptr.cast::<TcpTransport>() };
+    let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     tcp.remove_conn(conn);
 }
 
@@ -1070,14 +1066,15 @@ pub extern "C" fn hew_tcp_close(handle: c_int) -> c_int {
 mod unix_transport {
     use super::{
         accept_with_optional_timeout, c_char, c_int, c_void, framed_recv, framed_send, CStr,
-        Domain, HewTransport, HewTransportOps, SockAddr, Socket, Type, HEW_CONN_INVALID, MAX_CONNS,
+        Domain, HewTransport, HewTransportOps, RwLock, SockAddr, Socket, Type, HEW_CONN_INVALID,
+        MAX_CONNS,
     };
 
     /// Internal state for the Unix domain socket transport.
     struct UnixTransport {
         listen_sock: Option<Socket>,
         path: Option<String>,
-        conns: [Option<Socket>; MAX_CONNS],
+        conns: RwLock<Vec<Option<Socket>>>,
     }
 
     impl UnixTransport {
@@ -1085,12 +1082,15 @@ mod unix_transport {
             Self {
                 listen_sock: None,
                 path: None,
-                conns: std::array::from_fn(|_| None),
+                conns: RwLock::new((0..MAX_CONNS).map(|_| None).collect()),
             }
         }
 
-        fn store_conn(&mut self, sock: Socket) -> c_int {
-            for (i, slot) in self.conns.iter_mut().enumerate() {
+        fn store_conn(&self, sock: Socket) -> c_int {
+            let Ok(mut conns) = self.conns.write() else {
+                return HEW_CONN_INVALID;
+            };
+            for (i, slot) in conns.iter_mut().enumerate() {
                 if slot.is_none() {
                     *slot = Some(sock);
                     #[expect(
@@ -1104,21 +1104,27 @@ mod unix_transport {
             HEW_CONN_INVALID
         }
 
-        fn get_conn(&self, id: c_int) -> Option<&Socket> {
+        fn get_conn(&self, id: c_int) -> Option<Socket> {
             if id < 0 {
                 return None;
             }
             #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
             let idx = id as usize;
-            self.conns.get(idx).and_then(Option::as_ref)
+            let conns = self.conns.read().ok()?;
+            conns
+                .get(idx)
+                .and_then(Option::as_ref)
+                .and_then(|sock| sock.try_clone().ok())
         }
 
-        fn remove_conn(&mut self, id: c_int) {
+        fn remove_conn(&self, id: c_int) {
             if id >= 0 {
                 #[expect(clippy::cast_sign_loss, reason = "guarded by id >= 0")]
                 let idx = id as usize;
                 if idx < MAX_CONNS {
-                    self.conns[idx] = None;
+                    if let Ok(mut conns) = self.conns.write() {
+                        conns[idx] = None;
+                    }
                 }
             }
         }
@@ -1155,7 +1161,7 @@ mod unix_transport {
         }
 
         // SAFETY: impl_ptr points to a valid UnixTransport.
-        let ut = unsafe { &mut *impl_ptr.cast::<UnixTransport>() };
+        let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         ut.store_conn(socket)
     }
 
@@ -1196,7 +1202,7 @@ mod unix_transport {
             return HEW_CONN_INVALID;
         }
         // SAFETY: impl_ptr points to a valid UnixTransport.
-        let ut = unsafe { &mut *impl_ptr.cast::<UnixTransport>() };
+        let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let Some(listen_sock) = &ut.listen_sock else {
             return HEW_CONN_INVALID;
         };
@@ -1227,7 +1233,7 @@ mod unix_transport {
         };
         // SAFETY: data is valid for `len` bytes per caller contract.
         let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-        framed_send(sock, slice)
+        framed_send(&sock, slice)
     }
 
     unsafe extern "C" fn unix_recv(
@@ -1246,7 +1252,7 @@ mod unix_transport {
         };
         // SAFETY: buf is valid for buf_size bytes per caller contract.
         let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
-        framed_recv(sock, slice)
+        framed_recv(&sock, slice)
     }
 
     unsafe extern "C" fn unix_close_conn(impl_ptr: *mut c_void, conn: c_int) {
@@ -1254,7 +1260,7 @@ mod unix_transport {
             return;
         }
         // SAFETY: impl_ptr points to a valid UnixTransport.
-        let ut = unsafe { &mut *impl_ptr.cast::<UnixTransport>() };
+        let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         ut.remove_conn(conn);
     }
 

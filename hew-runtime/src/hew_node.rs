@@ -419,6 +419,10 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             crate::pid::hew_pid_set_local_node(node.node_id);
         }
     }
+
+    // Start the profiler with distributed runtime context if HEW_PPROF is set.
+    crate::profiler::maybe_start_with_context(node.cluster, node.conn_mgr, node.routing_table);
+
     0
 }
 

@@ -148,6 +148,36 @@ pub unsafe extern "C" fn hew_routing_is_local(
     c_int::from(HewRoutingTable::node_id_from_pid(target_pid) == table.local_node_id)
 }
 
+// ── Profiler snapshot ───────────────────────────────────────────────────
+
+/// Build a JSON object with the routing table for the profiler HTTP API.
+///
+/// Format: `{"local_node_id":N,"routes":[{"node_id":N,"conn_id":N},...]}`
+#[cfg(feature = "profiler")]
+pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
+    use std::fmt::Write as _;
+
+    let routes = match table.routes.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    let mut json = String::new();
+    let _ = write!(
+        json,
+        r#"{{"local_node_id":{},"routes":["#,
+        table.local_node_id
+    );
+    for (i, (&node_id, &conn_id)) in routes.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let _ = write!(json, r#"{{"node_id":{},"conn_id":{}}}"#, node_id, conn_id,);
+    }
+    json.push_str("]}");
+    json
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

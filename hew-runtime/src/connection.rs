@@ -1529,6 +1529,44 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
         .map_or(CONN_STATE_CLOSED, |c| c.state.load(Ordering::Acquire))
 }
 
+// ── Profiler snapshot ───────────────────────────────────────────────────
+
+/// Build a JSON array of active connections for the profiler HTTP API.
+///
+/// Each element: `{"conn_id":N,"peer_node_id":N,"state":"S","last_activity_ms":N}`
+#[cfg(feature = "profiler")]
+pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
+    use std::fmt::Write as _;
+
+    let connections = match mgr.connections.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    let mut json = String::from("[");
+    for (i, c) in connections.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let state_val = c.state.load(Ordering::Acquire);
+        let state_str = match state_val {
+            CONN_STATE_CONNECTING => "connecting",
+            CONN_STATE_ACTIVE => "active",
+            CONN_STATE_DRAINING => "draining",
+            CONN_STATE_CLOSED => "closed",
+            _ => "unknown",
+        };
+        let last_activity = c.last_activity_ms.load(Ordering::Acquire);
+        let _ = write!(
+            json,
+            r#"{{"conn_id":{},"peer_node_id":{},"state":"{}","last_activity_ms":{}}}"#,
+            c.conn_id, c.peer_node_id, state_str, last_activity,
+        );
+    }
+    json.push(']');
+    json
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

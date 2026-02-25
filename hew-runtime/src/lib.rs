@@ -109,6 +109,13 @@ pub mod profiler {
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
     /// No-op: profiler feature is disabled.
+    pub fn maybe_start_with_context(
+        _cluster: *mut crate::cluster::HewCluster,
+        _connmgr: *mut crate::connection::HewConnMgr,
+        _routing: *mut crate::routing::HewRoutingTable,
+    ) {
+    }
+    /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
 }
 

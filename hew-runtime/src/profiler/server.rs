@@ -17,6 +17,29 @@ use crate::profiler::pprof;
 const DASHBOARD_HTML: &str = include_str!("dashboard/index.html");
 const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
 
+// ── Profiler context ────────────────────────────────────────────────────
+
+/// Shared context passed to the profiler HTTP server thread.
+///
+/// Carries references to the metrics ring buffer and pointers to the
+/// distributed runtime subsystems so the profiler can expose cluster,
+/// connection, routing, and trace data over HTTP.
+#[derive(Debug)]
+pub struct ProfilerContext {
+    pub ring: Arc<Mutex<MetricsRing>>,
+    pub cluster: *mut crate::cluster::HewCluster,
+    pub connmgr: *mut crate::connection::HewConnMgr,
+    pub routing: *mut crate::routing::HewRoutingTable,
+}
+
+// SAFETY: The raw pointers reference heap-allocated structs that outlive
+// the profiler thread. The pointed-to types use internal synchronization
+// (Mutex / RwLock / atomics) for concurrent access.
+unsafe impl Send for ProfilerContext {}
+// SAFETY: All access through the pointers goes via functions that use
+// internal locking; no unsynchronized mutation is performed.
+unsafe impl Sync for ProfilerContext {}
+
 // ── Server ──────────────────────────────────────────────────────────────
 
 /// Start the profiling HTTP server, blocking the current thread.
@@ -24,7 +47,7 @@ const DASHBOARD_JS: &str = include_str!("dashboard/dashboard.js");
 /// # Panics
 ///
 /// Panics if `tiny_http::Server::http` fails to bind.
-pub fn run(bind_addr: &str, ring: &Arc<Mutex<MetricsRing>>) {
+pub fn run(bind_addr: &str, ctx: &ProfilerContext) {
     let server = match Server::http(bind_addr) {
         Ok(s) => s,
         Err(e) => {
@@ -36,20 +59,24 @@ pub fn run(bind_addr: &str, ring: &Arc<Mutex<MetricsRing>>) {
     eprintln!("[hew-pprof] dashboard at http://{bind_addr}/");
 
     for request in server.incoming_requests() {
-        handle_request(request, ring);
+        handle_request(request, ctx);
     }
 }
 
-fn handle_request(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
+fn handle_request(req: Request, ctx: &ProfilerContext) {
     let path = req.url().to_owned();
 
     match path.as_str() {
         "/" => serve_text(req, DASHBOARD_HTML, "text/html; charset=utf-8"),
         "/dashboard.js" => serve_text(req, DASHBOARD_JS, "application/javascript; charset=utf-8"),
-        "/api/metrics" => serve_current_metrics(req, ring),
+        "/api/metrics" => serve_current_metrics(req, &ctx.ring),
         "/api/memory" => serve_memory(req),
         "/api/actors" => serve_actors(req),
-        "/api/metrics/history" => serve_history(req, ring),
+        "/api/metrics/history" => serve_history(req, &ctx.ring),
+        "/api/cluster/members" => serve_cluster_members(req, ctx),
+        "/api/connections" => serve_connections(req, ctx),
+        "/api/routing/table" => serve_routing_table(req, ctx),
+        "/api/traces" => serve_traces(req),
         "/debug/pprof/heap" => serve_pprof_heap(req),
         "/debug/pprof/profile" => serve_flat_profile(req),
         _ => serve_not_found(req),
@@ -206,5 +233,52 @@ fn serve_actors(req: Request) {
     }
     json.push(']');
 
+    json_response(req, &json);
+}
+
+// ── Distributed runtime endpoints ───────────────────────────────────────
+
+/// `GET /api/cluster/members` — cluster membership snapshot.
+fn serve_cluster_members(req: Request, ctx: &ProfilerContext) {
+    if ctx.cluster.is_null() {
+        json_response(req, "[]");
+        return;
+    }
+    // SAFETY: pointer is non-null and points to a valid HewCluster that
+    // outlives the profiler thread. Internal access is mutex-protected.
+    let cluster = unsafe { &*ctx.cluster };
+    let json = crate::cluster::snapshot_members_json(cluster);
+    json_response(req, &json);
+}
+
+/// `GET /api/connections` — connection snapshot.
+fn serve_connections(req: Request, ctx: &ProfilerContext) {
+    if ctx.connmgr.is_null() {
+        json_response(req, "[]");
+        return;
+    }
+    // SAFETY: pointer is non-null and points to a valid HewConnMgr that
+    // outlives the profiler thread. Internal access is mutex-protected.
+    let mgr = unsafe { &*ctx.connmgr };
+    let json = crate::connection::snapshot_connections_json(mgr);
+    json_response(req, &json);
+}
+
+/// `GET /api/routing/table` — routing table snapshot.
+fn serve_routing_table(req: Request, ctx: &ProfilerContext) {
+    if ctx.routing.is_null() {
+        json_response(req, r#"{"local_node_id":0,"routes":[]}"#);
+        return;
+    }
+    // SAFETY: pointer is non-null and points to a valid HewRoutingTable
+    // that outlives the profiler thread. Internal access is RwLock-protected.
+    let table = unsafe { &*ctx.routing };
+    let json = crate::routing::snapshot_routing_json(table);
+    json_response(req, &json);
+}
+
+/// `GET /api/traces` — drain trace events.
+fn serve_traces(req: Request) {
+    let json = crate::tracing::drain_events_json();
     json_response(req, &json);
 }

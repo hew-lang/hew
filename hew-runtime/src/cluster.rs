@@ -785,6 +785,45 @@ pub unsafe extern "C" fn hew_cluster_gossip_count(cluster: *mut HewCluster) -> c
     }
 }
 
+// ── Profiler snapshot ───────────────────────────────────────────────────
+
+/// Build a JSON array of cluster members for the profiler HTTP API.
+///
+/// Each element: `{"node_id":N,"state":"S","incarnation":N,"addr":"S","last_seen_ms":N}`
+#[cfg(feature = "profiler")]
+pub fn snapshot_members_json(cluster: &HewCluster) -> String {
+    use std::fmt::Write as _;
+
+    let members = match cluster.members.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    let mut json = String::from("[");
+    for (i, m) in members.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let state_str = match m.state {
+            MEMBER_ALIVE => "alive",
+            MEMBER_SUSPECT => "suspect",
+            MEMBER_DEAD => "dead",
+            MEMBER_LEFT => "left",
+            _ => "unknown",
+        };
+        // Extract address as UTF-8 trimmed of null bytes.
+        let addr_end = m.addr.iter().position(|&b| b == 0).unwrap_or(m.addr.len());
+        let addr = std::str::from_utf8(&m.addr[..addr_end]).unwrap_or("");
+        let _ = write!(
+            json,
+            r#"{{"node_id":{},"state":"{}","incarnation":{},"addr":"{}","last_seen_ms":{}}}"#,
+            m.node_id, state_str, m.incarnation, addr, m.last_seen_ms,
+        );
+    }
+    json.push(']');
+    json
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

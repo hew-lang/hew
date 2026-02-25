@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
 use crate::internal::types::HewActorState;
@@ -41,6 +40,7 @@ pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
 
 /// Set the current actor, returning the previous value.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub(crate) fn set_current_actor(actor: *mut HewActor) -> *mut HewActor {
     // SAFETY: WASM is single-threaded, no data races possible.
     unsafe {
@@ -249,15 +249,9 @@ struct ActorPtr(*mut HewActor);
 unsafe impl Send for ActorPtr {}
 
 /// Set of all live (not-yet-freed) actor pointers.
-#[cfg(not(target_arch = "wasm32"))]
 static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
-#[cfg(target_arch = "wasm32")]
-// SAFETY: WASM is single-threaded. Using a static mut with manual access control.
-static mut LIVE_ACTORS_WASM: Option<HashSet<ActorPtr>> = None;
-
 /// Register an actor in the live tracking set.
-#[cfg(not(target_arch = "wasm32"))]
 fn track_actor(actor: *mut HewActor) {
     if let Ok(mut guard) = LIVE_ACTORS.lock() {
         guard
@@ -266,40 +260,13 @@ fn track_actor(actor: *mut HewActor) {
     }
 }
 
-/// Register an actor in the live tracking set.
-#[cfg(target_arch = "wasm32")]
-fn track_actor(actor: *mut HewActor) {
-    // SAFETY: WASM is single-threaded, no data races possible.
-    unsafe {
-        LIVE_ACTORS_WASM
-            .get_or_insert_with(HashSet::new)
-            .insert(ActorPtr(actor));
-    }
-}
-
 /// Remove an actor from the live tracking set.
 ///
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
-#[cfg(not(target_arch = "wasm32"))]
 fn untrack_actor(actor: *mut HewActor) -> bool {
     if let Ok(mut guard) = LIVE_ACTORS.lock() {
         if let Some(set) = guard.as_mut() {
-            return set.remove(&ActorPtr(actor));
-        }
-    }
-    false
-}
-
-/// Remove an actor from the live tracking set.
-///
-/// Returns `true` if the actor was present and removed, `false` if it
-/// was not found (e.g. already consumed by [`cleanup_all_actors`]).
-#[cfg(target_arch = "wasm32")]
-fn untrack_actor(actor: *mut HewActor) -> bool {
-    // SAFETY: WASM is single-threaded, no data races possible.
-    unsafe {
-        if let Some(set) = LIVE_ACTORS_WASM.as_mut() {
             return set.remove(&ActorPtr(actor));
         }
     }
@@ -311,9 +278,8 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
 ///
 /// # Safety
 ///
-/// Must only be called after all worker threads have stopped — no
-/// concurrent dispatch can be in progress.
-#[cfg(not(target_arch = "wasm32"))]
+/// Must only be called after all worker threads have stopped (native)
+/// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
         let mut guard = match LIVE_ACTORS.lock() {
@@ -330,33 +296,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // SAFETY: All workers have been joined, so no actor can be Running or Runnable.
-        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
-        unsafe { free_actor_resources(actor) };
-    }
-}
-
-/// Free all remaining tracked actors. Called during WASM scheduler
-/// shutdown.
-///
-/// # Safety
-///
-/// Must only be called when no dispatch is in progress.
-#[cfg(target_arch = "wasm32")]
-pub(crate) unsafe fn cleanup_all_actors() {
-    // SAFETY: WASM is single-threaded, no data races possible.
-    let actors = unsafe {
-        match LIVE_ACTORS_WASM.as_mut() {
-            Some(set) => std::mem::take(set),
-            None => HashSet::new(),
-        }
-    };
-
-    for ActorPtr(actor) in actors {
-        if actor.is_null() {
-            continue;
-        }
-        // SAFETY: No dispatch is in progress.
+        // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
     }

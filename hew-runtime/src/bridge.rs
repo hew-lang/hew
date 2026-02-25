@@ -37,31 +37,11 @@
 //! }
 //! ```
 
-use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::actor::HewActor;
-
-/// Single-threaded cell for WASM-only statics.
-///
-/// SAFETY: Only safe in single-threaded contexts (e.g., WASM modules).
-struct WasmCell<T>(UnsafeCell<T>);
-// SAFETY: WASM is single-threaded; no concurrent access.
-unsafe impl<T> Sync for WasmCell<T> {}
-impl<T> WasmCell<T> {
-    const fn new(val: T) -> Self {
-        Self(UnsafeCell::new(val))
-    }
-    /// # Safety
-    /// Caller must ensure no concurrent access (single-threaded WASM).
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn get_mut(&self) -> &mut T {
-        // SAFETY: Caller guarantees single-threaded access.
-        unsafe { &mut *self.0.get() }
-    }
-}
 
 // ── Outbound message queue ──────────────────────────────────────────────
 
@@ -273,7 +253,10 @@ pub unsafe extern "C" fn hew_wasm_send(
     const MAILBOX_OFFSET: usize = std::mem::offset_of!(HewActor, mailbox);
 
     // Verify offsets match expectations (checked at compile time).
+    #[cfg(target_pointer_width = "64")]
     const _: () = assert!(MAILBOX_OFFSET == 48);
+    #[cfg(target_pointer_width = "32")]
+    const _: () = assert!(MAILBOX_OFFSET == 36);
 
     // SAFETY: actor_ptr is a valid HewActor pointer from the registry.
     let mailbox_ptr = unsafe {
@@ -298,7 +281,10 @@ pub unsafe extern "C" fn hew_wasm_send(
     const ACTOR_STATE_OFFSET: usize = std::mem::offset_of!(HewActor, actor_state);
 
     // Verify offsets match expectations (checked at compile time).
+    #[cfg(target_pointer_width = "64")]
     const _: () = assert!(ACTOR_STATE_OFFSET == 56);
+    #[cfg(target_pointer_width = "32")]
+    const _: () = assert!(ACTOR_STATE_OFFSET == 40);
 
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable

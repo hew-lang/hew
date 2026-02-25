@@ -198,14 +198,21 @@ pub use native::*;
 mod wasm {
     use std::collections::HashMap;
     use std::ffi::{c_char, c_void, CStr};
+    use std::sync::Mutex;
 
-    /// Simple single-threaded registry for WASM.
-    /// SAFETY: WASM is single-threaded, no data races possible.
-    static mut REGISTRY: Option<HashMap<String, *mut c_void>> = None;
+    /// Wrapper around `*mut c_void` that implements Send.
+    /// SAFETY: WASM is single-threaded, no cross-thread sharing.
+    struct SendPtr(*mut c_void);
+    unsafe impl Send for SendPtr {}
 
-    fn get_or_init() -> &'static mut HashMap<String, *mut c_void> {
-        // SAFETY: WASM is single-threaded, no concurrent access.
-        unsafe { REGISTRY.get_or_insert_with(HashMap::new) }
+    static REGISTRY: Mutex<Option<HashMap<String, SendPtr>>> = Mutex::new(None);
+
+    fn with_registry<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut HashMap<String, SendPtr>) -> R,
+    {
+        let mut guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.get_or_insert_with(HashMap::new))
     }
 
     /// Register an actor by name.
@@ -226,12 +233,13 @@ mod wasm {
         let key = unsafe { CStr::from_ptr(name) }
             .to_string_lossy()
             .into_owned();
-        let reg = get_or_init();
-        if reg.contains_key(&key) {
-            return -1;
-        }
-        reg.insert(key, actor);
-        0
+        with_registry(|reg| {
+            if reg.contains_key(&key) {
+                return -1;
+            }
+            reg.insert(key, SendPtr(actor));
+            0
+        })
     }
 
     /// Look up an actor by name.
@@ -249,10 +257,11 @@ mod wasm {
         // SAFETY: `name` was checked for null above and caller guarantees it points
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        get_or_init()
-            .get(key.as_ref())
-            .copied()
-            .unwrap_or(std::ptr::null_mut())
+        with_registry(|reg| {
+            reg.get(key.as_ref())
+                .map(|p| p.0)
+                .unwrap_or(std::ptr::null_mut())
+        })
     }
 
     /// Remove an actor registration by name.
@@ -270,23 +279,25 @@ mod wasm {
         // SAFETY: `name` was checked for null above and caller guarantees it points
         // to a valid NUL-terminated C string.
         let key = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-        if get_or_init().remove(key.as_ref()).is_some() {
-            0
-        } else {
-            -1
-        }
+        with_registry(|reg| {
+            if reg.remove(key.as_ref()).is_some() {
+                0
+            } else {
+                -1
+            }
+        })
     }
 
     /// Return the number of registered actors.
     #[no_mangle]
     pub extern "C" fn hew_registry_count() -> i32 {
-        get_or_init().len() as i32
+        with_registry(|reg| reg.len() as i32)
     }
 
     /// Remove all entries from the registry.
     #[no_mangle]
     pub extern "C" fn hew_registry_clear() {
-        get_or_init().clear();
+        with_registry(|reg| reg.clear());
     }
 }
 

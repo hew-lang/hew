@@ -110,9 +110,9 @@ pub mod profiler {
     pub fn maybe_start() {}
     /// No-op: profiler feature is disabled.
     pub fn maybe_start_with_context(
-        _cluster: *mut crate::cluster::HewCluster,
-        _connmgr: *mut crate::connection::HewConnMgr,
-        _routing: *mut crate::routing::HewRoutingTable,
+        _cluster: *mut std::ffi::c_void,
+        _connmgr: *mut std::ffi::c_void,
+        _routing: *mut std::ffi::c_void,
     ) {
     }
     /// No-op: profiler feature is disabled.

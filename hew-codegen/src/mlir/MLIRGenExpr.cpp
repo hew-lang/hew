@@ -2021,7 +2021,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return true;
       key = coerceType(key, keyType, location);
       resultOut =
-          builder.create<hew::HashMapContainsKeyOp>(location, i32Type, mapValue, key).getResult();
+          builder.create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, key)
+              .getResult();
       return true;
     }
     if (method == "keys") {

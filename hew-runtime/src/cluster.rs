@@ -206,6 +206,10 @@ impl HewCluster {
         };
 
         if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
+            if existing.state == MEMBER_DEAD && state == MEMBER_ALIVE {
+                eprintln!("[cluster] ignoring ALIVE for dead node {node_id}");
+                return;
+            }
             // Only update if the new incarnation is higher.
             if incarnation > existing.incarnation
                 || (incarnation == existing.incarnation && state > existing.state)
@@ -321,7 +325,20 @@ impl HewCluster {
     }
 
     /// Process a received SWIM message.
-    fn process_message(&mut self, msg_type: i32, from_node: u16, incarnation: u64) {
+    fn process_message(
+        &mut self,
+        msg_type: i32,
+        from_node: u16,
+        incarnation: u64,
+        source_conn_node_id: u16,
+    ) {
+        if from_node != source_conn_node_id {
+            eprintln!(
+                "[cluster] rejecting message: from_node {} doesn't match connection node {}",
+                from_node, source_conn_node_id
+            );
+            return;
+        }
         match msg_type {
             SWIM_MSG_PING => {
                 // Respond with ACK (caller handles sending the response).
@@ -436,6 +453,11 @@ impl HewCluster {
                 .find(|m| m.node_id == node_id)
                 .map(|m| (m.state, m.incarnation))
         };
+
+        if member.is_none() {
+            eprintln!("[cluster] unknown node {node_id} connected, waiting for join");
+            return;
+        }
 
         if matches!(member, Some((MEMBER_ALIVE, _))) {
             self.update_last_seen(node_id);
@@ -589,13 +611,14 @@ pub unsafe extern "C" fn hew_cluster_process_message(
     msg_type: i32,
     from_node: u16,
     incarnation: u64,
+    source_conn_node_id: u16,
 ) -> c_int {
     if cluster.is_null() {
         return -1;
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &mut *cluster };
-    cluster.process_message(msg_type, from_node, incarnation);
+    cluster.process_message(msg_type, from_node, incarnation, source_conn_node_id);
     0
 }
 
@@ -811,8 +834,28 @@ mod tests {
             hew_cluster_join(cluster, 2, addr.as_ptr());
 
             // ACK from node 2 should keep it alive.
-            hew_cluster_process_message(cluster, SWIM_MSG_ACK, 2, 1);
+            hew_cluster_process_message(cluster, SWIM_MSG_ACK, 2, 1, 2);
             assert_eq!(hew_cluster_alive_count(cluster), 1);
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    fn process_message_rejects_source_mismatch() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            let addr = c"10.0.0.1:9000";
+            assert_eq!(hew_cluster_join(cluster, 2, addr.as_ptr()), 0);
+            assert_eq!(hew_cluster_notify_connection_lost(cluster, 2), 0);
+
+            // ACK claims to be from node 2, but arrived on node 3 connection.
+            hew_cluster_process_message(cluster, SWIM_MSG_ACK, 2, 2, 3);
+            let cluster_ref = &*cluster;
+            let members = cluster_ref.members.lock().unwrap();
+            let member = members.iter().find(|m| m.node_id == 2).unwrap();
+            assert_eq!(member.state, MEMBER_SUSPECT);
             hew_cluster_free(cluster);
         }
     }
@@ -902,6 +945,16 @@ mod tests {
     }
 
     #[test]
+    fn dead_member_cannot_be_revived_by_alive_update() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_DEAD, 5, b"10.0.0.1:9000");
+        cluster.upsert_member(2, MEMBER_ALIVE, 6, &[]);
+        let members = cluster.members.lock().unwrap();
+        assert_eq!(members[0].state, MEMBER_DEAD);
+        assert_eq!(members[0].incarnation, 5);
+    }
+
+    #[test]
     fn leave_marks_self_left() {
         let config = make_config(1);
         // SAFETY: test context.
@@ -987,6 +1040,18 @@ mod tests {
         unsafe {
             let cluster = hew_cluster_new(&raw const config);
             assert_eq!(hew_cluster_notify_connection_lost(cluster, 99), 0);
+            assert_eq!(hew_cluster_member_count(cluster), 0);
+            hew_cluster_free(cluster);
+        }
+    }
+
+    #[test]
+    fn connection_established_unknown_node_is_ignored() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert_eq!(hew_cluster_notify_connection_established(cluster, 99), 0);
             assert_eq!(hew_cluster_member_count(cluster), 0);
             hew_cluster_free(cluster);
         }

@@ -852,10 +852,12 @@ mod tests {
 
             // ACK claims to be from node 2, but arrived on node 3 connection.
             hew_cluster_process_message(cluster, SWIM_MSG_ACK, 2, 2, 3);
-            let cluster_ref = &*cluster;
-            let members = cluster_ref.members.lock().unwrap();
-            let member = members.iter().find(|m| m.node_id == 2).unwrap();
-            assert_eq!(member.state, MEMBER_SUSPECT);
+            {
+                let cluster_ref = &*cluster;
+                let members = cluster_ref.members.lock().unwrap();
+                let member = members.iter().find(|m| m.node_id == 2).unwrap();
+                assert_eq!(member.state, MEMBER_SUSPECT);
+            }
             hew_cluster_free(cluster);
         }
     }

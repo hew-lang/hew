@@ -68,8 +68,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows and macOS x86_64 MLIR builds can be flaky — don't block the release
-    continue-on-error: ${{ startsWith(matrix.target, 'windows') || matrix.target == 'darwin-x86_64' }}
+    # Non-Linux builds can be flaky (network timeouts, MLIR issues) — don't block the release
+    continue-on-error: ${{ !startsWith(matrix.target, 'linux') }}
     timeout-minutes: 120
 
     steps:

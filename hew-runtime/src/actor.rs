@@ -147,7 +147,7 @@ pub struct HewActor {
     pub actor_state: AtomicI32,
 
     /// Messages to process per activation.
-    pub budget: i32,
+    pub budget: AtomicI32,
 
     /// Saved initial state for supervisor restart (deep copy).
     pub init_state: *mut c_void,
@@ -188,7 +188,7 @@ pub struct HewActor {
 
     /// Number of consecutive idle activations before hibernation.
     /// 0 disables hibernation (default).
-    pub hibernation_threshold: i32,
+    pub hibernation_threshold: AtomicI32,
 
     /// Whether the actor is currently hibernating.
     /// Set to 1 when `idle_count` >= `hibernation_threshold`.
@@ -215,8 +215,8 @@ pub struct HewActor {
 // the scheduler/actor lifecycle which ensures exclusive access during
 // activation (CAS `RUNNABLE` → `RUNNING`).
 unsafe impl Send for HewActor {}
-// SAFETY: Concurrent reads of atomic fields are safe. Non-atomic fields
-// are only mutated by the owning worker thread after CAS acquisition.
+// SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
+// Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
 
 impl std::fmt::Debug for HewActor {
@@ -225,7 +225,7 @@ impl std::fmt::Debug for HewActor {
             .field("id", &self.id)
             .field("pid", &self.pid)
             .field("actor_state", &self.actor_state)
-            .field("budget", &self.budget)
+            .field("budget", &self.budget.load(Ordering::Relaxed))
             .field("arena", &self.arena)
             .finish_non_exhaustive()
     }
@@ -529,7 +529,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -539,7 +539,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -610,7 +610,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         dispatch: opts.dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget,
+        budget: AtomicI32::new(budget),
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
@@ -620,7 +620,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -672,7 +672,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -682,7 +682,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -881,8 +881,8 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 
 /// Free an actor and all associated resources.
 ///
-/// Spin-waits if the actor is currently being activated (state =
-/// `Running`), then frees state, mailbox, and the actor itself.
+/// Spin-waits until the actor reaches a terminal state, then frees state,
+/// mailbox, and the actor itself.
 ///
 /// # Safety
 ///
@@ -905,10 +905,10 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
-    // Spin-wait while actor is running or runnable (queued in scheduler).
+    // Wait until actor reaches a terminal state.
     loop {
         let state = a.actor_state.load(Ordering::Acquire);
-        if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32 {
+        if state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32 {
             break;
         }
         std::thread::yield_now();
@@ -930,15 +930,15 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_budget(actor: *mut HewActor, budget: u32) {
     // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &mut *actor };
+    let a = unsafe { &*actor };
     #[expect(
         clippy::cast_possible_wrap,
         reason = "budget values are small positive integers, well within i32 range"
     )]
     if budget == 0 {
-        a.budget = HEW_MSG_BUDGET;
+        a.budget.store(HEW_MSG_BUDGET, Ordering::Relaxed);
     } else {
-        a.budget = budget as i32;
+        a.budget.store(budget as i32, Ordering::Relaxed);
     }
 }
 
@@ -955,7 +955,7 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
         clippy::cast_sign_loss,
         reason = "budget is always set to a positive value"
     )]
-    let result = a.budget as u32;
+    let result = a.budget.load(Ordering::Relaxed) as u32;
     result
 }
 
@@ -1018,8 +1018,9 @@ pub unsafe extern "C" fn hew_actor_set_hibernation(actor: *mut HewActor, thresho
         return;
     }
     // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &mut *actor };
-    a.hibernation_threshold = threshold.max(0);
+    let a = unsafe { &*actor };
+    a.hibernation_threshold
+        .store(threshold.max(0), Ordering::Relaxed);
     // Reset hibernation state when threshold changes.
     a.idle_count.store(0, Ordering::Relaxed);
     a.hibernating.store(0, Ordering::Relaxed);
@@ -1644,7 +1645,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -1654,7 +1655,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -1696,7 +1697,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -1706,7 +1707,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -1763,7 +1764,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         dispatch: opts.dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget,
+        budget: AtomicI32::new(budget),
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
@@ -1773,7 +1774,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),

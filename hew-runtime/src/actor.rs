@@ -740,42 +740,44 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let actor = {
+    let sent_local = {
         let guard = match LIVE_ACTORS.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        guard.as_ref().and_then(|set| {
-            set.iter().find_map(|ptr| {
+        guard.as_ref().is_some_and(|set| {
+            set.iter().any(|ptr| {
                 let actor = ptr.0;
                 if actor.is_null() {
-                    return None;
+                    return false;
                 }
                 // SAFETY: `actor` pointers in LIVE_ACTORS originate from spawn
                 // functions and are removed on free.
                 let matches = unsafe { (&*actor).id == actor_id };
                 if matches {
-                    Some(actor)
+                    // SAFETY: actor pointer was discovered while LIVE_ACTORS is
+                    // locked, so it cannot be concurrently untracked/freed
+                    // during this send.
+                    unsafe { actor_send_internal(actor, msg_type, data, size) };
+                    true
                 } else {
-                    None
+                    false
                 }
             })
         })
     };
 
-    let Some(actor) = actor else {
-        // Actor not found locally. If the PID belongs to a remote node,
-        // route through the distributed node infrastructure.
-        if crate::pid::hew_pid_is_local(actor_id) == 0 {
-            // SAFETY: data validity is guaranteed by caller contract.
-            return unsafe { crate::hew_node::try_remote_send(actor_id, msg_type, data, size) };
-        }
-        return -1;
-    };
-    // SAFETY: pointer was discovered in LIVE_ACTORS and `data` validity is
-    // guaranteed by the caller contract.
-    unsafe { actor_send_internal(actor, msg_type, data, size) };
-    0
+    if sent_local {
+        return 0;
+    }
+
+    // Actor not found locally. If the PID belongs to a remote node,
+    // route through the distributed node infrastructure.
+    if crate::pid::hew_pid_is_local(actor_id) == 0 {
+        // SAFETY: data validity is guaranteed by caller contract.
+        return unsafe { crate::hew_node::try_remote_send(actor_id, msg_type, data, size) };
+    }
+    -1
 }
 
 /// Try to send a message, returning an error code on failure.

@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::set_last_error;
 use std::thread::{self, JoinHandle};
@@ -23,7 +23,10 @@ const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
 
 /// Global reference to the active node for remote message routing.
-static CURRENT_NODE: AtomicPtr<HewNode> = AtomicPtr::new(ptr::null_mut());
+///
+/// Only one `HewNode` may be active per process. Starting a second node
+/// while one is running is undefined behavior.
+static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
 
 /// Route a message to a remote actor via the current node.
 ///
@@ -35,11 +38,15 @@ pub(crate) unsafe fn try_remote_send(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let node = CURRENT_NODE.load(Ordering::Acquire);
-    if node.is_null() {
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if *guard == 0 {
         return -1;
     }
-    // SAFETY: CURRENT_NODE is only set to a valid, live node pointer.
+    let node = *guard as *mut HewNode;
+    // SAFETY: read lock pins CURRENT_NODE pointer for this send.
     unsafe { hew_node_send(node, target_pid, msg_type, data.cast::<u8>(), size) }
 }
 
@@ -197,6 +204,8 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
 }
 
 /// Start the node runtime: transport listen, accept loop, and cluster init.
+/// Only one `HewNode` may be active per process. Starting a second node
+/// while one is running is undefined behavior.
 ///
 /// # Safety
 ///
@@ -218,9 +227,18 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         set_last_error("hew_node_start: node is not stopped");
         return -1;
     }
+
+    let guard = match CURRENT_NODE.write() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let make_current = *guard == 0;
+    let current_node_guard = if make_current { Some(guard) } else { None };
     node.state.store(NODE_STATE_STARTING, Ordering::Release);
 
-    crate::pid::hew_pid_set_local_node(node.node_id);
+    if make_current {
+        crate::pid::hew_pid_set_local_node(node.node_id);
+    }
 
     if node.transport.is_null() {
         // SAFETY: constructor returns owned transport pointer or null.
@@ -322,7 +340,13 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
-    CURRENT_NODE.store(ptr::from_mut(node), Ordering::Release);
+    if let Some(mut guard) = current_node_guard {
+        debug_assert!(
+            *guard == 0,
+            "CURRENT_NODE must be null before starting a node"
+        );
+        *guard = ptr::from_mut(node) as usize;
+    }
     0
 }
 
@@ -344,14 +368,15 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
-    CURRENT_NODE
-        .compare_exchange(
-            ptr::from_mut(node),
-            ptr::null_mut(),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        )
-        .ok();
+    {
+        let mut guard = match CURRENT_NODE.write() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if *guard == ptr::from_mut(node) as usize {
+            *guard = 0;
+        }
+    }
     node.accept_stop.store(true, Ordering::Release);
     {
         let mut guard = match node.accept_thread.lock() {

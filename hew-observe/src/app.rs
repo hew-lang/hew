@@ -2,7 +2,7 @@
 
 use crate::client::{
     ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus, HistoryEntry,
-    Metrics, RoutingSnapshot, TraceEvent,
+    Metrics, RouteEntry, RoutingSnapshot, TraceEvent,
 };
 
 /// Active tab.
@@ -89,6 +89,10 @@ pub struct TreeRow {
 
 /// Main application state.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "TUI app state naturally has many boolean flags"
+)]
 pub struct App {
     pub active_tab: Tab,
     pub show_help: bool,
@@ -150,7 +154,7 @@ impl App {
 
         let base_url = node_addrs
             .first()
-            .map_or_else(|| "localhost:6060".to_owned(), |a| a.clone());
+            .map_or_else(|| "localhost:6060".to_owned(), Clone::clone);
 
         let mut app = Self {
             active_tab: Tab::Overview,
@@ -273,10 +277,6 @@ impl App {
         self.trace_filter_actor = Some(actor_id);
     }
 
-    #[expect(
-        dead_code,
-        reason = "Will be wired to key bindings in Messages tab UI task"
-    )]
     pub fn messages_clear_filter(&mut self) {
         self.trace_filter_actor = None;
     }
@@ -626,6 +626,141 @@ impl App {
         // Demo sparklines
         self.sparkline_msgs = vec![12, 45, 30, 67, 23, 89, 54, 32, 78, 41, 55, 90, 44, 61, 37];
         self.sparkline_actors = vec![4, 4, 4, 3, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4];
+
+        // Demo cluster members (3 nodes)
+        self.cluster_members = vec![
+            ClusterMember {
+                node_id: 1,
+                state: "alive".into(),
+                incarnation: 2,
+                addr: "127.0.0.1:9000".into(),
+                last_seen_ms: 0,
+            },
+            ClusterMember {
+                node_id: 2,
+                state: "alive".into(),
+                incarnation: 1,
+                addr: "192.168.1.11:9000".into(),
+                last_seen_ms: 500,
+            },
+            ClusterMember {
+                node_id: 3,
+                state: "suspect".into(),
+                incarnation: 3,
+                addr: "192.168.1.12:9000".into(),
+                last_seen_ms: 8000,
+            },
+        ];
+
+        // Demo connections
+        self.cluster_connections = vec![
+            ConnectionInfo {
+                conn_id: 0,
+                peer_node_id: 2,
+                state: "active".into(),
+                last_activity_ms: 500,
+            },
+            ConnectionInfo {
+                conn_id: 1,
+                peer_node_id: 3,
+                state: "active".into(),
+                last_activity_ms: 8000,
+            },
+        ];
+
+        // Demo routing
+        self.cluster_routing = RoutingSnapshot {
+            local_node_id: 1,
+            routes: vec![
+                RouteEntry {
+                    node_id: 2,
+                    conn_id: 0,
+                },
+                RouteEntry {
+                    node_id: 3,
+                    conn_id: 1,
+                },
+            ],
+        };
+
+        // Demo trace events (50 events over 10 seconds)
+        let base_ns: u64 = 40_000_000_000;
+        let mut traces = Vec::new();
+        // Spawns
+        traces.push(TraceEvent {
+            trace_id: "0001".into(),
+            span_id: 1,
+            parent_span_id: 0,
+            actor_id: (1u64 << 48) | 1,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns,
+        });
+        traces.push(TraceEvent {
+            trace_id: "0002".into(),
+            span_id: 2,
+            parent_span_id: 0,
+            actor_id: (2u64 << 48) | 101,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 100_000_000,
+        });
+        traces.push(TraceEvent {
+            trace_id: "0003".into(),
+            span_id: 3,
+            parent_span_id: 0,
+            actor_id: (3u64 << 48) | 201,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 200_000_000,
+        });
+        // Message sends between nodes
+        for i in 0..20u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 10 + i),
+                span_id: 100 + i,
+                parent_span_id: 0,
+                actor_id: (1u64 << 48) | 1,
+                event_type: "send".into(),
+                msg_type: 3,
+                timestamp_ns: base_ns + 1_000_000_000 + i * 200_000_000,
+            });
+        }
+        for i in 0..15u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 30 + i),
+                span_id: 200 + i,
+                parent_span_id: 0,
+                actor_id: (2u64 << 48) | 101,
+                event_type: "send".into(),
+                msg_type: 7,
+                timestamp_ns: base_ns + 1_100_000_000 + i * 300_000_000,
+            });
+        }
+        for i in 0..5u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 50 + i),
+                span_id: 300 + i,
+                parent_span_id: 0,
+                actor_id: (3u64 << 48) | 201,
+                event_type: "send".into(),
+                msg_type: 5,
+                timestamp_ns: base_ns + 500_000_000 + i * 500_000_000,
+            });
+        }
+        // Crash on node 3
+        traces.push(TraceEvent {
+            trace_id: "crash1".into(),
+            span_id: 400,
+            parent_span_id: 0,
+            actor_id: (3u64 << 48) | 201,
+            event_type: "crash".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 8_000_000_000,
+        });
+        // Sort by timestamp
+        traces.sort_by_key(|t| t.timestamp_ns);
+        self.trace_events = traces;
     }
 }
 

@@ -95,31 +95,565 @@ fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Actors => draw_actors(f, app, area),
         Tab::Supervisors => draw_supervisors(f, app, area),
         Tab::Crashes => draw_crashes(f, app, area),
-        Tab::Cluster => draw_cluster_placeholder(f, area),
-        Tab::Messages => draw_messages_placeholder(f, area),
-        Tab::Timeline => draw_timeline_placeholder(f, area),
+        Tab::Cluster => draw_cluster(f, app, area),
+        Tab::Messages => draw_messages(f, app, area),
+        Tab::Timeline => draw_timeline(f, app, area),
     }
 }
 
-fn draw_cluster_placeholder(f: &mut Frame, area: Rect) {
-    let msg = Paragraph::new("Cluster view — coming soon")
-        .block(Block::default().borders(Borders::ALL).title(" Cluster "))
-        .style(Style::default().fg(Color::Yellow));
-    f.render_widget(msg, area);
+// ---------------------------------------------------------------------------
+// Cluster tab
+// ---------------------------------------------------------------------------
+
+fn draw_cluster(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+    draw_cluster_topology(f, app, chunks[0]);
+    draw_cluster_members(f, app, chunks[1]);
 }
 
-fn draw_messages_placeholder(f: &mut Frame, area: Rect) {
-    let msg = Paragraph::new("Message flow view — coming soon")
-        .block(Block::default().borders(Borders::ALL).title(" Messages "))
-        .style(Style::default().fg(Color::Yellow));
-    f.render_widget(msg, area);
+fn member_state_color(state: &str) -> Color {
+    match state {
+        "alive" => Color::Green,
+        "suspect" => Color::Yellow,
+        "dead" => Color::Red,
+        "left" => Color::DarkGray,
+        _ => Color::White,
+    }
 }
 
-fn draw_timeline_placeholder(f: &mut Frame, area: Rect) {
-    let msg = Paragraph::new("Timeline view — coming soon")
-        .block(Block::default().borders(Borders::ALL).title(" Timeline "))
-        .style(Style::default().fg(Color::Yellow));
-    f.render_widget(msg, area);
+fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Cluster Topology ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if app.cluster_members.is_empty() {
+        let msg = Paragraph::new("No cluster data")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, inner);
+        return;
+    }
+
+    // Arrange nodes in a 2-column grid
+    let members = &app.cluster_members;
+    let num_rows = members.len().div_ceil(2);
+    let row_constraints: Vec<Constraint> = (0..num_rows)
+        .map(|_| Constraint::Length(6))
+        .chain(std::iter::once(Constraint::Min(0)))
+        .collect();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(inner);
+
+    for (row_idx, chunk) in rows.iter().enumerate() {
+        if row_idx >= num_rows {
+            break;
+        }
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(*chunk);
+
+        for col in 0..2 {
+            let member_idx = row_idx * 2 + col;
+            if member_idx >= members.len() {
+                break;
+            }
+            let m = &members[member_idx];
+            let is_self = m.node_id == app.cluster_routing.local_node_id;
+            let title = if is_self {
+                format!(" node:{} (self) ", m.node_id)
+            } else {
+                format!(" node:{} ", m.node_id)
+            };
+
+            let color = member_state_color(&m.state);
+            let state_bullet = Span::styled(format!("● {}", m.state), Style::default().fg(color));
+
+            // Check if there is a connection to this node
+            let conn_status = if is_self {
+                Span::raw("")
+            } else if app
+                .cluster_connections
+                .iter()
+                .any(|c| c.peer_node_id == m.node_id)
+            {
+                Span::styled(" ↔ connected", Style::default().fg(Color::Green))
+            } else {
+                Span::styled(" ✕ no conn", Style::default().fg(Color::DarkGray))
+            };
+
+            let lines = vec![
+                Line::from(Span::styled(&m.addr, Style::default().fg(Color::White))),
+                Line::from(vec![state_bullet, conn_status]),
+                Line::from(Span::styled(
+                    format!("actors: {}  msg/s: —", members.len()),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+
+            let node_block = Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(color));
+            let para = Paragraph::new(lines).block(node_block);
+            f.render_widget(para, cols[col]);
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "last_seen_ms values are small enough for display"
+)]
+fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
+    let header = Row::new(vec![
+        Cell::from("Node"),
+        Cell::from("State"),
+        Cell::from("Incarnation"),
+        Cell::from("Address"),
+        Cell::from("Last Seen"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows: Vec<Row> = app
+        .cluster_members
+        .iter()
+        .map(|m| {
+            let color = member_state_color(&m.state);
+            let last_seen = if m.last_seen_ms == 0 {
+                "\u{2014}".to_owned() // em-dash
+            } else if m.last_seen_ms >= 1000 {
+                format!("{:.1}s ago", m.last_seen_ms as f64 / 1000.0)
+            } else {
+                format!("{}ms ago", m.last_seen_ms)
+            };
+            Row::new(vec![
+                Cell::from(format!("node:{}", m.node_id)),
+                Cell::from(m.state.as_str()).style(Style::default().fg(color)),
+                Cell::from(format!("{}", m.incarnation)),
+                Cell::from(m.addr.as_str()),
+                Cell::from(last_seen),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(22),
+            Constraint::Min(12),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Cluster Members "),
+    );
+    f.render_widget(table, area);
+}
+
+// ---------------------------------------------------------------------------
+// Messages tab (sequence / swimlane diagram)
+// ---------------------------------------------------------------------------
+
+fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(3)])
+        .split(area);
+    draw_message_swimlanes(f, app, chunks[0]);
+    draw_message_controls(f, app, chunks[1]);
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+    reason = "swimlane rendering involves safe small-range conversions and is inherently verbose"
+)]
+fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
+    let subtitle = if let Some(actor) = app.trace_filter_actor {
+        format!(" Messages  [filtered: actor {actor}] ")
+    } else {
+        " Messages ".to_owned()
+    };
+    let block = Block::default().borders(Borders::ALL).title(subtitle);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Filter events
+    let events: Vec<&crate::client::TraceEvent> = app
+        .trace_events
+        .iter()
+        .filter(|e| {
+            if let Some(filter_id) = app.trace_filter_actor {
+                e.actor_id == filter_id
+            } else {
+                true
+            }
+        })
+        .filter(|e| {
+            e.event_type == "send"
+                || e.event_type == "spawn"
+                || e.event_type == "crash"
+                || e.event_type == "stop"
+        })
+        .collect();
+
+    if events.is_empty() {
+        let msg = Paragraph::new("No trace events. Enable tracing: HEW_TRACE=1")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, inner);
+        return;
+    }
+
+    // Collect unique node IDs
+    let mut node_ids: Vec<u16> = events.iter().map(|e| (e.actor_id >> 48) as u16).collect();
+    for m in &app.cluster_members {
+        node_ids.push(m.node_id);
+    }
+    node_ids.sort_unstable();
+    node_ids.dedup();
+
+    let lane_colors = [Color::Cyan, Color::Green, Color::Yellow, Color::Magenta];
+    let num_lanes = node_ids.len();
+    if num_lanes == 0 || inner.width < 4 || inner.height < 3 {
+        return;
+    }
+
+    let available_height = inner.height as usize;
+    // Reserve 2 lines for header
+    let event_rows = available_height.saturating_sub(2);
+    if event_rows == 0 {
+        return;
+    }
+
+    // Determine visible events slice
+    let visible_events = if app.trace_paused {
+        let start = app
+            .trace_scroll
+            .min(events.len().saturating_sub(event_rows));
+        let end = (start + event_rows).min(events.len());
+        &events[start..end]
+    } else {
+        let start = events.len().saturating_sub(event_rows);
+        &events[start..]
+    };
+
+    // Compute lane x positions
+    let lane_width = inner.width / num_lanes as u16;
+    // Build lines: header first
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header line with node labels
+    let mut header_spans = Vec::new();
+    for (i, &nid) in node_ids.iter().enumerate() {
+        let label = format!("node:{nid}");
+        let color = lane_colors[i % lane_colors.len()];
+        let pad = lane_width as usize;
+        let formatted = format!("{label:^pad$}");
+        header_spans.push(Span::styled(
+            formatted,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    lines.push(Line::from(header_spans));
+
+    // Separator
+    let sep = "\u{2500}".repeat(inner.width as usize);
+    lines.push(Line::from(Span::styled(
+        sep,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Get base timestamp for relative display
+    let base_ns = events.first().map_or(0, |e| e.timestamp_ns);
+
+    // Event rows
+    for evt in visible_events {
+        let node_id = (evt.actor_id >> 48) as u16;
+        let lane_idx = node_ids.iter().position(|&n| n == node_id).unwrap_or(0);
+        let color = lane_colors[lane_idx % lane_colors.len()];
+
+        // Build the row: show vertical bars at each lane, with event info at the source lane
+        let relative_s = (evt.timestamp_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
+        let time_str = format!("{relative_s:>6.2}s");
+
+        let event_label = match evt.event_type.as_str() {
+            "send" => format!("──▶ send({})", evt.msg_type),
+            "spawn" => "◆ spawn".to_owned(),
+            "crash" => "✕ crash".to_owned(),
+            "stop" => "◇ stop".to_owned(),
+            other => other.to_owned(),
+        };
+
+        let mut row_spans = Vec::new();
+        row_spans.push(Span::styled(
+            format!("{time_str} "),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        let remaining_width = inner.width.saturating_sub(8) as usize;
+        for (i, _) in node_ids.iter().enumerate() {
+            let segment_width = remaining_width / num_lanes;
+            if i == lane_idx {
+                let label_display = if event_label.len() > segment_width {
+                    event_label[..segment_width].to_owned()
+                } else {
+                    format!("{event_label:<segment_width$}")
+                };
+                let event_color = match evt.event_type.as_str() {
+                    "spawn" => Color::Green,
+                    "crash" => Color::Red,
+                    "stop" => Color::DarkGray,
+                    _ => color,
+                };
+                row_spans.push(Span::styled(
+                    label_display,
+                    Style::default().fg(event_color),
+                ));
+            } else {
+                let bar = format!("{:\u{2502}^width$}", "", width = segment_width);
+                row_spans.push(Span::styled(bar, Style::default().fg(Color::DarkGray)));
+            }
+        }
+        lines.push(Line::from(row_spans));
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
+    let paused_str = if app.trace_paused { "yes" } else { "no" };
+    let filter_str = if let Some(actor) = app.trace_filter_actor {
+        format!("  │  Filter: actor {actor}")
+    } else {
+        String::new()
+    };
+    let text = format!(
+        " [space/p] pause  [↑↓] scroll  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
+        app.trace_events.len()
+    );
+    let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(bar, area);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline tab
+// ---------------------------------------------------------------------------
+
+fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(2),
+            Constraint::Length(3),
+        ])
+        .split(area);
+    draw_timeline_chart(f, app, chunks[0]);
+    draw_timeline_legend(f, chunks[1]);
+    draw_timeline_controls(f, app, chunks[2]);
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "timeline pixel math involves safe small-range conversions; inherently verbose"
+)]
+fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" Timeline ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if inner.width < 10 || inner.height < 4 {
+        return;
+    }
+
+    // Collect node IDs from cluster members and trace events
+    let mut node_ids: Vec<u16> = app.cluster_members.iter().map(|m| m.node_id).collect();
+    for evt in &app.trace_events {
+        let nid = (evt.actor_id >> 48) as u16;
+        if !node_ids.contains(&nid) {
+            node_ids.push(nid);
+        }
+    }
+    node_ids.sort_unstable();
+    node_ids.dedup();
+
+    if node_ids.is_empty() || app.trace_events.is_empty() {
+        let msg = Paragraph::new("No events in window")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        f.render_widget(msg, inner);
+        return;
+    }
+
+    // Determine visible time window
+    let latest_ns = app
+        .trace_events
+        .iter()
+        .map(|e| e.timestamp_ns)
+        .max()
+        .unwrap_or(0);
+    let window_ns = app.timeline_window_ns;
+    let center_ns = (latest_ns as i64 + app.timeline_offset_ns).max(0) as u64;
+    let window_start = center_ns.saturating_sub(window_ns / 2);
+    let window_end = window_start + window_ns;
+
+    // Left margin for node labels
+    let label_width: u16 = 10;
+    let chart_width = inner.width.saturating_sub(label_width) as usize;
+    if chart_width < 4 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Time axis header
+    let mut time_header_spans = Vec::new();
+    time_header_spans.push(Span::styled(
+        format!("{:<width$}", "", width = label_width as usize),
+        Style::default(),
+    ));
+    let num_ticks = 5.min(chart_width / 8);
+    if num_ticks > 0 {
+        let tick_spacing = chart_width / num_ticks;
+        for i in 0..num_ticks {
+            let x = i * tick_spacing;
+            let t_ns = window_start as f64 + (x as f64 / chart_width as f64) * window_ns as f64;
+            let t_s = t_ns / 1_000_000_000.0;
+            let label = format!("{t_s:.1}s");
+            let padded = format!("{label:<tick_spacing$}");
+            time_header_spans.push(Span::styled(padded, Style::default().fg(Color::DarkGray)));
+        }
+    }
+    lines.push(Line::from(time_header_spans));
+
+    // One row per node
+    let lane_colors = [Color::Cyan, Color::Green, Color::Yellow, Color::Magenta];
+
+    for (node_idx, &nid) in node_ids.iter().enumerate() {
+        // Node label
+        let label = format!("node:{nid} \u{2502}");
+        let padded_label = format!("{label:>width$}", width = label_width as usize);
+
+        // Build the chart row
+        let mut row_chars: Vec<(char, Color)> = vec![(' ', Color::DarkGray); chart_width];
+
+        // Place events
+        let node_events: Vec<&crate::client::TraceEvent> = app
+            .trace_events
+            .iter()
+            .filter(|e| {
+                let enid = (e.actor_id >> 48) as u16;
+                enid == nid && e.timestamp_ns >= window_start && e.timestamp_ns < window_end
+            })
+            .collect();
+
+        for evt in &node_events {
+            let x = ((evt.timestamp_ns - window_start) as f64 / window_ns as f64
+                * chart_width as f64) as usize;
+            if x < chart_width {
+                let (glyph, color) = match evt.event_type.as_str() {
+                    "spawn" => ('\u{25C6}', Color::Green),   // ◆
+                    "crash" => ('\u{2715}', Color::Red),     // ✕
+                    "send" => ('\u{25CF}', Color::Cyan),     // ●
+                    "stop" => ('\u{25C7}', Color::DarkGray), // ◇
+                    _ => ('\u{00B7}', Color::White),         // ·
+                };
+                // If there's already something at this position (density), keep the higher-priority one
+                let existing = row_chars[x].0;
+                if existing == ' ' || existing == '\u{25CF}' {
+                    row_chars[x] = (glyph, color);
+                }
+            }
+        }
+
+        let node_color = lane_colors[node_idx % lane_colors.len()];
+        let mut spans = Vec::new();
+        spans.push(Span::styled(
+            padded_label,
+            Style::default().fg(node_color).add_modifier(Modifier::BOLD),
+        ));
+        for (ch, color) in &row_chars {
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(*color)));
+        }
+        lines.push(Line::from(spans));
+
+        // Separator between rows (if not last)
+        if node_idx < node_ids.len() - 1 {
+            let sep = format!(
+                "{:>width$}{}",
+                "",
+                "\u{2500}".repeat(chart_width),
+                width = label_width as usize
+            );
+            lines.push(Line::from(Span::styled(
+                sep,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+}
+
+fn draw_timeline_legend(f: &mut Frame, area: Rect) {
+    let legend = Line::from(vec![
+        Span::styled(" \u{25C6} ", Style::default().fg(Color::Green)),
+        Span::raw("spawn  "),
+        Span::styled("\u{2715} ", Style::default().fg(Color::Red)),
+        Span::raw("crash  "),
+        Span::styled("\u{25CF} ", Style::default().fg(Color::Cyan)),
+        Span::raw("message  "),
+        Span::styled("\u{25C7} ", Style::default().fg(Color::DarkGray)),
+        Span::raw("stop  "),
+        Span::styled("\u{25B2} ", Style::default().fg(Color::Yellow)),
+        Span::raw("suspect  "),
+        Span::styled("\u{2605} ", Style::default().fg(Color::Red)),
+        Span::raw("dead"),
+    ]);
+    let para = Paragraph::new(legend).alignment(Alignment::Center);
+    f.render_widget(para, area);
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "timeline offset/window values are small enough for display"
+)]
+fn draw_timeline_controls(f: &mut Frame, app: &App, area: Rect) {
+    let paused_str = if app.timeline_paused { "yes" } else { "no" };
+    let window_s = app.timeline_window_ns as f64 / 1_000_000_000.0;
+    let offset_s = app.timeline_offset_ns as f64 / 1_000_000_000.0;
+    let text = format!(
+        " [←→] scroll  [+/-] zoom  [p] pause  [n] snap to now │ Window: {window_s:.0}s │ Offset: {offset_s:+.1}s │ Events: {} │ Paused: {paused_str}",
+        app.trace_events.len()
+    );
+    let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
+    f.render_widget(bar, area);
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
@@ -505,8 +1039,13 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let mode = if app.demo_mode { "DEMO" } else { "LIVE" };
+    let node_count = if app.cluster_members.is_empty() {
+        1
+    } else {
+        app.cluster_members.len()
+    };
     let text = format!(
-        " [{mode}] {} │ Tab: switch │ ?: help │ r: refresh │ q: quit",
+        " [{mode}] {} │ {node_count} node(s) │ Tab: switch │ ?: help │ r: refresh │ q: quit",
         app.base_url
     );
     let bar = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
@@ -515,8 +1054,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_popup(f: &mut Frame) {
     let area = f.area();
-    let popup_width = 50;
-    let popup_height = 16;
+    let popup_width = 55;
+    let popup_height = 23;
     let x = area.width.saturating_sub(popup_width) / 2;
     let y = area.height.saturating_sub(popup_height) / 2;
     let popup = Rect::new(
@@ -565,6 +1104,33 @@ fn draw_help_popup(f: &mut Frame) {
         Line::from(vec![
             Span::styled("  Ctrl+C         ", style_key()),
             Span::raw("Force quit"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Distributed tabs:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  space/p        ", style_key()),
+            Span::raw("Pause (Messages/Timeline)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ←/→            ", style_key()),
+            Span::raw("Scroll time (Timeline)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  +/-            ", style_key()),
+            Span::raw("Zoom in/out (Timeline)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  n              ", style_key()),
+            Span::raw("Snap to now (Timeline)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c              ", style_key()),
+            Span::raw("Clear filter (Messages)"),
         ]),
         Line::from(""),
     ];

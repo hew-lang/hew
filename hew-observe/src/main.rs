@@ -130,7 +130,6 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
     }
 
     match app.active_tab {
-        Tab::Overview => {}
         Tab::Actors => match key {
             KeyCode::Up => app.actor_list_prev(),
             KeyCode::Down => app.actor_list_next(),
@@ -151,11 +150,11 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Down => app.crash_list_next(),
             _ => {}
         },
-        Tab::Cluster => {}
         Tab::Messages => match key {
             KeyCode::Up => app.messages_scroll_up(),
             KeyCode::Down => app.messages_scroll_down(),
-            KeyCode::Char('p') => app.messages_toggle_pause(),
+            KeyCode::Char('p' | ' ') => app.messages_toggle_pause(),
+            KeyCode::Char('c') => app.messages_clear_filter(),
             _ => {}
         },
         Tab::Timeline => match key {
@@ -163,9 +162,10 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Right => app.timeline_scroll_right(),
             KeyCode::Char('+') => app.timeline_zoom_in(),
             KeyCode::Char('-') => app.timeline_zoom_out(),
-            KeyCode::Char('p') => app.timeline_toggle_pause(),
+            KeyCode::Char('p' | ' ') => app.timeline_toggle_pause(),
             KeyCode::Char('n') => app.timeline_snap_to_now(),
             _ => {}
         },
+        Tab::Overview | Tab::Cluster => {}
     }
 }

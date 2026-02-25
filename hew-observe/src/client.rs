@@ -93,10 +93,6 @@ pub struct HistoryEntry {
 
 /// Cluster member from `/api/cluster/members`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
 pub struct ClusterMember {
     #[serde(default)]
     pub node_id: u16,

@@ -30,6 +30,8 @@ pub const HEW_CONN_INVALID: c_int = -1;
 
 /// Maximum number of connections stored per transport.
 const MAX_CONNS: usize = 64;
+/// Maximum accepted framed payload size (16 MiB).
+const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 
 // Error codes matching the C header.
 const HEW_OK: c_int = 0;
@@ -422,7 +424,28 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
         }
     }
     let frame_len = u32::from_le_bytes(header) as usize;
+    if frame_len > MAX_FRAME_SIZE {
+        let _ = sock.shutdown(Shutdown::Both);
+        set_last_error(format!(
+            "transport framed_recv: frame exceeds max size ({frame_len} > {MAX_FRAME_SIZE})"
+        ));
+        return -1;
+    }
     if frame_len > buf.len() {
+        // Drain oversized payload to keep stream aligned.
+        let mut remaining = frame_len;
+        let mut discard = [0u8; 4096];
+        let mut stream = sock;
+        while remaining > 0 {
+            let to_read = std::cmp::min(remaining, discard.len());
+            if let Err(e) = stream.read_exact(&mut discard[..to_read]) {
+                set_last_error(format!(
+                    "transport framed_recv: oversized frame drain failed: {e}"
+                ));
+                return -1;
+            }
+            remaining -= to_read;
+        }
         set_last_error(format!(
             "transport framed_recv: frame too large ({frame_len} > {})",
             buf.len()

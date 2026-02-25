@@ -6,6 +6,8 @@
 
 use std::ffi::{c_char, c_int, c_void};
 
+use crate::set_last_error;
+
 // ---------------------------------------------------------------------------
 // Wire type constants
 // ---------------------------------------------------------------------------
@@ -21,6 +23,7 @@ pub const HEW_WIRE_FIXED32: u32 = 5;
 
 const INITIAL_BUF_CAP: usize = 64;
 const HBF_HEADER_LEN: usize = 10;
+const MAX_MSG_TYPE: i64 = 65_535;
 
 /// HBF message magic bytes (`"HEW1"`).
 pub const HBF_MAGIC: [u8; 4] = *b"HEW1";
@@ -843,12 +846,17 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 if unsafe { hew_wire_decode_varint(buf, &raw mut v) } != 0 {
                     return -1;
                 }
+                let msg_type = hew_wire_zigzag_decode(v);
+                if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
+                    set_last_error(&format!("invalid msg_type: {msg_type}"));
+                    return -1;
+                }
                 #[expect(
                     clippy::cast_possible_truncation,
-                    reason = "msg_type is i32 by wire spec"
+                    reason = "validated msg_type fits within i32"
                 )]
                 {
-                    e.msg_type = hew_wire_zigzag_decode(v) as i32;
+                    e.msg_type = msg_type as i32;
                 }
             }
             (4, w) if w == HEW_WIRE_LENGTH_DELIMITED => {

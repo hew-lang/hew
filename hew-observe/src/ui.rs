@@ -37,16 +37,27 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(30)])
         .split(area);
 
-    let titles: Vec<Line> = ["① Overview", "② Actors", "③ Supervisors", "④ Crashes"]
-        .iter()
-        .map(|t| Line::from(*t))
-        .collect();
+    let titles: Vec<Line> = [
+        "① Overview",
+        "② Actors",
+        "③ Supervisors",
+        "④ Crashes",
+        "⑤ Cluster",
+        "⑥ Messages",
+        "⑦ Timeline",
+    ]
+    .iter()
+    .map(|t| Line::from(*t))
+    .collect();
 
     let tab_idx = match app.active_tab {
         Tab::Overview => 0,
         Tab::Actors => 1,
         Tab::Supervisors => 2,
         Tab::Crashes => 3,
+        Tab::Cluster => 4,
+        Tab::Messages => 5,
+        Tab::Timeline => 6,
     };
 
     let tabs = Tabs::new(titles)
@@ -84,7 +95,31 @@ fn draw_body(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Actors => draw_actors(f, app, area),
         Tab::Supervisors => draw_supervisors(f, app, area),
         Tab::Crashes => draw_crashes(f, app, area),
+        Tab::Cluster => draw_cluster_placeholder(f, area),
+        Tab::Messages => draw_messages_placeholder(f, area),
+        Tab::Timeline => draw_timeline_placeholder(f, area),
     }
+}
+
+fn draw_cluster_placeholder(f: &mut Frame, area: Rect) {
+    let msg = Paragraph::new("Cluster view — coming soon")
+        .block(Block::default().borders(Borders::ALL).title(" Cluster "))
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(msg, area);
+}
+
+fn draw_messages_placeholder(f: &mut Frame, area: Rect) {
+    let msg = Paragraph::new("Message flow view — coming soon")
+        .block(Block::default().borders(Borders::ALL).title(" Messages "))
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(msg, area);
+}
+
+fn draw_timeline_placeholder(f: &mut Frame, area: Rect) {
+    let msg = Paragraph::new("Timeline view — coming soon")
+        .block(Block::default().borders(Borders::ALL).title(" Timeline "))
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(msg, area);
 }
 
 fn draw_overview(f: &mut Frame, app: &App, area: Rect) {

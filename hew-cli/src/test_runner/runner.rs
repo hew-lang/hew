@@ -164,7 +164,7 @@ fn compile_test(
     source: &str,
     test: &TestCase,
     ffi_lib: Option<&str>,
-) -> Result<(tempfile::NamedTempFile, tempfile::NamedTempFile), String> {
+) -> Result<(tempfile::NamedTempFile, tempfile::TempPath), String> {
     let synthetic = format!(
         "{source}\n\nfn main() {{\n    {name}();\n}}\n",
         name = test.name,
@@ -194,13 +194,14 @@ fn compile_test(
         .prefix("hew_test_bin_")
         .suffix(exe_suffix)
         .tempfile_in(test_dir)
-        .map_err(|e| format!("cannot create temp binary: {e}"))?;
+        .map_err(|e| format!("cannot create temp binary: {e}"))?
+        .into_temp_path();
 
     let mut cmd = Command::new(&hew_binary);
     cmd.arg("build")
         .arg(tmp_source.path())
         .arg("-o")
-        .arg(tmp_binary.path());
+        .arg(&tmp_binary);
     if let Some(lib) = ffi_lib {
         cmd.arg("--link-lib").arg(lib);
     }
@@ -242,11 +243,6 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
             };
         }
     };
-
-    // Close the write fd before exec to avoid ETXTBSY ("Text file busy").
-    // NamedTempFile keeps the file open O_RDWR; into_temp_path() closes
-    // the fd while still auto-deleting on drop.
-    let tmp_binary = tmp_binary.into_temp_path();
 
     // Execute the compiled binary with a timeout.
     let run_result = run_binary_with_timeout(&tmp_binary, Duration::from_secs(30));

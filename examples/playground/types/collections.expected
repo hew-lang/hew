@@ -3,5 +3,5 @@ First: 10
 Popped: 30
 Map length: 3
 get(one): 1
-has three: 1
+has three: true
 After remove, length: 2

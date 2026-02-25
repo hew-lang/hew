@@ -37,8 +37,28 @@
 //! }
 //! ```
 
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::c_void;
+
+/// Single-threaded cell for WASM-only statics.
+///
+/// SAFETY: Only safe in single-threaded contexts (e.g., WASM modules).
+struct WasmCell<T>(UnsafeCell<T>);
+// SAFETY: WASM is single-threaded; no concurrent access.
+unsafe impl<T> Sync for WasmCell<T> {}
+impl<T> WasmCell<T> {
+    const fn new(val: T) -> Self {
+        Self(UnsafeCell::new(val))
+    }
+    /// # Safety
+    /// Caller must ensure no concurrent access (single-threaded WASM).
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_mut(&self) -> &mut T {
+        // SAFETY: Caller guarantees single-threaded access.
+        unsafe { &mut *self.0.get() }
+    }
+}
 
 // ── Outbound message queue ──────────────────────────────────────────────
 
@@ -54,16 +74,17 @@ struct OutboundMsg {
 
 /// Outbound message queue. Actors call `hew_wasm_emit` during dispatch,
 /// which appends here. The host drains via `hew_wasm_recv`.
-static mut OUTBOUND: Option<VecDeque<OutboundMsg>> = None;
+static OUTBOUND: WasmCell<Option<VecDeque<OutboundMsg>>> = WasmCell::new(None);
 
 fn outbound_queue() -> &'static mut VecDeque<OutboundMsg> {
     // SAFETY: WASM is single-threaded.
-    unsafe { OUTBOUND.get_or_insert_with(VecDeque::new) }
+    unsafe { OUTBOUND.get_mut().get_or_insert_with(VecDeque::new) }
 }
 
 // ── Type metadata registry ──────────────────────────────────────────────
 
 /// Describes a single parameter in a receive handler.
+#[derive(Debug)]
 #[repr(C)]
 pub struct HewParamMeta {
     /// Parameter name (NUL-terminated C string, static lifetime from codegen).
@@ -77,6 +98,7 @@ pub struct HewParamMeta {
 }
 
 /// Describes a single receive handler on an actor.
+#[derive(Debug)]
 #[repr(C)]
 pub struct HewHandlerMeta {
     /// Handler name (NUL-terminated C string).
@@ -94,6 +116,7 @@ pub struct HewHandlerMeta {
 }
 
 /// Describes an actor's complete message interface.
+#[derive(Debug)]
 #[repr(C)]
 pub struct HewActorMeta {
     /// Actor type name (NUL-terminated C string).
@@ -106,7 +129,7 @@ pub struct HewActorMeta {
 
 /// Registered actor metadata. Populated by codegen via
 /// [`hew_wasm_register_actor_meta`].
-static mut META_REGISTRY: Option<Vec<ActorMetaEntry>> = None;
+static META_REGISTRY: WasmCell<Option<Vec<ActorMetaEntry>>> = WasmCell::new(None);
 
 /// Owned metadata entry (strings are heap-allocated copies).
 struct ActorMetaEntry {
@@ -131,12 +154,12 @@ struct ParamMetaEntry {
 
 fn meta_registry() -> &'static mut Vec<ActorMetaEntry> {
     // SAFETY: WASM is single-threaded.
-    unsafe { META_REGISTRY.get_or_insert_with(Vec::new) }
+    unsafe { META_REGISTRY.get_mut().get_or_insert_with(Vec::new) }
 }
 
 /// Cached JSON output from [`hew_wasm_query_meta`]. Invalidated when new
 /// metadata is registered.
-static mut META_JSON_CACHE: Option<String> = None;
+static META_JSON_CACHE: WasmCell<Option<String>> = WasmCell::new(None);
 
 // ── Host → WASM: send a message to a named actor ───────────────────────
 
@@ -455,7 +478,7 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     // Invalidate cache.
     // SAFETY: single-threaded WASM.
     unsafe {
-        META_JSON_CACHE = None;
+        *META_JSON_CACHE.get_mut() = None;
     }
 }
 
@@ -510,17 +533,19 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
     let json = if filter_name.is_none() {
         // SAFETY: single-threaded.
         unsafe {
-            if META_JSON_CACHE.is_none() {
-                META_JSON_CACHE = Some(build_meta_json(None));
+            let cache = META_JSON_CACHE.get_mut();
+            if cache.is_none() {
+                *cache = Some(build_meta_json(None));
             }
-            META_JSON_CACHE.as_ref().unwrap()
+            cache.as_ref().unwrap()
         }
     } else {
         // Per-actor query: always rebuild (cheap for one actor).
         // SAFETY: single-threaded.
         unsafe {
-            META_JSON_CACHE = Some(build_meta_json(filter_name));
-            META_JSON_CACHE.as_ref().unwrap()
+            let cache = META_JSON_CACHE.get_mut();
+            *cache = Some(build_meta_json(filter_name));
+            cache.as_ref().unwrap()
         }
     };
 
@@ -632,11 +657,11 @@ fn json_escape_into(out: &mut String, s: &str) {
 pub fn bridge_init() {
     // SAFETY: single-threaded WASM.
     unsafe {
-        if OUTBOUND.is_none() {
-            OUTBOUND = Some(VecDeque::new());
+        if OUTBOUND.get_mut().is_none() {
+            *OUTBOUND.get_mut() = Some(VecDeque::new());
         }
-        if META_REGISTRY.is_none() {
-            META_REGISTRY = Some(Vec::new());
+        if META_REGISTRY.get_mut().is_none() {
+            *META_REGISTRY.get_mut() = Some(Vec::new());
         }
     }
 }
@@ -645,10 +670,10 @@ pub fn bridge_init() {
 pub fn bridge_shutdown() {
     // SAFETY: single-threaded WASM.
     unsafe {
-        if let Some(ref mut q) = OUTBOUND {
+        if let Some(ref mut q) = *OUTBOUND.get_mut() {
             q.clear();
         }
-        META_JSON_CACHE = None;
+        *META_JSON_CACHE.get_mut() = None;
     }
 }
 
@@ -664,9 +689,9 @@ mod tests {
 
     fn reset_bridge() {
         unsafe {
-            OUTBOUND = Some(VecDeque::new());
-            META_REGISTRY = Some(Vec::new());
-            META_JSON_CACHE = None;
+            *OUTBOUND.get_mut() = Some(VecDeque::new());
+            *META_REGISTRY.get_mut() = Some(Vec::new());
+            *META_JSON_CACHE.get_mut() = None;
         }
     }
 

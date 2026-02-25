@@ -811,7 +811,7 @@ def Hew_HashMapGetOp : Hew_Op<"hashmap.get", [MemoryEffects<[MemRead]>]> {
 def Hew_HashMapContainsKeyOp : Hew_Op<"hashmap.contains_key", [MemoryEffects<[MemRead]>]> {
   let summary = "Check if HashMap contains a key.";
   let arguments = (ins AnyType:$map, AnyType:$key);
-  let results = (outs I32:$result);
+  let results = (outs I1:$result);
   let assemblyFormat = "$map `,` $key attr-dict `:` `(` type($map) `,` type($key) `)`";
   let hasVerifier = 1;
 }

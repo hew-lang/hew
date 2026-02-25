@@ -1990,15 +1990,13 @@ struct HashMapContainsKeyOpLowering : public mlir::OpConversionPattern<hew::Hash
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto keyType = adaptor.getKey().getType();
     auto i1Type = rewriter.getI1Type();
-    auto i32Type = rewriter.getI32Type();
     auto funcType = rewriter.getFunctionType({ptrType, keyType}, {i1Type});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_contains_key",
                         funcType);
     auto call = rewriter.create<mlir::func::CallOp>(
         loc, "hew_hashmap_contains_key", mlir::TypeRange{i1Type},
         mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
-    auto zext = rewriter.create<mlir::arith::ExtUIOp>(loc, i32Type, call.getResult(0));
-    rewriter.replaceOp(op, zext.getResult());
+    rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
 };

@@ -249,19 +249,32 @@ fn link_delivers_exit_on_crash() {
         let id_a = (*actor_a).id;
         hew_fault_inject_crash(id_a, 1);
         hew_actor_send(actor_a, 1, std::ptr::null_mut(), 0);
-        std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // actor_a should be crashed
-        let state_a = (*actor_a).actor_state.load(Ordering::Acquire);
+        // Poll for actor_a to enter Crashed state (avoid fixed sleep)
+        let mut state_a = 0i32;
+        for _ in 0..50 {
+            state_a = (*actor_a).actor_state.load(Ordering::Acquire);
+            if state_a == HewActorState::Crashed as i32 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         assert_eq!(
             state_a,
             HewActorState::Crashed as i32,
             "actor_a should be in Crashed state"
         );
 
-        // actor_b should have received the EXIT system message
+        // Poll for actor_b to receive the EXIT system message
         // (link propagation wakes the idle actor automatically)
-        let exits = LINK_EXIT_RECEIVED.load(Ordering::SeqCst);
+        let mut exits = 0;
+        for _ in 0..50 {
+            exits = LINK_EXIT_RECEIVED.load(Ordering::SeqCst);
+            if exits >= 1 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         assert!(
             exits >= 1,
             "linked actor_b should have received EXIT message (got {exits})"

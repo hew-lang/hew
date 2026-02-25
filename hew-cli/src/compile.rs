@@ -392,12 +392,11 @@ pub fn compile(
         .to_string();
     // Windows executables need .exe when compiling for native host
     #[cfg(target_os = "windows")]
-    let default_output =
-        if options.target.is_none() && !default_output.ends_with(".exe") {
-            format!("{default_output}.exe")
-        } else {
-            default_output
-        };
+    let default_output = if options.target.is_none() && !default_output.ends_with(".exe") {
+        format!("{default_output}.exe")
+    } else {
+        default_output
+    };
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
@@ -438,7 +437,9 @@ fn find_codegen_binary() -> Result<String, String> {
         exe_dir.join(codegen_name),
         exe_dir.join(format!("../lib/{codegen_name}")),
         exe_dir.join(format!("../../hew-codegen/build/src/{codegen_name}")),
-        exe_dir.join(format!("../../hew-codegen/build-sanitizer/src/{codegen_name}")),
+        exe_dir.join(format!(
+            "../../hew-codegen/build-sanitizer/src/{codegen_name}"
+        )),
     ];
 
     for c in &candidates {

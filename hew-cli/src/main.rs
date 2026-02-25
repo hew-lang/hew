@@ -118,7 +118,11 @@ fn cmd_run(args: &[String]) {
     }
 
     // Compile to a temporary binary
-    let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let exe_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let tmp_path = tempfile::Builder::new()
         .prefix("hew_run_")
         .suffix(exe_suffix)

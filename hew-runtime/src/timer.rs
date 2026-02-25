@@ -35,28 +35,40 @@ unsafe extern "system" {
 
 unsafe fn mutex_init(m: *mut PlatformMutex) {
     #[cfg(unix)]
-    unsafe { libc::pthread_mutex_init(m, std::ptr::null()) };
+    unsafe {
+        libc::pthread_mutex_init(m, std::ptr::null())
+    };
     #[cfg(windows)]
     let _ = m;
 }
 
 unsafe fn mutex_lock(m: *mut PlatformMutex) {
     #[cfg(unix)]
-    unsafe { libc::pthread_mutex_lock(m) };
+    unsafe {
+        libc::pthread_mutex_lock(m)
+    };
     #[cfg(windows)]
-    unsafe { AcquireSRWLockExclusive(m) };
+    unsafe {
+        AcquireSRWLockExclusive(m)
+    };
 }
 
 unsafe fn mutex_unlock(m: *mut PlatformMutex) {
     #[cfg(unix)]
-    unsafe { libc::pthread_mutex_unlock(m) };
+    unsafe {
+        libc::pthread_mutex_unlock(m)
+    };
     #[cfg(windows)]
-    unsafe { ReleaseSRWLockExclusive(m) };
+    unsafe {
+        ReleaseSRWLockExclusive(m)
+    };
 }
 
 unsafe fn mutex_destroy(m: *mut PlatformMutex) {
     #[cfg(unix)]
-    unsafe { libc::pthread_mutex_destroy(m) };
+    unsafe {
+        libc::pthread_mutex_destroy(m)
+    };
     #[cfg(windows)]
     let _ = m;
 }

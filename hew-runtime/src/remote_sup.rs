@@ -4,16 +4,22 @@
 //! remote PIDs, watches SWIM membership for remote node death, and invokes a
 //! callback when monitored actors are considered dead.
 
+use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::cluster::{self, HEW_MEMBERSHIP_EVENT_NODE_DEAD, MEMBER_DEAD};
+use crate::cluster::{
+    self, HEW_MEMBERSHIP_EVENT_NODE_DEAD, HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+    HEW_MEMBERSHIP_EVENT_NODE_SUSPECT, MEMBER_DEAD,
+};
 use crate::hew_node::HewNode;
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_DEAD_QUARANTINE_MS: u64 = 5_000;
 
 /// Restart strategy used by remote supervision.
 #[repr(C)]
@@ -39,6 +45,39 @@ impl SupervisorStrategy {
 /// Signature: `fn(remote_pid, remote_node_id, reason)`.
 type RemoteDeathCallback = unsafe extern "C" fn(u64, u16, c_int);
 
+#[derive(Debug, Default)]
+struct QuarantineState {
+    suspect_since: Option<Instant>,
+    pending_dead: bool,
+    notified_dead: bool,
+}
+
+#[derive(Debug)]
+struct RemoteDeathDispatch {
+    callback: RemoteDeathCallback,
+    remote_node_id: u16,
+    monitored: Vec<u64>,
+    strategy: SupervisorStrategy,
+}
+
+impl RemoteDeathDispatch {
+    fn execute(self) {
+        match self.strategy {
+            SupervisorStrategy::OneForOne | SupervisorStrategy::OneForAll => {
+                for remote_pid in self.monitored {
+                    // SAFETY: callback pointer validity is guaranteed by caller contract.
+                    unsafe { (self.callback)(remote_pid, self.remote_node_id, MEMBER_DEAD) };
+                }
+            }
+        }
+    }
+}
+
+fn cluster_subscriptions() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
+    static SUBSCRIPTIONS: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+    SUBSCRIPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// A remote supervisor monitors actors on a remote node.
 #[repr(C)]
 #[derive(Debug)]
@@ -48,54 +87,156 @@ pub struct HewRemoteSupervisor {
     /// Remote node being supervised
     remote_node_id: u16,
     /// Actors being monitored (remote PIDs)
-    monitored: Vec<u64>,
+    monitored: Mutex<Vec<u64>>,
     /// Strategy (one-for-one, one-for-all)
     strategy: SupervisorStrategy,
     /// Heartbeat interval for liveness checks
     heartbeat_interval_ms: u64,
-    callback: Option<RemoteDeathCallback>,
+    dead_quarantine_ms: u64,
+    callback: Mutex<Option<RemoteDeathCallback>>,
+    quarantine_state: Mutex<QuarantineState>,
     running: AtomicBool,
     heartbeat_thread: Option<JoinHandle<()>>,
 }
 
 impl HewRemoteSupervisor {
-    fn dispatch_remote_death(&self) {
-        let Some(cb) = self.callback else {
-            return;
+    fn remote_death_dispatch(&self) -> Option<RemoteDeathDispatch> {
+        let callback = *self.callback.lock().expect("callback mutex poisoned");
+        let Some(callback) = callback else {
+            return None;
         };
 
-        let monitored = self.monitored.clone();
-        match self.strategy {
-            SupervisorStrategy::OneForOne => {
-                for remote_pid in monitored {
-                    // SAFETY: callback pointer validity is guaranteed by caller contract.
-                    unsafe { cb(remote_pid, self.remote_node_id, MEMBER_DEAD) };
+        let monitored = self
+            .monitored
+            .lock()
+            .expect("monitored mutex poisoned")
+            .clone();
+        Some(RemoteDeathDispatch {
+            callback,
+            remote_node_id: self.remote_node_id,
+            monitored,
+            strategy: self.strategy,
+        })
+    }
+
+    fn reset_quarantine_state(&self) {
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .expect("quarantine state mutex poisoned");
+        *state = QuarantineState::default();
+    }
+
+    fn process_membership_event(&self, event: u8) -> Option<RemoteDeathDispatch> {
+        let now = Instant::now();
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .expect("quarantine state mutex poisoned");
+        let quarantine = Duration::from_millis(self.dead_quarantine_ms);
+
+        let should_dispatch = match event {
+            HEW_MEMBERSHIP_EVENT_NODE_JOINED => {
+                *state = QuarantineState::default();
+                false
+            }
+            HEW_MEMBERSHIP_EVENT_NODE_SUSPECT => {
+                if state.suspect_since.is_none() {
+                    state.suspect_since = Some(now);
+                }
+                state.pending_dead = true;
+                false
+            }
+            HEW_MEMBERSHIP_EVENT_NODE_DEAD => {
+                if state.notified_dead {
+                    false
+                } else {
+                    let suspect_since = match state.suspect_since {
+                        Some(ts) => ts,
+                        None => {
+                            state.suspect_since = Some(now);
+                            now
+                        }
+                    };
+                    state.pending_dead = true;
+                    if now.duration_since(suspect_since) >= quarantine {
+                        state.pending_dead = false;
+                        state.notified_dead = true;
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
-            SupervisorStrategy::OneForAll => {
-                for remote_pid in monitored {
-                    // SAFETY: callback pointer validity is guaranteed by caller contract.
-                    unsafe { cb(remote_pid, self.remote_node_id, MEMBER_DEAD) };
-                }
-            }
+            _ => false,
+        };
+        drop(state);
+
+        if should_dispatch {
+            self.remote_death_dispatch()
+        } else {
+            None
         }
+    }
+
+    fn poll_quarantine(&self) -> Option<RemoteDeathDispatch> {
+        let now = Instant::now();
+        let quarantine = Duration::from_millis(self.dead_quarantine_ms);
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .expect("quarantine state mutex poisoned");
+
+        if !state.pending_dead || state.notified_dead {
+            return None;
+        }
+
+        let Some(suspect_since) = state.suspect_since else {
+            state.suspect_since = Some(now);
+            return None;
+        };
+
+        if now.duration_since(suspect_since) < quarantine {
+            return None;
+        }
+
+        state.pending_dead = false;
+        state.notified_dead = true;
+        drop(state);
+        self.remote_death_dispatch()
     }
 }
 
 extern "C" fn noop_membership_callback(_node_id: u16, _event: u8, _user_data: *mut c_void) {}
 
 extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
-    if event != HEW_MEMBERSHIP_EVENT_NODE_DEAD || user_data.is_null() {
+    if user_data.is_null() {
         return;
     }
 
-    // SAFETY: user_data is set to HewRemoteSupervisor* by hew_remote_sup_start.
-    let sup = unsafe { &*user_data.cast::<HewRemoteSupervisor>() };
-    if !sup.running.load(Ordering::Acquire) || node_id != sup.remote_node_id {
-        return;
+    let cluster_key = user_data as usize;
+    let mut dispatches = Vec::new();
+    let subscriptions = cluster_subscriptions();
+    let registry = subscriptions
+        .lock()
+        .expect("cluster subscriptions poisoned");
+    if let Some(supervisors) = registry.get(&cluster_key) {
+        for sup_addr in supervisors {
+            // SAFETY: pointers are registered by start and removed by stop under the same lock.
+            let sup = unsafe { &*(*sup_addr as *const HewRemoteSupervisor) };
+            if !sup.running.load(Ordering::Acquire) || node_id != sup.remote_node_id {
+                continue;
+            }
+            if let Some(dispatch) = sup.process_membership_event(event) {
+                dispatches.push(dispatch);
+            }
+        }
     }
+    drop(registry);
 
-    sup.dispatch_remote_death();
+    for dispatch in dispatches {
+        dispatch.execute();
+    }
 }
 
 /// Create a new remote supervisor bound to a local node and remote node ID.
@@ -119,10 +260,12 @@ pub unsafe extern "C" fn hew_remote_sup_new(
     let sup = Box::new(HewRemoteSupervisor {
         node,
         remote_node_id,
-        monitored: Vec::new(),
+        monitored: Mutex::new(Vec::new()),
         strategy,
         heartbeat_interval_ms: DEFAULT_HEARTBEAT_INTERVAL_MS,
-        callback: None,
+        dead_quarantine_ms: DEFAULT_DEAD_QUARANTINE_MS,
+        callback: Mutex::new(None),
+        quarantine_state: Mutex::new(QuarantineState::default()),
         running: AtomicBool::new(false),
         heartbeat_thread: None,
     });
@@ -146,16 +289,17 @@ pub unsafe extern "C" fn hew_remote_sup_monitor(
     }
 
     // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &mut *sup };
+    let sup = unsafe { &*sup };
     let pid_node = crate::pid::hew_pid_node(remote_pid);
     if pid_node != 0 && pid_node != sup.remote_node_id {
         return -1;
     }
-    if sup.monitored.contains(&remote_pid) {
+    let mut monitored = sup.monitored.lock().expect("monitored mutex poisoned");
+    if monitored.contains(&remote_pid) {
         return -1;
     }
 
-    sup.monitored.push(remote_pid);
+    monitored.push(remote_pid);
     0
 }
 
@@ -176,12 +320,13 @@ pub unsafe extern "C" fn hew_remote_sup_unmonitor(
     }
 
     // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &mut *sup };
-    let Some(idx) = sup.monitored.iter().position(|pid| *pid == remote_pid) else {
+    let sup = unsafe { &*sup };
+    let mut monitored = sup.monitored.lock().expect("monitored mutex poisoned");
+    let Some(idx) = monitored.iter().position(|pid| *pid == remote_pid) else {
         return -1;
     };
 
-    sup.monitored.swap_remove(idx);
+    monitored.swap_remove(idx);
     0
 }
 
@@ -201,6 +346,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
     if sup.running.swap(true, Ordering::AcqRel) {
         return 0;
     }
+    sup.reset_quarantine_state();
 
     // SAFETY: `node` is validated by constructor contract.
     let node = unsafe { &mut *sup.node };
@@ -209,17 +355,28 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
         return -1;
     }
 
-    // SAFETY: cluster pointer is valid and callback/user_data remain valid while running.
-    unsafe {
-        cluster::hew_cluster_set_membership_callback(
-            node.cluster,
-            remote_sup_membership_callback,
-            ptr::from_mut::<HewRemoteSupervisor>(sup).cast::<c_void>(),
-        );
+    let sup_addr = ptr::from_mut::<HewRemoteSupervisor>(sup) as usize;
+    let cluster_key = node.cluster as usize;
+    let subscriptions = cluster_subscriptions();
+    {
+        let mut registry = subscriptions
+            .lock()
+            .expect("cluster subscriptions poisoned");
+        let entry = registry.entry(cluster_key).or_default();
+        if entry.is_empty() {
+            // SAFETY: cluster pointer is valid while node is alive.
+            unsafe {
+                cluster::hew_cluster_set_membership_callback(
+                    node.cluster,
+                    remote_sup_membership_callback,
+                    cluster_key as *mut c_void,
+                );
+            }
+        }
+        entry.push(sup_addr);
     }
 
     let interval_ms = sup.heartbeat_interval_ms.max(10);
-    let sup_addr = ptr::from_mut::<HewRemoteSupervisor>(sup) as usize;
     let cluster_addr = node.cluster as usize;
 
     let handle = thread::Builder::new()
@@ -235,6 +392,10 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
                 // SAFETY: cluster pointer belongs to local node and is valid while supervisor is running.
                 let _ =
                     unsafe { cluster::hew_cluster_tick(cluster_addr as *mut cluster::HewCluster) };
+                // SAFETY: sup_ptr remains valid until stop joins this thread.
+                if let Some(dispatch) = unsafe { (*sup_ptr).poll_quarantine() } {
+                    dispatch.execute();
+                }
                 thread::sleep(Duration::from_millis(interval_ms));
             }
         });
@@ -246,6 +407,29 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
         }
         Err(_) => {
             sup.running.store(false, Ordering::Release);
+            let mut clear_cluster_callback = false;
+            {
+                let mut registry = subscriptions
+                    .lock()
+                    .expect("cluster subscriptions poisoned");
+                if let Some(entry) = registry.get_mut(&cluster_key) {
+                    entry.retain(|addr| *addr != sup_addr);
+                    if entry.is_empty() {
+                        registry.remove(&cluster_key);
+                        clear_cluster_callback = true;
+                    }
+                }
+            }
+            if clear_cluster_callback {
+                // SAFETY: cluster pointer belongs to local node and is valid while supervisor lives.
+                unsafe {
+                    cluster::hew_cluster_set_membership_callback(
+                        node.cluster,
+                        noop_membership_callback,
+                        ptr::null_mut(),
+                    );
+                }
+            }
             -1
         }
     }
@@ -268,13 +452,30 @@ pub unsafe extern "C" fn hew_remote_sup_stop(sup: *mut HewRemoteSupervisor) -> c
         return 0;
     }
 
+    // SAFETY: `node` is valid while supervisor lives.
+    let node = unsafe { &mut *sup.node };
+    let cluster_key = node.cluster as usize;
+    let sup_addr = ptr::from_mut::<HewRemoteSupervisor>(sup) as usize;
+    let subscriptions = cluster_subscriptions();
+    let mut clear_cluster_callback = false;
+    {
+        let mut registry = subscriptions
+            .lock()
+            .expect("cluster subscriptions poisoned");
+        if let Some(entry) = registry.get_mut(&cluster_key) {
+            entry.retain(|addr| *addr != sup_addr);
+            if entry.is_empty() {
+                registry.remove(&cluster_key);
+                clear_cluster_callback = true;
+            }
+        }
+    }
+
     if let Some(handle) = sup.heartbeat_thread.take() {
         let _ = handle.join();
     }
 
-    // SAFETY: `node` is valid while supervisor lives.
-    let node = unsafe { &mut *sup.node };
-    if !node.cluster.is_null() {
+    if clear_cluster_callback && !node.cluster.is_null() {
         // SAFETY: resets callback to no-op to avoid dangling callback userdata.
         unsafe {
             cluster::hew_cluster_set_membership_callback(
@@ -304,8 +505,8 @@ pub unsafe extern "C" fn hew_remote_sup_set_callback(
     }
 
     // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &mut *sup };
-    sup.callback = callback;
+    let sup = unsafe { &*sup };
+    *sup.callback.lock().expect("callback mutex poisoned") = callback;
 }
 
 /// Free a remote supervisor.
@@ -398,15 +599,18 @@ mod tests {
         unsafe {
             let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 1);
             assert!(!sup.is_null());
+            (*sup).dead_quarantine_ms = 0;
             hew_remote_sup_set_callback(sup, Some(on_death));
             assert_eq!(hew_remote_sup_monitor(sup, pid1), 0);
             assert_eq!(hew_remote_sup_monitor(sup, pid2), 0);
             assert_eq!(hew_remote_sup_start(sup), 0);
 
+            // SAFETY: `node` and cluster pointer are valid in this scope.
+            let cluster_ptr = (*node.as_ptr()).cluster.cast::<c_void>();
             remote_sup_membership_callback(
                 remote_node_id,
                 HEW_MEMBERSHIP_EVENT_NODE_DEAD,
-                sup.cast::<c_void>(),
+                cluster_ptr,
             );
 
             assert_eq!(CALLED.load(Ordering::Relaxed), 2);

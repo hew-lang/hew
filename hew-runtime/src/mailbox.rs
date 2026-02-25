@@ -1219,6 +1219,7 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
 }
 
 /// Return the number of user messages in the mailbox.
+/// Use [`hew_mailbox_sys_len`] to observe system-message backlog.
 ///
 /// # Safety
 ///

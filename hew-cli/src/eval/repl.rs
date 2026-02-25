@@ -313,8 +313,8 @@ fn find_hew_binary() -> Result<PathBuf, String> {
         "hew"
     };
     let candidates = [
-        exe_dir.join(format!("../{hew_name}")),          // target/debug/deps/../hew
-        exe_dir.join(hew_name),                          // same dir
+        exe_dir.join(format!("../{hew_name}")), // target/debug/deps/../hew
+        exe_dir.join(hew_name),                 // same dir
         exe_dir.join(format!("../../debug/{hew_name}")), // fallback
     ];
 

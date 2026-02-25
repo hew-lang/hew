@@ -137,8 +137,8 @@ fn find_hew_binary() -> Result<PathBuf, String> {
         "hew"
     };
     let candidates = [
-        exe_dir.join(format!("../{hew_name}")),          // target/debug/deps/../hew
-        exe_dir.join(hew_name),                          // same dir
+        exe_dir.join(format!("../{hew_name}")), // target/debug/deps/../hew
+        exe_dir.join(hew_name),                 // same dir
         exe_dir.join(format!("../../debug/{hew_name}")), // fallback
     ];
 
@@ -185,7 +185,11 @@ fn compile_test(
     std::fs::write(tmp_source.path(), &synthetic)
         .map_err(|e| format!("cannot write temp file: {e}"))?;
 
-    let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let exe_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
     let tmp_binary = tempfile::Builder::new()
         .prefix("hew_test_bin_")
         .suffix(exe_suffix)

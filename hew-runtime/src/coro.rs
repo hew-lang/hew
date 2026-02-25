@@ -118,8 +118,7 @@ impl CoroStack {
 
             // Set the guard page at the bottom to PAGE_NOACCESS.
             let mut old_protect: u32 = 0;
-            let ret =
-                unsafe { VirtualProtect(base, GUARD_SIZE, PAGE_NOACCESS, &mut old_protect) };
+            let ret = unsafe { VirtualProtect(base, GUARD_SIZE, PAGE_NOACCESS, &mut old_protect) };
             if ret == 0 {
                 unsafe { VirtualFree(base, 0, MEM_RELEASE) };
                 return None;

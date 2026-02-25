@@ -13,12 +13,7 @@ use std::ptr;
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn VirtualAlloc(
-        addr: *mut c_void,
-        size: usize,
-        alloc_type: u32,
-        protect: u32,
-    ) -> *mut c_void;
+    fn VirtualAlloc(addr: *mut c_void, size: usize, alloc_type: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, free_type: u32) -> i32;
 }
 

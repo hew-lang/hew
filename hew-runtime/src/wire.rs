@@ -303,6 +303,8 @@ pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut 
     let b = unsafe { &mut *buf };
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
+    let mut num_bytes: u8 = 0;
+    let mut tenth_byte: Option<u8> = None;
     loop {
         if shift >= 64 {
             return -1; // overflow
@@ -313,11 +315,19 @@ pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut 
         // SAFETY: peek confirmed at least 1 byte is available.
         let byte = unsafe { *ptr };
         b.read_pos += 1;
+        num_bytes += 1;
+        if num_bytes == 10 {
+            tenth_byte = Some(byte & 0x7F);
+        }
         result |= u64::from(byte & 0x7F) << shift;
         if byte & 0x80 == 0 {
             break;
         }
         shift += 7;
+    }
+    if tenth_byte.is_some_and(|b| b > 1) {
+        set_last_error("non-canonical varint encoding");
+        return -1;
     }
     // SAFETY: caller guarantees `out` is writable.
     unsafe {
@@ -749,6 +759,11 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
     }
     // SAFETY: caller guarantees `env` is valid.
     let e = unsafe { &*env };
+    let msg_type = i64::from(e.msg_type);
+    if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
+        set_last_error(&format!("msg_type {} out of valid range", e.msg_type));
+        return -1;
+    }
 
     // Field 1: target_actor_id (varint)
     // SAFETY: forwarded.

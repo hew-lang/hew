@@ -113,7 +113,7 @@ fn remove_link(from_id: u64, to_actor: *mut HewActor) {
     let shard_index = get_shard_index(from_id);
     let mut shard = LINK_TABLE[shard_index]
         .write()
-        .expect("link table poisoned");
+        .unwrap_or_else(|e| e.into_inner());
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
         let target_addr = to_actor as usize;
@@ -208,7 +208,7 @@ fn remove_link_by_target(from_id: u64, target_id: u64) {
     let shard_index = get_shard_index(from_id);
     let mut shard = LINK_TABLE[shard_index]
         .write()
-        .expect("link table poisoned");
+        .unwrap_or_else(|e| e.into_inner());
 
     if let Some(linked_actors) = shard.links.get_mut(&from_id) {
         linked_actors.retain(|&actor_addr| {
@@ -288,14 +288,18 @@ mod tests {
         let shard_b = get_shard_index(200);
 
         {
-            let table_a = LINK_TABLE[shard_a].read().expect("link table poisoned");
+            let table_a = LINK_TABLE[shard_a]
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(table_a
                 .links
                 .get(&100)
                 .map_or(false, |v| v.contains(&(b_ptr as usize))));
         }
         {
-            let table_b = LINK_TABLE[shard_b].read().expect("link table poisoned");
+            let table_b = LINK_TABLE[shard_b]
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(table_b
                 .links
                 .get(&200)
@@ -309,14 +313,18 @@ mod tests {
 
         // Verify links are removed
         {
-            let table_a = LINK_TABLE[shard_a].read().expect("link table poisoned");
+            let table_a = LINK_TABLE[shard_a]
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(!table_a
                 .links
                 .get(&100)
                 .map_or(false, |v| v.contains(&(b_ptr as usize))));
         }
         {
-            let table_b = LINK_TABLE[shard_b].read().expect("link table poisoned");
+            let table_b = LINK_TABLE[shard_b]
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             assert!(!table_b
                 .links
                 .get(&200)
@@ -346,7 +354,7 @@ mod tests {
         }
 
         let shard = get_shard_index(300);
-        let table = LINK_TABLE[shard].read().expect("link table poisoned");
+        let table = LINK_TABLE[shard].read().unwrap_or_else(|e| e.into_inner());
         assert!(!table.links.contains_key(&300));
     }
 }

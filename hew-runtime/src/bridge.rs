@@ -37,6 +37,7 @@
 //! }
 //! ```
 
+use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -88,7 +89,6 @@ fn outbound_queue() -> MutexGuard<'static, VecDeque<OutboundMsg>> {
 // ── Type metadata registry ──────────────────────────────────────────────
 
 /// Describes a single parameter in a receive handler.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewParamMeta {
     /// Parameter name (NUL-terminated C string, static lifetime from codegen).
@@ -112,7 +112,6 @@ impl std::fmt::Debug for HewParamMeta {
 }
 
 /// Describes a single receive handler on an actor.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewHandlerMeta {
     /// Handler name (NUL-terminated C string).
@@ -142,7 +141,6 @@ impl std::fmt::Debug for HewHandlerMeta {
 }
 
 /// Describes an actor's complete message interface.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewActorMeta {
     /// Actor type name (NUL-terminated C string).

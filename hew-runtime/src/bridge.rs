@@ -39,7 +39,7 @@
 
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
-use std::ffi::c_void;
+use std::ffi::{c_void, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::actor::HewActor;
@@ -554,9 +554,8 @@ unsafe fn cstr_to_string(ptr: *const u8) -> String {
 /// If `name_ptr` is non-null (pointing to `name_len` UTF-8 bytes), returns
 /// metadata for that specific actor (or `{"actors":{}}` if not found).
 ///
-/// Returns a pointer to a NUL-terminated JSON string. The pointer is valid
-/// until the next call to `hew_wasm_register_actor_meta` or
-/// `hew_wasm_query_meta`.
+/// Returns an owned pointer to a NUL-terminated JSON string. The caller owns
+/// the allocation and must free it with [`hew_wasm_free_meta_json`].
 ///
 /// The returned `*out_len` is set to the string length (excluding NUL).
 ///
@@ -578,22 +577,38 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
         std::str::from_utf8(bytes).ok()
     };
 
-    // Build JSON (or use cache for the all-actors case).
-    let (json_ptr, json_len) = {
+    // Lock ordering: always META_REGISTRY first, then META_JSON_CACHE.
+    let reg = meta_registry();
+    let json_owned = if filter_name.is_none() {
         let mut cache = meta_json_cache();
-        if filter_name.is_none() {
-            if cache.is_none() {
-                *cache = Some(build_meta_json(None));
-            }
-        } else {
-            // Per-actor query: always rebuild (cheap for one actor).
-            *cache = Some(build_meta_json(filter_name));
+        if cache.is_none() {
+            *cache = Some(build_meta_json(&reg, None));
         }
-        let json = cache
+        cache
             .as_ref()
-            .expect("metadata JSON cache should always contain a value");
-        (json.as_ptr(), json.len())
+            .expect("metadata JSON cache should always contain a value")
+            .clone()
+    } else {
+        // Per-actor query: always rebuild (cheap for one actor).
+        let json = build_meta_json(&reg, filter_name);
+        let mut cache = meta_json_cache();
+        *cache = Some(json.clone());
+        json
     };
+    drop(reg);
+
+    let c_json = match CString::new(json_owned) {
+        Ok(s) => s,
+        Err(_) => {
+            if !out_len.is_null() {
+                // SAFETY: Caller guarantees out_len is valid.
+                unsafe { *out_len = 0 };
+            }
+            return std::ptr::null();
+        }
+    };
+    let json_len = c_json.as_bytes().len();
+    let json_ptr = c_json.into_raw().cast::<u8>();
 
     if !out_len.is_null() {
         // SAFETY: Caller guarantees out_len is valid.
@@ -603,10 +618,23 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
     json_ptr
 }
 
-/// Build a JSON string describing actor metadata.
-fn build_meta_json(filter_name: Option<&str>) -> String {
-    let reg = meta_registry();
+/// Free a JSON string returned by [`hew_wasm_query_meta`].
+///
+/// # Safety
+///
+/// `ptr` must be a pointer returned by [`hew_wasm_query_meta`] that has not
+/// already been freed.
+#[cfg_attr(not(test), no_mangle)]
+pub unsafe extern "C" fn hew_wasm_free_meta_json(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees ptr came from CString::into_raw.
+    let _ = unsafe { CString::from_raw(ptr.cast()) };
+}
 
+/// Build a JSON string describing actor metadata.
+fn build_meta_json(reg: &[ActorMetaEntry], filter_name: Option<&str>) -> String {
     let mut json = String::from("{\"actors\":{");
     let mut first_actor = true;
 
@@ -855,6 +883,7 @@ mod tests {
 
         let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
         assert_eq!(json, "{\"actors\":{}}");
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]
@@ -897,6 +926,7 @@ mod tests {
         assert!(json.contains("\"offset\":0"));
         assert!(json.contains("\"size\":8"));
         assert!(json.contains("\"return_type\":null"));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]
@@ -948,6 +978,7 @@ mod tests {
         assert!(json.contains("\"ping\""));
         // Should NOT contain the other actor.
         assert!(!json.contains("\"Ponger\""));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]
@@ -976,6 +1007,7 @@ mod tests {
         let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
 
         assert!(json.contains("\"return_type\":{\"type\":\"i64\",\"size\":8}"));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]

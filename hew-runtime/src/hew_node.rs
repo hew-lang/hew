@@ -21,6 +21,10 @@ const NODE_STATE_STARTING: u8 = 0;
 const NODE_STATE_RUNNING: u8 = 1;
 const NODE_STATE_STOPPING: u8 = 2;
 const NODE_STATE_STOPPED: u8 = 3;
+const _: () = assert!(
+    std::mem::size_of::<usize>() >= std::mem::size_of::<u64>(),
+    "Hew requires 64-bit target for actor ID encoding"
+);
 
 /// Global reference to the active node for remote message routing.
 ///
@@ -57,11 +61,13 @@ pub struct HewRegistry {
     remote_names: Mutex<HashMap<String, u64>>,
 }
 
+#[derive(Clone, Copy)]
 struct SendTransport(*mut HewTransport);
 // SAFETY: transport implementations are internally synchronized and used via
 // their vtable APIs.
 unsafe impl Send for SendTransport {}
 
+#[derive(Clone, Copy)]
 struct SendConnMgr(*mut HewConnMgr);
 // SAFETY: manager internals are synchronized by mutexes.
 unsafe impl Send for SendConnMgr {}
@@ -149,7 +155,7 @@ unsafe fn parse_connect_target(
     Some((fallback_node_id, CString::new(c_addr.to_bytes()).ok()?))
 }
 
-fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop: Arc<AtomicBool>) {
+fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop: &AtomicBool) {
     while !stop.load(Ordering::Acquire) {
         // SAFETY: pointers are valid for the lifetime of the spawned loop.
         let conn_id = unsafe {
@@ -164,6 +170,68 @@ fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop: Arc<Atomic
             let _ = unsafe { connection::hew_connmgr_add(conn_mgr.0, conn_id) };
         }
     }
+}
+
+unsafe fn free_transport(transport: *mut HewTransport) {
+    if transport.is_null() {
+        return;
+    }
+    // SAFETY: valid transport pointer from constructor.
+    let transport_ref = unsafe { &*transport };
+    // SAFETY: ops pointer is part of valid transport.
+    if let Some(ops) = unsafe { transport_ref.ops.as_ref() } {
+        if let Some(destroy_fn) = ops.destroy {
+            // SAFETY: transport impl belongs to this transport.
+            unsafe { destroy_fn(transport_ref.r#impl) };
+        }
+    }
+    // SAFETY: transport was allocated by Box::into_raw.
+    let _ = unsafe { Box::from_raw(transport) };
+}
+
+unsafe fn cleanup_start_failure(
+    node: &mut HewNode,
+    created_transport: bool,
+    created_cluster: bool,
+    created_routing_table: bool,
+    created_conn_mgr: bool,
+    joined_cluster: bool,
+) {
+    if joined_cluster && !node.cluster.is_null() {
+        // SAFETY: valid cluster pointer.
+        unsafe { cluster::hew_cluster_leave(node.cluster) };
+    }
+    if created_conn_mgr && !node.conn_mgr.is_null() {
+        // SAFETY: valid manager pointer from hew_connmgr_new.
+        unsafe { connection::hew_connmgr_free(node.conn_mgr) };
+        node.conn_mgr = ptr::null_mut();
+    }
+    if created_routing_table && !node.routing_table.is_null() {
+        // SAFETY: valid routing table pointer from hew_routing_table_new.
+        unsafe { routing::hew_routing_table_free(node.routing_table) };
+        node.routing_table = ptr::null_mut();
+    }
+    if created_cluster && !node.cluster.is_null() {
+        // SAFETY: valid cluster pointer from hew_cluster_new.
+        unsafe { cluster::hew_cluster_free(node.cluster) };
+        node.cluster = ptr::null_mut();
+    }
+    if created_transport && !node.transport.is_null() {
+        // SAFETY: transport was created during this start attempt.
+        unsafe { free_transport(node.transport) };
+        node.transport = ptr::null_mut();
+        node.transport_ops = ptr::null();
+    }
+}
+
+fn actor_id_to_registry_ptr(actor_id: u64) -> *mut c_void {
+    let encoded = usize::try_from(actor_id)
+        .expect("u64 actor IDs fit in usize on supported targets (64-bit required)");
+    encoded as *mut c_void
+}
+
+fn registry_ptr_to_actor_id(actor_ptr: *mut c_void) -> u64 {
+    u64::try_from(actor_ptr as usize).expect("usize always fits in u64")
 }
 
 /// Create a new unified distributed node runtime.
@@ -229,38 +297,54 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_STARTING, Ordering::Release);
+    let mut created_transport = false;
+    let mut created_cluster = false;
+    let mut created_routing_table = false;
+    let mut created_conn_mgr = false;
+    let mut joined_cluster = false;
+    macro_rules! fail_start {
+        ($msg:literal) => {{
+            // SAFETY: pointers belong to this node; flags track what was created in this start call.
+            unsafe {
+                cleanup_start_failure(
+                    node,
+                    created_transport,
+                    created_cluster,
+                    created_routing_table,
+                    created_conn_mgr,
+                    joined_cluster,
+                )
+            };
+            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+            set_last_error($msg);
+            return -1;
+        }};
+    }
 
     if node.transport.is_null() {
         // SAFETY: constructor returns owned transport pointer or null.
         node.transport = unsafe { transport::hew_transport_tcp_new() };
         if node.transport.is_null() {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            set_last_error("hew_node_start: failed to create transport");
-            return -1;
+            fail_start!("hew_node_start: failed to create transport");
         }
+        created_transport = true;
     }
 
     // SAFETY: transport was just created or previously assigned and validated by caller.
     let t = unsafe { &*node.transport };
     node.transport_ops = t.ops;
     if node.transport_ops.is_null() {
-        node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-        set_last_error("hew_node_start: transport ops are null");
-        return -1;
+        fail_start!("hew_node_start: transport ops are null");
     }
     // SAFETY: checked non-null above.
     let ops = unsafe { &*node.transport_ops };
 
     let Some(listen_fn) = ops.listen else {
-        node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-        set_last_error("hew_node_start: transport listen op missing");
-        return -1;
+        fail_start!("hew_node_start: transport listen op missing");
     };
     // SAFETY: transport implementation is valid.
     if unsafe { listen_fn(t.r#impl, node.bind_addr) } < 0 {
-        node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-        set_last_error("hew_node_start: transport listen failed");
-        return -1;
+        fail_start!("hew_node_start: transport listen failed");
     }
 
     if node.cluster.is_null() {
@@ -271,20 +355,18 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         // SAFETY: config pointer is valid for this call.
         node.cluster = unsafe { cluster::hew_cluster_new(&raw const cfg) };
         if node.cluster.is_null() {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            set_last_error("hew_node_start: failed to create connection manager");
-            return -1;
+            fail_start!("hew_node_start: failed to create cluster");
         }
+        created_cluster = true;
     }
 
     if node.routing_table.is_null() {
         // SAFETY: constructor returns owned routing table pointer or null.
         node.routing_table = unsafe { routing::hew_routing_table_new(node.node_id) };
         if node.routing_table.is_null() {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            set_last_error("hew_node_start: failed to create cluster");
-            return -1;
+            fail_start!("hew_node_start: failed to create routing table");
         }
+        created_routing_table = true;
     }
 
     if node.conn_mgr.is_null() {
@@ -298,13 +380,14 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
             )
         };
         if node.conn_mgr.is_null() {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            return -1;
+            fail_start!("hew_node_start: failed to create connection manager");
         }
+        created_conn_mgr = true;
     }
 
     // SAFETY: cluster pointer valid; bind_addr points to a stable strdup buffer.
     let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.node_id, node.bind_addr) };
+    joined_cluster = true;
 
     node.accept_stop.store(false, Ordering::Release);
     let stop = Arc::clone(&node.accept_stop);
@@ -313,27 +396,24 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let thread_name = format!("hew-node-accept-{}", node.node_id);
     let handle = thread::Builder::new()
         .name(thread_name)
-        .spawn(move || accept_loop(transport, conn_mgr, stop));
-    match handle {
-        Ok(h) => {
-            let mut guard = match node.accept_thread.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
-            *guard = Some(h);
-        }
-        Err(_) => {
-            node.state.store(NODE_STATE_STOPPED, Ordering::Release);
-            set_last_error("hew_node_start: failed to spawn accept thread");
-            return -1;
-        }
+        .spawn(move || accept_loop(transport, conn_mgr, stop.as_ref()));
+    if let Ok(h) = handle {
+        let mut guard = match node.accept_thread.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *guard = Some(h);
+    } else {
+        fail_start!("hew_node_start: failed to spawn accept thread");
     }
 
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
     // Atomically check-and-set CURRENT_NODE under write lock to avoid
     // the TOCTOU race where two threads both read 0 and both try to set.
     {
-        let mut guard = CURRENT_NODE.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = CURRENT_NODE
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *guard == 0 {
             *guard = ptr::from_mut(node) as usize;
             crate::pid::hew_pid_set_local_node(node.node_id);
@@ -480,7 +560,8 @@ pub unsafe extern "C" fn hew_node_register(
     }
 
     // SAFETY: registry API expects a stable C string pointer.
-    let rc = unsafe { crate::registry::hew_registry_register(name, actor as usize as *mut c_void) };
+    let rc =
+        unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) };
     if rc != 0 {
         return -1;
     }
@@ -553,7 +634,7 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
     // SAFETY: registry API expects a valid C string pointer.
     let local_ptr = unsafe { crate::registry::hew_registry_lookup(name) };
     if !local_ptr.is_null() {
-        return local_ptr as usize as u64;
+        return registry_ptr_to_actor_id(local_ptr);
     }
 
     if node.registry.is_null() {

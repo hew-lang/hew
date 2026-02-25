@@ -193,7 +193,7 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(Span::styled(&m.addr, Style::default().fg(Color::White))),
                 Line::from(vec![state_bullet, conn_status]),
                 Line::from(Span::styled(
-                    format!("actors: {}  msg/s: —", members.len()),
+                    "msg/s: \u{2014}",
                     Style::default().fg(Color::DarkGray),
                 )),
             ];

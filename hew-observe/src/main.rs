@@ -49,7 +49,12 @@ fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let node_addrs = if cli.node.is_empty() {
         vec![cli.addr.clone()]
     } else {
-        cli.node.clone()
+        let mut addrs = cli.node.clone();
+        // Include --addr if explicitly set and not already in --node list
+        if cli.addr != "localhost:6060" && !addrs.contains(&cli.addr) {
+            addrs.insert(0, cli.addr.clone());
+        }
+        addrs
     };
     let mut app = App::new(&node_addrs, cli.demo);
     let refresh = Duration::from_millis(cli.refresh_ms);

@@ -794,6 +794,9 @@ pub unsafe extern "C" fn hew_cluster_gossip_count(cluster: *mut HewCluster) -> c
 pub fn snapshot_members_json(cluster: &HewCluster) -> String {
     use std::fmt::Write as _;
 
+    // SAFETY: hew_now_ms has no preconditions.
+    let now_ms = unsafe { crate::io_time::hew_now_ms() };
+
     let members = match cluster.members.lock() {
         Ok(g) => g,
         Err(e) => e.into_inner(),
@@ -814,10 +817,12 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
         // Extract address as UTF-8 trimmed of null bytes.
         let addr_end = m.addr.iter().position(|&b| b == 0).unwrap_or(m.addr.len());
         let addr = std::str::from_utf8(&m.addr[..addr_end]).unwrap_or("");
+        // Emit last_seen_ms as a relative "ms ago" value for the observer client.
+        let last_seen_ago_ms = now_ms.saturating_sub(m.last_seen_ms);
         let _ = write!(
             json,
             r#"{{"node_id":{},"state":"{}","incarnation":{},"addr":"{}","last_seen_ms":{}}}"#,
-            m.node_id, state_str, m.incarnation, addr, m.last_seen_ms,
+            m.node_id, state_str, m.incarnation, addr, last_seen_ago_ms,
         );
     }
     json.push(']');

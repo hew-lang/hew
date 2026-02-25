@@ -66,24 +66,25 @@ fi
   install -Dm644 completions/adze.fish \
     %{buildroot}%{_datadir}/fish/vendor_completions.d/adze.fish
 
+# Generate dynamic completion filelist (adze completions may be absent)
+{
+  find %{buildroot}%{_datadir}/bash-completion -type f 2>/dev/null
+  find %{buildroot}%{_datadir}/zsh -type f 2>/dev/null
+  find %{buildroot}%{_datadir}/fish -type f 2>/dev/null
+} | sed "s|^%{buildroot}||" > %{_builddir}/completions.lst || true
+
 # Licenses
 install -Dm644 LICENSE-MIT    %{buildroot}%{_licensedir}/%{name}/LICENSE-MIT
 install -Dm644 LICENSE-APACHE %{buildroot}%{_licensedir}/%{name}/LICENSE-APACHE
 install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 
-%files
+%files -f %{_builddir}/completions.lst
 %license LICENSE-MIT LICENSE-APACHE NOTICE
 %{_bindir}/hew
 %{_bindir}/adze
 %{_bindir}/hew-codegen
 %{_libdir}/hew/
 %{_datadir}/hew/
-%{_datadir}/bash-completion/completions/hew
-%{_datadir}/zsh/site-functions/_hew
-%{_datadir}/fish/vendor_completions.d/hew.fish
-%{_datadir}/bash-completion/completions/adze
-%{_datadir}/zsh/site-functions/_adze
-%{_datadir}/fish/vendor_completions.d/adze.fish
 
 %changelog
 * Thu Feb 19 2026 The Hew Project Developers <hello@hew.sh> - 0.1.0-1

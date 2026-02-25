@@ -2,6 +2,10 @@
 # Multi-arch Dockerfile for CI release builds.
 # Expects both linux-x86_64 and linux-aarch64 tarballs in the build context.
 # Used with: docker buildx build --platform linux/amd64,linux/arm64
+#
+# Usage:
+#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew build main.hew
+#   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew run main.hew
 
 FROM alpine:3.21 AS fetch
 ARG TARGETARCH
@@ -20,7 +24,10 @@ RUN apk add --no-cache \
       gcompat \
       libgcc \
       libstdc++ \
-      ca-certificates
+      ca-certificates \
+      gcc \
+      musl-dev \
+      lld
 COPY --from=fetch /tmp/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew/bin/hew-codegen   /usr/local/bin/hew-codegen

@@ -17,5 +17,8 @@ hew-cabi = { path = "../../../hew-cabi" }
 flate2 = "1"
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

@@ -108,6 +108,11 @@ pub fn link_executable(
 
     #[cfg(target_os = "windows")]
     {
+        // Clang defaults to the static CRT (libcmt) but the Rust-compiled
+        // runtime uses the DLL CRT (msvcrt). Override the default so the
+        // CRT linkage matches.
+        cmd.args(["-Wl,/NODEFAULTLIB:libcmt", "-Wl,/DEFAULTLIB:msvcrt"]);
+
         // MSVC-style dead-code elimination via clang → lld-link/link.exe
         if !extra_libs.is_empty() {
             cmd.arg("-Wl,/FORCE:MULTIPLE");
@@ -129,7 +134,18 @@ pub fn link_executable(
     ]);
 
     #[cfg(target_os = "windows")]
-    cmd.args(["-lws2_32", "-luserenv", "-lbcrypt", "-lntdll", "-ladvapi32"]);
+    cmd.args([
+        // The Rust runtime references `printf` via __declspec(dllimport), but
+        // the UCRT inlines printf through __stdio_common_vfprintf. The legacy
+        // definitions library provides the classic __imp_printf symbol.
+        "-llegacy_stdio_definitions",
+        // Windows system libraries required by the runtime
+        "-lws2_32",
+        "-luserenv",
+        "-lbcrypt",
+        "-lntdll",
+        "-ladvapi32",
+    ]);
 
     let output = cmd
         .output()

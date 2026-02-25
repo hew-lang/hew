@@ -23,5 +23,8 @@ libc = "0.2"
 hew-export-macro = { path = "../../../hew-export-macro", optional = true }
 hew-export-types = { path = "../../../hew-export-types", optional = true }
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

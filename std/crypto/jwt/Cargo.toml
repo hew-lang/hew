@@ -18,5 +18,8 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 serde_json = "1"
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

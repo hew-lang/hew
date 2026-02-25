@@ -434,9 +434,20 @@ fn find_codegen_binary() -> Result<String, String> {
         "hew-codegen"
     };
     let candidates = [
+        // Same directory as the hew binary (installed layout)
         exe_dir.join(codegen_name),
+        // Installed layout: <prefix>/lib/hew-codegen
         exe_dir.join(format!("../lib/{codegen_name}")),
+        // Dev layout from target/debug/ or target/release/
         exe_dir.join(format!("../../hew-codegen/build/src/{codegen_name}")),
+        // Dev layout from target/debug/deps/ (cargo test)
+        exe_dir.join(format!("../../../hew-codegen/build/src/{codegen_name}")),
+        // Windows MSVC: CMake puts binaries in Release/ or Debug/ subdirs
+        exe_dir.join(format!("../../hew-codegen/build/src/Release/{codegen_name}")),
+        exe_dir.join(format!("../../hew-codegen/build/src/Debug/{codegen_name}")),
+        exe_dir.join(format!("../../../hew-codegen/build/src/Release/{codegen_name}")),
+        exe_dir.join(format!("../../../hew-codegen/build/src/Debug/{codegen_name}")),
+        // Sanitizer build
         exe_dir.join(format!(
             "../../hew-codegen/build-sanitizer/src/{codegen_name}"
         )),

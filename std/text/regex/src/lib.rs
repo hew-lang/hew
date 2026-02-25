@@ -177,6 +177,7 @@ pub unsafe extern "C" fn hew_regex_match_free(m: *mut HewRegexMatch) {
 }
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

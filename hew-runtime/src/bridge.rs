@@ -37,8 +37,7 @@
 //! }
 //! ```
 
-use std::cell::UnsafeCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -163,9 +162,15 @@ impl std::fmt::Debug for HewActorMeta {
     }
 }
 
-/// Registered actor metadata. Populated by codegen via
+/// Combined metadata registry + cache state.
+struct MetaState {
+    registry: HashMap<String, ActorMetaEntry>,
+    cache_all: Option<String>,
+}
+
+/// Registered actor metadata and cache state. Populated by codegen via
 /// [`hew_wasm_register_actor_meta`].
-static META_REGISTRY: OnceLock<Mutex<Vec<ActorMetaEntry>>> = OnceLock::new();
+static META_STATE: OnceLock<Mutex<MetaState>> = OnceLock::new();
 
 /// Owned metadata entry (strings are heap-allocated copies).
 struct ActorMetaEntry {
@@ -188,22 +193,16 @@ struct ParamMetaEntry {
     size: u32,
 }
 
-fn meta_registry() -> MutexGuard<'static, Vec<ActorMetaEntry>> {
-    META_REGISTRY
-        .get_or_init(|| Mutex::new(Vec::new()))
+fn meta_state() -> MutexGuard<'static, MetaState> {
+    META_STATE
+        .get_or_init(|| {
+            Mutex::new(MetaState {
+                registry: HashMap::new(),
+                cache_all: None,
+            })
+        })
         .lock()
-        .expect("bridge metadata registry mutex poisoned")
-}
-
-/// Cached JSON output from [`hew_wasm_query_meta`]. Invalidated when new
-/// metadata is registered.
-static META_JSON_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
-fn meta_json_cache() -> MutexGuard<'static, Option<String>> {
-    META_JSON_CACHE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .expect("bridge metadata JSON cache mutex poisoned")
+        .expect("bridge metadata state mutex poisoned")
 }
 
 // ── Host → WASM: send a message to a named actor ───────────────────────
@@ -518,17 +517,11 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
         });
     }
 
-    let mut reg = meta_registry();
-
-    // Replace existing entry for the same actor name.
-    if let Some(existing) = reg.iter_mut().find(|e| e.name == name) {
-        existing.handlers = handlers;
-    } else {
-        reg.push(ActorMetaEntry { name, handlers });
-    }
-
-    // Invalidate cache.
-    *meta_json_cache() = None;
+    let mut state = meta_state();
+    state
+        .registry
+        .insert(name.clone(), ActorMetaEntry { name, handlers });
+    state.cache_all = None;
 }
 
 /// Read a NUL-terminated C string into an owned `String`.
@@ -577,25 +570,24 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
         std::str::from_utf8(bytes).ok()
     };
 
-    // Lock ordering: always META_REGISTRY first, then META_JSON_CACHE.
-    let reg = meta_registry();
-    let json_owned = if filter_name.is_none() {
-        let mut cache = meta_json_cache();
-        if cache.is_none() {
-            *cache = Some(build_meta_json(&reg, None));
+    let mut state = meta_state();
+    let json_owned = if let Some(filter_name) = filter_name {
+        if let Some(entry) = state.registry.get(filter_name) {
+            build_meta_json(std::iter::once(entry))
+        } else {
+            build_meta_json(std::iter::empty())
         }
-        cache
+    } else {
+        if state.cache_all.is_none() {
+            state.cache_all = Some(build_meta_json(state.registry.values()));
+        }
+        state
+            .cache_all
             .as_ref()
             .expect("metadata JSON cache should always contain a value")
             .clone()
-    } else {
-        // Per-actor query: always rebuild (cheap for one actor).
-        let json = build_meta_json(&reg, filter_name);
-        let mut cache = meta_json_cache();
-        *cache = Some(json.clone());
-        json
     };
-    drop(reg);
+    drop(state);
 
     let c_json = match CString::new(json_owned) {
         Ok(s) => s,
@@ -634,17 +626,14 @@ pub unsafe extern "C" fn hew_wasm_free_meta_json(ptr: *mut u8) {
 }
 
 /// Build a JSON string describing actor metadata.
-fn build_meta_json(reg: &[ActorMetaEntry], filter_name: Option<&str>) -> String {
+fn build_meta_json<'a, I>(entries: I) -> String
+where
+    I: IntoIterator<Item = &'a ActorMetaEntry>,
+{
     let mut json = String::from("{\"actors\":{");
     let mut first_actor = true;
 
-    for entry in reg.iter() {
-        if let Some(name) = filter_name {
-            if entry.name != name {
-                continue;
-            }
-        }
-
+    for entry in entries {
         if !first_actor {
             json.push(',');
         }
@@ -730,14 +719,19 @@ fn json_escape_into(out: &mut String, s: &str) {
 /// Sets up the outbound queue and metadata registry.
 pub fn bridge_init() {
     let _ = OUTBOUND.get_or_init(|| Mutex::new(VecDeque::new()));
-    let _ = META_REGISTRY.get_or_init(|| Mutex::new(Vec::new()));
-    let _ = META_JSON_CACHE.get_or_init(|| Mutex::new(None));
+    let _ = META_STATE.get_or_init(|| {
+        Mutex::new(MetaState {
+            registry: HashMap::new(),
+            cache_all: None,
+        })
+    });
 }
 
 /// Shut down the bridge, draining queues.
 pub fn bridge_shutdown() {
     outbound_queue().clear();
-    *meta_json_cache() = None;
+    let mut state = meta_state();
+    state.cache_all = None;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -751,8 +745,9 @@ mod tests {
 
     fn reset_bridge() {
         outbound_queue().clear();
-        meta_registry().clear();
-        *meta_json_cache() = None;
+        let mut state = meta_state();
+        state.registry.clear();
+        state.cache_all = None;
     }
 
     #[test]
@@ -979,6 +974,60 @@ mod tests {
         // Should NOT contain the other actor.
         assert!(!json.contains("\"Ponger\""));
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
+    }
+
+    #[test]
+    fn filtered_query_does_not_poison_unfiltered_cache() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        let h1 = HewHandlerMeta {
+            name: b"ping\0".as_ptr(),
+            msg_type: 0,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let m1 = HewActorMeta {
+            name: b"Pinger\0".as_ptr(),
+            handler_count: 1,
+            handlers: &h1,
+        };
+
+        let h2 = HewHandlerMeta {
+            name: b"pong\0".as_ptr(),
+            msg_type: 0,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let m2 = HewActorMeta {
+            name: b"Ponger\0".as_ptr(),
+            handler_count: 1,
+            handlers: &h2,
+        };
+
+        unsafe {
+            hew_wasm_register_actor_meta(&m1);
+            hew_wasm_register_actor_meta(&m2);
+        }
+
+        let name = b"Pinger";
+        let mut filtered_len: usize = 0;
+        let filtered_ptr =
+            unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &mut filtered_len) };
+        unsafe { hew_wasm_free_meta_json(filtered_ptr.cast_mut()) };
+
+        let mut all_len: usize = 0;
+        let all_ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut all_len) };
+        let json =
+            unsafe { std::str::from_utf8(std::slice::from_raw_parts(all_ptr, all_len)).unwrap() };
+
+        assert!(json.contains("\"Pinger\""));
+        assert!(json.contains("\"Ponger\""));
+        unsafe { hew_wasm_free_meta_json(all_ptr.cast_mut()) };
     }
 
     #[test]

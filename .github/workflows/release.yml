@@ -248,7 +248,7 @@ jobs:
       # ── macOS code signing & notarization ───────────────────────────────
 
       - name: Code sign binaries (macOS)
-        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != ''
+        if: ${{ startsWith(matrix.target, 'darwin') && secrets.APPLE_CERTIFICATE_P12 != '' }}
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -289,7 +289,7 @@ jobs:
           rm -f certificate.p12
 
       - name: Notarize archive (macOS)
-        if: startsWith(matrix.target, 'darwin') && env.APPLE_API_KEY_P8 != ''
+        if: ${{ startsWith(matrix.target, 'darwin') && secrets.APPLE_API_KEY_P8 != '' }}
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -519,8 +519,8 @@ jobs:
           SHA_LINUX_X86_64=$(sha256sum "hew-v${VERSION}-linux-x86_64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_X86_64__")
           SHA_LINUX_AARCH64=$(sha256sum "hew-v${VERSION}-linux-aarch64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_AARCH64__")
 
-          # Clone the tap repo and copy fresh template from main repo
-          gh repo clone hew-lang/homebrew-hew tap-repo
+          # Clone the tap repo with token-authenticated URL for push access
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/hew-lang/homebrew-hew.git" tap-repo
           cp installers/homebrew/hew.rb tap-repo/Formula/hew.rb
 
           cd tap-repo

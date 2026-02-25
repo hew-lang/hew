@@ -71,6 +71,10 @@ jobs:
     # Non-Linux builds can be flaky (network timeouts, MLIR issues) — don't block the release
     continue-on-error: ${{ !startsWith(matrix.target, 'linux') }}
     timeout-minutes: 120
+    env:
+      # Secrets can't be referenced in if: conditions, so expose as env at job level
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      HAS_APPLE_NOTARIZATION: ${{ secrets.APPLE_API_KEY_P8 != '' }}
 
     steps:
       - name: Checkout code
@@ -248,7 +252,7 @@ jobs:
       # ── macOS code signing & notarization ───────────────────────────────
 
       - name: Code sign binaries (macOS)
-        if: ${{ startsWith(matrix.target, 'darwin') && secrets.APPLE_CERTIFICATE_P12 != '' }}
+        if: startsWith(matrix.target, 'darwin') && env.HAS_APPLE_SIGNING == 'true'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -289,7 +293,7 @@ jobs:
           rm -f certificate.p12
 
       - name: Notarize archive (macOS)
-        if: ${{ startsWith(matrix.target, 'darwin') && secrets.APPLE_API_KEY_P8 != '' }}
+        if: startsWith(matrix.target, 'darwin') && env.HAS_APPLE_NOTARIZATION == 'true'
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}

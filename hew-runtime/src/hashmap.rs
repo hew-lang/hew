@@ -600,9 +600,7 @@ pub unsafe extern "C" fn hew_hashmap_get_or_default_i32(
 /// The returned pointer must eventually be freed with [`hew_hashmap_free_impl`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_hashmap_clone_impl(m: *const HewHashMap) -> *mut HewHashMap {
-    if m.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(m.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `m` is valid.
     unsafe {
         let src = &*m;
@@ -661,19 +659,18 @@ pub unsafe extern "C" fn hew_hashmap_clone_impl(m: *const HewHashMap) -> *mut He
 pub unsafe extern "C" fn hew_hashmap_free_impl(m: *mut HewHashMap) {
     // SAFETY: caller guarantees `m` was allocated with malloc (or is null).
     unsafe {
-        if !m.is_null() {
-            for i in 0..(*m).cap {
-                let entry = &*(*m).entries.add(i);
-                if entry.state == OCCUPIED {
-                    libc::free(entry.key.cast());
-                    if !entry.value_str.is_null() {
-                        libc::free(entry.value_str.cast());
-                    }
+        cabi_guard!(m.is_null());
+        for i in 0..(*m).cap {
+            let entry = &*(*m).entries.add(i);
+            if entry.state == OCCUPIED {
+                libc::free(entry.key.cast());
+                if !entry.value_str.is_null() {
+                    libc::free(entry.value_str.cast());
                 }
             }
-            libc::free((*m).entries.cast());
-            libc::free(m.cast());
         }
+        libc::free((*m).entries.cast());
+        libc::free(m.cast());
     }
 }
 

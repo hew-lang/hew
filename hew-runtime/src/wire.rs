@@ -6,6 +6,8 @@
 
 use std::ffi::{c_char, c_int, c_void};
 
+use crate::set_last_error;
+
 // ---------------------------------------------------------------------------
 // Wire type constants
 // ---------------------------------------------------------------------------
@@ -21,6 +23,7 @@ pub const HEW_WIRE_FIXED32: u32 = 5;
 
 const INITIAL_BUF_CAP: usize = 64;
 const HBF_HEADER_LEN: usize = 10;
+const MAX_MSG_TYPE: i64 = 65_535;
 
 /// HBF message magic bytes (`"HEW1"`).
 pub const HBF_MAGIC: [u8; 4] = *b"HEW1";
@@ -146,9 +149,7 @@ impl HewWireBuf {
 /// `buf` must point to a valid, writable [`HewWireBuf`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees `buf` is valid.
     unsafe {
         (*buf).data = std::ptr::null_mut();
@@ -185,9 +186,7 @@ pub unsafe extern "C" fn hew_wire_buf_new() -> *mut HewWireBuf {
 /// `libc::malloc`/`libc::realloc` (or is null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees the pointer is valid.
     let b = unsafe { &mut *buf };
     if !b.data.is_null() && b.cap > 0 {
@@ -209,9 +208,7 @@ pub unsafe extern "C" fn hew_wire_buf_free(buf: *mut HewWireBuf) {
 /// `buf` must be either null or a pointer returned by [`hew_wire_buf_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: `buf` is valid per caller contract.
     unsafe { hew_wire_buf_free(buf) };
     // SAFETY: `buf` was allocated by hew_wire_buf_new via libc::malloc.
@@ -227,9 +224,7 @@ pub unsafe extern "C" fn hew_wire_buf_destroy(buf: *mut HewWireBuf) {
 /// `buf` must point to a valid [`HewWireBuf`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees the pointer is valid.
     unsafe {
         (*buf).len = 0;
@@ -245,9 +240,7 @@ pub unsafe extern "C" fn hew_wire_buf_reset(buf: *mut HewWireBuf) {
 /// bytes and must outlive the buffer's use.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_init_read(buf: *mut HewWireBuf, data: *const u8, len: usize) {
-    if buf.is_null() {
-        return;
-    }
+    cabi_guard!(buf.is_null());
     // SAFETY: caller guarantees `buf` is valid.
     unsafe {
         (*buf).data = data.cast_mut();
@@ -310,6 +303,8 @@ pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut 
     let b = unsafe { &mut *buf };
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
+    let mut num_bytes: u8 = 0;
+    let mut tenth_byte: Option<u8> = None;
     loop {
         if shift >= 64 {
             return -1; // overflow
@@ -320,11 +315,19 @@ pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut 
         // SAFETY: peek confirmed at least 1 byte is available.
         let byte = unsafe { *ptr };
         b.read_pos += 1;
+        num_bytes += 1;
+        if num_bytes == 10 {
+            tenth_byte = Some(byte & 0x7F);
+        }
         result |= u64::from(byte & 0x7F) << shift;
         if byte & 0x80 == 0 {
             break;
         }
         shift += 7;
+    }
+    if tenth_byte.is_some_and(|b| b > 1) {
+        set_last_error("non-canonical varint encoding");
+        return -1;
     }
     // SAFETY: caller guarantees `out` is writable.
     unsafe {
@@ -756,6 +759,11 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
     }
     // SAFETY: caller guarantees `env` is valid.
     let e = unsafe { &*env };
+    let msg_type = i64::from(e.msg_type);
+    if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
+        set_last_error(&format!("msg_type {} out of valid range", e.msg_type));
+        return -1;
+    }
 
     // Field 1: target_actor_id (varint)
     // SAFETY: forwarded.
@@ -853,12 +861,17 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 if unsafe { hew_wire_decode_varint(buf, &raw mut v) } != 0 {
                     return -1;
                 }
+                let msg_type = hew_wire_zigzag_decode(v);
+                if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
+                    set_last_error(&format!("invalid msg_type: {msg_type}"));
+                    return -1;
+                }
                 #[expect(
                     clippy::cast_possible_truncation,
-                    reason = "msg_type is i32 by wire spec"
+                    reason = "validated msg_type fits within i32"
                 )]
                 {
-                    e.msg_type = hew_wire_zigzag_decode(v) as i32;
+                    e.msg_type = msg_type as i32;
                 }
             }
             (4, w) if w == HEW_WIRE_LENGTH_DELIMITED => {

@@ -35,9 +35,7 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
     let total = la + lb;
     // SAFETY: Requesting total+1 bytes from malloc.
     let result = unsafe { libc::malloc(total + 1) }.cast::<u8>();
-    if result.is_null() {
-        return result.cast::<c_char>();
-    }
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
     if la > 0 {
         // SAFETY: a is valid for la bytes; result has total+1 bytes allocated.
         unsafe { std::ptr::copy_nonoverlapping(a.cast::<u8>(), result, la) };
@@ -64,10 +62,8 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_slice(s: *const c_char, start: i32, end: i32) -> *mut c_char {
-    if s.is_null() {
-        // SAFETY: malloc_copy with len=0 is safe regardless of src.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: malloc_copy with len=0 is safe regardless of src.
+    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let len = unsafe { cstr_len(s) } as i32;
     let start = start.max(0);
@@ -78,7 +74,7 @@ pub unsafe extern "C" fn hew_string_slice(s: *const c_char, start: i32, end: i32
     }
     let slice_len = (end - start) as usize;
     // SAFETY: start is non-negative and < len, so s + start is within the string;
-    // slice_len bytes are readable because end <= len.
+    // SAFETY: slice_len bytes are readable because end <= len.
     unsafe { malloc_cstring(s.cast::<u8>().add(start as usize), slice_len) }
 }
 
@@ -93,14 +89,10 @@ pub unsafe extern "C" fn hew_string_slice(s: *const c_char, start: i32, end: i32
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_find(s: *const c_char, substr: *const c_char) -> i32 {
-    if s.is_null() || substr.is_null() {
-        return -1;
-    }
+    cabi_guard!(s.is_null() || substr.is_null(), -1);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     let p = unsafe { libc::strstr(s, substr) };
-    if p.is_null() {
-        return -1;
-    }
+    cabi_guard!(p.is_null(), -1);
     // SAFETY: p points within s, so the offset is non-negative and fits in isize.
     unsafe { p.offset_from(s) as i32 }
 }
@@ -112,9 +104,7 @@ pub unsafe extern "C" fn hew_string_find(s: *const c_char, substr: *const c_char
 /// Both `s` and `prefix` must be valid NUL-terminated C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_starts_with(s: *const c_char, prefix: *const c_char) -> bool {
-    if s.is_null() || prefix.is_null() {
-        return false;
-    }
+    cabi_guard!(s.is_null() || prefix.is_null(), false);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     let plen = unsafe { cstr_len(prefix) };
     // SAFETY: s and prefix are valid C strings; plen is derived from prefix.
@@ -128,9 +118,7 @@ pub unsafe extern "C" fn hew_string_starts_with(s: *const c_char, prefix: *const
 /// Both `s` and `suffix` must be valid NUL-terminated C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_ends_with(s: *const c_char, suffix: *const c_char) -> bool {
-    if s.is_null() || suffix.is_null() {
-        return false;
-    }
+    cabi_guard!(s.is_null() || suffix.is_null(), false);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     let slen = unsafe { cstr_len(s) };
     // SAFETY: suffix is a valid NUL-terminated C string per caller contract.
@@ -149,9 +137,7 @@ pub unsafe extern "C" fn hew_string_ends_with(s: *const c_char, suffix: *const c
 /// Both `s` and `substr` must be valid NUL-terminated C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_contains(s: *const c_char, substr: *const c_char) -> bool {
-    if s.is_null() || substr.is_null() {
-        return false;
-    }
+    cabi_guard!(s.is_null() || substr.is_null(), false);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     !unsafe { libc::strstr(s, substr) }.is_null()
 }
@@ -199,9 +185,7 @@ pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
 /// `s` must be a valid NUL-terminated C string (or null, which returns 0).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_int(s: *const c_char) -> i32 {
-    if s.is_null() {
-        return 0;
-    }
+    cabi_guard!(s.is_null(), 0);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     unsafe { libc::atoi(s) }
 }
@@ -256,10 +240,8 @@ pub unsafe extern "C" fn hew_bool_to_string(b: bool) -> *mut c_char {
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_trim(s: *const c_char) -> *mut c_char {
-    if s.is_null() {
-        // SAFETY: Allocating an empty string with len=0.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: Allocating an empty string with len=0.
+    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     let start = bytes
@@ -286,10 +268,8 @@ pub unsafe extern "C" fn hew_string_replace(
     old_str: *const c_char,
     new_str: *const c_char,
 ) -> *mut c_char {
-    if s.is_null() {
-        // SAFETY: Allocating an empty string with len=0.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: Allocating an empty string with len=0.
+    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
     // SAFETY: s is valid per caller contract.
     let slen = unsafe { cstr_len(s) };
     let olen = if old_str.is_null() {
@@ -385,9 +365,7 @@ pub unsafe extern "C" fn hew_string_replace(
 pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut c_char {
     // SAFETY: Allocating 2 bytes via malloc.
     let ptr = unsafe { libc::malloc(2) }.cast::<u8>();
-    if ptr.is_null() {
-        return ptr.cast::<c_char>();
-    }
+    cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
     // SAFETY: ptr is a valid 2-byte allocation.
     unsafe {
         *ptr = c as u8;
@@ -419,12 +397,8 @@ pub unsafe extern "C" fn hew_string_length(s: *const c_char) -> i32 {
 /// Both `a` and `b` must be valid NUL-terminated C strings (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_equals(a: *const c_char, b: *const c_char) -> i32 {
-    if a.is_null() && b.is_null() {
-        return 1;
-    }
-    if a.is_null() || b.is_null() {
-        return 0;
-    }
+    cabi_guard!(a.is_null() && b.is_null(), 1);
+    cabi_guard!(a.is_null() || b.is_null(), 0);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     i32::from(unsafe { libc::strcmp(a, b) } == 0)
 }
@@ -442,9 +416,7 @@ pub unsafe extern "C" fn hew_string_split(
 ) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new_str has no preconditions.
     let v = unsafe { crate::vec::hew_vec_new_str() };
-    if s.is_null() {
-        return v;
-    }
+    cabi_guard!(s.is_null(), v);
     if delim.is_null() {
         // SAFETY: s is valid per caller contract.
         unsafe { crate::vec::hew_vec_push_str(v, s) };
@@ -495,18 +467,14 @@ pub unsafe extern "C" fn hew_string_split(
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_lowercase(s: *const c_char) -> *mut c_char {
-    if s.is_null() {
-        // SAFETY: Allocating an empty string.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: Allocating an empty string.
+    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     let len = bytes.len();
     // SAFETY: Allocating len+1 bytes.
     let result = unsafe { libc::malloc(len + 1) }.cast::<u8>();
-    if result.is_null() {
-        return result.cast::<c_char>();
-    }
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
     for (i, &b) in bytes.iter().enumerate() {
         // SAFETY: i < len, result is valid for len bytes.
         unsafe { *result.add(i) = b.to_ascii_lowercase() };
@@ -523,18 +491,14 @@ pub unsafe extern "C" fn hew_string_to_lowercase(s: *const c_char) -> *mut c_cha
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_uppercase(s: *const c_char) -> *mut c_char {
-    if s.is_null() {
-        // SAFETY: Allocating an empty string.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: Allocating an empty string.
+    cabi_guard!(s.is_null(), unsafe { malloc_cstring(core::ptr::null(), 0) });
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     let len = bytes.len();
     // SAFETY: Allocating len+1 bytes.
     let result = unsafe { libc::malloc(len + 1) }.cast::<u8>();
-    if result.is_null() {
-        return result.cast::<c_char>();
-    }
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
     for (i, &b) in bytes.iter().enumerate() {
         // SAFETY: i < len, result is valid for len bytes.
         unsafe { *result.add(i) = b.to_ascii_uppercase() };
@@ -555,9 +519,7 @@ pub unsafe extern "C" fn hew_string_to_uppercase(s: *const c_char) -> *mut c_cha
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_char_at(s: *const c_char, idx: i32) -> i32 {
-    if s.is_null() || idx < 0 {
-        return -1;
-    }
+    cabi_guard!(s.is_null() || idx < 0, -1);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let len = unsafe { cstr_len(s) };
     let i = idx as usize;
@@ -582,9 +544,7 @@ pub unsafe extern "C" fn hew_string_char_at(s: *const c_char, idx: i32) -> i32 {
 pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
     // SAFETY: Allocating 2 bytes via malloc.
     let ptr = unsafe { libc::malloc(2) }.cast::<u8>();
-    if ptr.is_null() {
-        return ptr.cast::<c_char>();
-    }
+    cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
     // SAFETY: ptr is a valid 2-byte allocation.
     unsafe {
         *ptr = c as u8;
@@ -604,19 +564,17 @@ pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut c_char {
-    if s.is_null() || count <= 0 {
-        // SAFETY: Allocating an empty string.
-        return unsafe { malloc_cstring(core::ptr::null(), 0) };
-    }
+    // SAFETY: Allocating an empty string.
+    cabi_guard!(s.is_null() || count <= 0, unsafe {
+        malloc_cstring(core::ptr::null(), 0)
+    });
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let len = unsafe { cstr_len(s) };
     let n = count as usize;
     let total = len * n;
     // SAFETY: Allocating total+1 bytes.
     let result = unsafe { libc::malloc(total + 1) }.cast::<u8>();
-    if result.is_null() {
-        return result.cast::<c_char>();
-    }
+    cabi_guard!(result.is_null(), result.cast::<c_char>());
     for i in 0..n {
         // SAFETY: Each copy writes len bytes at offset i*len, within total bytes.
         unsafe { std::ptr::copy_nonoverlapping(s.cast::<u8>(), result.add(i * len), len) };
@@ -644,9 +602,7 @@ pub unsafe extern "C" fn hew_string_index_of(
     substr: *const c_char,
     from: i32,
 ) -> i32 {
-    if s.is_null() || substr.is_null() {
-        return -1;
-    }
+    cabi_guard!(s.is_null() || substr.is_null(), -1);
     // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
     let slen = unsafe { cstr_len(s) };
     let start = if from < 0 { 0usize } else { from as usize };
@@ -660,9 +616,7 @@ pub unsafe extern "C" fn hew_string_index_of(
     }
     // SAFETY: start < slen, so s + start is within the string.
     let p = unsafe { libc::strstr(s.add(start), substr) };
-    if p.is_null() {
-        return -1;
-    }
+    cabi_guard!(p.is_null(), -1);
     // SAFETY: p points within s, so the offset is non-negative.
     unsafe { p.offset_from(s) as i32 }
 }
@@ -707,6 +661,8 @@ fn is_static_string(ptr: *const u8) -> bool {
     // SizeOfImage is 80 bytes past the PE signature in a PE32+ (64-bit) image.
     // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
     let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
+    // SAFETY: pe_off was read from the DOS header of a valid mapped image; the SizeOfImage field
+    // SAFETY: lies within the PE optional header for that image.
     let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
     addr >= base && addr < base + image_size
 }
@@ -734,9 +690,7 @@ fn is_static_string(ptr: *const u8) -> bool {
 /// functions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_drop(s: *mut c_char) {
-    if s.is_null() || is_static_string(s.cast()) {
-        return;
-    }
+    cabi_guard!(s.is_null() || is_static_string(s.cast()));
     // SAFETY: Not null and not a static string — must be heap-allocated.
     unsafe { libc::free(s.cast()) };
 }
@@ -787,9 +741,7 @@ pub unsafe extern "C" fn hew_string_byte_length(s: *const c_char) -> i32 {
 /// `s` must be a valid NUL-terminated C string (or null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_is_ascii(s: *const c_char) -> i32 {
-    if s.is_null() {
-        return 1;
-    }
+    cabi_guard!(s.is_null(), 1);
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     i32::from(bytes.is_ascii())
@@ -887,16 +839,14 @@ pub unsafe extern "C" fn hew_string_reverse_utf8(s: *const c_char) -> *mut c_cha
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::vec::HewVec {
     // SAFETY: hew_vec_new creates a Vec<i32>-style HewVec, matching what
-    // hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
+    // SAFETY: hew_tcp_write / hew_bytes_to_string expect (i32-element vecs).
     let v = unsafe { crate::vec::hew_vec_new() };
-    if s.is_null() {
-        return v;
-    }
+    cabi_guard!(s.is_null(), v);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
     for &b in bytes {
         // SAFETY: v is a valid HewVec; push each byte as i32 to match
-        // the convention used by hew_tcp_read and hew_bytes_to_string.
+        // SAFETY: the convention used by hew_tcp_read and hew_bytes_to_string.
         unsafe {
             crate::vec::hew_vec_push_i32(v, i32::from(b));
         };

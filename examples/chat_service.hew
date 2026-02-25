@@ -1,0 +1,69 @@
+// Distributed chat service — idiomatic Hew networked actors
+//
+// Architecture:
+//   Server node: ChatRoom actor manages connected users
+//   Client node: connects, looks up "room", sends messages
+//
+// The actor code is identical whether local or distributed.
+// Node::start/shutdown/register/lookup typecheck today. Node::connect is
+// runtime-only for now (not a typechecker builtin yet).
+
+actor ChatRoom {
+    let users: Vec<String>;
+    let messages: Vec<String>;
+
+    receive fn enter(username: String) {
+        self.users.push(username);
+        println(f"[room] {username} entered ({self.users.len()} online)");
+    }
+
+    receive fn say(username: String, text: String) {
+        let msg = f"{username}: {text}";
+        self.messages.push(msg);
+        println(f"[room] {msg}");
+    }
+
+    receive fn exit_room(username: String) {
+        println(f"[room] {username} left");
+    }
+
+    receive fn history() {
+        println(f"[room] {self.messages.len()} messages total");
+        for i in 0..self.messages.len() {
+            println(f"  {self.messages.get(i)}");
+        }
+    }
+}
+
+fn main() {
+    // ── Server side ──────────────────────────────────────────
+    // Node::start("0.0.0.0:9000");
+
+    let empty_users: Vec<String> = Vec::new();
+    let empty_msgs: Vec<String> = Vec::new();
+    let room = spawn ChatRoom(users: empty_users, messages: empty_msgs);
+
+    // Node::register("room", room);
+
+    // ── Client side (same process for now) ───────────────────
+    // In a distributed setup:
+    //   Node::start("0.0.0.0:9001");
+    //   Node::connect("127.0.0.1:9000");  // runtime API, not a typechecker builtin yet
+    //   let room = Node::lookup("room");
+
+    // These calls are location-transparent — identical syntax
+    // whether room is local or on a remote node:
+    room.enter("alice");
+    room.enter("bob");
+    room.say("alice", "hello everyone!");
+    room.say("bob", "hey alice!");
+    room.say("alice", "how is the weather?");
+    room.exit_room("bob");
+
+    sleep_ms(100);
+    room.history();
+    sleep_ms(100);
+
+    // Node::shutdown();
+    println("[main] chat demo complete");
+}

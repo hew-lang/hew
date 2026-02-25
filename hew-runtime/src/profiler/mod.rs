@@ -25,12 +25,40 @@ use std::thread;
 use std::time::Duration;
 
 use metrics::MetricsRing;
+pub use server::ProfilerContext;
 
 /// Check `HEW_PPROF` and start the profiler if set.
 ///
 /// Called from [`hew_sched_init`](crate::scheduler::hew_sched_init) during
 /// scheduler startup. If `HEW_PPROF` is not set, this is a no-op.
+///
+/// Distributed subsystem pointers default to null (no cluster/connection/
+/// routing data will be served). Use [`maybe_start_with_context`] to pass
+/// live pointers from a running [`HewNode`](crate::hew_node::HewNode).
 pub fn maybe_start() {
+    maybe_start_with_context(
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+    );
+}
+
+/// Check `HEW_PPROF` and start the profiler with distributed runtime context.
+///
+/// Like [`maybe_start`] but accepts pointers to the cluster, connection
+/// manager, and routing table so the profiler can expose distributed
+/// runtime endpoints.
+///
+/// # Safety
+///
+/// The pointers (if non-null) must remain valid for the lifetime of the
+/// program. Null pointers are safe and result in empty JSON responses
+/// for the corresponding endpoints.
+pub fn maybe_start_with_context(
+    cluster: *mut crate::cluster::HewCluster,
+    connmgr: *mut crate::connection::HewConnMgr,
+    routing: *mut crate::routing::HewRoutingTable,
+) {
     let bind_addr = match std::env::var("HEW_PPROF") {
         Ok(val) if !val.is_empty() => val,
         _ => return,
@@ -56,10 +84,17 @@ pub fn maybe_start() {
         return;
     }
 
+    let ctx = ProfilerContext {
+        ring,
+        cluster,
+        connmgr,
+        routing,
+    };
+
     // HTTP server thread.
     if thread::Builder::new()
         .name("hew-pprof-server".into())
-        .spawn(move || server::run(&bind_addr, &ring))
+        .spawn(move || server::run(&bind_addr, &ctx))
         .is_err()
     {
         eprintln!("[hew-pprof] failed to spawn server thread");

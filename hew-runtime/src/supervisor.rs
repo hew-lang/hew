@@ -6,7 +6,7 @@
 
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 
 use crate::actor::{self, HewActor, HewActorOpts};
 use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
@@ -117,6 +117,8 @@ pub struct HewSupervisor {
     restart_head: usize,
 
     running: AtomicI32,
+    cancelled: AtomicBool,
+    pending_restart_timers: AtomicUsize,
     self_actor: *mut HewActor,
 
     /// Parent supervisor (set by `hew_supervisor_add_child_supervisor`).
@@ -512,81 +514,19 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
     new_child
 }
 
-/// Apply the restart strategy after a child failure.
+/// Restart children after checking the supervisor restart budget.
 ///
 /// # Safety
 ///
 /// `sup` must be valid.
-#[expect(
-    clippy::too_many_lines,
-    reason = "restart strategies (one-for-one/all/rest) need inline logic"
-)]
-unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state: c_int) {
-    let spec = &mut sup.child_specs[failed_index];
-
-    // Record crash if it was a crash (not a normal stop)
-    if exit_state == HewActorState::Crashed as c_int {
-        circuit_breaker_record_crash(spec, 11); // Default to SIGSEGV if signal not available
-                                                // Apply exponential backoff delay after crash (only for subsequent crashes)
-        if spec.restart_delay_ms > 0 {
-            apply_restart_backoff(spec);
-        }
-    }
-
-    // Check restart policy.
-    if spec.restart_policy == RESTART_TEMPORARY {
-        sup.children[failed_index] = ptr::null_mut();
-        return;
-    }
-    if spec.restart_policy == RESTART_TRANSIENT && exit_state == HewActorState::Stopped as c_int {
-        sup.children[failed_index] = ptr::null_mut();
+unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index: usize) {
+    if failed_index >= sup.child_count {
         return;
     }
 
-    // Check circuit breaker
-    if !circuit_breaker_should_restart(spec) {
-        sup.children[failed_index] = ptr::null_mut();
-        return;
-    }
-
-    // Check restart delay — if backoff delay hasn't elapsed, schedule a
-    // delayed restart by spawning a timer thread. Don't abandon the child.
-    if !restart_delay_allows_restart(spec) {
-        let delay_remaining_ns = spec
-            .next_restart_time_ns
-            .saturating_sub(monotonic_time_ns());
-        let delay_ms = (delay_remaining_ns / 1_000_000).max(1);
-        let sup_addr = std::ptr::from_mut::<HewSupervisor>(sup) as usize;
-        let idx = failed_index;
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            // SAFETY: sup was alive when we captured its address, and we
-            // check running before touching it.
-            let sup_ptr = sup_addr as *mut HewSupervisor;
-            // SAFETY: sup was alive when we captured its address; running flag checked below.
-            unsafe {
-                let s = &mut *sup_ptr;
-                if s.running.load(Ordering::Acquire) != 0 {
-                    let new_child = restart_child_from_spec(s, idx);
-                    if !new_child.is_null() {
-                        record_restart(s);
-                    }
-                }
-            }
-        });
-        return;
-    }
-
-    // Set the initial delay for the next restart
-    if exit_state == HewActorState::Crashed as c_int && spec.restart_delay_ms == 0 {
-        spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
-    }
-
-    // Check restart budget.
     let recent = restart_within_window(sup);
     if recent >= sup.max_restarts {
         sup.running.store(0, Ordering::Release);
-        // Escalate to parent supervisor if one exists.
         if !sup.parent.is_null() {
             escalate_to_parent(sup);
         }
@@ -666,6 +606,77 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
     }
 }
 
+/// Apply the restart strategy after a child failure.
+///
+/// # Safety
+///
+/// `sup` must be valid.
+#[expect(
+    clippy::too_many_lines,
+    reason = "restart strategies (one-for-one/all/rest) need inline logic"
+)]
+unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state: c_int) {
+    let spec = &mut sup.child_specs[failed_index];
+
+    // Record crash if it was a crash (not a normal stop)
+    if exit_state == HewActorState::Crashed as c_int {
+        circuit_breaker_record_crash(spec, 11); // Default to SIGSEGV if signal not available
+                                                // Apply exponential backoff delay after crash (only for subsequent crashes)
+        if spec.restart_delay_ms > 0 {
+            apply_restart_backoff(spec);
+        }
+    }
+
+    // Check restart policy.
+    if spec.restart_policy == RESTART_TEMPORARY {
+        sup.children[failed_index] = ptr::null_mut();
+        return;
+    }
+    if spec.restart_policy == RESTART_TRANSIENT && exit_state == HewActorState::Stopped as c_int {
+        sup.children[failed_index] = ptr::null_mut();
+        return;
+    }
+
+    // Check circuit breaker
+    if !circuit_breaker_should_restart(spec) {
+        sup.children[failed_index] = ptr::null_mut();
+        return;
+    }
+
+    // Check restart delay — if backoff delay hasn't elapsed, schedule a
+    // delayed restart by spawning a timer thread. Don't abandon the child.
+    if !restart_delay_allows_restart(spec) {
+        let delay_remaining_ns = spec
+            .next_restart_time_ns
+            .saturating_sub(monotonic_time_ns());
+        let delay_ms = (delay_remaining_ns / 1_000_000).max(1);
+        let sup_addr = std::ptr::from_mut::<HewSupervisor>(sup) as usize;
+        let idx = failed_index;
+        sup.pending_restart_timers.fetch_add(1, Ordering::AcqRel);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            // SAFETY: stop waits for pending timers before dropping supervisor.
+            let sup_ptr = sup_addr as *mut HewSupervisor;
+            unsafe {
+                let s = &mut *sup_ptr;
+                if !s.cancelled.load(Ordering::Acquire) && s.running.load(Ordering::Acquire) != 0 {
+                    restart_with_budget_and_strategy(s, idx);
+                }
+                s.pending_restart_timers.fetch_sub(1, Ordering::AcqRel);
+            }
+        });
+        return;
+    }
+
+    // Set the initial delay for the next restart
+    if exit_state == HewActorState::Crashed as c_int && spec.restart_delay_ms == 0 {
+        spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
+    }
+
+    // SAFETY: supervisor and failed_index were validated by caller.
+    unsafe { restart_with_budget_and_strategy(sup, failed_index) };
+}
+
 /// Supervisor dispatch function (handles system messages).
 unsafe extern "C" fn supervisor_dispatch(
     state: *mut c_void,
@@ -714,6 +725,7 @@ unsafe extern "C" fn supervisor_dispatch(
             unsafe { apply_restart(sup, idx, event.exit_state) };
         }
         SYS_MSG_SUPERVISOR_STOP => {
+            sup.cancelled.store(true, Ordering::Release);
             sup.running.store(0, Ordering::Release);
             // Stop child supervisors recursively.
             for child_sup in &sup.child_supervisors {
@@ -764,6 +776,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
         restart_count: 0,
         restart_head: 0,
         running: AtomicI32::new(0),
+        cancelled: AtomicBool::new(false),
+        pending_restart_timers: AtomicUsize::new(0),
         self_actor: ptr::null_mut(),
     });
     Box::into_raw(sup)
@@ -855,9 +869,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int {
-    if sup.is_null() {
-        return -1;
-    }
+    cabi_guard!(sup.is_null(), -1);
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &mut *sup };
 
@@ -974,9 +986,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
 /// pointer must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
-    if sup.is_null() {
-        return;
-    }
+    cabi_guard!(sup.is_null());
 
     // Unregister from shutdown list to prevent double-stop.
     // SAFETY: sup is still valid here.
@@ -985,7 +995,11 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
     // SAFETY: caller guarantees sup is valid and surrenders ownership.
     let mut s = unsafe { Box::from_raw(sup) };
 
+    s.cancelled.store(true, Ordering::Release);
     s.running.store(0, Ordering::Release);
+    while s.pending_restart_timers.load(Ordering::Acquire) != 0 {
+        std::thread::yield_now();
+    }
 
     // Recursively stop all child supervisors first.
     for child_sup in std::mem::take(&mut s.child_supervisors) {
@@ -1059,7 +1073,11 @@ pub unsafe extern "C" fn hew_supervisor_stop(sup: *mut HewSupervisor) {
 /// Worker threads must have been joined before calling.
 pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) {
     // SAFETY: caller guarantees sup is valid.
-    let s = unsafe { &*sup };
+    let s = unsafe { &mut *sup };
+    s.cancelled.store(true, Ordering::Release);
+    while s.pending_restart_timers.load(Ordering::Acquire) != 0 {
+        std::thread::yield_now();
+    }
     if !s.self_actor.is_null() {
         // Null out state so cleanup_all_actors won't libc::free it
         // (state points to the supervisor Box, not malloc'd memory).
@@ -1270,9 +1288,7 @@ pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> 
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_is_running(sup: *mut HewSupervisor) -> c_int {
-    if sup.is_null() {
-        return 0;
-    }
+    cabi_guard!(sup.is_null(), 0);
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
     s.running.load(Ordering::Acquire)

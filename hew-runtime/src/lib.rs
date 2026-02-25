@@ -28,6 +28,51 @@
 //! - `profiler` — built-in profiler dashboard and pprof export
 //! - `export-meta` — emit `__hew_export_meta_*` companion functions
 
+use std::cell::RefCell;
+use std::ffi::{c_char, CString};
+
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = RefCell::new(None);
+}
+
+/// Set the last error message for the current thread.
+pub(crate) fn set_last_error(msg: impl Into<String>) {
+    LAST_ERROR.with(|e| {
+        *e.borrow_mut() = Some(CString::new(msg.into()).unwrap_or_default());
+    });
+}
+
+/// Get a pointer to the last error message. Returns null if no error.
+/// The pointer is valid until the next error is set on this thread.
+#[no_mangle]
+pub extern "C" fn hew_last_error() -> *const c_char {
+    LAST_ERROR.with(|e| match e.borrow().as_ref() {
+        Some(s) => s.as_ptr(),
+        None => std::ptr::null(),
+    })
+}
+
+/// Clear the last error.
+#[no_mangle]
+pub extern "C" fn hew_clear_error() {
+    LAST_ERROR.with(|e| *e.borrow_mut() = None);
+}
+
+macro_rules! cabi_guard {
+    ($cond:expr) => {
+        if $cond {
+            $crate::set_last_error(&format!("C-ABI guard failed: {}", stringify!($cond)));
+            return;
+        }
+    };
+    ($cond:expr, $ret:expr) => {
+        if $cond {
+            $crate::set_last_error(&format!("C-ABI guard failed: {}", stringify!($cond)));
+            return $ret;
+        }
+    };
+}
+
 // Profiler (must be declared before other modules so the global
 // allocator is installed before any allocations occur).
 // Not available on WASM — profiler requires HTTP server for dashboard.
@@ -64,6 +109,13 @@ pub mod profiler {
     /// No-op: profiler feature is disabled.
     pub fn maybe_start() {}
     /// No-op: profiler feature is disabled.
+    pub fn maybe_start_with_context(
+        _cluster: *mut crate::cluster::HewCluster,
+        _connmgr: *mut crate::connection::HewConnMgr,
+        _routing: *mut crate::routing::HewRoutingTable,
+    ) {
+    }
+    /// No-op: profiler feature is disabled.
     pub fn maybe_write_on_exit() {}
 }
 
@@ -87,6 +139,7 @@ pub mod string;
 pub mod vec;
 
 pub mod internal;
+mod tagged_union;
 
 // On WASM, provide a minimal arena stub — no per-actor scoping, just malloc.
 #[cfg(target_arch = "wasm32")]
@@ -178,7 +231,7 @@ pub mod timer;
 pub mod timer_wheel;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod node;
+pub mod hew_node;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
@@ -203,10 +256,14 @@ pub mod monitor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod pool;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod process;
 pub mod registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote_sup;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
 #[cfg(not(target_arch = "wasm32"))]

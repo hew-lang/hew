@@ -1,6 +1,9 @@
 //! Application state for the TUI observer.
 
-use crate::client::{ActorInfo, ConnectionStatus, HistoryEntry, Metrics, ProfilerClient};
+use crate::client::{
+    ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus, HistoryEntry,
+    Metrics, RouteEntry, RoutingSnapshot, TraceEvent,
+};
 
 /// Active tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,9 +12,29 @@ pub enum Tab {
     Actors,
     Supervisors,
     Crashes,
+    Cluster,
+    Messages,
+    Timeline,
 }
 
-const TABS: [Tab; 4] = [Tab::Overview, Tab::Actors, Tab::Supervisors, Tab::Crashes];
+const TABS: [Tab; 7] = [
+    Tab::Overview,
+    Tab::Actors,
+    Tab::Supervisors,
+    Tab::Crashes,
+    Tab::Cluster,
+    Tab::Messages,
+    Tab::Timeline,
+];
+
+const ZOOM_LEVELS_NS: [u64; 6] = [
+    1_000_000_000,
+    2_000_000_000,
+    5_000_000_000,
+    10_000_000_000,
+    30_000_000_000,
+    60_000_000_000,
+];
 
 /// Sort column for actor list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +89,10 @@ pub struct TreeRow {
 
 /// Main application state.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "TUI app state naturally has many boolean flags"
+)]
 pub struct App {
     pub active_tab: Tab,
     pub show_help: bool,
@@ -90,8 +117,25 @@ pub struct App {
     pub crash_selected: usize,
     pub tree_selected: usize,
 
+    // Cluster data
+    pub cluster_members: Vec<ClusterMember>,
+    pub cluster_connections: Vec<ConnectionInfo>,
+    pub cluster_routing: RoutingSnapshot,
+
+    // Message flow data
+    pub trace_events: Vec<TraceEvent>,
+    pub trace_paused: bool,
+    pub trace_scroll: usize,
+    pub trace_filter_actor: Option<u64>,
+
+    // Timeline data
+    pub timeline_offset_ns: i64,
+    pub timeline_window_ns: u64,
+    pub timeline_paused: bool,
+    pub timeline_zoom_level: usize,
+
     // Connection
-    client: Option<ProfilerClient>,
+    cluster: Option<ClusterClient>,
     pub connection_status: ConnectionStatus,
     pub demo_mode: bool,
     pub base_url: String,
@@ -101,12 +145,16 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(base_url: &str, demo: bool) -> Self {
-        let client = if demo {
+    pub fn new(node_addrs: &[String], demo: bool) -> Self {
+        let cluster = if demo {
             None
         } else {
-            Some(ProfilerClient::new(base_url))
+            Some(ClusterClient::new(node_addrs))
         };
+
+        let base_url = node_addrs
+            .first()
+            .map_or_else(|| "localhost:6060".to_owned(), Clone::clone);
 
         let mut app = Self {
             active_tab: Tab::Overview,
@@ -125,14 +173,25 @@ impl App {
             sort_column: SortColumn::Id,
             crash_selected: 0,
             tree_selected: 0,
-            client,
+            cluster_members: Vec::new(),
+            cluster_connections: Vec::new(),
+            cluster_routing: RoutingSnapshot::default(),
+            trace_events: Vec::new(),
+            trace_paused: false,
+            trace_scroll: 0,
+            trace_filter_actor: None,
+            timeline_offset_ns: 0,
+            timeline_window_ns: ZOOM_LEVELS_NS[2], // default 5s
+            timeline_paused: false,
+            timeline_zoom_level: 2,
+            cluster,
             connection_status: if demo {
                 ConnectionStatus::Connected
             } else {
                 ConnectionStatus::Connecting
             },
             demo_mode: demo,
-            base_url: base_url.to_owned(),
+            base_url,
             prev_messages_sent: 0,
             prev_timestamp: 0.0,
         };
@@ -194,6 +253,74 @@ impl App {
         self.tree_selected = self.tree_selected.saturating_sub(1);
     }
 
+    // -- Messages tab navigation --
+
+    pub fn messages_scroll_up(&mut self) {
+        self.trace_scroll = self.trace_scroll.saturating_sub(1);
+    }
+
+    pub fn messages_scroll_down(&mut self) {
+        if !self.trace_events.is_empty() {
+            self.trace_scroll = (self.trace_scroll + 1).min(self.trace_events.len() - 1);
+        }
+    }
+
+    pub fn messages_toggle_pause(&mut self) {
+        self.trace_paused = !self.trace_paused;
+    }
+
+    #[expect(
+        dead_code,
+        reason = "Will be wired to key bindings in Messages tab UI task"
+    )]
+    pub fn messages_set_filter(&mut self, actor_id: u64) {
+        self.trace_filter_actor = Some(actor_id);
+    }
+
+    pub fn messages_clear_filter(&mut self) {
+        self.trace_filter_actor = None;
+    }
+
+    // -- Timeline tab navigation --
+
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "timeline window is always small enough to fit in i64"
+    )]
+    pub fn timeline_scroll_left(&mut self) {
+        self.timeline_offset_ns -= self.timeline_window_ns as i64 / 4;
+    }
+
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "timeline window is always small enough to fit in i64"
+    )]
+    pub fn timeline_scroll_right(&mut self) {
+        self.timeline_offset_ns += self.timeline_window_ns as i64 / 4;
+    }
+
+    pub fn timeline_zoom_in(&mut self) {
+        if self.timeline_zoom_level > 0 {
+            self.timeline_zoom_level -= 1;
+            self.timeline_window_ns = ZOOM_LEVELS_NS[self.timeline_zoom_level];
+        }
+    }
+
+    pub fn timeline_zoom_out(&mut self) {
+        if self.timeline_zoom_level < ZOOM_LEVELS_NS.len() - 1 {
+            self.timeline_zoom_level += 1;
+            self.timeline_window_ns = ZOOM_LEVELS_NS[self.timeline_zoom_level];
+        }
+    }
+
+    pub fn timeline_toggle_pause(&mut self) {
+        self.timeline_paused = !self.timeline_paused;
+    }
+
+    pub fn timeline_snap_to_now(&mut self) {
+        self.timeline_offset_ns = 0;
+    }
+
     pub fn filtered_actors(&self) -> Vec<&ActorInfo> {
         if self.filter_text.is_empty() {
             self.actors.iter().collect()
@@ -215,31 +342,68 @@ impl App {
             return;
         }
 
-        let Some(client) = &mut self.client else {
+        let Some(cluster) = &mut self.cluster else {
+            return;
+        };
+
+        // Use first node for single-node data (metrics, actors, history)
+        let Some(first) = cluster.nodes.first_mut() else {
             return;
         };
 
         // Only fetch data needed for the current tab to avoid unnecessary blocking
-        let metrics = client.fetch_metrics();
-        let status = client.status;
+        let metrics = first.client.fetch_metrics();
+        let status = first.client.status;
         if status == ConnectionStatus::Disconnected {
             self.connection_status = status;
             return;
         }
 
         let actors = if self.active_tab == Tab::Actors || self.active_tab == Tab::Overview {
-            client.fetch_actors()
+            first.client.fetch_actors()
         } else {
             None
         };
 
         let history = if self.active_tab == Tab::Overview {
-            client.fetch_history()
+            first.client.fetch_history()
         } else {
             None
         };
 
-        let status = client.status;
+        // Cluster tab: fetch cluster data from first connected node
+        let (cluster_members, connections, routing) =
+            if self.active_tab == Tab::Cluster || self.active_tab == Tab::Timeline {
+                (
+                    first.client.fetch_cluster_members(),
+                    first.client.fetch_connections(),
+                    first.client.fetch_routing(),
+                )
+            } else {
+                (None, None, None)
+            };
+
+        // Messages/Timeline tab: fetch traces from all nodes
+        let traces = if (self.active_tab == Tab::Messages && !self.trace_paused)
+            || self.active_tab == Tab::Timeline
+        {
+            let cluster_ref = self.cluster.as_mut().unwrap();
+            let mut all_traces = Vec::new();
+            for node in &mut cluster_ref.nodes {
+                if let Some(mut t) = node.client.fetch_traces() {
+                    all_traces.append(&mut t);
+                }
+            }
+            if all_traces.is_empty() {
+                None
+            } else {
+                Some(all_traces)
+            }
+        } else {
+            None
+        };
+
+        let cluster_status = self.cluster.as_ref().unwrap().status();
 
         if let Some(m) = metrics {
             if self.prev_timestamp > 0.0 && m.timestamp_secs > self.prev_timestamp {
@@ -267,7 +431,26 @@ impl App {
             self.history = h;
         }
 
-        self.connection_status = status;
+        if let Some(members) = cluster_members {
+            self.cluster_members = members;
+        }
+        if let Some(conns) = connections {
+            self.cluster_connections = conns;
+        }
+        if let Some(r) = routing {
+            self.cluster_routing = r;
+        }
+
+        if let Some(mut t) = traces {
+            self.trace_events.append(&mut t);
+            // Cap at 1000 entries
+            if self.trace_events.len() > 1000 {
+                let drain = self.trace_events.len() - 1000;
+                self.trace_events.drain(..drain);
+            }
+        }
+
+        self.connection_status = cluster_status;
     }
 
     fn sort_actors(&mut self) {
@@ -443,6 +626,141 @@ impl App {
         // Demo sparklines
         self.sparkline_msgs = vec![12, 45, 30, 67, 23, 89, 54, 32, 78, 41, 55, 90, 44, 61, 37];
         self.sparkline_actors = vec![4, 4, 4, 3, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4];
+
+        // Demo cluster members (3 nodes)
+        self.cluster_members = vec![
+            ClusterMember {
+                node_id: 1,
+                state: "alive".into(),
+                incarnation: 2,
+                addr: "127.0.0.1:9000".into(),
+                last_seen_ms: 0,
+            },
+            ClusterMember {
+                node_id: 2,
+                state: "alive".into(),
+                incarnation: 1,
+                addr: "192.168.1.11:9000".into(),
+                last_seen_ms: 500,
+            },
+            ClusterMember {
+                node_id: 3,
+                state: "suspect".into(),
+                incarnation: 3,
+                addr: "192.168.1.12:9000".into(),
+                last_seen_ms: 8000,
+            },
+        ];
+
+        // Demo connections
+        self.cluster_connections = vec![
+            ConnectionInfo {
+                conn_id: 0,
+                peer_node_id: 2,
+                state: "active".into(),
+                last_activity_ms: 500,
+            },
+            ConnectionInfo {
+                conn_id: 1,
+                peer_node_id: 3,
+                state: "active".into(),
+                last_activity_ms: 8000,
+            },
+        ];
+
+        // Demo routing
+        self.cluster_routing = RoutingSnapshot {
+            local_node_id: 1,
+            routes: vec![
+                RouteEntry {
+                    node_id: 2,
+                    conn_id: 0,
+                },
+                RouteEntry {
+                    node_id: 3,
+                    conn_id: 1,
+                },
+            ],
+        };
+
+        // Demo trace events (50 events over 10 seconds)
+        let base_ns: u64 = 40_000_000_000;
+        let mut traces = Vec::new();
+        // Spawns
+        traces.push(TraceEvent {
+            trace_id: "0001".into(),
+            span_id: 1,
+            parent_span_id: 0,
+            actor_id: (1u64 << 48) | 1,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns,
+        });
+        traces.push(TraceEvent {
+            trace_id: "0002".into(),
+            span_id: 2,
+            parent_span_id: 0,
+            actor_id: (2u64 << 48) | 101,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 100_000_000,
+        });
+        traces.push(TraceEvent {
+            trace_id: "0003".into(),
+            span_id: 3,
+            parent_span_id: 0,
+            actor_id: (3u64 << 48) | 201,
+            event_type: "spawn".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 200_000_000,
+        });
+        // Message sends between nodes
+        for i in 0..20u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 10 + i),
+                span_id: 100 + i,
+                parent_span_id: 0,
+                actor_id: (1u64 << 48) | 1,
+                event_type: "send".into(),
+                msg_type: 3,
+                timestamp_ns: base_ns + 1_000_000_000 + i * 200_000_000,
+            });
+        }
+        for i in 0..15u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 30 + i),
+                span_id: 200 + i,
+                parent_span_id: 0,
+                actor_id: (2u64 << 48) | 101,
+                event_type: "send".into(),
+                msg_type: 7,
+                timestamp_ns: base_ns + 1_100_000_000 + i * 300_000_000,
+            });
+        }
+        for i in 0..5u64 {
+            traces.push(TraceEvent {
+                trace_id: format!("t{:04}", 50 + i),
+                span_id: 300 + i,
+                parent_span_id: 0,
+                actor_id: (3u64 << 48) | 201,
+                event_type: "send".into(),
+                msg_type: 5,
+                timestamp_ns: base_ns + 500_000_000 + i * 500_000_000,
+            });
+        }
+        // Crash on node 3
+        traces.push(TraceEvent {
+            trace_id: "crash1".into(),
+            span_id: 400,
+            parent_span_id: 0,
+            actor_id: (3u64 << 48) | 201,
+            event_type: "crash".into(),
+            msg_type: 0,
+            timestamp_ns: base_ns + 8_000_000_000,
+        });
+        // Sort by timestamp
+        traces.sort_by_key(|t| t.timestamp_ns);
+        self.trace_events = traces;
     }
 }
 

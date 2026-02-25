@@ -428,10 +428,13 @@ fn activate_actor(actor: *mut HewActor) {
         return;
     }
 
-    let base_budget = if a.budget > 0 {
-        a.budget
-    } else {
-        HEW_MSG_BUDGET
+    let base_budget = {
+        let b = a.budget.load(Ordering::Relaxed);
+        if b > 0 {
+            b
+        } else {
+            HEW_MSG_BUDGET
+        }
     };
     // Scale budget by priority: high (0) = 2×, normal (1) = 1×, low (2) = ½×.
     let budget = match a.priority.load(Ordering::Relaxed) {
@@ -622,9 +625,10 @@ fn activate_actor(actor: *mut HewActor) {
     }
 
     // Hibernation: track idle activations.
-    if msgs_processed == 0 && a.hibernation_threshold > 0 {
+    let hib_threshold = a.hibernation_threshold.load(Ordering::Relaxed);
+    if msgs_processed == 0 && hib_threshold > 0 {
         let prev_idle = a.idle_count.fetch_add(1, Ordering::Relaxed);
-        if prev_idle + 1 >= a.hibernation_threshold {
+        if prev_idle + 1 >= hib_threshold {
             a.hibernating.store(1, Ordering::Relaxed);
         }
     } else if msgs_processed > 0 {
@@ -887,7 +891,7 @@ mod tests {
             dispatch: None,
             mailbox: ptr::null_mut(),
             actor_state: AtomicI32::new(HewActorState::Runnable as i32),
-            budget: HEW_MSG_BUDGET,
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
             init_state: ptr::null_mut(),
             init_state_size: 0,
             coalesce_key_fn: None,
@@ -897,7 +901,7 @@ mod tests {
             priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
             reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
             idle_count: AtomicI32::new(0),
-            hibernation_threshold: 0,
+            hibernation_threshold: AtomicI32::new(0),
             hibernating: AtomicI32::new(0),
             prof_messages_processed: AtomicU64::new(0),
             prof_processing_time_ns: AtomicU64::new(0),

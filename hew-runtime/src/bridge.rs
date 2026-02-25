@@ -38,8 +38,11 @@
 //! ```
 
 use std::cell::UnsafeCell;
-use std::collections::VecDeque;
-use std::ffi::c_void;
+use std::collections::{HashMap, VecDeque};
+use std::ffi::{c_void, CString};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+use crate::actor::HewActor;
 
 /// Single-threaded cell for WASM-only statics.
 ///
@@ -65,7 +68,7 @@ impl<T> WasmCell<T> {
 /// An outbound message emitted by an actor for the host.
 struct OutboundMsg {
     /// Source actor name (empty string if unnamed).
-    source: String,
+    _source: String,
     /// Message type tag.
     msg_type: i32,
     /// Payload bytes (deep-copied from actor dispatch).
@@ -74,17 +77,18 @@ struct OutboundMsg {
 
 /// Outbound message queue. Actors call `hew_wasm_emit` during dispatch,
 /// which appends here. The host drains via `hew_wasm_recv`.
-static OUTBOUND: WasmCell<Option<VecDeque<OutboundMsg>>> = WasmCell::new(None);
+static OUTBOUND: OnceLock<Mutex<VecDeque<OutboundMsg>>> = OnceLock::new();
 
-fn outbound_queue() -> &'static mut VecDeque<OutboundMsg> {
-    // SAFETY: WASM is single-threaded.
-    unsafe { OUTBOUND.get_mut().get_or_insert_with(VecDeque::new) }
+fn outbound_queue() -> MutexGuard<'static, VecDeque<OutboundMsg>> {
+    OUTBOUND
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .expect("bridge outbound queue mutex poisoned")
 }
 
 // ── Type metadata registry ──────────────────────────────────────────────
 
 /// Describes a single parameter in a receive handler.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewParamMeta {
     /// Parameter name (NUL-terminated C string, static lifetime from codegen).
@@ -96,9 +100,18 @@ pub struct HewParamMeta {
     /// Size in bytes.
     pub size: u32,
 }
+impl std::fmt::Debug for HewParamMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewParamMeta")
+            .field("name", &self.name)
+            .field("type_name", &self.type_name)
+            .field("offset", &self.offset)
+            .field("size", &self.size)
+            .finish()
+    }
+}
 
 /// Describes a single receive handler on an actor.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewHandlerMeta {
     /// Handler name (NUL-terminated C string).
@@ -114,9 +127,20 @@ pub struct HewHandlerMeta {
     /// Return type size in bytes (0 if void).
     pub return_size: u32,
 }
+impl std::fmt::Debug for HewHandlerMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewHandlerMeta")
+            .field("name", &self.name)
+            .field("msg_type", &self.msg_type)
+            .field("param_count", &self.param_count)
+            .field("params", &self.params)
+            .field("return_type", &self.return_type)
+            .field("return_size", &self.return_size)
+            .finish()
+    }
+}
 
 /// Describes an actor's complete message interface.
-#[derive(Debug)]
 #[repr(C)]
 pub struct HewActorMeta {
     /// Actor type name (NUL-terminated C string).
@@ -126,10 +150,25 @@ pub struct HewActorMeta {
     /// Pointer to array of `handler_count` [`HewHandlerMeta`] entries.
     pub handlers: *const HewHandlerMeta,
 }
+impl std::fmt::Debug for HewActorMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HewActorMeta")
+            .field("name", &self.name)
+            .field("handler_count", &self.handler_count)
+            .field("handlers", &self.handlers)
+            .finish()
+    }
+}
 
-/// Registered actor metadata. Populated by codegen via
+/// Combined metadata registry + cache state.
+struct MetaState {
+    registry: HashMap<String, ActorMetaEntry>,
+    cache_all: Option<String>,
+}
+
+/// Registered actor metadata and cache state. Populated by codegen via
 /// [`hew_wasm_register_actor_meta`].
-static META_REGISTRY: WasmCell<Option<Vec<ActorMetaEntry>>> = WasmCell::new(None);
+static META_STATE: OnceLock<Mutex<MetaState>> = OnceLock::new();
 
 /// Owned metadata entry (strings are heap-allocated copies).
 struct ActorMetaEntry {
@@ -152,14 +191,17 @@ struct ParamMetaEntry {
     size: u32,
 }
 
-fn meta_registry() -> &'static mut Vec<ActorMetaEntry> {
-    // SAFETY: WASM is single-threaded.
-    unsafe { META_REGISTRY.get_mut().get_or_insert_with(Vec::new) }
+fn meta_state() -> MutexGuard<'static, MetaState> {
+    META_STATE
+        .get_or_init(|| {
+            Mutex::new(MetaState {
+                registry: HashMap::new(),
+                cache_all: None,
+            })
+        })
+        .lock()
+        .expect("bridge metadata state mutex poisoned")
 }
-
-/// Cached JSON output from [`hew_wasm_query_meta`]. Invalidated when new
-/// metadata is registered.
-static META_JSON_CACHE: WasmCell<Option<String>> = WasmCell::new(None);
 
 // ── Host → WASM: send a message to a named actor ───────────────────────
 
@@ -228,7 +270,10 @@ pub unsafe extern "C" fn hew_wasm_send(
     //  32: state_size (8 bytes, usize)
     //  40: dispatch (8 bytes, Option<fn>)
     //  48: mailbox (8 bytes, *mut c_void)
-    const MAILBOX_OFFSET: usize = 48;
+    const MAILBOX_OFFSET: usize = std::mem::offset_of!(HewActor, mailbox);
+
+    // Verify offsets match expectations (checked at compile time).
+    const _: () = assert!(MAILBOX_OFFSET == 48);
 
     // SAFETY: actor_ptr is a valid HewActor pointer from the registry.
     let mailbox_ptr = unsafe {
@@ -250,7 +295,11 @@ pub unsafe extern "C" fn hew_wasm_send(
     // actor_state is at offset 56 (after mailbox at 48):
     //  48: mailbox (8 bytes)
     //  56: actor_state (4 bytes, AtomicI32)
-    const ACTOR_STATE_OFFSET: usize = 56;
+    const ACTOR_STATE_OFFSET: usize = std::mem::offset_of!(HewActor, actor_state);
+
+    // Verify offsets match expectations (checked at compile time).
+    const _: () = assert!(ACTOR_STATE_OFFSET == 56);
+
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable
 
@@ -298,7 +347,7 @@ pub unsafe extern "C" fn hew_wasm_emit(msg_type: i32, data_ptr: *const c_void, d
     let source = String::new();
 
     outbound_queue().push_back(OutboundMsg {
-        source,
+        _source: source,
         msg_type,
         data,
     });
@@ -332,7 +381,7 @@ pub unsafe extern "C" fn hew_wasm_recv(out_buf: *mut u8, buf_len: usize) -> i32 
         return 0;
     }
 
-    let queue = outbound_queue();
+    let mut queue = outbound_queue();
     let mut offset = 0usize;
 
     while let Some(front) = queue.front() {
@@ -466,20 +515,11 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
         });
     }
 
-    let reg = meta_registry();
-
-    // Replace existing entry for the same actor name.
-    if let Some(existing) = reg.iter_mut().find(|e| e.name == name) {
-        existing.handlers = handlers;
-    } else {
-        reg.push(ActorMetaEntry { name, handlers });
-    }
-
-    // Invalidate cache.
-    // SAFETY: single-threaded WASM.
-    unsafe {
-        *META_JSON_CACHE.get_mut() = None;
-    }
+    let mut state = meta_state();
+    state
+        .registry
+        .insert(name.clone(), ActorMetaEntry { name, handlers });
+    state.cache_all = None;
 }
 
 /// Read a NUL-terminated C string into an owned `String`.
@@ -505,9 +545,8 @@ unsafe fn cstr_to_string(ptr: *const u8) -> String {
 /// If `name_ptr` is non-null (pointing to `name_len` UTF-8 bytes), returns
 /// metadata for that specific actor (or `{"actors":{}}` if not found).
 ///
-/// Returns a pointer to a NUL-terminated JSON string. The pointer is valid
-/// until the next call to `hew_wasm_register_actor_meta` or
-/// `hew_wasm_query_meta`.
+/// Returns an owned pointer to a NUL-terminated JSON string. The caller owns
+/// the allocation and must free it with [`hew_wasm_free_meta_json`].
 ///
 /// The returned `*out_len` is set to the string length (excluding NUL).
 ///
@@ -529,48 +568,70 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
         std::str::from_utf8(bytes).ok()
     };
 
-    // Build JSON (or use cache for the all-actors case).
-    let json = if filter_name.is_none() {
-        // SAFETY: single-threaded.
-        unsafe {
-            let cache = META_JSON_CACHE.get_mut();
-            if cache.is_none() {
-                *cache = Some(build_meta_json(None));
-            }
-            cache.as_ref().unwrap()
+    let mut state = meta_state();
+    let json_owned = if let Some(filter_name) = filter_name {
+        if let Some(entry) = state.registry.get(filter_name) {
+            build_meta_json(std::iter::once(entry))
+        } else {
+            build_meta_json(std::iter::empty())
         }
     } else {
-        // Per-actor query: always rebuild (cheap for one actor).
-        // SAFETY: single-threaded.
-        unsafe {
-            let cache = META_JSON_CACHE.get_mut();
-            *cache = Some(build_meta_json(filter_name));
-            cache.as_ref().unwrap()
+        if state.cache_all.is_none() {
+            state.cache_all = Some(build_meta_json(state.registry.values()));
+        }
+        state
+            .cache_all
+            .as_ref()
+            .expect("metadata JSON cache should always contain a value")
+            .clone()
+    };
+    drop(state);
+
+    let c_json = match CString::new(json_owned) {
+        Ok(s) => s,
+        Err(_) => {
+            if !out_len.is_null() {
+                // SAFETY: Caller guarantees out_len is valid.
+                unsafe { *out_len = 0 };
+            }
+            return std::ptr::null();
         }
     };
+    let json_len = c_json.as_bytes().len();
+    let json_ptr = c_json.into_raw().cast::<u8>();
 
     if !out_len.is_null() {
         // SAFETY: Caller guarantees out_len is valid.
-        unsafe { *out_len = json.len() };
+        unsafe { *out_len = json_len };
     }
 
-    json.as_ptr()
+    json_ptr
+}
+
+/// Free a JSON string returned by [`hew_wasm_query_meta`].
+///
+/// # Safety
+///
+/// `ptr` must be a pointer returned by [`hew_wasm_query_meta`] that has not
+/// already been freed.
+#[cfg_attr(not(test), no_mangle)]
+pub unsafe extern "C" fn hew_wasm_free_meta_json(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees ptr came from CString::into_raw.
+    let _ = unsafe { CString::from_raw(ptr.cast()) };
 }
 
 /// Build a JSON string describing actor metadata.
-fn build_meta_json(filter_name: Option<&str>) -> String {
-    let reg = meta_registry();
-
+fn build_meta_json<'a, I>(entries: I) -> String
+where
+    I: IntoIterator<Item = &'a ActorMetaEntry>,
+{
     let mut json = String::from("{\"actors\":{");
     let mut first_actor = true;
 
-    for entry in reg.iter() {
-        if let Some(name) = filter_name {
-            if entry.name != name {
-                continue;
-            }
-        }
-
+    for entry in entries {
         if !first_actor {
             json.push(',');
         }
@@ -655,26 +716,20 @@ fn json_escape_into(out: &mut String, s: &str) {
 ///
 /// Sets up the outbound queue and metadata registry.
 pub fn bridge_init() {
-    // SAFETY: single-threaded WASM.
-    unsafe {
-        if OUTBOUND.get_mut().is_none() {
-            *OUTBOUND.get_mut() = Some(VecDeque::new());
-        }
-        if META_REGISTRY.get_mut().is_none() {
-            *META_REGISTRY.get_mut() = Some(Vec::new());
-        }
-    }
+    let _ = OUTBOUND.get_or_init(|| Mutex::new(VecDeque::new()));
+    let _ = META_STATE.get_or_init(|| {
+        Mutex::new(MetaState {
+            registry: HashMap::new(),
+            cache_all: None,
+        })
+    });
 }
 
 /// Shut down the bridge, draining queues.
 pub fn bridge_shutdown() {
-    // SAFETY: single-threaded WASM.
-    unsafe {
-        if let Some(ref mut q) = *OUTBOUND.get_mut() {
-            q.clear();
-        }
-        *META_JSON_CACHE.get_mut() = None;
-    }
+    outbound_queue().clear();
+    let mut state = meta_state();
+    state.cache_all = None;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -682,17 +737,15 @@ pub fn bridge_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    // Serialize tests to avoid data races on static mut globals.
+    // Serialize tests to avoid inter-test mutation races on shared globals.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_bridge() {
-        unsafe {
-            *OUTBOUND.get_mut() = Some(VecDeque::new());
-            *META_REGISTRY.get_mut() = Some(Vec::new());
-            *META_JSON_CACHE.get_mut() = None;
-        }
+        outbound_queue().clear();
+        let mut state = meta_state();
+        state.registry.clear();
+        state.cache_all = None;
     }
 
     #[test]
@@ -823,6 +876,7 @@ mod tests {
 
         let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
         assert_eq!(json, "{\"actors\":{}}");
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]
@@ -865,6 +919,7 @@ mod tests {
         assert!(json.contains("\"offset\":0"));
         assert!(json.contains("\"size\":8"));
         assert!(json.contains("\"return_type\":null"));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]
@@ -916,6 +971,61 @@ mod tests {
         assert!(json.contains("\"ping\""));
         // Should NOT contain the other actor.
         assert!(!json.contains("\"Ponger\""));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
+    }
+
+    #[test]
+    fn filtered_query_does_not_poison_unfiltered_cache() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        reset_bridge();
+
+        let h1 = HewHandlerMeta {
+            name: b"ping\0".as_ptr(),
+            msg_type: 0,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let m1 = HewActorMeta {
+            name: b"Pinger\0".as_ptr(),
+            handler_count: 1,
+            handlers: &h1,
+        };
+
+        let h2 = HewHandlerMeta {
+            name: b"pong\0".as_ptr(),
+            msg_type: 0,
+            param_count: 0,
+            params: std::ptr::null(),
+            return_type: std::ptr::null(),
+            return_size: 0,
+        };
+        let m2 = HewActorMeta {
+            name: b"Ponger\0".as_ptr(),
+            handler_count: 1,
+            handlers: &h2,
+        };
+
+        unsafe {
+            hew_wasm_register_actor_meta(&m1);
+            hew_wasm_register_actor_meta(&m2);
+        }
+
+        let name = b"Pinger";
+        let mut filtered_len: usize = 0;
+        let filtered_ptr =
+            unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &mut filtered_len) };
+        unsafe { hew_wasm_free_meta_json(filtered_ptr.cast_mut()) };
+
+        let mut all_len: usize = 0;
+        let all_ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut all_len) };
+        let json =
+            unsafe { std::str::from_utf8(std::slice::from_raw_parts(all_ptr, all_len)).unwrap() };
+
+        assert!(json.contains("\"Pinger\""));
+        assert!(json.contains("\"Ponger\""));
+        unsafe { hew_wasm_free_meta_json(all_ptr.cast_mut()) };
     }
 
     #[test]
@@ -944,6 +1054,7 @@ mod tests {
         let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
 
         assert!(json.contains("\"return_type\":{\"type\":\"i64\",\"size\":8}"));
+        unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
     #[test]

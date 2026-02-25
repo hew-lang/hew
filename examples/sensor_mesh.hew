@@ -1,0 +1,84 @@
+// Sensor mesh — distributed actor service pattern
+//
+// A temperature monitoring system with three actor types:
+//   Sensor   — periodically publishes readings
+//   Monitor  — aggregates readings, detects anomalies
+//   Logger   — writes events to a log
+//
+// In a distributed deployment each would run on its own node.
+// Node::start/shutdown/register/lookup typecheck today; other Node APIs
+// (for example Node::connect/load_keys/allow_peer) are runtime-only for now.
+
+actor Logger {
+    let count: i32;
+
+    receive fn log_event(source: String, msg: String) {
+        self.count = self.count + 1;
+        println(f"[log #{self.count}] {source}: {msg}");
+    }
+}
+
+actor Monitor {
+    let readings: Vec<i32>;
+    let logger: ActorRef<Logger>;
+    let threshold: i32;
+
+    receive fn reading(sensor_id: String, temp: i32) {
+        self.readings.push(temp);
+
+        if temp > self.threshold {
+            self.logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {self.threshold}");
+        }
+
+        if self.readings.len() % 3 == 0 {
+            var sum = 0;
+            for i in 0..self.readings.len() {
+                sum = sum + self.readings.get(i);
+            }
+            let avg = sum / self.readings.len();
+            self.logger.log_event("monitor", f"avg={avg} over {self.readings.len()} readings");
+        }
+    }
+}
+
+actor Sensor {
+    let sensor_id: String;
+    let monitor: ActorRef<Monitor>;
+    let base_temp: i32;
+
+    receive fn tick(cycle: i32) {
+        // Simulate temperature with variation
+        let temp = self.base_temp + cycle % 5 - 2;
+        self.monitor.reading(self.sensor_id, temp);
+    }
+}
+
+fn main() {
+    println("=== Sensor Mesh Demo ===");
+
+    // ── In distributed mode, each of these would be on a different node:
+    // Node::start("0.0.0.0:9000");  // logger node
+    let logger = spawn Logger;
+    // Node::register("logger", logger);
+
+    // Node::start("0.0.0.0:9001");  // monitor node
+    // let logger = Node::lookup("logger");
+    let empty: Vec<i32> = Vec::new();
+    let monitor = spawn Monitor(readings: empty, logger: logger, threshold: 30);
+    // Node::register("monitor", monitor);
+
+    // Node::start("0.0.0.0:9002");  // sensor node
+    // let monitor = Node::lookup("monitor");
+    let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
+    let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
+
+    // Simulate 6 ticks
+    for cycle in 0..6 {
+        s1.tick(cycle);
+        s2.tick(cycle);
+        sleep_ms(30);
+    }
+
+    sleep_ms(200);
+    println("=== Done ===");
+}

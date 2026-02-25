@@ -147,7 +147,7 @@ pub struct HewActor {
     pub actor_state: AtomicI32,
 
     /// Messages to process per activation.
-    pub budget: i32,
+    pub budget: AtomicI32,
 
     /// Saved initial state for supervisor restart (deep copy).
     pub init_state: *mut c_void,
@@ -188,7 +188,7 @@ pub struct HewActor {
 
     /// Number of consecutive idle activations before hibernation.
     /// 0 disables hibernation (default).
-    pub hibernation_threshold: i32,
+    pub hibernation_threshold: AtomicI32,
 
     /// Whether the actor is currently hibernating.
     /// Set to 1 when `idle_count` >= `hibernation_threshold`.
@@ -215,8 +215,8 @@ pub struct HewActor {
 // the scheduler/actor lifecycle which ensures exclusive access during
 // activation (CAS `RUNNABLE` → `RUNNING`).
 unsafe impl Send for HewActor {}
-// SAFETY: Concurrent reads of atomic fields are safe. Non-atomic fields
-// are only mutated by the owning worker thread after CAS acquisition.
+// SAFETY: Concurrent reads/writes of shared mutable fields use atomics.
+// Raw-pointer fields are lifecycle-managed by scheduler CAS transitions.
 unsafe impl Sync for HewActor {}
 
 impl std::fmt::Debug for HewActor {
@@ -225,7 +225,7 @@ impl std::fmt::Debug for HewActor {
             .field("id", &self.id)
             .field("pid", &self.pid)
             .field("actor_state", &self.actor_state)
-            .field("budget", &self.budget)
+            .field("budget", &self.budget.load(Ordering::Relaxed))
             .field("arena", &self.arena)
             .finish_non_exhaustive()
     }
@@ -236,8 +236,7 @@ impl std::fmt::Debug for HewActor {
 /// Monotonically increasing actor serial counter.
 static NEXT_ACTOR_SERIAL: AtomicU64 = AtomicU64::new(1);
 
-/// Monotonically increasing actor PID counter.
-static NEXT_PID: AtomicU64 = AtomicU64::new(1);
+// PID is now unified with id — actors use location-transparent IDs everywhere.
 
 // ── Live actor tracking ────────────────────────────────────────────────
 
@@ -331,9 +330,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // SAFETY: All workers have been joined, so no actor can be
-        // Running or Runnable. The actor was allocated by a spawn
-        // function and has not been freed yet.
+        // SAFETY: All workers have been joined, so no actor can be Running or Runnable.
+        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
     }
 }
@@ -358,8 +356,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
-        // SAFETY: No dispatch is in progress. The actor was allocated
-        // by a spawn function and has not been freed yet.
+        // SAFETY: No dispatch is in progress.
+        // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
     }
 }
@@ -521,16 +519,17 @@ pub unsafe extern "C" fn hew_actor_spawn(
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
     }
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id (location-transparent)
         state: actor_state,
         state_size,
         dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -540,7 +539,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -601,16 +600,17 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         HEW_MSG_BUDGET
     };
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id (location-transparent)
         state: actor_state,
         state_size: opts.state_size,
         dispatch: opts.dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget,
+        budget: AtomicI32::new(budget),
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
@@ -620,7 +620,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -662,16 +662,17 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
     }
 
+    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed)),
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        id: actor_id,
+        pid: actor_id, // unified: pid == id
         state: actor_state,
         state_size,
         dispatch,
         mailbox: mailbox.cast(),
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -681,7 +682,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -721,6 +722,62 @@ pub unsafe extern "C" fn hew_actor_send(
 ) {
     // SAFETY: Caller guarantees `actor` is valid.
     unsafe { actor_send_internal(actor, msg_type, data, size) };
+}
+
+/// Send a message to an actor by actor ID.
+///
+/// Returns 0 on success, -1 if the actor ID is not currently live.
+///
+/// # Safety
+///
+/// `data` must point to at least `size` readable bytes, or be null when
+/// `size` is 0.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_by_id(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> c_int {
+    let sent_local = {
+        let guard = match LIVE_ACTORS.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        guard.as_ref().is_some_and(|set| {
+            set.iter().any(|ptr| {
+                let actor = ptr.0;
+                if actor.is_null() {
+                    return false;
+                }
+                // SAFETY: `actor` pointers in LIVE_ACTORS originate from spawn
+                // functions and are removed on free.
+                let matches = unsafe { (&*actor).id == actor_id };
+                if matches {
+                    // SAFETY: actor pointer was discovered while LIVE_ACTORS is
+                    // locked, so it cannot be concurrently untracked/freed
+                    // during this send.
+                    unsafe { actor_send_internal(actor, msg_type, data, size) };
+                    true
+                } else {
+                    false
+                }
+            })
+        })
+    };
+
+    if sent_local {
+        return 0;
+    }
+
+    // Actor not found locally. If the PID belongs to a remote node,
+    // route through the distributed node infrastructure.
+    if crate::pid::hew_pid_is_local(actor_id) == 0 {
+        // SAFETY: data validity is guaranteed by caller contract.
+        return unsafe { crate::hew_node::try_remote_send(actor_id, msg_type, data, size) };
+    }
+    -1
 }
 
 /// Try to send a message, returning an error code on failure.
@@ -810,8 +867,7 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     unsafe { hew_actor_close(actor) };
 
-    // SAFETY: Caller guarantees `actor` is valid; pointer remains valid
-    // throughout this function.
+    // SAFETY: Caller guarantees `actor` is valid and remains valid throughout this function.
     let a = unsafe { &*actor };
     let mb = a.mailbox.cast::<HewMailbox>();
 
@@ -825,8 +881,8 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 
 /// Free an actor and all associated resources.
 ///
-/// Spin-waits if the actor is currently being activated (state =
-/// `Running`), then frees state, mailbox, and the actor itself.
+/// Spin-waits until the actor reaches a terminal state, then frees state,
+/// mailbox, and the actor itself.
 ///
 /// # Safety
 ///
@@ -849,10 +905,20 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
-    // Spin-wait while actor is running or runnable (queued in scheduler).
+    // Wait until actor reaches a terminal or idle state (with timeout).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let state = a.actor_state.load(Ordering::Acquire);
-        if state != HewActorState::Running as i32 && state != HewActorState::Runnable as i32 {
+        if state == HewActorState::Stopped as i32
+            || state == HewActorState::Crashed as i32
+            || state == HewActorState::Idle as i32
+        {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            // Actor didn't reach terminal state in time — proceed with
+            // cleanup to avoid hanging.  This can happen when freeing
+            // actors that were never fully scheduled.
             break;
         }
         std::thread::yield_now();
@@ -874,15 +940,15 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_budget(actor: *mut HewActor, budget: u32) {
     // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &mut *actor };
+    let a = unsafe { &*actor };
     #[expect(
         clippy::cast_possible_wrap,
         reason = "budget values are small positive integers, well within i32 range"
     )]
     if budget == 0 {
-        a.budget = HEW_MSG_BUDGET;
+        a.budget.store(HEW_MSG_BUDGET, Ordering::Relaxed);
     } else {
-        a.budget = budget as i32;
+        a.budget.store(budget as i32, Ordering::Relaxed);
     }
 }
 
@@ -899,7 +965,7 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
         clippy::cast_sign_loss,
         reason = "budget is always set to a positive value"
     )]
-    let result = a.budget as u32;
+    let result = a.budget.load(Ordering::Relaxed) as u32;
     result
 }
 
@@ -962,8 +1028,9 @@ pub unsafe extern "C" fn hew_actor_set_hibernation(actor: *mut HewActor, thresho
         return;
     }
     // SAFETY: Caller guarantees `actor` is valid.
-    let a = unsafe { &mut *actor };
-    a.hibernation_threshold = threshold.max(0);
+    let a = unsafe { &*actor };
+    a.hibernation_threshold
+        .store(threshold.max(0), Ordering::Relaxed);
     // Reset hibernation state when threshold changes.
     a.idle_count.store(0, Ordering::Relaxed);
     a.hibernating.store(0, Ordering::Relaxed);
@@ -1137,7 +1204,7 @@ pub unsafe extern "C" fn hew_actor_ask(
         return ptr::null_mut();
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1203,7 +1270,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         return ptr::null_mut();
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1230,7 +1297,7 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         // Timeout: mark the channel as cancelled so the late replier
         // handles cleanup instead of us freeing it (which would be UAF).
         // SAFETY: ch is valid; the actor holding the channel pointer will
-        // check this flag in hew_reply and free the channel at that point.
+        // SAFETY: check this flag in hew_reply and free the channel at that point.
         unsafe { (*ch).cancelled.store(true, Ordering::Release) };
     } else {
         // Got a reply — we own the channel and can free it.
@@ -1276,7 +1343,7 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
         return;
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
-    // unaligned, so write_unaligned is required.
+    // SAFETY: unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1418,7 +1485,7 @@ pub extern "C" fn hew_panic() {
     // into a trap instruction.
     //
     // SAFETY: Intentional null dereference to trigger SIGSEGV, which the
-    // crash signal handler catches and recovers from via siglongjmp.
+    // SAFETY: crash signal handler catches and recovers from via siglongjmp.
     unsafe {
         core::ptr::write_volatile(core::ptr::null_mut::<i32>(), 0xDEAD_i32);
     }
@@ -1573,20 +1640,22 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: Caller guarantees `state` validity (second copy for restart).
     let init_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: hew_mailbox_new is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new() };
 
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size,
         dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -1596,7 +1665,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -1621,21 +1690,24 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
     capacity: i32,
 ) -> *mut HewActor {
+    // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: Caller guarantees `state` validity (second copy for restart).
     let init_state = unsafe { deep_copy_state(state, state_size) };
+    // SAFETY: hew_mailbox_new_bounded is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new_bounded(capacity) };
 
     let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size,
         dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: HEW_MSG_BUDGET,
+        budget: AtomicI32::new(HEW_MSG_BUDGET),
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
@@ -1645,7 +1717,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -1668,16 +1740,21 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     if opts.is_null() {
         return ptr::null_mut();
     }
+    // SAFETY: Caller guarantees `opts` points to a valid HewActorOpts.
     let opts = unsafe { &*opts };
 
+    // SAFETY: Caller guarantees opts.init_state is readable for opts.state_size bytes.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
+    // SAFETY: Same as above (second copy for restart).
     let init_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
         let policy = parse_overflow_policy(opts.overflow);
+        // SAFETY: Trusted FFI constructor; capacity/policy were derived from opts above.
         unsafe { hew_mailbox_new_with_policy(capacity, policy) }
     } else {
+        // SAFETY: Trusted FFI constructor for an unbounded mailbox.
         unsafe { hew_mailbox_new() }
     };
 
@@ -1691,13 +1768,13 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: serial,
-        pid: NEXT_PID.fetch_add(1, Ordering::Relaxed),
+        pid: serial, // unified: pid == id,
         state: actor_state,
         state_size: opts.state_size,
         dispatch: opts.dispatch,
         mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget,
+        budget: AtomicI32::new(budget),
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
@@ -1707,7 +1784,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
         reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
         idle_count: AtomicI32::new(0),
-        hibernation_threshold: 0,
+        hibernation_threshold: AtomicI32::new(0),
         hibernating: AtomicI32::new(0),
         prof_messages_processed: AtomicU64::new(0),
         prof_processing_time_ns: AtomicU64::new(0),
@@ -1762,7 +1839,9 @@ pub unsafe extern "C" fn hew_actor_try_send(
     data: *mut c_void,
     size: usize,
 ) -> i32 {
+    // SAFETY: Caller guarantees `actor` is a valid pointer.
     let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer for the actor's lifetime.
     let result = unsafe { hew_mailbox_send(a.mailbox, msg_type, data, size) };
     if result != 0 {
         return result;
@@ -1773,6 +1852,7 @@ pub unsafe extern "C" fn hew_actor_try_send(
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
         a.idle_count.store(0, Ordering::Relaxed);
         a.hibernating.store(0, Ordering::Relaxed);
+        // SAFETY: actor is valid.
         unsafe { hew_wasm_sched_enqueue(actor.cast()) };
     }
 
@@ -1806,9 +1886,12 @@ pub unsafe extern "C" fn hew_actor_ask(
     // SAFETY: malloc for packed buffer.
     let packed = unsafe { libc::malloc(total) };
     if packed.is_null() {
+        // SAFETY: ch was created by hew_reply_channel_new above.
         unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
         return ptr::null_mut();
     }
+    // SAFETY: packed is a total-byte malloc allocation; data is readable for size bytes when non-null.
+    // SAFETY: reply channel pointer slot may be unaligned, so write_unaligned is required.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
@@ -1818,7 +1901,9 @@ pub unsafe extern "C" fn hew_actor_ask(
     }
 
     // Send the packed message.
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+    // SAFETY: a.mailbox is a valid mailbox pointer.
     unsafe { hew_mailbox_send(a.mailbox, msg_type, packed, total) };
     // SAFETY: packed buffer ownership transferred to mailbox (deep-copied).
     unsafe { libc::free(packed) };
@@ -1827,6 +1912,7 @@ pub unsafe extern "C" fn hew_actor_ask(
     if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {
         a.actor_state
             .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor is valid.
         unsafe { hew_wasm_sched_enqueue(actor.cast()) };
     }
 
@@ -1835,7 +1921,9 @@ pub unsafe extern "C" fn hew_actor_ask(
     unsafe { hew_sched_run() };
 
     // Read the reply and free the channel.
+    // SAFETY: ch is a valid reply channel pointer created above.
     let reply = unsafe { reply_channel_wasm::reply_take(ch) };
+    // SAFETY: ch was created by hew_reply_channel_new and is no longer needed.
     unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
 
     reply
@@ -1849,10 +1937,12 @@ pub unsafe extern "C" fn hew_actor_ask(
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Close the mailbox.
     if !a.mailbox.is_null() {
+        // SAFETY: a.mailbox is a valid mailbox pointer.
         unsafe { hew_mailbox_close(a.mailbox) };
     }
 
@@ -1873,12 +1963,15 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
+    // SAFETY: Caller guarantees `actor` is valid.
     unsafe { hew_actor_close(actor) };
 
+    // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Send a system shutdown message (-1).
     if !a.mailbox.is_null() {
+        // SAFETY: a.mailbox is a valid mailbox pointer.
         unsafe { hew_mailbox_send_sys(a.mailbox, -1, ptr::null_mut(), 0) };
     }
 }

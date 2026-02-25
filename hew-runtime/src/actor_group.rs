@@ -26,17 +26,13 @@ static DEATH_NOTIFIERS: LazyLock<std::sync::Mutex<HashMap<u64, Vec<Arc<std::sync
 
 /// Register a condvar to be notified when `actor_id` dies.
 fn register_death_notifier(actor_id: u64, cv: Arc<std::sync::Condvar>) {
-    let mut map = DEATH_NOTIFIERS
-        .lock()
-        .expect("death_notifiers lock poisoned");
+    let mut map = DEATH_NOTIFIERS.lock().unwrap_or_else(|e| e.into_inner());
     map.entry(actor_id).or_default().push(cv);
 }
 
 /// Unregister all condvar entries for `actor_id` that point to `cv`.
 fn unregister_death_notifier(actor_id: u64, cv: &Arc<std::sync::Condvar>) {
-    let mut map = DEATH_NOTIFIERS
-        .lock()
-        .expect("death_notifiers lock poisoned");
+    let mut map = DEATH_NOTIFIERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(list) = map.get_mut(&actor_id) {
         list.retain(|c| !Arc::ptr_eq(c, cv));
         if list.is_empty() {
@@ -49,9 +45,7 @@ fn unregister_death_notifier(actor_id: u64, cv: &Arc<std::sync::Condvar>) {
 ///
 /// Called from actor death paths (trap, self-stop finalisation).
 pub(crate) fn notify_actor_death(actor_id: u64) {
-    let map = DEATH_NOTIFIERS
-        .lock()
-        .expect("death_notifiers lock poisoned");
+    let map = DEATH_NOTIFIERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(condvars) = map.get(&actor_id) {
         for cv in condvars {
             cv.notify_all();
@@ -141,7 +135,7 @@ pub unsafe extern "C" fn hew_actor_group_add(g: *mut HewActorGroup, actor: *mut 
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &mut *g };
 
-    let _guard = group.lock.lock().expect("actor_group mutex poisoned");
+    let _guard = group.lock.lock().unwrap_or_else(|e| e.into_inner());
 
     // Register death notifier so wait_all wakes immediately on actor death.
     let a = actor.cast::<HewActor>();
@@ -197,7 +191,7 @@ pub unsafe extern "C" fn hew_actor_group_wait_all(g: *mut HewActorGroup) {
     let group = unsafe { &*g };
 
     loop {
-        let guard = group.lock.lock().expect("actor_group mutex poisoned");
+        let guard = group.lock.lock().unwrap_or_else(|e| e.into_inner());
         if all_stopped(group) {
             return;
         }
@@ -205,7 +199,7 @@ pub unsafe extern "C" fn hew_actor_group_wait_all(g: *mut HewActorGroup) {
         let _guard = group
             .done_cond
             .wait_timeout(guard, std::time::Duration::from_millis(10))
-            .expect("actor_group mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
     }
 }
 
@@ -241,14 +235,14 @@ pub unsafe extern "C" fn hew_actor_group_wait_timeout(
             return HewError::ErrTimeout as i32;
         }
 
-        let guard = group.lock.lock().expect("actor_group mutex poisoned");
+        let guard = group.lock.lock().unwrap_or_else(|e| e.into_inner());
         if all_stopped(group) {
             return 0;
         }
         let _guard = group
             .done_cond
             .wait_timeout(guard, std::time::Duration::from_millis(10))
-            .expect("actor_group mutex poisoned");
+            .unwrap_or_else(|e| e.into_inner());
     }
 }
 
@@ -271,7 +265,7 @@ pub unsafe extern "C" fn hew_actor_group_stop_all(g: *mut HewActorGroup) {
     // SAFETY: Caller guarantees `g` is valid.
     let group = unsafe { &*g };
 
-    let _guard = group.lock.lock().expect("actor_group mutex poisoned");
+    let _guard = group.lock.lock().unwrap_or_else(|e| e.into_inner());
     for &actor_ptr in &group.actors {
         if !actor_ptr.is_null() {
             // SAFETY: actor pointer is valid per add contract.

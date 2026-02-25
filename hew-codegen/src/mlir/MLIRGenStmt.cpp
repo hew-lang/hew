@@ -944,60 +944,6 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       return;
     }
 
-    if (auto *ie = std::get_if<ast::ExprIdentifier>(&idx->object->value.kind)) {
-      auto varName = ie->name;
-      std::string collStr;
-      if (auto *typeExpr = resolvedTypeOf(idx->object->span))
-        collStr = typeExprToCollectionString(
-            *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
-      if (collStr.empty()) {
-        auto colIt = collectionVarTypes.find(varName);
-        if (colIt != collectionVarTypes.end())
-          collStr = colIt->second;
-      }
-      if (collStr.rfind("Vec<", 0) == 0) {
-        auto inner = collStr.substr(4);
-        if (!inner.empty() && inner.back() == '>')
-          inner.pop_back();
-        auto start = inner.find_first_not_of(' ');
-        if (start != std::string::npos)
-          inner = inner.substr(start);
-        auto end = inner.find_last_not_of(' ');
-        if (end != std::string::npos)
-          inner = inner.substr(0, end + 1);
-
-        mlir::Type elemType;
-        if (inner == "i32" || inner == "I32")
-          elemType = builder.getI32Type();
-        else if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
-          elemType = builder.getI64Type();
-        else if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
-          elemType = builder.getF64Type();
-        else if (inner == "string" || inner == "String" || inner == "str")
-          elemType = hew::StringRefType::get(&context);
-        else if (inner == "bool")
-          elemType = builder.getI1Type();
-        else if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
-          elemType = ptrType;
-        else {
-          auto stIt = structTypes.find(inner);
-          if (stIt != structTypes.end() && stIt->second.mlirType)
-            elemType = stIt->second.mlirType;
-        }
-
-        if (!elemType) {
-          emitError(location) << "unsupported Vec element type '" << inner << "'";
-          return;
-        }
-        auto typedVec = builder
-                            .create<hew::BitcastOp>(location, hew::VecType::get(&context, elemType),
-                                                    collectionVal)
-                            .getResult();
-        rhsVal = coerceType(rhsVal, elemType, location);
-        builder.create<hew::VecSetOp>(location, typedVec, indexVal, rhsVal);
-        return;
-      }
-    }
     emitError(location) << "unsupported indexed assignment target";
     return;
   }
@@ -1672,30 +1618,31 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
 }
 
 void MLIRGen::generateForStmt(const ast::StmtFor &stmt) {
-  auto location = currentLoc;
-
-  // Check if this is a range-based for loop (for i in start..end)
-  bool isRange = false;
   const ast::ExprBinary *rangeExpr = nullptr;
   if (auto *binExpr = std::get_if<ast::ExprBinary>(&stmt.iterable.value.kind)) {
     if (binExpr->op == ast::BinaryOp::Range || binExpr->op == ast::BinaryOp::RangeInclusive) {
-      isRange = true;
       rangeExpr = binExpr;
     }
   }
 
-  if (!isRange) {
-    // Collection-based for loop (for x in vec)
-    generateForCollectionStmt(stmt);
+  if (rangeExpr) {
+    generateForRange(stmt, *rangeExpr);
     return;
   }
 
+  // Collection-based for loop (for x in vec)
+  generateForCollectionStmt(stmt);
+}
+
+void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &rangeExpr) {
+  auto location = currentLoc;
+
   mlir::Value lb = nullptr;
   mlir::Value ub = nullptr;
-  if (rangeExpr->left)
-    lb = generateExpression(rangeExpr->left->value);
-  if (rangeExpr->right)
-    ub = generateExpression(rangeExpr->right->value);
+  if (rangeExpr.left)
+    lb = generateExpression(rangeExpr.left->value);
+  if (rangeExpr.right)
+    ub = generateExpression(rangeExpr.right->value);
 
   if (!lb || !ub)
     return;
@@ -1710,7 +1657,7 @@ void MLIRGen::generateForStmt(const ast::StmtFor &stmt) {
   }
 
   // For inclusive range, add 1 to upper bound
-  if (rangeExpr->op == ast::BinaryOp::RangeInclusive) {
+  if (rangeExpr.op == ast::BinaryOp::RangeInclusive) {
     auto one = builder.create<mlir::arith::ConstantIndexOp>(location, 1);
     ub = builder.create<mlir::arith::AddIOp>(location, ub, one);
   }
@@ -1926,8 +1873,6 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 }
 
 void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
-  auto location = currentLoc;
-
   // Check if the iterable is a generator call or variable
   std::string genFuncName;
   if (auto *callExpr = std::get_if<ast::ExprCall>(&stmt.iterable.value.kind)) {
@@ -1952,12 +1897,6 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   if (!collection)
     return;
 
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-  auto i64Type = builder.getI64Type();
-  auto i32Type = builder.getI32Type();
-  auto i1Type = builder.getI1Type();
-
-  // Determine collection element type
   std::string collType;
   // Prefer resolved type from the type checker
   if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
@@ -1989,9 +1928,28 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
 
   // Check if this is a HashMap iteration
   if (mlir::isa<hew::HashMapType>(collection.getType()) || collType.rfind("HashMap<", 0) == 0) {
-    generateForHashMapStmt(stmt, collection, collType);
+    generateForHashMap(stmt, collection, collType);
     return;
   }
+
+  bool isStringCollection = collType == "bytes" || collType == "string" || collType == "String" ||
+                            collType == "str" ||
+                            mlir::isa<hew::StringRefType>(collection.getType());
+  if (isStringCollection) {
+    generateForString(stmt, collection, collType);
+    return;
+  }
+
+  generateForVec(stmt, collection, collType);
+}
+
+void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
+                             const std::string &collType) {
+  auto location = currentLoc;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i64Type = builder.getI64Type();
+  auto i32Type = builder.getI32Type();
+  auto i1Type = builder.getI1Type();
 
   mlir::Type typedVecElemType;
   if (auto vecType = mlir::dyn_cast<hew::VecType>(collection.getType()))
@@ -2175,8 +2133,13 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   builder.setInsertionPointAfter(whileOp);
 }
 
-void MLIRGen::generateForHashMapStmt(const ast::StmtFor &stmt, mlir::Value collection,
-                                     const std::string &collType) {
+void MLIRGen::generateForString(const ast::StmtFor &stmt, mlir::Value collection,
+                                const std::string &collType) {
+  generateForVec(stmt, collection, collType);
+}
+
+void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collection,
+                                 const std::string &collType) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i64Type = builder.getI64Type();

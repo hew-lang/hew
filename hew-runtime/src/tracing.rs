@@ -396,6 +396,54 @@ pub extern "C" fn hew_trace_reset() {
     CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
 }
 
+// ── Profiler snapshot ───────────────────────────────────────────────────
+
+/// Drain up to 256 trace events and return them as a JSON array.
+///
+/// Each element: `{"trace_id":"HEX32","span_id":N,"parent_span_id":N,"actor_id":N,"event_type":"S","msg_type":N,"timestamp_ns":N}`
+#[cfg(feature = "profiler")]
+pub fn drain_events_json() -> String {
+    use std::fmt::Write as _;
+
+    let mut events = match TRACE_EVENTS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    let count = events.len().min(256);
+    let mut json = String::from("[");
+    for i in 0..count {
+        if let Some(ev) = events.pop_front() {
+            if i > 0 {
+                json.push(',');
+            }
+            let event_type_str = match ev.event_type {
+                SPAN_BEGIN => "begin",
+                SPAN_END => "end",
+                SPAN_SPAWN => "spawn",
+                SPAN_CRASH => "crash",
+                SPAN_STOP => "stop",
+                SPAN_SEND => "send",
+                _ => "unknown",
+            };
+            let _ = write!(
+                json,
+                r#"{{"trace_id":"{:016x}{:016x}","span_id":{},"parent_span_id":{},"actor_id":{},"event_type":"{}","msg_type":{},"timestamp_ns":{}}}"#,
+                ev.trace_id_hi,
+                ev.trace_id_lo,
+                ev.span_id,
+                ev.parent_span_id,
+                ev.actor_id,
+                event_type_str,
+                ev.msg_type,
+                ev.timestamp_ns,
+            );
+        }
+    }
+    json.push(']');
+    json
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]

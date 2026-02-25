@@ -25,9 +25,13 @@ use ratatui::Terminal;
 #[derive(Parser, Debug)]
 #[command(name = "hew-observe", version, about)]
 struct Cli {
-    /// Address of the Hew profiler endpoint (host:port)
+    /// Address of the Hew profiler endpoint (host:port). Backward-compat single-node shorthand.
     #[arg(long, default_value = "localhost:6060")]
     addr: String,
+
+    /// Additional node endpoints for multi-node observation (repeatable).
+    #[arg(long = "node")]
+    node: Vec<String>,
 
     /// Refresh interval in milliseconds
     #[arg(long, default_value_t = 1000)]
@@ -42,8 +46,17 @@ fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let base_url = format!("http://{}", cli.addr);
-    let mut app = App::new(&base_url, cli.demo);
+    let node_addrs = if cli.node.is_empty() {
+        vec![cli.addr.clone()]
+    } else {
+        let mut addrs = cli.node.clone();
+        // Include --addr if explicitly set and not already in --node list
+        if cli.addr != "localhost:6060" && !addrs.contains(&cli.addr) {
+            addrs.insert(0, cli.addr.clone());
+        }
+        addrs
+    };
+    let mut app = App::new(&node_addrs, cli.demo);
     let refresh = Duration::from_millis(cli.refresh_ms);
     let mut last_refresh = Instant::now()
         .checked_sub(refresh)
@@ -122,7 +135,6 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
     }
 
     match app.active_tab {
-        Tab::Overview => {}
         Tab::Actors => match key {
             KeyCode::Up => app.actor_list_prev(),
             KeyCode::Down => app.actor_list_next(),
@@ -143,5 +155,22 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Down => app.crash_list_next(),
             _ => {}
         },
+        Tab::Messages => match key {
+            KeyCode::Up => app.messages_scroll_up(),
+            KeyCode::Down => app.messages_scroll_down(),
+            KeyCode::Char('p' | ' ') => app.messages_toggle_pause(),
+            KeyCode::Char('c') => app.messages_clear_filter(),
+            _ => {}
+        },
+        Tab::Timeline => match key {
+            KeyCode::Left => app.timeline_scroll_left(),
+            KeyCode::Right => app.timeline_scroll_right(),
+            KeyCode::Char('+') => app.timeline_zoom_in(),
+            KeyCode::Char('-') => app.timeline_zoom_out(),
+            KeyCode::Char('p' | ' ') => app.timeline_toggle_pause(),
+            KeyCode::Char('n') => app.timeline_snap_to_now(),
+            _ => {}
+        },
+        Tab::Overview | Tab::Cluster => {}
     }
 }

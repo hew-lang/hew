@@ -91,6 +91,86 @@ pub struct HistoryEntry {
     pub bytes_live: u64,
 }
 
+/// Cluster member from `/api/cluster/members`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ClusterMember {
+    #[serde(default)]
+    pub node_id: u16,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub incarnation: u64,
+    #[serde(default)]
+    pub addr: String,
+    #[serde(default)]
+    pub last_seen_ms: u64,
+}
+
+/// Connection info from `/api/connections`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields deserialized from JSON; used for future display features"
+)]
+pub struct ConnectionInfo {
+    #[serde(default)]
+    pub conn_id: i32,
+    #[serde(default)]
+    pub peer_node_id: u16,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub last_activity_ms: u64,
+}
+
+/// Routing table snapshot from `/api/routing/table`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields deserialized from JSON; used for future display features"
+)]
+pub struct RoutingSnapshot {
+    #[serde(default)]
+    pub local_node_id: u16,
+    #[serde(default)]
+    pub routes: Vec<RouteEntry>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields deserialized from JSON; used for future display features"
+)]
+pub struct RouteEntry {
+    #[serde(default)]
+    pub node_id: u16,
+    #[serde(default)]
+    pub conn_id: i32,
+}
+
+/// Trace event from `/api/traces`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "Fields deserialized from JSON; used for future display features"
+)]
+pub struct TraceEvent {
+    #[serde(default)]
+    pub trace_id: String,
+    #[serde(default)]
+    pub span_id: u64,
+    #[serde(default)]
+    pub parent_span_id: u64,
+    #[serde(default)]
+    pub actor_id: u64,
+    #[serde(default)]
+    pub event_type: String,
+    #[serde(default)]
+    pub msg_type: i32,
+    #[serde(default)]
+    pub timestamp_ns: u64,
+}
+
 /// Connection status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -168,6 +248,126 @@ impl ProfilerClient {
                 self.status = ConnectionStatus::Disconnected;
                 None
             }
+        }
+    }
+
+    pub fn fetch_cluster_members(&mut self) -> Option<Vec<ClusterMember>> {
+        match self
+            .http
+            .get(format!("{}/api/cluster/members", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+
+    pub fn fetch_connections(&mut self) -> Option<Vec<ConnectionInfo>> {
+        match self
+            .http
+            .get(format!("{}/api/connections", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+
+    pub fn fetch_routing(&mut self) -> Option<RoutingSnapshot> {
+        match self
+            .http
+            .get(format!("{}/api/routing/table", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+
+    pub fn fetch_traces(&mut self) -> Option<Vec<TraceEvent>> {
+        match self
+            .http
+            .get(format!("{}/api/traces", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+}
+
+/// Multi-node client wrapping one `ProfilerClient` per node.
+#[derive(Debug)]
+pub struct ClusterClient {
+    pub nodes: Vec<NodeClient>,
+}
+
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "Fields used for future multi-node display features"
+)]
+pub struct NodeClient {
+    pub client: ProfilerClient,
+    pub addr: String,
+    pub node_id: Option<u16>,
+}
+
+impl ClusterClient {
+    pub fn new(addrs: &[String]) -> Self {
+        let nodes = addrs
+            .iter()
+            .map(|addr| {
+                let base_url = format!("http://{addr}");
+                NodeClient {
+                    client: ProfilerClient::new(&base_url),
+                    addr: addr.clone(),
+                    node_id: None,
+                }
+            })
+            .collect();
+        Self { nodes }
+    }
+
+    pub fn status(&self) -> ConnectionStatus {
+        if self
+            .nodes
+            .iter()
+            .any(|n| n.client.status == ConnectionStatus::Connected)
+        {
+            ConnectionStatus::Connected
+        } else if self
+            .nodes
+            .iter()
+            .any(|n| n.client.status == ConnectionStatus::Connecting)
+        {
+            ConnectionStatus::Connecting
+        } else {
+            ConnectionStatus::Disconnected
         }
     }
 }

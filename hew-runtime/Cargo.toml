@@ -28,11 +28,13 @@ export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
 libc = "0.2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Threading/networking deps — not available on wasm32
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
+rand = "0.10"
 socket2 = "0.6"
 
 # Optional ecosystem dependencies

@@ -216,6 +216,7 @@ mod tests {
 
     #[test]
     fn format_default_is_text() {
+        hew_log_set_format(0); // ensure reset for test-ordering safety
         assert_eq!(hew_log_get_format(), 0);
     }
 

@@ -1,526 +1,612 @@
-//! Cross-node (remote) actor supervision for the Hew runtime.
+//! Remote supervision wired to unified [`crate::hew_node::HewNode`].
 //!
-//! Enables a supervisor on one node to monitor and restart actors on
-//! remote nodes via proxy supervision. When a remote actor crashes,
-//! the local supervisor receives a notification and can decide to
-//! restart it on the remote node or escalate.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Node A (supervisor)              Node B (actor)
-//! ┌──────────────────┐             ┌──────────────────┐
-//! │  HewSupervisor   │──monitor──▶ │  Remote Actor    │
-//! │    + RemoteProxy │◀──notify───│                  │
-//! └──────────────────┘             └──────────────────┘
-//! ```
-//!
-//! A `RemoteChildSpec` describes a child actor running on a remote
-//! node. The local supervisor creates a `RemoteProxy` that monitors
-//! the remote actor via the connection manager and handles failure
-//! notifications.
-//!
-//! # Partition Handling
-//!
-//! When a network partition is detected (via cluster membership),
-//! remote children are marked as `PARTITION` instead of `DEAD`.
-//! The supervisor can be configured to either:
-//! - **Escalate**: Notify the parent supervisor.
-//! - **Wait**: Keep the child in `PARTITION` state until reconnect.
-//! - **Restart locally**: Spawn a replacement on the local node.
-//!
-//! # C ABI
-//!
-//! - [`hew_remote_sup_add_child`] — Add a remote child to a supervisor.
-//! - [`hew_remote_sup_remove_child`] — Remove a remote child.
-//! - [`hew_remote_sup_notify`] — Notify supervisor of remote event.
-//! - [`hew_remote_sup_child_count`] — Count remote children.
-//! - [`hew_remote_sup_set_partition_policy`] — Set partition handling.
+//! This is scaffolding for remote restart orchestration. It currently monitors
+//! remote PIDs, watches SWIM membership for remote node death, and invokes a
+//! callback when monitored actors are considered dead.
 
-use std::ffi::c_int;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::ffi::{c_int, c_void};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
-// ── Remote child states ────────────────────────────────────────────────
+use crate::cluster::{
+    self, HEW_MEMBERSHIP_EVENT_NODE_DEAD, HEW_MEMBERSHIP_EVENT_NODE_JOINED,
+    HEW_MEMBERSHIP_EVENT_NODE_SUSPECT, MEMBER_DEAD,
+};
+use crate::hew_node::HewNode;
 
-/// Remote child is running normally on the remote node.
-pub const REMOTE_CHILD_ALIVE: i32 = 0;
-/// Remote child has crashed on the remote node.
-pub const REMOTE_CHILD_CRASHED: i32 = 1;
-/// Remote child is being restarted on the remote node.
-pub const REMOTE_CHILD_RESTARTING: i32 = 2;
-/// Remote child is unreachable due to network partition.
-pub const REMOTE_CHILD_PARTITION: i32 = 3;
-/// Remote child has been stopped.
-pub const REMOTE_CHILD_STOPPED: i32 = 4;
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_DEAD_QUARANTINE_MS: u64 = 5_000;
 
-// ── Partition policies ─────────────────────────────────────────────────
-
-/// On partition, escalate to the parent supervisor.
-pub const PARTITION_ESCALATE: i32 = 0;
-/// On partition, keep the child in PARTITION state and wait.
-pub const PARTITION_WAIT: i32 = 1;
-/// On partition, restart the child locally.
-pub const PARTITION_RESTART_LOCAL: i32 = 2;
-
-// ── Remote child spec ──────────────────────────────────────────────────
-
-/// Specification for a remote child actor.
+/// Restart strategy used by remote supervision.
 #[repr(C)]
-#[derive(Debug, Clone)]
-pub struct RemoteChildSpec {
-    /// Actor ID on the remote node.
-    pub remote_actor_id: u64,
-    /// Node ID where the actor lives.
-    pub node_id: u16,
-    /// Current state of the remote child.
-    pub state: i32,
-    /// Number of restarts observed.
-    pub restart_count: u32,
-    /// Maximum restarts before giving up (0 = unlimited).
-    pub max_restarts: u32,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupervisorStrategy {
+    /// Restart only the failed actor.
+    OneForOne = 0,
+    /// Restart all monitored actors together.
+    OneForAll = 1,
 }
 
-/// The remote supervision manager.
-///
-/// Tracks remote child actors and their states. Typically one per
-/// supervisor that has remote children.
-#[derive(Debug)]
-pub struct HewRemoteSup {
-    /// Remote children managed by this supervisor.
-    children: Mutex<Vec<RemoteChildSpec>>,
-    /// Partition handling policy.
-    partition_policy: i32,
-    /// Callback for remote child events.
-    /// Signature: `fn(remote_actor_id: u64, node_id: u16, new_state: i32)`
-    callback: Option<RemoteEventCallback>,
-}
-
-/// Remote event callback type.
-type RemoteEventCallback = unsafe extern "C" fn(u64, u16, i32);
-
-impl HewRemoteSup {
-    fn new() -> Self {
-        Self {
-            children: Mutex::new(Vec::with_capacity(8)),
-            partition_policy: PARTITION_ESCALATE,
-            callback: None,
+impl SupervisorStrategy {
+    fn from_c_int(raw: c_int) -> Option<Self> {
+        match raw {
+            0 => Some(Self::OneForOne),
+            1 => Some(Self::OneForAll),
+            _ => None,
         }
     }
 }
 
-// ── C ABI ──────────────────────────────────────────────────────────────
+/// Callback fired when a monitored actor is considered dead.
+/// Signature: `fn(remote_pid, remote_node_id, reason)`.
+type RemoteDeathCallback = unsafe extern "C" fn(u64, u16, c_int);
 
-/// Create a new remote supervision manager.
+#[derive(Debug, Default)]
+struct QuarantineState {
+    suspect_since: Option<Instant>,
+    pending_dead: bool,
+    notified_dead: bool,
+}
+
+#[derive(Debug)]
+struct RemoteDeathDispatch {
+    callback: RemoteDeathCallback,
+    remote_node_id: u16,
+    monitored: Vec<u64>,
+    strategy: SupervisorStrategy,
+}
+
+impl RemoteDeathDispatch {
+    fn execute(self) {
+        match self.strategy {
+            SupervisorStrategy::OneForOne | SupervisorStrategy::OneForAll => {
+                for remote_pid in self.monitored {
+                    // SAFETY: callback pointer validity is guaranteed by caller contract.
+                    unsafe { (self.callback)(remote_pid, self.remote_node_id, MEMBER_DEAD) };
+                }
+            }
+        }
+    }
+}
+
+fn cluster_subscriptions() -> &'static Mutex<HashMap<usize, Vec<usize>>> {
+    static SUBSCRIPTIONS: OnceLock<Mutex<HashMap<usize, Vec<usize>>>> = OnceLock::new();
+    SUBSCRIPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A remote supervisor monitors actors on a remote node.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewRemoteSupervisor {
+    /// The node this supervisor is running on
+    node: *mut HewNode,
+    /// Remote node being supervised
+    remote_node_id: u16,
+    /// Actors being monitored (remote PIDs)
+    monitored: Mutex<Vec<u64>>,
+    /// Strategy (one-for-one, one-for-all)
+    strategy: SupervisorStrategy,
+    /// Heartbeat interval for liveness checks
+    heartbeat_interval_ms: u64,
+    dead_quarantine_ms: u64,
+    callback: Mutex<Option<RemoteDeathCallback>>,
+    quarantine_state: Mutex<QuarantineState>,
+    running: AtomicBool,
+    heartbeat_thread: Option<JoinHandle<()>>,
+}
+
+impl HewRemoteSupervisor {
+    fn remote_death_dispatch(&self) -> Option<RemoteDeathDispatch> {
+        let callback = *self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(callback) = callback else {
+            return None;
+        };
+
+        let monitored = self
+            .monitored
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Some(RemoteDeathDispatch {
+            callback,
+            remote_node_id: self.remote_node_id,
+            monitored,
+            strategy: self.strategy,
+        })
+    }
+
+    fn reset_quarantine_state(&self) {
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *state = QuarantineState::default();
+    }
+
+    fn process_membership_event(&self, event: u8) -> Option<RemoteDeathDispatch> {
+        let now = Instant::now();
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let quarantine = Duration::from_millis(self.dead_quarantine_ms);
+
+        let should_dispatch = match event {
+            HEW_MEMBERSHIP_EVENT_NODE_JOINED => {
+                *state = QuarantineState::default();
+                false
+            }
+            HEW_MEMBERSHIP_EVENT_NODE_SUSPECT => {
+                if state.suspect_since.is_none() {
+                    state.suspect_since = Some(now);
+                }
+                state.pending_dead = true;
+                false
+            }
+            HEW_MEMBERSHIP_EVENT_NODE_DEAD => {
+                if state.notified_dead {
+                    false
+                } else {
+                    let suspect_since = match state.suspect_since {
+                        Some(ts) => ts,
+                        None => {
+                            state.suspect_since = Some(now);
+                            now
+                        }
+                    };
+                    state.pending_dead = true;
+                    if now.duration_since(suspect_since) >= quarantine {
+                        state.pending_dead = false;
+                        state.notified_dead = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+            _ => false,
+        };
+        drop(state);
+
+        if should_dispatch {
+            self.remote_death_dispatch()
+        } else {
+            None
+        }
+    }
+
+    fn poll_quarantine(&self) -> Option<RemoteDeathDispatch> {
+        let now = Instant::now();
+        let quarantine = Duration::from_millis(self.dead_quarantine_ms);
+        let mut state = self
+            .quarantine_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        if !state.pending_dead || state.notified_dead {
+            return None;
+        }
+
+        let Some(suspect_since) = state.suspect_since else {
+            state.suspect_since = Some(now);
+            return None;
+        };
+
+        if now.duration_since(suspect_since) < quarantine {
+            return None;
+        }
+
+        state.pending_dead = false;
+        state.notified_dead = true;
+        drop(state);
+        self.remote_death_dispatch()
+    }
+}
+
+extern "C" fn noop_membership_callback(_node_id: u16, _event: u8, _user_data: *mut c_void) {}
+
+extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
+    if user_data.is_null() {
+        return;
+    }
+
+    let cluster_key = user_data as usize;
+    let mut dispatches = Vec::new();
+    let subscriptions = cluster_subscriptions();
+    let registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(supervisors) = registry.get(&cluster_key) {
+        for sup_addr in supervisors {
+            // SAFETY: pointers are registered by start and removed by stop under the same lock.
+            let sup = unsafe { &*(*sup_addr as *const HewRemoteSupervisor) };
+            if !sup.running.load(Ordering::Acquire) || node_id != sup.remote_node_id {
+                continue;
+            }
+            if let Some(dispatch) = sup.process_membership_event(event) {
+                dispatches.push(dispatch);
+            }
+        }
+    }
+    drop(registry);
+
+    for dispatch in dispatches {
+        dispatch.execute();
+    }
+}
+
+/// Create a new remote supervisor bound to a local node and remote node ID.
 ///
 /// # Safety
 ///
-/// No preconditions.
+/// `node` must be a valid pointer returned by [`crate::hew_node::hew_node_new`].
 #[no_mangle]
-pub extern "C" fn hew_remote_sup_new() -> *mut HewRemoteSup {
-    let sup = Box::new(HewRemoteSup::new());
+pub unsafe extern "C" fn hew_remote_sup_new(
+    node: *mut HewNode,
+    remote_node_id: u16,
+    strategy: c_int,
+) -> *mut HewRemoteSupervisor {
+    if node.is_null() || remote_node_id == 0 {
+        return ptr::null_mut();
+    }
+    let Some(strategy) = SupervisorStrategy::from_c_int(strategy) else {
+        return ptr::null_mut();
+    };
+
+    let sup = Box::new(HewRemoteSupervisor {
+        node,
+        remote_node_id,
+        monitored: Mutex::new(Vec::new()),
+        strategy,
+        heartbeat_interval_ms: DEFAULT_HEARTBEAT_INTERVAL_MS,
+        dead_quarantine_ms: DEFAULT_DEAD_QUARANTINE_MS,
+        callback: Mutex::new(None),
+        quarantine_state: Mutex::new(QuarantineState::default()),
+        running: AtomicBool::new(false),
+        heartbeat_thread: None,
+    });
     Box::into_raw(sup)
 }
 
-/// Destroy a remote supervision manager.
+/// Monitor a remote actor PID.
 ///
-/// # Safety
-///
-/// `sup` must be a valid pointer returned by [`hew_remote_sup_new`],
-/// or null (no-op).
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_free(sup: *mut HewRemoteSup) {
-    if !sup.is_null() {
-        // SAFETY: caller guarantees `sup` is valid.
-        let _ = unsafe { Box::from_raw(sup) };
-    }
-}
-
-/// Add a remote child to the supervisor.
-///
-/// Returns 0 on success, -1 on error (e.g., duplicate).
+/// Returns 0 on success, -1 on error/duplicate.
 ///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_add_child(
-    sup: *mut HewRemoteSup,
-    remote_actor_id: u64,
-    node_id: u16,
-    max_restarts: u32,
+pub unsafe extern "C" fn hew_remote_sup_monitor(
+    sup: *mut HewRemoteSupervisor,
+    remote_pid: u64,
 ) -> c_int {
-    if sup.is_null() {
+    if sup.is_null() || remote_pid == 0 {
         return -1;
     }
+
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    let mut children = match sup.children.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-
-    // Check for duplicate.
-    if children
-        .iter()
-        .any(|c| c.remote_actor_id == remote_actor_id)
-    {
+    let pid_node = crate::pid::hew_pid_node(remote_pid);
+    if pid_node != 0 && pid_node != sup.remote_node_id {
+        return -1;
+    }
+    let mut monitored = sup.monitored.lock().unwrap_or_else(|e| e.into_inner());
+    if monitored.contains(&remote_pid) {
         return -1;
     }
 
-    children.push(RemoteChildSpec {
-        remote_actor_id,
-        node_id,
-        state: REMOTE_CHILD_ALIVE,
-        restart_count: 0,
-        max_restarts,
-    });
+    monitored.push(remote_pid);
     0
 }
 
-/// Remove a remote child from the supervisor.
+/// Stop monitoring a remote actor PID.
 ///
-/// Returns 0 on success, -1 if not found.
+/// Returns 0 on success, -1 if the PID was not monitored.
 ///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_remove_child(
-    sup: *mut HewRemoteSup,
-    remote_actor_id: u64,
+pub unsafe extern "C" fn hew_remote_sup_unmonitor(
+    sup: *mut HewRemoteSupervisor,
+    remote_pid: u64,
 ) -> c_int {
     if sup.is_null() {
         return -1;
     }
+
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    let mut children = match sup.children.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
+    let mut monitored = sup.monitored.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(idx) = monitored.iter().position(|pid| *pid == remote_pid) else {
+        return -1;
     };
 
-    let idx = children
-        .iter()
-        .position(|c| c.remote_actor_id == remote_actor_id);
-    match idx {
-        Some(i) => {
-            children.swap_remove(i);
-            0
-        }
-        None => -1,
-    }
+    monitored.swap_remove(idx);
+    0
 }
 
-/// Notify the remote supervisor of a child event.
-///
-/// `new_state` should be one of the `REMOTE_CHILD_*` constants.
-///
-/// Returns 0 on success, -1 if the child is not found.
+/// Start remote supervision: register SWIM callback and heartbeat tick loop.
 ///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_notify(
-    sup: *mut HewRemoteSup,
-    remote_actor_id: u64,
-    new_state: i32,
-) -> c_int {
+pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> c_int {
     if sup.is_null() {
         return -1;
     }
+
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &mut *sup };
-    let mut children = match sup.children.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-
-    let child = children
-        .iter_mut()
-        .find(|c| c.remote_actor_id == remote_actor_id);
-    let Some(child) = child else { return -1 };
-
-    let node_id = child.node_id;
-
-    match new_state {
-        REMOTE_CHILD_CRASHED => {
-            child.restart_count += 1;
-            if child.max_restarts > 0 && child.restart_count > child.max_restarts {
-                child.state = REMOTE_CHILD_STOPPED;
-            } else {
-                child.state = REMOTE_CHILD_RESTARTING;
-            }
-        }
-        REMOTE_CHILD_PARTITION => {
-            child.state = if sup.partition_policy == PARTITION_RESTART_LOCAL {
-                REMOTE_CHILD_RESTARTING
-            } else {
-                REMOTE_CHILD_PARTITION // ESCALATE and WAIT both use PARTITION state
-            };
-        }
-        _ => {
-            child.state = new_state;
-        }
-    }
-
-    let final_state = child.state;
-    drop(children);
-
-    // Fire callback if registered.
-    if let Some(cb) = sup.callback {
-        // SAFETY: callback is valid per caller contract.
-        unsafe { cb(remote_actor_id, node_id, final_state) };
-    }
-
-    0
-}
-
-/// Return the number of remote children.
-///
-/// # Safety
-///
-/// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_child_count(sup: *mut HewRemoteSup) -> c_int {
-    if sup.is_null() {
+    if sup.running.swap(true, Ordering::AcqRel) {
         return 0;
     }
-    // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &*sup };
-    let children = match sup.children.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "remote child count will not exceed c_int range"
-    )]
+    sup.reset_quarantine_state();
+
+    // SAFETY: `node` is validated by constructor contract.
+    let node = unsafe { &mut *sup.node };
+    if node.cluster.is_null() {
+        sup.running.store(false, Ordering::Release);
+        return -1;
+    }
+
+    let sup_addr = ptr::from_mut::<HewRemoteSupervisor>(sup) as usize;
+    let cluster_key = node.cluster as usize;
+    let subscriptions = cluster_subscriptions();
     {
-        children.len() as c_int
+        let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = registry.entry(cluster_key).or_default();
+        if entry.is_empty() {
+            // SAFETY: cluster pointer is valid while node is alive.
+            unsafe {
+                cluster::hew_cluster_set_membership_callback(
+                    node.cluster,
+                    remote_sup_membership_callback,
+                    cluster_key as *mut c_void,
+                );
+            }
+        }
+        entry.push(sup_addr);
+    }
+
+    let interval_ms = sup.heartbeat_interval_ms.max(10);
+    let cluster_addr = node.cluster as usize;
+
+    let handle = thread::Builder::new()
+        .name(format!("hew-remote-sup-{}", sup.remote_node_id))
+        .spawn(move || {
+            let sup_ptr = sup_addr as *mut HewRemoteSupervisor;
+            loop {
+                // SAFETY: sup_ptr remains valid until stop joins this thread.
+                let keep_running = unsafe { (*sup_ptr).running.load(Ordering::Acquire) };
+                if !keep_running {
+                    break;
+                }
+                // SAFETY: cluster pointer belongs to local node and is valid while supervisor is running.
+                let _ =
+                    unsafe { cluster::hew_cluster_tick(cluster_addr as *mut cluster::HewCluster) };
+                // SAFETY: sup_ptr remains valid until stop joins this thread.
+                if let Some(dispatch) = unsafe { (*sup_ptr).poll_quarantine() } {
+                    dispatch.execute();
+                }
+                thread::sleep(Duration::from_millis(interval_ms));
+            }
+        });
+
+    match handle {
+        Ok(h) => {
+            sup.heartbeat_thread = Some(h);
+            0
+        }
+        Err(_) => {
+            sup.running.store(false, Ordering::Release);
+            let mut clear_cluster_callback = false;
+            {
+                let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(entry) = registry.get_mut(&cluster_key) {
+                    entry.retain(|addr| *addr != sup_addr);
+                    if entry.is_empty() {
+                        registry.remove(&cluster_key);
+                        clear_cluster_callback = true;
+                    }
+                }
+            }
+            if clear_cluster_callback {
+                // SAFETY: cluster pointer belongs to local node and is valid while supervisor lives.
+                unsafe {
+                    cluster::hew_cluster_set_membership_callback(
+                        node.cluster,
+                        noop_membership_callback,
+                        ptr::null_mut(),
+                    );
+                }
+            }
+            -1
+        }
     }
 }
 
-/// Set the partition handling policy.
-///
-/// `policy` should be one of `PARTITION_ESCALATE`, `PARTITION_WAIT`,
-/// or `PARTITION_RESTART_LOCAL`.
+/// Stop remote supervision and heartbeat checks.
 ///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_set_partition_policy(sup: *mut HewRemoteSup, policy: i32) {
+pub unsafe extern "C" fn hew_remote_sup_stop(sup: *mut HewRemoteSupervisor) -> c_int {
     if sup.is_null() {
-        return;
+        return -1;
     }
+
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &mut *sup };
-    sup.partition_policy = policy;
+    if !sup.running.swap(false, Ordering::AcqRel) {
+        return 0;
+    }
+
+    // SAFETY: `node` is valid while supervisor lives.
+    let node = unsafe { &mut *sup.node };
+    let cluster_key = node.cluster as usize;
+    let sup_addr = ptr::from_mut::<HewRemoteSupervisor>(sup) as usize;
+    let subscriptions = cluster_subscriptions();
+    let mut clear_cluster_callback = false;
+    {
+        let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = registry.get_mut(&cluster_key) {
+            entry.retain(|addr| *addr != sup_addr);
+            if entry.is_empty() {
+                registry.remove(&cluster_key);
+                clear_cluster_callback = true;
+            }
+        }
+    }
+
+    if let Some(handle) = sup.heartbeat_thread.take() {
+        let _ = handle.join();
+    }
+
+    if clear_cluster_callback && !node.cluster.is_null() {
+        // SAFETY: resets callback to no-op to avoid dangling callback userdata.
+        unsafe {
+            cluster::hew_cluster_set_membership_callback(
+                node.cluster,
+                noop_membership_callback,
+                ptr::null_mut(),
+            );
+        }
+    }
+
+    0
 }
 
-/// Register a callback for remote child events.
+/// Register callback fired when monitored remote actors are considered dead.
 ///
 /// # Safety
 ///
 /// - `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
-/// - `callback` must be a valid function pointer, or null to clear.
+/// - `callback` must remain valid while set.
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_sup_set_callback(
-    sup: *mut HewRemoteSup,
-    callback: Option<RemoteEventCallback>,
+    sup: *mut HewRemoteSupervisor,
+    callback: Option<RemoteDeathCallback>,
 ) {
     if sup.is_null() {
         return;
     }
+
     // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &mut *sup };
-    sup.callback = callback;
+    let sup = unsafe { &*sup };
+    *sup.callback.lock().unwrap_or_else(|e| e.into_inner()) = callback;
 }
 
-/// Get the state of a remote child.
-///
-/// Returns the state, or -1 if not found.
+/// Free a remote supervisor.
 ///
 /// # Safety
 ///
-/// `sup` must be a valid pointer returned by [`hew_remote_sup_new`].
+/// `sup` must be null or a valid pointer returned by [`hew_remote_sup_new`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_remote_sup_child_state(
-    sup: *mut HewRemoteSup,
-    remote_actor_id: u64,
-) -> c_int {
+pub unsafe extern "C" fn hew_remote_sup_free(sup: *mut HewRemoteSupervisor) {
     if sup.is_null() {
-        return -1;
+        return;
     }
-    // SAFETY: caller guarantees `sup` is valid.
-    let sup = unsafe { &*sup };
-    let children = match sup.children.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    children
-        .iter()
-        .find(|c| c.remote_actor_id == remote_actor_id)
-        .map_or(-1, |c| c.state)
-}
 
-// ── Tests ──────────────────────────────────────────────────────────────
+    // SAFETY: pointer validity guaranteed by caller.
+    let _ = unsafe { hew_remote_sup_stop(sup) };
+    // SAFETY: caller transfers ownership back to this function.
+    let _ = unsafe { Box::from_raw(sup) };
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+
+    struct TestNode(*mut HewNode);
+
+    impl TestNode {
+        unsafe fn new(node_id: u16) -> Self {
+            let bind = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind pointer is valid C string for this call.
+            let node = unsafe { crate::hew_node::hew_node_new(node_id, bind.as_ptr()) };
+            assert!(!node.is_null());
+            // SAFETY: node pointer is valid.
+            assert_eq!(unsafe { crate::hew_node::hew_node_start(node) }, 0);
+            Self(node)
+        }
+
+        fn as_ptr(&self) -> *mut HewNode {
+            self.0
+        }
+    }
+
+    impl Drop for TestNode {
+        fn drop(&mut self) {
+            if self.0.is_null() {
+                return;
+            }
+            // SAFETY: TestNode owns pointer from hew_node_new.
+            unsafe { crate::hew_node::hew_node_free(self.0) };
+            self.0 = ptr::null_mut();
+        }
+    }
 
     #[test]
-    fn create_and_destroy() {
-        let sup = hew_remote_sup_new();
-        assert!(!sup.is_null());
-        // SAFETY: sup was just created.
+    fn monitor_and_unmonitor() {
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3001) };
+        let remote_node_id = 3002;
+        let remote_pid = (u64::from(remote_node_id) << 48) | 7;
+
+        // SAFETY: pointers are valid for this scope.
         unsafe {
-            assert_eq!(hew_remote_sup_child_count(sup), 0);
+            let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 0);
+            assert!(!sup.is_null());
+            assert_eq!(hew_remote_sup_monitor(sup, remote_pid), 0);
+            assert_eq!(hew_remote_sup_monitor(sup, remote_pid), -1);
+            assert_eq!(hew_remote_sup_unmonitor(sup, remote_pid), 0);
+            assert_eq!(hew_remote_sup_unmonitor(sup, remote_pid), -1);
             hew_remote_sup_free(sup);
         }
     }
 
     #[test]
-    fn add_remove_children() {
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup is valid.
-        unsafe {
-            assert_eq!(hew_remote_sup_add_child(sup, 100, 2, 5), 0);
-            assert_eq!(hew_remote_sup_add_child(sup, 200, 3, 10), 0);
-            assert_eq!(hew_remote_sup_child_count(sup), 2);
+    fn dead_membership_event_triggers_callback_for_monitored() {
+        static CALLED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-            // Duplicate should fail.
-            assert_eq!(hew_remote_sup_add_child(sup, 100, 2, 5), -1);
-
-            // Remove.
-            assert_eq!(hew_remote_sup_remove_child(sup, 100), 0);
-            assert_eq!(hew_remote_sup_child_count(sup), 1);
-
-            // Remove nonexistent.
-            assert_eq!(hew_remote_sup_remove_child(sup, 999), -1);
-
-            hew_remote_sup_free(sup);
+        unsafe extern "C" fn on_death(_remote_pid: u64, _remote_node_id: u16, _reason: c_int) {
+            CALLED.fetch_add(1, Ordering::Relaxed);
         }
-    }
 
-    #[test]
-    fn crash_increments_restart_count() {
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup is valid.
+        CALLED.store(0, Ordering::Relaxed);
+
+        // SAFETY: node lifecycle handled by TestNode.
+        let node = unsafe { TestNode::new(3011) };
+        let remote_node_id = 3012;
+        let pid1 = (u64::from(remote_node_id) << 48) | 10;
+        let pid2 = (u64::from(remote_node_id) << 48) | 11;
+
+        // SAFETY: pointers are valid for this scope.
         unsafe {
-            hew_remote_sup_add_child(sup, 100, 2, 3);
+            let sup = hew_remote_sup_new(node.as_ptr(), remote_node_id, 1);
+            assert!(!sup.is_null());
+            (*sup).dead_quarantine_ms = 0;
+            hew_remote_sup_set_callback(sup, Some(on_death));
+            assert_eq!(hew_remote_sup_monitor(sup, pid1), 0);
+            assert_eq!(hew_remote_sup_monitor(sup, pid2), 0);
+            assert_eq!(hew_remote_sup_start(sup), 0);
 
-            // First crash → restarting.
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_CRASHED);
-            assert_eq!(
-                hew_remote_sup_child_state(sup, 100),
-                REMOTE_CHILD_RESTARTING
+            // SAFETY: `node` and cluster pointer are valid in this scope.
+            let cluster_ptr = (*node.as_ptr()).cluster.cast::<c_void>();
+            remote_sup_membership_callback(
+                remote_node_id,
+                HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+                cluster_ptr,
             );
 
-            // Second crash → restarting.
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_CRASHED);
-            assert_eq!(
-                hew_remote_sup_child_state(sup, 100),
-                REMOTE_CHILD_RESTARTING
-            );
-
-            // Third crash → restarting.
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_CRASHED);
-            assert_eq!(
-                hew_remote_sup_child_state(sup, 100),
-                REMOTE_CHILD_RESTARTING
-            );
-
-            // Fourth crash exceeds max_restarts=3 → stopped.
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_CRASHED);
-            assert_eq!(hew_remote_sup_child_state(sup, 100), REMOTE_CHILD_STOPPED);
-
-            hew_remote_sup_free(sup);
-        }
-    }
-
-    #[test]
-    fn partition_escalate_policy() {
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup is valid.
-        unsafe {
-            hew_remote_sup_set_partition_policy(sup, PARTITION_ESCALATE);
-            hew_remote_sup_add_child(sup, 100, 2, 5);
-
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_PARTITION);
-            assert_eq!(hew_remote_sup_child_state(sup, 100), REMOTE_CHILD_PARTITION);
-
-            hew_remote_sup_free(sup);
-        }
-    }
-
-    #[test]
-    fn partition_wait_policy() {
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup is valid.
-        unsafe {
-            hew_remote_sup_set_partition_policy(sup, PARTITION_WAIT);
-            hew_remote_sup_add_child(sup, 100, 2, 5);
-
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_PARTITION);
-            assert_eq!(hew_remote_sup_child_state(sup, 100), REMOTE_CHILD_PARTITION);
-
-            hew_remote_sup_free(sup);
-        }
-    }
-
-    #[test]
-    fn partition_restart_local_policy() {
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup is valid.
-        unsafe {
-            hew_remote_sup_set_partition_policy(sup, PARTITION_RESTART_LOCAL);
-            hew_remote_sup_add_child(sup, 100, 2, 5);
-
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_PARTITION);
-            assert_eq!(
-                hew_remote_sup_child_state(sup, 100),
-                REMOTE_CHILD_RESTARTING
-            );
-
-            hew_remote_sup_free(sup);
-        }
-    }
-
-    #[test]
-    fn null_safety() {
-        // SAFETY: testing null safety.
-        unsafe {
-            let null: *mut HewRemoteSup = std::ptr::null_mut();
-            assert_eq!(hew_remote_sup_child_count(null), 0);
-            assert_eq!(hew_remote_sup_child_state(null, 0), -1);
-            assert_eq!(hew_remote_sup_notify(null, 0, 0), -1);
-            assert_eq!(hew_remote_sup_add_child(null, 0, 0, 0), -1);
-            assert_eq!(hew_remote_sup_remove_child(null, 0), -1);
-            hew_remote_sup_free(null);
-        }
-    }
-
-    #[test]
-    fn callback_fires_on_crash() {
-        use std::sync::atomic::{AtomicI32, Ordering};
-        static CB_CALLED: AtomicI32 = AtomicI32::new(0);
-
-        unsafe extern "C" fn test_cb(_id: u64, _node: u16, _state: i32) {
-            CB_CALLED.fetch_add(1, Ordering::Relaxed);
-        }
-
-        CB_CALLED.store(0, Ordering::Relaxed);
-        let sup = hew_remote_sup_new();
-        // SAFETY: sup and callback are valid.
-        unsafe {
-            hew_remote_sup_set_callback(sup, Some(test_cb));
-            hew_remote_sup_add_child(sup, 100, 2, 5);
-            hew_remote_sup_notify(sup, 100, REMOTE_CHILD_CRASHED);
-            assert_eq!(CB_CALLED.load(Ordering::Relaxed), 1);
+            assert_eq!(CALLED.load(Ordering::Relaxed), 2);
+            assert_eq!(hew_remote_sup_stop(sup), 0);
             hew_remote_sup_free(sup);
         }
     }

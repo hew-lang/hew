@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicI64, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use crate::internal::types::{HewError, HewOverflowPolicy};
@@ -30,6 +30,8 @@ pub use crate::internal::types::HewOverflowPolicy as OverflowPolicy;
 
 /// Key extractor used by coalescing mailboxes.
 pub type HewCoalesceKeyFn = unsafe extern "C" fn(i32, *mut c_void, usize) -> u64;
+
+const SYS_QUEUE_WARN_THRESHOLD: usize = 10_000;
 
 // ── Message node ────────────────────────────────────────────────────────
 
@@ -320,6 +322,8 @@ pub struct HewMailbox {
     slow_path: Mutex<SlowPathQueue>,
     /// Approximate message count for capacity checks.
     pub(crate) count: AtomicI64,
+    /// Approximate system-queue message count for observability.
+    sys_count: AtomicUsize,
     /// Maximum user-queue capacity (`-1` = unbounded).
     capacity: i64,
     /// Policy applied when user-queue is at capacity.
@@ -383,6 +387,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
             user_queue: VecDeque::new(),
         }),
         count: AtomicI64::new(0),
+        sys_count: AtomicUsize::new(0),
         capacity: -1,
         overflow: HewOverflowPolicy::DropNew,
         coalesce_key_fn: None,
@@ -421,6 +426,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
             user_queue: VecDeque::new(),
         }),
         count: AtomicI64::new(0),
+        sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
         overflow: policy,
         coalesce_key_fn: None,
@@ -468,6 +474,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
             user_queue: VecDeque::new(),
         }),
         count: AtomicI64::new(0),
+        sys_count: AtomicUsize::new(0),
         capacity: cap,
         overflow: policy,
         coalesce_key_fn: None,
@@ -507,6 +514,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
             user_queue: VecDeque::new(),
         }),
         count: AtomicI64::new(0),
+        sys_count: AtomicUsize::new(0),
         capacity: cap,
         overflow: HewOverflowPolicy::Coalesce,
         coalesce_key_fn: None,
@@ -874,6 +882,10 @@ pub unsafe extern "C" fn hew_mailbox_send_sys(
 
     // SAFETY: `node` was just allocated with next == null.
     unsafe { mb.sys_queue.enqueue(node) };
+    let sys_queue_len = mb.sys_count.fetch_add(1, Ordering::AcqRel) + 1;
+    if sys_queue_len > SYS_QUEUE_WARN_THRESHOLD {
+        eprintln!("[mailbox] warning: system queue has {sys_queue_len} messages (mailbox {mb:p})");
+    }
     MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -1127,6 +1139,7 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
     // SAFETY: single-consumer invariant satisfied by caller.
     let sys_node = unsafe { mb.sys_queue.try_dequeue() };
     if !sys_node.is_null() {
+        mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
         return sys_node;
     }
@@ -1170,6 +1183,7 @@ pub unsafe extern "C" fn hew_mailbox_try_recv_sys(mb: *mut HewMailbox) -> *mut H
     // SAFETY: single-consumer invariant satisfied by caller.
     let node = unsafe { mb.sys_queue.try_dequeue() };
     if !node.is_null() {
+        mb.sys_count.fetch_sub(1, Ordering::AcqRel);
         MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
         return node;
     }
@@ -1214,6 +1228,17 @@ pub unsafe extern "C" fn hew_mailbox_len(mb: *const HewMailbox) -> usize {
     // SAFETY: Caller guarantees `mb` is valid.
     let count = unsafe { &*mb }.count.load(Ordering::Acquire);
     usize::try_from(count).unwrap_or(0)
+}
+
+/// Return the number of system messages in the mailbox.
+///
+/// # Safety
+///
+/// `mb` must be a valid mailbox pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_mailbox_sys_len(mb: *const HewMailbox) -> usize {
+    // SAFETY: Caller guarantees `mb` is valid.
+    unsafe { &*mb }.sys_count.load(Ordering::Acquire)
 }
 
 /// Return the mailbox capacity. Returns `0` for unbounded mailboxes.

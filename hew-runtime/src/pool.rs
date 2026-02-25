@@ -2,11 +2,14 @@
 
 use std::ffi::c_char;
 use std::ffi::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
 use rand::rng;
 use rand::RngExt;
+
+use crate::set_last_error;
 
 /// Routing strategy for actor pools.
 #[repr(C)]
@@ -29,12 +32,22 @@ pub struct HewActorPool {
     name: *const c_char,
     strategy: PoolStrategy,
     state: Mutex<PoolState>,
+    freed: AtomicBool,
 }
 
 fn lock_state(pool: &HewActorPool) -> MutexGuard<'_, PoolState> {
     match pool.state.lock() {
         Ok(state) => state,
         Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn pool_is_freed(pool: &HewActorPool) -> bool {
+    if pool.freed.load(Ordering::Acquire) {
+        set_last_error("pool has been freed");
+        true
+    } else {
+        false
     }
 }
 
@@ -60,6 +73,7 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
         name,
         strategy,
         state: Mutex::new(PoolState::default()),
+        freed: AtomicBool::new(false),
     }))
 }
 
@@ -77,6 +91,9 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
+    if pool_is_freed(pool) {
+        return -1;
+    }
     let mut state = lock_state(pool);
     state.members.push(actor_pid);
     0
@@ -96,6 +113,9 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
+    if pool_is_freed(pool) {
+        return -1;
+    }
     let mut state = lock_state(pool);
     if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
         state.members.swap_remove(idx);
@@ -116,6 +136,9 @@ pub unsafe extern "C" fn hew_pool_size(pool: *const HewActorPool) -> usize {
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &*pool };
+    if pool_is_freed(pool) {
+        return 0;
+    }
     lock_state(pool).members.len()
 }
 
@@ -133,6 +156,9 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
+    if pool_is_freed(pool) {
+        return 0;
+    }
     let mut state = lock_state(pool);
     if state.members.is_empty() {
         return 0;
@@ -157,9 +183,17 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
 /// # Safety
 ///
 /// `pool` must be a valid pointer returned by [`hew_pool_new`].
+/// Callers must ensure no concurrent pool operations are in-flight when this
+/// is invoked.
 #[no_mangle]
 pub unsafe extern "C" fn hew_pool_free(pool: *mut HewActorPool) {
     if pool.is_null() {
+        return;
+    }
+    // SAFETY: Caller guarantees `pool` is valid.
+    let pool_ref = unsafe { &*pool };
+    if pool_ref.freed.swap(true, Ordering::AcqRel) {
+        set_last_error("pool has been freed");
         return;
     }
     // SAFETY: Caller guarantees `pool` came from `hew_pool_new`.

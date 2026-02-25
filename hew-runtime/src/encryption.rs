@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 
 use snow::Builder;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -357,9 +357,10 @@ unsafe extern "C" fn enc_connect(impl_ptr: *mut c_void, address: *const c_char) 
     }
 
     // Perform initiator handshake.
-    let key = *enc.private_key();
+    let mut key = *enc.private_key();
     // SAFETY: ops and inner_impl are valid.
     let transport_state = unsafe { do_initiator_handshake(&*ops, inner_impl, conn, &key) };
+    key.zeroize();
     if let Some((ts, peer_key)) = transport_state {
         if !hew_allowlist_check_active_peer(&peer_key) {
             // SAFETY: ops was derived from a valid &HewTransportOps and remains valid for this scope.
@@ -423,9 +424,10 @@ unsafe extern "C" fn enc_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
     }
 
     // Perform responder handshake.
-    let key = *enc.private_key();
+    let mut key = *enc.private_key();
     // SAFETY: ops and inner_impl are valid.
     let transport_state = unsafe { do_responder_handshake(&*ops, inner_impl, conn, &key) };
+    key.zeroize();
     if let Some((ts, peer_key)) = transport_state {
         if !hew_allowlist_check_active_peer(&peer_key) {
             // SAFETY: ops was derived from a valid &HewTransportOps and remains valid for this scope.
@@ -680,7 +682,6 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
     let ptr = Box::into_raw(Box::new(list.clone()));
     #[cfg(not(test))]
     {
-        let strict_required = matches!(mode, AllowlistMode::Strict);
         let mut active = match ACTIVE_ALLOWLIST.write() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -689,7 +690,9 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
             ptr: ptr as usize,
             list,
         });
-        ALLOWLIST_STRICT_REQUIRED.store(strict_required, Ordering::Release);
+        if mode == AllowlistMode::Strict {
+            ALLOWLIST_STRICT_REQUIRED.store(true, Ordering::Release);
+        }
     }
     ptr
 }
@@ -796,9 +799,11 @@ pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
         };
         if let Some(current) = active.as_ref() {
             if current.ptr == list as usize {
-                let strict_required = matches!(current.list.mode, AllowlistMode::Strict);
+                let strict_mode = current.list.mode == AllowlistMode::Strict;
                 *active = None;
-                ALLOWLIST_STRICT_REQUIRED.store(strict_required, Ordering::Release);
+                if strict_mode {
+                    ALLOWLIST_STRICT_REQUIRED.store(true, Ordering::Release);
+                }
             }
         }
     }
@@ -826,6 +831,7 @@ pub unsafe extern "C" fn hew_transport_encrypted_new(
     // SAFETY: private_key is non-null and caller guarantees at least KEY_LEN bytes.
     unsafe { ptr::copy_nonoverlapping(private_key, local_private_key.as_mut_ptr(), KEY_LEN) };
     let enc = Box::new(EncryptedTransport::new(inner, local_private_key));
+    local_private_key.zeroize();
     let transport = Box::new(HewTransport {
         ops: &raw const ENC_OPS,
         r#impl: Box::into_raw(enc).cast::<c_void>(),
@@ -853,7 +859,7 @@ pub unsafe extern "C" fn hew_noise_keygen(
         Err(_) => return -1,
     };
     let builder = Builder::new(pattern);
-    let keypair = match builder.generate_keypair() {
+    let mut keypair = match builder.generate_keypair() {
         Ok(k) => k,
         Err(_) => return -1,
     };
@@ -864,6 +870,7 @@ pub unsafe extern "C" fn hew_noise_keygen(
         ptr::copy_nonoverlapping(keypair.public.as_ptr(), public_key_out, KEY_LEN);
         ptr::copy_nonoverlapping(keypair.private.as_ptr(), private_key_out, KEY_LEN);
     }
+    keypair.private.zeroize();
     0
 }
 
@@ -936,11 +943,12 @@ pub unsafe extern "C" fn hew_noise_key_load(
         Ok(p) => p,
         Err(_) => return -1,
     };
-    let bytes = match fs::read(path_str) {
+    let mut bytes = match fs::read(path_str) {
         Ok(b) => b,
         Err(_) => return -1,
     };
     if bytes.len() != KEYPAIR_FILE_LEN {
+        bytes.zeroize();
         return -1;
     }
 
@@ -950,6 +958,7 @@ pub unsafe extern "C" fn hew_noise_key_load(
         ptr::copy_nonoverlapping(bytes.as_ptr(), public_key_out, KEY_LEN);
         ptr::copy_nonoverlapping(bytes.as_ptr().add(KEY_LEN), private_key_out, KEY_LEN);
     }
+    bytes.zeroize();
     0
 }
 
@@ -969,7 +978,7 @@ pub unsafe extern "C" fn hew_noise_key_load(
 #[no_mangle]
 pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
     let builder = Builder::new(NOISE_PATTERN.parse().expect("valid pattern"));
-    let keypair = builder.generate_keypair().expect("keypair generation");
+    let mut keypair = builder.generate_keypair().expect("keypair generation");
 
     // Allocate and copy public key.
     // SAFETY: malloc with a valid size.
@@ -981,6 +990,7 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
     unsafe {
         ptr::copy_nonoverlapping(keypair.public.as_ptr(), pub_key, KEY_LEN);
     }
+    keypair.private.zeroize();
     pub_key
 }
 

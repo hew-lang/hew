@@ -2,8 +2,8 @@
 
 use std::ffi::c_char;
 use std::ffi::c_int;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
 
 use rand::rng;
 use rand::RngExt;
@@ -14,7 +14,12 @@ use rand::RngExt;
 pub enum PoolStrategy {
     RoundRobin = 0,
     Random = 1,
-    LeastLoaded = 2,
+}
+
+#[derive(Debug, Default)]
+struct PoolState {
+    members: Vec<u64>,
+    next_index: usize,
 }
 
 /// A pool of actors behind a single logical name.
@@ -22,9 +27,15 @@ pub enum PoolStrategy {
 #[derive(Debug)]
 pub struct HewActorPool {
     name: *const c_char,
-    members: Vec<u64>,
     strategy: PoolStrategy,
-    next_index: AtomicUsize,
+    state: Mutex<PoolState>,
+}
+
+fn lock_state(pool: &HewActorPool) -> MutexGuard<'_, PoolState> {
+    match pool.state.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 /// Create a new actor pool with the provided name and routing strategy.
@@ -41,15 +52,14 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
 
     let strategy = match strategy {
         1 => PoolStrategy::Random,
-        2 => PoolStrategy::LeastLoaded,
+        2 => PoolStrategy::RoundRobin,
         _ => PoolStrategy::RoundRobin,
     };
 
     Box::into_raw(Box::new(HewActorPool {
         name,
-        members: Vec::new(),
         strategy,
-        next_index: AtomicUsize::new(0),
+        state: Mutex::new(PoolState::default()),
     }))
 }
 
@@ -67,7 +77,8 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
-    pool.members.push(actor_pid);
+    let mut state = lock_state(pool);
+    state.members.push(actor_pid);
     0
 }
 
@@ -85,8 +96,9 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
-    if let Some(idx) = pool.members.iter().position(|&pid| pid == actor_pid) {
-        pool.members.swap_remove(idx);
+    let mut state = lock_state(pool);
+    if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
+        state.members.swap_remove(idx);
         return 0;
     }
     -1
@@ -104,7 +116,7 @@ pub unsafe extern "C" fn hew_pool_size(pool: *const HewActorPool) -> usize {
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &*pool };
-    pool.members.len()
+    lock_state(pool).members.len()
 }
 
 /// Select a member PID according to the pool strategy.
@@ -121,21 +133,21 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
     }
     // SAFETY: Caller guarantees `pool` is valid.
     let pool = unsafe { &mut *pool };
-    if pool.members.is_empty() {
+    let mut state = lock_state(pool);
+    if state.members.is_empty() {
         return 0;
     }
 
     match pool.strategy {
-        PoolStrategy::RoundRobin | PoolStrategy::LeastLoaded => {
-            // LeastLoaded currently falls back to round-robin until mailbox size
-            // metrics are available in runtime metadata.
-            let idx = pool.next_index.fetch_add(1, Ordering::Relaxed) % pool.members.len();
-            pool.members[idx]
+        PoolStrategy::RoundRobin => {
+            let idx = state.next_index % state.members.len();
+            state.next_index = state.next_index.wrapping_add(1);
+            state.members[idx]
         }
         PoolStrategy::Random => {
             let mut rng = rng();
-            let idx = rng.random_range(0..pool.members.len());
-            pool.members[idx]
+            let idx = rng.random_range(0..state.members.len());
+            state.members[idx]
         }
     }
 }

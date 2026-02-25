@@ -28,6 +28,7 @@ export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
 libc = "0.2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
 
 # Threading/networking deps — not available on wasm32
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

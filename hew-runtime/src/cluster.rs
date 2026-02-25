@@ -412,13 +412,16 @@ impl HewCluster {
                 .map(|m| (m.state, m.incarnation))
         };
 
-        if let Some((state, incarnation)) = member {
-            if state == MEMBER_ALIVE {
-                self.upsert_member(node_id, MEMBER_SUSPECT, incarnation, &[]);
-            }
+        let Some((state, incarnation)) = member else {
+            eprintln!(
+                "hew-runtime cluster warning: ignoring connection_lost for unknown node_id={node_id}"
+            );
             return;
+        };
+
+        if state == MEMBER_ALIVE {
+            self.upsert_member(node_id, MEMBER_SUSPECT, incarnation, &[]);
         }
-        self.upsert_member(node_id, MEMBER_SUSPECT, 1, &[]);
     }
 
     /// Notify SWIM state machine that a connection was established.
@@ -975,6 +978,18 @@ mod tests {
                 (2, HEW_MEMBERSHIP_EVENT_NODE_JOINED),
             ]
         );
+    }
+
+    #[test]
+    fn connection_lost_unknown_node_is_ignored() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert_eq!(hew_cluster_notify_connection_lost(cluster, 99), 0);
+            assert_eq!(hew_cluster_member_count(cluster), 0);
+            hew_cluster_free(cluster);
+        }
     }
 
     #[test]

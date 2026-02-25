@@ -11,9 +11,11 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock};
 
 use snow::Builder;
+use zeroize::Zeroizing;
 
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
 
@@ -70,8 +72,15 @@ struct ActiveAllowlist {
 }
 
 static ALLOWLIST_OPS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+/// Global allowlist for all encrypted transports in-process.
+///
+/// The allowlist is intentionally process-global for C ABI simplicity; replacing or
+/// freeing it affects every encrypted transport instance. `ALLOWLIST_STRICT_REQUIRED`
+/// preserves fail-closed behavior after strict mode is enabled so a dropped list
+/// cannot silently disable peer filtering.
 static ACTIVE_ALLOWLIST: LazyLock<RwLock<Option<ActiveAllowlist>>> =
     LazyLock::new(|| RwLock::new(None));
+static ALLOWLIST_STRICT_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // Encrypted transport state
@@ -86,7 +95,7 @@ struct ConnState {
 /// Internal state for the encrypted transport wrapper.
 struct EncryptedTransport {
     inner: *mut HewTransport,
-    private_key: [u8; KEY_LEN],
+    private_key: Zeroizing<[u8; KEY_LEN]>,
     conns: [Option<ConnState>; MAX_CONNS],
 }
 
@@ -94,7 +103,7 @@ impl EncryptedTransport {
     fn new(inner: *mut HewTransport, private_key: [u8; KEY_LEN]) -> Self {
         Self {
             inner,
-            private_key,
+            private_key: Zeroizing::new(private_key),
             conns: std::array::from_fn(|_| None),
         }
     }
@@ -643,7 +652,9 @@ pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> boo
     };
     match active.as_ref() {
         Some(current) => current.list.allows(public_key),
-        None => true,
+        // Design choice: strict mode is fail-closed. If the active strict list is
+        // unset/freed, deny peers rather than silently disabling security.
+        None => !ALLOWLIST_STRICT_REQUIRED.load(Ordering::Acquire),
     }
 }
 
@@ -654,6 +665,8 @@ pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> boo
 /// Create a new peer allowlist.
 ///
 /// `mode`: 0 = Open, 1 = Strict.
+/// This allowlist is process-global for encrypted transports; creating a new list
+/// replaces the active one for all encrypted transport instances.
 ///
 /// # Safety
 ///
@@ -667,6 +680,7 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
     let ptr = Box::into_raw(Box::new(list.clone()));
     #[cfg(not(test))]
     {
+        let strict_required = matches!(mode, AllowlistMode::Strict);
         let mut active = match ACTIVE_ALLOWLIST.write() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -675,6 +689,7 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
             ptr: ptr as usize,
             list,
         });
+        ALLOWLIST_STRICT_REQUIRED.store(strict_required, Ordering::Release);
     }
     ptr
 }
@@ -781,7 +796,9 @@ pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
         };
         if let Some(current) = active.as_ref() {
             if current.ptr == list as usize {
+                let strict_required = matches!(current.list.mode, AllowlistMode::Strict);
                 *active = None;
+                ALLOWLIST_STRICT_REQUIRED.store(strict_required, Ordering::Release);
             }
         }
     }
@@ -991,7 +1008,8 @@ pub unsafe extern "C" fn hew_noise_set_keypair(
     // SAFETY: impl points to a valid EncryptedTransport.
     let enc = unsafe { &mut *t.r#impl.cast::<EncryptedTransport>() };
     // SAFETY: private_key is valid for at least KEY_LEN bytes.
-    unsafe { ptr::copy_nonoverlapping(private_key, enc.private_key.as_mut_ptr(), KEY_LEN) };
+    let key_slice = unsafe { std::slice::from_raw_parts(private_key, KEY_LEN) };
+    enc.private_key[..].copy_from_slice(key_slice);
 }
 
 #[cfg(test)]
@@ -1224,7 +1242,7 @@ mod tests {
         // Verify the key was stored.
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert_eq!(enc_state.private_key, private_key);
+        assert_eq!(enc_state.private_key.as_ref(), &private_key);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1250,7 +1268,7 @@ mod tests {
         // Key should remain unchanged.
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert_eq!(enc_state.private_key, TEST_PRIVATE_KEY);
+        assert_eq!(enc_state.private_key.as_ref(), &TEST_PRIVATE_KEY);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1269,7 +1287,7 @@ mod tests {
 
         // SAFETY: enc and its impl are valid.
         let enc_state = unsafe { &*(*enc).r#impl.cast::<EncryptedTransport>() };
-        assert_eq!(enc_state.private_key, TEST_PRIVATE_KEY);
+        assert_eq!(enc_state.private_key.as_ref(), &TEST_PRIVATE_KEY);
 
         // SAFETY: enc was created by hew_transport_encrypted_new.
         unsafe { destroy_transport(enc) };
@@ -1903,7 +1921,7 @@ mod tests {
     fn private_key_returns_configured_key() {
         let enc = EncryptedTransport {
             inner: ptr::null_mut(),
-            private_key: TEST_PRIVATE_KEY,
+            private_key: Zeroizing::new(TEST_PRIVATE_KEY),
             conns: std::array::from_fn(|_| None),
         };
         assert_eq!(*enc.private_key(), TEST_PRIVATE_KEY);

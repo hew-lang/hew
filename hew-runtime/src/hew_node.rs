@@ -228,7 +228,6 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         return -1;
     }
 
-    let make_current = *CURRENT_NODE.read().unwrap_or_else(|e| e.into_inner()) == 0;
     node.state.store(NODE_STATE_STARTING, Ordering::Release);
 
     if node.transport.is_null() {
@@ -331,14 +330,14 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     node.state.store(NODE_STATE_RUNNING, Ordering::Release);
-    if make_current {
+    // Atomically check-and-set CURRENT_NODE under write lock to avoid
+    // the TOCTOU race where two threads both read 0 and both try to set.
+    {
         let mut guard = CURRENT_NODE.write().unwrap_or_else(|e| e.into_inner());
-        debug_assert!(
-            *guard == 0,
-            "CURRENT_NODE must be null before starting a node"
-        );
-        *guard = ptr::from_mut(node) as usize;
-        crate::pid::hew_pid_set_local_node(node.node_id);
+        if *guard == 0 {
+            *guard = ptr::from_mut(node) as usize;
+            crate::pid::hew_pid_set_local_node(node.node_id);
+        }
     }
     0
 }

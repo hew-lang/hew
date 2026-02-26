@@ -703,6 +703,8 @@ impl<'src> Parser<'src> {
             doc_comment = self.collect_doc_comments();
         }
         let start = self.peek_span().start;
+        // Pre-compute attribute span before attrs is moved into the item.
+        let attr_start = attrs.first().map(|a| a.span.start);
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -719,8 +721,7 @@ impl<'src> Parser<'src> {
                 match self.peek() {
                     Some(Token::Fn) => {
                         self.advance();
-                        let mut f =
-                            self.parse_function(false, false, true, is_pure, attrs.clone())?;
+                        let mut f = self.parse_function(false, false, true, is_pure, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     }
@@ -729,7 +730,7 @@ impl<'src> Parser<'src> {
                         if self.eat(&Token::Gen) {
                             if self.eat(&Token::Fn) {
                                 let mut f =
-                                    self.parse_function(true, true, true, is_pure, attrs.clone())?;
+                                    self.parse_function(true, true, true, is_pure, attrs)?;
                                 f.doc_comment.clone_from(&doc_comment);
                                 Item::Function(f)
                             } else {
@@ -737,8 +738,7 @@ impl<'src> Parser<'src> {
                                 return None;
                             }
                         } else if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(true, false, true, is_pure, attrs.clone())?;
+                            let mut f = self.parse_function(true, false, true, is_pure, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -749,8 +749,7 @@ impl<'src> Parser<'src> {
                     Some(Token::Gen) => {
                         self.advance();
                         if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(false, true, true, is_pure, attrs.clone())?;
+                            let mut f = self.parse_function(false, true, true, is_pure, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -814,7 +813,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Fn) => {
                 self.advance();
-                let mut f = self.parse_function(false, false, false, false, attrs.clone())?;
+                let mut f = self.parse_function(false, false, false, false, attrs)?;
                 f.doc_comment.clone_from(&doc_comment);
                 Item::Function(f)
             }
@@ -823,16 +822,14 @@ impl<'src> Parser<'src> {
                 match self.peek() {
                     Some(Token::Fn) => {
                         self.advance();
-                        let mut f =
-                            self.parse_function(false, false, false, true, attrs.clone())?;
+                        let mut f = self.parse_function(false, false, false, true, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     }
                     Some(Token::Gen) => {
                         self.advance();
                         if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(false, true, false, true, attrs.clone())?;
+                            let mut f = self.parse_function(false, true, false, true, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -852,7 +849,7 @@ impl<'src> Parser<'src> {
                 self.advance();
                 if self.eat(&Token::Gen) {
                     if self.eat(&Token::Fn) {
-                        let mut f = self.parse_function(true, true, false, false, attrs.clone())?;
+                        let mut f = self.parse_function(true, true, false, false, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     } else {
@@ -860,7 +857,7 @@ impl<'src> Parser<'src> {
                         return None;
                     }
                 } else if self.eat(&Token::Fn) {
-                    let mut f = self.parse_function(true, false, false, false, attrs.clone())?;
+                    let mut f = self.parse_function(true, false, false, false, attrs)?;
                     f.doc_comment.clone_from(&doc_comment);
                     Item::Function(f)
                 } else {
@@ -871,7 +868,7 @@ impl<'src> Parser<'src> {
             Some(Token::Gen) => {
                 self.advance();
                 if self.eat(&Token::Fn) {
-                    let mut f = self.parse_function(false, true, false, false, attrs.clone())?;
+                    let mut f = self.parse_function(false, true, false, false, attrs)?;
                     f.doc_comment.clone_from(&doc_comment);
                     Item::Function(f)
                 } else {
@@ -980,11 +977,7 @@ impl<'src> Parser<'src> {
 
         let end = self.peek_span().start;
         // Extend span to cover leading attributes if present.
-        let item_start = if let Some(first) = attrs.first() {
-            first.span.start
-        } else {
-            start
-        };
+        let item_start = attr_start.unwrap_or(start);
         Some((item, item_start..end))
     }
 

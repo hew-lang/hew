@@ -13,6 +13,7 @@ use std::ptr;
 /// On WASM, the ask pattern is cooperative: the caller sends a message,
 /// runs the scheduler until the dispatch function calls [`hew_reply`],
 /// then reads the reply synchronously.
+#[derive(Debug)]
 #[repr(C)]
 pub struct WasmReplyChannel {
     /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).

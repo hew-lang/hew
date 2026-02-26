@@ -25,71 +25,114 @@ target_link_libraries(HewMLIRDialect PUBLIC
 add_dependencies(HewMLIRDialect HewOpsIncGen HewTypesIncGen)
 
 if(HEW_STATIC_LINK)
-  # ── Static linking: use individual MLIR + LLVM static libraries ──────────
-  #
-  # Ubuntu's LLVM packages set LLVM_LINK_LLVM_DYLIB=ON, which means the
-  # "LLVM" and "MLIR" CMake imported targets point to shared libraries
-  # (libLLVM.so, libMLIR.so).  Every MLIR static library lists "LLVM" in
-  # its INTERFACE_LINK_LIBRARIES, so the shared lib gets pulled in
-  # transitively even when we want fully static linking.
-  #
-  # Fix: (1) neuter the shared LLVM/MLIR targets so they contribute nothing,
-  #       (2) filter MLIR_ALL_LIBS to exclude shared/executable targets,
-  #       (3) explicitly link the static LLVM component libraries.
+  # ── Static linking: curated MLIR + LLVM static libraries ────────────────
+  # We link ONLY the MLIR components hew-codegen actually uses.
+  # Using MLIR_ALL_LIBS pulls in MLIRJitRunner / MLIRExecutionEngine which
+  # depend on shared-only runtime libraries (libmlir_c_runner_utils.so, etc.)
+  # that don't have static counterparts and break portable distribution.
 
-  # (1) Filter MLIR_ALL_LIBS to only static library targets (exclude shared
-  #     runtime libraries like MLIRExecutionEngineShared, mlir_c_runner_utils,
-  #     and tool executables like mlir-opt).
-  get_property(_all_mlir_libs GLOBAL PROPERTY MLIR_ALL_LIBS)
-  set(MLIR_STATIC_LIBS "")
-  foreach(_lib IN LISTS _all_mlir_libs)
-    if(NOT TARGET ${_lib})
-      continue()
-    endif()
-    get_target_property(_type ${_lib} TYPE)
-    if(_type STREQUAL "STATIC_LIBRARY")
-      list(APPEND MLIR_STATIC_LIBS ${_lib})
-    endif()
-  endforeach()
+  # Dialects used by our MLIR codegen
+  set(HEW_MLIR_LIBS
+    MLIRFuncDialect
+    MLIRArithDialect
+    MLIRMemRefDialect
+    MLIRLLVMDialect
+    MLIRSCFDialect
+    MLIRControlFlowDialect
+    MLIRUBDialect
+    MLIRMathDialect
+    # Conversion passes (Hew dialect → LLVM IR)
+    MLIRFuncToLLVM
+    MLIRArithToLLVM
+    MLIRMemRefToLLVM
+    MLIRControlFlowToLLVM
+    MLIRSCFToControlFlow
+    MLIRReconcileUnrealizedCasts
+    MLIRLLVMCommonConversion
+    # Translation to LLVM IR
+    MLIRTargetLLVMIRExport
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRLLVMToLLVMIRTranslation
+    # Core infrastructure
+    MLIRIR
+    MLIRPass
+    MLIRTransforms
+    MLIRTransformUtils
+    MLIRAnalysis
+    MLIRParser
+    MLIRSupport
+    MLIRRewrite
+    MLIRDialect
+    MLIRBytecodeWriter
+    MLIRBytecodeReader
+    MLIRBytecodeOpInterface
+    MLIRAsmParser
+    MLIRTranslateLib
+    # Interfaces required by the above
+    MLIRSideEffectInterfaces
+    MLIRCallInterfaces
+    MLIRFunctionInterfaces
+    MLIRInferTypeOpInterface
+    MLIRControlFlowInterfaces
+    MLIRCastInterfaces
+    MLIRDataLayoutInterfaces
+    MLIRLoopLikeInterface
+    MLIRViewLikeInterface
+    MLIRDestinationStyleOpInterface
+    MLIRSubsetOpInterface
+    MLIRValueBoundsOpInterface
+    MLIRShapedOpInterfaces
+    MLIRMemorySlotInterfaces
+    MLIRRuntimeVerifiableOpInterface
+    MLIRInferIntRangeInterface
+    MLIRInferIntRangeCommon
+    MLIRDialectUtils
+    # Transforms used by dialect conversions
+    MLIRFuncTransforms
+    MLIRSCFTransforms
+    MLIRSCFUtils
+    MLIRArithTransforms
+    MLIRArithUtils
+    MLIRMemRefTransforms
+    # PDL rewrite engine (needed by some conversion passes)
+    MLIRRewritePDL
+    MLIRPDLToPDLInterp
+    MLIRPDLInterpDialect
+    MLIRPDLDialect
+    # LLVM IR transforms
+    MLIRLLVMIRTransforms
+    MLIRArithAttrToLLVMConversion
+    MLIRPresburger
+  )
 
-  # (2) Strip shared LLVM/MLIR targets from each static lib's transitive
-  #     dependencies.  Ubuntu's packages set LLVM_LINK_LLVM_DYLIB=ON so the
-  #     "LLVM" target points to libLLVM.so; we replace it with our explicit
-  #     static component libraries below.
-  foreach(_lib IN LISTS MLIR_STATIC_LIBS)
-    get_target_property(_deps ${_lib} INTERFACE_LINK_LIBRARIES)
-    if(_deps)
-      list(REMOVE_ITEM _deps LLVM MLIR)
-      set_target_properties(${_lib} PROPERTIES INTERFACE_LINK_LIBRARIES "${_deps}")
-    endif()
-  endforeach()
-
-  # (3) LLVM components needed for codegen.  codegen.cpp calls
-  #     InitializeAllTargets/AsmPrinters/AsmParsers so we need every backend
-  #     that was built.  The "all-targets" pseudo-component doesn't resolve to
-  #     individual static libraries when LLVM_LINK_LLVM_DYLIB=ON, so we expand
-  #     it manually from LLVM_TARGETS_TO_BUILD.
+  # LLVM components — all backends needed since codegen calls InitializeAllTargets()
   set(HEW_LLVM_COMPONENTS
     Core Support IRReader IRPrinter
     Passes Target TransformUtils Analysis
     MC MCParser MCDisassembler
     OrcJIT
     CodeGen AsmPrinter SelectionDAG GlobalISel
+    AllTargetsAsmParsers AllTargetsCodeGens AllTargetsDescs AllTargetsInfos
   )
-
-  foreach(_target IN LISTS LLVM_TARGETS_TO_BUILD)
-    list(APPEND HEW_LLVM_COMPONENTS ${_target}CodeGen ${_target}Desc ${_target}Info)
-    # Not every target ships an AsmParser static library (e.g. NVPTX, SPIRV,
-    # XCore).  Only add the component when the corresponding .a file exists.
-    if(EXISTS "${LLVM_LIBRARY_DIR}/libLLVM${_target}AsmParser.a")
-      list(APPEND HEW_LLVM_COMPONENTS ${_target}AsmParser)
-    endif()
-  endforeach()
 
   llvm_map_components_to_libnames(LLVM_STATIC_LIBS ${HEW_LLVM_COMPONENTS})
 
+  # Redirect the monolithic shared LLVM target to a static archive.
+  # Every MLIR target lists "LLVM" (shared) in INTERFACE_LINK_LIBRARIES.
+  # We redirect it to LLVMSupport.a (a harmless duplicate since we already
+  # link all needed static LLVM components) and clear its interface deps.
+  if(TARGET LLVM)
+    get_target_property(_llvm_type LLVM TYPE)
+    if(_llvm_type STREQUAL "SHARED_LIBRARY" OR _llvm_type STREQUAL "UNKNOWN_LIBRARY")
+      set_target_properties(LLVM PROPERTIES
+        IMPORTED_LOCATION "${LLVM_LIBRARY_DIR}/libLLVMSupport.a"
+        IMPORTED_SONAME ""
+        INTERFACE_LINK_LIBRARIES "")
+    endif()
+  endif()
+
   target_link_libraries(HewMLIRDialect PUBLIC
-    ${MLIR_STATIC_LIBS}
+    ${HEW_MLIR_LIBS}
     ${LLVM_STATIC_LIBS}
   )
 else()
@@ -139,7 +182,9 @@ target_include_directories(hew-codegen PRIVATE
 
 if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
   if(NOT MSVC AND NOT APPLE)
-    target_link_options(hew-codegen PRIVATE -s)
+    # Statically link libstdc++ and libgcc for maximum portability.
+    # Only libc, libm, libz, libzstd remain as dynamic deps (available everywhere).
+    target_link_options(hew-codegen PRIVATE -s -static-libgcc -static-libstdc++)
   endif()
   if(APPLE)
     add_custom_command(TARGET hew-codegen POST_BUILD

@@ -201,6 +201,7 @@ pub unsafe extern "C" fn hew_hex_decode_hew(s: *const c_char) -> *mut hew_cabi::
 
 #[cfg(test)]
 extern crate hew_runtime; // Link hew_vec_* symbol implementations
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

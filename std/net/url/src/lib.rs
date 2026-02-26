@@ -229,6 +229,7 @@ pub unsafe extern "C" fn hew_url_free(url: *mut HewUrl) {
 
 #[cfg(test)]
 extern crate hew_runtime; // Link hew_vec_* symbol implementations
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

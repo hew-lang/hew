@@ -446,6 +446,7 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
 
 #[cfg(test)]
 extern crate hew_runtime; // Link hew_vec_* symbol implementations
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

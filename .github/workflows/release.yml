@@ -144,6 +144,15 @@ jobs:
       - name: Build hew, adze, and hew-lsp
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
+      - name: Smoke test hew-lsp (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: |
+          ./target/${{ matrix.rust_target }}/release/hew-lsp --version
+
+      - name: Smoke test hew-lsp (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
+
       # ── hew-codegen (CMake + MLIR) ───────────────────────────────────────────
 
       - name: Configure hew-codegen (Linux)

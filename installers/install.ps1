@@ -7,8 +7,13 @@
 
 .DESCRIPTION
     Downloads and installs the Hew programming language compiler and runtime
-    from GitHub releases. Verifies SHA256 checksums and adds the install
+    from GitHub releases. Verifies SHA-256 checksums and adds the install
     directory to your PATH.
+
+    Supports both .zip and .tar.gz archive formats. Prefers .zip on Windows
+    but falls back to .tar.gz when the .zip asset is not available.
+
+    Works on Windows PowerShell 5.1+ and PowerShell Core 7+.
 
     Usage via web:
       irm https://install.hew.sh/install.ps1 | iex
@@ -17,7 +22,7 @@
     Specific version to install (e.g. "0.1.0"). Defaults to latest.
 
 .PARAMETER Prefix
-    Installation directory. Defaults to $env:USERPROFILE\.hew
+    Installation directory. Defaults to $env:HEW_HOME or $env:USERPROFILE\.hew
 
 .PARAMETER Help
     Show this help message.
@@ -44,16 +49,18 @@ $ErrorActionPreference = "Stop"
 $GITHUB_ORG = "hew-lang"
 $GITHUB_REPO = "hew"
 
-# --- Helpers ----------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 function Write-Banner {
     $banner = @"
 
-  _   _
- | | | | _____      __
- | |_| |/ _ \ \ /\ / /
- |  _  |  __/\ V  V /
- |_| |_|\___| \_/\_/
+    _   _
+   | | | | _____      __
+   | |_| |/ _ \ \ /\ / /
+   |  _  |  __/\ V  V /
+   |_| |_|\___| \_/\_/
 
 "@
     Write-Host $banner -ForegroundColor Cyan
@@ -65,7 +72,7 @@ function Write-Step {
         [string]$Status = "",
         [switch]$NoNewline
     )
-    $padding = 16 - $Label.Length
+    $padding = 18 - $Label.Length - 3  # match bash: %-18s with "..."
     if ($padding -lt 1) { $padding = 1 }
     $spaces = " " * $padding
     if ($NoNewline) {
@@ -77,31 +84,100 @@ function Write-Step {
     }
 }
 
-function Write-Error-And-Exit {
+function Write-ErrorAndExit {
     param([string]$Message)
     Write-Host ""
-    Write-Host "  Error: $Message" -ForegroundColor Red
+    Write-Host "  error: $Message" -ForegroundColor Red
     Write-Host ""
     exit 1
 }
 
 function Show-Help {
     Write-Banner
-    Write-Host "  Usage: install.ps1 [options]" -ForegroundColor White
+    Write-Host "  Hew installer" -ForegroundColor White
     Write-Host ""
-    Write-Host "  Options:" -ForegroundColor White
-    Write-Host "    -Version <version>   Install a specific version (e.g. 0.1.0)"
-    Write-Host "    -Prefix <path>       Install directory (default: `$env:USERPROFILE\.hew)"
-    Write-Host "    -Help                Show this help message"
+    Write-Host "  USAGE:" -ForegroundColor White
+    Write-Host "    install.ps1 [OPTIONS]"
     Write-Host ""
-    Write-Host "  Examples:" -ForegroundColor White
+    Write-Host "  OPTIONS:" -ForegroundColor White
+    Write-Host "    -Version <ver>   Install a specific version (e.g. 0.1.0). Default: latest"
+    Write-Host "    -Prefix  <dir>   Installation directory. Default: `$env:HEW_HOME or `$env:USERPROFILE\.hew"
+    Write-Host "    -Help            Show this help message"
+    Write-Host ""
+    Write-Host "  EXAMPLES:" -ForegroundColor White
     Write-Host "    irm https://install.hew.sh/install.ps1 | iex"
     Write-Host "    .\install.ps1 -Version 0.1.0"
     Write-Host "    .\install.ps1 -Prefix C:\tools\hew"
     Write-Host ""
 }
 
-# --- Main -------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Architecture detection (compatible with PS 5.1 and PS 7+)
+# ---------------------------------------------------------------------------
+
+function Get-Platform {
+    $detectedArch = $null
+
+    # Try .NET RuntimeInformation first (PS 6+)
+    try {
+        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        if ($osArch -eq [System.Runtime.InteropServices.Architecture]::X64) {
+            $detectedArch = "x86_64"
+        }
+        elseif ($osArch -eq [System.Runtime.InteropServices.Architecture]::Arm64) {
+            $detectedArch = "aarch64"
+        }
+    }
+    catch {
+        # RuntimeInformation not available — fall back to environment variable
+    }
+
+    # Fallback for Windows PowerShell 5.1
+    if (-not $detectedArch) {
+        $envArch = $env:PROCESSOR_ARCHITECTURE
+        switch ($envArch) {
+            "AMD64" { $detectedArch = "x86_64" }
+            "ARM64" { $detectedArch = "aarch64" }
+            default { Write-ErrorAndExit "Unsupported architecture: $envArch" }
+        }
+    }
+
+    return "windows-$detectedArch"
+}
+
+# ---------------------------------------------------------------------------
+# Archive extraction (handles both .zip and .tar.gz)
+# ---------------------------------------------------------------------------
+
+function Expand-TarGz {
+    param(
+        [string]$Path,
+        [string]$DestinationPath
+    )
+    New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        # PowerShell 7+ ships with tar
+        tar -xzf $Path -C $DestinationPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar extraction failed with exit code $LASTEXITCODE"
+        }
+    }
+    elseif (Get-Command tar -ErrorAction SilentlyContinue) {
+        # Windows 10 1803+ includes tar.exe
+        tar -xzf $Path -C $DestinationPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar extraction failed with exit code $LASTEXITCODE"
+        }
+    }
+    else {
+        throw ".tar.gz extraction requires tar (available on Windows 10 1803+) or PowerShell 7+"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 if ($Help) {
     Show-Help
@@ -110,29 +186,26 @@ if ($Help) {
 
 Write-Banner
 
-# Detect architecture
-$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
-    # Fallback for older PowerShell without RuntimeInformation
-    $envArch = $env:PROCESSOR_ARCHITECTURE
-    if ($envArch -ne "AMD64") {
-        Write-Error-And-Exit "Unsupported architecture: $envArch. Hew currently supports x86_64 (AMD64) only."
-    }
+# Detect platform
+$platform = Get-Platform
+
+# Resolve install directory: -Prefix > $env:HEW_HOME > $env:USERPROFILE\.hew
+if ($Prefix) {
+    $InstallDir = $Prefix
 }
-
-$platform = "windows-x86_64"
-
-# Set install directory
-if (-not $Prefix) {
-    $InstallDir = Join-Path $env:USERPROFILE ".hew"
+elseif ($env:HEW_HOME) {
+    $InstallDir = $env:HEW_HOME
 }
 else {
-    $InstallDir = $Prefix
+    $InstallDir = Join-Path $env:USERPROFILE ".hew"
 }
 
 $BinDir = Join-Path $InstallDir "bin"
 
-# Fetch version
+# ---------------------------------------------------------------------------
+# Resolve version
+# ---------------------------------------------------------------------------
+
 if (-not $Version) {
     Write-Step -Label "Fetching version" -NoNewline
     try {
@@ -147,54 +220,89 @@ if (-not $Version) {
     }
     catch {
         Write-Host "failed" -ForegroundColor Red
-        Write-Error-And-Exit "Failed to fetch latest version from GitHub: $_"
+        Write-ErrorAndExit "Failed to fetch latest version from GitHub: $_"
     }
+}
+else {
+    # Strip leading 'v' if provided
+    $Version = $Version -replace '^v', ''
 }
 
 Write-Host "  Installing Hew v${Version} (${platform})" -ForegroundColor White
 Write-Host ""
 
+# ---------------------------------------------------------------------------
 # Check if same version is already installed
+# ---------------------------------------------------------------------------
+
 $versionFile = Join-Path $InstallDir ".hew-version"
 if (Test-Path $versionFile) {
     $installedVersion = (Get-Content $versionFile -Raw).Trim()
     if ($installedVersion -eq $Version) {
         Write-Host "  Hew v${Version} is already installed at ${InstallDir}" -ForegroundColor Yellow
         Write-Host ""
+        Write-Host "  To reinstall, remove $versionFile and run again."
+        Write-Host ""
         exit 0
     }
 }
 
-# Build download URLs
-$archiveName = "hew-v${Version}-${platform}.zip"
-$downloadUrl = "https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${Version}/${archiveName}"
+# ---------------------------------------------------------------------------
+# Build download URLs — prefer .zip, fall back to .tar.gz
+# ---------------------------------------------------------------------------
+
+$baseUrl = "https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${Version}"
+$archiveZip = "hew-v${Version}-${platform}.zip"
+$archiveTarGz = "hew-v${Version}-${platform}.tar.gz"
 $checksumsName = "hew-v${Version}-checksums.txt"
-$checksumsUrl  = "https://github.com/${GITHUB_ORG}/${GITHUB_REPO}/releases/download/v${Version}/${checksumsName}"
 
 # Create temp directory
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) "hew-install-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 try {
-    $archivePath = Join-Path $tempDir $archiveName
-    $checksumsPath = Join-Path $tempDir $checksumsName
-
-    # Download archive
+    # ------------------------------------------------------------------
+    # Download archive (.zip preferred, .tar.gz fallback)
+    # ------------------------------------------------------------------
     Write-Step -Label "Downloading" -NoNewline
+    $archiveName = $null
+    $archivePath = $null
+    $savedProgressPreference = $ProgressPreference
     try {
-        $progressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -UseBasicParsing
+        $ProgressPreference = 'SilentlyContinue'
+
+        # Try .zip first
+        $archiveName = $archiveZip
+        $archivePath = Join-Path $tempDir $archiveName
+        try {
+            Invoke-WebRequest -Uri "${baseUrl}/${archiveName}" -OutFile $archivePath -UseBasicParsing
+        }
+        catch {
+            # Fall back to .tar.gz
+            $archiveName = $archiveTarGz
+            $archivePath = Join-Path $tempDir $archiveName
+            Invoke-WebRequest -Uri "${baseUrl}/${archiveName}" -OutFile $archivePath -UseBasicParsing
+        }
+
         Write-Host "done" -ForegroundColor Green
     }
     catch {
         Write-Host "failed" -ForegroundColor Red
-        Write-Error-And-Exit "Failed to download ${downloadUrl}: $_"
+        Write-ErrorAndExit "Failed to download Hew v${Version} for ${platform}: $_"
+    }
+    finally {
+        $ProgressPreference = $savedProgressPreference
     }
 
-    # Download checksums and verify
+    # ------------------------------------------------------------------
+    # Download and verify SHA-256 checksum
+    # ------------------------------------------------------------------
     Write-Step -Label "Verifying" -NoNewline
+    $checksumsPath = Join-Path $tempDir $checksumsName
     try {
-        Invoke-WebRequest -Uri $checksumsUrl -OutFile $checksumsPath -UseBasicParsing
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri "${baseUrl}/${checksumsName}" -OutFile $checksumsPath -UseBasicParsing
+        $ProgressPreference = $savedProgressPreference
 
         $expectedHash = $null
         foreach ($line in Get-Content $checksumsPath) {
@@ -210,37 +318,48 @@ try {
 
         if (-not $expectedHash) {
             Write-Host "failed" -ForegroundColor Red
-            Write-Error-And-Exit "Checksum for ${archiveName} not found in ${checksumsName}"
+            Write-ErrorAndExit "Checksum for ${archiveName} not found in ${checksumsName}"
         }
 
         $actualHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLower()
         if ($actualHash -ne $expectedHash) {
             Write-Host "failed" -ForegroundColor Red
-            Write-Error-And-Exit "SHA256 mismatch!`n  Expected: ${expectedHash}`n  Got:      ${actualHash}"
+            Write-ErrorAndExit "SHA-256 mismatch!`n  Expected: ${expectedHash}`n  Got:      ${actualHash}"
         }
 
         Write-Host "done" -ForegroundColor Green
     }
     catch [System.Net.WebException] {
-        Write-Host "skipped (no $checksumsName)" -ForegroundColor Yellow
+        $ProgressPreference = $savedProgressPreference
+        Write-Host "skipped" -ForegroundColor DarkGray
     }
 
+    # ------------------------------------------------------------------
     # Extract archive
+    # ------------------------------------------------------------------
     Write-Step -Label "Extracting" -NoNewline
     try {
         $extractDir = Join-Path $tempDir "extracted"
-        Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
 
-        # Find the inner directory (hew-v{version}-windows-x86_64/)
+        if ($archiveName.EndsWith(".zip")) {
+            Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+        }
+        elseif ($archiveName.EndsWith(".tar.gz")) {
+            Expand-TarGz -Path $archivePath -DestinationPath $extractDir
+        }
+        else {
+            throw "Unknown archive format: $archiveName"
+        }
+
+        # Find the inner directory (e.g. hew-v0.1.0-windows-x86_64/)
         $innerDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
         if (-not $innerDir) {
             Write-Host "failed" -ForegroundColor Red
-            Write-Error-And-Exit "Archive does not contain expected directory structure."
+            Write-ErrorAndExit "Archive does not contain expected directory structure."
         }
 
-        # Create install directory
+        # Prepare install directory — remove old bin/ and lib/ but preserve user data
         if (Test-Path $InstallDir) {
-            # Remove old bin/ and lib/ but preserve user data
             foreach ($subdir in @("bin", "lib")) {
                 $sub = Join-Path $InstallDir $subdir
                 if (Test-Path $sub) {
@@ -248,60 +367,97 @@ try {
                 }
             }
         }
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-        # Copy files from extracted archive to install directory
-        Get-ChildItem -Path $innerDir.FullName | ForEach-Object {
-            Copy-Item -Path $_.FullName -Destination $InstallDir -Recurse -Force
+        # Create standard directories
+        foreach ($dir in @("bin", "lib", "std", "completions")) {
+            New-Item -ItemType Directory -Path (Join-Path $InstallDir $dir) -Force | Out-Null
         }
 
-        # std/ and completions/ (best-effort)
+        # Copy binaries
+        foreach ($bin in @("hew", "adze", "hew-codegen", "hew-lsp")) {
+            # On Windows, binaries have .exe extension
+            foreach ($ext in @(".exe", "")) {
+                $src = Join-Path $innerDir.FullName "bin/${bin}${ext}"
+                if (Test-Path $src) {
+                    Copy-Item -Path $src -Destination (Join-Path $InstallDir "bin/${bin}${ext}") -Force
+                }
+            }
+        }
+
+        # Copy runtime library
+        $runtimeLib = Join-Path $innerDir.FullName "lib/libhew_runtime.a"
+        if (Test-Path $runtimeLib) {
+            Copy-Item -Path $runtimeLib -Destination (Join-Path $InstallDir "lib/libhew_runtime.a") -Force
+        }
+        $runtimeLibWin = Join-Path $innerDir.FullName "lib/hew_runtime.lib"
+        if (Test-Path $runtimeLibWin) {
+            Copy-Item -Path $runtimeLibWin -Destination (Join-Path $InstallDir "lib/hew_runtime.lib") -Force
+        }
+
+        # Standard library and completions (best-effort — may not be in older releases)
         $stdSrc = Join-Path $innerDir.FullName "std"
         if (Test-Path $stdSrc) {
-            Copy-Item -Path $stdSrc -Destination $InstallDir -Recurse -Force
+            Copy-Item -Path (Join-Path $stdSrc "*") -Destination (Join-Path $InstallDir "std") -Recurse -Force
         }
         $compSrc = Join-Path $innerDir.FullName "completions"
         if (Test-Path $compSrc) {
-            Copy-Item -Path $compSrc -Destination $InstallDir -Recurse -Force
+            Copy-Item -Path (Join-Path $compSrc "*") -Destination (Join-Path $InstallDir "completions") -Recurse -Force
         }
 
-        # Write version file
+        # Copy license and doc files
+        foreach ($f in @("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "README.md")) {
+            $src = Join-Path $innerDir.FullName $f
+            if (Test-Path $src) {
+                Copy-Item -Path $src -Destination (Join-Path $InstallDir $f) -Force
+            }
+        }
+
+        # Write version marker
         Set-Content -Path $versionFile -Value $Version -NoNewline
 
         Write-Host "done" -ForegroundColor Green
     }
     catch {
         Write-Host "failed" -ForegroundColor Red
-        Write-Error-And-Exit "Failed to extract archive: $_"
+        Write-ErrorAndExit "Failed to extract archive: $_"
     }
 }
 finally {
-    # Clean up temp files
+    # Clean up temp directory
     if (Test-Path $tempDir) {
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-# Add to PATH
+# ---------------------------------------------------------------------------
+# Environment variables — add to user PATH and set HEW_HOME / HEW_STD
+# ---------------------------------------------------------------------------
+
 $pathUpdated = $false
 $userPath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::User)
-if ($userPath -split ";" | Where-Object { $_ -eq $BinDir }) {
-    # Already in PATH
-}
-else {
+if (-not ($userPath -split ";" | Where-Object { $_ -eq $BinDir })) {
     $newPath = if ($userPath) { "${userPath};${BinDir}" } else { $BinDir }
     [System.Environment]::SetEnvironmentVariable("Path", $newPath, [System.EnvironmentVariableTarget]::User)
     $pathUpdated = $true
 }
 
-# Set HEW_STD environment variable
+# Persist HEW_HOME so other tools can find the installation
+$currentHewHome = [System.Environment]::GetEnvironmentVariable("HEW_HOME", [System.EnvironmentVariableTarget]::User)
+if ($currentHewHome -ne $InstallDir) {
+    [System.Environment]::SetEnvironmentVariable("HEW_HOME", $InstallDir, [System.EnvironmentVariableTarget]::User)
+}
+
+# Persist HEW_STD for the standard library
 $StdDir = Join-Path $InstallDir "std"
 $currentHewStd = [System.Environment]::GetEnvironmentVariable("HEW_STD", [System.EnvironmentVariableTarget]::User)
 if ($currentHewStd -ne $StdDir) {
     [System.Environment]::SetEnvironmentVariable("HEW_STD", $StdDir, [System.EnvironmentVariableTarget]::User)
 }
 
+# ---------------------------------------------------------------------------
 # Success message
+# ---------------------------------------------------------------------------
+
 Write-Host ""
 Write-Host "  Hew was installed to " -NoNewline
 Write-Host $InstallDir -ForegroundColor Green
@@ -311,6 +467,7 @@ if ($pathUpdated) {
     Write-Host "  Added " -NoNewline
     Write-Host $BinDir -ForegroundColor Cyan -NoNewline
     Write-Host " to your PATH."
+    Write-Host ""
     Write-Host "  Restart your terminal, then run " -NoNewline
     Write-Host "hew version" -ForegroundColor Cyan -NoNewline
     Write-Host " and " -NoNewline
@@ -318,7 +475,11 @@ if ($pathUpdated) {
     Write-Host " to verify."
 }
 else {
-    Write-Host "  $BinDir is already in your PATH."
+    Write-Host "  Run " -NoNewline
+    Write-Host "hew version" -ForegroundColor Cyan -NoNewline
+    Write-Host " and " -NoNewline
+    Write-Host "adze --version" -ForegroundColor Cyan -NoNewline
+    Write-Host " to verify the installation."
 }
 
 Write-Host ""

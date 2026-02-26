@@ -153,6 +153,7 @@ pub unsafe extern "C" fn hew_constant_time_eq(a: *const u8, b: *const u8, len: u
 }
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
 

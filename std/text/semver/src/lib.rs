@@ -220,6 +220,7 @@ pub unsafe extern "C" fn hew_semver_free(v: *mut HewSemver) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

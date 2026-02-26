@@ -31,6 +31,11 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace {
 
 struct Options {
@@ -119,6 +124,11 @@ auto main(int argc, char *argv[]) -> int {
     }
     inputData = std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {});
   } else {
+#ifdef _WIN32
+    // Windows opens stdin in text mode by default, which translates \r\n → \n
+    // and treats 0x1a (Ctrl-Z) as EOF — both corrupt binary msgpack data.
+    _setmode(_fileno(stdin), _O_BINARY);
+#endif
     inputData = std::vector<uint8_t>(std::istreambuf_iterator<char>(std::cin), {});
   }
 

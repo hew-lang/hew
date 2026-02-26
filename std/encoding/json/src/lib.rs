@@ -448,6 +448,7 @@ pub unsafe extern "C" fn hew_json_object_set_string(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

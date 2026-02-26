@@ -20,5 +20,8 @@ chrono = { version = "0.4", default-features = false, features = [
 ] }
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

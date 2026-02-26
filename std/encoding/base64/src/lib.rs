@@ -138,6 +138,7 @@ pub unsafe extern "C" fn hew_base64_free(ptr: *mut c_void) {
 }
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

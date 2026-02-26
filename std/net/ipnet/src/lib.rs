@@ -227,6 +227,8 @@ pub unsafe extern "C" fn hew_cidr_free(s: *mut c_char) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+extern crate hew_runtime; // Link hew_vec_* symbol implementations
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::{CStr, CString};

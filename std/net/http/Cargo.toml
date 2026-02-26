@@ -18,5 +18,8 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 tiny_http = "0.12"
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

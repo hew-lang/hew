@@ -76,8 +76,8 @@ static bool translateWithTimeout(mlir::ModuleOp module, mlir::MLIRContext &conte
 #ifdef _WIN32
   // Windows: run translation in a thread with a timeout
   std::atomic<bool> done{false};
-  std::unique_ptr<llvm::Module> result;
   llvm::LLVMContext llvmContext;
+  std::unique_ptr<llvm::Module> result;
 
   std::thread worker([&] {
     result = mlir::translateModuleToLLVMIR(module, llvmContext);

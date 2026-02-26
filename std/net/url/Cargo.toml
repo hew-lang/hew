@@ -17,5 +17,8 @@ hew-cabi = { path = "../../../hew-cabi" }
 url = "2"
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

@@ -21,5 +21,8 @@ lettre = { version = "0.11", default-features = false, features = [
 ] }
 libc = "0.2"
 
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
 [lints]
 workspace = true

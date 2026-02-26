@@ -1553,6 +1553,7 @@ name = "hew-std-crypto-crypto"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "ring",
 ]
@@ -1562,6 +1563,7 @@ name = "hew-std-crypto-jwt"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "jsonwebtoken",
  "libc",
  "serde_json",
@@ -1582,6 +1584,7 @@ version = "0.1.2"
 dependencies = [
  "base64",
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 
@@ -1591,6 +1594,7 @@ version = "0.1.2"
 dependencies = [
  "flate2",
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 
@@ -1600,6 +1604,7 @@ version = "0.1.2"
 dependencies = [
  "csv",
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "tempfile",
 ]
@@ -1609,6 +1614,7 @@ name = "hew-std-encoding-json"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "serde_json",
 ]
@@ -1620,6 +1626,7 @@ dependencies = [
  "hew-cabi",
  "hew-export-macro",
  "hew-export-types",
+ "hew-runtime",
  "libc",
  "pulldown-cmark",
 ]
@@ -1629,6 +1636,7 @@ name = "hew-std-encoding-msgpack"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "rmp-serde",
  "serde_json",
@@ -1646,6 +1654,7 @@ name = "hew-std-encoding-toml"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "toml",
 ]
@@ -1655,6 +1664,7 @@ name = "hew-std-encoding-yaml"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "serde_yaml",
 ]
@@ -1667,6 +1677,7 @@ dependencies = [
  "hew-cabi",
  "hew-export-macro",
  "hew-export-types",
+ "hew-runtime",
  "libc",
  "log",
 ]
@@ -1678,6 +1689,7 @@ dependencies = [
  "hew-cabi",
  "hew-export-macro",
  "hew-export-types",
+ "hew-runtime",
  "libc",
  "uuid",
 ]
@@ -1687,6 +1699,7 @@ name = "hew-std-net-http"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "tiny_http",
  "ureq",
@@ -1697,6 +1710,7 @@ name = "hew-std-net-ipnet"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "ipnet",
  "libc",
 ]
@@ -1706,6 +1720,7 @@ name = "hew-std-net-smtp"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "lettre",
  "libc",
 ]
@@ -1715,6 +1730,7 @@ name = "hew-std-net-url"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "url",
 ]
@@ -1732,6 +1748,7 @@ name = "hew-std-text-regex"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "regex",
 ]
@@ -1741,6 +1758,7 @@ name = "hew-std-text-semver"
 version = "0.1.2"
 dependencies = [
  "hew-cabi",
+ "hew-runtime",
  "libc",
  "semver",
 ]
@@ -1752,6 +1770,7 @@ dependencies = [
  "chrono",
  "cron",
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 
@@ -1761,6 +1780,7 @@ version = "0.1.2"
 dependencies = [
  "chrono",
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 

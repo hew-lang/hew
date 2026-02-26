@@ -382,7 +382,9 @@ fn compile_and_execute(source: &str) -> Result<String, String> {
         });
     }
 
-    Ok(String::from_utf8_lossy(&run.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    // Normalize Windows \r\n line endings to \n for consistent output.
+    Ok(stdout.replace("\r\n", "\n"))
 }
 
 /// Run the interactive REPL.

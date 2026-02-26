@@ -29,7 +29,10 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
 #endif
 
@@ -86,11 +89,16 @@ static std::string findHewCli() {
   if (const char *env = std::getenv("HEW_CLI"))
     return env;
   // Check relative to the test binary's likely build location
+#ifdef _WIN32
+  constexpr const char *hewName = "hew.exe";
+#else
+  constexpr const char *hewName = "hew";
+#endif
   for (auto candidate : {
-           std::filesystem::path("../../../target/release/hew"),
-           std::filesystem::path("../../../target/debug/hew"),
-           std::filesystem::path("../../target/release/hew"),
-           std::filesystem::path("../../target/debug/hew"),
+           std::filesystem::path("../../../target/release") / hewName,
+           std::filesystem::path("../../../target/debug") / hewName,
+           std::filesystem::path("../../target/release") / hewName,
+           std::filesystem::path("../../target/debug") / hewName,
        }) {
     if (std::filesystem::exists(candidate))
       return std::filesystem::canonical(candidate).string();
@@ -107,7 +115,9 @@ static std::string findHewCli() {
 static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &source,
                                    bool dumpIR = false) {
   // Write source to a temp file
-  std::string tmpPath = "/tmp/test_mlirgen_" + std::to_string(getpid()) + ".hew";
+  std::string tmpPath = (std::filesystem::temp_directory_path() /
+                         ("test_mlirgen_" + std::to_string(getpid()) + ".hew"))
+                            .string();
   {
     std::ofstream tmp(tmpPath);
     if (!tmp) {
@@ -119,7 +129,11 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
 
   // Invoke hew build --emit-json via popen
   static std::string hewCli = findHewCli();
-  std::string cmd = hewCli + " build " + tmpPath + " --emit-json 2>/dev/null";
+#ifdef _WIN32
+  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>NUL";
+#else
+  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>/dev/null";
+#endif
 #ifdef _WIN32
   FILE *pipe = _popen(cmd.c_str(), "r");
 #else

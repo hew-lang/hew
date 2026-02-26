@@ -363,6 +363,19 @@ mod tests {
     use super::super::discovery;
     use super::*;
 
+    /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
+    /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
+    fn require_codegen() -> bool {
+        ensure_hew_binary();
+        match find_hew_binary() {
+            Ok(hew) => {
+                let out = Command::new(&hew).arg("--version").output();
+                out.is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Ensure the `hew` binary is built before tests that need it.
     ///
     /// `cargo test` only builds test harness binaries, not the regular
@@ -405,6 +418,9 @@ mod tests {
 
     #[test]
     fn passing_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -419,6 +435,9 @@ fn test_pass() {
 
     #[test]
     fn failing_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -433,6 +452,9 @@ fn test_fail() {
 
     #[test]
     fn assert_eq_pass() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 fn add(a: i64, b: i64) -> i64 { a + b }
@@ -448,6 +470,9 @@ fn test_add() {
 
     #[test]
     fn assert_eq_fail() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -464,6 +489,9 @@ fn test_bad_eq() {
 
     #[test]
     fn should_panic_pass() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -478,6 +506,9 @@ fn test_expected_panic() {
 
     #[test]
     fn should_panic_fail_no_panic() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -492,6 +523,9 @@ fn test_no_panic() {
 
     #[test]
     fn ignored_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]

@@ -154,8 +154,6 @@ unsafe fn mime_starts_with(mime: *const c_char, prefix: &str) -> i32 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

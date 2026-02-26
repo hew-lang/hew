@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.1.4 — 2026-02-26
+
+### Fixed
+
+- Eliminate false 'function is never called' warnings
+- Properly static-link MLIR/LLVM in hew-codegen release builds
+- Resolve all codegen test failures and WASM build warnings
+- Windows test compatibility and end-to-end build pipeline
+
+### Changed
+
+- Simplify over-engineering: parser, runtime, std libraries
+
 ## v0.1.3 — 2026-02-25
 
 ### Fixed

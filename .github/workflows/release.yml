@@ -15,12 +15,12 @@
 # Required secrets for macOS code signing (optional — skipped if absent):
 #   APPLE_CERTIFICATE_P12       — Base64-encoded .p12 signing certificate
 #   APPLE_CERTIFICATE_PASSWORD  — Password for the .p12 file
-#   APPLE_ID                    — Apple ID email for notarization
-#   APPLE_ID_PASSWORD           — App-specific password for notarization
-#   APPLE_TEAM_ID               — Apple Developer Team ID
+#   APPLE_API_KEY_P8            — App Store Connect API private key (.p8 contents)
+#   APPLE_API_KEY_ID            — App Store Connect API key ID
+#   APPLE_API_ISSUER_ID         — App Store Connect API issuer ID
 #
 # Required secrets for Homebrew tap updates (optional — skipped if absent):
-#   HOMEBREW_TAP_TOKEN           — GitHub PAT with repo scope for hew-lang/homebrew-hew
+#   HOMEBREW_TAP_TOKEN           — GitHub PAT with actions:write scope for hew-lang/homebrew-hew
 #
 # Required secrets for VS Code extension publishing (optional — skipped if absent):
 #   VSCE_PAT                     — VS Code Marketplace Personal Access Token
@@ -304,20 +304,25 @@ jobs:
           rm -f certificate.p12
 
       - name: Notarize archive (macOS)
-        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != ''
+        if: startsWith(matrix.target, 'darwin') && env.APPLE_CERTIFICATE_P12 != '' && env.APPLE_API_KEY_P8 != ''
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
+          # Write the API key (base64-encoded in secret) to disk
+          mkdir -p ~/private_keys
+          echo "${APPLE_API_KEY_P8}" | base64 --decode > ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+
           ditto -c -k --keepParent "${ARCHIVE_NAME}" "${ARCHIVE_NAME}-notarize.zip"
           xcrun notarytool submit "${ARCHIVE_NAME}-notarize.zip" \
-            --apple-id "${APPLE_ID}" \
-            --password "${APPLE_ID_PASSWORD}" \
-            --team-id "${APPLE_TEAM_ID}" \
+            --key ~/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8 \
+            --key-id "${APPLE_API_KEY_ID}" \
+            --issuer "${APPLE_API_ISSUER_ID}" \
             --wait
           rm -f "${ARCHIVE_NAME}-notarize.zip"
+          rm -rf ~/private_keys
 
       # ── Create final archive ────────────────────────────────────────────
 
@@ -511,54 +516,23 @@ jobs:
             ghcr.io/hew-lang/hew:latest
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Homebrew — update the hew-lang/homebrew-hew tap with new version + hashes
+  # Homebrew — trigger formula update in hew-lang/homebrew-hew
   # ─────────────────────────────────────────────────────────────────────────
   homebrew:
     needs: release
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.release.result == 'success' }}
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.RELEASE_TAG }}
-
-      - name: Update Homebrew tap
+      - name: Trigger homebrew-hew formula update
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION="${RELEASE_TAG#v}"
-
-          # Download release tarballs to compute SHA256
-          for target in darwin-x86_64 darwin-aarch64 linux-x86_64 linux-aarch64; do
-            curl -fsSL -o "hew-v${VERSION}-${target}.tar.gz" \
-              "https://github.com/hew-lang/hew/releases/download/v${VERSION}/hew-v${VERSION}-${target}.tar.gz" \
-              || echo "warn: ${target} tarball not available"
-          done
-
-          SHA_DARWIN_X86_64=$(sha256sum "hew-v${VERSION}-darwin-x86_64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_DARWIN_X86_64__")
-          SHA_DARWIN_AARCH64=$(sha256sum "hew-v${VERSION}-darwin-aarch64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_DARWIN_AARCH64__")
-          SHA_LINUX_X86_64=$(sha256sum "hew-v${VERSION}-linux-x86_64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_X86_64__")
-          SHA_LINUX_AARCH64=$(sha256sum "hew-v${VERSION}-linux-aarch64.tar.gz" 2>/dev/null | awk '{print $1}' || echo "__SHA256_LINUX_AARCH64__")
-
-          # Clone the tap repo and copy fresh template from main repo
-          gh repo clone hew-lang/homebrew-hew tap-repo
-          cp installers/homebrew/hew.rb tap-repo/Formula/hew.rb
-
-          cd tap-repo
-          sed -i "s/version \".*\"/version \"${VERSION}\"/" Formula/hew.rb
-          sed -i "s/__SHA256_DARWIN_X86_64__/${SHA_DARWIN_X86_64}/" Formula/hew.rb
-          sed -i "s/__SHA256_DARWIN_AARCH64__/${SHA_DARWIN_AARCH64}/" Formula/hew.rb
-          sed -i "s/__SHA256_LINUX_X86_64__/${SHA_LINUX_X86_64}/" Formula/hew.rb
-          sed -i "s/__SHA256_LINUX_AARCH64__/${SHA_LINUX_AARCH64}/" Formula/hew.rb
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/hew.rb
-          git diff --cached --quiet || git commit -m "Update hew to v${VERSION}"
-          git push
+          gh workflow run update-formula.yml \
+            -R hew-lang/homebrew-hew \
+            -f version="${VERSION}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # VS Code Extension — package + publish with bundled hew-lsp per platform
@@ -665,10 +639,16 @@ jobs:
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
+          shopt -s nullglob
+          vsix_files=(vsix/*.vsix)
+          if [ ${#vsix_files[@]} -eq 0 ]; then
+            echo "::warning::No .vsix files found — skipping marketplace publish"
+            exit 0
+          fi
           if [ -z "${VSCE_PAT}" ]; then
             echo "::warning::VSCE_PAT secret not set — skipping marketplace publish"
             echo "Built .vsix files:"
-            ls -lh vsix/*.vsix 2>/dev/null
+            ls -lh "${vsix_files[@]}"
             exit 0
           fi
-          vsce publish --packagePath vsix/*.vsix
+          vsce publish --packagePath "${vsix_files[@]}"

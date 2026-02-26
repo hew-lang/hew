@@ -90,9 +90,7 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     }
     // SAFETY: caller guarantees `pool` is valid.
     let p = unsafe { &*pool };
-    let Ok(mut guard) = p.inner.queue.lock() else {
-        return -1;
-    };
+    let mut guard = p.inner.queue.lock().unwrap();
     let (ref mut queue, running) = *guard;
     if !running {
         return -1;
@@ -132,9 +130,7 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 fn worker_loop(inner: &PoolInner) {
     loop {
         let task = {
-            let Ok(mut guard) = inner.queue.lock() else {
-                return;
-            };
+            let mut guard = inner.queue.lock().unwrap();
             loop {
                 let (ref mut queue, running) = *guard;
                 if let Some(t) = queue.pop() {
@@ -143,10 +139,7 @@ fn worker_loop(inner: &PoolInner) {
                 if !running {
                     break None;
                 }
-                let Ok(g) = inner.condvar.wait(guard) else {
-                    return;
-                };
-                guard = g;
+                guard = inner.condvar.wait(guard).unwrap();
             }
         };
         match task {

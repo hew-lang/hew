@@ -63,7 +63,7 @@ fn outbound_queue() -> MutexGuard<'static, VecDeque<OutboundMsg>> {
     OUTBOUND
         .get_or_init(|| Mutex::new(VecDeque::new()))
         .lock()
-        .expect("bridge outbound queue mutex poisoned")
+        .unwrap()
 }
 
 // ── Type metadata registry ──────────────────────────────────────────────
@@ -180,7 +180,7 @@ fn meta_state() -> MutexGuard<'static, MetaState> {
             })
         })
         .lock()
-        .expect("bridge metadata state mutex poisoned")
+        .unwrap()
 }
 
 // ── Host → WASM: send a message to a named actor ───────────────────────

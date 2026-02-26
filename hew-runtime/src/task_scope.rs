@@ -81,15 +81,15 @@ impl TaskDoneSignal {
     }
 
     fn notify_done(&self) {
-        let mut done = self.lock.lock().expect("TaskDoneSignal lock poisoned");
+        let mut done = self.lock.lock().unwrap();
         *done = true;
         self.cond.notify_all();
     }
 
     fn wait_until_done(&self) {
-        let mut done = self.lock.lock().expect("TaskDoneSignal lock poisoned");
+        let mut done = self.lock.lock().unwrap();
         while !*done {
-            done = self.cond.wait(done).expect("TaskDoneSignal lock poisoned");
+            done = self.cond.wait(done).unwrap();
         }
     }
 }

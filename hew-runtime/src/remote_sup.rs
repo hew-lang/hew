@@ -101,16 +101,12 @@ pub struct HewRemoteSupervisor {
 
 impl HewRemoteSupervisor {
     fn remote_death_dispatch(&self) -> Option<RemoteDeathDispatch> {
-        let callback = *self.callback.lock().unwrap_or_else(|e| e.into_inner());
+        let callback = *self.callback.lock().unwrap();
         let Some(callback) = callback else {
             return None;
         };
 
-        let monitored = self
-            .monitored
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let monitored = self.monitored.lock().unwrap().clone();
         Some(RemoteDeathDispatch {
             callback,
             remote_node_id: self.remote_node_id,
@@ -120,19 +116,13 @@ impl HewRemoteSupervisor {
     }
 
     fn reset_quarantine_state(&self) {
-        let mut state = self
-            .quarantine_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut state = self.quarantine_state.lock().unwrap();
         *state = QuarantineState::default();
     }
 
     fn process_membership_event(&self, event: u8) -> Option<RemoteDeathDispatch> {
         let now = Instant::now();
-        let mut state = self
-            .quarantine_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut state = self.quarantine_state.lock().unwrap();
         let quarantine = Duration::from_millis(self.dead_quarantine_ms);
 
         let should_dispatch = match event {
@@ -182,10 +172,7 @@ impl HewRemoteSupervisor {
     fn poll_quarantine(&self) -> Option<RemoteDeathDispatch> {
         let now = Instant::now();
         let quarantine = Duration::from_millis(self.dead_quarantine_ms);
-        let mut state = self
-            .quarantine_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut state = self.quarantine_state.lock().unwrap();
 
         if !state.pending_dead || state.notified_dead {
             return None;
@@ -217,7 +204,7 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
     let cluster_key = user_data as usize;
     let mut dispatches = Vec::new();
     let subscriptions = cluster_subscriptions();
-    let registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+    let registry = subscriptions.lock().unwrap();
     if let Some(supervisors) = registry.get(&cluster_key) {
         for sup_addr in supervisors {
             // SAFETY: pointers are registered by start and removed by stop under the same lock.
@@ -292,7 +279,7 @@ pub unsafe extern "C" fn hew_remote_sup_monitor(
     if pid_node != 0 && pid_node != sup.remote_node_id {
         return -1;
     }
-    let mut monitored = sup.monitored.lock().unwrap_or_else(|e| e.into_inner());
+    let mut monitored = sup.monitored.lock().unwrap();
     if monitored.contains(&remote_pid) {
         return -1;
     }
@@ -319,7 +306,7 @@ pub unsafe extern "C" fn hew_remote_sup_unmonitor(
 
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    let mut monitored = sup.monitored.lock().unwrap_or_else(|e| e.into_inner());
+    let mut monitored = sup.monitored.lock().unwrap();
     let Some(idx) = monitored.iter().position(|pid| *pid == remote_pid) else {
         return -1;
     };
@@ -357,7 +344,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
     let cluster_key = node.cluster as usize;
     let subscriptions = cluster_subscriptions();
     {
-        let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registry = subscriptions.lock().unwrap();
         let entry = registry.entry(cluster_key).or_default();
         if entry.is_empty() {
             // SAFETY: cluster pointer is valid while node is alive.
@@ -405,7 +392,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
             sup.running.store(false, Ordering::Release);
             let mut clear_cluster_callback = false;
             {
-                let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+                let mut registry = subscriptions.lock().unwrap();
                 if let Some(entry) = registry.get_mut(&cluster_key) {
                     entry.retain(|addr| *addr != sup_addr);
                     if entry.is_empty() {
@@ -453,7 +440,7 @@ pub unsafe extern "C" fn hew_remote_sup_stop(sup: *mut HewRemoteSupervisor) -> c
     let subscriptions = cluster_subscriptions();
     let mut clear_cluster_callback = false;
     {
-        let mut registry = subscriptions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut registry = subscriptions.lock().unwrap();
         if let Some(entry) = registry.get_mut(&cluster_key) {
             entry.retain(|addr| *addr != sup_addr);
             if entry.is_empty() {
@@ -498,7 +485,7 @@ pub unsafe extern "C" fn hew_remote_sup_set_callback(
 
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    *sup.callback.lock().unwrap_or_else(|e| e.into_inner()) = callback;
+    *sup.callback.lock().unwrap() = callback;
 }
 
 /// Free a remote supervisor.

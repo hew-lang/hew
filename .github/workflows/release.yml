@@ -7,6 +7,7 @@
 #   bin/hew           — compiler driver
 #   bin/adze          — package manager
 #   bin/hew-codegen   — C++ MLIR compiler (statically linked)
+#   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew_runtime.a — Rust actor runtime static library
 #   std/              — standard library sources
 #   completions/      — shell completions (bash, zsh, fish)
@@ -137,8 +138,8 @@ jobs:
       - name: Build hew-runtime
         run: cargo build -p hew-runtime --release --target ${{ matrix.rust_target }}
 
-      - name: Build hew and adze
-        run: cargo build -p hew-cli -p adze-cli --release --target ${{ matrix.rust_target }}
+      - name: Build hew, adze, and hew-lsp
+        run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       # ── hew-codegen (CMake + MLIR) ───────────────────────────────────────────
 
@@ -197,6 +198,7 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
           cp "hew-codegen/build/src/hew-codegen"                            "${ARCHIVE_NAME}/bin/"
+          cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
           # Runtime library
@@ -214,7 +216,7 @@ jobs:
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
           # Strip binaries
-          for b in hew adze hew-codegen; do
+          for b in hew adze hew-codegen hew-lsp; do
             strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
           done
 
@@ -231,6 +233,7 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "hew-codegen/build/src/hew-codegen.exe"                           "${ArchiveName}/bin/"
+          Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
 
           # Standard library sources
@@ -276,13 +279,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-codegen; do
+          for bin in hew adze hew-codegen hew-lsp; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-codegen; do
+          for bin in hew adze hew-codegen hew-lsp; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -330,6 +333,20 @@ jobs:
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.zip
+
+      - name: Upload hew-lsp standalone (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-lsp
+
+      - name: Upload hew-lsp standalone (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux packages — build .deb, .rpm, .pkg.tar.zst, .apk from tarballs

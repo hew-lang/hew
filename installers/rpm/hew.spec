@@ -19,6 +19,12 @@ Source0:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 # Pre-built binaries — no compilation needed.
 %global debug_package %{nil}
 
+# Binaries are statically linked (LLVM/MLIR baked in); disable automatic
+# shared-library dependency scanning so rpmbuild doesn't declare
+# requirements on packages that aren't needed at runtime.
+AutoReqProv:    no
+Requires:       glibc zlib libzstd
+
 %description
 Hew is a statically-typed, actor-oriented programming language targeting
 concurrent and distributed systems, featuring Erlang-inspired supervision
@@ -28,6 +34,7 @@ This package provides:
   - hew          the compiler driver
   - adze         the package manager
   - hew-codegen  the MLIR code generator
+  - hew-lsp      the language server
   - libhew_runtime.a  the actor runtime static library
 
 %prep
@@ -37,6 +44,7 @@ This package provides:
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
 install -Dm755 bin/adze         %{buildroot}%{_bindir}/adze
 install -Dm755 bin/hew-codegen  %{buildroot}%{_bindir}/hew-codegen
+install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
 
 install -Dm644 lib/libhew_runtime.a %{buildroot}%{_libdir}/hew/libhew_runtime.a
 
@@ -83,6 +91,7 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %{_bindir}/hew
 %{_bindir}/adze
 %{_bindir}/hew-codegen
+%{_bindir}/hew-lsp
 %{_libdir}/hew/
 %{_datadir}/hew/
 

@@ -45,6 +45,7 @@ override_dh_auto_install:
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew          $(DESTDIR)/usr/bin/hew
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/adze         $(DESTDIR)/usr/bin/adze
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-codegen  $(DESTDIR)/usr/bin/hew-codegen
+	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-lsp      $(DESTDIR)/usr/bin/hew-lsp 2>/dev/null || true
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew_runtime.a \
 	              $(DESTDIR)/usr/lib/hew/libhew_runtime.a
 	cp -r hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/std/. $(DESTDIR)/usr/share/hew/std/ 2>/dev/null || true

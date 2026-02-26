@@ -168,8 +168,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-serialize hew-runtime (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-serialize -p hew-runtime --release
+    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-runtime (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime --release
 
     if [[ -f "${REPO_DIR}/hew-codegen/build/build.ninja" ]]; then
         local jobs
@@ -186,7 +186,7 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-    for bin in hew adze; do
+    for bin in hew adze hew-lsp; do
         if [[ -f "${REPO_DIR}/target/release/${bin}" ]]; then
             cp "${REPO_DIR}/target/release/${bin}" "${staging}/bin/"
             chmod +x "${staging}/bin/${bin}"
@@ -510,6 +510,7 @@ RUN apk add --no-cache \
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-codegen   /usr/local/bin/hew-codegen
+COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 ENV HEW_STD=/usr/local/share/hew/std

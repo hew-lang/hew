@@ -8,10 +8,10 @@ url="https://hew.sh"
 arch="x86_64 aarch64"
 license="MIT OR Apache-2.0"
 # Rust binaries are linked against glibc; gcompat provides the compatibility
-# shim on Alpine's musl-based system.
-depends="gcompat"
+# shim on Alpine's musl-based system. libgcc is needed for unwinding.
+# zlib and zstd are needed by hew-codegen (LLVM compression support).
+depends="gcompat libgcc zlib zstd-libs"
 # Pre-built binaries — skip automatic shared-library dependency tracing.
-# hew-codegen links against LLVM/MLIR shared libs not present at build time.
 options="!tracedeps !strip"
 
 _hew_arch=""
@@ -38,6 +38,7 @@ package() {
   install -Dm755 "$builddir/bin/hew"          "$pkgdir/usr/bin/hew"
   install -Dm755 "$builddir/bin/adze"         "$pkgdir/usr/bin/adze"
   install -Dm755 "$builddir/bin/hew-codegen"  "$pkgdir/usr/bin/hew-codegen"
+  install -Dm755 "$builddir/bin/hew-lsp"      "$pkgdir/usr/bin/hew-lsp"
 
   install -Dm644 "$builddir/lib/libhew_runtime.a" \
     "$pkgdir/usr/lib/hew/libhew_runtime.a"

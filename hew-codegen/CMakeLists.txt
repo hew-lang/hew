@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
+endif()
 project(hew-codegen VERSION 0.1.4 LANGUAGES C CXX)
 
 # ── Standards ────────────────────────────────────────────────────────────────
@@ -27,6 +30,21 @@ include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+# Ensure MLIR_TABLEGEN_EXE is an absolute path so ninja can find it.
+# When installed via cmake --install with BUILD_TOOLS=OFF, the config may
+# set it to a bare "mlir-tblgen" which cmake resolves to a build-local path.
+if(MLIR_TABLEGEN_EXE AND NOT IS_ABSOLUTE "${MLIR_TABLEGEN_EXE}")
+  find_program(_mlir_tblgen_abs "${MLIR_TABLEGEN_EXE}"
+    PATHS "${LLVM_TOOLS_BINARY_DIR}" "${MLIR_DIR}/../../../bin"
+    NO_DEFAULT_PATH)
+  if(NOT _mlir_tblgen_abs)
+    find_program(_mlir_tblgen_abs "${MLIR_TABLEGEN_EXE}")
+  endif()
+  if(_mlir_tblgen_abs)
+    set(MLIR_TABLEGEN_EXE "${_mlir_tblgen_abs}" CACHE FILEPATH "" FORCE)
+  endif()
+endif()
+
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -47,7 +65,6 @@ FetchContent_Declare(
   msgpack-cxx
   URL      https://github.com/msgpack/msgpack-c/archive/refs/tags/cpp-7.0.0.tar.gz
   URL_HASH SHA256=070881ebea9208cf7e731fd5a46a11404025b2f260ab9527e32dfcb7c689fbfc
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(MSGPACK_USE_BOOST OFF CACHE BOOL "" FORCE)
 set(MSGPACK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -59,7 +76,6 @@ FetchContent_Declare(
   nlohmann_json
   URL      https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
   # Hash omitted — GitHub tarballs are regenerated and may vary
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(nlohmann_json)

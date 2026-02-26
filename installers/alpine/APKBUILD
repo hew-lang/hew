@@ -7,10 +7,9 @@ pkgdesc="Statically-typed, actor-oriented programming language"
 url="https://hew.sh"
 arch="x86_64 aarch64"
 license="MIT OR Apache-2.0"
-# Rust binaries are linked against glibc; gcompat provides the compatibility
-# shim on Alpine's musl-based system. libgcc is needed for unwinding.
-# zlib and zstd are needed by hew-codegen (LLVM compression support).
-depends="gcompat libgcc zlib zstd-libs"
+# All binaries are statically linked for musl — no runtime dependencies
+# except basic system libraries.
+depends="zlib zstd-libs"
 # Pre-built binaries — skip automatic shared-library dependency tracing.
 options="!tracedeps !strip"
 

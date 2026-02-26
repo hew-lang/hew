@@ -365,15 +365,40 @@ mod tests {
 
     /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
     /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
+    ///
+    /// Verifies the pipeline end-to-end by attempting to compile a trivial
+    /// program. `hew --version` alone is not sufficient because the hew
+    /// binary can exist without the separate hew-codegen binary.
     fn require_codegen() -> bool {
         ensure_hew_binary();
-        match find_hew_binary() {
-            Ok(hew) => {
-                let out = Command::new(&hew).arg("--version").output();
-                out.is_ok()
-            }
-            Err(_) => false,
+        let hew = match find_hew_binary() {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        // Try to compile a trivial program to verify hew-codegen is available.
+        let dir = std::env::temp_dir();
+        let src = dir.join("hew_codegen_check.hew");
+        let bin = dir.join(if cfg!(target_os = "windows") {
+            "hew_codegen_check.exe"
+        } else {
+            "hew_codegen_check"
+        });
+        if std::fs::write(&src, "fn main() {}\n").is_err() {
+            return false;
         }
+        let ok = Command::new(&hew)
+            .args([
+                "build",
+                &src.display().to_string(),
+                "-o",
+                &bin.display().to_string(),
+            ])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&bin);
+        ok
     }
 
     /// Ensure the `hew` binary is built before tests that need it.

@@ -103,9 +103,17 @@ impl CrashStats {
     /// Count crashes within a time window (in nanoseconds).
     fn recent_crash_count(&self, window_ns: u64, now_ns: u64) -> u32 {
         let cutoff_time = now_ns.saturating_sub(window_ns);
+        let valid_entries = (self.total_crashes as usize).min(self.recent_timestamps.len());
         let mut count = 0;
 
-        for &timestamp in &self.recent_timestamps {
+        // Only examine slots that have been written to. The circular buffer
+        // is zero-initialized, and zero timestamps would be spuriously
+        // counted when the monotonic epoch is younger than the window.
+        for i in 0..valid_entries {
+            // Walk backwards from the most recent entry.
+            let idx = (self.recent_head as usize + self.recent_timestamps.len() - 1 - i)
+                % self.recent_timestamps.len();
+            let timestamp = self.recent_timestamps[idx];
             if timestamp >= cutoff_time && timestamp <= now_ns {
                 count += 1;
             }

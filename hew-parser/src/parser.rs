@@ -331,11 +331,11 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn expect(&mut self, expected: &Token<'_>) -> Result<Span, ()> {
+    fn expect(&mut self, expected: &Token<'_>) -> Option<Span> {
         if let Some(tok) = self.peek() {
             if std::mem::discriminant(tok) == std::mem::discriminant(expected) {
                 let (_, span) = self.advance().unwrap();
-                return Ok(span);
+                return Some(span);
             }
         }
         let found = match self.peek() {
@@ -351,7 +351,7 @@ impl<'src> Parser<'src> {
         } else {
             self.error(format!("expected {expected}, found {found}"));
         }
-        Err(())
+        None
     }
 
     fn eat(&mut self, expected: &Token<'_>) -> bool {
@@ -466,33 +466,11 @@ impl<'src> Parser<'src> {
         });
     }
 
-    #[expect(dead_code, reason = "API for future use")]
-    fn warning(&mut self, message: String) {
-        let span = self.peek_span();
-        self.errors.push(ParseError {
-            message,
-            span,
-            hint: None,
-            severity: Severity::Warning,
-        });
-    }
-
     fn warning_at(&mut self, message: String, span: Span) {
         self.errors.push(ParseError {
             message,
             span,
             hint: None,
-            severity: Severity::Warning,
-        });
-    }
-
-    #[expect(dead_code, reason = "API for future use")]
-    fn warning_with_hint(&mut self, message: String, hint: impl Into<String>) {
-        let span = self.peek_span();
-        self.errors.push(ParseError {
-            message,
-            span,
-            hint: Some(hint.into()),
             severity: Severity::Warning,
         });
     }
@@ -535,12 +513,12 @@ impl<'src> Parser<'src> {
         )
     }
 
-    fn expect_ident(&mut self) -> Result<String, ()> {
+    fn expect_ident(&mut self) -> Option<String> {
         match self.peek() {
             Some(Token::Identifier(name)) => {
                 let name = name.to_string();
                 self.advance();
-                Ok(name)
+                Some(name)
             }
             // Contextual keywords that can also be used as identifiers
             Some(
@@ -583,7 +561,7 @@ impl<'src> Parser<'src> {
                     _ => unreachable!(),
                 };
                 self.advance();
-                Ok(name.to_string())
+                Some(name.to_string())
             }
             _ => {
                 let found = match self.peek() {
@@ -591,7 +569,7 @@ impl<'src> Parser<'src> {
                     None => "end of file".to_string(),
                 };
                 self.error(format!("expected identifier, found {found}"));
-                Err(())
+                None
             }
         }
     }
@@ -676,13 +654,15 @@ impl<'src> Parser<'src> {
         while self.peek() == Some(&Token::HashBracket) {
             let start = self.peek_span().start;
             self.advance(); // consume `#[`
-            let Ok(name) = self.expect_ident() else { break };
+            let Some(name) = self.expect_ident() else {
+                break;
+            };
             let mut args = Vec::new();
             if self.eat(&Token::LeftParen) {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
-                        args.push(self.expect_ident().ok().unwrap_or_default());
+                        args.push(self.expect_ident().unwrap_or_default());
                     } else if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
                         let val = s
                             .strip_prefix("r\"")
@@ -723,6 +703,8 @@ impl<'src> Parser<'src> {
             doc_comment = self.collect_doc_comments();
         }
         let start = self.peek_span().start;
+        // Pre-compute attribute span before attrs is moved into the item.
+        let attr_start = attrs.first().map(|a| a.span.start);
 
         let item = match self.peek() {
             Some(Token::Import) => {
@@ -739,8 +721,7 @@ impl<'src> Parser<'src> {
                 match self.peek() {
                     Some(Token::Fn) => {
                         self.advance();
-                        let mut f =
-                            self.parse_function(false, false, true, is_pure, attrs.clone())?;
+                        let mut f = self.parse_function(false, false, true, is_pure, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     }
@@ -749,7 +730,7 @@ impl<'src> Parser<'src> {
                         if self.eat(&Token::Gen) {
                             if self.eat(&Token::Fn) {
                                 let mut f =
-                                    self.parse_function(true, true, true, is_pure, attrs.clone())?;
+                                    self.parse_function(true, true, true, is_pure, attrs)?;
                                 f.doc_comment.clone_from(&doc_comment);
                                 Item::Function(f)
                             } else {
@@ -757,8 +738,7 @@ impl<'src> Parser<'src> {
                                 return None;
                             }
                         } else if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(true, false, true, is_pure, attrs.clone())?;
+                            let mut f = self.parse_function(true, false, true, is_pure, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -769,8 +749,7 @@ impl<'src> Parser<'src> {
                     Some(Token::Gen) => {
                         self.advance();
                         if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(false, true, true, is_pure, attrs.clone())?;
+                            let mut f = self.parse_function(false, true, true, is_pure, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -834,7 +813,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Fn) => {
                 self.advance();
-                let mut f = self.parse_function(false, false, false, false, attrs.clone())?;
+                let mut f = self.parse_function(false, false, false, false, attrs)?;
                 f.doc_comment.clone_from(&doc_comment);
                 Item::Function(f)
             }
@@ -843,16 +822,14 @@ impl<'src> Parser<'src> {
                 match self.peek() {
                     Some(Token::Fn) => {
                         self.advance();
-                        let mut f =
-                            self.parse_function(false, false, false, true, attrs.clone())?;
+                        let mut f = self.parse_function(false, false, false, true, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     }
                     Some(Token::Gen) => {
                         self.advance();
                         if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(false, true, false, true, attrs.clone())?;
+                            let mut f = self.parse_function(false, true, false, true, attrs)?;
                             f.doc_comment.clone_from(&doc_comment);
                             Item::Function(f)
                         } else {
@@ -872,7 +849,7 @@ impl<'src> Parser<'src> {
                 self.advance();
                 if self.eat(&Token::Gen) {
                     if self.eat(&Token::Fn) {
-                        let mut f = self.parse_function(true, true, false, false, attrs.clone())?;
+                        let mut f = self.parse_function(true, true, false, false, attrs)?;
                         f.doc_comment.clone_from(&doc_comment);
                         Item::Function(f)
                     } else {
@@ -880,7 +857,7 @@ impl<'src> Parser<'src> {
                         return None;
                     }
                 } else if self.eat(&Token::Fn) {
-                    let mut f = self.parse_function(true, false, false, false, attrs.clone())?;
+                    let mut f = self.parse_function(true, false, false, false, attrs)?;
                     f.doc_comment.clone_from(&doc_comment);
                     Item::Function(f)
                 } else {
@@ -891,7 +868,7 @@ impl<'src> Parser<'src> {
             Some(Token::Gen) => {
                 self.advance();
                 if self.eat(&Token::Fn) {
-                    let mut f = self.parse_function(false, true, false, false, attrs.clone())?;
+                    let mut f = self.parse_function(false, true, false, false, attrs)?;
                     f.doc_comment.clone_from(&doc_comment);
                     Item::Function(f)
                 } else {
@@ -1000,11 +977,7 @@ impl<'src> Parser<'src> {
 
         let end = self.peek_span().start;
         // Extend span to cover leading attributes if present.
-        let item_start = if let Some(first) = attrs.first() {
-            first.span.start
-        } else {
-            start
-        };
+        let item_start = attr_start.unwrap_or(start);
         Some((item, item_start..end))
     }
 
@@ -1016,7 +989,7 @@ impl<'src> Parser<'src> {
         is_pure: bool,
         attributes: Vec<Attribute>,
     ) -> Option<FnDecl> {
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
         let type_params = if self.eat(&Token::Less) {
             Some(self.parse_type_params()?)
@@ -1024,9 +997,9 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::LeftParen).ok()?;
+        self.expect(&Token::LeftParen)?;
         let params = self.parse_params();
-        self.expect(&Token::RightParen).ok()?;
+        self.expect(&Token::RightParen)?;
 
         let return_type = if self.eat(&Token::Arrow) {
             Some(self.parse_type()?)
@@ -1070,11 +1043,11 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_type_alias(&mut self, is_pub: bool) -> Option<TypeAliasDecl> {
-        self.expect(&Token::Type).ok()?;
-        let name = self.expect_ident().ok()?;
-        self.expect(&Token::Equal).ok()?;
+        self.expect(&Token::Type)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::Equal)?;
         let ty = self.parse_type()?;
-        self.expect(&Token::Semicolon).ok()?;
+        self.expect(&Token::Semicolon)?;
         Some(TypeAliasDecl { is_pub, name, ty })
     }
 
@@ -1091,7 +1064,7 @@ impl<'src> Parser<'src> {
             _ => return None,
         };
 
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
         let type_params = if self.eat(&Token::Less) {
             Some(self.parse_type_params()?)
@@ -1106,7 +1079,7 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut body = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -1122,7 +1095,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(TypeDecl {
             is_pub,
@@ -1149,8 +1122,8 @@ impl<'src> Parser<'src> {
                     )?))
                 } else {
                     // Field
-                    let name = self.expect_ident().ok()?;
-                    self.expect(&Token::Colon).ok()?;
+                    let name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
                     if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                         self.error("use `;` instead of `,` to separate fields".to_string());
@@ -1161,7 +1134,7 @@ impl<'src> Parser<'src> {
             }
             TypeDeclKind::Enum => {
                 // Enum variant
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
                 let mut fields = Vec::new();
 
                 if self.eat(&Token::LeftParen) {
@@ -1171,7 +1144,7 @@ impl<'src> Parser<'src> {
                             break;
                         }
                     }
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
                 }
 
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
@@ -1184,7 +1157,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_trait_decl(&mut self, is_pub: bool) -> Option<TraitDecl> {
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
         let type_params = if self.eat(&Token::Less) {
             Some(self.parse_type_params()?)
@@ -1205,7 +1178,7 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut items = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -1216,7 +1189,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(TraitDecl {
             is_pub,
@@ -1235,7 +1208,7 @@ impl<'src> Parser<'src> {
         match self.peek() {
             Some(Token::Fn) => {
                 self.advance();
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
 
                 let type_params = if self.eat(&Token::Less) {
                     Some(self.parse_type_params()?)
@@ -1243,9 +1216,9 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::LeftParen).ok()?;
+                self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
-                self.expect(&Token::RightParen).ok()?;
+                self.expect(&Token::RightParen)?;
 
                 let return_type = if self.eat(&Token::Arrow) {
                     Some(self.parse_type()?)
@@ -1263,7 +1236,7 @@ impl<'src> Parser<'src> {
                 let body = if self.peek() == Some(&Token::LeftBrace) {
                     Some(self.parse_block()?)
                 } else {
-                    self.expect(&Token::Semicolon).ok()?;
+                    self.expect(&Token::Semicolon)?;
                     None
                 };
 
@@ -1279,7 +1252,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Type) => {
                 self.advance();
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
 
                 let bounds = if self.eat(&Token::Colon) {
                     let mut bounds = Vec::new();
@@ -1294,7 +1267,7 @@ impl<'src> Parser<'src> {
                     Vec::new()
                 };
 
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
                 Some(TraitItem::AssociatedType { name, bounds })
             }
             _ => {
@@ -1341,7 +1314,7 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut methods = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
@@ -1357,7 +1330,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(ImplDecl {
             type_params,
@@ -1371,7 +1344,7 @@ impl<'src> Parser<'src> {
     /// Checks if the current position looks like a field declaration (ident: type).
     fn peek_is_field_decl(&mut self) -> bool {
         let saved = self.save_pos();
-        let result = if self.expect_ident().is_ok() {
+        let result = if self.expect_ident().is_some() {
             self.peek() == Some(&Token::Colon)
         } else {
             false
@@ -1385,7 +1358,7 @@ impl<'src> Parser<'src> {
         reason = "actor decl parsing has many fields and sections"
     )]
     fn parse_actor_decl(&mut self, is_pub: bool) -> Option<ActorDecl> {
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
         let super_traits = if self.eat(&Token::Colon) {
             let mut bounds = Vec::new();
@@ -1400,7 +1373,7 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut init = None;
         let mut fields = Vec::new();
@@ -1412,9 +1385,9 @@ impl<'src> Parser<'src> {
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::Init) {
                 self.advance();
-                self.expect(&Token::LeftParen).ok()?;
+                self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
-                self.expect(&Token::RightParen).ok()?;
+                self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
             } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
@@ -1435,15 +1408,15 @@ impl<'src> Parser<'src> {
                         }
                         false
                     };
-                    let handler_name = self.expect_ident().ok()?;
+                    let handler_name = self.expect_ident()?;
                     let type_params = if self.eat(&Token::Less) {
                         Some(self.parse_type_params()?)
                     } else {
                         None
                     };
-                    self.expect(&Token::LeftParen).ok()?;
+                    self.expect(&Token::LeftParen)?;
                     let params = self.parse_params();
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     let return_type = if self.eat(&Token::Arrow) {
                         Some(self.parse_type()?)
@@ -1489,8 +1462,8 @@ impl<'src> Parser<'src> {
                 }
             } else if self.peek() == Some(&Token::Let) {
                 self.advance();
-                let field_name = self.expect_ident().ok()?;
-                self.expect(&Token::Colon).ok()?;
+                let field_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
@@ -1502,8 +1475,8 @@ impl<'src> Parser<'src> {
                 });
             } else if self.peek() == Some(&Token::Var) {
                 self.advance();
-                let field_name = self.expect_ident().ok()?;
-                self.expect(&Token::Colon).ok()?;
+                let field_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 // Skip optional `= expr` initializer
                 if self.eat(&Token::Equal) {
@@ -1535,8 +1508,8 @@ impl<'src> Parser<'src> {
                 }
                 self.eat(&Token::Semicolon);
             } else if self.peek_is_field_decl() {
-                let field_name = self.expect_ident().ok()?;
-                self.expect(&Token::Colon).ok()?;
+                let field_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
@@ -1551,7 +1524,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(ActorDecl {
             is_pub,
@@ -1591,9 +1564,9 @@ impl<'src> Parser<'src> {
                     }
                     "coalesce" => {
                         self.advance();
-                        self.expect(&Token::LeftParen).ok()?;
-                        let key_field = self.expect_ident().ok()?;
-                        self.expect(&Token::RightParen).ok()?;
+                        self.expect(&Token::LeftParen)?;
+                        let key_field = self.expect_ident()?;
+                        self.expect(&Token::RightParen)?;
                         let fallback = if matches!(self.peek(), Some(Token::Identifier(s)) if *s == "fallback")
                         {
                             self.advance();
@@ -1643,9 +1616,9 @@ impl<'src> Parser<'src> {
         reason = "supervisor parsing requires sequential field handling"
     )]
     fn parse_supervisor_decl(&mut self, is_pub: bool) -> Option<SupervisorDecl> {
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut strategy = None;
         let mut max_restarts = None;
@@ -1656,7 +1629,7 @@ impl<'src> Parser<'src> {
             match self.peek() {
                 Some(Token::Strategy) => {
                     self.advance();
-                    self.expect(&Token::Colon).ok()?;
+                    self.expect(&Token::Colon)?;
                     strategy = match self.peek() {
                         Some(Token::OneForOne) => {
                             self.advance();
@@ -1678,7 +1651,7 @@ impl<'src> Parser<'src> {
                 }
                 Some(Token::Identifier(s)) if *s == "max_restarts" => {
                     self.advance();
-                    self.expect(&Token::Colon).ok()?;
+                    self.expect(&Token::Colon)?;
                     if let Some(Token::Integer(num_str)) = self.peek() {
                         max_restarts = parse_int_literal(num_str).ok();
                         self.advance();
@@ -1689,7 +1662,7 @@ impl<'src> Parser<'src> {
                 }
                 Some(Token::Identifier(s)) if *s == "window" => {
                     self.advance();
-                    self.expect(&Token::Colon).ok()?;
+                    self.expect(&Token::Colon)?;
                     let mut val = String::new();
                     if let Some(Token::Integer(num_str)) = self.peek() {
                         val.push_str(num_str);
@@ -1711,9 +1684,9 @@ impl<'src> Parser<'src> {
                 }
                 Some(Token::Child) => {
                     self.advance();
-                    let child_name = self.expect_ident().ok()?;
-                    self.expect(&Token::Colon).ok()?;
-                    let actor_type = self.expect_ident().ok()?;
+                    let child_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let actor_type = self.expect_ident()?;
 
                     let mut args = Vec::new();
                     if self.eat(&Token::LeftParen) {
@@ -1723,7 +1696,7 @@ impl<'src> Parser<'src> {
                                 break;
                             }
                         }
-                        self.expect(&Token::RightParen).ok()?;
+                        self.expect(&Token::RightParen)?;
                     }
 
                     let restart = match self.peek() {
@@ -1800,7 +1773,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(SupervisorDecl {
             is_pub,
@@ -1826,19 +1799,19 @@ impl<'src> Parser<'src> {
             "C".to_string()
         };
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut functions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::Fn) {
                 self.advance();
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
 
-                self.expect(&Token::LeftParen).ok()?;
+                self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
 
                 let is_variadic = self.eat(&Token::DotDot);
-                self.expect(&Token::RightParen).ok()?;
+                self.expect(&Token::RightParen)?;
 
                 let return_type = if self.eat(&Token::Arrow) {
                     Some(self.parse_type()?)
@@ -1846,7 +1819,7 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
 
                 functions.push(ExternFnDecl {
                     name,
@@ -1859,7 +1832,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(ExternBlock { abi, functions })
     }
@@ -1881,9 +1854,9 @@ impl<'src> Parser<'src> {
             _ => return None,
         };
 
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut fields = Vec::new();
         let mut variants = Vec::new();
@@ -1899,7 +1872,7 @@ impl<'src> Parser<'src> {
                                 self.advance();
                                 self.eat(&Token::Comma);
                             }
-                            self.expect(&Token::RightParen).ok()?;
+                            self.expect(&Token::RightParen)?;
                         }
                         if !self.eat(&Token::Semicolon) {
                             self.eat(&Token::Comma);
@@ -1908,9 +1881,9 @@ impl<'src> Parser<'src> {
                     }
 
                     // Parse wire field
-                    let field_name = self.expect_ident().ok()?;
-                    self.expect(&Token::Colon).ok()?;
-                    let raw_ty = self.expect_ident().ok()?;
+                    let field_name = self.expect_ident()?;
+                    self.expect(&Token::Colon)?;
+                    let raw_ty = self.expect_ident()?;
                     // Normalize legacy lowercase aliases to canonical type names
                     let ty = match raw_ty.as_str() {
                         "string" | "str" => "String".to_string(),
@@ -2022,7 +1995,7 @@ impl<'src> Parser<'src> {
                 }
                 WireDeclKind::Enum => {
                     // Parse enum variant
-                    let variant_name = self.expect_ident().ok()?;
+                    let variant_name = self.expect_ident()?;
                     let mut variant_fields = Vec::new();
 
                     if self.eat(&Token::LeftParen) {
@@ -2032,7 +2005,7 @@ impl<'src> Parser<'src> {
                                 break;
                             }
                         }
-                        self.expect(&Token::RightParen).ok()?;
+                        self.expect(&Token::RightParen)?;
                     }
 
                     if !self.eat(&Token::Comma) {
@@ -2046,7 +2019,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         // Extract struct-level JSON/YAML naming conventions from outer attributes.
         let json_case = attrs
@@ -2074,7 +2047,7 @@ impl<'src> Parser<'src> {
         if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
             let raw = *s;
             self.advance();
-            self.expect(&Token::Semicolon).ok()?;
+            self.expect(&Token::Semicolon)?;
             let file_path = raw
                 .strip_prefix("r\"")
                 .or_else(|| raw.strip_prefix('"'))
@@ -2092,7 +2065,7 @@ impl<'src> Parser<'src> {
         let mut path = Vec::new();
 
         loop {
-            path.push(self.expect_ident().ok()?);
+            path.push(self.expect_ident()?);
             // Only continue path if :: is followed by an identifier
             if self.peek() == Some(&Token::DoubleColon) {
                 let saved = self.save_pos();
@@ -2135,9 +2108,9 @@ impl<'src> Parser<'src> {
             } else if self.eat(&Token::LeftBrace) {
                 let mut names = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                    let name = self.expect_ident().ok()?;
+                    let name = self.expect_ident()?;
                     let alias = if self.eat(&Token::As) {
-                        Some(self.expect_ident().ok()?)
+                        Some(self.expect_ident()?)
                     } else {
                         None
                     };
@@ -2146,7 +2119,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                self.expect(&Token::RightBrace).ok()?;
+                self.expect(&Token::RightBrace)?;
                 Some(ImportSpec::Names(names))
             } else {
                 let found = self
@@ -2159,7 +2132,7 @@ impl<'src> Parser<'src> {
             None
         };
 
-        self.expect(&Token::Semicolon).ok()?;
+        self.expect(&Token::Semicolon)?;
 
         Some(ImportDecl {
             path,
@@ -2170,12 +2143,12 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_const_decl(&mut self, is_pub: bool) -> Option<ConstDecl> {
-        let name = self.expect_ident().ok()?;
-        self.expect(&Token::Colon).ok()?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::Colon)?;
         let ty = self.parse_type()?;
-        self.expect(&Token::Equal).ok()?;
+        self.expect(&Token::Equal)?;
         let value = self.parse_expr()?;
-        self.expect(&Token::Semicolon).ok()?;
+        self.expect(&Token::Semicolon)?;
 
         Some(ConstDecl {
             is_pub,
@@ -2208,7 +2181,7 @@ impl<'src> Parser<'src> {
                         }
                         types.push(self.parse_type()?);
                     }
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     if types.len() == 1 {
                         return Some(types.into_iter().next().unwrap());
@@ -2228,7 +2201,7 @@ impl<'src> Parser<'src> {
                             .and_then(|v| u64::try_from(v).ok())
                         {
                             self.advance();
-                            self.expect(&Token::RightBracket).ok()?;
+                            self.expect(&Token::RightBracket)?;
                             TypeExpr::Array {
                                 element: Box::new(element_type),
                                 size,
@@ -2243,7 +2216,7 @@ impl<'src> Parser<'src> {
                     }
                 } else {
                     // Slice: [T]
-                    self.expect(&Token::RightBracket).ok()?;
+                    self.expect(&Token::RightBracket)?;
                     TypeExpr::Slice(Box::new(element_type))
                 }
             }
@@ -2259,7 +2232,7 @@ impl<'src> Parser<'src> {
             Some(Token::Dyn) => {
                 self.advance();
                 // dyn TraitName or dyn TraitName<TypeArgs>
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
                 let type_args = if self.eat(&Token::Less) {
                     Some(self.parse_type_args()?)
                 } else {
@@ -2269,7 +2242,7 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Fn) => {
                 self.advance();
-                self.expect(&Token::LeftParen).ok()?;
+                self.expect(&Token::LeftParen)?;
 
                 let mut params = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightParen) {
@@ -2278,7 +2251,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                self.expect(&Token::RightParen).ok()?;
+                self.expect(&Token::RightParen)?;
 
                 let return_type = if self.eat(&Token::Arrow) {
                     Box::new(self.parse_type()?)
@@ -2294,14 +2267,14 @@ impl<'src> Parser<'src> {
             }
             _ => {
                 // Named type: identifier or contextual keyword, with optional module prefix
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
                 // `_` in type position means infer the type
                 if name == "_" {
                     TypeExpr::Infer
                 } else {
                     // Check for module-qualified type: module.TypeName
                     let name = if self.eat(&Token::Dot) {
-                        let type_name = self.expect_ident().ok()?;
+                        let type_name = self.expect_ident()?;
                         format!("{name}.{type_name}")
                     } else {
                         name
@@ -2324,7 +2297,7 @@ impl<'src> Parser<'src> {
         let mut params = Vec::new();
 
         while !self.at_end() && !self.at_closing_angle() {
-            let name = self.expect_ident().ok()?;
+            let name = self.expect_ident()?;
 
             let bounds = if self.eat(&Token::Colon) {
                 let mut bounds = Vec::new();
@@ -2371,7 +2344,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_trait_bound(&mut self) -> Option<TraitBound> {
-        let name = self.expect_ident().ok()?;
+        let name = self.expect_ident()?;
 
         let type_args = if self.eat(&Token::Less) {
             Some(self.parse_type_args()?)
@@ -2387,7 +2360,7 @@ impl<'src> Parser<'src> {
 
         loop {
             let ty = self.parse_type()?;
-            self.expect(&Token::Colon).ok()?;
+            self.expect(&Token::Colon)?;
 
             let mut bounds = Vec::new();
             loop {
@@ -2412,7 +2385,7 @@ impl<'src> Parser<'src> {
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
             let is_mutable = self.eat(&Token::Var);
-            let Ok(name) = self.expect_ident() else {
+            let Some(name) = self.expect_ident() else {
                 break;
             };
 
@@ -2452,7 +2425,7 @@ impl<'src> Parser<'src> {
 
     // ── Statements ──
     fn parse_block(&mut self) -> Option<Block> {
-        self.expect(&Token::LeftBrace).ok()?;
+        self.expect(&Token::LeftBrace)?;
 
         let mut stmts = Vec::new();
         let mut trailing_expr = None;
@@ -2474,7 +2447,7 @@ impl<'src> Parser<'src> {
                 // Check for assignment
                 if let Some(op) = self.parse_compound_assign_op() {
                     let value = self.parse_expr()?;
-                    self.expect(&Token::Semicolon).ok()?;
+                    self.expect(&Token::Semicolon)?;
                     let span = expr.1.start..value.1.end;
                     stmts.push((
                         Stmt::Assign {
@@ -2486,7 +2459,7 @@ impl<'src> Parser<'src> {
                     ));
                 } else if self.eat(&Token::Equal) {
                     let value = self.parse_expr()?;
-                    self.expect(&Token::Semicolon).ok()?;
+                    self.expect(&Token::Semicolon)?;
                     let span = expr.1.start..value.1.end;
                     stmts.push((
                         Stmt::Assign {
@@ -2524,7 +2497,7 @@ impl<'src> Parser<'src> {
             }
         }
 
-        self.expect(&Token::RightBrace).ok()?;
+        self.expect(&Token::RightBrace)?;
 
         Some(Block {
             stmts,
@@ -2559,13 +2532,13 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
 
                 Stmt::Let { pattern, ty, value }
             }
             Some(Token::Var) => {
                 self.advance();
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
 
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
@@ -2579,7 +2552,7 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
 
                 Stmt::Var { name, ty, value }
             }
@@ -2620,14 +2593,14 @@ impl<'src> Parser<'src> {
             Some(Token::Match) => {
                 self.advance();
                 let scrutinee = self.parse_expr()?;
-                self.expect(&Token::LeftBrace).ok()?;
+                self.expect(&Token::LeftBrace)?;
 
                 let mut arms = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     arms.push(self.parse_match_arm()?);
                 }
 
-                self.expect(&Token::RightBrace).ok()?;
+                self.expect(&Token::RightBrace)?;
 
                 Stmt::Match { scrutinee, arms }
             }
@@ -2650,7 +2623,7 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let is_await = self.eat(&Token::Await);
                 let pattern = self.parse_pattern()?;
-                self.expect(&Token::In).ok()?;
+                self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Stmt::For {
@@ -2674,7 +2647,7 @@ impl<'src> Parser<'src> {
                 } else {
                     Some(self.parse_expr()?)
                 };
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
                 Stmt::Break { label, value }
             }
             Some(Token::Continue) => {
@@ -2686,7 +2659,7 @@ impl<'src> Parser<'src> {
                 } else {
                     None
                 };
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
                 Stmt::Continue { label }
             }
             Some(Token::Return) => {
@@ -2696,13 +2669,13 @@ impl<'src> Parser<'src> {
                 } else {
                     Some(self.parse_expr()?)
                 };
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
                 Stmt::Return(value)
             }
             Some(Token::Defer) => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                self.expect(&Token::Semicolon).ok()?;
+                self.expect(&Token::Semicolon)?;
                 Stmt::Defer(Box::new(expr))
             }
             _ => {
@@ -2723,7 +2696,7 @@ impl<'src> Parser<'src> {
         } else {
             return None;
         };
-        self.expect(&Token::Colon).ok()?;
+        self.expect(&Token::Colon)?;
 
         let stmt = match self.peek() {
             Some(Token::While) => {
@@ -2896,7 +2869,7 @@ impl<'src> Parser<'src> {
                         if self.peek() == Some(&Token::LeftParen) {
                             self.advance(); // consume '('
                             let args = self.parse_call_args()?;
-                            self.expect(&Token::RightParen).ok()?;
+                            self.expect(&Token::RightParen)?;
                             let end = self.peek_span().start;
                             lhs = (
                                 Expr::Call {
@@ -3050,7 +3023,7 @@ impl<'src> Parser<'src> {
 
                 // Handle path expressions like Vec::new, HashMap::new
                 while self.eat(&Token::DoubleColon) {
-                    if let Ok(segment) = self.expect_ident() {
+                    if let Some(segment) = self.expect_ident() {
                         name = format!("{name}::{segment}");
                     } else {
                         break;
@@ -3073,8 +3046,8 @@ impl<'src> Parser<'src> {
                             }
                             "cancel" => {
                                 self.advance(); // consume "cancel"
-                                self.expect(&Token::LeftParen).ok()?;
-                                self.expect(&Token::RightParen).ok()?;
+                                self.expect(&Token::LeftParen)?;
+                                self.expect(&Token::RightParen)?;
                                 let end = self.peek_span().start;
                                 return Some((Expr::ScopeCancel, start..end));
                             }
@@ -3107,8 +3080,8 @@ impl<'src> Parser<'src> {
                         self.advance(); // consume {
                         let mut fields = Vec::new();
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            let field_name = self.expect_ident().ok()?;
-                            self.expect(&Token::Colon).ok()?;
+                            let field_name = self.expect_ident()?;
+                            self.expect(&Token::Colon)?;
                             let value = self.parse_expr()?;
                             fields.push((field_name, value));
 
@@ -3116,7 +3089,7 @@ impl<'src> Parser<'src> {
                                 break;
                             }
                         }
-                        self.expect(&Token::RightBrace).ok()?;
+                        self.expect(&Token::RightBrace)?;
                         Expr::StructInit { name, fields }
                     } else {
                         Expr::Identifier(name)
@@ -3131,7 +3104,7 @@ impl<'src> Parser<'src> {
                 // Try parsing as lambda first
                 let saved_pos = self.save_pos();
                 let is_lambda = if self.try_parse_lambda_params().is_some() {
-                    if self.expect(&Token::RightParen).is_ok() {
+                    if self.expect(&Token::RightParen).is_some() {
                         // Check for optional return type
                         if self.eat(&Token::Arrow) {
                             self.parse_type().is_some() && self.peek() == Some(&Token::FatArrow)
@@ -3149,7 +3122,7 @@ impl<'src> Parser<'src> {
                 if is_lambda {
                     let is_move = false;
                     let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     let return_type = if self.eat(&Token::Arrow) {
                         Some(self.parse_type()?)
@@ -3157,7 +3130,7 @@ impl<'src> Parser<'src> {
                         None
                     };
 
-                    self.expect(&Token::FatArrow).ok()?;
+                    self.expect(&Token::FatArrow)?;
                     let body = Box::new(self.parse_expr()?);
 
                     Expr::Lambda {
@@ -3178,7 +3151,7 @@ impl<'src> Parser<'src> {
                         }
                         exprs.push(self.parse_expr()?);
                     }
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     if exprs.len() == 1 {
                         return Some(exprs.into_iter().next().unwrap());
@@ -3197,7 +3170,7 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                self.expect(&Token::RightBracket).ok()?;
+                self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
             Token::LeftBrace => Expr::Block(self.parse_block()?),
@@ -3219,14 +3192,14 @@ impl<'src> Parser<'src> {
             Token::Match => {
                 self.advance();
                 let scrutinee = Box::new(self.parse_expr()?);
-                self.expect(&Token::LeftBrace).ok()?;
+                self.expect(&Token::LeftBrace)?;
 
                 let mut arms = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     arms.push(self.parse_match_arm()?);
                 }
 
-                self.expect(&Token::RightBrace).ok()?;
+                self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
             Token::Spawn => {
@@ -3240,7 +3213,7 @@ impl<'src> Parser<'src> {
                     let saved_pos = self.save_pos();
                     self.advance();
                     let is_lambda_actor = self.try_parse_lambda_params().is_some() && {
-                        self.expect(&Token::RightParen).is_ok()
+                        self.expect(&Token::RightParen).is_some()
                             && self.peek() == Some(&Token::FatArrow)
                     };
                     self.restore_pos(saved_pos);
@@ -3248,7 +3221,7 @@ impl<'src> Parser<'src> {
                     if is_lambda_actor {
                         self.advance(); // consume (
                         let params = self.try_parse_lambda_params()?;
-                        self.expect(&Token::RightParen).ok()?;
+                        self.expect(&Token::RightParen)?;
 
                         let return_type = if self.eat(&Token::Arrow) {
                             Some(self.parse_type()?)
@@ -3256,7 +3229,7 @@ impl<'src> Parser<'src> {
                             None
                         };
 
-                        self.expect(&Token::FatArrow).ok()?;
+                        self.expect(&Token::FatArrow)?;
                         let body = Box::new(self.parse_expr()?);
 
                         return Some((
@@ -3272,21 +3245,21 @@ impl<'src> Parser<'src> {
                 }
 
                 // Regular spawn: spawn ActorName(field: value, ...)
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
                 let target = Box::new((Expr::Identifier(name), start..name_end));
                 let args = if self.eat(&Token::LeftParen) {
                     let mut args = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                        let field_name = self.expect_ident().ok()?;
-                        self.expect(&Token::Colon).ok()?;
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
                         let value = self.parse_expr()?;
                         args.push((field_name, value));
                         if !self.eat(&Token::Comma) {
                             break;
                         }
                     }
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
                     args
                 } else {
                     Vec::new()
@@ -3299,7 +3272,7 @@ impl<'src> Parser<'src> {
                 if self.eat(&Token::LeftParen) {
                     // Move lambda
                     let params = self.try_parse_lambda_params()?;
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     let return_type = if self.eat(&Token::Arrow) {
                         Some(self.parse_type()?)
@@ -3307,7 +3280,7 @@ impl<'src> Parser<'src> {
                         None
                     };
 
-                    self.expect(&Token::FatArrow).ok()?;
+                    self.expect(&Token::FatArrow)?;
                     let body = Box::new(self.parse_expr()?);
 
                     Expr::Lambda {
@@ -3340,8 +3313,8 @@ impl<'src> Parser<'src> {
                 }
                 // Parse optional binding: scope |s| { ... }
                 let binding = if self.eat(&Token::Pipe) {
-                    let name = self.expect_ident().ok()?;
-                    self.expect(&Token::Pipe).ok()?;
+                    let name = self.expect_ident()?;
+                    self.expect(&Token::Pipe)?;
                     Some(name)
                 } else {
                     None
@@ -3366,7 +3339,7 @@ impl<'src> Parser<'src> {
             }
             Token::Select => {
                 self.advance();
-                self.expect(&Token::LeftBrace).ok()?;
+                self.expect(&Token::LeftBrace)?;
 
                 let mut arms = Vec::new();
                 let mut timeout = None;
@@ -3376,7 +3349,7 @@ impl<'src> Parser<'src> {
                     {
                         self.advance();
                         let duration = self.parse_expr()?;
-                        self.expect(&Token::FatArrow).ok()?;
+                        self.expect(&Token::FatArrow)?;
                         let body = self.parse_expr()?;
                         self.eat(&Token::Comma);
                         timeout = Some(Box::new(TimeoutClause {
@@ -3388,7 +3361,7 @@ impl<'src> Parser<'src> {
                     arms.push(self.parse_select_arm()?);
                 }
 
-                self.expect(&Token::RightBrace).ok()?;
+                self.expect(&Token::RightBrace)?;
 
                 Expr::Select { arms, timeout }
             }
@@ -3404,7 +3377,7 @@ impl<'src> Parser<'src> {
                 } else {
                     (Token::LeftParen, Token::RightParen)
                 };
-                self.expect(&open).ok()?;
+                self.expect(&open)?;
 
                 let mut exprs = Vec::new();
                 while !self.at_end() && self.peek() != Some(&close) {
@@ -3414,7 +3387,7 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                self.expect(&close).ok()?;
+                self.expect(&close)?;
                 Expr::Join(exprs)
             }
             Token::Yield => {
@@ -3489,7 +3462,7 @@ impl<'src> Parser<'src> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-            let name = self.expect_ident().ok()?;
+            let name = self.expect_ident()?;
 
             let ty = if self.eat(&Token::Colon) {
                 Some(self.parse_type()?)
@@ -3525,14 +3498,14 @@ impl<'src> Parser<'src> {
             ));
         }
 
-        let field = self.expect_ident().ok()?;
+        let field = self.expect_ident()?;
 
         // Check for method call
         if self.peek() == Some(&Token::LeftParen) {
             self.advance();
             let args = self.parse_call_args()?;
 
-            self.expect(&Token::RightParen).ok()?;
+            self.expect(&Token::RightParen)?;
             let end = self.peek_span().start;
 
             Some((
@@ -3572,7 +3545,7 @@ impl<'src> Parser<'src> {
                 && self.peek_at(self.pos + 1) == Some(&Token::Colon);
 
             if is_named_arg {
-                let name = self.expect_ident().ok()?;
+                let name = self.expect_ident()?;
                 self.advance(); // consume ':'
                 let value = self.parse_expr()?;
                 args.push(CallArg::Named { name, value });
@@ -3605,7 +3578,7 @@ impl<'src> Parser<'src> {
 
         let args = self.parse_call_args()?;
 
-        self.expect(&Token::RightParen).ok()?;
+        self.expect(&Token::RightParen)?;
         let end = self.peek_span().start;
 
         Some((
@@ -3624,7 +3597,7 @@ impl<'src> Parser<'src> {
         self.advance(); // consume [
 
         let index = self.parse_expr()?;
-        self.expect(&Token::RightBracket).ok()?;
+        self.expect(&Token::RightBracket)?;
         let end = self.peek_span().start;
 
         Some((
@@ -3670,7 +3643,7 @@ impl<'src> Parser<'src> {
                 } else {
                     // Handle qualified names like Color::Red
                     while self.eat(&Token::DoubleColon) {
-                        if let Ok(segment) = self.expect_ident() {
+                        if let Some(segment) = self.expect_ident() {
                             name = format!("{name}::{segment}");
                         } else {
                             break;
@@ -3686,13 +3659,13 @@ impl<'src> Parser<'src> {
                                 break;
                             }
                         }
-                        self.expect(&Token::RightParen).ok()?;
+                        self.expect(&Token::RightParen)?;
                         Pattern::Constructor { name, patterns }
                     } else if self.eat(&Token::LeftBrace) {
                         // Struct pattern
                         let mut fields = Vec::new();
                         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            let field_name = self.expect_ident().ok()?;
+                            let field_name = self.expect_ident()?;
                             let pattern = if self.eat(&Token::Colon) {
                                 Some(self.parse_pattern()?)
                             } else {
@@ -3707,7 +3680,7 @@ impl<'src> Parser<'src> {
                                 break;
                             }
                         }
-                        self.expect(&Token::RightBrace).ok()?;
+                        self.expect(&Token::RightBrace)?;
                         Pattern::Struct { name, fields }
                     } else {
                         Pattern::Identifier(name)
@@ -3727,7 +3700,7 @@ impl<'src> Parser<'src> {
                         }
                         patterns.push(self.parse_pattern()?);
                     }
-                    self.expect(&Token::RightParen).ok()?;
+                    self.expect(&Token::RightParen)?;
 
                     if patterns.len() == 1 {
                         return Some(patterns.into_iter().next().unwrap());
@@ -3848,13 +3821,13 @@ impl<'src> Parser<'src> {
             );
             self.advance();
         } else {
-            self.expect(&Token::FatArrow).ok()?;
+            self.expect(&Token::FatArrow)?;
         }
         let body = self.parse_expr()?;
         if self.peek() == Some(&Token::RightBrace) {
             self.eat(&Token::Comma); // trailing comma optional on last arm
         } else {
-            self.expect(&Token::Comma).ok()?;
+            self.expect(&Token::Comma)?;
         }
 
         Some(MatchArm {
@@ -3868,10 +3841,10 @@ impl<'src> Parser<'src> {
         let binding = self.parse_pattern()?;
         // Accept either `<-` or `from` for select arms
         if !self.eat(&Token::LeftArrow) {
-            self.expect(&Token::From).ok()?;
+            self.expect(&Token::From)?;
         }
         let source = self.parse_expr()?;
-        self.expect(&Token::FatArrow).ok()?;
+        self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;
         self.eat(&Token::Comma);
 

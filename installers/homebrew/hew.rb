@@ -31,6 +31,7 @@ class Hew < Formula
     bin.install "bin/hew"
     bin.install "bin/adze"
     bin.install "bin/hew-codegen"
+    bin.install "bin/hew-lsp"
     lib.install "lib/libhew_runtime.a"
 
     (share/"hew/std").mkpath
@@ -57,5 +58,6 @@ class Hew < Formula
   test do
     system "#{bin}/hew", "version"
     system "#{bin}/adze", "--version"
+    system "#{bin}/hew-lsp", "--version"
   end
 end

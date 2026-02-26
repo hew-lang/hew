@@ -363,6 +363,44 @@ mod tests {
     use super::super::discovery;
     use super::*;
 
+    /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
+    /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
+    ///
+    /// Verifies the pipeline end-to-end by attempting to compile a trivial
+    /// program. `hew --version` alone is not sufficient because the hew
+    /// binary can exist without the separate hew-codegen binary.
+    fn require_codegen() -> bool {
+        ensure_hew_binary();
+        let hew = match find_hew_binary() {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        // Try to compile a trivial program to verify hew-codegen is available.
+        let dir = std::env::temp_dir();
+        let src = dir.join("hew_codegen_check.hew");
+        let bin = dir.join(if cfg!(target_os = "windows") {
+            "hew_codegen_check.exe"
+        } else {
+            "hew_codegen_check"
+        });
+        if std::fs::write(&src, "fn main() {}\n").is_err() {
+            return false;
+        }
+        let ok = Command::new(&hew)
+            .args([
+                "build",
+                &src.display().to_string(),
+                "-o",
+                &bin.display().to_string(),
+            ])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&bin);
+        ok
+    }
+
     /// Ensure the `hew` binary is built before tests that need it.
     ///
     /// `cargo test` only builds test harness binaries, not the regular
@@ -405,6 +443,9 @@ mod tests {
 
     #[test]
     fn passing_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -419,6 +460,9 @@ fn test_pass() {
 
     #[test]
     fn failing_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -433,6 +477,9 @@ fn test_fail() {
 
     #[test]
     fn assert_eq_pass() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 fn add(a: i64, b: i64) -> i64 { a + b }
@@ -448,6 +495,9 @@ fn test_add() {
 
     #[test]
     fn assert_eq_fail() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -464,6 +514,9 @@ fn test_bad_eq() {
 
     #[test]
     fn should_panic_pass() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -478,6 +531,9 @@ fn test_expected_panic() {
 
     #[test]
     fn should_panic_fail_no_panic() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]
@@ -492,6 +548,9 @@ fn test_no_panic() {
 
     #[test]
     fn ignored_test() {
+        if !require_codegen() {
+            return;
+        }
         let summary = run_inline(
             r#"
 #[test]

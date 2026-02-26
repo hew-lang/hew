@@ -236,7 +236,6 @@ pub unsafe extern "C" fn hew_smtp_close(conn: *mut HewSmtpConn) {
 }
 
 #[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

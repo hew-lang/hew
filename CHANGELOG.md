@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.1.3 — 2026-02-25
+
+### Fixed
+
+- Resolve all codegen test failures and WASM build warnings
+
+### Changed
+
+- Bump version to 0.1.3
+
+## v0.1.2 — 2026-02-24
+
+### Added
+
+- Windows x86_64 build support (#13)
+- Distributed actors v2: bridge, transport synchronization, cluster membership (#14)
+- Distributed observer HTTP API endpoints
+- Distributed TUI: Cluster, Messages, and Timeline tabs
+
+### Fixed
+
+- Runtime: actor sync hardening, free wait
+- Runtime: transport connection slot synchronization
+- Runtime: close transport before dropping connection actor
+- Runtime: supervisor delayed restart safety
+- Runtime: pool lifecycle and mailbox sys backlog
+- Runtime: hew_node start cleanup and actor ID encoding
+- Wire varint validation
+- Cluster membership message handling hardening
+- Allowlist strict mode and zeroize key copies
+- Bridge.rs post-rebase build errors
+
+## v0.1.1 — 2026-02-23
+
+### Fixed
+
+- Release packaging: adze completions, RPM spec, Docker image, macOS signing
+- macOS notarization: switch from Apple ID to App Store Connect API keys
+- Non-Linux builds: continue-on-error for cross-platform CI
+- Secret checks: use job-level env vars for signing conditions
+
 ## v0.1.0 — 2026-02-22
 
 **Hew** is a statically-typed, actor-oriented programming language for concurrent and distributed systems. It features Erlang-inspired supervision trees, first-class async/await, and message-passing concurrency — compiled to native code via MLIR and LLVM.

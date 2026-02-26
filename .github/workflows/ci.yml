@@ -122,7 +122,10 @@ jobs:
           restore-keys: hew-codegen-build-${{ runner.os }}-
 
       - name: Build Rust runtime and frontend (release)
-        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize --release
+        run: cargo build -p hew-cli -p hew-runtime -p hew-serialize -p hew-lsp --release
+
+      - name: Smoke test hew-lsp
+        run: ./target/release/hew-lsp --version
 
       - name: Build hew binary (debug — needed by test_runner tests)
         run: cargo build -p hew-cli
@@ -206,7 +209,7 @@ jobs:
           restore-keys: build-test-${{ runner.os }}-
 
       - name: Build Rust crates
-        run: cargo build -p hew-cli -p adze-cli -p hew-runtime --release
+        run: cargo build -p hew-cli -p adze-cli -p hew-runtime -p hew-lsp --release
 
       - name: Run Rust workspace tests (no codegen)
         # hew-cabi and hew-std-* crates link against C runtime symbols

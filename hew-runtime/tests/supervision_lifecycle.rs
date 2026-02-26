@@ -41,6 +41,14 @@ fn ensure_scheduler() {
     });
 }
 
+/// Global lock to serialize all tests in this file.
+///
+/// Tests share mutable global state: the fault injection table (cleared by
+/// `hew_deterministic_reset`), dispatch counters, and the crash log.  Running
+/// them in parallel causes one test's `hew_deterministic_reset` to clear
+/// faults injected by another, leading to flaky failures.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // ── Dispatch counters ────────────────────────────────────────────────────
 
 /// Counts how many times the child dispatch function has been called.
@@ -69,6 +77,7 @@ fn cstr(s: &str) -> CString {
 /// and the restarted actor processes subsequent messages.
 #[test]
 fn supervised_actor_crash_and_restart() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_scheduler();
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
@@ -123,6 +132,7 @@ fn supervised_actor_crash_and_restart() {
         // 7. The supervisor should have restarted the child with a NEW actor.
         //    (The old `child` pointer may be freed — don't dereference it.)
         let restarted = hew_supervisor_get_child(sup, 0);
+
         if !restarted.is_null() {
             // The restarted actor should process messages normally
             let pre = DISPATCH_COUNT.load(Ordering::SeqCst);
@@ -150,6 +160,7 @@ fn supervised_actor_crash_and_restart() {
 /// Supervisor with circuit breaker: repeated crashes should trip the breaker.
 #[test]
 fn circuit_breaker_trips_on_repeated_crashes() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_scheduler();
     hew_deterministic_reset();
 
@@ -181,29 +192,45 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             HEW_CIRCUIT_BREAKER_CLOSED,
         );
 
-        // Crash the child twice in quick succession
-        for _ in 0..2 {
-            let child = hew_supervisor_get_child(sup, 0);
+        // Crash the child twice, waiting for each crash to be recorded and
+        // the child to be restarted before the next iteration.
+        let crashes_before = hew_crash_log_count();
+        for crash_num in 0..2i32 {
+            // Wait for the child to be available (supervisor may still
+            // be restarting from the previous crash).
+            let mut child = std::ptr::null_mut();
+            for _ in 0..100 {
+                child = hew_supervisor_get_child(sup, 0);
+                if !child.is_null() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             if child.is_null() {
                 break;
             }
+
             let child_id = (*child).id;
             hew_fault_inject_crash(child_id, 1);
             hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            // Wait for this crash to be recorded
+            let expected = crashes_before + crash_num + 1;
+            for _ in 0..100 {
+                if hew_crash_log_count() >= expected {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
         }
 
-        // After 2 crashes, circuit breaker should be OPEN (1)
-        // and the child slot should be null (not restarted)
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let state = hew_supervisor_get_child_circuit_state(sup, 0);
-        // Circuit breaker may or may not be open depending on timing,
-        // but crash log should show entries
+        // Verify crashes were recorded
+        let final_crash_count = hew_crash_log_count();
+        let _state = hew_supervisor_get_child_circuit_state(sup, 0);
         assert!(
-            hew_crash_log_count() >= 2,
-            "crash log should have at least 2 entries"
+            final_crash_count >= crashes_before + 2,
+            "crash log should have at least 2 new entries (before={crashes_before}, after={final_crash_count})"
         );
-        eprintln!("circuit breaker state after 2 crashes: {state}");
 
         hew_deterministic_reset();
         hew_supervisor_stop(sup);
@@ -215,6 +242,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
 /// EXIT system message (msg_type = 103).
 #[test]
 fn link_delivers_exit_on_crash() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_scheduler();
     hew_deterministic_reset();
 
@@ -287,6 +315,7 @@ fn link_delivers_exit_on_crash() {
 /// Monitor: when monitored actor crashes, watcher receives a DOWN notification.
 #[test]
 fn monitor_detects_crash() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_scheduler();
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
@@ -341,6 +370,7 @@ fn monitor_detects_crash() {
 /// Crash forensics: crash reports contain meaningful metadata.
 #[test]
 fn crash_report_has_metadata() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     ensure_scheduler();
     hew_deterministic_reset();
 
@@ -379,6 +409,7 @@ fn crash_report_has_metadata() {
 /// Deterministic testing: seed control and fault injection work correctly.
 #[test]
 fn deterministic_seed_and_fault_injection() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     hew_deterministic_reset();
 
     // Set a seed and verify it sticks

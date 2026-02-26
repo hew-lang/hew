@@ -93,9 +93,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let mut shard = MONITOR_TABLE[shard_index]
-        .write()
-        .expect("monitor table poisoned");
+    let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
 
     // Add to monitors: target_id -> [monitoring actors]
     shard
@@ -126,9 +124,7 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
     for shard_index in 0..MONITOR_SHARDS {
-        let mut shard = MONITOR_TABLE[shard_index]
-            .write()
-            .expect("monitor table poisoned");
+        let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
 
         if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
             // Remove from monitors list
@@ -153,9 +149,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
     // Take all monitors for this actor ID.
     let monitors = {
-        let mut shard = MONITOR_TABLE[shard_index]
-            .write()
-            .expect("monitor table poisoned");
+        let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
 
         // Also remove from ref_to_monitor mapping
@@ -287,9 +281,7 @@ mod tests {
         // Verify monitor exists
         let shard_index = get_shard_index(target_id);
         {
-            let shard = MONITOR_TABLE[shard_index]
-                .read()
-                .expect("monitor table poisoned");
+            let shard = MONITOR_TABLE[shard_index].read().unwrap();
             let monitors = shard
                 .monitors
                 .get(&target_id)
@@ -307,9 +299,7 @@ mod tests {
 
         // Verify monitor is removed
         {
-            let shard = MONITOR_TABLE[shard_index]
-                .read()
-                .expect("monitor table poisoned");
+            let shard = MONITOR_TABLE[shard_index].read().unwrap();
             assert!(
                 !shard.monitors.contains_key(&target_id)
                     || shard
@@ -341,9 +331,7 @@ mod tests {
         // Verify both monitors exist
         let shard_index = get_shard_index(20_200);
         {
-            let shard = MONITOR_TABLE[shard_index]
-                .read()
-                .expect("monitor table poisoned");
+            let shard = MONITOR_TABLE[shard_index].read().unwrap();
             let monitors = shard.monitors.get(&20_200).expect("monitors should exist");
             assert_eq!(monitors.len(), 2);
         }
@@ -353,9 +341,7 @@ mod tests {
 
         // Verify only second monitor remains
         {
-            let shard = MONITOR_TABLE[shard_index]
-                .read()
-                .expect("monitor table poisoned");
+            let shard = MONITOR_TABLE[shard_index].read().unwrap();
             let monitors = shard
                 .monitors
                 .get(&20_200)
@@ -369,9 +355,7 @@ mod tests {
 
         // Verify all monitors removed
         {
-            let shard = MONITOR_TABLE[shard_index]
-                .read()
-                .expect("monitor table poisoned");
+            let shard = MONITOR_TABLE[shard_index].read().unwrap();
             assert!(
                 !shard.monitors.contains_key(&20_200)
                     || shard.monitors.get(&20_200).map_or(true, |v| v.is_empty())

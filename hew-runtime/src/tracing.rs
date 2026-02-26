@@ -335,7 +335,7 @@ pub extern "C" fn hew_trace_is_enabled() -> c_int {
 /// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_trace_event_count() -> u64 {
-    let events = TRACE_EVENTS.lock().expect("trace events lock poisoned");
+    let events = TRACE_EVENTS.lock().unwrap();
     events.len() as u64
 }
 
@@ -355,7 +355,7 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
     if out.is_null() || max_count == 0 {
         return 0;
     }
-    let mut events = TRACE_EVENTS.lock().expect("trace events lock poisoned");
+    let mut events = TRACE_EVENTS.lock().unwrap();
     let count = events.len().min(max_count as usize);
     for i in 0..count {
         if let Some(event) = events.pop_front() {
@@ -379,7 +379,7 @@ pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32
 /// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_trace_clear() {
-    let mut events = TRACE_EVENTS.lock().expect("trace events lock poisoned");
+    let mut events = TRACE_EVENTS.lock().unwrap();
     events.clear();
 }
 
@@ -391,7 +391,7 @@ pub extern "C" fn hew_trace_clear() {
 #[no_mangle]
 pub extern "C" fn hew_trace_reset() {
     TRACING_ENABLED.store(false, Ordering::Release);
-    let mut events = TRACE_EVENTS.lock().expect("trace events lock poisoned");
+    let mut events = TRACE_EVENTS.lock().unwrap();
     events.clear();
     CURRENT_CONTEXT.with(|c| c.set(HewTraceContext::default()));
 }
@@ -455,7 +455,7 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let guard = TEST_LOCK.lock().unwrap();
         hew_trace_reset();
         hew_trace_enable(1);
         guard
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn enable_disable() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_trace_reset();
         assert_eq!(hew_trace_is_enabled(), 0);
         hew_trace_enable(1);
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn disabled_noop() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_trace_reset();
         // Tracing disabled — events should not be recorded.
         hew_trace_begin(100, 1);

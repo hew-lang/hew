@@ -7,6 +7,7 @@
 #   bin/hew           — compiler driver
 #   bin/adze          — package manager
 #   bin/hew-codegen   — C++ MLIR compiler (statically linked)
+#   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew_runtime.a — Rust actor runtime static library
 #   std/              — standard library sources
 #   completions/      — shell completions (bash, zsh, fish)
@@ -20,6 +21,9 @@
 #
 # Required secrets for Homebrew tap updates (optional — skipped if absent):
 #   HOMEBREW_TAP_TOKEN           — GitHub PAT with repo scope for hew-lang/homebrew-hew
+#
+# Required secrets for VS Code extension publishing (optional — skipped if absent):
+#   VSCE_PAT                     — VS Code Marketplace Personal Access Token
 
 name: Release
 
@@ -137,8 +141,17 @@ jobs:
       - name: Build hew-runtime
         run: cargo build -p hew-runtime --release --target ${{ matrix.rust_target }}
 
-      - name: Build hew and adze
-        run: cargo build -p hew-cli -p adze-cli --release --target ${{ matrix.rust_target }}
+      - name: Build hew, adze, and hew-lsp
+        run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
+
+      - name: Smoke test hew-lsp (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        run: |
+          ./target/${{ matrix.rust_target }}/release/hew-lsp --version
+
+      - name: Smoke test hew-lsp (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
 
       # ── hew-codegen (CMake + MLIR) ───────────────────────────────────────────
 
@@ -197,6 +210,7 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
           cp "hew-codegen/build/src/hew-codegen"                            "${ARCHIVE_NAME}/bin/"
+          cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
           # Runtime library
@@ -214,7 +228,7 @@ jobs:
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
           # Strip binaries
-          for b in hew adze hew-codegen; do
+          for b in hew adze hew-codegen hew-lsp; do
             strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
           done
 
@@ -231,6 +245,7 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "hew-codegen/build/src/hew-codegen.exe"                           "${ArchiveName}/bin/"
+          Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
 
           # Standard library sources
@@ -276,13 +291,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-codegen; do
+          for bin in hew adze hew-codegen hew-lsp; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-codegen; do
+          for bin in hew adze hew-codegen hew-lsp; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -330,6 +345,20 @@ jobs:
         with:
           name: ${{ env.ARCHIVE_NAME }}
           path: ${{ env.ARCHIVE_NAME }}.zip
+
+      - name: Upload hew-lsp standalone (Unix)
+        if: "!startsWith(matrix.target, 'windows')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-lsp
+
+      - name: Upload hew-lsp standalone (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux packages — build .deb, .rpm, .pkg.tar.zst, .apk from tarballs
@@ -530,3 +559,116 @@ jobs:
           git add Formula/hew.rb
           git diff --cached --quiet || git commit -m "Update hew to v${VERSION}"
           git push
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # VS Code Extension — package + publish with bundled hew-lsp per platform
+  # ─────────────────────────────────────────────────────────────────────────
+  vscode-extension:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    timeout-minutes: 15
+
+    # Map hew release targets to VS Code platform identifiers
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            vscode_target: linux-x64
+            binary: hew-lsp
+          - target: linux-aarch64
+            vscode_target: linux-arm64
+            binary: hew-lsp
+          - target: darwin-x86_64
+            vscode_target: darwin-x64
+            binary: hew-lsp
+          - target: darwin-aarch64
+            vscode_target: darwin-arm64
+            binary: hew-lsp
+          - target: windows-x86_64
+            vscode_target: win32-x64
+            binary: hew-lsp.exe
+
+    steps:
+      - name: Download hew-lsp binary
+        uses: actions/download-artifact@v4
+        with:
+          name: hew-lsp-${{ matrix.target }}
+          path: lsp-binary/
+        continue-on-error: true
+        id: download
+
+      - name: Clone vscode-hew
+        if: steps.download.outcome == 'success'
+        run: |
+          git clone --depth 1 https://github.com/hew-lang/vscode-hew.git extension
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        if: steps.download.outcome == 'success'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        if: steps.download.outcome == 'success'
+        run: cd extension && npm ci
+
+      - name: Bundle LSP binary
+        if: steps.download.outcome == 'success'
+        run: |
+          mkdir -p extension/server
+          cp "lsp-binary/${{ matrix.binary }}" "extension/server/${{ matrix.binary }}"
+          chmod +x "extension/server/${{ matrix.binary }}" 2>/dev/null || true
+
+      - name: Package extension
+        if: steps.download.outcome == 'success'
+        run: |
+          cd extension
+          npx vsce package --target ${{ matrix.vscode_target }}
+
+      - name: Upload .vsix artifact
+        if: steps.download.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.vscode_target }}
+          path: extension/*.vsix
+
+  # Publish all platform-specific .vsix packages in a single job
+  vscode-publish:
+    needs: vscode-extension
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.vscode-extension.result != 'failure' }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Download all .vsix packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "vsix-*"
+          path: vsix/
+          merge-multiple: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "${VSCE_PAT}" ]; then
+            echo "::warning::VSCE_PAT secret not set — skipping marketplace publish"
+            echo "Built .vsix files:"
+            ls -lh vsix/*.vsix 2>/dev/null
+            exit 0
+          fi
+          vsce publish --packagePath vsix/*.vsix

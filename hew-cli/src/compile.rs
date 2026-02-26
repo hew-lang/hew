@@ -443,10 +443,16 @@ fn find_codegen_binary() -> Result<String, String> {
         // Dev layout from target/debug/deps/ (cargo test)
         exe_dir.join(format!("../../../hew-codegen/build/src/{codegen_name}")),
         // Windows MSVC: CMake puts binaries in Release/ or Debug/ subdirs
-        exe_dir.join(format!("../../hew-codegen/build/src/Release/{codegen_name}")),
+        exe_dir.join(format!(
+            "../../hew-codegen/build/src/Release/{codegen_name}"
+        )),
         exe_dir.join(format!("../../hew-codegen/build/src/Debug/{codegen_name}")),
-        exe_dir.join(format!("../../../hew-codegen/build/src/Release/{codegen_name}")),
-        exe_dir.join(format!("../../../hew-codegen/build/src/Debug/{codegen_name}")),
+        exe_dir.join(format!(
+            "../../../hew-codegen/build/src/Release/{codegen_name}"
+        )),
+        exe_dir.join(format!(
+            "../../../hew-codegen/build/src/Debug/{codegen_name}"
+        )),
         // Sanitizer build
         exe_dir.join(format!(
             "../../hew-codegen/build-sanitizer/src/{codegen_name}"

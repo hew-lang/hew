@@ -269,7 +269,6 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
 }
 
 #[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

@@ -155,7 +155,6 @@ pub unsafe extern "C" fn hew_log_trace(msg: *const c_char) {
 }
 
 #[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

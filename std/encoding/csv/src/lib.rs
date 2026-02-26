@@ -271,7 +271,6 @@ fn parse_csv_str(data: &str, has_headers: bool) -> *mut HewCsvTable {
 }
 
 #[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 mod tests {
     use super::*;
     use std::ffi::CString;

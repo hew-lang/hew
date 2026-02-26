@@ -188,7 +188,7 @@ static FAULTS: Mutex<Vec<ActorFault>> = Mutex::new(Vec::new());
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     // Remove any existing crash fault for this actor.
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Crash { .. })));
     if count > 0 {
@@ -209,7 +209,7 @@ pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Delay { .. })));
     if ms > 0 {
         faults.push(ActorFault {
@@ -229,7 +229,7 @@ pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_drop(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Drop { .. })));
     if count > 0 {
         faults.push(ActorFault {
@@ -246,7 +246,7 @@ pub extern "C" fn hew_fault_inject_drop(actor_id: u64, count: u32) {
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear(actor_id: u64) {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     faults.retain(|f| f.actor_id != actor_id);
 }
 
@@ -257,7 +257,7 @@ pub extern "C" fn hew_fault_clear(actor_id: u64) {
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear_all() {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     faults.clear();
 }
 
@@ -268,7 +268,7 @@ pub extern "C" fn hew_fault_clear_all() {
 /// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_count() -> u32 {
-    let faults = FAULTS.lock().expect("fault lock poisoned");
+    let faults = FAULTS.lock().unwrap();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "fault count will never exceed u32::MAX in practice"
@@ -283,7 +283,7 @@ pub extern "C" fn hew_fault_count() -> u32 {
 /// Returns `true` if a crash should be simulated (caller should mark
 /// the actor as `Crashed` and notify the supervisor).
 pub(crate) fn check_crash_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     for fault in faults.iter_mut() {
         if fault.actor_id == actor_id {
             if let FaultKind::Crash { remaining } = &mut fault.kind {
@@ -311,7 +311,7 @@ pub(crate) fn check_crash_fault(actor_id: u64) -> bool {
 ///
 /// Returns the delay in milliseconds (0 = no delay).
 pub(crate) fn check_delay_fault(actor_id: u64) -> u32 {
-    let faults = FAULTS.lock().expect("fault lock poisoned");
+    let faults = FAULTS.lock().unwrap();
     for fault in &*faults {
         if fault.actor_id == actor_id {
             if let FaultKind::Delay { ms } = fault.kind {
@@ -326,7 +326,7 @@ pub(crate) fn check_delay_fault(actor_id: u64) -> u32 {
 ///
 /// Returns `true` if the message should be dropped.
 pub(crate) fn check_drop_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     for fault in faults.iter_mut() {
         if fault.actor_id == actor_id {
             if let FaultKind::Drop { remaining } = &mut fault.kind {
@@ -365,7 +365,7 @@ pub extern "C" fn hew_deterministic_reset() {
     GLOBAL_SEED.store(0, Ordering::Release);
     SIMTIME_ENABLED.store(false, Ordering::Release);
     SIMTIME_MS.store(0, Ordering::Release);
-    let mut faults = FAULTS.lock().expect("fault lock poisoned");
+    let mut faults = FAULTS.lock().unwrap();
     faults.clear();
 }
 
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn seed_control() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_set_seed(42);
         assert_eq!(hew_deterministic_get_seed(), 42);
 
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn simulated_time() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_simtime_enable(1000);
         assert_eq!(hew_simtime_is_enabled(), 1);
         assert_eq!(hew_simtime_now_ms(), 1000);
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn crash_fault_injection() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_reset();
 
         // Inject crash for actor 100, 2 times
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn delay_fault_injection() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_reset();
 
         hew_fault_inject_delay(100, 50);
@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn drop_fault_injection() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_reset();
 
         hew_fault_inject_drop(100, 3);
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn clear_faults() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_reset();
 
         hew_fault_inject_crash(100, 5);
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn full_reset() {
-        let _guard = TEST_LOCK.lock().expect("test lock poisoned");
+        let _guard = TEST_LOCK.lock().unwrap();
         hew_deterministic_set_seed(99);
         hew_simtime_enable(5000);
         hew_fault_inject_crash(1, 1);

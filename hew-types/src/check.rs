@@ -740,8 +740,13 @@ impl Checker {
     /// Pass 2: Collect function signatures
     fn collect_functions(&mut self, program: &Program) {
         // Process module graph items first (if multi-module).
+        // Skip the root module — its items are already in program.items and
+        // will be processed below with current_module = None (bare names).
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
                 if let Some(module) = mg.modules.get(mod_id) {
                     let module_name = mod_id.path.join(".");
                     self.current_module = Some(module_name);
@@ -3364,6 +3369,13 @@ impl Checker {
                 self.used_modules.borrow_mut().insert(name.clone());
                 let key = format!("{name}.{method}");
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
+                    self.called_functions.insert(key.clone());
+                    if let Some(caller) = &self.current_function {
+                        self.call_graph
+                            .entry(caller.clone())
+                            .or_default()
+                            .insert(key.clone());
+                    }
                     // Separate positional and named args
                     let positional_count = args.iter().take_while(|a| a.name().is_none()).count();
                     let positional_args = &args[..positional_count];

@@ -2128,11 +2128,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto loop = builder.create<mlir::scf::ForOp>(location, zero, len, one);
       auto *body = loop.getBody();
       auto iv = loop.getInductionVar();
-      builder.setInsertionPointToStart(body);
+      // Insert before the implicit scf.yield created by ForOp builder
+      builder.setInsertionPoint(body->getTerminator());
       auto key = builder.create<hew::VecGetOp>(location, keyType, keysVec, iv).getResult();
       auto val = builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
       builder.create<hew::VecPushOp>(location, valuesVec, val);
-      builder.create<mlir::scf::YieldOp>(location);
       builder.setInsertionPointAfter(loop);
       builder.create<hew::VecFreeOp>(location, keysVec);
       resultOut = valuesVec;

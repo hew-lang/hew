@@ -135,6 +135,8 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
       return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
                                                  eqResult.getResult(), zero);
     }
+    if (litVal.getType() != scrType)
+      litVal = coerceType(litVal, scrType, location);
     return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, scrutinee,
                                                litVal);
   }
@@ -389,6 +391,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
                                                  eqResult.getResult(), zero);
     } else {
+      if (litVal.getType() != scrType)
+        litVal = coerceType(litVal, scrType, location);
       cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
                                                  scrutinee, litVal);
     }

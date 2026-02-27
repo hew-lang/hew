@@ -3331,6 +3331,27 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
         return mlir::LLVM::LLVMStructType::getLiteral(
             type.getContext(), {mlir::IntegerType::get(type.getContext(), 32), ok, err});
       });
+  // LLVMStructType may embed Hew dialect types (e.g. !hew.string_ref) when
+  // used for user-defined enum layouts.  Recursively convert body elements.
+  typeConverter.addConversion([&typeConverter](
+                                  mlir::LLVM::LLVMStructType type) -> std::optional<mlir::Type> {
+    if (type.isIdentified())
+      return mlir::Type(type);
+    auto body = type.getBody();
+    bool anyChanged = false;
+    llvm::SmallVector<mlir::Type, 4> converted;
+    for (auto elem : body) {
+      auto c = typeConverter.convertType(elem);
+      if (!c)
+        return std::nullopt;
+      converted.push_back(c);
+      if (c != elem)
+        anyChanged = true;
+    }
+    if (!anyChanged)
+      return mlir::Type(type);
+    return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), converted, type.isPacked());
+  });
   // Materializations: only allow boundary casts that map through the type
   // converter (plus explicit func ref <-> !llvm.ptr bridging).
   auto canMaterializeBoundaryCast = [&typeConverter](mlir::Type resultType, mlir::Type inputType) {

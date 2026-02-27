@@ -1936,36 +1936,74 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       info.mlirType = builder.getI32Type();
     } else {
       // Build an LLVM struct type: { i32 tag, payload_fields... }
-      // Collect the types for each payload position using the widest type
+      //
+      // When all payload variants at each position have compatible types
+      // (all scalars or all the same type), we use a union-style layout
+      // where the widest type is selected per position.
+      // When types at a position are incompatible (e.g. i32 vs pointer),
+      // we fall back to per-variant fields so each variant gets its own
+      // dedicated struct slot — avoiding type mismatches in the verifier.
+
+      // Determine if union-style is safe for every position.
+      bool canUnionize = true;
+      for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields && canUnionize; ++fieldIdx) {
+        mlir::Type firstStorageTy = nullptr;
+        for (const auto &v : info.variants) {
+          if (fieldIdx >= v.payloadTypes.size())
+            continue;
+          auto storageTy = toLLVMStorageType(v.payloadTypes[fieldIdx]);
+          if (!firstStorageTy) {
+            firstStorageTy = storageTy;
+          } else if (firstStorageTy != storageTy) {
+            bool aScalar = mlir::isa<mlir::IntegerType, mlir::FloatType>(firstStorageTy);
+            bool bScalar = mlir::isa<mlir::IntegerType, mlir::FloatType>(storageTy);
+            if (!aScalar || !bScalar)
+              canUnionize = false;
+          }
+        }
+      }
+
       llvm::SmallVector<mlir::Type, 4> structFields;
       structFields.push_back(builder.getI32Type()); // tag
 
-      for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields; ++fieldIdx) {
-        mlir::Type fieldType = nullptr;
-        for (const auto &v : info.variants) {
-          if (fieldIdx < v.payloadTypes.size()) {
-            auto ty = v.payloadTypes[fieldIdx];
-            if (!fieldType) {
-              fieldType = ty;
-            } else if (fieldType != ty) {
-              // Mixed types at same position: use the larger one
-              // For simplicity, prefer f64 > i64 > i32 > i8
-              unsigned existingBits = 0, newBits = 0;
-              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(fieldType))
-                existingBits = intTy.getWidth();
-              if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(fieldType))
-                existingBits = fltTy.getWidth();
-              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
-                newBits = intTy.getWidth();
-              if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
-                newBits = fltTy.getWidth();
-              if (newBits > existingBits)
+      if (canUnionize) {
+        // Union-style: all variants share fields, use widest type per position
+        for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields; ++fieldIdx) {
+          mlir::Type fieldType = nullptr;
+          for (const auto &v : info.variants) {
+            if (fieldIdx < v.payloadTypes.size()) {
+              auto ty = v.payloadTypes[fieldIdx];
+              if (!fieldType) {
                 fieldType = ty;
+              } else if (fieldType != ty) {
+                // Mixed scalar types at same position: use the wider one
+                unsigned existingBits = 0, newBits = 0;
+                if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(fieldType))
+                  existingBits = intTy.getWidth();
+                if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(fieldType))
+                  existingBits = fltTy.getWidth();
+                if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+                  newBits = intTy.getWidth();
+                if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+                  newBits = fltTy.getWidth();
+                if (newBits > existingBits)
+                  fieldType = ty;
+              }
             }
           }
+          if (fieldType)
+            structFields.push_back(fieldType);
         }
-        if (fieldType)
-          structFields.push_back(fieldType);
+      } else {
+        // Per-variant fields: each variant gets its own struct slots.
+        int64_t nextField = 1;
+        for (auto &v : info.variants) {
+          v.payloadPositions.clear();
+          for (const auto &pt : v.payloadTypes) {
+            v.payloadPositions.push_back(nextField++);
+            structFields.push_back(pt);
+          }
+        }
       }
 
       info.mlirType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);

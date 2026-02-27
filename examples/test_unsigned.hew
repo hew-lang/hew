@@ -1,0 +1,22 @@
+// Regression: unsigned arithmetic and HashMap.values()
+fn main() {
+    let a: u8 = 12;
+    let b: u8 = 30;
+    let sum8: u8 = a + b;
+
+    let x: u32 = 1000;
+    let y: u32 = 7;
+    let bonus: u32 = 5;
+    let total: u32 = x * y + bonus;
+
+    println(sum8);
+    println(total);
+
+    let m: HashMap<String, i32> = HashMap::new();
+    m.insert("left", 10);
+    m.insert("right", 32);
+
+    let values = m.values();
+    println(values.len());
+    println(values.get(0));
+}

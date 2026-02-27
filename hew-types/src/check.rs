@@ -3621,6 +3621,22 @@ impl Checker {
                         // Returns bool
                         Ty::Bool
                     }
+                    "values" => {
+                        if !args.is_empty() {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`HashMap::values` takes 0 arguments but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        Ty::Named {
+                            name: "Vec".to_string(),
+                            args: vec![val_ty],
+                        }
+                    }
                     "len" => Ty::I32,
                     "is_empty" => Ty::Bool,
                     _ => {

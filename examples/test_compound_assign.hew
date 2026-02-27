@@ -1,0 +1,29 @@
+// Regression: compound assignment on self.field
+actor Counter {
+    let value: i32;
+
+    receive fn set(v: i32) {
+        self.value = v;
+    }
+
+    receive fn double() {
+        self.value *= 2;
+    }
+
+    receive fn scale(n: i32) {
+        self.value *= n;
+    }
+
+    receive fn print_value() {
+        println(self.value);
+    }
+}
+
+fn main() {
+    let counter = spawn Counter;
+    counter.set(3);
+    counter.double();
+    counter.scale(4);
+    counter.print_value();
+    sleep_ms(50);
+}

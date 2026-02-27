@@ -24,6 +24,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdlib>
 #include <string>
 
 using namespace hew;
@@ -81,11 +82,20 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
                          : builder.create<mlir::arith::ConstantOp>(location, i64Type,
                                                                    builder.getI64IntegerAttr(5));
 
-  auto window = decl.window.has_value()
-                    ? builder.create<mlir::arith::ConstantOp>(
-                          location, i32Type, builder.getI32IntegerAttr(std::stoi(*decl.window)))
-                    : builder.create<mlir::arith::ConstantOp>(location, i32Type,
-                                                              builder.getI32IntegerAttr(60));
+  mlir::arith::ConstantOp window;
+  if (decl.window.has_value()) {
+    char *end = nullptr;
+    long val = std::strtol(decl.window->c_str(), &end, 10);
+    if (end == decl.window->c_str() || *end != '\0') {
+      emitError(location) << "invalid supervisor window value: " << *decl.window;
+      return;
+    }
+    window = builder.create<mlir::arith::ConstantOp>(
+        location, i32Type, builder.getI32IntegerAttr(static_cast<int32_t>(val)));
+  } else {
+    window =
+        builder.create<mlir::arith::ConstantOp>(location, i32Type, builder.getI32IntegerAttr(60));
+  }
 
   auto strategy = builder
                       .create<mlir::arith::ConstantOp>(location, i32Type,

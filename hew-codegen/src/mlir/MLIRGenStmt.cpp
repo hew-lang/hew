@@ -776,8 +776,23 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
               case ast::CompoundAssignOp::Shr:
                 result = (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, current, rhs);
                 break;
-              default:
-                result = rhs;
+              case ast::CompoundAssignOp::Multiply:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::MulFOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::MulIOp>(location, current, rhs);
+                break;
+              case ast::CompoundAssignOp::Divide:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, current, rhs);
+                break;
+              case ast::CompoundAssignOp::Modulo:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, current, rhs);
                 break;
               }
               rhs = result;

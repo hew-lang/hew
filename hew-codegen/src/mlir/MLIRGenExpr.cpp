@@ -2047,6 +2047,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       builder.create<hew::VecPushOp>(location, valuesVec, val);
       builder.create<mlir::scf::YieldOp>(location);
       builder.setInsertionPointAfter(loop);
+      builder.create<hew::VecFreeOp>(location, keysVec);
       resultOut = valuesVec;
       return true;
     }

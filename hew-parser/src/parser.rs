@@ -92,6 +92,24 @@ fn unescape_string(s: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('"') => out.push('"'),
                 Some('0') => out.push('\0'),
+                Some('x') => {
+                    // \xNN hex escape
+                    let hi = chars.next();
+                    let lo = chars.next();
+                    if let (Some(h), Some(l)) = (hi, lo) {
+                        if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                            out.push(byte as char);
+                        } else {
+                            out.push('\\');
+                            out.push('x');
+                            out.push(h);
+                            out.push(l);
+                        }
+                    } else {
+                        out.push('\\');
+                        out.push('x');
+                    }
+                }
                 Some('\\') | None => out.push('\\'),
                 Some(other) => {
                     // Unknown escape: preserve as-is
@@ -140,6 +158,20 @@ fn parse_string_parts(
                 'r' => literal_buf.push('\r'),
                 '"' => literal_buf.push('"'),
                 '0' => literal_buf.push('\0'),
+                'x' if idx + 3 < chars.len() => {
+                    let (_, h) = chars[idx + 2];
+                    let (_, l) = chars[idx + 3];
+                    if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                        literal_buf.push(byte as char);
+                    } else {
+                        literal_buf.push('\\');
+                        literal_buf.push('x');
+                        literal_buf.push(h);
+                        literal_buf.push(l);
+                    }
+                    idx += 4;
+                    continue;
+                }
                 '\\' => literal_buf.push('\\'),
                 '{' => literal_buf.push('{'),
                 '$' => literal_buf.push('$'),
@@ -4798,5 +4830,16 @@ mod tests {
         let source = r#"fn main() { let x = r"hello\nworld"; }"#;
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+    #[test]
+    fn test_hex_escape_in_string() {
+        // \x41 = 'A', \x42 = 'B'
+        assert_eq!(unescape_string(r"\x41\x42"), "AB");
+        // Mixed with normal text and other escapes
+        assert_eq!(unescape_string(r"hi\x21\n"), "hi!\n");
+        // Invalid hex digits preserved as-is
+        assert_eq!(unescape_string(r"\xZZ"), "\\xZZ");
+        // Truncated hex escape (only one char after \x)
+        assert_eq!(unescape_string("\\x4"), "\\x");
     }
 } // mod tests

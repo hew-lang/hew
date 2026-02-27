@@ -415,7 +415,7 @@ pub fn compile(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn find_codegen_binary() -> Result<String, String> {
+pub(crate) fn find_codegen_binary() -> Result<String, String> {
     // Allow explicit override via environment variable
     if let Ok(path) = std::env::var("HEW_CODEGEN") {
         let p = std::path::PathBuf::from(&path);

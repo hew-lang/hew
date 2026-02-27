@@ -4055,6 +4055,18 @@ impl Checker {
             ) => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(sig) = td.methods.get(method) {
+                        if args.len() != sig.params.len() {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "method '{}' expects {} argument(s), found {}",
+                                    method,
+                                    sig.params.len(),
+                                    args.len(),
+                                ),
+                            );
+                        }
                         for (i, arg) in args.iter().enumerate() {
                             if let Some(param_ty) = sig.params.get(i) {
                                 // Substitute generic type params with concrete args
@@ -4076,6 +4088,18 @@ impl Checker {
                 // Try fn_sigs with Name::method pattern
                 let method_key = format!("{name}::{method}");
                 if let Some(sig) = self.lookup_fn_sig(&method_key) {
+                    if args.len() != sig.params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "method '{}' expects {} argument(s), found {}",
+                                method,
+                                sig.params.len(),
+                                args.len(),
+                            ),
+                        );
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -4099,6 +4123,18 @@ impl Checker {
             // Trait object method dispatch: look up methods from trait definition
             (Ty::TraitObject { trait_name, .. }, _) => {
                 if let Some(sig) = self.lookup_trait_method(trait_name, method) {
+                    if args.len() != sig.params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "method '{}' expects {} argument(s), found {}",
+                                method,
+                                sig.params.len(),
+                                args.len(),
+                            ),
+                        );
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -4891,6 +4927,37 @@ impl Checker {
                 param_name,
                 replacement,
             ))),
+            Ty::Stream(inner) => Ty::Stream(Box::new(self.substitute_named_param(
+                inner,
+                param_name,
+                replacement,
+            ))),
+            Ty::Sink(inner) => Ty::Sink(Box::new(self.substitute_named_param(
+                inner,
+                param_name,
+                replacement,
+            ))),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(self.substitute_named_param(pointee, param_name, replacement)),
+            },
+            Ty::TraitObject { trait_name, args } => Ty::TraitObject {
+                trait_name: trait_name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.substitute_named_param(a, param_name, replacement))
+                    .collect(),
+            },
+            Ty::Generator { yields, returns } => Ty::Generator {
+                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
+                returns: Box::new(self.substitute_named_param(returns, param_name, replacement)),
+            },
+            Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
+                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
+            },
             _ => ty.clone(),
         }
     }
@@ -5011,10 +5078,15 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.resolve_type_expr(&pointee.0)),
             },
-            TypeExpr::TraitObject(bound) => Ty::TraitObject {
-                trait_name: bound.name.clone(),
-                args: vec![],
-            },
+            TypeExpr::TraitObject(bound) => {
+                let args = bound.type_args.as_ref().map_or(vec![], |ta| {
+                    ta.iter().map(|t| self.resolve_type_expr(&t.0)).collect()
+                });
+                Ty::TraitObject {
+                    trait_name: bound.name.clone(),
+                    args,
+                }
+            }
             TypeExpr::Infer => Ty::Var(TypeVar::fresh()),
         }
     }

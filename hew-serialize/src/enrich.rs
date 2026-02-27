@@ -661,6 +661,9 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
         Stmt::Match { scrutinee, arms } => {
             normalize_expr_types(scrutinee);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    normalize_expr_types(guard);
+                }
                 normalize_expr_types(&mut arm.body);
             }
         }
@@ -704,7 +707,15 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
         Expr::Match { scrutinee, arms } => {
             normalize_expr_types(scrutinee);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    normalize_expr_types(guard);
+                }
                 normalize_expr_types(&mut arm.body);
+            }
+        }
+        Expr::Array(elements) | Expr::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                normalize_expr_types(e);
             }
         }
         Expr::Lambda {
@@ -882,6 +893,9 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) {
         Stmt::Match { scrutinee, arms } => {
             enrich_expr(scrutinee, tco);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    enrich_expr(guard, tco);
+                }
                 enrich_expr(&mut arm.body, tco);
             }
         }
@@ -944,7 +958,15 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
         Expr::Match { scrutinee, arms } => {
             enrich_expr(scrutinee, tco);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    enrich_expr(guard, tco);
+                }
                 enrich_expr(&mut arm.body, tco);
+            }
+        }
+        Expr::Array(elements) | Expr::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                enrich_expr(e, tco);
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {

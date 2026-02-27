@@ -16,7 +16,7 @@ supervisor WorkerPool {
     strategy: one_for_one,
     max_restarts: 5,
     window: 10,
-    children: [Worker]
+    child w: Worker
 }
 
 fn main() {

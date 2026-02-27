@@ -241,10 +241,6 @@ private:
   mlir::Value coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
                          bool isUnsigned = false);
 
-  /// Coerce a value to the hashmap's declared value type based on collType.
-  mlir::Value coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                       mlir::Location location, mlir::Type mapType = {});
-
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.
   void

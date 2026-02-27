@@ -2875,34 +2875,37 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
     auto loc = op.getLoc();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto origType = op.getValue().getType();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     // Select runtime function based on operand type, extending small
     // integers to match the runtime function's parameter width.
+    // Use zero-extension for unsigned source types.
     std::string funcName;
     mlir::Value arg = adaptor.getValue();
     if (origType.isInteger(1)) {
       funcName = "hew_bool_to_string";
-    } else if (origType.isInteger(8)) {
-      // bytes/u8 values — extend to i32 for decimal conversion via hew_int_to_string.
+    } else if (origType.isInteger(8) || origType.isInteger(16)) {
+      // Sub-i32 values — extend to i32 for decimal conversion.
       // Note: char is i32 in MLIR and hits the i32 branch directly.
-      // Using hew_char_to_string here would emit the raw byte as a character
-      // (e.g. 0 → NUL → empty string), which is wrong for numeric u8 values.
-      funcName = "hew_int_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
-    } else if (origType.isInteger(16)) {
-      // i16 — extend to i32
-      funcName = "hew_int_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
+      funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
+      if (isUnsigned)
+        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), arg);
+      else
+        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
     } else if (origType.isInteger(32)) {
-      funcName = "hew_int_to_string";
+      funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
     } else if (origType.isInteger(64)) {
-      funcName = "hew_i64_to_string";
+      funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
     } else if (origType.isF64() || origType.isF32()) {
       funcName = "hew_float_to_string";
     } else if (mlir::isa<mlir::IntegerType>(origType)) {
       // Other int widths — extend to i64
-      funcName = "hew_i64_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
+      funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
+      if (isUnsigned)
+        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI64Type(), arg);
+      else
+        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
     } else {
       funcName = "hew_i64_to_string"; // fallback
     }

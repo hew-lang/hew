@@ -533,42 +533,6 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   return value;
 }
 
-mlir::Value MLIRGen::coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                              mlir::Location location, mlir::Type mapType) {
-  mlir::Type targetType;
-  if (auto hmType = mlir::dyn_cast<hew::HashMapType>(mapType))
-    targetType = hmType.getValueType();
-  if (!targetType) {
-    bool valIsStr = collType.find(", string>") != std::string::npos ||
-                    collType.find(",string>") != std::string::npos ||
-                    collType.find(", String>") != std::string::npos ||
-                    collType.find(",String>") != std::string::npos;
-    bool valIsI64 = collType.find(", i64>") != std::string::npos ||
-                    collType.find(",i64>") != std::string::npos ||
-                    collType.find(", int>") != std::string::npos ||
-                    collType.find(",int>") != std::string::npos ||
-                    collType.find(", Int>") != std::string::npos ||
-                    collType.find(",Int>") != std::string::npos;
-    bool valIsF64 = collType.find(", f64>") != std::string::npos ||
-                    collType.find(",f64>") != std::string::npos ||
-                    collType.find(", float>") != std::string::npos ||
-                    collType.find(",float>") != std::string::npos ||
-                    collType.find(", Float>") != std::string::npos ||
-                    collType.find(",Float>") != std::string::npos;
-    if (valIsStr)
-      targetType = hew::StringRefType::get(&context);
-    else if (valIsI64)
-      targetType = builder.getIntegerType(64);
-    else if (valIsF64)
-      targetType = builder.getF64Type();
-  }
-  if (!targetType) {
-    emitError(location) << "cannot resolve HashMap value type from '" << collType << "'";
-    return val;
-  }
-  return coerceType(val, targetType, location);
-}
-
 // ============================================================================
 // Symbol table operations
 // ============================================================================
@@ -1331,8 +1295,11 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto n = generateExpression(ast::callArgExpr(args[0]).value);
     if (!n)
       return nullptr;
-    return builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context), n)
-        .getResult();
+    auto toStr = builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context), n);
+    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+      if (isUnsignedTypeExpr(*argType))
+        toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return toStr.getResult();
   }
 
   // char_to_string(c) -> string

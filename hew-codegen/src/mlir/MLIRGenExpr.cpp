@@ -580,6 +580,9 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
           partValues.push_back(val);
         } else if (valType.isIntOrFloat() || valType.isInteger(1)) {
           auto str = builder.create<hew::ToStringOp>(location, strRefType, val);
+          if (auto *typeExpr = resolvedTypeOf(exprPart->expr->span))
+            if (isUnsignedTypeExpr(*typeExpr))
+              str->setAttr("is_unsigned", builder.getBoolAttr(true));
           partValues.push_back(str);
           ownedTemps.push_back(str); // heap-allocated — we own this
         } else {
@@ -1858,7 +1861,11 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       // Ensure it is a string; convert non-strings via hew.to_string.
       if (!mlir::isa<hew::StringRefType>(msgStr.getType()) &&
           !mlir::isa<mlir::LLVM::LLVMPointerType>(msgStr.getType())) {
-        msgStr = b.create<hew::ToStringOp>(loc, strRefType, msgStr);
+        auto toStr = b.create<hew::ToStringOp>(loc, strRefType, msgStr);
+        if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+          if (isUnsignedTypeExpr(*argType))
+            toStr->setAttr("is_unsigned", b.getBoolAttr(true));
+        msgStr = toStr;
       }
     } else {
       // No args at all — use empty string.
@@ -1916,7 +1923,11 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
           mlir::isa<mlir::LLVM::LLVMPointerType>(val.getType())) {
         valStr = val;
       } else {
-        valStr = b.create<hew::ToStringOp>(loc, strRefType, val);
+        auto toStr = b.create<hew::ToStringOp>(loc, strRefType, val);
+        if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[i]).span))
+          if (isUnsignedTypeExpr(*argType))
+            toStr->setAttr("is_unsigned", b.getBoolAttr(true));
+        valStr = toStr;
       }
 
       // Concat: msgStr + " key=" + valStr

@@ -1725,7 +1725,57 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
     if (suffix.empty())
       suffix = vecElemSuffixWithPtr(resultType);
 
-    if (suffix == "_generic") {
+    // Inline lowering for primitive types: load data/len from HewVec struct,
+    // bounds-check, then GEP+load. Avoids runtime function call overhead.
+    // HewVec layout (repr(C), 64-bit): { ptr data, i64 len, i64 cap, i64 elem_size, i32 elem_kind }
+    if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
+      auto i64Type = rewriter.getI64Type();
+      auto vecPtr = adaptor.getVec();
+      auto index = adaptor.getIndex();
+
+      // Define HewVec struct type: { ptr, i64, i64, i64, i32 }
+      auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
+          op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
+
+      // Load len field (struct field index 1)
+      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
+      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+
+      // Bounds check: if index >= len, call abort
+      auto oob =
+          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index, len);
+
+      // Declare the OOB abort function
+      auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_abort_oob",
+                          abortFuncType);
+
+      // Use scf.if for the bounds check (abort terminates; yield is for IR validity)
+      rewriter.create<mlir::scf::IfOp>(
+          loc, oob,
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            b.create<mlir::func::CallOp>(l, "hew_vec_abort_oob", mlir::TypeRange{},
+                                         mlir::ValueRange{index, len});
+            b.create<mlir::scf::YieldOp>(l);
+          },
+          nullptr);
+
+      // Load data pointer (struct field 0) and GEP to element
+      auto dataFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
+      auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
+
+      // GEP to element and load
+      mlir::Type elemStorageType = resultType;
+      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, elemStorageType, dataPtr,
+          mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
+      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, resultType, elemPtr);
+      rewriter.replaceOp(op, loaded.getResult());
+    } else if (suffix == "_generic") {
       // For struct elements: get returns a pointer, then load the struct
       auto idxType = adaptor.getIndex().getType();
       auto funcType = rewriter.getFunctionType({ptrType, idxType}, {ptrType});
@@ -1763,7 +1813,50 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
     if (suffix.empty())
       suffix = vecElemSuffixWithPtr(valType);
 
-    if (suffix == "_generic") {
+    // Inline lowering for primitive types: bounds-check then GEP+store.
+    if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
+      auto i64Type = rewriter.getI64Type();
+      auto vecPtr = adaptor.getVec();
+      auto index = adaptor.getIndex();
+      auto value = adaptor.getValue();
+
+      auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
+          op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
+
+      // Load len field (struct field 1)
+      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
+      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+
+      // Bounds check using scf.if (stays in structured control flow)
+      auto oob =
+          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index, len);
+
+      auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_abort_oob",
+                          abortFuncType);
+
+      rewriter.create<mlir::scf::IfOp>(
+          loc, oob,
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            b.create<mlir::func::CallOp>(l, "hew_vec_abort_oob", mlir::TypeRange{},
+                                         mlir::ValueRange{index, len});
+            b.create<mlir::scf::YieldOp>(l);
+          },
+          nullptr);
+
+      // Store value at element
+      auto dataFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
+      auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
+
+      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, valType, dataPtr,
+          mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
+      rewriter.create<mlir::LLVM::StoreOp>(loc, value, elemPtr);
+    } else if (suffix == "_generic") {
       // For struct elements: alloca + store + pass pointer to set_generic
       auto one = rewriter.create<mlir::LLVM::ConstantOp>(loc, rewriter.getI64Type(),
                                                          rewriter.getI64IntegerAttr(1));
@@ -1797,12 +1890,18 @@ struct VecLenOpLowering : public mlir::OpConversionPattern<hew::VecLenOp> {
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
-    auto resultType = getTypeConverter()->convertType(op.getResult().getType());
-    auto funcType = rewriter.getFunctionType({ptrType}, {resultType});
-    getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_len", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_vec_len", mlir::TypeRange{resultType},
-                                                    mlir::ValueRange{adaptor.getVec()});
-    rewriter.replaceOp(op, call.getResults());
+    auto i64Type = rewriter.getI64Type();
+
+    // Define HewVec struct type: { ptr, i64, i64, i64, i32 }
+    auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
+        op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
+
+    // Inline: load len directly from HewVec struct field 1
+    auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+        loc, ptrType, vecStructType, adaptor.getVec(),
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
+    auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+    rewriter.replaceOp(op, len.getResult());
     return mlir::success();
   }
 };

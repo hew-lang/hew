@@ -96,6 +96,16 @@ unsafe fn abort_oob(index: usize, len: usize) -> ! {
     }
 }
 
+/// C-ABI abort for out-of-bounds access, called by inline codegen bounds checks.
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_abort_oob(index: i64, len: i64) -> ! {
+    unsafe { abort_oob(index as usize, len as usize) }
+}
+
 /// Abort on pop of empty vec.
 unsafe fn abort_pop_empty() -> ! {
     // SAFETY: writing to stderr and aborting is always safe.

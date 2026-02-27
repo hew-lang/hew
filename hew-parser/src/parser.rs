@@ -1214,7 +1214,11 @@ impl<'src> Parser<'src> {
             if let Some(item) = self.parse_trait_item() {
                 items.push(item);
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected trait item (fn or type), found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery
             }
         }
 
@@ -1355,7 +1359,11 @@ impl<'src> Parser<'src> {
                     methods.push(method);
                 }
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected 'fn' in impl body, found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery: skip the bad token
             }
         }
 
@@ -1509,7 +1517,9 @@ impl<'src> Parser<'src> {
                 let ty = self.parse_type()?;
                 // Skip optional `= expr` initializer
                 if self.eat(&Token::Equal) {
-                    let _ = self.parse_expr();
+                    if self.parse_expr().is_none() {
+                        self.error("expected expression for field initializer".to_string());
+                    }
                 }
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
@@ -1549,7 +1559,8 @@ impl<'src> Parser<'src> {
                     ty,
                 });
             } else {
-                self.advance();
+                self.error(format!("unexpected token in actor body: {:?}", self.peek()));
+                self.advance(); // error recovery
             }
         }
 
@@ -1783,20 +1794,14 @@ impl<'src> Parser<'src> {
                     });
                 }
                 _ => {
-                    // Skip unknown fields (e.g. max_restarts: 5, window: 10, children: [...])
+                    self.error(format!("unknown supervisor field: {:?}", self.peek()));
                     self.advance();
-                    if self.eat(&Token::Colon) {
-                        // Skip the value — may be an integer, identifier, or bracket list
-                        while !self.at_end()
-                            && self.peek() != Some(&Token::Semicolon)
-                            && self.peek() != Some(&Token::Comma)
-                            && self.peek() != Some(&Token::RightBrace)
-                        {
-                            self.advance();
-                        }
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
+                    // skip to next comma or closing brace
+                    while self.peek() != Some(&Token::Comma)
+                        && self.peek() != Some(&Token::RightBrace)
+                        && self.peek().is_some()
+                    {
+                        self.advance();
                     }
                 }
             }
@@ -1857,7 +1862,11 @@ impl<'src> Parser<'src> {
                     is_variadic,
                 });
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected 'fn' in extern block, found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery
             }
         }
 

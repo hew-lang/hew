@@ -530,6 +530,8 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       return builder.create<hew::ClosureCreateOp>(location, closureType, fnPtrVal, nullEnv);
     }
   }
+  emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
+                        << targetType;
   return value;
 }
 
@@ -745,8 +747,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_str / print_str: takes a string (ptr), prints it
   if (name == "println_str" || name == "print_str") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -757,8 +761,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_int / print_int: takes an integer, prints it
   if (name == "println_int" || name == "print_int") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -772,8 +778,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_f64 / print_f64: takes a float, prints it
   if (name == "println_f64" || name == "print_f64") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -784,8 +792,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_bool / print_bool: takes a bool, prints it
   if (name == "println_bool" || name == "print_bool") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -796,8 +806,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // sqrt(x) -> f64
   if (name == "sqrt") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto arg = generateExpression(ast::callArgExpr(args[0]).value);
     if (!arg)
       return nullptr;
@@ -811,8 +823,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // abs(x) -> i64
   if (name == "abs") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto arg = generateExpression(ast::callArgExpr(args[0]).value);
     if (!arg)
       return nullptr;
@@ -827,8 +841,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // min(a, b) -> i64
   if (name == "min") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -842,8 +858,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // max(a, b) -> i64
   if (name == "max") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -857,8 +875,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_concat(a, b) -> string_ref
   if (name == "string_concat") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -869,8 +889,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_length(s) -> i32
   if (name == "string_length") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -882,8 +904,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_equals(a, b) -> i32
   if (name == "string_equals") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -896,8 +920,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // sleep_ms(ms) -> void
   if (name == "sleep_ms") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto ms = generateExpression(ast::callArgExpr(args[0]).value);
     if (!ms)
       return nullptr;
@@ -1004,8 +1030,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // stop(actor) -> void: stop an actor
   if (name == "stop") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto actorVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!actorVal)
       return nullptr;
@@ -1015,8 +1043,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // close(actor) -> void: close an actor's mailbox
   if (name == "close") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto actorVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!actorVal)
       return nullptr;
@@ -1026,8 +1056,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // link(actor_ref) — link current actor to target
   if (name == "link") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1039,8 +1071,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // unlink(actor_ref) — unlink current actor from target
   if (name == "unlink") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1051,8 +1085,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // monitor(actor_ref) -> i64 (ref_id)
   if (name == "monitor") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1063,8 +1099,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // demonitor(ref_id) — cancel a monitor by reference id
   if (name == "demonitor") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto refIdVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!refIdVal)
       return nullptr;
@@ -1074,8 +1112,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // supervisor_child(sup, index) -> actor_ptr or supervisor_ptr
   if (name == "supervisor_child") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto supVal = generateExpression(ast::callArgExpr(args[0]).value);
     auto idxVal = generateExpression(ast::callArgExpr(args[1]).value);
     if (!supVal || !idxVal)
@@ -1127,8 +1167,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // supervisor_stop(sup) -> void
   if (name == "supervisor_stop") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto supVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!supVal)
       return nullptr;
@@ -1157,8 +1199,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_char_at(s, idx) -> i32
   if (name == "string_char_at") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto idx = generateExpression(ast::callArgExpr(args[1]).value);
     if (!s || !idx)
@@ -1173,8 +1217,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_slice(s, start, end) -> string
   if (name == "string_slice" || name == "substring") {
-    if (args.size() < 3)
+    if (args.size() < 3) {
+      emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto start = generateExpression(ast::callArgExpr(args[1]).value);
     auto end = generateExpression(ast::callArgExpr(args[2]).value);
@@ -1192,8 +1238,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_find(haystack, needle) -> i32
   if (name == "string_find") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1206,8 +1254,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_contains(haystack, needle) -> bool
   if (name == "string_contains") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1220,8 +1270,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_starts_with(s, prefix) -> i32
   if (name == "string_starts_with") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1234,8 +1286,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_ends_with(s, suffix) -> i32
   if (name == "string_ends_with") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1248,8 +1302,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_trim(s) -> string
   if (name == "string_trim") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -1261,8 +1317,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_replace(s, from, to) -> string
   if (name == "string_replace") {
-    if (args.size() < 3)
+    if (args.size() < 3) {
+      emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto from = generateExpression(ast::callArgExpr(args[1]).value);
     auto to = generateExpression(ast::callArgExpr(args[2]).value);
@@ -1277,8 +1335,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_to_int(s) -> i32
   if (name == "string_to_int") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -1290,8 +1350,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_from_int(n) / int_to_string(n) -> string
   if (name == "string_from_int" || name == "int_to_string") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto n = generateExpression(ast::callArgExpr(args[0]).value);
     if (!n)
       return nullptr;
@@ -1304,8 +1366,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // char_to_string(c) -> string
   if (name == "char_to_string") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto c = generateExpression(ast::callArgExpr(args[0]).value);
     if (!c)
       return nullptr;
@@ -1315,8 +1379,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // read_file(path) -> string
   if (name == "read_file") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto path = generateExpression(ast::callArgExpr(args[0]).value);
     if (!path)
       return nullptr;
@@ -1329,8 +1395,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert(cond) -> void: abort if cond is falsy
   if (name == "assert") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto cond = generateExpression(ast::callArgExpr(args[0]).value);
     if (!cond)
       return nullptr;
@@ -1340,8 +1408,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert_eq(left, right) -> void: abort if left != right
   if (name == "assert_eq") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto left = generateExpression(ast::callArgExpr(args[0]).value);
     auto right = generateExpression(ast::callArgExpr(args[1]).value);
     if (!left || !right)
@@ -1352,8 +1422,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert_ne(left, right) -> void: abort if left == right
   if (name == "assert_ne") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto left = generateExpression(ast::callArgExpr(args[0]).value);
     auto right = generateExpression(ast::callArgExpr(args[1]).value);
     if (!left || !right)

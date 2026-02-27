@@ -246,6 +246,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1) {
           resultType = currentFunction.getResultTypes()[0];
         } else {
+          emitWarning(location) << "match result type not resolved; defaulting to i32";
           resultType = builder.getI32Type();
         }
         auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
@@ -305,6 +306,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       if (currentFunction && currentFunction.getResultTypes().size() == 1) {
         resultType = currentFunction.getResultTypes()[0];
       } else {
+        emitWarning(location) << "match result type not resolved; defaulting to i32";
         resultType = builder.getI32Type();
       }
       return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
@@ -1136,10 +1138,12 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   }
 
   mlir::Type resultType;
-  if (currentFunction && currentFunction.getResultTypes().size() == 1)
+  if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
-  else
+  } else {
+    emitWarning(location) << "if-statement result type not resolved; defaulting to i64";
     resultType = defaultIntType();
+  }
 
   bool hasElse = stmt.else_block.has_value();
   if (!hasElse) {

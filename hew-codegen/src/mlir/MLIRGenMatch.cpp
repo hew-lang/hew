@@ -101,6 +101,7 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
   // Fallback: if the type checker didn't record a type (e.g. statement
   // position or missing type info), use the scrutinee type to infer.
   if (!resultType) {
+    emitWarning(location) << "match expression type not resolved; inferring from scrutinee type";
     if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(scrutinee.getType()))
       resultType = rt.getOkType();
     else if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(scrutinee.getType()))
@@ -468,8 +469,10 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
             }
           }
           auto guardCond = generateExpression(arm.guard->value);
-          if (!guardCond)
-            guardCond = createIntConstant(builder, location, builder.getI1Type(), 0);
+          if (!guardCond) {
+            emitError(location) << "failed to generate match guard expression";
+            return nullptr;
+          }
           builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{guardCond});
         }
 
@@ -486,7 +489,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       // No guard: tag check is sufficient
       return generateTagMatch(tagCond);
     }
-    // Unknown constructor, fall through
+    emitError(location) << "unknown constructor pattern '" << ctorName << "' in match arm";
+    return nullptr;
   }
 
   // Or-pattern: e.g., 1 | 2 | 3
@@ -536,5 +540,6 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   }
 
   // For other pattern types, skip to next arm
+  emitWarning(location) << "unhandled pattern kind in match arm; skipping";
   return generateMatchArmsChain(scrutinee, arms, idx + 1, resultType, location);
 }

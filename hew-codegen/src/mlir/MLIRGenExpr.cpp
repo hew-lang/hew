@@ -525,11 +525,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       auto resultPtr = builder.create<hew::ScopeAwaitOp>(location, ptrType, operand);
 
       mlir::Type resultType = builder.getI32Type();
+      bool resolvedScopeAwaitType = false;
       if (auto *ie = std::get_if<ast::ExprIdentifier>(&awaitE->inner->value.kind)) {
         auto it = taskResultTypes.find(ie->name);
-        if (it != taskResultTypes.end())
+        if (it != taskResultTypes.end()) {
           resultType = it->second;
+          resolvedScopeAwaitType = true;
+        }
       }
+      if (!resolvedScopeAwaitType)
+        emitWarning(location) << "cannot determine scope.await result type; defaulting to i32";
 
       auto loadedResult = builder.create<mlir::LLVM::LoadOp>(location, resultType, resultPtr);
       return loadedResult;
@@ -1524,6 +1529,7 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   } else if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
+    emitWarning(location) << "if-expression result type not resolved; defaulting to i64";
     resultType = defaultIntType();
   }
 
@@ -2984,6 +2990,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     } else if (expectedClosureType && i < expectedClosureType.getInputTypes().size()) {
       userParamTypes.push_back(expectedClosureType.getInputTypes()[i]);
     } else {
+      emitWarning(location) << "cannot infer type for lambda parameter; defaulting to i64";
       userParamTypes.push_back(defaultIntType());
     }
   }

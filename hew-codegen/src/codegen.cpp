@@ -250,6 +250,7 @@ struct ConstantOpLowering : public mlir::OpConversionPattern<hew::ConstantOp> {
       return mlir::success();
     }
 
+    op.emitError() << "unsupported constant type: " << value;
     return mlir::failure();
   }
 };
@@ -324,6 +325,7 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       return mlir::success();
     }
 
+    op.emitError() << "unsupported cast: " << inputType << " to " << resultType;
     return mlir::failure();
   }
 };
@@ -2907,7 +2909,8 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
       else
         arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
     } else {
-      funcName = "hew_i64_to_string"; // fallback
+      op.emitError() << "ToStringOp: cannot convert type to string: " << origType;
+      return mlir::failure();
     }
 
     auto funcType = rewriter.getFunctionType({arg.getType()}, {ptrType});
@@ -3114,7 +3117,7 @@ struct FuncPtrOpLowering : public mlir::OpConversionPattern<hew::FuncPtrOp> {
     // Look up the function to get its type
     auto funcOp = module.lookupSymbol<mlir::func::FuncOp>(funcName);
     if (!funcOp) {
-      // Function might not be declared yet — create a minimal declaration
+      op.emitError() << "runtime function not found: " << funcName;
       return mlir::failure();
     }
 

@@ -1936,6 +1936,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
           if (isUnsignedTypeExpr(*argType))
             toStr->setAttr("is_unsigned", b.getBoolAttr(true));
         valStr = toStr;
+        ownedTemps.push_back(toStr);
       }
 
       // Concat: msgStr + " key=" + valStr

@@ -839,13 +839,6 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
         return 0;
     }
 
-    // Remove from live tracking. If the actor was already consumed by
-    // cleanup_all_actors (returns false), skip freeing to avoid
-    // double-free.
-    if !untrack_actor(actor) {
-        return 0;
-    }
-
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -860,18 +853,25 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            // Actor didn't reach terminal state in time — proceed with
-            // cleanup to avoid hanging.  This can happen when freeing
-            // actors that were never fully scheduled.
             break;
         }
         std::thread::yield_now();
     }
 
     let state = a.actor_state.load(Ordering::Acquire);
-    if state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32 {
+    if state != HewActorState::Stopped as i32
+        && state != HewActorState::Crashed as i32
+        && state != HewActorState::Idle as i32
+    {
         crate::set_last_error("actor still running after timeout");
         return -2;
+    }
+
+    // Remove from live tracking. If the actor was already consumed by
+    // cleanup_all_actors (returns false), skip freeing to avoid
+    // double-free.
+    if !untrack_actor(actor) {
+        return 0;
     }
 
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.

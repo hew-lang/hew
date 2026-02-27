@@ -6148,6 +6148,42 @@ mod tests {
     }
 
     #[test]
+    fn typecheck_match_statement_exhaustive_enum_ok() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Light { Red; Green; }\n",
+            "fn main() { let v = Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
+        ));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    #[ignore = "known gap: match-as-statement skips exhaustiveness checking (check_match_stmt)"]
+    fn typecheck_match_statement_missing_variant_errors() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Light { Red; Green; }\n",
+            "fn main() { let v = Red; match v { Red => 1, } let _done = 0; }\n",
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "known gap: generic enum constructors lose type args during type checking"]
+    fn typecheck_generic_enum_constructor_infers_type_args() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Option<T> { Some(T); None; }\n",
+            "fn take_int(x: Option<int>) -> Option<int> { x }\n",
+            "fn take_string(x: Option<string>) -> Option<string> { x }\n",
+            "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
+        ));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
     fn warn_unused_variable() {
         let source = "fn main() { let unused_var = 42; }";
         let result = hew_parser::parse(source);

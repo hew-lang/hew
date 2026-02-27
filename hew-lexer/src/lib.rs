@@ -1101,6 +1101,11 @@ mod tests {
     }
 
     #[test]
+    fn unterminated_block_comment_emits_error_token() {
+        assert!(tokens("/* unterminated").contains(&Token::Error));
+    }
+
+    #[test]
     fn span_tracking() {
         let result = lex("fn main");
         assert_eq!(result.len(), 2);

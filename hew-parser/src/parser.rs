@@ -4189,6 +4189,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_interpolated_string_contains_expr_part() {
+        let result = parse(r#"fn main() { let s = f"hello {name}"; }"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected interpolated string");
+        };
+        assert!(parts.iter().any(|p| matches!(p, StringPart::Expr(_))));
+    }
+
+    #[test]
+    #[ignore = "known gap: interpolation parse errors silently dropped (sub-parser errors not propagated)"]
+    fn parse_interpolated_string_empty_expr_reports_error() {
+        let result = parse(r#"fn main() { let s = f"hello {}"; }"#);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse errors for malformed interpolation"
+        );
+    }
+
+    #[test]
     fn parse_deeply_nested_expr_produces_error() {
         // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).
         // Use a child thread with an explicit stack size to avoid the test

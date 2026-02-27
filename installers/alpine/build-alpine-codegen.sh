@@ -28,21 +28,29 @@ die() {
     exit 1
 }
 
-# ── Install build dependencies ───────────────────────────────────────────────
-info "Installing build dependencies"
-apk add --no-cache \
-    cmake samurai build-base python3 clang \
-    zlib-dev zlib-static zstd-dev zstd-static \
-    libffi-dev linux-headers \
-    git 2>&1 | tail -3
-
 # ── Check for pre-built LLVM cache ───────────────────────────────────────────
 LLVM_INSTALL="/opt/llvm-${LLVM_MAJOR}"
 LLVM_SRC="/tmp/llvm-project"
 
 if [ -d "${LLVM_INSTALL}/lib/cmake/mlir" ]; then
     info "Using cached LLVM+MLIR from ${LLVM_INSTALL}"
+    # In pre-built image, build tools are already installed — only need
+    # cmake + ninja + compiler if not present
+    if ! command -v cmake >/dev/null 2>&1; then
+        info "Installing build dependencies (pre-built LLVM image)"
+        apk add --no-cache \
+            cmake samurai build-base clang \
+            zlib-dev zlib-static zstd-dev zstd-static \
+            libffi-dev linux-headers 2>&1 | tail -3
+    fi
 else
+    # Full build: install all deps including git/python for LLVM source build
+    info "Installing build dependencies"
+    apk add --no-cache \
+        cmake samurai build-base python3 clang \
+        zlib-dev zlib-static zstd-dev zstd-static \
+        libffi-dev linux-headers \
+        git 2>&1 | tail -3
     # ── Download LLVM source ─────────────────────────────────────────────────
     info "Downloading LLVM ${LLVM_VERSION} source..."
     LLVM_TAG="llvmorg-${LLVM_VERSION}"

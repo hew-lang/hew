@@ -472,10 +472,17 @@ jobs:
       - name: Build hew-codegen natively on Alpine
         run: |
           mkdir -p /tmp/alpine-codegen-out
+          # Use pre-built LLVM image from GHCR (~2 min vs ~30 min from source).
+          # Falls back to alpine:edge + full LLVM build if image not available.
+          IMAGE="ghcr.io/hew-lang/llvm-alpine:21"
+          if ! docker pull "${IMAGE}" 2>/dev/null; then
+            echo "::warning::Pre-built LLVM image not found, building from source (~30 min)"
+            IMAGE="alpine:edge"
+          fi
           docker run --rm \
             -v "$PWD:/src:ro" \
             -v /tmp/alpine-codegen-out:/output \
-            alpine:edge \
+            "${IMAGE}" \
             sh /src/installers/alpine/build-alpine-codegen.sh
 
       - name: Assemble Alpine tarball and build .apk

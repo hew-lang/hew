@@ -84,6 +84,15 @@ static mlir::IntegerType getSizeType(mlir::MLIRContext *ctx, mlir::ModuleOp modu
   return mlir::IntegerType::get(ctx, 64); // default to 64-bit
 }
 
+/// Return true when the module targets a 64-bit platform (native).
+/// Inline Vec/string lowering assumes 64-bit struct layout and must be
+/// skipped on WASM32.
+static bool isNative64(mlir::ModuleOp module) {
+  if (auto attr = module->getAttrOfType<mlir::IntegerAttr>("hew.ptr_width"))
+    return attr.getInt() == 64;
+  return true;
+}
+
 /// Get or declare an external runtime function in the module (LLVM dialect).
 [[maybe_unused]]
 mlir::LLVM::LLVMFuncOp getOrInsertLLVMFunc(mlir::ModuleOp module, mlir::OpBuilder &builder,
@@ -1700,9 +1709,8 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
                           funcType);
       rewriter.create<mlir::func::CallOp>(loc, "hew_vec_push_generic", mlir::TypeRange{},
                                           mlir::ValueRange{adaptor.getVec(), alloca});
-    } else if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
-      // Inline fast path for primitives: store at data[len] when len < cap,
-      // otherwise fall back to runtime call for grow+push.
+    } else if ((suffix == "_i64" || suffix == "_i32" || suffix == "_f64") &&
+               isNative64(op->getParentOfType<mlir::ModuleOp>())) {
       auto i64Type = rewriter.getI64Type();
       auto vecPtr = adaptor.getVec();
       auto value = adaptor.getValue();
@@ -1783,7 +1791,8 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
     // Inline lowering for primitive types: load data/len from HewVec struct,
     // bounds-check, then GEP+load. Avoids runtime function call overhead.
     // HewVec layout (repr(C), 64-bit): { ptr data, i64 len, i64 cap, i64 elem_size, i32 elem_kind }
-    if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
+    if ((suffix == "_i64" || suffix == "_i32" || suffix == "_f64") &&
+        isNative64(op->getParentOfType<mlir::ModuleOp>())) {
       auto i64Type = rewriter.getI64Type();
       auto vecPtr = adaptor.getVec();
       auto index = adaptor.getIndex();
@@ -1869,7 +1878,8 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
       suffix = vecElemSuffixWithPtr(valType);
 
     // Inline lowering for primitive types: bounds-check then GEP+store.
-    if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
+    if ((suffix == "_i64" || suffix == "_i32" || suffix == "_f64") &&
+        isNative64(op->getParentOfType<mlir::ModuleOp>())) {
       auto i64Type = rewriter.getI64Type();
       auto vecPtr = adaptor.getVec();
       auto index = adaptor.getIndex();
@@ -1947,16 +1957,24 @@ struct VecLenOpLowering : public mlir::OpConversionPattern<hew::VecLenOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto i64Type = rewriter.getI64Type();
 
-    // Define HewVec struct type: { ptr, i64, i64, i64, i32 }
-    auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
-        op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
-
-    // Inline: load len directly from HewVec struct field 1
-    auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-        loc, ptrType, vecStructType, adaptor.getVec(),
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
-    auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
-    rewriter.replaceOp(op, len.getResult());
+    if (isNative64(op->getParentOfType<mlir::ModuleOp>())) {
+      // Inline: load len directly from HewVec struct field 1
+      // HewVec layout (repr(C), 64-bit): { ptr, i64, i64, i64, i32 }
+      auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
+          op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
+      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, adaptor.getVec(),
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
+      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+      rewriter.replaceOp(op, len.getResult());
+    } else {
+      // WASM: call runtime function (struct layout differs on 32-bit)
+      auto funcType = rewriter.getFunctionType({ptrType}, {i64Type});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_len", funcType);
+      auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_vec_len", mlir::TypeRange{i64Type},
+                                                      mlir::ValueRange{adaptor.getVec()});
+      rewriter.replaceOp(op, call.getResults());
+    }
     return mlir::success();
   }
 };
@@ -3087,7 +3105,8 @@ struct StringMethodOpLowering : public mlir::OpConversionPattern<hew::StringMeth
 
     // Inline lowering for char_at: strlen + bounds check + GEP + byte load.
     // Avoids a full C-ABI call per character access.
-    if (methodName == "char_at") {
+    // Only inline on 64-bit targets; WASM32 has different size_t/strlen types.
+    if (methodName == "char_at" && isNative64(module)) {
       auto i8Type = rewriter.getI8Type();
       auto i32Type = rewriter.getI32Type();
       auto i64Type = rewriter.getI64Type();

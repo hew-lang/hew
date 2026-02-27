@@ -366,7 +366,7 @@ jobs:
           path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Linux packages — build .deb, .rpm, .pkg.tar.zst, .apk from tarballs
+  # Linux packages — build .deb, .rpm, .pkg.tar.zst from glibc tarballs
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
     needs: build
@@ -404,7 +404,7 @@ jobs:
             --version "${VERSION}" \
             --arch "${{ matrix.arch }}" \
             --skip-build \
-            --only debian,rpm,arch,alpine
+            --only debian,rpm,arch
 
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
@@ -414,13 +414,133 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.pkg.tar.zst
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Alpine package — musl-native build (separate from glibc Linux packages)
+  # ─────────────────────────────────────────────────────────────────────────
+  alpine-package:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+            rust_musl_target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+            rust_musl_target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install Rust with musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_musl_target }}
+
+      - name: Install musl cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache Rust artifacts (musl)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: alpine-${{ matrix.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            alpine-${{ matrix.arch }}-cargo-
+
+      - name: Build musl Rust binaries
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: |
+          cargo build --release --target ${{ matrix.rust_musl_target }} \
+            -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime
+
+      - name: Build hew-codegen natively on Alpine
+        run: |
+          mkdir -p /tmp/alpine-codegen-out
+          # Use pre-built LLVM image from GHCR (~2 min vs ~30 min from source).
+          # Falls back to alpine:edge + full LLVM build if image not available.
+          IMAGE="ghcr.io/hew-lang/llvm-alpine:21"
+          if ! docker pull "${IMAGE}" 2>/dev/null; then
+            echo "::warning::Pre-built LLVM image not found, building from source (~30 min)"
+            IMAGE="alpine:edge"
+          fi
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            -v /tmp/alpine-codegen-out:/output \
+            "${IMAGE}" \
+            sh /src/installers/alpine/build-alpine-codegen.sh
+
+      - name: Assemble Alpine tarball and build .apk
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          installers/build-packages.sh \
+            --version "${VERSION}" \
+            --arch "${{ matrix.arch }}" \
+            --skip-build \
+            --only alpine
+
+          # The --skip-build mode for Alpine needs the musl tarball to exist.
+          # Assemble it manually since we built the binaries above.
+          PLATFORM="linux-musl-${{ matrix.arch }}"
+          ARCHIVE_NAME="hew-v${VERSION}-${PLATFORM}"
+          mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
+                   "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+
+          MUSL_REL="target/${{ matrix.rust_musl_target }}/release"
+          for bin in hew adze hew-lsp; do
+            cp "${MUSL_REL}/${bin}" "${ARCHIVE_NAME}/bin/"
+            chmod +x "${ARCHIVE_NAME}/bin/${bin}"
+          done
+
+          cp /tmp/alpine-codegen-out/hew-codegen "${ARCHIVE_NAME}/bin/"
+          chmod +x "${ARCHIVE_NAME}/bin/hew-codegen"
+
+          cp "${MUSL_REL}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
+          cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+          cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+
+          for b in hew adze hew-codegen hew-lsp; do
+            strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+          done
+
+          tar czf "dist/${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+
+          # Now build .apk from the musl tarball
+          installers/build-packages.sh \
+            --version "${VERSION}" \
+            --arch "${{ matrix.arch }}" \
+            --skip-build \
+            --only alpine
+
+      - name: Upload Alpine packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-packages-${{ matrix.arch }}
+          path: |
             dist/*.apk
+            dist/hew-v*-linux-musl-*.tar.gz
 
   # ─────────────────────────────────────────────────────────────────────────
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, linux-packages]
+    needs: [build, linux-packages, alpine-package]
     runs-on: ubuntu-24.04
     # Run as long as build didn't hard-fail — linux-packages and continue-on-error
     # targets (Windows, macOS x86_64) are allowed to fail without blocking release
@@ -437,6 +557,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: "linux-packages-*"
+          path: artifacts
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download Alpine package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "alpine-packages-*"
           path: artifacts
           merge-multiple: true
         continue-on-error: true

@@ -1,0 +1,82 @@
+# installers/alpine/Dockerfile.llvm
+#
+# Pre-built LLVM+MLIR for Alpine edge (musl).
+# This image is pushed to GHCR and reused in CI so we don't rebuild
+# LLVM from source on every release (~30 min → ~2 min).
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -t ghcr.io/hew-lang/llvm-alpine:21 \
+#     -f installers/alpine/Dockerfile.llvm .
+#
+# The image contains /opt/llvm-21 with static LLVM+MLIR libraries,
+# cmake configs, and tools (including mlir-tblgen).
+
+FROM alpine:edge AS builder
+
+ARG LLVM_VERSION=21.1.8
+ARG LLVM_MAJOR=21
+
+RUN apk add --no-cache \
+    cmake samurai build-base python3 clang \
+    zlib-dev zlib-static zstd-dev zstd-static \
+    libffi-dev linux-headers git
+
+# Sparse clone only the directories we need
+RUN git clone --depth 1 --branch "llvmorg-${LLVM_VERSION}" \
+    --filter=blob:none --sparse \
+    https://github.com/llvm/llvm-project.git /tmp/llvm-project \
+    && cd /tmp/llvm-project \
+    && git sparse-checkout set llvm mlir cmake third-party
+
+# Build LLVM + MLIR (static, minimal targets)
+RUN cd /tmp/llvm-project && cmake -S llvm -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="/opt/llvm-${LLVM_MAJOR}" \
+    -DLLVM_ENABLE_PROJECTS="mlir" \
+    -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
+    -DLLVM_BUILD_TOOLS=OFF \
+    -DLLVM_BUILD_UTILS=OFF \
+    -DLLVM_INCLUDE_TESTS=OFF \
+    -DLLVM_INCLUDE_BENCHMARKS=OFF \
+    -DLLVM_INCLUDE_EXAMPLES=OFF \
+    -DLLVM_INCLUDE_DOCS=OFF \
+    -DLLVM_ENABLE_BINDINGS=OFF \
+    -DLLVM_ENABLE_ZLIB=ON \
+    -DLLVM_ENABLE_ZSTD=ON \
+    -DLLVM_ENABLE_ASSERTIONS=OFF \
+    -DLLVM_BUILD_LLVM_DYLIB=OFF \
+    -DLLVM_LINK_LLVM_DYLIB=OFF \
+    -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
+    -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
+    -DBUILD_SHARED_LIBS=OFF
+
+RUN cd /tmp/llvm-project && ninja -C build -j4
+RUN cd /tmp/llvm-project && ninja -C build install
+
+# Copy built tools (mlir-tblgen etc.) that aren't installed with BUILD_TOOLS=OFF
+RUN mkdir -p "/opt/llvm-${LLVM_MAJOR}/bin" \
+    && cd /tmp/llvm-project \
+    && for tool in build/bin/*; do \
+         [ -f "$tool" ] && [ -x "$tool" ] && \
+           install -Dm755 "$tool" "/opt/llvm-${LLVM_MAJOR}/bin/$(basename "$tool")"; \
+       done
+
+# Clean up source to reduce image size
+RUN rm -rf /tmp/llvm-project
+
+# ── Final image: Alpine edge with LLVM installed + build tools ───────────────
+FROM alpine:edge
+
+ARG LLVM_MAJOR=21
+
+COPY --from=builder /opt/llvm-${LLVM_MAJOR} /opt/llvm-${LLVM_MAJOR}
+
+# Install only the tools needed to build hew-codegen (not LLVM)
+RUN apk add --no-cache \
+    cmake samurai build-base clang \
+    zlib-dev zlib-static zstd-dev zstd-static \
+    libffi-dev linux-headers
+
+LABEL org.opencontainers.image.source="https://github.com/hew-lang/hew"
+LABEL org.opencontainers.image.description="Pre-built LLVM ${LLVM_MAJOR} + MLIR for Alpine (musl) — used by hew-codegen CI"

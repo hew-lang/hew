@@ -550,16 +550,11 @@ mod tests {
     use super::*;
 
     /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
-    /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
+    /// when hew-codegen is not available (e.g. Windows CI or Rust-only test jobs).
     fn require_codegen() -> bool {
-        match find_hew_binary() {
-            Ok(hew) => {
-                // Check that `hew build` can actually find hew-codegen
-                let out = std::process::Command::new(&hew).arg("--version").output();
-                out.is_ok()
-            }
-            Err(_) => false,
-        }
+        // Actually check that hew-codegen binary can be found, not just hew.
+        // On Windows CI and other environments without LLVM, hew-codegen won't exist.
+        crate::compile::find_codegen_binary().is_ok()
     }
 
     #[test]

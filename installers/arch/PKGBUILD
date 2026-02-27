@@ -31,6 +31,7 @@ package() {
   install -Dm755 "${_srcdir}/bin/hew"          "${pkgdir}/usr/bin/hew"
   install -Dm755 "${_srcdir}/bin/adze"         "${pkgdir}/usr/bin/adze"
   install -Dm755 "${_srcdir}/bin/hew-codegen"  "${pkgdir}/usr/bin/hew-codegen"
+  install -Dm755 "${_srcdir}/bin/hew-lsp"      "${pkgdir}/usr/bin/hew-lsp"
 
   # Runtime library
   install -Dm644 "${_srcdir}/lib/libhew_runtime.a" \

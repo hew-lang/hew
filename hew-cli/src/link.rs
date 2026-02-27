@@ -276,6 +276,8 @@ fn find_runtime_lib(name: &str) -> Result<String, String> {
 
     let candidates = [
         exe_dir.join("../lib").join(name),
+        exe_dir.join("../lib/hew").join(name), // /usr/lib/hew/ (Debian/Ubuntu)
+        exe_dir.join("../lib64/hew").join(name), // /usr/lib64/hew/ (Fedora/RHEL)
         exe_dir.join(name), // same dir as the binary (target/debug/ or target/release/)
         exe_dir.join("../../target/release").join(name),
         exe_dir.join("../../target/debug").join(name),
@@ -317,6 +319,8 @@ pub fn find_package_libs(modules: &[String]) -> Vec<String> {
         if let Some(lib_name) = module_to_staticlib_name(module_path) {
             let candidates = [
                 exe_dir.join("../lib").join(&lib_name),
+                exe_dir.join("../lib/hew").join(&lib_name),
+                exe_dir.join("../lib64/hew").join(&lib_name),
                 exe_dir.join(&lib_name),
                 exe_dir.join("../../target/release").join(&lib_name),
                 exe_dir.join("../../target/debug").join(&lib_name),

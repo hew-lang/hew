@@ -54,7 +54,7 @@ USAGE:
     install.sh [OPTIONS]
 
 OPTIONS:
-    --version <ver>    Install a specific version (e.g. 0.1.0). Default: latest
+    --version <ver>    Install a specific version (e.g. 0.1.3). Default: latest
     --prefix  <dir>    Installation directory. Default: \$HEW_HOME or \$HOME/.hew
     --help             Print this help message
 EOF
@@ -150,7 +150,9 @@ resolve_version() {
         response="$(http_get "${GITHUB_API}/releases/latest")" ||
             err "failed to fetch latest release from GitHub API"
         VERSION="$(printf '%s' "$response" | grep '"tag_name"' | sed -E 's/.*"tag_name":\s*"v?([^"]+)".*/\1/')"
-        [ -z "$VERSION" ] && err "could not determine latest version"
+        if [ -z "$VERSION" ]; then
+            err "could not determine latest version"
+        fi
     fi
 }
 
@@ -239,7 +241,9 @@ main() {
     http_download "${base_url}/${checksums_name}" "${TMPDIR_INSTALL}/${checksums_name}"
     local expected actual
     expected="$(grep "${archive_name}" "${TMPDIR_INSTALL}/${checksums_name}" | awk '{print $1}')"
-    [ -z "$expected" ] && err "checksum not found for ${archive_name} in ${checksums_name}"
+    if [ -z "$expected" ]; then
+        err "checksum not found for ${archive_name} in ${checksums_name}"
+    fi
     actual="$(compute_sha256 "${TMPDIR_INSTALL}/${archive_name}")"
     if [ "$expected" != "$actual" ]; then
         err "checksum mismatch\n  expected: ${expected}\n  got:      ${actual}"
@@ -256,7 +260,7 @@ main() {
     mkdir -p "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/lib" \
         "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/completions"
 
-    for b in hew adze hew-codegen; do
+    for b in hew adze hew-codegen hew-lsp; do
         if [ -f "${extracted_dir}/bin/${b}" ]; then
             cp -f "${extracted_dir}/bin/${b}" "${INSTALL_PREFIX}/bin/${b}"
             chmod +x "${INSTALL_PREFIX}/bin/${b}"

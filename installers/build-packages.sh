@@ -168,8 +168,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-serialize hew-runtime (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-serialize -p hew-runtime --release
+    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-runtime (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime --release
 
     if [[ -f "${REPO_DIR}/hew-codegen/build/build.ninja" ]]; then
         local jobs
@@ -186,7 +186,7 @@ build_tarball() {
     rm -rf "${staging_root}"
     mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
 
-    for bin in hew adze; do
+    for bin in hew adze hew-lsp; do
         if [[ -f "${REPO_DIR}/target/release/${bin}" ]]; then
             cp "${REPO_DIR}/target/release/${bin}" "${staging}/bin/"
             chmod +x "${staging}/bin/${bin}"
@@ -407,38 +407,129 @@ build_alpine() {
         _record_skip "alpine" "not selected"
         return 0
     }
-    _init_tarball_vars
-    [[ -f "${TARBALL_PATH}" ]] || {
-        _record_fail "alpine" "tarball not found: ${TARBALL_PATH}"
-        return 0
-    }
     _has_cmd docker || {
         _record_skip "alpine" "docker not available"
         return 0
     }
 
-    step "Building Alpine .apk package"
+    step "Building Alpine .apk package (musl-native)"
 
+    # ── Build Alpine-specific musl tarball ────────────────────────────────────
+    # Alpine needs musl-linked binaries (not glibc).  The Rust binaries are
+    # built with --target x86_64-unknown-linux-musl, and hew-codegen is built
+    # natively on Alpine edge with LLVM+MLIR compiled from source.
+
+    _init_tarball_vars
+    local alpine_platform="linux-musl-${TARGET_ARCH}"
+    local alpine_tarball_name="hew-v${VERSION}-${alpine_platform}.tar.gz"
+    local alpine_tarball="${DIST_DIR}/${alpine_tarball_name}"
+
+    if $SKIP_BUILD && [[ -f "${alpine_tarball}" ]]; then
+        info "alpine" "Using existing Alpine tarball: ${alpine_tarball}"
+    elif $SKIP_BUILD && [[ -f "${TARBALL_PATH}" ]]; then
+        # Fall back to the standard tarball (may fail on Alpine — glibc)
+        warn "No musl tarball found; falling back to glibc tarball (may not work on Alpine)"
+        alpine_tarball="${TARBALL_PATH}"
+        alpine_tarball_name="${TARBALL_NAME}"
+    elif $SKIP_BUILD; then
+        _record_fail "alpine" "no tarball found: ${alpine_tarball} or ${TARBALL_PATH}"
+        return 0
+    else
+        info "alpine" "Building musl-native binaries..."
+
+        # Build Rust binaries with musl target
+        local musl_target="x86_64-unknown-linux-musl"
+        if [[ "${TARGET_ARCH}" == "aarch64" ]]; then
+            musl_target="aarch64-unknown-linux-musl"
+        fi
+
+        info "cargo" "Building Rust binaries for ${musl_target}..."
+        (cd "${REPO_DIR}" &&
+            cargo build --release --target "${musl_target}" \
+                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime)
+
+        # Build hew-codegen natively on Alpine edge
+        info "docker" "Building hew-codegen natively on Alpine edge..."
+        local codegen_out="${DIST_DIR}/.alpine-codegen-$$"
+        mkdir -p "${codegen_out}"
+        docker run --rm \
+            -v "${REPO_DIR}:/src:ro" \
+            -v "${codegen_out}:/output" \
+            alpine:edge \
+            sh /src/installers/alpine/build-alpine-codegen.sh
+
+        # Assemble Alpine tarball
+        local staging_root="${DIST_DIR}/.alpine-staging-$$"
+        local staging="${staging_root}/hew-v${VERSION}-${alpine_platform}"
+        rm -rf "${staging_root}"
+        mkdir -p "${staging}/bin" "${staging}/lib" "${staging}/std" "${staging}/completions"
+
+        local musl_release="${REPO_DIR}/target/${musl_target}/release"
+        for bin in hew adze hew-lsp; do
+            if [[ -f "${musl_release}/${bin}" ]]; then
+                cp "${musl_release}/${bin}" "${staging}/bin/"
+                chmod +x "${staging}/bin/${bin}"
+            else
+                warn "musl binary not found: ${musl_release}/${bin}"
+            fi
+        done
+
+        if [[ -f "${codegen_out}/hew-codegen" ]]; then
+            cp "${codegen_out}/hew-codegen" "${staging}/bin/"
+            chmod +x "${staging}/bin/hew-codegen"
+        else
+            warn "Alpine-native hew-codegen not found"
+        fi
+        rm -rf "${codegen_out}"
+
+        if [[ -f "${musl_release}/libhew_runtime.a" ]]; then
+            cp "${musl_release}/libhew_runtime.a" "${staging}/lib/"
+        else
+            warn "musl libhew_runtime.a not found"
+        fi
+
+        cp "${REPO_DIR}/std/"*.hew "${staging}/std/" 2>/dev/null || true
+        cp "${REPO_DIR}/completions/"*.bash \
+            "${REPO_DIR}/completions/"*.zsh \
+            "${REPO_DIR}/completions/"*.fish "${staging}/completions/" 2>/dev/null || true
+        cp "${REPO_DIR}/LICENSE-MIT" "${REPO_DIR}/LICENSE-APACHE" \
+            "${REPO_DIR}/NOTICE" "${REPO_DIR}/README.md" "${staging}/"
+
+        tar -czf "${alpine_tarball}" -C "${staging_root}" "hew-v${VERSION}-${alpine_platform}"
+        rm -rf "${staging_root}"
+        info "alpine" "Alpine tarball: ${alpine_tarball}"
+    fi
+
+    # ── Build .apk from tarball ───────────────────────────────────────────────
     local ctx="${DIST_DIR}/.alpine-build-$$"
     _docker_rm "${ctx}"
     mkdir -p "${ctx}"
 
+    # Patch APKBUILD to use the musl tarball name
     cp "${SCRIPT_DIR}/alpine/APKBUILD" "${ctx}/"
     sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${ctx}/APKBUILD"
-    # Place tarball where abuild expects it (same dir as APKBUILD)
-    cp "${TARBALL_PATH}" "${ctx}/"
 
-    # Compute real SHA-512 checksum so abuild doesn't reject the local file
+    # Update the source URL/filename to match our Alpine tarball
+    local inner_dir="hew-v\${pkgver}-linux-\${_hew_arch}"
+    if [[ "${alpine_tarball_name}" == *"musl"* ]]; then
+        inner_dir="hew-v\${pkgver}-linux-musl-\${_hew_arch}"
+        sed -i 's|linux-${_hew_arch}|linux-musl-${_hew_arch}|g' "${ctx}/APKBUILD"
+    fi
+
+    cp "${alpine_tarball}" "${ctx}/"
+
     local sha512
-    sha512="$(sha512sum "${TARBALL_PATH}" | awk '{print $1}')"
-    sed -i "s|^sha512sums=.*|sha512sums=\"${sha512}  ${TARBALL_NAME}\"|" "${ctx}/APKBUILD"
+    sha512="$(sha512sum "${alpine_tarball}" | awk '{print $1}')"
+    local apk_tarball_name
+    apk_tarball_name="$(basename "${alpine_tarball}")"
+    sed -i "s|^sha512sums=.*|sha512sums=\"${sha512}  ${apk_tarball_name}\"|" "${ctx}/APKBUILD"
 
     info "docker" "alpine:3.21 -> hew-${VERSION}.apk"
     if docker run --rm \
         -v "${ctx}:/build" \
         alpine:3.21 sh -c '
             apk update >/dev/null 2>&1 &&
-            apk add --no-cache alpine-sdk sudo gcompat >/dev/null 2>&1 &&
+            apk add --no-cache alpine-sdk sudo >/dev/null 2>&1 &&
             adduser -D builder &&
             addgroup builder abuild &&
             echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers &&
@@ -510,6 +601,7 @@ RUN apk add --no-cache \
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-codegen   /usr/local/bin/hew-codegen
+COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/
 ENV HEW_STD=/usr/local/share/hew/std

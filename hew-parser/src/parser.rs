@@ -108,6 +108,9 @@ fn unescape_string(s: &str) -> String {
                     } else {
                         out.push('\\');
                         out.push('x');
+                        if let Some(h) = hi {
+                            out.push(h);
+                        }
                     }
                 }
                 Some('\\') | None => out.push('\\'),
@@ -4849,6 +4852,6 @@ mod tests {
         // Invalid hex digits preserved as-is
         assert_eq!(unescape_string(r"\xZZ"), "\\xZZ");
         // Truncated hex escape (only one char after \x)
-        assert_eq!(unescape_string("\\x4"), "\\x");
+        assert_eq!(unescape_string("\\x4"), "\\x4");
     }
 } // mod tests

@@ -11,6 +11,8 @@
 #include "hew/mlir/MLIRGen.h"
 #include "MLIRGenHelpers.h"
 
+#include <climits>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -88,6 +90,10 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     long val = std::strtol(decl.window->c_str(), &end, 10);
     if (end == decl.window->c_str() || *end != '\0') {
       emitError(location) << "invalid supervisor window value: " << *decl.window;
+      return;
+    }
+    if (val < 0 || val > INT32_MAX) {
+      emitError(location) << "supervisor window value out of range: " << *decl.window;
       return;
     }
     window = builder.create<mlir::arith::ConstantOp>(

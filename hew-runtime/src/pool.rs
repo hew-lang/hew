@@ -35,12 +35,16 @@ pub struct HewActorPool {
     freed: AtomicBool,
 }
 
-fn lock_state(pool: &HewActorPool) -> MutexGuard<'_, PoolState> {
+fn lock_state(pool: &HewActorPool) -> Option<MutexGuard<'_, PoolState>> {
     match pool.state.lock() {
-        Ok(state) => state,
+        Ok(state) => Some(state),
         // Policy: per-pool state — a poisoned mutex means this pool is
-        // corrupted and cannot be used safely.
-        Err(_) => panic!("hew: pool mutex poisoned (a thread panicked); cannot safely continue"),
+        // corrupted and cannot be used safely.  Return None so C-ABI
+        // callers can report an error instead of aborting the process.
+        Err(_) => {
+            set_last_error("pool mutex poisoned (a thread panicked)");
+            None
+        }
     }
 }
 
@@ -96,7 +100,10 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     if pool_is_freed(pool) {
         return -1;
     }
-    let mut state = lock_state(pool);
+    let mut state = match lock_state(pool) {
+        Some(s) => s,
+        None => return -1,
+    };
     state.members.push(actor_pid);
     0
 }
@@ -118,7 +125,10 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     if pool_is_freed(pool) {
         return -1;
     }
-    let mut state = lock_state(pool);
+    let mut state = match lock_state(pool) {
+        Some(s) => s,
+        None => return -1,
+    };
     if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
         state.members.swap_remove(idx);
         return 0;
@@ -141,7 +151,10 @@ pub unsafe extern "C" fn hew_pool_size(pool: *const HewActorPool) -> usize {
     if pool_is_freed(pool) {
         return 0;
     }
-    lock_state(pool).members.len()
+    match lock_state(pool) {
+        Some(s) => s.members.len(),
+        None => 0,
+    }
 }
 
 /// Select a member PID according to the pool strategy.
@@ -161,7 +174,10 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
     if pool_is_freed(pool) {
         return 0;
     }
-    let mut state = lock_state(pool);
+    let mut state = match lock_state(pool) {
+        Some(s) => s,
+        None => return 0,
+    };
     if state.members.is_empty() {
         return 0;
     }

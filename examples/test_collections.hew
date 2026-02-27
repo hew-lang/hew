@@ -76,17 +76,11 @@ fn test_hashmap_basic() -> i32 {
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
-    let one = match m.get("one") {
-        Some(_) => 1,
-        None => -1,
-    };
-    let two = match m.get("two") {
-        Some(_) => 2,
-        None => -1,
-    };
+    let has_one = m.contains_key("one");
+    let has_two = m.contains_key("two");
     let len = m.len();
-    if one == 1 {
-        if two == 2 {
+    if has_one {
+        if has_two {
             if len == 3 {
                 println("PASS: hashmap basic ops");
                 1

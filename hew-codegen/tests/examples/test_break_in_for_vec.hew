@@ -1,0 +1,42 @@
+// Regression: break inside for-in-vec must work with nested loops.
+fn main() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.push(42);
+    v.push(50);
+
+    // Simple break in for-vec
+    var found = 0;
+    for x in v {
+        if x > 35 {
+            found = x;
+            break;
+        }
+    }
+    println(found);
+
+    // Break in for-vec inside a loop (nested — tests stack alignment)
+    let v2: Vec<int> = Vec::new();
+    v2.push(1);
+    v2.push(2);
+    v2.push(3);
+
+    var total = 0;
+    var passes = 0;
+    loop {
+        for x in v2 {
+            if x == 2 {
+                break;
+            }
+            total = total + x;
+        }
+        passes = passes + 1;
+        if passes >= 3 {
+            break;
+        }
+    }
+    // Each pass adds 1 (only x=1 before break at x=2), 3 passes = 3
+    println(total);
+}

@@ -127,6 +127,8 @@ add_e2e_test(trait_default test_trait_default.hew "10\n42\n")
 add_e2e_test(labeled_break test_labeled_break.hew "2\n1\n")
 add_e2e_test(labeled_continue test_labeled_continue.hew "15\n")
 add_e2e_test(break_with_value test_break_with_value.hew "7\n")
+add_e2e_test(break_in_for_vec test_break_in_for_vec.hew "42\n3\n")
+add_e2e_test(break_in_for_hashmap test_break_in_for_hashmap.hew "1\n2\n")
 add_e2e_test(cooperate test_cooperate.hew "before cooperate\nafter cooperate\n")
 
 # ── Migrated E2E tests (compile + run, compare against .expected file) ───────

@@ -1,0 +1,44 @@
+// Run-length encoding
+
+fn rle_encode(s: String) -> String {
+    let n = s.len();
+    if n == 0 {
+        return "";
+    }
+    var result = "";
+    var count = 1;
+    var i = 1;
+    while i < n {
+        if s.char_at(i) == s.char_at(i - 1) {
+            count = count + 1;
+        } else {
+            result = result + string_from_int(count) + s.slice(i - 1, i);
+            count = 1;
+        }
+        i = i + 1;
+    }
+    result = result + string_from_int(count) + s.slice(n - 1, n);
+    result
+}
+
+fn main() {
+    var pass = true;
+
+    let r1 = rle_encode("aaabbc");
+    if r1 != "3a2b1c" { pass = false; println("FAIL aaabbc got:"); println(r1); }
+
+    let r2 = rle_encode("a");
+    if r2 != "1a" { pass = false; println("FAIL a got:"); println(r2); }
+
+    let r3 = rle_encode("");
+    if r3 != "" { pass = false; println("FAIL empty got:"); println(r3); }
+
+    let r4 = rle_encode("aabbcc");
+    if r4 != "2a2b2c" { pass = false; println("FAIL aabbcc got:"); println(r4); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

@@ -1,0 +1,74 @@
+// Primality test by trial division
+fn is_prime(n: int) -> int {
+    if n < 2 {
+        return 0;
+    }
+    if n == 2 {
+        return 1;
+    }
+    if n % 2 == 0 {
+        return 0;
+    }
+    var i = 3;
+    while i * i <= n {
+        if n % i == 0 {
+            return 0;
+        }
+        i = i + 2;
+    }
+    1
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    // Primes
+    total = total + 1;
+    passed = passed + check("2 is prime", is_prime(2), 1);
+    total = total + 1;
+    passed = passed + check("3 is prime", is_prime(3), 1);
+    total = total + 1;
+    passed = passed + check("17 is prime", is_prime(17), 1);
+    total = total + 1;
+    passed = passed + check("97 is prime", is_prime(97), 1);
+    total = total + 1;
+    passed = passed + check("7919 is prime", is_prime(7919), 1);
+
+    // Composites
+    total = total + 1;
+    passed = passed + check("0 is not prime", is_prime(0), 0);
+    total = total + 1;
+    passed = passed + check("1 is not prime", is_prime(1), 0);
+    total = total + 1;
+    passed = passed + check("4 is not prime", is_prime(4), 0);
+    total = total + 1;
+    passed = passed + check("15 is not prime", is_prime(15), 0);
+    total = total + 1;
+    passed = passed + check("100 is not prime", is_prime(100), 0);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

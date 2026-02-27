@@ -1,0 +1,57 @@
+// Two Sum: find two indices that sum to target (O(n^2) brute force)
+
+fn main() {
+    let nums: Vec<i32> = Vec::new();
+    nums.push(2);
+    nums.push(7);
+    nums.push(11);
+    nums.push(15);
+    let target = 9;
+
+    var found_i = 0 - 1;
+    var found_j = 0 - 1;
+    var i = 0;
+    while i < nums.len() {
+        var j = i + 1;
+        while j < nums.len() {
+            if nums.get(i) + nums.get(j) == target {
+                found_i = i;
+                found_j = j;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    var pass = true;
+    if found_i != 0 { pass = false; println("FAIL i"); println(found_i); }
+    if found_j != 1 { pass = false; println("FAIL j"); println(found_j); }
+
+    // Test 2: [3,2,4] target=6 -> [1,2]
+    let nums2: Vec<i32> = Vec::new();
+    nums2.push(3);
+    nums2.push(2);
+    nums2.push(4);
+    var fi2 = 0 - 1;
+    var fj2 = 0 - 1;
+    var a = 0;
+    while a < nums2.len() {
+        var b = a + 1;
+        while b < nums2.len() {
+            if nums2.get(a) + nums2.get(b) == 6 {
+                fi2 = a;
+                fj2 = b;
+            }
+            b = b + 1;
+        }
+        a = a + 1;
+    }
+    if fi2 != 1 { pass = false; println("FAIL i2"); println(fi2); }
+    if fj2 != 2 { pass = false; println("FAIL j2"); println(fj2); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

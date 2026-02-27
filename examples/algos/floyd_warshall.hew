@@ -1,0 +1,71 @@
+// Floyd-Warshall All-Pairs Shortest Paths
+// 4-node graph:
+//   0->1(3), 0->2(6), 1->2(2), 2->3(1), 3->0(7), 1->3(5)
+// Expected distance matrix:
+//   [0, 3, 5, 6]
+//   [10, 0, 2, 3]
+//   [8, 11, 0, 1]
+//   [7, 10, 12, 0]
+
+fn main() {
+    let n = 4;
+    let INF = 999999;
+
+    // Initialize distance matrix (flat n*n)
+    let dist: Vec<i32> = Vec::new();
+    for i in 0..(n * n) {
+        dist.push(INF);
+    }
+
+    // Diagonal = 0
+    for i in 0..n {
+        dist.set(i * n + i, 0);
+    }
+
+    // Edges
+    dist.set(0 * n + 1, 3);
+    dist.set(0 * n + 2, 6);
+    dist.set(1 * n + 2, 2);
+    dist.set(2 * n + 3, 1);
+    dist.set(3 * n + 0, 7);
+    dist.set(1 * n + 3, 5);
+
+    // Floyd-Warshall
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
+                let through_k = dist.get(i * n + k) + dist.get(k * n + j);
+                if through_k < dist.get(i * n + j) {
+                    dist.set(i * n + j, through_k);
+                }
+            }
+        }
+    }
+
+    // Expected
+    let expected: Vec<i32> = Vec::new();
+    expected.push(0);  expected.push(3);  expected.push(5);  expected.push(6);
+    expected.push(10); expected.push(0);  expected.push(2);  expected.push(3);
+    expected.push(8);  expected.push(11); expected.push(0);  expected.push(1);
+    expected.push(7);  expected.push(10); expected.push(12); expected.push(0);
+
+    var ok = 1;
+    for i in 0..n {
+        for j in 0..n {
+            let d = dist.get(i * n + j);
+            let e = expected.get(i * n + j);
+            print(d);
+            print(" ");
+            if d != e {
+                ok = 0;
+            }
+        }
+        println("");
+    }
+
+    if ok == 1 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

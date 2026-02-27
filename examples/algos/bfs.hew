@@ -1,0 +1,89 @@
+// BFS Traversal
+// Graph (6 nodes, undirected):
+//   0-1, 0-2, 1-3, 2-4, 3-5, 4-5
+// BFS from 0: verify distances [0,1,1,2,2,3]
+
+fn main() {
+    let num_nodes = 6;
+
+    // Build adjacency list (undirected)
+    let adj_nodes: Vec<i32> = Vec::new();
+    let adj_offsets: Vec<i32> = Vec::new();
+
+    // Node 0: neighbors 1, 2
+    adj_offsets.push(0);
+    adj_nodes.push(1);
+    adj_nodes.push(2);
+    // Node 1: neighbors 0, 3
+    adj_offsets.push(2);
+    adj_nodes.push(0);
+    adj_nodes.push(3);
+    // Node 2: neighbors 0, 4
+    adj_offsets.push(4);
+    adj_nodes.push(0);
+    adj_nodes.push(4);
+    // Node 3: neighbors 1, 5
+    adj_offsets.push(6);
+    adj_nodes.push(1);
+    adj_nodes.push(5);
+    // Node 4: neighbors 2, 5
+    adj_offsets.push(8);
+    adj_nodes.push(2);
+    adj_nodes.push(5);
+    // Node 5: neighbors 3, 4
+    adj_offsets.push(10);
+    adj_nodes.push(3);
+    adj_nodes.push(4);
+    // End sentinel
+    adj_offsets.push(12);
+
+    // BFS
+    let dist: Vec<i32> = Vec::new();
+    for i in 0..num_nodes {
+        dist.push(0 - 1);
+    }
+    dist.set(0, 0);
+
+    let queue: Vec<i32> = Vec::new();
+    queue.push(0);
+    var front = 0;
+
+    while front < queue.len() {
+        let u = queue.get(front);
+        front = front + 1;
+        let start = adj_offsets.get(u);
+        let end = adj_offsets.get(u + 1);
+        var idx = start;
+        while idx < end {
+            let v = adj_nodes.get(idx);
+            if dist.get(v) == 0 - 1 {
+                dist.set(v, dist.get(u) + 1);
+                queue.push(v);
+            }
+            idx = idx + 1;
+        }
+    }
+
+    // Expected distances: [0, 1, 1, 2, 2, 3]
+    let expected: Vec<i32> = Vec::new();
+    expected.push(0);
+    expected.push(1);
+    expected.push(1);
+    expected.push(2);
+    expected.push(2);
+    expected.push(3);
+
+    var ok = 1;
+    for i in 0..num_nodes {
+        println(dist.get(i));
+        if dist.get(i) != expected.get(i) {
+            ok = 0;
+        }
+    }
+
+    if ok == 1 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

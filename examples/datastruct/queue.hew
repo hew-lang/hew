@@ -1,0 +1,120 @@
+// Queue - FIFO data structure using Vec<int> with head index
+// Index 0 = head pointer, rest is data starting at index 1
+
+fn queue_new() -> Vec<int> {
+    let q: Vec<int> = Vec::new();
+    q.push(0); // head index (relative to data start at 1)
+    q
+}
+
+fn queue_enqueue(q: Vec<int>, val: int) {
+    q.push(val);
+}
+
+fn queue_size(q: Vec<int>) -> int {
+    let head = q.get(0);
+    q.len() - 1 - head
+}
+
+fn queue_is_empty(q: Vec<int>) -> int {
+    if queue_size(q) == 0 { 1 } else { 0 }
+}
+
+fn queue_peek(q: Vec<int>) -> int {
+    let head = q.get(0);
+    q.get(head + 1)
+}
+
+fn queue_dequeue(q: Vec<int>) -> int {
+    let head = q.get(0);
+    let val = q.get(head + 1);
+    q.set(0, head + 1);
+    val
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    // Test 1: new queue is empty
+    total = total + 1;
+    let q = queue_new();
+    let r1 = if queue_is_empty(q) == 1 { 1 } else { 0 };
+    passed = passed + run_test("new queue is empty", r1);
+
+    // Test 2: enqueue and size
+    total = total + 1;
+    queue_enqueue(q, 10);
+    queue_enqueue(q, 20);
+    queue_enqueue(q, 30);
+    let r2 = if queue_size(q) == 3 { 1 } else { 0 };
+    passed = passed + run_test("enqueue and size", r2);
+
+    // Test 3: peek returns front
+    total = total + 1;
+    let r3 = if queue_peek(q) == 10 { 1 } else { 0 };
+    passed = passed + run_test("peek returns front", r3);
+
+    // Test 4: dequeue returns FIFO order
+    total = total + 1;
+    let d1 = queue_dequeue(q);
+    let d2 = queue_dequeue(q);
+    let d3 = queue_dequeue(q);
+    var r4 = 0;
+    if d1 == 10 {
+        if d2 == 20 {
+            if d3 == 30 {
+                r4 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("dequeue FIFO order", r4);
+
+    // Test 5: empty after dequeue all
+    total = total + 1;
+    let r5 = if queue_is_empty(q) == 1 { 1 } else { 0 };
+    passed = passed + run_test("empty after dequeue all", r5);
+
+    // Test 6: enqueue after empty
+    total = total + 1;
+    queue_enqueue(q, 99);
+    var r6 = 0;
+    if queue_size(q) == 1 {
+        if queue_peek(q) == 99 {
+            r6 = 1;
+        }
+    }
+    passed = passed + run_test("enqueue after empty", r6);
+
+    // Test 7: many elements FIFO
+    total = total + 1;
+    let q2 = queue_new();
+    for i in 0..50 {
+        queue_enqueue(q2, i);
+    }
+    var r7 = 1;
+    for i in 0..50 {
+        let val = queue_dequeue(q2);
+        if val != i {
+            r7 = 0;
+        }
+    }
+    passed = passed + run_test("50 elements FIFO", r7);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

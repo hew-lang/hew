@@ -1,0 +1,54 @@
+// 0/1 Knapsack Problem
+// Items: weights=[2,3,4,5], values=[3,4,5,6], capacity=5
+// Expected answer: 7 (items with weights 2,3 -> values 3+4)
+
+fn main() {
+    let n = 4;
+    let capacity = 5;
+
+    let weights: Vec<i32> = Vec::new();
+    weights.push(2);
+    weights.push(3);
+    weights.push(4);
+    weights.push(5);
+
+    let values: Vec<i32> = Vec::new();
+    values.push(3);
+    values.push(4);
+    values.push(5);
+    values.push(6);
+
+    // dp is (n+1) x (capacity+1) flat array
+    let rows = n + 1;
+    let cols = capacity + 1;
+    let dp: Vec<i32> = Vec::new();
+    for i in 0..(rows * cols) {
+        dp.push(0);
+    }
+
+    for i in 1..rows {
+        let w = weights.get(i - 1);
+        let v = values.get(i - 1);
+        for j in 1..cols {
+            let exclude = dp.get((i - 1) * cols + j);
+            if w <= j {
+                let include = dp.get((i - 1) * cols + (j - w)) + v;
+                if include > exclude {
+                    dp.set(i * cols + j, include);
+                } else {
+                    dp.set(i * cols + j, exclude);
+                }
+            } else {
+                dp.set(i * cols + j, exclude);
+            }
+        }
+    }
+
+    let result = dp.get(n * cols + capacity);
+    println(result);
+    if result == 7 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

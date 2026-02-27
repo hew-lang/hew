@@ -1,0 +1,245 @@
+// Unrolled Linked List using Vec<i32> with index-based pointers
+// Each block holds up to BLOCK_CAP (4) elements.
+// Block layout: [count, e0, e1, e2, e3, next] = 6 slots per block
+// Block i starts at index i*6
+
+fn block_count(n: Vec<i32>, b: i32) -> i32 { n.get(b * 6) }
+fn block_elem(n: Vec<i32>, b: i32, idx: i32) -> i32 { n.get(b * 6 + 1 + idx) }
+fn block_next(n: Vec<i32>, b: i32) -> i32 { n.get(b * 6 + 5) }
+fn set_count(n: Vec<i32>, b: i32, c: i32) { n.set(b * 6, c); }
+fn set_elem(n: Vec<i32>, b: i32, idx: i32, val: i32) { n.set(b * 6 + 1 + idx, val); }
+fn set_block_next(n: Vec<i32>, b: i32, nx: i32) { n.set(b * 6 + 5, nx); }
+
+fn alloc_block(n: Vec<i32>) -> i32 {
+    let b = n.len() / 6;
+    n.push(0);
+    n.push(0);
+    n.push(0);
+    n.push(0);
+    n.push(0);
+    n.push(-1);
+    b
+}
+
+// Insert at end of unrolled list. Returns head.
+fn unrolled_insert(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    if head == -1 {
+        let b = alloc_block(n);
+        set_elem(n, b, 0, val);
+        set_count(n, b, 1);
+        return b;
+    }
+    // Find last block
+    var last = head;
+    while block_next(n, last) != -1 {
+        last = block_next(n, last);
+    }
+    let cnt = block_count(n, last);
+    if cnt < 4 {
+        set_elem(n, last, cnt, val);
+        set_count(n, last, cnt + 1);
+    } else {
+        let b = alloc_block(n);
+        set_elem(n, b, 0, val);
+        set_count(n, b, 1);
+        set_block_next(n, last, b);
+    }
+    head
+}
+
+// Iterate all elements in order into result vec
+fn unrolled_iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
+    var b = head;
+    while b != -1 {
+        let cnt = block_count(n, b);
+        for i in 0..cnt {
+            result.push(block_elem(n, b, i));
+        }
+        b = block_next(n, b);
+    }
+}
+
+// Total element count
+fn unrolled_len(n: Vec<i32>, head: i32) -> i32 {
+    var total = 0;
+    var b = head;
+    while b != -1 {
+        total = total + block_count(n, b);
+        b = block_next(n, b);
+    }
+    total
+}
+
+// Count blocks
+fn block_count_total(n: Vec<i32>, head: i32) -> i32 {
+    var c = 0;
+    var b = head;
+    while b != -1 { c = c + 1; b = block_next(n, b); }
+    c
+}
+
+// Get element by logical index
+fn unrolled_get(n: Vec<i32>, head: i32, idx: i32) -> i32 {
+    var b = head;
+    var remaining = idx;
+    while b != -1 {
+        let cnt = block_count(n, b);
+        if remaining < cnt {
+            return block_elem(n, b, remaining);
+        }
+        remaining = remaining - cnt;
+        b = block_next(n, b);
+    }
+    -1
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() != b.len() { return 0; }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) { return 0; }
+    }
+    1
+}
+
+// --- Tests ---
+
+fn test_insert_and_iterate() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = unrolled_insert(n, head, 10);
+    head = unrolled_insert(n, head, 20);
+    head = unrolled_insert(n, head, 30);
+    let r: Vec<i32> = Vec::new();
+    unrolled_iterate(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(20); e.push(30);
+    if vecs_equal(r, e) == 1 {
+        println("PASS: insert and iterate");
+        return 1;
+    }
+    println("FAIL: insert and iterate");
+    0
+}
+
+fn test_block_split() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    // Insert 5 elements - should create 2 blocks (4+1)
+    head = unrolled_insert(n, head, 1);
+    head = unrolled_insert(n, head, 2);
+    head = unrolled_insert(n, head, 3);
+    head = unrolled_insert(n, head, 4);
+    head = unrolled_insert(n, head, 5);
+    if block_count_total(n, head) == 2 {
+        if unrolled_len(n, head) == 5 {
+            println("PASS: block split");
+            return 1;
+        }
+    }
+    println("FAIL: block split");
+    0
+}
+
+fn test_cross_block_iteration() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    // Insert 10 elements across 3 blocks (4+4+2)
+    for i in 0..10 {
+        head = unrolled_insert(n, head, (i + 1) * 10);
+    }
+    let r: Vec<i32> = Vec::new();
+    unrolled_iterate(n, head, r);
+    var ok = 1;
+    for i in 0..10 {
+        if r.get(i) != (i + 1) * 10 { ok = 0; }
+    }
+    if ok == 1 {
+        if r.len() == 10 {
+            println("PASS: cross-block iteration");
+            return 1;
+        }
+    }
+    println("FAIL: cross-block iteration");
+    0
+}
+
+fn test_random_access() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    for i in 0..8 {
+        head = unrolled_insert(n, head, i * 100);
+    }
+    let v0 = unrolled_get(n, head, 0);
+    let v3 = unrolled_get(n, head, 3);
+    let v5 = unrolled_get(n, head, 5);
+    let v7 = unrolled_get(n, head, 7);
+    if v0 == 0 {
+        if v3 == 300 {
+            if v5 == 500 {
+                if v7 == 700 {
+                    println("PASS: random access");
+                    return 1;
+                }
+            }
+        }
+    }
+    println("FAIL: random access");
+    0
+}
+
+fn test_single_block() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = unrolled_insert(n, head, 42);
+    if block_count_total(n, head) == 1 {
+        if unrolled_get(n, head, 0) == 42 {
+            println("PASS: single block");
+            return 1;
+        }
+    }
+    println("FAIL: single block");
+    0
+}
+
+fn test_many_blocks() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    // 20 elements = 5 blocks of 4
+    for i in 0..20 {
+        head = unrolled_insert(n, head, i);
+    }
+    if block_count_total(n, head) == 5 {
+        if unrolled_len(n, head) == 20 {
+            // Verify order
+            let r: Vec<i32> = Vec::new();
+            unrolled_iterate(n, head, r);
+            var ok = 1;
+            for i in 0..20 {
+                if r.get(i) != i { ok = 0; }
+            }
+            if ok == 1 {
+                println("PASS: many blocks");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: many blocks");
+    0
+}
+
+fn main() {
+    println("=== Unrolled List Tests ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_insert_and_iterate();
+    passed = passed + test_block_split();
+    passed = passed + test_cross_block_iteration();
+    passed = passed + test_random_access();
+    passed = passed + test_single_block();
+    passed = passed + test_many_blocks();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+}

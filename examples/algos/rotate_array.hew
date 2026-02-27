@@ -1,0 +1,53 @@
+// Rotate array by k positions to the right
+// [1,2,3,4,5] k=2 -> [4,5,1,2,3]
+
+fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
+    var l = start;
+    var r = end - 1;
+    while l < r {
+        let tmp = arr.get(l);
+        arr.set(l, arr.get(r));
+        arr.set(r, tmp);
+        l = l + 1;
+        r = r - 1;
+    }
+}
+
+fn main() {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(1);
+    arr.push(2);
+    arr.push(3);
+    arr.push(4);
+    arr.push(5);
+    let n = arr.len();
+    let k = 2 % n;
+
+    // Reverse entire array, then reverse first k, then reverse rest
+    reverse_range(arr, 0, n);
+    reverse_range(arr, 0, k);
+    reverse_range(arr, k, n);
+
+    // Expected: [4,5,1,2,3]
+    let expected: Vec<i32> = Vec::new();
+    expected.push(4);
+    expected.push(5);
+    expected.push(1);
+    expected.push(2);
+    expected.push(3);
+
+    var pass = true;
+    for i in 0..5 {
+        if arr.get(i) != expected.get(i) {
+            pass = false;
+            println("FAIL at index:");
+            println(i);
+        }
+    }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

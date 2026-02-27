@@ -1,0 +1,165 @@
+// Adjacency List - Compressed adjacency list from edge list
+// adj_nodes: all neighbors flattened
+// adj_offsets: start index for each node (length = num_nodes + 1)
+
+fn get_degree(adj_offsets: Vec<int>, node: int) -> int {
+    adj_offsets.get(node + 1) - adj_offsets.get(node)
+}
+
+fn has_edge(adj_nodes: Vec<int>, adj_offsets: Vec<int>, src: int, dst: int) -> bool {
+    let start = adj_offsets.get(src);
+    let end = adj_offsets.get(src + 1);
+    var i = start;
+    while i < end {
+        if adj_nodes.get(i) == dst {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let num_nodes = 6;
+
+    // Edge list: (0,1),(0,2),(1,2),(1,3),(2,4),(3,4),(3,5),(4,5)
+    let edge_src: Vec<int> = Vec::new();
+    let edge_dst: Vec<int> = Vec::new();
+    edge_src.push(0); edge_dst.push(1);
+    edge_src.push(0); edge_dst.push(2);
+    edge_src.push(1); edge_dst.push(2);
+    edge_src.push(1); edge_dst.push(3);
+    edge_src.push(2); edge_dst.push(4);
+    edge_src.push(3); edge_dst.push(4);
+    edge_src.push(3); edge_dst.push(5);
+    edge_src.push(4); edge_dst.push(5);
+    let num_edges = edge_src.len();
+
+    // Count degree per node (undirected: each edge counted twice)
+    let degree: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        degree.push(0);
+    }
+    for i in 0..num_edges {
+        let s = edge_src.get(i);
+        let d = edge_dst.get(i);
+        degree.set(s, degree.get(s) + 1);
+        degree.set(d, degree.get(d) + 1);
+    }
+
+    // Compute offsets (prefix sum)
+    let adj_offsets: Vec<int> = Vec::new();
+    adj_offsets.push(0);
+    for i in 0..num_nodes {
+        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+    }
+
+    // Fill adj_nodes
+    let total = adj_offsets.get(num_nodes);
+    let adj_nodes: Vec<int> = Vec::new();
+    for i in 0..total {
+        adj_nodes.push(0);
+    }
+    let pos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        pos.push(adj_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = edge_src.get(i);
+        let d = edge_dst.get(i);
+        adj_nodes.set(pos.get(s), d);
+        pos.set(s, pos.get(s) + 1);
+        adj_nodes.set(pos.get(d), s);
+        pos.set(d, pos.get(d) + 1);
+    }
+
+    // Test 1: Total directed edges = 16
+    if adj_nodes.len() == 16 {
+        println("PASS: total directed edges = 16");
+        passed = passed + 1;
+    } else {
+        println("FAIL: total directed edges");
+        failed = failed + 1;
+    }
+
+    // Test 2: Degree of node 0 = 2
+    if get_degree(adj_offsets, 0) == 2 {
+        println("PASS: degree(0) = 2");
+        passed = passed + 1;
+    } else {
+        println("FAIL: degree(0)");
+        failed = failed + 1;
+    }
+
+    // Test 3: Degree of node 1 = 3
+    if get_degree(adj_offsets, 1) == 3 {
+        println("PASS: degree(1) = 3");
+        passed = passed + 1;
+    } else {
+        println("FAIL: degree(1)");
+        failed = failed + 1;
+    }
+
+    // Test 4: Edge (0,1) exists
+    if has_edge(adj_nodes, adj_offsets, 0, 1) {
+        println("PASS: edge (0,1) exists");
+        passed = passed + 1;
+    } else {
+        println("FAIL: edge (0,1)");
+        failed = failed + 1;
+    }
+
+    // Test 5: Edge (0,3) does not exist
+    if has_edge(adj_nodes, adj_offsets, 0, 3) {
+        println("FAIL: edge (0,3) should not exist");
+        failed = failed + 1;
+    } else {
+        println("PASS: edge (0,3) absent");
+        passed = passed + 1;
+    }
+
+    // Test 6: Bidirectional edge (3,5)
+    if has_edge(adj_nodes, adj_offsets, 3, 5) {
+        if has_edge(adj_nodes, adj_offsets, 5, 3) {
+            println("PASS: edge (3,5) bidirectional");
+            passed = passed + 1;
+        } else {
+            println("FAIL: edge (5,3) missing");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: edge (3,5) missing");
+        failed = failed + 1;
+    }
+
+    // Test 7: Degree of node 5 = 2
+    if get_degree(adj_offsets, 5) == 2 {
+        println("PASS: degree(5) = 2");
+        passed = passed + 1;
+    } else {
+        println("FAIL: degree(5)");
+        failed = failed + 1;
+    }
+
+    // Test 8: Offsets length = num_nodes + 1
+    if adj_offsets.len() == 7 {
+        println("PASS: offsets length = 7");
+        passed = passed + 1;
+    } else {
+        println("FAIL: offsets length");
+        failed = failed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

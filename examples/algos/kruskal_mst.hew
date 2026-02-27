@@ -1,0 +1,85 @@
+// Kruskal's MST using Union-Find
+// Graph (6 nodes, 9 edges):
+//   0-1(4), 0-2(3), 1-2(1), 1-3(2), 2-3(4), 2-4(6), 3-4(5), 3-5(7), 4-5(8)
+// MST edges by weight: 1-2(1), 1-3(2), 0-2(3), 3-4(5), 3-5(7) -> total = 18
+
+fn find(parent: Vec<i32>, x: i32) -> i32 {
+    var node = x;
+    while parent.get(node) != node {
+        // Path compression: point to grandparent
+        let gp = parent.get(parent.get(node));
+        parent.set(node, gp);
+        node = gp;
+    }
+    node
+}
+
+fn main() {
+    let num_nodes = 6;
+
+    // Edges sorted by weight (pre-sorted)
+    let edge_u: Vec<i32> = Vec::new();
+    let edge_v: Vec<i32> = Vec::new();
+    let edge_w: Vec<i32> = Vec::new();
+
+    edge_u.push(1); edge_v.push(2); edge_w.push(1);
+    edge_u.push(1); edge_v.push(3); edge_w.push(2);
+    edge_u.push(0); edge_v.push(2); edge_w.push(3);
+    edge_u.push(0); edge_v.push(1); edge_w.push(4);
+    edge_u.push(2); edge_v.push(3); edge_w.push(4);
+    edge_u.push(3); edge_v.push(4); edge_w.push(5);
+    edge_u.push(2); edge_v.push(4); edge_w.push(6);
+    edge_u.push(3); edge_v.push(5); edge_w.push(7);
+    edge_u.push(4); edge_v.push(5); edge_w.push(8);
+
+    let num_edges = edge_u.len();
+
+    // Union-Find
+    let parent: Vec<i32> = Vec::new();
+    let rank: Vec<i32> = Vec::new();
+    for i in 0..num_nodes {
+        parent.push(i);
+        rank.push(0);
+    }
+
+    var mst_weight = 0;
+    var mst_edges = 0;
+
+    for e in 0..num_edges {
+        let u = edge_u.get(e);
+        let v = edge_v.get(e);
+        let w = edge_w.get(e);
+
+        let ru = find(parent, u);
+        let rv = find(parent, v);
+
+        if ru != rv {
+            // Union by rank
+            if rank.get(ru) < rank.get(rv) {
+                parent.set(ru, rv);
+            } else {
+                if rank.get(ru) > rank.get(rv) {
+                    parent.set(rv, ru);
+                } else {
+                    parent.set(rv, ru);
+                    rank.set(ru, rank.get(ru) + 1);
+                }
+            }
+            mst_weight = mst_weight + w;
+            mst_edges = mst_edges + 1;
+        }
+    }
+
+    println(mst_weight);
+    println(mst_edges);
+
+    if mst_weight == 18 {
+        if mst_edges == 5 {
+            println("PASS");
+        } else {
+            println("FAIL");
+        }
+    } else {
+        println("FAIL");
+    }
+}

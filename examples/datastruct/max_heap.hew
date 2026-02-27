@@ -1,0 +1,262 @@
+// Max-Heap using implicit array representation
+// Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
+
+fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
+    heap.push(val);
+    var i = heap.len() - 1;
+    while i > 0 {
+        let parent = (i - 1) / 2;
+        if heap.get(i) > heap.get(parent) {
+            let tmp = heap.get(i);
+            heap.set(i, heap.get(parent));
+            heap.set(parent, tmp);
+            i = parent;
+        } else {
+            i = 0;
+        }
+    }
+    0
+}
+
+fn heap_peek(heap: Vec<i32>) -> i32 {
+    heap.get(0)
+}
+
+fn heap_pop(heap: Vec<i32>) -> i32 {
+    let max_val = heap.get(0);
+    let last = heap.pop();
+    if heap.len() > 0 {
+        heap.set(0, last);
+        var i = 0;
+        var done = false;
+        while !done {
+            let left = 2 * i + 1;
+            let right = 2 * i + 2;
+            var largest = i;
+            if left < heap.len() {
+                if heap.get(left) > heap.get(largest) {
+                    largest = left;
+                }
+            }
+            if right < heap.len() {
+                if heap.get(right) > heap.get(largest) {
+                    largest = right;
+                }
+            }
+            if largest != i {
+                let tmp = heap.get(i);
+                heap.set(i, heap.get(largest));
+                heap.set(largest, tmp);
+                i = largest;
+            } else {
+                done = true;
+            }
+        }
+    }
+    max_val
+}
+
+// Build heap from array (heapify)
+fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
+    var i = 0;
+    while i < arr.len() {
+        heap.push(arr.get(i));
+        i = i + 1;
+    }
+    // Heapify from last non-leaf node
+    i = heap.len() / 2 - 1;
+    while i >= 0 {
+        var cur = i;
+        var done = false;
+        while !done {
+            let left = 2 * cur + 1;
+            let right = 2 * cur + 2;
+            var largest = cur;
+            if left < heap.len() {
+                if heap.get(left) > heap.get(largest) {
+                    largest = left;
+                }
+            }
+            if right < heap.len() {
+                if heap.get(right) > heap.get(largest) {
+                    largest = right;
+                }
+            }
+            if largest != cur {
+                let tmp = heap.get(cur);
+                heap.set(cur, heap.get(largest));
+                heap.set(largest, tmp);
+                cur = largest;
+            } else {
+                done = true;
+            }
+        }
+        i = i - 1;
+    }
+    0
+}
+
+fn check_max_heap_property(heap: Vec<i32>) -> bool {
+    var i = 0;
+    var ok = true;
+    while i < heap.len() {
+        let left = 2 * i + 1;
+        let right = 2 * i + 2;
+        if left < heap.len() {
+            if heap.get(i) < heap.get(left) {
+                ok = false;
+            }
+        }
+        if right < heap.len() {
+            if heap.get(i) < heap.get(right) {
+                ok = false;
+            }
+        }
+        i = i + 1;
+    }
+    ok
+}
+
+fn test_basic_max_heap() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 5);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 7);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 9);
+    let pk = heap_peek(heap);
+    if pk == 9 {
+        println("PASS: max-heap peek returns maximum");
+        1
+    } else {
+        print("FAIL: max-heap peek expected 9 got ");
+        println(pk);
+        0
+    }
+}
+
+fn test_extract_max_order() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 5);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 7);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 4);
+    let _ = heap_push(heap, 6);
+    let _ = heap_push(heap, 2);
+    let e1 = heap_pop(heap);
+    let e2 = heap_pop(heap);
+    let e3 = heap_pop(heap);
+    let e4 = heap_pop(heap);
+    let e5 = heap_pop(heap);
+    let e6 = heap_pop(heap);
+    let e7 = heap_pop(heap);
+    var ok = true;
+    if e1 != 7 { ok = false; }
+    if e2 != 6 { ok = false; }
+    if e3 != 5 { ok = false; }
+    if e4 != 4 { ok = false; }
+    if e5 != 3 { ok = false; }
+    if e6 != 2 { ok = false; }
+    if e7 != 1 { ok = false; }
+    if ok {
+        println("PASS: extract_max returns descending order");
+        1
+    } else {
+        print("FAIL: extract order: ");
+        print(e1); print(" "); print(e2); print(" "); print(e3); print(" ");
+        print(e4); print(" "); print(e5); print(" "); print(e6); print(" ");
+        println(e7);
+        0
+    }
+}
+
+fn test_build_heap() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(3); arr.push(1); arr.push(6); arr.push(5);
+    arr.push(2); arr.push(4);
+    let heap: Vec<i32> = Vec::new();
+    let _ = build_heap(arr, heap);
+    let ok = check_max_heap_property(heap);
+    if ok {
+        if heap_peek(heap) == 6 {
+            println("PASS: build_heap maintains max-heap property");
+            return 1;
+        }
+    }
+    println("FAIL: build_heap");
+    0
+}
+
+fn test_heap_property_after_ops() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 10);
+    let _ = heap_push(heap, 20);
+    let _ = heap_push(heap, 15);
+    let _ = heap_push(heap, 30);
+    let _ = heap_push(heap, 5);
+    let _ = heap_pop(heap);
+    let _ = heap_push(heap, 25);
+    let _ = heap_pop(heap);
+    let ok = check_max_heap_property(heap);
+    if ok {
+        println("PASS: heap property after mixed ops");
+        1
+    } else {
+        println("FAIL: heap property violated");
+        0
+    }
+}
+
+fn test_heapsort() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 8);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 10);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 5);
+    let _ = heap_push(heap, 7);
+    // Extract all to get sorted descending
+    let sorted: Vec<i32> = Vec::new();
+    while heap.len() > 0 {
+        sorted.push(heap_pop(heap));
+    }
+    // Verify descending order
+    var ok = true;
+    var i = 1;
+    while i < sorted.len() {
+        if sorted.get(i) > sorted.get(i - 1) {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    if ok {
+        if sorted.len() == 6 {
+            println("PASS: heapsort produces sorted output");
+            return 1;
+        }
+    }
+    println("FAIL: heapsort");
+    0
+}
+
+fn main() {
+    println("=== Max-Heap ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_max_heap();
+    passed = passed + test_extract_max_order();
+    passed = passed + test_build_heap();
+    passed = passed + test_heap_property_after_ops();
+    passed = passed + test_heapsort();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

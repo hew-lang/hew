@@ -1,0 +1,49 @@
+// Factorial - iterative implementation
+fn factorial(n: int) -> int {
+    var result = 1;
+    var i = 2;
+    while i <= n {
+        result = result * i;
+        i = i + 1;
+    }
+    result
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("0!=1", factorial(0), 1);
+    total = total + 1;
+    passed = passed + check("1!=1", factorial(1), 1);
+    total = total + 1;
+    passed = passed + check("5!=120", factorial(5), 120);
+    total = total + 1;
+    passed = passed + check("10!=3628800", factorial(10), 3628800);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

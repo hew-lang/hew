@@ -1,0 +1,79 @@
+// Fibonacci - iterative and recursive implementations
+fn fib_recursive(n: int) -> int {
+    if n <= 0 {
+        0
+    } else if n == 1 {
+        1
+    } else {
+        fib_recursive(n - 1) + fib_recursive(n - 2)
+    }
+}
+
+fn fib_iterative(n: int) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    if n == 1 {
+        return 1;
+    }
+    var a = 0;
+    var b = 1;
+    var i = 2;
+    while i <= n {
+        let temp = a + b;
+        a = b;
+        b = temp;
+        i = i + 1;
+    }
+    b
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    // Test recursive fibonacci
+    total = total + 1;
+    passed = passed + check("fib_recursive(0)=0", fib_recursive(0), 0);
+    total = total + 1;
+    passed = passed + check("fib_recursive(1)=1", fib_recursive(1), 1);
+    total = total + 1;
+    passed = passed + check("fib_recursive(10)=55", fib_recursive(10), 55);
+    total = total + 1;
+    passed = passed + check("fib_recursive(20)=6765", fib_recursive(20), 6765);
+
+    // Test iterative fibonacci
+    total = total + 1;
+    passed = passed + check("fib_iterative(0)=0", fib_iterative(0), 0);
+    total = total + 1;
+    passed = passed + check("fib_iterative(1)=1", fib_iterative(1), 1);
+    total = total + 1;
+    passed = passed + check("fib_iterative(10)=55", fib_iterative(10), 55);
+    total = total + 1;
+    passed = passed + check("fib_iterative(20)=6765", fib_iterative(20), 6765);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

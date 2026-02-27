@@ -1,0 +1,49 @@
+// Longest common prefix of a set of strings
+// We compare strings pairwise using char_at, tracking the prefix via slice.
+
+fn common_prefix(a: String, b: String) -> String {
+    var len = a.len();
+    if b.len() < len {
+        len = b.len();
+    }
+    var i = 0;
+    while i < len {
+        if a.char_at(i) != b.char_at(i) {
+            return a.slice(0, i);
+        }
+        i = i + 1;
+    }
+    a.slice(0, i)
+}
+
+fn main() {
+    var pass = true;
+
+    // Test 1: "flower","flow","flight" -> "fl"
+    let p1 = common_prefix("flower", "flow");
+    let p2 = common_prefix(p1, "flight");
+    if p2 != "fl" { pass = false; println("FAIL expected fl got:"); println(p2); }
+
+    // Test 2: identical strings
+    let p3 = common_prefix("abc", "abc");
+    if p3 != "abc" { pass = false; println("FAIL expected abc got:"); println(p3); }
+
+    // Test 3: no common prefix
+    let p4 = common_prefix("dog", "cat");
+    if p4 != "" { pass = false; println("FAIL expected empty got:"); println(p4); }
+
+    // Test 4: one empty
+    let p5 = common_prefix("", "abc");
+    if p5 != "" { pass = false; println("FAIL expected empty for empty input got:"); println(p5); }
+
+    // Test 5: three strings via fold
+    let q1 = common_prefix("interspecies", "interstellar");
+    let q2 = common_prefix(q1, "interstate");
+    if q2 != "inters" { pass = false; println("FAIL expected inters got:"); println(q2); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

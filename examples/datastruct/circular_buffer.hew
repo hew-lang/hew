@@ -1,0 +1,179 @@
+// Circular Buffer - Fixed-size ring buffer using Vec<int>
+// Layout: [capacity, head, tail, count, data...]
+// Data starts at index 4
+
+fn cb_new(capacity: int) -> Vec<int> {
+    let buf: Vec<int> = Vec::new();
+    buf.push(capacity); // index 0: capacity
+    buf.push(0);        // index 1: head
+    buf.push(0);        // index 2: tail
+    buf.push(0);        // index 3: count
+    // Pre-allocate data slots
+    for i in 0..capacity {
+        buf.push(0);
+    }
+    buf
+}
+
+fn cb_capacity(buf: Vec<int>) -> int {
+    buf.get(0)
+}
+
+fn cb_count(buf: Vec<int>) -> int {
+    buf.get(3)
+}
+
+fn cb_is_empty(buf: Vec<int>) -> int {
+    if buf.get(3) == 0 { 1 } else { 0 }
+}
+
+fn cb_is_full(buf: Vec<int>) -> int {
+    if buf.get(3) == buf.get(0) { 1 } else { 0 }
+}
+
+fn cb_push(buf: Vec<int>, val: int) -> int {
+    let cap = buf.get(0);
+    let count = buf.get(3);
+    if count == cap {
+        0 // full, return failure
+    } else {
+        let tail = buf.get(2);
+        buf.set(4 + tail, val);
+        let new_tail = (tail + 1) % cap;
+        buf.set(2, new_tail);
+        buf.set(3, count + 1);
+        1 // success
+    }
+}
+
+fn cb_pop(buf: Vec<int>) -> int {
+    let head = buf.get(1);
+    let cap = buf.get(0);
+    let count = buf.get(3);
+    let val = buf.get(4 + head);
+    let new_head = (head + 1) % cap;
+    buf.set(1, new_head);
+    buf.set(3, count - 1);
+    val
+}
+
+fn cb_peek(buf: Vec<int>) -> int {
+    let head = buf.get(1);
+    buf.get(4 + head)
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    // Test 1: new buffer is empty
+    total = total + 1;
+    let buf = cb_new(5);
+    var r1 = 0;
+    if cb_is_empty(buf) == 1 {
+        if cb_capacity(buf) == 5 {
+            r1 = 1;
+        }
+    }
+    passed = passed + run_test("new buffer empty, cap=5", r1);
+
+    // Test 2: push and count
+    total = total + 1;
+    cb_push(buf, 10);
+    cb_push(buf, 20);
+    cb_push(buf, 30);
+    let r2 = if cb_count(buf) == 3 { 1 } else { 0 };
+    passed = passed + run_test("push 3 items, count=3", r2);
+
+    // Test 3: peek
+    total = total + 1;
+    let r3 = if cb_peek(buf) == 10 { 1 } else { 0 };
+    passed = passed + run_test("peek returns first", r3);
+
+    // Test 4: pop FIFO
+    total = total + 1;
+    let v1 = cb_pop(buf);
+    let v2 = cb_pop(buf);
+    var r4 = 0;
+    if v1 == 10 {
+        if v2 == 20 {
+            r4 = 1;
+        }
+    }
+    passed = passed + run_test("pop FIFO order", r4);
+
+    // Test 5: fill to capacity
+    total = total + 1;
+    // count is now 1 (30 remains), fill 4 more
+    cb_push(buf, 40);
+    cb_push(buf, 50);
+    cb_push(buf, 60);
+    cb_push(buf, 70);
+    let r5 = if cb_is_full(buf) == 1 { 1 } else { 0 };
+    passed = passed + run_test("fill to capacity", r5);
+
+    // Test 6: push when full returns 0
+    total = total + 1;
+    let ok = cb_push(buf, 99);
+    let r6 = if ok == 0 { 1 } else { 0 };
+    passed = passed + run_test("push when full fails", r6);
+
+    // Test 7: wraparound - pop all then refill
+    total = total + 1;
+    // Pop all 5
+    let w1 = cb_pop(buf);
+    let w2 = cb_pop(buf);
+    let w3 = cb_pop(buf);
+    let w4 = cb_pop(buf);
+    let w5 = cb_pop(buf);
+    // Now head and tail have wrapped
+    // Fill again
+    cb_push(buf, 100);
+    cb_push(buf, 200);
+    cb_push(buf, 300);
+    let wr1 = cb_pop(buf);
+    let wr2 = cb_pop(buf);
+    let wr3 = cb_pop(buf);
+    var r7 = 0;
+    if wr1 == 100 {
+        if wr2 == 200 {
+            if wr3 == 300 {
+                r7 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("wraparound works", r7);
+
+    // Test 8: original pop values correct
+    total = total + 1;
+    var r8 = 0;
+    if w1 == 30 {
+        if w2 == 40 {
+            if w3 == 50 {
+                if w4 == 60 {
+                    if w5 == 70 {
+                        r8 = 1;
+                    }
+                }
+            }
+        }
+    }
+    passed = passed + run_test("pop values after fill", r8);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

@@ -1,0 +1,64 @@
+// Catalan numbers using dynamic programming
+fn catalan(n: int) -> int {
+    let dp: Vec<int> = Vec::new();
+    dp.push(1); // C(0) = 1
+
+    var i = 1;
+    while i <= n {
+        var sum = 0;
+        var j = 0;
+        while j < i {
+            sum = sum + dp.get(j) * dp.get(i - 1 - j);
+            j = j + 1;
+        }
+        dp.push(sum);
+        i = i + 1;
+    }
+
+    dp.get(n)
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("C(0)=1", catalan(0), 1);
+    total = total + 1;
+    passed = passed + check("C(1)=1", catalan(1), 1);
+    total = total + 1;
+    passed = passed + check("C(2)=2", catalan(2), 2);
+    total = total + 1;
+    passed = passed + check("C(3)=5", catalan(3), 5);
+    total = total + 1;
+    passed = passed + check("C(4)=14", catalan(4), 14);
+    total = total + 1;
+    passed = passed + check("C(5)=42", catalan(5), 42);
+    total = total + 1;
+    passed = passed + check("C(6)=132", catalan(6), 132);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

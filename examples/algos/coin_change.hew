@@ -1,0 +1,39 @@
+// Minimum Coins to Make Change
+// Coins: [1, 5, 10, 25], Amount: 30 -> 2 (25 + 5)
+
+fn main() {
+    let coins: Vec<i32> = Vec::new();
+    coins.push(1);
+    coins.push(5);
+    coins.push(10);
+    coins.push(25);
+    let num_coins = coins.len();
+    let amount = 30;
+    let INF = 999999;
+
+    let dp: Vec<i32> = Vec::new();
+    dp.push(0);
+    for i in 1..(amount + 1) {
+        dp.push(INF);
+    }
+
+    for i in 1..(amount + 1) {
+        for j in 0..num_coins {
+            let c = coins.get(j);
+            if c <= i {
+                let prev = dp.get(i - c);
+                if prev + 1 < dp.get(i) {
+                    dp.set(i, prev + 1);
+                }
+            }
+        }
+    }
+
+    let result = dp.get(amount);
+    println(result);
+    if result == 2 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

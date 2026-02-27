@@ -1,0 +1,51 @@
+// Climbing Stairs - ways to climb n stairs taking 1 or 2 steps
+// Tests: n=1->1, n=2->2, n=5->8, n=10->89
+
+fn climb(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        let dp: Vec<i32> = Vec::new();
+        dp.push(1);
+        dp.push(1);
+        for i in 2..(n + 1) {
+            let val = dp.get(i - 1) + dp.get(i - 2);
+            dp.push(val);
+        }
+        dp.get(n)
+    }
+}
+
+fn main() {
+    var passed = 0;
+
+    let r1 = climb(1);
+    println(r1);
+    if r1 == 1 {
+        passed = passed + 1;
+    }
+
+    let r2 = climb(2);
+    println(r2);
+    if r2 == 2 {
+        passed = passed + 1;
+    }
+
+    let r5 = climb(5);
+    println(r5);
+    if r5 == 8 {
+        passed = passed + 1;
+    }
+
+    let r10 = climb(10);
+    println(r10);
+    if r10 == 89 {
+        passed = passed + 1;
+    }
+
+    if passed == 4 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

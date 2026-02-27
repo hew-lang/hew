@@ -1,0 +1,160 @@
+// Union-Find (Disjoint Set) with path compression and union by rank
+
+fn find(parent: Vec<int>, x: int) -> int {
+    var r = x;
+    while parent.get(r) != r {
+        r = parent.get(r);
+    }
+    // Path compression
+    var c = x;
+    while c != r {
+        let next = parent.get(c);
+        parent.set(c, r);
+        c = next;
+    }
+    r
+}
+
+fn union(parent: Vec<int>, rank: Vec<int>, a: int, b: int) -> bool {
+    let ra = find(parent, a);
+    let rb = find(parent, b);
+    if ra == rb {
+        return false;
+    }
+    let rka = rank.get(ra);
+    let rkb = rank.get(rb);
+    if rka < rkb {
+        parent.set(ra, rb);
+    } else if rka > rkb {
+        parent.set(rb, ra);
+    } else {
+        parent.set(rb, ra);
+        rank.set(ra, rka + 1);
+    }
+    true
+}
+
+fn connected(parent: Vec<int>, a: int, b: int) -> bool {
+    find(parent, a) == find(parent, b)
+}
+
+fn count_components(parent: Vec<int>) -> int {
+    let n = parent.len();
+    var count = 0;
+    for i in 0..n {
+        if find(parent, i) == i {
+            count = count + 1;
+        }
+    }
+    count
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let n = 8;
+
+    // Initialize: each node is its own parent
+    let parent: Vec<int> = Vec::new();
+    let rank: Vec<int> = Vec::new();
+    for i in 0..n {
+        parent.push(i);
+        rank.push(0);
+    }
+
+    // Test 1: Initially 8 components
+    if count_components(parent) == 8 {
+        println("PASS: initial 8 components");
+        passed = passed + 1;
+    } else {
+        println("FAIL: initial components");
+        failed = failed + 1;
+    }
+
+    // Test 2: Union 0-1, 2-3, 4-5, 6-7 -> 4 components
+    let _ = union(parent, rank, 0, 1);
+    let _ = union(parent, rank, 2, 3);
+    let _ = union(parent, rank, 4, 5);
+    let _ = union(parent, rank, 6, 7);
+    if count_components(parent) == 4 {
+        println("PASS: 4 components after pairs");
+        passed = passed + 1;
+    } else {
+        println("FAIL: components after pairs");
+        failed = failed + 1;
+    }
+
+    // Test 3: 0 and 1 connected
+    if connected(parent, 0, 1) {
+        println("PASS: 0 and 1 connected");
+        passed = passed + 1;
+    } else {
+        println("FAIL: 0 and 1 connected");
+        failed = failed + 1;
+    }
+
+    // Test 4: 0 and 2 not connected
+    if connected(parent, 0, 2) {
+        println("FAIL: 0 and 2 should not be connected");
+        failed = failed + 1;
+    } else {
+        println("PASS: 0 and 2 not connected");
+        passed = passed + 1;
+    }
+
+    // Test 5: Union {0,1} with {2,3} -> 3 components
+    let _ = union(parent, rank, 1, 3);
+    if count_components(parent) == 3 {
+        println("PASS: 3 components after merge");
+        passed = passed + 1;
+    } else {
+        println("FAIL: components after merge");
+        failed = failed + 1;
+    }
+
+    // Test 6: Now 0 and 2 connected (transitive)
+    if connected(parent, 0, 2) {
+        println("PASS: 0 and 2 now connected");
+        passed = passed + 1;
+    } else {
+        println("FAIL: 0 and 2 should be connected");
+        failed = failed + 1;
+    }
+
+    // Test 7: Redundant union returns false
+    let dup = union(parent, rank, 0, 3);
+    if dup {
+        println("FAIL: redundant union should return false");
+        failed = failed + 1;
+    } else {
+        println("PASS: redundant union returns false");
+        passed = passed + 1;
+    }
+
+    // Test 8: Merge all into 1 component
+    let _ = union(parent, rank, 0, 4);
+    let _ = union(parent, rank, 4, 6);
+    if count_components(parent) == 1 {
+        if connected(parent, 0, 7) {
+            println("PASS: all in one component");
+            passed = passed + 1;
+        } else {
+            println("FAIL: all connected");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: single component");
+        failed = failed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

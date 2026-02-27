@@ -1,0 +1,224 @@
+// Bloom Filter using Vec<int> as bit array
+// 3 hash functions for probabilistic membership testing
+
+fn h1(key: int, m: int) -> int {
+    let h = key % m;
+    if h < 0 {
+        h + m
+    } else {
+        h
+    }
+}
+
+fn h2(key: int, m: int) -> int {
+    let h = (key * 7 + 13) % m;
+    if h < 0 {
+        h + m
+    } else {
+        h
+    }
+}
+
+fn h3(key: int, m: int) -> int {
+    let h = (key * 31 + 17) % m;
+    if h < 0 {
+        h + m
+    } else {
+        h
+    }
+}
+
+fn make_bloom(size: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    for i in 0..size {
+        v.push(0);
+    }
+    v
+}
+
+fn bloom_add(filter: Vec<int>, key: int) {
+    let m = filter.len();
+    filter.set(h1(key, m), 1);
+    filter.set(h2(key, m), 1);
+    filter.set(h3(key, m), 1);
+}
+
+fn bloom_might_contain(filter: Vec<int>, key: int) -> bool {
+    let m = filter.len();
+    if filter.get(h1(key, m)) == 0 {
+        return false;
+    }
+    if filter.get(h2(key, m)) == 0 {
+        return false;
+    }
+    if filter.get(h3(key, m)) == 0 {
+        return false;
+    }
+    true
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let m = 64;
+    let filter = make_bloom(m);
+
+    // Add elements
+    bloom_add(filter, 10);
+    bloom_add(filter, 20);
+    bloom_add(filter, 30);
+    bloom_add(filter, 40);
+    bloom_add(filter, 50);
+
+    // Test 1: No false negatives - all inserted elements must be found
+    var all_found = true;
+    if !bloom_might_contain(filter, 10) {
+        all_found = false;
+    }
+    if !bloom_might_contain(filter, 20) {
+        all_found = false;
+    }
+    if !bloom_might_contain(filter, 30) {
+        all_found = false;
+    }
+    if !bloom_might_contain(filter, 40) {
+        all_found = false;
+    }
+    if !bloom_might_contain(filter, 50) {
+        all_found = false;
+    }
+    if all_found {
+        println("PASS: no false negatives");
+        passed = passed + 1;
+    } else {
+        println("FAIL: no false negatives");
+        failed = failed + 1;
+    }
+
+    // Test 2: Check some non-inserted elements
+    // Not all will return false (false positives are expected)
+    // but at least some should return false with a 64-bit filter
+    var false_count = 0;
+    for i in 0..20 {
+        let key = 1000 + i * 7;
+        if !bloom_might_contain(filter, key) {
+            false_count = false_count + 1;
+        }
+    }
+    if false_count > 0 {
+        println("PASS: some non-members rejected");
+        passed = passed + 1;
+    } else {
+        println("FAIL: some non-members rejected");
+        failed = failed + 1;
+    }
+
+    // Test 3: Empty bloom filter rejects everything
+    let empty_filter = make_bloom(32);
+    var rejected = true;
+    if bloom_might_contain(empty_filter, 1) {
+        rejected = false;
+    }
+    if bloom_might_contain(empty_filter, 100) {
+        rejected = false;
+    }
+    if bloom_might_contain(empty_filter, 999) {
+        rejected = false;
+    }
+    if rejected {
+        println("PASS: empty filter rejects all");
+        passed = passed + 1;
+    } else {
+        println("FAIL: empty filter rejects all");
+        failed = failed + 1;
+    }
+
+    // Test 4: Adding more elements increases false positive rate
+    let small = make_bloom(16);
+    bloom_add(small, 1);
+    bloom_add(small, 2);
+    bloom_add(small, 3);
+    bloom_add(small, 4);
+    bloom_add(small, 5);
+    bloom_add(small, 6);
+    bloom_add(small, 7);
+    bloom_add(small, 8);
+    // Count how many bits are set
+    var bits_set = 0;
+    for i in 0..16 {
+        if small.get(i) == 1 {
+            bits_set = bits_set + 1;
+        }
+    }
+    // With 8 elements and 3 hash functions in a 16-bit filter, many bits should be set
+    if bits_set > 8 {
+        println("PASS: high saturation with many elements");
+        passed = passed + 1;
+    } else {
+        println("FAIL: high saturation with many elements");
+        failed = failed + 1;
+    }
+
+    // Test 5: False positive demonstration
+    // Use a very small filter (8 bits) with several inserts
+    let tiny = make_bloom(8);
+    bloom_add(tiny, 100);
+    bloom_add(tiny, 200);
+    bloom_add(tiny, 300);
+    // Count false positives among 100 non-inserted keys
+    var fp_count = 0;
+    for i in 0..100 {
+        let key = 5000 + i;
+        if bloom_might_contain(tiny, key) {
+            fp_count = fp_count + 1;
+        }
+    }
+    // With an 8-bit filter and 3 elements, FP rate should be high
+    if fp_count > 0 {
+        print("PASS: false positives demonstrated (");
+        print(fp_count);
+        println(" out of 100)");
+        passed = passed + 1;
+    } else {
+        println("FAIL: expected some false positives");
+        failed = failed + 1;
+    }
+
+    // Test 6: Large filter has fewer false positives
+    let big = make_bloom(256);
+    bloom_add(big, 100);
+    bloom_add(big, 200);
+    bloom_add(big, 300);
+    var big_fp = 0;
+    for i in 0..100 {
+        let key = 5000 + i;
+        if bloom_might_contain(big, key) {
+            big_fp = big_fp + 1;
+        }
+    }
+    if big_fp < fp_count {
+        println("PASS: larger filter has fewer false positives");
+        passed = passed + 1;
+    } else {
+        // Even if equal, both could be 0 for large filter
+        if big_fp == 0 {
+            println("PASS: larger filter has fewer false positives");
+            passed = passed + 1;
+        } else {
+            println("FAIL: larger filter has fewer false positives");
+            failed = failed + 1;
+        }
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

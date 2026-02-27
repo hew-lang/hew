@@ -1,0 +1,143 @@
+// Min Stack - Stack that tracks minimum in O(1)
+// Uses two Vecs: main stack and min-tracking stack
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    let data: Vec<int> = Vec::new();
+    let mins: Vec<int> = Vec::new();
+
+    // Helper: push onto min stack
+    // Push val, and push min(val, current_min) onto mins
+
+    // Test 1: push single element, min is that element
+    total = total + 1;
+    data.push(5);
+    mins.push(5);
+    let r1 = if mins.get(mins.len() - 1) == 5 { 1 } else { 0 };
+    passed = passed + run_test("single element min", r1);
+
+    // Test 2: push smaller, min updates
+    total = total + 1;
+    data.push(3);
+    let cur_min1 = mins.get(mins.len() - 1);
+    if 3 < cur_min1 {
+        mins.push(3);
+    } else {
+        mins.push(cur_min1);
+    }
+    let r2 = if mins.get(mins.len() - 1) == 3 { 1 } else { 0 };
+    passed = passed + run_test("push smaller updates min", r2);
+
+    // Test 3: push larger, min stays
+    total = total + 1;
+    data.push(7);
+    let cur_min2 = mins.get(mins.len() - 1);
+    if 7 < cur_min2 {
+        mins.push(7);
+    } else {
+        mins.push(cur_min2);
+    }
+    let r3 = if mins.get(mins.len() - 1) == 3 { 1 } else { 0 };
+    passed = passed + run_test("push larger keeps min", r3);
+
+    // Test 4: push even smaller
+    total = total + 1;
+    data.push(1);
+    let cur_min3 = mins.get(mins.len() - 1);
+    if 1 < cur_min3 {
+        mins.push(1);
+    } else {
+        mins.push(cur_min3);
+    }
+    let r4 = if mins.get(mins.len() - 1) == 1 { 1 } else { 0 };
+    passed = passed + run_test("push even smaller", r4);
+
+    // Stack is now: [5, 3, 7, 1], mins: [5, 3, 3, 1]
+
+    // Test 5: pop removes smallest, min reverts
+    total = total + 1;
+    data.pop();
+    mins.pop();
+    let r5 = if mins.get(mins.len() - 1) == 3 { 1 } else { 0 };
+    passed = passed + run_test("pop reverts min to 3", r5);
+
+    // Test 6: pop again
+    total = total + 1;
+    data.pop();
+    mins.pop();
+    let r6 = if mins.get(mins.len() - 1) == 3 { 1 } else { 0 };
+    passed = passed + run_test("pop again min still 3", r6);
+
+    // Test 7: pop the 3, min becomes 5
+    total = total + 1;
+    data.pop();
+    mins.pop();
+    let r7 = if mins.get(mins.len() - 1) == 5 { 1 } else { 0 };
+    passed = passed + run_test("pop 3 min becomes 5", r7);
+
+    // Test 8: many elements min tracking
+    total = total + 1;
+    // Reset
+    let data2: Vec<int> = Vec::new();
+    let mins2: Vec<int> = Vec::new();
+    // Push values: 50, 40, 60, 30, 70, 20, 80, 10
+    let vals: Vec<int> = Vec::new();
+    vals.push(50);
+    vals.push(40);
+    vals.push(60);
+    vals.push(30);
+    vals.push(70);
+    vals.push(20);
+    vals.push(80);
+    vals.push(10);
+
+    for i in 0..8 {
+        let v = vals.get(i);
+        data2.push(v);
+        if mins2.len() == 0 {
+            mins2.push(v);
+        } else {
+            let cm = mins2.get(mins2.len() - 1);
+            if v < cm {
+                mins2.push(v);
+            } else {
+                mins2.push(cm);
+            }
+        }
+    }
+    let r8 = if mins2.get(mins2.len() - 1) == 10 { 1 } else { 0 };
+    passed = passed + run_test("many elements min=10", r8);
+
+    // Test 9: pop back to min=30
+    total = total + 1;
+    // Pop 4 elements: 10, 80, 20, 70
+    data2.pop();
+    mins2.pop();
+    data2.pop();
+    mins2.pop();
+    data2.pop();
+    mins2.pop();
+    data2.pop();
+    mins2.pop();
+    let r9 = if mins2.get(mins2.len() - 1) == 30 { 1 } else { 0 };
+    passed = passed + run_test("pop 4 min becomes 30", r9);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

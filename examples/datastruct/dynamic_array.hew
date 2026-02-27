@@ -1,0 +1,199 @@
+// Dynamic Array - array with capacity tracking and growth pattern
+// Layout: Vec<int> where index 0 = logical size, index 1 = capacity, rest is data
+// Data starts at index 2
+
+fn da_new(initial_cap: int) -> Vec<int> {
+    let arr: Vec<int> = Vec::new();
+    arr.push(0);            // index 0: logical size
+    arr.push(initial_cap);  // index 1: capacity
+    // Pre-allocate slots
+    for i in 0..initial_cap {
+        arr.push(0);
+    }
+    arr
+}
+
+fn da_size(arr: Vec<int>) -> int {
+    arr.get(0)
+}
+
+fn da_capacity(arr: Vec<int>) -> int {
+    arr.get(1)
+}
+
+fn da_grow(arr: Vec<int>) {
+    let old_cap = arr.get(1);
+    let new_cap = old_cap * 2;
+    // Add more slots
+    var i = 0;
+    while i < old_cap {
+        arr.push(0);
+        i = i + 1;
+    }
+    arr.set(1, new_cap);
+}
+
+fn da_push(arr: Vec<int>, val: int) {
+    let sz = arr.get(0);
+    let cap = arr.get(1);
+    if sz == cap {
+        da_grow(arr);
+    }
+    let sz2 = arr.get(0);
+    arr.set(2 + sz2, val);
+    arr.set(0, sz2 + 1);
+}
+
+fn da_get(arr: Vec<int>, idx: int) -> int {
+    arr.get(2 + idx)
+}
+
+fn da_set(arr: Vec<int>, idx: int, val: int) {
+    arr.set(2 + idx, val);
+}
+
+fn da_pop(arr: Vec<int>) -> int {
+    let sz = arr.get(0);
+    let val = arr.get(2 + sz - 1);
+    arr.set(0, sz - 1);
+    val
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    // Test 1: new array, size=0, cap=4
+    total = total + 1;
+    let arr = da_new(4);
+    var r1 = 0;
+    if da_size(arr) == 0 {
+        if da_capacity(arr) == 4 {
+            r1 = 1;
+        }
+    }
+    passed = passed + run_test("new array size=0 cap=4", r1);
+
+    // Test 2: push within capacity
+    total = total + 1;
+    da_push(arr, 10);
+    da_push(arr, 20);
+    da_push(arr, 30);
+    var r2 = 0;
+    if da_size(arr) == 3 {
+        if da_capacity(arr) == 4 {
+            r2 = 1;
+        }
+    }
+    passed = passed + run_test("push within cap", r2);
+
+    // Test 3: get returns correct values
+    total = total + 1;
+    var r3 = 0;
+    if da_get(arr, 0) == 10 {
+        if da_get(arr, 1) == 20 {
+            if da_get(arr, 2) == 30 {
+                r3 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("get returns values", r3);
+
+    // Test 4: push triggers growth
+    total = total + 1;
+    da_push(arr, 40); // fills cap=4
+    da_push(arr, 50); // triggers growth to cap=8
+    var r4 = 0;
+    if da_size(arr) == 5 {
+        if da_capacity(arr) == 8 {
+            r4 = 1;
+        }
+    }
+    passed = passed + run_test("growth doubles cap", r4);
+
+    // Test 5: values preserved after growth
+    total = total + 1;
+    var r5 = 0;
+    if da_get(arr, 3) == 40 {
+        if da_get(arr, 4) == 50 {
+            r5 = 1;
+        }
+    }
+    passed = passed + run_test("values after growth", r5);
+
+    // Test 6: set modifies value
+    total = total + 1;
+    da_set(arr, 2, 99);
+    let r6 = if da_get(arr, 2) == 99 { 1 } else { 0 };
+    passed = passed + run_test("set modifies value", r6);
+
+    // Test 7: pop
+    total = total + 1;
+    let popped = da_pop(arr);
+    var r7 = 0;
+    if popped == 50 {
+        if da_size(arr) == 4 {
+            r7 = 1;
+        }
+    }
+    passed = passed + run_test("pop returns last", r7);
+
+    // Test 8: multiple growth steps
+    total = total + 1;
+    let arr2 = da_new(2);
+    for i in 0..20 {
+        da_push(arr2, i);
+    }
+    var r8 = 0;
+    // cap should be 2 -> 4 -> 8 -> 16 -> 32
+    if da_size(arr2) == 20 {
+        if da_capacity(arr2) == 32 {
+            // Verify first and last values
+            if da_get(arr2, 0) == 0 {
+                if da_get(arr2, 19) == 19 {
+                    r8 = 1;
+                }
+            }
+        }
+    }
+    passed = passed + run_test("multi growth pattern", r8);
+
+    // Test 9: capacity tracking
+    total = total + 1;
+    let arr3 = da_new(1);
+    // cap=1, push 1 -> cap stays 1
+    da_push(arr3, 100);
+    let c1 = da_capacity(arr3);
+    // push 2 -> cap grows to 2
+    da_push(arr3, 200);
+    let c2 = da_capacity(arr3);
+    // push 3 -> cap grows to 4
+    da_push(arr3, 300);
+    let c3 = da_capacity(arr3);
+    var r9 = 0;
+    if c1 == 1 {
+        if c2 == 2 {
+            if c3 == 4 {
+                r9 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("cap 1->2->4 growth", r9);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

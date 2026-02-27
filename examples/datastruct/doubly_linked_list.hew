@@ -1,0 +1,215 @@
+// Doubly Linked List using Vec<i32> with index-based pointers
+// Node layout: nodes[i*3] = value, nodes[i*3+1] = prev, nodes[i*3+2] = next
+// NIL = -1
+
+fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3) }
+fn node_prev(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 1) }
+fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 2) }
+fn set_prev(n: Vec<i32>, i: i32, p: i32) { n.set(i * 3 + 1, p); }
+fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 3 + 2, nx); }
+
+fn alloc_node(n: Vec<i32>, val: i32) -> i32 {
+    let idx = n.len() / 3;
+    n.push(val);
+    n.push(-1);
+    n.push(-1);
+    idx
+}
+
+// Insert at front, returns new head
+fn insert_front(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    let nd = alloc_node(n, val);
+    if head != -1 {
+        set_next(n, nd, head);
+        set_prev(n, head, nd);
+    }
+    nd
+}
+
+// Insert at back, returns new head
+fn insert_back(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    let nd = alloc_node(n, val);
+    if head == -1 { return nd; }
+    var curr = head;
+    while node_next(n, curr) != -1 {
+        curr = node_next(n, curr);
+    }
+    set_next(n, curr, nd);
+    set_prev(n, nd, curr);
+    head
+}
+
+// Delete node with given value, returns new head
+fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    var curr = head;
+    var new_head = head;
+    var found = 0;
+    while curr != -1 {
+        if node_val(n, curr) == val {
+            if found == 0 {
+                found = 1;
+                let p = node_prev(n, curr);
+                let nx = node_next(n, curr);
+                if p != -1 {
+                    set_next(n, p, nx);
+                } else {
+                    new_head = nx;
+                }
+                if nx != -1 {
+                    set_prev(n, nx, p);
+                }
+            }
+        }
+        curr = node_next(n, curr);
+    }
+    new_head
+}
+
+fn traverse_forward(n: Vec<i32>, head: i32, result: Vec<i32>) {
+    var curr = head;
+    while curr != -1 {
+        result.push(node_val(n, curr));
+        curr = node_next(n, curr);
+    }
+}
+
+fn traverse_backward(n: Vec<i32>, head: i32, result: Vec<i32>) {
+    if head == -1 { return; }
+    var curr = head;
+    while node_next(n, curr) != -1 {
+        curr = node_next(n, curr);
+    }
+    while curr != -1 {
+        result.push(node_val(n, curr));
+        curr = node_prev(n, curr);
+    }
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() != b.len() { return 0; }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) { return 0; }
+    }
+    1
+}
+
+fn test_insert_front() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_front(n, head, 30);
+    head = insert_front(n, head, 20);
+    head = insert_front(n, head, 10);
+    let r: Vec<i32> = Vec::new();
+    traverse_forward(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(20); e.push(30);
+    if vecs_equal(r, e) == 1 { println("PASS: insert_front"); return 1; }
+    println("FAIL: insert_front");
+    0
+}
+
+fn test_insert_back() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_back(n, head, 10);
+    head = insert_back(n, head, 20);
+    head = insert_back(n, head, 30);
+    let r: Vec<i32> = Vec::new();
+    traverse_forward(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(20); e.push(30);
+    if vecs_equal(r, e) == 1 { println("PASS: insert_back"); return 1; }
+    println("FAIL: insert_back");
+    0
+}
+
+fn test_backward_traverse() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_back(n, head, 10);
+    head = insert_back(n, head, 20);
+    head = insert_back(n, head, 30);
+    let r: Vec<i32> = Vec::new();
+    traverse_backward(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(30); e.push(20); e.push(10);
+    if vecs_equal(r, e) == 1 { println("PASS: backward traverse"); return 1; }
+    println("FAIL: backward traverse");
+    0
+}
+
+fn test_delete() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_back(n, head, 10);
+    head = insert_back(n, head, 20);
+    head = insert_back(n, head, 30);
+    head = delete_val(n, head, 20);
+    let fwd: Vec<i32> = Vec::new();
+    traverse_forward(n, head, fwd);
+    let ef: Vec<i32> = Vec::new();
+    ef.push(10); ef.push(30);
+    let bwd: Vec<i32> = Vec::new();
+    traverse_backward(n, head, bwd);
+    let eb: Vec<i32> = Vec::new();
+    eb.push(30); eb.push(10);
+    if vecs_equal(fwd, ef) == 1 {
+        if vecs_equal(bwd, eb) == 1 {
+            println("PASS: delete + bidirectional");
+            return 1;
+        }
+    }
+    println("FAIL: delete + bidirectional");
+    0
+}
+
+fn test_delete_head() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_back(n, head, 10);
+    head = insert_back(n, head, 20);
+    head = delete_val(n, head, 10);
+    if node_val(n, head) == 20 {
+        if node_prev(n, head) == -1 {
+            println("PASS: delete head");
+            return 1;
+        }
+    }
+    println("FAIL: delete head");
+    0
+}
+
+fn test_delete_tail() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_back(n, head, 10);
+    head = insert_back(n, head, 20);
+    head = delete_val(n, head, 20);
+    let r: Vec<i32> = Vec::new();
+    traverse_forward(n, head, r);
+    if r.len() == 1 {
+        if r.get(0) == 10 {
+            println("PASS: delete tail");
+            return 1;
+        }
+    }
+    println("FAIL: delete tail");
+    0
+}
+
+fn main() {
+    println("=== Doubly Linked List Tests ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_insert_front();
+    passed = passed + test_insert_back();
+    passed = passed + test_backward_traverse();
+    passed = passed + test_delete();
+    passed = passed + test_delete_head();
+    passed = passed + test_delete_tail();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+}

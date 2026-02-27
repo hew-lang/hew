@@ -1,0 +1,41 @@
+// Rod Cutting Problem
+// Prices: [1,5,8,9,10,17,17,20] for lengths 1..8
+// Rod length: 8 -> max revenue = 22 (cut into 2+6 -> 5+17)
+
+fn main() {
+    let prices: Vec<i32> = Vec::new();
+    prices.push(1);
+    prices.push(5);
+    prices.push(8);
+    prices.push(9);
+    prices.push(10);
+    prices.push(17);
+    prices.push(17);
+    prices.push(20);
+    let rod_len = 8;
+
+    let dp: Vec<i32> = Vec::new();
+    dp.push(0);
+    for i in 1..(rod_len + 1) {
+        dp.push(0);
+    }
+
+    for i in 1..(rod_len + 1) {
+        var best = 0;
+        for j in 1..(i + 1) {
+            let candidate = prices.get(j - 1) + dp.get(i - j);
+            if candidate > best {
+                best = candidate;
+            }
+        }
+        dp.set(i, best);
+    }
+
+    let result = dp.get(rod_len);
+    println(result);
+    if result == 22 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

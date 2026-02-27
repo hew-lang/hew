@@ -1,0 +1,355 @@
+// AVL Tree using Vec<i32> with index-based pointers
+// Each node: [value, left, right, height] = 4 slots
+// NIL = -1 means no child
+
+fn node_val(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4) }
+fn node_left(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 1) }
+fn node_right(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 2) }
+fn node_height(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 3) }
+fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 1, v); 0 }
+fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 2, v); 0 }
+fn set_height(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 3, v); 0 }
+
+fn add_node(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
+    let idx = nodes.len() / 4;
+    nodes.push(val);
+    nodes.push(NIL);
+    nodes.push(NIL);
+    nodes.push(1);
+    idx
+}
+
+fn get_height(nodes: Vec<i32>, i: i32, NIL: i32) -> i32 {
+    if i == NIL { 0 } else { node_height(nodes, i) }
+}
+
+fn max_val(a: i32, b: i32) -> i32 {
+    if a > b { a } else { b }
+}
+
+fn update_height(nodes: Vec<i32>, i: i32, NIL: i32) -> i32 {
+    let lh = get_height(nodes, node_left(nodes, i), NIL);
+    let rh = get_height(nodes, node_right(nodes, i), NIL);
+    let _ = set_height(nodes, i, max_val(lh, rh) + 1);
+    0
+}
+
+fn balance_factor(nodes: Vec<i32>, i: i32, NIL: i32) -> i32 {
+    let lh = get_height(nodes, node_left(nodes, i), NIL);
+    let rh = get_height(nodes, node_right(nodes, i), NIL);
+    lh - rh
+}
+
+// Right rotate: y is root, x = y.left, T2 = x.right
+// After: x is root, y is x.right, T2 is y.left
+fn right_rotate(nodes: Vec<i32>, y: i32, NIL: i32) -> i32 {
+    let x = node_left(nodes, y);
+    let t2 = node_right(nodes, x);
+    let _ = set_right(nodes, x, y);
+    let _ = set_left(nodes, y, t2);
+    let _ = update_height(nodes, y, NIL);
+    let _ = update_height(nodes, x, NIL);
+    x
+}
+
+// Left rotate: x is root, y = x.right, T2 = y.left
+fn left_rotate(nodes: Vec<i32>, x: i32, NIL: i32) -> i32 {
+    let y = node_right(nodes, x);
+    let t2 = node_left(nodes, y);
+    let _ = set_left(nodes, y, x);
+    let _ = set_right(nodes, x, t2);
+    let _ = update_height(nodes, x, NIL);
+    let _ = update_height(nodes, y, NIL);
+    y
+}
+
+// Insert into AVL tree, returns new root index
+fn avl_insert(nodes: Vec<i32>, root: i32, val: i32, NIL: i32) -> i32 {
+    if root == NIL {
+        return add_node(nodes, val, NIL);
+    }
+    // Track path from root to insertion point
+    let path: Vec<i32> = Vec::new();
+    let dirs: Vec<i32> = Vec::new();  // 0=left, 1=right
+    var cur = root;
+    var placed = false;
+    while !placed {
+        let cur_val = node_val(nodes, cur);
+        if val < cur_val {
+            let left = node_left(nodes, cur);
+            if left == NIL {
+                let new_idx = add_node(nodes, val, NIL);
+                let _ = set_left(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(0);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(0);
+                cur = left;
+            }
+        } else {
+            let right = node_right(nodes, cur);
+            if right == NIL {
+                let new_idx = add_node(nodes, val, NIL);
+                let _ = set_right(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(1);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(1);
+                cur = right;
+            }
+        }
+    }
+    // Rebalance from bottom to top
+    // Rebalance from bottom to top
+    var new_root = root;
+    while path.len() > 0 {
+        let node = path.pop();
+        let _ = dirs.pop(); // direction from node to its child (discard)
+        let _ = update_height(nodes, node, NIL);
+        let bf = balance_factor(nodes, node, NIL);
+        var new_subtree_root = node;
+        if bf > 1 {
+            let left = node_left(nodes, node);
+            if val < node_val(nodes, left) {
+                new_subtree_root = right_rotate(nodes, node, NIL);
+            } else {
+                let _ = set_left(nodes, node, left_rotate(nodes, left, NIL));
+                new_subtree_root = right_rotate(nodes, node, NIL);
+            }
+        } else if bf < (0 - 1) {
+            let right = node_right(nodes, node);
+            if val > node_val(nodes, right) {
+                new_subtree_root = left_rotate(nodes, node, NIL);
+            } else {
+                let _ = set_right(nodes, node, right_rotate(nodes, right, NIL));
+                new_subtree_root = left_rotate(nodes, node, NIL);
+            }
+        }
+        // Update parent's pointer to this subtree
+        if path.len() > 0 {
+            let parent = path.get(path.len() - 1);
+            let dir = dirs.get(dirs.len() - 1);
+            if dir == 0 {
+                let _ = set_left(nodes, parent, new_subtree_root);
+            } else {
+                let _ = set_right(nodes, parent, new_subtree_root);
+            }
+        } else {
+            new_root = new_subtree_root;
+        }
+    }
+    new_root
+}
+
+fn inorder(nodes: Vec<i32>, root: i32, result: Vec<i32>, NIL: i32) -> i32 {
+    if root == NIL {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    var cur = root;
+    var running = true;
+    while running {
+        while cur != NIL {
+            stack.push(cur);
+            cur = node_left(nodes, cur);
+        }
+        if stack.len() == 0 {
+            running = false;
+        } else {
+            cur = stack.pop();
+            result.push(node_val(nodes, cur));
+            cur = node_right(nodes, cur);
+        }
+    }
+    0
+}
+
+fn is_sorted(v: Vec<i32>) -> bool {
+    if v.len() <= 1 {
+        return true;
+    }
+    var i = 1;
+    while i < v.len() {
+        if v.get(i) <= v.get(i - 1) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// Verify AVL height invariant for all nodes
+fn check_avl(nodes: Vec<i32>, root: i32, NIL: i32) -> bool {
+    if root == NIL {
+        return true;
+    }
+    let stack: Vec<i32> = Vec::new();
+    stack.push(root);
+    var ok = true;
+    while stack.len() > 0 {
+        let cur = stack.pop();
+        let bf = balance_factor(nodes, cur, NIL);
+        if bf > 1 {
+            ok = false;
+        }
+        if bf < (0 - 1) {
+            ok = false;
+        }
+        let l = node_left(nodes, cur);
+        if l != NIL {
+            stack.push(l);
+        }
+        let r = node_right(nodes, cur);
+        if r != NIL {
+            stack.push(r);
+        }
+    }
+    ok
+}
+
+fn test_basic_insert() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = avl_insert(nodes, root, 5, NIL);
+    root = avl_insert(nodes, root, 3, NIL);
+    root = avl_insert(nodes, root, 7, NIL);
+    root = avl_insert(nodes, root, 1, NIL);
+    root = avl_insert(nodes, root, 4, NIL);
+    root = avl_insert(nodes, root, 6, NIL);
+    root = avl_insert(nodes, root, 8, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if is_sorted(result) {
+        if result.len() == 7 {
+            println("PASS: AVL basic insert + inorder sorted");
+            return 1;
+        }
+    }
+    println("FAIL: AVL basic insert");
+    0
+}
+
+fn test_left_left() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = avl_insert(nodes, root, 30, NIL);
+    root = avl_insert(nodes, root, 20, NIL);
+    root = avl_insert(nodes, root, 10, NIL);
+    let balanced = check_avl(nodes, root, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if balanced {
+        if is_sorted(result) {
+            if result.len() == 3 {
+                println("PASS: AVL LL rotation");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: AVL LL rotation");
+    0
+}
+
+fn test_right_right() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = avl_insert(nodes, root, 10, NIL);
+    root = avl_insert(nodes, root, 20, NIL);
+    root = avl_insert(nodes, root, 30, NIL);
+    let balanced = check_avl(nodes, root, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if balanced {
+        if is_sorted(result) {
+            if result.len() == 3 {
+                println("PASS: AVL RR rotation");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: AVL RR rotation");
+    0
+}
+
+fn test_left_right() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = avl_insert(nodes, root, 30, NIL);
+    root = avl_insert(nodes, root, 10, NIL);
+    root = avl_insert(nodes, root, 20, NIL);
+    let balanced = check_avl(nodes, root, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if balanced {
+        if is_sorted(result) {
+            if result.len() == 3 {
+                println("PASS: AVL LR rotation");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: AVL LR rotation");
+    0
+}
+
+fn test_many_inserts() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    var i = 1;
+    while i <= 20 {
+        root = avl_insert(nodes, root, i, NIL);
+        i = i + 1;
+    }
+    let balanced = check_avl(nodes, root, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    let h = node_height(nodes, root);
+    if balanced {
+        if is_sorted(result) {
+            if result.len() == 20 {
+                // Height should be O(log n), at most ~6 for 20 nodes
+                if h <= 6 {
+                    println("PASS: AVL 20 sequential inserts balanced");
+                    return 1;
+                }
+            }
+        }
+    }
+    print("FAIL: AVL many inserts, balanced=");
+    print(balanced);
+    print(" len=");
+    print(result.len());
+    print(" h=");
+    println(h);
+    0
+}
+
+fn main() {
+    println("=== AVL Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_insert();
+    passed = passed + test_left_left();
+    passed = passed + test_right_right();
+    passed = passed + test_left_right();
+    passed = passed + test_many_inserts();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

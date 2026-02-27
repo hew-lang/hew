@@ -1,0 +1,59 @@
+// Caesar cipher: shift ASCII letters by N positions using lookup
+
+fn find_in(alphabet: String, ch: String) -> i32 {
+    var pos = 0;
+    while pos < alphabet.len() {
+        if alphabet.char_at(pos) == ch.char_at(0) {
+            return pos;
+        }
+        pos = pos + 1;
+    }
+    0 - 1
+}
+
+fn caesar_encode(s: String, shift: i32) -> String {
+    let lower = "abcdefghijklmnopqrstuvwxyz";
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    var result = "";
+    for i in 0..s.len() {
+        let ch = s.slice(i, i + 1);
+        let lpos = find_in(lower, ch);
+        if lpos >= 0 {
+            let np = (lpos + shift) % 26;
+            result = result + lower.slice(np, np + 1);
+        } else {
+            let upos = find_in(upper, ch);
+            if upos >= 0 {
+                let np = (upos + shift) % 26;
+                result = result + upper.slice(np, np + 1);
+            } else {
+                result = result + ch;
+            }
+        }
+    }
+    result
+}
+
+fn main() {
+    var pass = true;
+
+    let encoded = caesar_encode("abc", 3);
+    if encoded != "def" { pass = false; println("FAIL encode abc->def got:"); println(encoded); }
+
+    let encoded2 = caesar_encode("xyz", 3);
+    if encoded2 != "abc" { pass = false; println("FAIL encode xyz->abc got:"); println(encoded2); }
+
+    let original = "hello";
+    let enc = caesar_encode(original, 5);
+    let dec = caesar_encode(enc, 21);
+    if dec != original { pass = false; println("FAIL roundtrip"); println(dec); }
+
+    let enc3 = caesar_encode("ABC", 1);
+    if enc3 != "BCD" { pass = false; println("FAIL uppercase"); println(enc3); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

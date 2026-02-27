@@ -1,0 +1,84 @@
+// Merge two sorted arrays into one sorted array
+
+fn main() {
+    let a: Vec<i32> = Vec::new();
+    a.push(1);
+    a.push(3);
+    a.push(5);
+
+    let b: Vec<i32> = Vec::new();
+    b.push(2);
+    b.push(4);
+    b.push(6);
+
+    let merged: Vec<i32> = Vec::new();
+    var i = 0;
+    var j = 0;
+    while i < a.len() {
+        if j < b.len() {
+            if a.get(i) <= b.get(j) {
+                merged.push(a.get(i));
+                i = i + 1;
+            } else {
+                merged.push(b.get(j));
+                j = j + 1;
+            }
+        } else {
+            merged.push(a.get(i));
+            i = i + 1;
+        }
+    }
+    while j < b.len() {
+        merged.push(b.get(j));
+        j = j + 1;
+    }
+
+    // Expected: [1,2,3,4,5,6]
+    var pass = true;
+    if merged.len() != 6 { pass = false; println("FAIL length"); }
+    for k in 0..6 {
+        if merged.get(k) != k + 1 {
+            pass = false;
+            println("FAIL at:");
+            println(k);
+        }
+    }
+
+    // Test 2: merge [1] + [2,3] -> [1,2,3]
+    let c: Vec<i32> = Vec::new();
+    c.push(1);
+    let d: Vec<i32> = Vec::new();
+    d.push(2);
+    d.push(3);
+    let m2: Vec<i32> = Vec::new();
+    var ci = 0;
+    var di = 0;
+    while ci < c.len() {
+        if di < d.len() {
+            if c.get(ci) <= d.get(di) {
+                m2.push(c.get(ci));
+                ci = ci + 1;
+            } else {
+                m2.push(d.get(di));
+                di = di + 1;
+            }
+        } else {
+            m2.push(c.get(ci));
+            ci = ci + 1;
+        }
+    }
+    while di < d.len() {
+        m2.push(d.get(di));
+        di = di + 1;
+    }
+    if m2.len() != 3 { pass = false; println("FAIL test2 length"); }
+    if m2.get(0) != 1 { pass = false; println("FAIL test2 [0]"); }
+    if m2.get(1) != 2 { pass = false; println("FAIL test2 [1]"); }
+    if m2.get(2) != 3 { pass = false; println("FAIL test2 [2]"); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

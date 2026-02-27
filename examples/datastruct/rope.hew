@@ -1,0 +1,313 @@
+// Simplified Rope - binary tree of integer sequences
+// Nodes stored in Vec<int>, each node = 5 fields:
+//   [left_idx, right_idx, weight, data_start, data_len]
+// left_idx/right_idx: index of child node (0-based, -1 = no child)
+// weight: total length of left subtree (for indexing)
+// data_start, data_len: range in a separate data Vec for leaf nodes
+// Internal nodes have data_len = 0
+
+// Node field offsets
+fn node_left(nodes: Vec<int>, node: int) -> int {
+    nodes.get(node * 5)
+}
+
+fn node_right(nodes: Vec<int>, node: int) -> int {
+    nodes.get(node * 5 + 1)
+}
+
+fn node_weight(nodes: Vec<int>, node: int) -> int {
+    nodes.get(node * 5 + 2)
+}
+
+fn node_data_start(nodes: Vec<int>, node: int) -> int {
+    nodes.get(node * 5 + 3)
+}
+
+fn node_data_len(nodes: Vec<int>, node: int) -> int {
+    nodes.get(node * 5 + 4)
+}
+
+fn is_leaf(nodes: Vec<int>, node: int) -> bool {
+    node_data_len(nodes, node) > 0
+}
+
+// Add a new node, return its index
+fn add_node(nodes: Vec<int>, left: int, right: int, weight: int, dstart: int, dlen: int) -> int {
+    let idx = nodes.len() / 5;
+    nodes.push(left);
+    nodes.push(right);
+    nodes.push(weight);
+    nodes.push(dstart);
+    nodes.push(dlen);
+    idx
+}
+
+// Create a leaf node from data[start..start+len]
+fn make_leaf(nodes: Vec<int>, start: int, len: int) -> int {
+    add_node(nodes, 0 - 1, 0 - 1, len, start, len)
+}
+
+// Concat two rope subtrees: create internal node
+fn rope_concat(nodes: Vec<int>, left: int, right: int) -> int {
+    let left_total = rope_length(nodes, left);
+    add_node(nodes, left, right, left_total, 0, 0)
+}
+
+// Total length of rope subtree
+fn rope_length(nodes: Vec<int>, node: int) -> int {
+    if node < 0 {
+        return 0;
+    }
+    if is_leaf(nodes, node) {
+        return node_data_len(nodes, node);
+    }
+    let left = node_left(nodes, node);
+    let right = node_right(nodes, node);
+    rope_length(nodes, left) + rope_length(nodes, right)
+}
+
+// Index into rope: get the i-th element
+fn rope_index(nodes: Vec<int>, data: Vec<int>, node: int, idx: int) -> int {
+    if is_leaf(nodes, node) {
+        let start = node_data_start(nodes, node);
+        data.get(start + idx)
+    } else {
+        let w = node_weight(nodes, node);
+        if idx < w {
+            let left = node_left(nodes, node);
+            rope_index(nodes, data, left, idx)
+        } else {
+            let right = node_right(nodes, node);
+            rope_index(nodes, data, right, idx - w)
+        }
+    }
+}
+
+// Collect all elements in order into a result Vec
+fn rope_collect(nodes: Vec<int>, data: Vec<int>, node: int, result: Vec<int>) -> int {
+    if node < 0 {
+        return 0;
+    }
+    if is_leaf(nodes, node) {
+        let start = node_data_start(nodes, node);
+        let len = node_data_len(nodes, node);
+        for i in 0..len {
+            result.push(data.get(start + i));
+        }
+        return 0;
+    }
+    let left = node_left(nodes, node);
+    let right = node_right(nodes, node);
+    rope_collect(nodes, data, left, result);
+    rope_collect(nodes, data, right, result);
+    0
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Data array: [10, 20, 30, 40, 50, 60, 70, 80]
+    let data: Vec<int> = Vec::new();
+    data.push(10);
+    data.push(20);
+    data.push(30);
+    data.push(40);
+    data.push(50);
+    data.push(60);
+    data.push(70);
+    data.push(80);
+
+    let nodes: Vec<int> = Vec::new();
+
+    // Create leaves: [10,20,30] and [40,50] and [60,70,80]
+    let leaf1 = make_leaf(nodes, 0, 3);   // data[0..3] = [10,20,30]
+    let leaf2 = make_leaf(nodes, 3, 2);   // data[3..5] = [40,50]
+    let leaf3 = make_leaf(nodes, 5, 3);   // data[5..8] = [60,70,80]
+
+    // Test 1: Leaf length
+    if rope_length(nodes, leaf1) == 3 {
+        if rope_length(nodes, leaf2) == 2 {
+            if rope_length(nodes, leaf3) == 3 {
+                println("PASS: leaf lengths");
+                passed = passed + 1;
+            } else {
+                println("FAIL: leaf lengths");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: leaf lengths");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: leaf lengths");
+        failed = failed + 1;
+    }
+
+    // Test 2: Leaf index
+    if rope_index(nodes, data, leaf1, 0) == 10 {
+        if rope_index(nodes, data, leaf1, 2) == 30 {
+            println("PASS: leaf index");
+            passed = passed + 1;
+        } else {
+            println("FAIL: leaf index");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: leaf index");
+        failed = failed + 1;
+    }
+
+    // Test 3: Concat two leaves
+    let ab = rope_concat(nodes, leaf1, leaf2);
+    // ab = [10,20,30,40,50], length 5
+    if rope_length(nodes, ab) == 5 {
+        println("PASS: concat length");
+        passed = passed + 1;
+    } else {
+        print("FAIL: concat length got ");
+        println(rope_length(nodes, ab));
+        failed = failed + 1;
+    }
+
+    // Test 4: Index into concatenated rope
+    var idx_ok = 1;
+    if rope_index(nodes, data, ab, 0) != 10 { idx_ok = 0; }
+    if rope_index(nodes, data, ab, 2) != 30 { idx_ok = 0; }
+    if rope_index(nodes, data, ab, 3) != 40 { idx_ok = 0; }
+    if rope_index(nodes, data, ab, 4) != 50 { idx_ok = 0; }
+    if idx_ok == 1 {
+        println("PASS: concat index");
+        passed = passed + 1;
+    } else {
+        println("FAIL: concat index");
+        failed = failed + 1;
+    }
+
+    // Test 5: Concat three (nested): (ab, leaf3)
+    let abc = rope_concat(nodes, ab, leaf3);
+    // abc = [10,20,30,40,50,60,70,80], length 8
+    if rope_length(nodes, abc) == 8 {
+        println("PASS: triple concat length");
+        passed = passed + 1;
+    } else {
+        println("FAIL: triple concat length");
+        failed = failed + 1;
+    }
+
+    // Test 6: Index across all nodes
+    var all_ok = 1;
+    if rope_index(nodes, data, abc, 0) != 10 { all_ok = 0; }
+    if rope_index(nodes, data, abc, 3) != 40 { all_ok = 0; }
+    if rope_index(nodes, data, abc, 5) != 60 { all_ok = 0; }
+    if rope_index(nodes, data, abc, 7) != 80 { all_ok = 0; }
+    if all_ok == 1 {
+        println("PASS: index across nodes");
+        passed = passed + 1;
+    } else {
+        println("FAIL: index across nodes");
+        failed = failed + 1;
+    }
+
+    // Test 7: Collect all elements in order
+    let collected: Vec<int> = Vec::new();
+    rope_collect(nodes, data, abc, collected);
+    var col_ok = 1;
+    if collected.len() != 8 { col_ok = 0; }
+    if col_ok == 1 {
+        for i in 0..8 {
+            let expected = (i + 1) * 10;
+            if collected.get(i) != expected { col_ok = 0; }
+        }
+    }
+    if col_ok == 1 {
+        println("PASS: collect in order");
+        passed = passed + 1;
+    } else {
+        println("FAIL: collect in order");
+        failed = failed + 1;
+    }
+
+    // Test 8: Build rope with different tree shape (right-heavy)
+    let nodes2: Vec<int> = Vec::new();
+    let data2: Vec<int> = Vec::new();
+    data2.push(1);
+    data2.push(2);
+    data2.push(3);
+    data2.push(4);
+    data2.push(5);
+    data2.push(6);
+    // Build: leaf[1] concat (leaf[2,3] concat leaf[4,5,6])
+    let la = make_leaf(nodes2, 0, 1);
+    let lb = make_leaf(nodes2, 1, 2);
+    let lc = make_leaf(nodes2, 3, 3);
+    let bc = rope_concat(nodes2, lb, lc);
+    let abc2 = rope_concat(nodes2, la, bc);
+    var shape_ok = 1;
+    if rope_length(nodes2, abc2) != 6 { shape_ok = 0; }
+    if rope_index(nodes2, data2, abc2, 0) != 1 { shape_ok = 0; }
+    if rope_index(nodes2, data2, abc2, 1) != 2 { shape_ok = 0; }
+    if rope_index(nodes2, data2, abc2, 3) != 4 { shape_ok = 0; }
+    if rope_index(nodes2, data2, abc2, 5) != 6 { shape_ok = 0; }
+    if shape_ok == 1 {
+        println("PASS: right-heavy tree");
+        passed = passed + 1;
+    } else {
+        println("FAIL: right-heavy tree");
+        failed = failed + 1;
+    }
+
+    // Test 9: Single element rope
+    let nodes3: Vec<int> = Vec::new();
+    let data3: Vec<int> = Vec::new();
+    data3.push(99);
+    let single = make_leaf(nodes3, 0, 1);
+    if rope_length(nodes3, single) == 1 {
+        if rope_index(nodes3, data3, single, 0) == 99 {
+            println("PASS: single element rope");
+            passed = passed + 1;
+        } else {
+            println("FAIL: single element rope");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: single element rope");
+        failed = failed + 1;
+    }
+
+    // Test 10: Concat single elements
+    let nodes4: Vec<int> = Vec::new();
+    let data4: Vec<int> = Vec::new();
+    data4.push(100);
+    data4.push(200);
+    data4.push(300);
+    let s1 = make_leaf(nodes4, 0, 1);
+    let s2 = make_leaf(nodes4, 1, 1);
+    let s3 = make_leaf(nodes4, 2, 1);
+    let c12 = rope_concat(nodes4, s1, s2);
+    let c123 = rope_concat(nodes4, c12, s3);
+    var cs_ok = 1;
+    if rope_length(nodes4, c123) != 3 { cs_ok = 0; }
+    if rope_index(nodes4, data4, c123, 0) != 100 { cs_ok = 0; }
+    if rope_index(nodes4, data4, c123, 1) != 200 { cs_ok = 0; }
+    if rope_index(nodes4, data4, c123, 2) != 300 { cs_ok = 0; }
+    if cs_ok == 1 {
+        println("PASS: concat single elements");
+        passed = passed + 1;
+    } else {
+        println("FAIL: concat single elements");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

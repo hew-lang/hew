@@ -1,0 +1,185 @@
+// Exponential Search - double range then binary search within bounds
+
+fn binary_search_range(arr: Vec<int>, target: int, low_in: int, high_in: int) -> int {
+    var low = low_in;
+    var high = high_in;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let val = arr.get(mid);
+        if val == target {
+            return mid;
+        } else if val < target {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    0 - 1
+}
+
+fn exponential_search(arr: Vec<int>, target: int) -> int {
+    let n = arr.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    if arr.get(0) == target {
+        return 0;
+    }
+    // Find range by doubling
+    var bound = 1;
+    while bound < n {
+        if arr.get(bound) == target {
+            return bound;
+        }
+        if arr.get(bound) > target {
+            break;
+        }
+        bound = bound * 2;
+    }
+    // Binary search in [bound/2, min(bound, n-1)]
+    let low = bound / 2;
+    var high = bound;
+    if high >= n {
+        high = n - 1;
+    }
+    binary_search_range(arr, target, low, high)
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: find element
+    let v1: Vec<int> = Vec::new();
+    v1.push(2);
+    v1.push(4);
+    v1.push(6);
+    v1.push(8);
+    v1.push(10);
+    v1.push(12);
+    v1.push(14);
+    v1.push(16);
+    v1.push(18);
+    v1.push(20);
+    let r1 = exponential_search(v1, 14);
+    if r1 == 6 {
+        println("Test 1 - find 14: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 1 - find 14: FAIL (got ");
+        print(r1);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 2: find first element
+    let v2: Vec<int> = Vec::new();
+    v2.push(2);
+    v2.push(4);
+    v2.push(6);
+    v2.push(8);
+    v2.push(10);
+    let r2 = exponential_search(v2, 2);
+    if r2 == 0 {
+        println("Test 2 - find first: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 2 - find first: FAIL (got ");
+        print(r2);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 3: find last element
+    let v3: Vec<int> = Vec::new();
+    v3.push(2);
+    v3.push(4);
+    v3.push(6);
+    v3.push(8);
+    v3.push(10);
+    let r3 = exponential_search(v3, 10);
+    if r3 == 4 {
+        println("Test 3 - find last: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 3 - find last: FAIL (got ");
+        print(r3);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 4: not found
+    let v4: Vec<int> = Vec::new();
+    v4.push(2);
+    v4.push(4);
+    v4.push(6);
+    v4.push(8);
+    v4.push(10);
+    let r4 = exponential_search(v4, 7);
+    if r4 == 0 - 1 {
+        println("Test 4 - not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 4 - not found: FAIL (got ");
+        print(r4);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 5: empty array
+    let v5: Vec<int> = Vec::new();
+    let r5 = exponential_search(v5, 5);
+    if r5 == 0 - 1 {
+        println("Test 5 - empty array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 5 - empty array: FAIL (got ");
+        print(r5);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 6: single element found
+    let v6: Vec<int> = Vec::new();
+    v6.push(42);
+    let r6 = exponential_search(v6, 42);
+    if r6 == 0 {
+        println("Test 6 - single found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 6 - single found: FAIL (got ");
+        print(r6);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 7: large array, find near end
+    let v7: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 100 {
+        v7.push(i * 3);
+        i = i + 1;
+    }
+    let r7 = exponential_search(v7, 291);
+    if r7 == 97 {
+        println("Test 7 - large array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 7 - large array: FAIL (got ");
+        print(r7);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    print(passed);
+    print(" passed, ");
+    print(failed);
+    println(" failed");
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

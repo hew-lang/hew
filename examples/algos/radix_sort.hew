@@ -1,0 +1,139 @@
+// Radix Sort - LSD (least significant digit), base 10, non-negative integers
+
+fn radix_sort(v: Vec<int>) {
+    let n = v.len();
+    if n >= 2 {
+        // Find max to know number of digits
+        var max_val = v.get(0);
+        var i = 1;
+        while i < n {
+            if v.get(i) > max_val {
+                max_val = v.get(i);
+            }
+            i = i + 1;
+        }
+        // Process each digit position
+        var exp = 1;
+        while max_val / exp > 0 {
+            let output: Vec<int> = Vec::new();
+            i = 0;
+            while i < n {
+                output.push(0);
+                i = i + 1;
+            }
+            let count: Vec<int> = Vec::new();
+            i = 0;
+            while i < 10 {
+                count.push(0);
+                i = i + 1;
+            }
+            i = 0;
+            while i < n {
+                let digit = (v.get(i) / exp) % 10;
+                count.set(digit, count.get(digit) + 1);
+                i = i + 1;
+            }
+            i = 1;
+            while i < 10 {
+                count.set(i, count.get(i) + count.get(i - 1));
+                i = i + 1;
+            }
+            // Build output from end for stability
+            i = n - 1;
+            var done = 0;
+            while done == 0 {
+                let digit = (v.get(i) / exp) % 10;
+                let pos = count.get(digit) - 1;
+                output.set(pos, v.get(i));
+                count.set(digit, count.get(digit) - 1);
+                if i == 0 {
+                    done = 1;
+                } else {
+                    i = i - 1;
+                }
+            }
+            i = 0;
+            while i < n {
+                v.set(i, output.get(i));
+                i = i + 1;
+            }
+            exp = exp * 10;
+        }
+    }
+}
+
+fn vec_eq(a: Vec<int>, b: Vec<int>) -> int {
+    if a.len() != b.len() {
+        return 0;
+    }
+    var i = 0;
+    while i < a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+fn make_vec_5(a: int, b: int, c: int, d: int, e: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(a);
+    v.push(b);
+    v.push(c);
+    v.push(d);
+    v.push(e);
+    v
+}
+
+fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
+    radix_sort(input);
+    let pass = vec_eq(input, expected);
+    if pass == 1 {
+        println(f"Test {name} ... PASS");
+    } else {
+        println(f"Test {name} ... FAIL");
+    }
+    pass
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    total = total + 1;
+    passed = passed + run_test("basic", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
+
+    total = total + 1;
+    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
+
+    total = total + 1;
+    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
+
+    // Multi-digit numbers
+    total = total + 1;
+    let multi: Vec<int> = Vec::new();
+    multi.push(170); multi.push(45); multi.push(75); multi.push(90); multi.push(802);
+    let exp_multi: Vec<int> = Vec::new();
+    exp_multi.push(45); exp_multi.push(75); exp_multi.push(90); exp_multi.push(170); exp_multi.push(802);
+    passed = passed + run_test("multi_digit", multi, exp_multi);
+
+    total = total + 1;
+    let single: Vec<int> = Vec::new();
+    single.push(42);
+    let exp_single: Vec<int> = Vec::new();
+    exp_single.push(42);
+    passed = passed + run_test("single", single, exp_single);
+
+    total = total + 1;
+    let empty: Vec<int> = Vec::new();
+    let exp_empty: Vec<int> = Vec::new();
+    passed = passed + run_test("empty", empty, exp_empty);
+
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAIL");
+    }
+}

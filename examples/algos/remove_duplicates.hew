@@ -1,0 +1,49 @@
+// Remove duplicates from sorted array in-place
+
+fn main() {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(1);
+    arr.push(1);
+    arr.push(2);
+    arr.push(2);
+    arr.push(3);
+
+    // Move unique elements to front, return new length
+    var write = 1;
+    var read = 1;
+    while read < arr.len() {
+        if arr.get(read) != arr.get(read - 1) {
+            arr.set(write, arr.get(read));
+            write = write + 1;
+        }
+        read = read + 1;
+    }
+
+    var pass = true;
+    if write != 3 { pass = false; println("FAIL length"); println(write); }
+    if arr.get(0) != 1 { pass = false; println("FAIL [0]"); }
+    if arr.get(1) != 2 { pass = false; println("FAIL [1]"); }
+    if arr.get(2) != 3 { pass = false; println("FAIL [2]"); }
+
+    // Test 2: [1,1,1] -> [1]
+    let arr2: Vec<i32> = Vec::new();
+    arr2.push(1);
+    arr2.push(1);
+    arr2.push(1);
+    var w2 = 1;
+    var r2 = 1;
+    while r2 < arr2.len() {
+        if arr2.get(r2) != arr2.get(r2 - 1) {
+            arr2.set(w2, arr2.get(r2));
+            w2 = w2 + 1;
+        }
+        r2 = r2 + 1;
+    }
+    if w2 != 1 { pass = false; println("FAIL test2 length"); println(w2); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

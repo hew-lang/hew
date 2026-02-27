@@ -1,0 +1,95 @@
+// Sieve of Eratosthenes - find primes up to N using Vec<int> with 0/1 flags
+fn sieve(n: int) -> Vec<int> {
+    // is_prime[i] = 1 means i is prime, 0 means not
+    let is_prime: Vec<int> = Vec::new();
+    var i = 0;
+    while i <= n {
+        if i < 2 {
+            is_prime.push(0);
+        } else {
+            is_prime.push(1);
+        }
+        i = i + 1;
+    }
+
+    // Sieve
+    var p = 2;
+    while p * p <= n {
+        if is_prime.get(p) == 1 {
+            var j = p * p;
+            while j <= n {
+                is_prime.set(j, 0);
+                j = j + p;
+            }
+        }
+        p = p + 1;
+    }
+
+    is_prime
+}
+
+fn count_primes(flags: Vec<int>) -> int {
+    var count = 0;
+    var i = 0;
+    while i < flags.len() {
+        if flags.get(i) == 1 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    let flags = sieve(100);
+
+    // There are 25 primes up to 100
+    total = total + 1;
+    passed = passed + check("count primes<=100 = 25", count_primes(flags), 25);
+
+    // Check specific primes
+    total = total + 1;
+    passed = passed + check("2 is prime", flags.get(2), 1);
+    total = total + 1;
+    passed = passed + check("3 is prime", flags.get(3), 1);
+    total = total + 1;
+    passed = passed + check("5 is prime", flags.get(5), 1);
+    total = total + 1;
+    passed = passed + check("97 is prime", flags.get(97), 1);
+
+    // Check specific composites
+    total = total + 1;
+    passed = passed + check("4 is not prime", flags.get(4), 0);
+    total = total + 1;
+    passed = passed + check("9 is not prime", flags.get(9), 0);
+    total = total + 1;
+    passed = passed + check("100 is not prime", flags.get(100), 0);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

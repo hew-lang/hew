@@ -1,0 +1,214 @@
+// Min-Heap using implicit array representation
+// Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
+
+fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
+    heap.push(val);
+    // Sift up
+    var i = heap.len() - 1;
+    while i > 0 {
+        let parent = (i - 1) / 2;
+        if heap.get(i) < heap.get(parent) {
+            let tmp = heap.get(i);
+            heap.set(i, heap.get(parent));
+            heap.set(parent, tmp);
+            i = parent;
+        } else {
+            i = 0; // stop
+        }
+    }
+    0
+}
+
+fn heap_peek(heap: Vec<i32>) -> i32 {
+    heap.get(0)
+}
+
+fn heap_pop(heap: Vec<i32>) -> i32 {
+    let min_val = heap.get(0);
+    let last = heap.pop();
+    if heap.len() > 0 {
+        heap.set(0, last);
+        // Sift down
+        var i = 0;
+        var done = false;
+        while !done {
+            let left = 2 * i + 1;
+            let right = 2 * i + 2;
+            var smallest = i;
+            if left < heap.len() {
+                if heap.get(left) < heap.get(smallest) {
+                    smallest = left;
+                }
+            }
+            if right < heap.len() {
+                if heap.get(right) < heap.get(smallest) {
+                    smallest = right;
+                }
+            }
+            if smallest != i {
+                let tmp = heap.get(i);
+                heap.set(i, heap.get(smallest));
+                heap.set(smallest, tmp);
+                i = smallest;
+            } else {
+                done = true;
+            }
+        }
+    }
+    min_val
+}
+
+fn test_basic_min_heap() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 5);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 7);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 4);
+    let pk = heap_peek(heap);
+    if pk == 1 {
+        println("PASS: min-heap peek returns minimum");
+        1
+    } else {
+        print("FAIL: min-heap peek expected 1 got ");
+        println(pk);
+        0
+    }
+}
+
+fn test_extract_min_order() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 5);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 7);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 4);
+    let _ = heap_push(heap, 6);
+    let _ = heap_push(heap, 2);
+    // Extract all in order
+    let e1 = heap_pop(heap);
+    let e2 = heap_pop(heap);
+    let e3 = heap_pop(heap);
+    let e4 = heap_pop(heap);
+    let e5 = heap_pop(heap);
+    let e6 = heap_pop(heap);
+    let e7 = heap_pop(heap);
+    var ok = true;
+    if e1 != 1 { ok = false; }
+    if e2 != 2 { ok = false; }
+    if e3 != 3 { ok = false; }
+    if e4 != 4 { ok = false; }
+    if e5 != 5 { ok = false; }
+    if e6 != 6 { ok = false; }
+    if e7 != 7 { ok = false; }
+    if ok {
+        println("PASS: extract_min returns sorted order");
+        1
+    } else {
+        print("FAIL: extract order: ");
+        print(e1); print(" "); print(e2); print(" "); print(e3); print(" ");
+        print(e4); print(" "); print(e5); print(" "); print(e6); print(" ");
+        println(e7);
+        0
+    }
+}
+
+fn test_heap_property() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 10);
+    let _ = heap_push(heap, 4);
+    let _ = heap_push(heap, 15);
+    let _ = heap_push(heap, 20);
+    let _ = heap_push(heap, 0);
+    let _ = heap_push(heap, 8);
+    // Verify heap property: parent <= children
+    var ok = true;
+    var i = 0;
+    while i < heap.len() {
+        let left = 2 * i + 1;
+        let right = 2 * i + 2;
+        if left < heap.len() {
+            if heap.get(i) > heap.get(left) {
+                ok = false;
+            }
+        }
+        if right < heap.len() {
+            if heap.get(i) > heap.get(right) {
+                ok = false;
+            }
+        }
+        i = i + 1;
+    }
+    if ok {
+        println("PASS: heap property maintained");
+        1
+    } else {
+        println("FAIL: heap property violated");
+        0
+    }
+}
+
+fn test_single_element() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 42);
+    let pk = heap_peek(heap);
+    let popped = heap_pop(heap);
+    if pk == 42 {
+        if popped == 42 {
+            if heap.len() == 0 {
+                println("PASS: single element heap");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: single element heap");
+    0
+}
+
+fn test_duplicates() -> i32 {
+    let heap: Vec<i32> = Vec::new();
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 3);
+    let _ = heap_push(heap, 1);
+    let _ = heap_push(heap, 2);
+    let e1 = heap_pop(heap);
+    let e2 = heap_pop(heap);
+    let e3 = heap_pop(heap);
+    let e4 = heap_pop(heap);
+    let e5 = heap_pop(heap);
+    var ok = true;
+    if e1 != 1 { ok = false; }
+    if e2 != 1 { ok = false; }
+    if e3 != 2 { ok = false; }
+    if e4 != 3 { ok = false; }
+    if e5 != 3 { ok = false; }
+    if ok {
+        println("PASS: duplicates handled");
+        1
+    } else {
+        println("FAIL: duplicates");
+        0
+    }
+}
+
+fn main() {
+    println("=== Min-Heap ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_min_heap();
+    passed = passed + test_extract_min_order();
+    passed = passed + test_heap_property();
+    passed = passed + test_single_element();
+    passed = passed + test_duplicates();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

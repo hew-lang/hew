@@ -1,0 +1,29 @@
+// String rotation check: s2 is a rotation of s1 if (s1+s1).contains(s2)
+
+fn is_rotation(s1: String, s2: String) -> bool {
+    if s1.len() != s2.len() {
+        return false;
+    }
+    if s1.len() == 0 {
+        return true;
+    }
+    let doubled = s1 + s1;
+    doubled.contains(s2)
+}
+
+fn main() {
+    var pass = true;
+
+    if !is_rotation("abcde", "cdeab") { pass = false; println("FAIL abcde/cdeab"); }
+    if !is_rotation("abcde", "eabcd") { pass = false; println("FAIL abcde/eabcd"); }
+    if is_rotation("abcde", "abced") { pass = false; println("FAIL abcde/abced should be false"); }
+    if !is_rotation("a", "a") { pass = false; println("FAIL a/a"); }
+    if is_rotation("ab", "abc") { pass = false; println("FAIL ab/abc different length"); }
+    if !is_rotation("", "") { pass = false; println("FAIL empty/empty"); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

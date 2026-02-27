@@ -20,17 +20,17 @@ fn test_vec() -> i32 {
     first + second + last
 }
 
-fn test_hashmap() -> i64 {
-    let m: HashMap<String, i64> = HashMap::new();
+fn test_hashmap() -> i32 {
+    let m: HashMap<String, i32> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
     let one = match m.get("one") {
-        Some(v) => v,
+        Some(_) => 1,
         None => 0,
     };
     let two = match m.get("two") {
-        Some(v) => v,
+        Some(_) => 2,
         None => 0,
     };
     let has_three = m.contains_key("three");

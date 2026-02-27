@@ -131,7 +131,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *call = std::get_if<ast::ExprCall>(&expr.kind))
     return generateCallExpr(*call);
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
-    return generateIfExpr(*ifE);
+    return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
     return generateBlockExpr(blockExpr->block);
   if (auto *pf = std::get_if<ast::ExprPostfixTry>(&expr.kind))
@@ -1484,7 +1484,7 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
 // If expression generation (expression form that yields a value)
 // ============================================================================
 
-mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE) {
+mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exprSpan) {
   auto location = currentLoc;
 
   auto cond = generateExpression(ifE.condition->value);
@@ -1516,8 +1516,12 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE) {
     return nullptr;
   }
 
+  // Use the type checker's resolved type for this if-expression when available.
+  // This is correct even when the if-expression is not in tail position.
   mlir::Type resultType;
-  if (currentFunction && currentFunction.getResultTypes().size() == 1) {
+  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    resultType = convertType(*resolvedType);
+  } else if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
     resultType = defaultIntType();

@@ -157,7 +157,7 @@ private:
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
   mlir::Value generateCallExpr(const ast::ExprCall &expr);
-  mlir::Value generateIfExpr(const ast::ExprIf &expr);
+  mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan);
   mlir::Value generateBlockExpr(const ast::Block &block);
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr);

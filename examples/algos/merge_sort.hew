@@ -37,10 +37,8 @@ fn merge_sort(v: Vec<int>) {
                         aux.push(v.get(j));
                         j = j + 1;
                     }
-                    var k = 0;
-                    while k < aux.len() {
+                    for k in 0..aux.len() {
                         v.set(start + k, aux.get(k));
-                        k = k + 1;
                     }
                     start = start + width + width;
                 }
@@ -116,10 +114,8 @@ fn main() {
     big.push(9); big.push(3); big.push(7); big.push(1); big.push(5);
     big.push(8); big.push(2); big.push(6); big.push(4); big.push(0);
     let exp_big: Vec<int> = Vec::new();
-    var x = 0;
-    while x < 10 {
+    for x in 0..10 {
         exp_big.push(x);
-        x = x + 1;
     }
     passed = passed + run_test("ten_elements", big, exp_big);
 

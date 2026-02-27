@@ -119,11 +119,9 @@ fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> bool {
 }
 
 fn print_vec(v: Vec<i32>) -> i32 {
-    var i = 0;
-    while i < v.len() {
+    for i in 0..v.len() {
         print(v.get(i));
         print(" ");
-        i = i + 1;
     }
     println("");
     0
@@ -231,12 +229,10 @@ fn test_sorted_insert() -> i32 {
     if result.len() != 10 {
         ok = false;
     } else {
-        var j = 0;
-        while j < 10 {
+        for j in 0..10 {
             if result.get(j) != j + 1 {
                 ok = false;
             }
-            j = j + 1;
         }
     }
     if ok {

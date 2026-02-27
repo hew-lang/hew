@@ -141,12 +141,10 @@ fn test_circular_property() -> i32 {
     head = insert_tail(n, head, 3);
     // Walk 2 full cycles and check we see values repeated
     var curr = head;
-    var count = 0;
     var sum = 0;
-    while count < 6 {
+    for count in 0..6 {
         sum = sum + node_val(n, curr);
         curr = node_next(n, curr);
-        count = count + 1;
     }
     // 2 cycles of 1+2+3=6, so sum=12
     if sum == 12 {

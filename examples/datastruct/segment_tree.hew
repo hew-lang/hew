@@ -49,10 +49,8 @@ fn seg_update(tree: Vec<i32>, node: i32, start: i32, end: i32, idx: i32, val: i3
 
 fn init_tree(size: i32) -> Vec<i32> {
     let tree: Vec<i32> = Vec::new();
-    var i = 0;
-    while i < 4 * size {
+    for i in 0..4 * size {
         tree.push(0);
-        i = i + 1;
     }
     tree
 }

@@ -58,13 +58,11 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 
 // Build heap from array (heapify)
 fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
-    var i = 0;
-    while i < arr.len() {
+    for i in 0..arr.len() {
         heap.push(arr.get(i));
-        i = i + 1;
     }
     // Heapify from last non-leaf node
-    i = heap.len() / 2 - 1;
+    var i = heap.len() / 2 - 1;
     while i >= 0 {
         var cur = i;
         var done = false;
@@ -97,9 +95,8 @@ fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
 }
 
 fn check_max_heap_property(heap: Vec<i32>) -> bool {
-    var i = 0;
     var ok = true;
-    while i < heap.len() {
+    for i in 0..heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
@@ -112,7 +109,6 @@ fn check_max_heap_property(heap: Vec<i32>) -> bool {
                 ok = false;
             }
         }
-        i = i + 1;
     }
     ok
 }

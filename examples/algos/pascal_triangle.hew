@@ -9,11 +9,9 @@ fn binomial(n: int, k: int) -> int {
         kk = n - kk;
     }
     var result = 1;
-    var i = 0;
-    while i < kk {
+    for i in 0..kk {
         result = result * (n - i);
         result = result / (i + 1);
-        i = i + 1;
     }
     result
 }

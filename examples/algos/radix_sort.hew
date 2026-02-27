@@ -16,22 +16,16 @@ fn radix_sort(v: Vec<int>) {
         var exp = 1;
         while max_val / exp > 0 {
             let output: Vec<int> = Vec::new();
-            i = 0;
-            while i < n {
+            for i in 0..n {
                 output.push(0);
-                i = i + 1;
             }
             let count: Vec<int> = Vec::new();
-            i = 0;
-            while i < 10 {
+            for i in 0..10 {
                 count.push(0);
-                i = i + 1;
             }
-            i = 0;
-            while i < n {
+            for i in 0..n {
                 let digit = (v.get(i) / exp) % 10;
                 count.set(digit, count.get(digit) + 1);
-                i = i + 1;
             }
             i = 1;
             while i < 10 {
@@ -52,10 +46,8 @@ fn radix_sort(v: Vec<int>) {
                     i = i - 1;
                 }
             }
-            i = 0;
-            while i < n {
+            for i in 0..n {
                 v.set(i, output.get(i));
-                i = i + 1;
             }
             exp = exp * 10;
         }

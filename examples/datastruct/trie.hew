@@ -4,10 +4,8 @@
 
 fn new_trie_node(nodes: Vec<i32>, NIL: i32) -> i32 {
     let idx = nodes.len() / 11;
-    var i = 0;
-    while i < 10 {
+    for i in 0..10 {
         nodes.push(NIL);
-        i = i + 1;
     }
     nodes.push(0); // is_end = 0 (false)
     idx
@@ -56,8 +54,7 @@ fn trie_insert(nodes: Vec<i32>, num: i32, NIL: i32) -> i32 {
     let digits: Vec<i32> = Vec::new();
     let _ = get_digits(num, digits);
     var cur = 0;
-    var i = 0;
-    while i < digits.len() {
+    for i in 0..digits.len() {
         let d = digits.get(i);
         let child = get_child(nodes, cur, d);
         if child == NIL {
@@ -67,7 +64,6 @@ fn trie_insert(nodes: Vec<i32>, num: i32, NIL: i32) -> i32 {
         } else {
             cur = child;
         }
-        i = i + 1;
     }
     let _ = set_end(nodes, cur);
     0
@@ -77,9 +73,8 @@ fn trie_search(nodes: Vec<i32>, num: i32, NIL: i32) -> bool {
     let digits: Vec<i32> = Vec::new();
     let _ = get_digits(num, digits);
     var cur = 0;
-    var i = 0;
     var found = true;
-    while i < digits.len() {
+    for i in 0..digits.len() {
         if found {
             let d = digits.get(i);
             let child = get_child(nodes, cur, d);
@@ -89,7 +84,6 @@ fn trie_search(nodes: Vec<i32>, num: i32, NIL: i32) -> bool {
                 cur = child;
             }
         }
-        i = i + 1;
     }
     if found {
         return is_end(nodes, cur);
@@ -101,9 +95,8 @@ fn trie_starts_with(nodes: Vec<i32>, prefix: i32, NIL: i32) -> bool {
     let digits: Vec<i32> = Vec::new();
     let _ = get_digits(prefix, digits);
     var cur = 0;
-    var i = 0;
     var found = true;
-    while i < digits.len() {
+    for i in 0..digits.len() {
         if found {
             let d = digits.get(i);
             let child = get_child(nodes, cur, d);
@@ -113,7 +106,6 @@ fn trie_starts_with(nodes: Vec<i32>, prefix: i32, NIL: i32) -> bool {
                 cur = child;
             }
         }
-        i = i + 1;
     }
     found
 }

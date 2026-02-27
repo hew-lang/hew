@@ -8,16 +8,12 @@ fn swap(v: Vec<int>, i: int, j: int) {
 
 fn bubble_sort(v: Vec<int>) {
     let n = v.len();
-    var i = 0;
-    while i < n {
-        var j = 0;
-        while j < n - 1 - i {
+    for i in 0..n {
+        for j in 0..(n - 1 - i) {
             if v.get(j) > v.get(j + 1) {
                 swap(v, j, j + 1);
             }
-            j = j + 1;
         }
-        i = i + 1;
     }
 }
 

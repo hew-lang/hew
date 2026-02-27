@@ -8,8 +8,7 @@ fn swap(v: Vec<int>, i: int, j: int) {
 
 fn selection_sort(v: Vec<int>) {
     let n = v.len();
-    var i = 0;
-    while i < n {
+    for i in 0..n {
         var min_idx = i;
         var j = i + 1;
         while j < n {
@@ -21,7 +20,6 @@ fn selection_sort(v: Vec<int>) {
         if min_idx != i {
             swap(v, i, min_idx);
         }
-        i = i + 1;
     }
 }
 

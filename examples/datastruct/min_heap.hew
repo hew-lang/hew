@@ -123,8 +123,7 @@ fn test_heap_property() -> i32 {
     let _ = heap_push(heap, 8);
     // Verify heap property: parent <= children
     var ok = true;
-    var i = 0;
-    while i < heap.len() {
+    for i in 0..heap.len() {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
@@ -137,7 +136,6 @@ fn test_heap_property() -> i32 {
                 ok = false;
             }
         }
-        i = i + 1;
     }
     if ok {
         println("PASS: heap property maintained");

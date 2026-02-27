@@ -25,10 +25,8 @@ fn da_grow(arr: Vec<int>) {
     let old_cap = arr.get(1);
     let new_cap = old_cap * 2;
     // Add more slots
-    var i = 0;
-    while i < old_cap {
+    for i in 0..old_cap {
         arr.push(0);
-        i = i + 1;
     }
     arr.set(1, new_cap);
 }

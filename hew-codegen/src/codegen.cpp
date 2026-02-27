@@ -130,21 +130,35 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     auto inputVal = adaptor.getInput();
     auto inputType = inputVal.getType();
     bool newline = op.getNewline();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     std::string funcName;
     mlir::FunctionType funcType;
 
-    // Promote sub-i32 integer types (e.g. i8 from u8/bytes) to i32
+    // Promote sub-i32 integer types (e.g. i8 from u8/byte) to i32.
+    // Use zero-extension for unsigned source types.
     if (inputType.isInteger(8) || inputType.isInteger(16)) {
-      inputVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), inputVal);
+      if (isUnsigned)
+        inputVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), inputVal);
+      else
+        inputVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), inputVal);
       inputType = rewriter.getI32Type();
     }
 
     if (inputType.isInteger(32)) {
-      funcName = newline ? "hew_println_i32" : "hew_print_i32";
+      if (isUnsigned) {
+        funcName = newline ? "hew_println_u32" : "hew_print_u32";
+      } else {
+        funcName = newline ? "hew_println_i32" : "hew_print_i32";
+      }
       funcType = rewriter.getFunctionType({rewriter.getI32Type()}, {});
     } else if (inputType.isInteger(64)) {
-      funcName = newline ? "hew_println_i64" : "hew_print_i64";
+      if (isUnsigned) {
+        funcName = newline ? "hew_println_u64" : "hew_print_u64";
+      } else {
+        funcName = newline ? "hew_println_i64" : "hew_print_i64";
+      }
       funcType = rewriter.getFunctionType({rewriter.getI64Type()}, {});
     } else if (inputType.isF64()) {
       funcName = newline ? "hew_println_f64" : "hew_print_f64";
@@ -269,16 +283,24 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
     auto inputVal = adaptor.getInput();
     auto inputType = inputVal.getType();
     auto resultType = op.getType();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     // Int to float
     if (inputType.isIntOrIndex() && mlir::isa<mlir::FloatType>(resultType)) {
-      rewriter.replaceOpWithNewOp<mlir::arith::SIToFPOp>(op, resultType, inputVal);
+      if (isUnsigned)
+        rewriter.replaceOpWithNewOp<mlir::arith::UIToFPOp>(op, resultType, inputVal);
+      else
+        rewriter.replaceOpWithNewOp<mlir::arith::SIToFPOp>(op, resultType, inputVal);
       return mlir::success();
     }
 
     // Float to int
     if (mlir::isa<mlir::FloatType>(inputType) && resultType.isIntOrIndex()) {
-      rewriter.replaceOpWithNewOp<mlir::arith::FPToSIOp>(op, resultType, inputVal);
+      if (isUnsigned)
+        rewriter.replaceOpWithNewOp<mlir::arith::FPToUIOp>(op, resultType, inputVal);
+      else
+        rewriter.replaceOpWithNewOp<mlir::arith::FPToSIOp>(op, resultType, inputVal);
       return mlir::success();
     }
 
@@ -287,7 +309,10 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       auto inWidth = inputType.getIntOrFloatBitWidth();
       auto outWidth = resultType.getIntOrFloatBitWidth();
       if (outWidth > inWidth) {
-        rewriter.replaceOpWithNewOp<mlir::arith::ExtSIOp>(op, resultType, inputVal);
+        if (isUnsigned)
+          rewriter.replaceOpWithNewOp<mlir::arith::ExtUIOp>(op, resultType, inputVal);
+        else
+          rewriter.replaceOpWithNewOp<mlir::arith::ExtSIOp>(op, resultType, inputVal);
         return mlir::success();
       }
       if (outWidth < inWidth) {

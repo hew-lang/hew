@@ -395,7 +395,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 // Type coercion
 // ============================================================================
 
-mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location) {
+mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
+                                bool isUnsigned) {
   if (!value || value.getType() == targetType)
     return value;
 
@@ -421,14 +422,21 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   // Numeric conversions go through hew.cast so the dialect folder /
   // canonicalizer can optimise cast chains before lowering.
   if ((srcIsInt && dstIsFloat) || (srcIsFloat && dstIsInt)) {
-    return builder.create<hew::CastOp>(location, targetType, value);
+    auto castOp = builder.create<hew::CastOp>(location, targetType, value);
+    if (isUnsigned)
+      castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return castOp;
   }
   // int -> int width conversion (e.g. i64 literal to i32 field, or i32 to i64)
   if (srcIsInt && dstIsInt) {
     auto srcWidth = mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
     auto dstWidth = mlir::cast<mlir::IntegerType>(targetType).getWidth();
-    if (srcWidth != dstWidth)
-      return builder.create<hew::CastOp>(location, targetType, value);
+    if (srcWidth != dstWidth) {
+      auto castOp = builder.create<hew::CastOp>(location, targetType, value);
+      if (isUnsigned)
+        castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+      return castOp;
+    }
   }
   // concrete struct → dyn Trait coercion
   if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(targetType)) {
@@ -791,7 +799,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!val)
       return nullptr;
     bool newline = (name == "println_int");
-    builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+    auto printOp = builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+      if (isUnsignedTypeExpr(*argType))
+        printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
     return nullptr;
   }
 

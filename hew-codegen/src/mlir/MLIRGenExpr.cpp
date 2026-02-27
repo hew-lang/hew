@@ -742,9 +742,15 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   bool lhsIsFloat = llvm::isa<mlir::FloatType>(lhs.getType());
   bool rhsIsFloat = llvm::isa<mlir::FloatType>(rhs.getType());
   if (lhsIsFloat && !rhsIsFloat) {
-    rhs = coerceType(rhs, lhs.getType(), location);
+    bool rhsUns = false;
+    if (auto *rt = resolvedTypeOf(expr.right->span))
+      rhsUns = isUnsignedTypeExpr(*rt);
+    rhs = coerceType(rhs, lhs.getType(), location, rhsUns);
   } else if (rhsIsFloat && !lhsIsFloat) {
-    lhs = coerceType(lhs, rhs.getType(), location);
+    bool lhsUns = false;
+    if (auto *lt = resolvedTypeOf(expr.left->span))
+      lhsUns = isUnsignedTypeExpr(*lt);
+    lhs = coerceType(lhs, rhs.getType(), location, lhsUns);
   }
 
   // Integer width promotion
@@ -752,11 +758,17 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   auto rhsInt = mlir::dyn_cast<mlir::IntegerType>(rhs.getType());
   if (lhsInt && rhsInt && lhsInt.getWidth() != rhsInt.getWidth()) {
     if (lhsInt.getWidth() < rhsInt.getWidth()) {
-      lhs = lhsInt.isUnsigned()
+      bool lhsUnsigned = false;
+      if (auto *lt = resolvedTypeOf(expr.left->span))
+        lhsUnsigned = isUnsignedTypeExpr(*lt);
+      lhs = lhsUnsigned
                 ? builder.create<mlir::arith::ExtUIOp>(location, rhs.getType(), lhs).getResult()
                 : builder.create<mlir::arith::ExtSIOp>(location, rhs.getType(), lhs).getResult();
     } else {
-      rhs = rhsInt.isUnsigned()
+      bool rhsUnsigned = false;
+      if (auto *rt = resolvedTypeOf(expr.right->span))
+        rhsUnsigned = isUnsignedTypeExpr(*rt);
+      rhs = rhsUnsigned
                 ? builder.create<mlir::arith::ExtUIOp>(location, lhs.getType(), rhs).getResult()
                 : builder.create<mlir::arith::ExtSIOp>(location, lhs.getType(), rhs).getResult();
     }
@@ -765,9 +777,14 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   auto type = lhs.getType();
   bool isFloat = llvm::isa<mlir::FloatType>(type);
   bool isPtr = isPointerLikeType(type);
+  // Derive signedness from the type checker's resolved type for the LHS operand.
+  // MLIR IntegerTypes are signless, so intType.isUnsigned() always returns false;
+  // we must consult the source type name instead.
   bool isUnsigned = false;
-  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
-    isUnsigned = intType.isUnsigned();
+  if (mlir::isa<mlir::IntegerType>(type)) {
+    if (auto *lhsType = resolvedTypeOf(expr.left->span))
+      isUnsigned = isUnsignedTypeExpr(*lhsType);
+  }
 
   switch (expr.op) {
   // Arithmetic
@@ -1447,7 +1464,11 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   if (!val)
     return nullptr;
 
-  builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+  auto printOp = builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+  // Propagate unsigned type info so the lowering uses unsigned print routines.
+  if (auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[0]).span))
+    if (isUnsignedTypeExpr(*argType))
+      printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
 
   if (!std::holds_alternative<ast::ExprIdentifier>(ast::callArgExpr(call.args[0]).value.kind) &&
       isTemporaryString(val))

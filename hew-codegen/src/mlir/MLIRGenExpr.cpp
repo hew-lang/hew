@@ -46,6 +46,11 @@ using namespace mlir;
 mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   currentLoc = loc(expr.span);
 
+  // Return pre-computed value for hoisted loop-invariant sub-expressions.
+  auto hoistIt = hoistedValues.find(&expr);
+  if (hoistIt != hoistedValues.end())
+    return hoistIt->second;
+
   if (auto *lit = std::get_if<ast::ExprLiteral>(&expr.kind))
     return generateLiteral(lit->lit);
 

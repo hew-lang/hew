@@ -1190,6 +1190,45 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   return ifOp.getResult(0);
 }
 
+// ── Loop-invariant expression detection ──────────────────────────────────────
+// Returns true when `expr` only references immutable locals, literals, field
+// accesses and method calls on invariant receivers — i.e. values that cannot
+// change across loop iterations.
+
+bool MLIRGen::isExprLoopInvariant(const ast::Expr &expr) {
+  if (std::get_if<ast::ExprLiteral>(&expr.kind))
+    return true;
+
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+    return !mutableVars.lookup(intern(ident->name));
+
+  if (auto *method = std::get_if<ast::ExprMethodCall>(&expr.kind)) {
+    if (!isExprLoopInvariant(method->receiver->value))
+      return false;
+    for (const auto &arg : method->args) {
+      if (auto *pos = std::get_if<ast::CallArgPositional>(&arg)) {
+        if (!isExprLoopInvariant(pos->expr->value))
+          return false;
+      } else if (auto *named = std::get_if<ast::CallArgNamed>(&arg)) {
+        if (!isExprLoopInvariant(named->value->value))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  if (auto *field = std::get_if<ast::ExprFieldAccess>(&expr.kind))
+    return isExprLoopInvariant(field->object->value);
+
+  if (auto *binary = std::get_if<ast::ExprBinary>(&expr.kind))
+    return isExprLoopInvariant(binary->left->value) && isExprLoopInvariant(binary->right->value);
+
+  if (auto *unary = std::get_if<ast::ExprUnary>(&expr.kind))
+    return isExprLoopInvariant(unary->operand->value);
+
+  return false;
+}
+
 void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   auto location = currentLoc;
 
@@ -1214,6 +1253,39 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   }
 
   loopBreakValueStack.push_back(nullptr);
+
+  // ── Hoist loop-invariant sub-expressions from comparison conditions ──
+  // For patterns like `while i < v.len()`, evaluate the invariant side
+  // (v.len()) once before the loop so it is not re-evaluated every iteration.
+  const ast::Expr *hoistedExpr = nullptr;
+  if (auto *binary = std::get_if<ast::ExprBinary>(&stmt.condition.value.kind)) {
+    switch (binary->op) {
+    case ast::BinaryOp::Less:
+    case ast::BinaryOp::LessEqual:
+    case ast::BinaryOp::Greater:
+    case ast::BinaryOp::GreaterEqual:
+    case ast::BinaryOp::Equal:
+    case ast::BinaryOp::NotEqual:
+      if (!isExprLoopInvariant(binary->right->value) && !isExprLoopInvariant(binary->left->value))
+        break;
+      // Hoist whichever side is invariant (prefer right — the common case).
+      if (isExprLoopInvariant(binary->right->value)) {
+        hoistedExpr = &binary->right->value;
+      } else {
+        hoistedExpr = &binary->left->value;
+      }
+      {
+        mlir::Value val = generateExpression(*hoistedExpr);
+        if (val)
+          hoistedValues[hoistedExpr] = val;
+        else
+          hoistedExpr = nullptr;
+      }
+      break;
+    default:
+      break;
+    }
+  }
 
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
@@ -1272,6 +1344,10 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   }
 
   builder.setInsertionPointAfter(whileOp);
+
+  // Clean up hoisted value so it doesn't leak into subsequent code.
+  if (hoistedExpr)
+    hoistedValues.erase(hoistedExpr);
 
   if (breakValueAlloca) {
     lastBreakValue =

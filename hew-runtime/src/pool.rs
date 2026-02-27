@@ -38,7 +38,9 @@ pub struct HewActorPool {
 fn lock_state(pool: &HewActorPool) -> MutexGuard<'_, PoolState> {
     match pool.state.lock() {
         Ok(state) => state,
-        Err(poisoned) => poisoned.into_inner(),
+        // Policy: per-pool state — a poisoned mutex means this pool is
+        // corrupted and cannot be used safely.
+        Err(_) => panic!("hew: pool mutex poisoned (a thread panicked); cannot safely continue"),
     }
 }
 

@@ -13,6 +13,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::scheduler;
+use crate::set_last_error;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1280,7 +1281,8 @@ pub unsafe extern "C" fn hew_supervisor_get_child(
 )]
 pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> c_int {
     if sup.is_null() {
-        return 0;
+        set_last_error("hew_supervisor_child_count: supervisor is null");
+        return -1;
     }
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };

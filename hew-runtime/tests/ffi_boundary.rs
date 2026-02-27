@@ -2574,8 +2574,8 @@ mod supervisor_nesting_tests {
             // Self-referencing returns -1.
             assert_eq!(hew_supervisor_add_child_supervisor(sup, sup), -1);
 
-            // Null supervisor child_count returns 0.
-            assert_eq!(hew_supervisor_child_count(std::ptr::null_mut()), 0);
+            // Null supervisor child_count returns -1.
+            assert_eq!(hew_supervisor_child_count(std::ptr::null_mut()), -1);
 
             hew_supervisor_stop(sup);
         }

@@ -164,7 +164,9 @@ impl StreamBacking for ChannelStream {
 impl SinkBacking for ChannelSink {
     fn write_item(&mut self, data: &[u8]) {
         // Blocks (with backpressure) if the bounded channel is full.
-        let _ = self.tx.send(data.to_vec());
+        if self.tx.send(data.to_vec()).is_err() {
+            set_last_error("hew_sink_write: failed to send to channel sink".to_string());
+        }
     }
 
     fn flush(&mut self) {
@@ -238,15 +240,21 @@ struct FileWriteSink {
 
 impl SinkBacking for FileWriteSink {
     fn write_item(&mut self, data: &[u8]) {
-        let _ = self.writer.write_all(data);
+        if let Err(e) = self.writer.write_all(data) {
+            set_last_error(format!("hew_sink_write: file write failed: {e}"));
+        }
     }
 
     fn flush(&mut self) {
-        let _ = self.writer.flush();
+        if let Err(e) = self.writer.flush() {
+            set_last_error(format!("hew_sink_flush: file flush failed: {e}"));
+        }
     }
 
     fn close(&mut self) {
-        let _ = self.writer.flush();
+        if let Err(e) = self.writer.flush() {
+            set_last_error(format!("hew_sink_close: file flush failed: {e}"));
+        }
         // File is closed when the struct is dropped.
     }
 }

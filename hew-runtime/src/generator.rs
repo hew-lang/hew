@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
+use crate::set_last_error;
+
 // ── Value envelope ──────────────────────────────────────────────────────
 
 /// Envelope for a yielded value.
@@ -376,7 +378,9 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
 
         // Join the generator thread.
         if let Some(handle) = (*ctx).handle.take() {
-            let _ = handle.join();
+            if let Err(_) = handle.join() {
+                set_last_error("generator thread panicked during execution");
+            }
         }
 
         drop(Box::from_raw(ctx));

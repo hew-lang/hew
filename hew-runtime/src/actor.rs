@@ -255,6 +255,8 @@ static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 fn track_actor(actor: *mut HewActor) {
     let mut guard = match LIVE_ACTORS.lock() {
         Ok(g) => g,
+        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+        // data remains valid after a thread panic.
         Err(e) => e.into_inner(),
     };
     guard
@@ -269,6 +271,8 @@ fn track_actor(actor: *mut HewActor) {
 fn untrack_actor(actor: *mut HewActor) -> bool {
     let mut guard = match LIVE_ACTORS.lock() {
         Ok(g) => g,
+        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+        // data remains valid after a thread panic.
         Err(e) => e.into_inner(),
     };
     if let Some(set) = guard.as_mut() {
@@ -288,6 +292,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
         let mut guard = match LIVE_ACTORS.lock() {
             Ok(g) => g,
+            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+            // data remains valid after a thread panic.
             Err(e) => e.into_inner(),
         };
         match guard.as_mut() {
@@ -687,6 +693,8 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     let sent_local = {
         let guard = match LIVE_ACTORS.lock() {
             Ok(g) => g,
+            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+            // data remains valid after a thread panic.
             Err(e) => e.into_inner(),
         };
         guard.as_ref().is_some_and(|set| {
@@ -836,7 +844,8 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return 0;
+        crate::set_last_error("hew_actor_free: null actor pointer");
+        return -1;
     }
 
     // SAFETY: Caller guarantees `actor` is valid.
@@ -871,7 +880,8 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // cleanup_all_actors (returns false), skip freeing to avoid
     // double-free.
     if !untrack_actor(actor) {
-        return 0;
+        crate::set_last_error("hew_actor_free: actor already freed or not tracked");
+        return -1;
     }
 
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.

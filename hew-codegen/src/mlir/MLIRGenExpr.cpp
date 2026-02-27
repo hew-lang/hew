@@ -2471,6 +2471,14 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // These types map to i32 at the MLIR level but need handle method dispatch.
   auto receiverType = receiver.getType();
   if (receiverType.isInteger(32)) {
+    auto normalizeHandleType = [](std::string typeName) {
+      if (typeName == "Listener")
+        return std::string("net.Listener");
+      if (typeName == "Connection")
+        return std::string("net.Connection");
+      return typeName;
+    };
+
     std::string handleType;
     // Prefer resolved type from the type checker
     if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
@@ -2483,6 +2491,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           handleType = hit->second;
       }
     }
+    handleType = normalizeHandleType(handleType);
     // Check field access (e.g. self.conn)
     if (handleType.empty()) {
       if (auto *fa = std::get_if<ast::ExprFieldAccess>(&mc.receiver->value.kind)) {
@@ -2490,9 +2499,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           if (baseIdent->name == "self" && !currentActorName.empty()) {
             auto key = currentActorName + "." + fa->field;
             auto aft = actorFieldTypes.find(key);
-            if (aft != actorFieldTypes.end() &&
-                (aft->second == "net.Listener" || aft->second == "net.Connection"))
-              handleType = aft->second;
+            if (aft != actorFieldTypes.end())
+              handleType = normalizeHandleType(aft->second);
           }
         }
       }
@@ -2532,8 +2540,23 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       if (handleType == "net.Connection") {
         if (method == "read")
           return emitRuntimeCall("hew_tcp_read", vecType, argVals);
+        if (method == "read_string") {
+          auto bytes = emitRuntimeCall("hew_tcp_read", vecType, argVals);
+          return emitRuntimeCall("hew_bytes_to_string", hew::StringRefType::get(&context),
+                                 mlir::ValueRange{bytes});
+        }
         if (method == "write") {
           emitRuntimeCall("hew_tcp_write", {}, argVals);
+          return nullptr;
+        }
+        if (method == "write_string") {
+          if (argVals.size() < 2) {
+            emitError(location) << ".write_string() requires one argument";
+            return nullptr;
+          }
+          auto bytes =
+              emitRuntimeCall("hew_string_to_bytes", vecType, mlir::ValueRange{argVals[1]});
+          emitRuntimeCall("hew_tcp_write", {}, mlir::ValueRange{receiver, bytes});
           return nullptr;
         }
         if (method == "close")
@@ -3484,7 +3507,9 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       if (hasTimeoutBody) {
         SymbolTableScopeT scope(symbolTable);
         MutableTableScopeT mutScope(mutableVars);
-        return generateExpression((*sel.timeout)->body->value);
+        auto val = generateExpression((*sel.timeout)->body->value);
+        return val ? coerceType(val, selectResultType, location)
+                   : createDefaultValue(builder, location, selectResultType);
       }
       return createDefaultValue(builder, location, selectResultType);
     }
@@ -3509,7 +3534,8 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       auto bodyVal = generateExpression(arm.body->value);
       builder.create<hew::SelectDestroyOp>(location, channels[armIdx]);
 
-      return bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
+      auto retVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
+      return coerceType(retVal, selectResultType, location);
     }
 
     auto armIdxVal =
@@ -3540,6 +3566,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       builder.create<hew::SelectDestroyOp>(location, channels[armIdx]);
 
       auto yieldVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
+      yieldVal = coerceType(yieldVal, selectResultType, location);
       builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{yieldVal});
     }
 
@@ -3548,6 +3575,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto *elseBlock = builder.getInsertionBlock();
     if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
       auto yieldVal = elseVal ? elseVal : createDefaultValue(builder, location, selectResultType);
+      yieldVal = coerceType(yieldVal, selectResultType, location);
       builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{yieldVal});
     }
 

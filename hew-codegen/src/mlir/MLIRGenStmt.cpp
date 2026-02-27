@@ -756,6 +756,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
             // Handle compound assignment
             if (stmt.op) {
               auto current = builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr);
+              rhs = coerceType(rhs, field.type, location);
               bool isFloat = llvm::isa<mlir::FloatType>(field.type);
               bool isUnsigned = false;
               if (mlir::isa<mlir::IntegerType>(field.type))
@@ -871,6 +872,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       auto currentFieldVal = builder.create<mlir::LLVM::ExtractValueOp>(
           location, currentStruct,
           llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
+      rhs = coerceType(rhs, targetField->type, location);
       bool isFloat = llvm::isa<mlir::FloatType>(targetField->type);
       bool isUnsigned = false;
       if (mlir::isa<mlir::IntegerType>(targetField->type))

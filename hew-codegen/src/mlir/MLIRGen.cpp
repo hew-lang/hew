@@ -2344,11 +2344,13 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       mlir::Value normalValue = bodyValue;
       if (!normalValue)
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
+      normalValue = coerceType(normalValue, resultTypes[0], location);
       builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
       builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
+      bodyValue = coerceType(bodyValue, resultTypes[0], location);
       builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyValue});
     } else {
       builder.create<mlir::func::ReturnOp>(location);

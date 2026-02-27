@@ -564,6 +564,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     if (currentBlock &&
         (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
       if (!resultTypes.empty() && bodyValue) {
+        bodyValue = coerceType(bodyValue, resultTypes[0], location);
         builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyValue});
       } else {
         builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});

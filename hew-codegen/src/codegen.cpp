@@ -1700,6 +1700,61 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
                           funcType);
       rewriter.create<mlir::func::CallOp>(loc, "hew_vec_push_generic", mlir::TypeRange{},
                                           mlir::ValueRange{adaptor.getVec(), alloca});
+    } else if (suffix == "_i64" || suffix == "_i32" || suffix == "_f64") {
+      // Inline fast path for primitives: store at data[len] when len < cap,
+      // otherwise fall back to runtime call for grow+push.
+      auto i64Type = rewriter.getI64Type();
+      auto vecPtr = adaptor.getVec();
+      auto value = adaptor.getValue();
+
+      auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
+          op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
+
+      // Load len (field 1) and cap (field 2)
+      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
+      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+
+      auto capFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, vecStructType, vecPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(2)});
+      auto cap = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, capFieldPtr);
+
+      // needs_grow = len >= cap
+      auto needsGrow =
+          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, len, cap);
+
+      // Declare the runtime push function for the slow path
+      std::string funcName = "hew_vec_push" + suffix;
+      auto funcType = rewriter.getFunctionType({ptrType, valType}, {});
+      getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
+
+      rewriter.create<mlir::scf::IfOp>(
+          loc, needsGrow,
+          // Then: slow path — call runtime to grow and push
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            b.create<mlir::func::CallOp>(l, funcName, mlir::TypeRange{},
+                                         mlir::ValueRange{vecPtr, value});
+            b.create<mlir::scf::YieldOp>(l);
+          },
+          // Else: fast path — store directly at data[len], bump len
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            auto dataFieldPtr = b.create<mlir::LLVM::GEPOp>(
+                l, ptrType, vecStructType, vecPtr,
+                llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
+            auto dataPtr = b.create<mlir::LLVM::LoadOp>(l, ptrType, dataFieldPtr);
+
+            auto elemPtr = b.create<mlir::LLVM::GEPOp>(
+                l, ptrType, valType, dataPtr,
+                mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(len)});
+            b.create<mlir::LLVM::StoreOp>(l, value, elemPtr);
+
+            auto one = b.create<mlir::LLVM::ConstantOp>(l, i64Type, b.getI64IntegerAttr(1));
+            auto newLen = b.create<mlir::arith::AddIOp>(l, len, one);
+            b.create<mlir::LLVM::StoreOp>(l, newLen, lenFieldPtr);
+            b.create<mlir::scf::YieldOp>(l);
+          });
     } else {
       std::string funcName = "hew_vec_push" + suffix;
       auto funcType = rewriter.getFunctionType({ptrType, valType}, {});
@@ -3029,6 +3084,54 @@ struct StringMethodOpLowering : public mlir::OpConversionPattern<hew::StringMeth
     auto loc = op.getLoc();
     auto module = op->getParentOfType<mlir::ModuleOp>();
     auto methodName = op.getMethod().str();
+
+    // Inline lowering for char_at: strlen + bounds check + GEP + byte load.
+    // Avoids a full C-ABI call per character access.
+    if (methodName == "char_at") {
+      auto i8Type = rewriter.getI8Type();
+      auto i32Type = rewriter.getI32Type();
+      auto i64Type = rewriter.getI64Type();
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
+
+      auto strPtr = adaptor.getReceiver();
+      auto index = adaptor.getExtraArgs()[0];
+
+      // Extend i32 index to i64 for comparison with strlen result
+      auto index64 = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, index);
+
+      // Call strlen to get byte length
+      auto strlenType = rewriter.getFunctionType({ptrType}, {i64Type});
+      getOrInsertFuncDecl(module, rewriter, "strlen", strlenType);
+      auto lenCall = rewriter.create<mlir::func::CallOp>(loc, "strlen", mlir::TypeRange{i64Type},
+                                                         mlir::ValueRange{strPtr});
+      auto len = lenCall.getResult(0);
+
+      // Bounds check: if index >= len, abort (uge catches negative indices too)
+      auto oob =
+          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index64, len);
+
+      auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_string_abort_oob", abortFuncType);
+
+      rewriter.create<mlir::scf::IfOp>(
+          loc, oob,
+          [&](mlir::OpBuilder &b, mlir::Location l) {
+            b.create<mlir::func::CallOp>(l, "hew_string_abort_oob", mlir::TypeRange{},
+                                         mlir::ValueRange{index64, len});
+            b.create<mlir::scf::YieldOp>(l);
+          },
+          nullptr);
+
+      // GEP to byte at index, load i8, zero-extend to i32
+      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
+          loc, ptrType, i8Type, strPtr,
+          mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index64)});
+      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, i8Type, elemPtr);
+      auto result = rewriter.create<mlir::arith::ExtUIOp>(loc, i32Type, loaded);
+      rewriter.replaceOp(op, result.getResult());
+      return mlir::success();
+    }
+
     std::string funcName = "hew_string_" + methodName;
 
     // Build operand list: receiver + extra args

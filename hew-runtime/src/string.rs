@@ -216,6 +216,7 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     if len < 0 {
         return std::ptr::null_mut();
     }
+    #[expect(clippy::cast_sign_loss, reason = "len >= 0 checked above")]
     let len = (len as usize).min(buf.len());
     // SAFETY: buf contains len valid bytes from snprintf.
     unsafe { malloc_cstring(buf.as_ptr(), len) }

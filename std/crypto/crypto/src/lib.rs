@@ -348,6 +348,11 @@ pub unsafe extern "C" fn hew_hmac_sha256_hew(
 /// None — all memory is managed by the runtime allocator.
 #[no_mangle]
 pub unsafe extern "C" fn hew_random_bytes_hew(len: i64) -> *mut hew_cabi::vec::HewVec {
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "len > 0 checked; practical buffer sizes fit in usize"
+    )]
     let n = if len > 0 { len as usize } else { 0 };
     let mut buf = vec![0u8; n];
     if n > 0 {

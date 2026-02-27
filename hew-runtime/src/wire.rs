@@ -957,7 +957,11 @@ pub unsafe extern "C" fn hew_wire_encode_header_hew(
     payload_len: i32,
     flags: i32,
 ) -> *mut crate::vec::HewVec {
-    #[expect(clippy::cast_sign_loss, reason = "C ABI: values are non-negative")]
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "C ABI: values are non-negative and fit in target types"
+    )]
     // SAFETY: hew_wire_encode_header is a pure function that allocates or returns null.
     let raw = unsafe { hew_wire_encode_header(payload_len as u32, flags as u8) };
     if raw.is_null() {

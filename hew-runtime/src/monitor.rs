@@ -64,10 +64,6 @@ fn get_shard_index(actor_id: u64) -> usize {
 /// Create a monitor: watcher monitors target.
 /// Returns a unique reference ID for this monitor.
 ///
-/// # Panics
-///
-/// Panics if the monitor table's `RwLock` is poisoned.
-///
 /// # Safety
 ///
 /// Both `watcher` and `target` must be valid pointers to [`HewActor`] structs.
@@ -93,9 +89,10 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
-
-    // Add to monitors: target_id -> [monitoring actors]
+    let mut shard = match MONITOR_TABLE[shard_index].write() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     shard
         .monitors
         .entry(target_id)
@@ -111,10 +108,6 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
 }
 
 /// Remove a monitor by its reference ID.
-///
-/// # Panics
-///
-/// Panics if any monitor table's `RwLock` is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     if ref_id == 0 {
@@ -124,7 +117,10 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
     for shard_index in 0..MONITOR_SHARDS {
-        let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
+        let mut shard = match MONITOR_TABLE[shard_index].write() {
+            Ok(guard) => guard,
+            Err(e) => e.into_inner(),
+        };
 
         if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
             // Remove from monitors list
@@ -149,7 +145,10 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
     // Take all monitors for this actor ID.
     let monitors = {
-        let mut shard = MONITOR_TABLE[shard_index].write().unwrap();
+        let mut shard = match MONITOR_TABLE[shard_index].write() {
+            Ok(guard) => guard,
+            Err(e) => e.into_inner(),
+        };
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
 
         // Also remove from ref_to_monitor mapping

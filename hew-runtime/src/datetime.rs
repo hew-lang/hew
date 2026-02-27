@@ -14,6 +14,10 @@ use core::ptr;
 fn realtime_clock() -> (i64, i64) {
     use std::time::SystemTime;
     match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "Unix epoch seconds fit in i64 for millennia"
+        )]
         Ok(d) => (d.as_secs() as i64, i64::from(d.subsec_nanos())),
         Err(_) => (0, 0),
     }
@@ -59,6 +63,12 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
 const SECS_PER_DAY: i64 = 86400;
 
 /// Convert epoch milliseconds to (year, month 1-12, day 1-31, hour, minute, second).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "Hinnant civil-date algorithm: intermediate values are bounded by calendar ranges"
+)]
 fn epoch_ms_to_components(epoch_ms: i64) -> (i32, i32, i32, i32, i32, i32) {
     let total_secs = epoch_ms / 1000;
     let day_secs = total_secs.rem_euclid(SECS_PER_DAY);
@@ -125,6 +135,10 @@ pub extern "C" fn hew_datetime_second(epoch_ms: i64) -> i32 {
 
 /// Return the weekday (0=Sunday, 6=Saturday) for an epoch-millisecond timestamp.
 #[no_mangle]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "rem_euclid(7) always returns 0..6, fits in i32"
+)]
 pub extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
     let days = epoch_ms / 1000 / SECS_PER_DAY;
     // 1970-01-01 was Thursday (4). Adjust.
@@ -244,6 +258,10 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, _fmt: *const c_cha
 }
 
 /// Convert date components to epoch milliseconds (UTC).
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "month values 1-12 mapped to 0-11 are non-negative; day-of-year values are non-negative"
+)]
 fn components_to_epoch_ms(y: i32, m: i32, d: i32, h: i32, min: i32, s: i32) -> i64 {
     // Inverse of epoch_ms_to_components using the same civil calendar algorithm
     let y = i64::from(y);
@@ -253,6 +271,10 @@ fn components_to_epoch_ms(y: i32, m: i32, d: i32, h: i32, min: i32, s: i32) -> i
         (y, (m - 3) as u32)
     };
     let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "year-of-era is 0..399, fits in u32"
+    )]
     let yoe = (y_adj - era * 400) as u32;
     let doy = (153 * m_adj + 2) / 5 + (d as u32) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;

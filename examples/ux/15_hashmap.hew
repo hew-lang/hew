@@ -1,7 +1,7 @@
 // HashMap test
 
 fn main() {
-    let map: HashMap<string, i32> = HashMap::new();
+    let map: HashMap<String, i32> = HashMap::new();
     map.insert("a", 100);
     map.insert("b", 200);
 

@@ -327,6 +327,11 @@ pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count
     }
 
     let mut first_error: i32 = 0;
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "count >= 0 checked above; practical array sizes fit in usize"
+    )]
     for i in 0..count as usize {
         // SAFETY: Caller guarantees the array is valid for `count` elements.
         let actor = unsafe { *actors.add(i) };

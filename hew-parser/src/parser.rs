@@ -488,29 +488,33 @@ impl<'src> Parser<'src> {
         Some(RecursionGuard(std::ptr::from_ref(&self.depth)))
     }
 
+    /// If the token is a contextual keyword, return its identifier name.
+    fn contextual_keyword_name(tok: &Token<'_>) -> Option<&'static str> {
+        match tok {
+            Token::After => Some("after"),
+            Token::From => Some("from"),
+            Token::Init => Some("init"),
+            Token::Child => Some("child"),
+            Token::Restart => Some("restart"),
+            Token::Budget => Some("budget"),
+            Token::Strategy => Some("strategy"),
+            Token::Permanent => Some("permanent"),
+            Token::Transient => Some("transient"),
+            Token::Temporary => Some("temporary"),
+            Token::OneForOne => Some("one_for_one"),
+            Token::OneForAll => Some("one_for_all"),
+            Token::RestForOne => Some("rest_for_one"),
+            Token::Wire => Some("wire"),
+            Token::Optional => Some("optional"),
+            Token::Deprecated => Some("deprecated"),
+            Token::Reserved => Some("reserved"),
+            _ => None,
+        }
+    }
+
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
     fn is_ident_token(tok: &Token<'_>) -> bool {
-        matches!(
-            tok,
-            Token::Identifier(_)
-                | Token::After
-                | Token::From
-                | Token::Init
-                | Token::Child
-                | Token::Restart
-                | Token::Budget
-                | Token::Strategy
-                | Token::Permanent
-                | Token::Transient
-                | Token::Temporary
-                | Token::OneForOne
-                | Token::OneForAll
-                | Token::RestForOne
-                | Token::Wire
-                | Token::Optional
-                | Token::Deprecated
-                | Token::Reserved
-        )
+        matches!(tok, Token::Identifier(_)) || Self::contextual_keyword_name(tok).is_some()
     }
 
     fn expect_ident(&mut self) -> Option<String> {
@@ -520,46 +524,8 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Some(name)
             }
-            // Contextual keywords that can also be used as identifiers
-            Some(
-                Token::After
-                | Token::From
-                | Token::Init
-                | Token::Child
-                | Token::Restart
-                | Token::Budget
-                | Token::Strategy
-                | Token::Permanent
-                | Token::Transient
-                | Token::Temporary
-                | Token::OneForOne
-                | Token::OneForAll
-                | Token::RestForOne
-                | Token::Wire
-                | Token::Optional
-                | Token::Deprecated
-                | Token::Reserved,
-            ) => {
-                let name = match self.peek().unwrap() {
-                    Token::After => "after",
-                    Token::From => "from",
-                    Token::Init => "init",
-                    Token::Child => "child",
-                    Token::Restart => "restart",
-                    Token::Budget => "budget",
-                    Token::Strategy => "strategy",
-                    Token::Permanent => "permanent",
-                    Token::Transient => "transient",
-                    Token::Temporary => "temporary",
-                    Token::OneForOne => "one_for_one",
-                    Token::OneForAll => "one_for_all",
-                    Token::RestForOne => "rest_for_one",
-                    Token::Wire => "wire",
-                    Token::Optional => "optional",
-                    Token::Deprecated => "deprecated",
-                    Token::Reserved => "reserved",
-                    _ => unreachable!(),
-                };
+            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
+                let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
                 self.advance();
                 Some(name.to_string())
             }
@@ -583,12 +549,16 @@ impl<'src> Parser<'src> {
         self.errors.truncate(saved.1);
     }
 
-    /// Collect consecutive outer doc comment (`///`) tokens and return
-    /// the concatenated content, or `None` if no doc comments are present.
-    fn collect_doc_comments(&mut self) -> Option<String> {
+    /// Collect consecutive doc comment tokens with the given prefix and return
+    /// the concatenated content, or `None` if no matching comments are present.
+    fn collect_doc_comments_with_prefix(
+        &mut self,
+        prefix: &str,
+        is_match: fn(&Token<'src>) -> Option<&'src str>,
+    ) -> Option<String> {
         let mut lines = Vec::new();
-        while let Some(Token::DocComment(s)) = self.peek() {
-            let content = s.strip_prefix("///").unwrap_or(s);
+        while let Some(s) = self.peek().and_then(is_match) {
+            let content = s.strip_prefix(prefix).unwrap_or(s);
             // Strip one leading space if present (conventional formatting)
             let content = content.strip_prefix(' ').unwrap_or(content);
             lines.push(content.to_string());
@@ -601,21 +571,22 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Collect consecutive outer doc comment (`///`) tokens and return
+    /// the concatenated content, or `None` if no doc comments are present.
+    fn collect_doc_comments(&mut self) -> Option<String> {
+        self.collect_doc_comments_with_prefix("///", |t| match t {
+            Token::DocComment(s) => Some(s),
+            _ => None,
+        })
+    }
+
     /// Collect consecutive inner doc comment (`//!`) tokens at the start of
     /// the file and return the concatenated content.
     fn collect_inner_doc_comments(&mut self) -> Option<String> {
-        let mut lines = Vec::new();
-        while let Some(Token::InnerDocComment(s)) = self.peek() {
-            let content = s.strip_prefix("//!").unwrap_or(s);
-            let content = content.strip_prefix(' ').unwrap_or(content);
-            lines.push(content.to_string());
-            self.advance();
-        }
-        if lines.is_empty() {
-            None
-        } else {
-            Some(lines.join("\n"))
-        }
+        self.collect_doc_comments_with_prefix("//!", |t| match t {
+            Token::InnerDocComment(s) => Some(s),
+            _ => None,
+        })
     }
 
     // ── Program and Items ──
@@ -3404,43 +3375,8 @@ impl<'src> Parser<'src> {
                 Expr::Cooperate
             }
             // Contextual keywords that can be used as identifiers in expressions
-            Token::After
-            | Token::From
-            | Token::Init
-            | Token::Child
-            | Token::Restart
-            | Token::Budget
-            | Token::Strategy
-            | Token::Permanent
-            | Token::Transient
-            | Token::Temporary
-            | Token::OneForOne
-            | Token::OneForAll
-            | Token::RestForOne
-            | Token::Wire
-            | Token::Optional
-            | Token::Deprecated
-            | Token::Reserved => {
-                let name = match self.peek().unwrap() {
-                    Token::After => "after",
-                    Token::From => "from",
-                    Token::Init => "init",
-                    Token::Child => "child",
-                    Token::Restart => "restart",
-                    Token::Budget => "budget",
-                    Token::Strategy => "strategy",
-                    Token::Permanent => "permanent",
-                    Token::Transient => "transient",
-                    Token::Temporary => "temporary",
-                    Token::OneForOne => "one_for_one",
-                    Token::OneForAll => "one_for_all",
-                    Token::RestForOne => "rest_for_one",
-                    Token::Wire => "wire",
-                    Token::Optional => "optional",
-                    Token::Deprecated => "deprecated",
-                    Token::Reserved => "reserved",
-                    _ => unreachable!(),
-                };
+            tok if Self::contextual_keyword_name(&tok).is_some() => {
+                let name = Self::contextual_keyword_name(&tok).unwrap();
                 self.advance();
                 Expr::Identifier(name.to_string())
             }

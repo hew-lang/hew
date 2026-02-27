@@ -3196,7 +3196,8 @@ impl Checker {
                             {
                                 #[expect(
                                     clippy::cast_sign_loss,
-                                    reason = "supervisor child index is always non-negative"
+                                    clippy::cast_possible_truncation,
+                                    reason = "supervisor child index is always non-negative and small"
                                 )]
                                 let i = *idx as usize;
                                 if i < children.len() {
@@ -6872,7 +6873,7 @@ mod tests {
         items: Vec<Spanned<Item>>,
     ) -> ImportDecl {
         ImportDecl {
-            path: path.iter().map(|s| s.to_string()).collect(),
+            path: path.iter().map(ToString::to_string).collect(),
             spec,
             file_path: None,
             resolved_items: Some(items),

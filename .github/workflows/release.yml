@@ -535,6 +535,25 @@ jobs:
             -f version="${VERSION}"
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Playground — trigger Docker image rebuild in hew-lang/playground
+  # ─────────────────────────────────────────────────────────────────────────
+  playground:
+    needs: release
+    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Trigger playground image rebuild
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          gh workflow run build.yml \
+            -R hew-lang/playground \
+            -f version="${VERSION}"
+
+  # ─────────────────────────────────────────────────────────────────────────
   # VS Code Extension — package + publish with bundled hew-lsp per platform
   # ─────────────────────────────────────────────────────────────────────────
   vscode-extension:

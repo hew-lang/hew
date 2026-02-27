@@ -434,6 +434,7 @@ When a `receive fn` message handler returns `Err`, the error is:
 - **Owned heap types**: `String`, `Bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Arc<T>` where `T: Frozen`.
 - **Actor references**: `ActorRef<A>` is sendable.
+- **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
 ### 3.2 Mutability
 
@@ -527,7 +528,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ### 3.3.2 The `bytes` Type
 
-`bytes` is a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name and u8-typed API:
+`bytes` is a standard library type (not a language primitive): a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name and u8-typed API:
 
 ```hew
 let buf: bytes = bytes::new();
@@ -3239,7 +3240,7 @@ fn main() {
 ```
 
 - `spawn SupervisorName` — creates and starts the supervisor with all declared children
-- `supervisor_child(sup, index)` — returns a typed reference to the child at the given index
+- `supervisor_child(sup, index)` — compiler intrinsic that returns a typed reference to the child at the given index. The compiler resolves the child's actor type from the supervisor declaration, so the returned reference is fully typed without a cast.
 - `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
 
 ### 5.7 Crash Isolation

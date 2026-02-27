@@ -1194,6 +1194,98 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
 // Returns true when `expr` only references immutable locals, literals, field
 // accesses and method calls on invariant receivers — i.e. values that cannot
 // change across loop iterations.
+//
+// IMPORTANT: method calls are structurally invariant but NOT safe to hoist if
+// the receiver is mutated in the loop body (e.g. v.push() inside a
+// while i < v.len() loop). The caller must check bodyMutatesVar() separately.
+
+// Extract the root identifier name from a method-call receiver chain.
+// e.g. for v.len() returns "v", for a.b.len() returns "a".
+static std::optional<std::string> extractReceiverVarName(const ast::Expr &expr) {
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+    return ident->name;
+  if (auto *field = std::get_if<ast::ExprFieldAccess>(&expr.kind))
+    return extractReceiverVarName(field->object->value);
+  if (auto *method = std::get_if<ast::ExprMethodCall>(&expr.kind))
+    return extractReceiverVarName(method->receiver->value);
+  return std::nullopt;
+}
+
+// Check if an expression tree contains a method call on `varName`.
+static bool exprCallsMethodOn(const ast::Expr &expr, const std::string &varName) {
+  if (auto *mc = std::get_if<ast::ExprMethodCall>(&expr.kind)) {
+    auto recv = extractReceiverVarName(mc->receiver->value);
+    if (recv && *recv == varName)
+      return true;
+    if (exprCallsMethodOn(mc->receiver->value, varName))
+      return true;
+    for (auto &arg : mc->args) {
+      if (auto *p = std::get_if<ast::CallArgPositional>(&arg)) {
+        if (exprCallsMethodOn(p->expr->value, varName))
+          return true;
+      } else if (auto *n = std::get_if<ast::CallArgNamed>(&arg)) {
+        if (exprCallsMethodOn(n->value->value, varName))
+          return true;
+      }
+    }
+  }
+  if (auto *call = std::get_if<ast::ExprCall>(&expr.kind)) {
+    for (auto &arg : call->args) {
+      if (auto *p = std::get_if<ast::CallArgPositional>(&arg)) {
+        if (exprCallsMethodOn(p->expr->value, varName))
+          return true;
+      }
+    }
+  }
+  if (auto *bin = std::get_if<ast::ExprBinary>(&expr.kind))
+    return exprCallsMethodOn(bin->left->value, varName) ||
+           exprCallsMethodOn(bin->right->value, varName);
+  if (auto *un = std::get_if<ast::ExprUnary>(&expr.kind))
+    return exprCallsMethodOn(un->operand->value, varName);
+  return false;
+}
+
+// Check if a block (loop body) contains any method calls on `varName`,
+// or passes `varName` to a function call (potential mutation through alias).
+static bool bodyMutatesVar(const ast::Block &block, const std::string &varName);
+
+static bool stmtMutatesVar(const ast::Stmt &stmt, const std::string &varName) {
+  if (auto *expr = std::get_if<ast::StmtExpression>(&stmt.kind))
+    return exprCallsMethodOn(expr->expr.value, varName);
+  if (auto *let_ = std::get_if<ast::StmtLet>(&stmt.kind))
+    return let_->value && exprCallsMethodOn(let_->value->value, varName);
+  if (auto *var_ = std::get_if<ast::StmtVar>(&stmt.kind))
+    return var_->value && exprCallsMethodOn(var_->value->value, varName);
+  if (auto *assign = std::get_if<ast::StmtAssign>(&stmt.kind))
+    return exprCallsMethodOn(assign->value.value, varName);
+  if (auto *if_ = std::get_if<ast::StmtIf>(&stmt.kind)) {
+    if (bodyMutatesVar(if_->then_block, varName))
+      return true;
+    if (if_->else_block && if_->else_block->block &&
+        bodyMutatesVar(*if_->else_block->block, varName))
+      return true;
+    if (if_->else_block && if_->else_block->if_stmt)
+      return stmtMutatesVar(if_->else_block->if_stmt->value, varName);
+    return false;
+  }
+  if (auto *for_ = std::get_if<ast::StmtFor>(&stmt.kind))
+    return bodyMutatesVar(for_->body, varName);
+  if (auto *while_ = std::get_if<ast::StmtWhile>(&stmt.kind))
+    return bodyMutatesVar(while_->body, varName);
+  if (auto *loop_ = std::get_if<ast::StmtLoop>(&stmt.kind))
+    return bodyMutatesVar(loop_->body, varName);
+  return false;
+}
+
+static bool bodyMutatesVar(const ast::Block &block, const std::string &varName) {
+  for (auto &s : block.stmts) {
+    if (stmtMutatesVar(s->value, varName))
+      return true;
+  }
+  if (block.trailing_expr && exprCallsMethodOn(block.trailing_expr->value, varName))
+    return true;
+  return false;
+}
 
 bool MLIRGen::isExprLoopInvariant(const ast::Expr &expr) {
   if (std::get_if<ast::ExprLiteral>(&expr.kind))
@@ -1202,6 +1294,10 @@ bool MLIRGen::isExprLoopInvariant(const ast::Expr &expr) {
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
     return !mutableVars.lookup(intern(ident->name));
 
+  // Method calls are only invariant if the receiver is immutable AND
+  // no method is called on that same receiver inside the loop body
+  // (since methods like push/insert can mutate the receiver's contents
+  // even though the binding itself is immutable).
   if (auto *method = std::get_if<ast::ExprMethodCall>(&expr.kind)) {
     if (!isExprLoopInvariant(method->receiver->value))
       return false;
@@ -1214,6 +1310,8 @@ bool MLIRGen::isExprLoopInvariant(const ast::Expr &expr) {
           return false;
       }
     }
+    // Requires the caller to have checked the loop body for mutations
+    // on this receiver (see bodyMutatesVar in generateWhileStmt).
     return true;
   }
 
@@ -1257,6 +1355,8 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   // ── Hoist loop-invariant sub-expressions from comparison conditions ──
   // For patterns like `while i < v.len()`, evaluate the invariant side
   // (v.len()) once before the loop so it is not re-evaluated every iteration.
+  // SAFETY: Only hoist if the receiver variable is NOT mutated (no method
+  // calls on it) anywhere in the loop body.
   const ast::Expr *hoistedExpr = nullptr;
   if (auto *binary = std::get_if<ast::ExprBinary>(&stmt.condition.value.kind)) {
     switch (binary->op) {
@@ -1265,23 +1365,32 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
     case ast::BinaryOp::Greater:
     case ast::BinaryOp::GreaterEqual:
     case ast::BinaryOp::Equal:
-    case ast::BinaryOp::NotEqual:
-      if (!isExprLoopInvariant(binary->right->value) && !isExprLoopInvariant(binary->left->value))
+    case ast::BinaryOp::NotEqual: {
+      // Determine which side (if any) is invariant.
+      const ast::Expr *candidate = nullptr;
+      if (isExprLoopInvariant(binary->right->value))
+        candidate = &binary->right->value;
+      else if (isExprLoopInvariant(binary->left->value))
+        candidate = &binary->left->value;
+      if (!candidate)
         break;
-      // Hoist whichever side is invariant (prefer right — the common case).
-      if (isExprLoopInvariant(binary->right->value)) {
-        hoistedExpr = &binary->right->value;
-      } else {
-        hoistedExpr = &binary->left->value;
+
+      // If the candidate contains a method call, check that the receiver
+      // is not mutated in the loop body.
+      auto recvName = extractReceiverVarName(*candidate);
+      if (recvName && bodyMutatesVar(stmt.body, *recvName)) {
+        // Not safe to hoist — receiver is mutated in the body.
+        break;
       }
-      {
-        mlir::Value val = generateExpression(*hoistedExpr);
-        if (val)
-          hoistedValues[hoistedExpr] = val;
-        else
-          hoistedExpr = nullptr;
-      }
+
+      hoistedExpr = candidate;
+      mlir::Value val = generateExpression(*hoistedExpr);
+      if (val)
+        hoistedValues[hoistedExpr] = val;
+      else
+        hoistedExpr = nullptr;
       break;
+    }
     default:
       break;
     }

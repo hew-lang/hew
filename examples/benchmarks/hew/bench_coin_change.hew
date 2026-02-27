@@ -2,15 +2,12 @@ fn coin_change(coins: Vec<int>, num_coins: int, amount: int) -> int {
     let INF = 999999;
     let sz = amount + 1;
     let dp: Vec<int> = Vec::new();
-    var idx = 0;
-    while idx < sz {
+    for idx in 0..sz {
         dp.push(INF);
-        idx = idx + 1;
     }
     dp.set(0, 0);
 
-    var i = 0;
-    while i < num_coins {
+    for i in 0..num_coins {
         let c = coins.get(i);
         var a = c;
         while a <= amount {
@@ -20,7 +17,6 @@ fn coin_change(coins: Vec<int>, num_coins: int, amount: int) -> int {
             }
             a = a + 1;
         }
-        i = i + 1;
     }
     return dp.get(amount);
 }
@@ -38,10 +34,8 @@ fn main() {
 
     let iters = 100000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + coin_change(coins, num_coins, amount);
-        i = i + 1;
     }
     println("bench_coin_change");
     println(checksum);

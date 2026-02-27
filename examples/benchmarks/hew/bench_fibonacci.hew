@@ -1,23 +1,19 @@
 fn fibonacci(n: int) -> int {
     var a = 0;
     var b = 1;
-    var i = 0;
-    while i < n {
+    for i in 0..n {
         let temp = b;
         b = a + b;
         a = temp;
-        i = i + 1;
     }
     a
 }
 
 fn main() {
     let iters = 1000000;
-    var i = 0;
     var sum = 0;
-    while i < iters {
+    for i in 0..iters {
         sum = sum + fibonacci(30);
-        i = i + 1;
     }
     println(iters);
     println(sum);

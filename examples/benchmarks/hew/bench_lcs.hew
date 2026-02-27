@@ -2,10 +2,8 @@ fn lcs(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
     let cols = n + 1;
     let total = (m + 1) * cols;
     let dp: Vec<int> = Vec::new();
-    var idx = 0;
-    while idx < total {
+    for idx in 0..total {
         dp.push(0);
-        idx = idx + 1;
     }
 
     var i = 1;
@@ -36,23 +34,17 @@ fn main() {
 
     let a: Vec<int> = Vec::new();
     let b: Vec<int> = Vec::new();
-    var k = 0;
-    while k < m {
+    for k in 0..m {
         a.push(k % 7);
-        k = k + 1;
     }
-    k = 0;
-    while k < n {
+    for k in 0..n {
         b.push(k % 9);
-        k = k + 1;
     }
 
     let iters = 50000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + lcs(a, b, m, n);
-        i = i + 1;
     }
     println("bench_lcs");
     println(checksum);

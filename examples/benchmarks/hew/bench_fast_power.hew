@@ -14,11 +14,9 @@ fn fast_power(base: int, exp: int) -> int {
 
 fn main() {
     let iters = 5000000;
-    var i = 0;
     var sum = 0;
-    while i < iters {
+    for i in 0..iters {
         sum = sum + fast_power(2, 30);
-        i = i + 1;
     }
     println(iters);
     println(sum);

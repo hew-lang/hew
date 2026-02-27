@@ -22,16 +22,12 @@ fn rotate_array(arr: Vec<int>, k: int) -> int {
 fn main() {
     let iters = 100000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         let arr: Vec<int> = Vec::new();
-        var k = 0;
-        while k < 1000 {
+        for k in 0..1000 {
             arr.push(k);
-            k = k + 1;
         }
         checksum = checksum + rotate_array(arr, 337);
-        i = i + 1;
     }
     println("bench_rotate_array");
     println(checksum);

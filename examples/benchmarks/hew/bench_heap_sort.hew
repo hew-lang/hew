@@ -50,11 +50,9 @@ fn make_test_array() -> Vec<int> {
 
 fn main() {
     let iters = 100000;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         let v = make_test_array();
         heap_sort(v);
-        i = i + 1;
     }
     println(iters);
 }

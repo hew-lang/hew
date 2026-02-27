@@ -1,33 +1,25 @@
 fn lis(arr: Vec<int>, n: int) -> int {
     let dp: Vec<int> = Vec::new();
-    var idx = 0;
-    while idx < n {
+    for idx in 0..n {
         dp.push(1);
-        idx = idx + 1;
     }
 
-    var i = 1;
-    while i < n {
-        var j = 0;
-        while j < i {
+    for i in 1..n {
+        for j in 0..i {
             if arr.get(j) < arr.get(i) {
                 let candidate = dp.get(j) + 1;
                 if candidate > dp.get(i) {
                     dp.set(i, candidate);
                 }
             }
-            j = j + 1;
         }
-        i = i + 1;
     }
 
     var best = 0;
-    i = 0;
-    while i < n {
+    for i in 0..n {
         if dp.get(i) > best {
             best = dp.get(i);
         }
-        i = i + 1;
     }
     return best;
 }
@@ -35,18 +27,14 @@ fn lis(arr: Vec<int>, n: int) -> int {
 fn main() {
     let n = 500;
     let arr: Vec<int> = Vec::new();
-    var k = 0;
-    while k < n {
+    for k in 0..n {
         arr.push((k * 37 + 13) % 100);
-        k = k + 1;
     }
 
     let iters = 5000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + lis(arr, n);
-        i = i + 1;
     }
     println("bench_lis");
     println(checksum);

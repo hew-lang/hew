@@ -14,11 +14,9 @@ fn is_prime(n: int) -> int {
 
 fn main() {
     let iters = 100000;
-    var i = 0;
     var sum = 0;
-    while i < iters {
+    for i in 0..iters {
         sum = sum + is_prime(104729);
-        i = i + 1;
     }
     println(iters);
     println(sum);

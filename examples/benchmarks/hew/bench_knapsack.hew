@@ -2,10 +2,8 @@ fn knapsack(weights: Vec<int>, values: Vec<int>, n: int, cap: int) -> int {
     let cols = cap + 1;
     let total = (n + 1) * cols;
     let dp: Vec<int> = Vec::new();
-    var idx = 0;
-    while idx < total {
+    for idx in 0..total {
         dp.push(0);
-        idx = idx + 1;
     }
 
     var i = 1;
@@ -37,19 +35,15 @@ fn main() {
 
     let weights: Vec<int> = Vec::new();
     let values: Vec<int> = Vec::new();
-    var k = 0;
-    while k < n {
+    for k in 0..n {
         weights.push(k % 10 + 1);
         values.push(k % 15 + 3);
-        k = k + 1;
     }
 
     let iters = 50000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + knapsack(weights, values, n, cap);
-        i = i + 1;
     }
     println("bench_knapsack");
     println(checksum);

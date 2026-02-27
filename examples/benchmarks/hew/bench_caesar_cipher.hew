@@ -1,8 +1,7 @@
 fn caesar_checksum(s: String, lower: String, table: Vec<i32>) -> i32 {
     let n = s.len();
     var checksum = 0;
-    var i = 0;
-    while i < n {
+    for i in 0..n {
         var found = 0 - 1;
         var p = 0;
         while p < 26 {
@@ -17,7 +16,6 @@ fn caesar_checksum(s: String, lower: String, table: Vec<i32>) -> i32 {
             let mapped = table.get(found);
             checksum = checksum + mapped;
         }
-        i = i + 1;
     }
     checksum
 }
@@ -27,19 +25,15 @@ fn main() {
     let lower = "abcdefghijklmnopqrstuvwxyz";
 
     let table: Vec<i32> = Vec::new();
-    var k = 0;
-    while k < 26 {
+    for k in 0..26 {
         let shifted = (k + 13) % 26;
         table.push(shifted + 97);
-        k = k + 1;
     }
 
     let iters = 200000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + caesar_checksum(s, lower, table);
-        i = i + 1;
     }
     println("bench_caesar_cipher");
     println(checksum);

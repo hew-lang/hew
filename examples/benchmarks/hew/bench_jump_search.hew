@@ -62,17 +62,13 @@ fn jump_search(v: Vec<int>, target: int) -> int {
 
 fn main() {
     let v: Vec<int> = Vec::new();
-    var i = 0;
-    while i < 10000 {
+    for i in 0..10000 {
         v.push(i);
-        i = i + 1;
     }
     let iters = 1000000;
-    var iter = 0;
     var sum = 0;
-    while iter < iters {
+    for iter in 0..iters {
         sum = sum + jump_search(v, 7777);
-        iter = iter + 1;
     }
     println(iters);
     println(sum);

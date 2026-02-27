@@ -94,10 +94,8 @@ fn main() {
 
     let iters = 100000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + topological_sort(adj_nodes, adj_offsets, in_degree, n);
-        i = i + 1;
     }
     println("bench_topological_sort");
     println(checksum);

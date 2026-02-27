@@ -1,26 +1,20 @@
 fn build_directed_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
-    var i = 0;
-    while i <= n {
+    for i in 0..(n + 1) {
         adj_offsets.push(0);
-        i = i + 1;
     }
 
-    var src = 0;
-    while src < n {
+    for src in 0..n {
         let start = adj_offsets.get(src);
         var count = 0;
-        var dst = 1;
-        while dst <= 3 {
+        for dst in 1..4 {
             let neighbor = (src + dst) % n;
             adj_nodes.push(neighbor);
             count = count + 1;
-            dst = dst + 1;
         }
         let extra = (src * 7 + 13) % n;
         adj_nodes.push(extra);
         count = count + 1;
         adj_offsets.set(src + 1, start + count);
-        src = src + 1;
     }
     return 0;
 }
@@ -29,15 +23,12 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
     let color: Vec<int> = Vec::new();
     let stack: Vec<int> = Vec::new();
     let stack_phase: Vec<int> = Vec::new();
-    var i = 0;
-    while i < n {
+    for i in 0..n {
         color.push(0);
-        i = i + 1;
     }
 
     var has_cycle = 0;
-    var start = 0;
-    while start < n {
+    for start in 0..n {
         if color.get(start) == 0 {
             stack.push(start);
             stack_phase.push(0);
@@ -52,8 +43,7 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
                     stack_phase.set(top, 1);
                     let edge_start = adj_offsets.get(node);
                     let edge_end = adj_offsets.get(node + 1);
-                    var e = edge_start;
-                    while e < edge_end {
+                    for e in edge_start..edge_end {
                         let neighbor = adj_nodes.get(e);
                         if color.get(neighbor) == 1 {
                             has_cycle = 1;
@@ -62,7 +52,6 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
                             stack.push(neighbor);
                             stack_phase.push(0);
                         }
-                        e = e + 1;
                     }
                 } else {
                     color.set(node, 2);
@@ -71,7 +60,6 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
                 }
             }
         }
-        start = start + 1;
     }
     return has_cycle;
 }
@@ -84,10 +72,8 @@ fn main() {
 
     let iters = 200000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + detect_cycle(adj_nodes, adj_offsets, n);
-        i = i + 1;
     }
     println("bench_detect_cycle");
     println(checksum);

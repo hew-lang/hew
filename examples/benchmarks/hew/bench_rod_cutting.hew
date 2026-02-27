@@ -24,18 +24,14 @@ fn rod_cutting(prices: Vec<int>, n: int) -> int {
 fn main() {
     let n = 50;
     let prices: Vec<int> = Vec::new();
-    var k = 0;
-    while k < n {
+    for k in 0..n {
         prices.push(k % 10 + 1 + k / 5);
-        k = k + 1;
     }
 
     let iters = 100000;
     var checksum = 0;
-    var i = 0;
-    while i < iters {
+    for i in 0..iters {
         checksum = checksum + rod_cutting(prices, n);
-        i = i + 1;
     }
     println("bench_rod_cutting");
     println(checksum);

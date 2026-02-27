@@ -2800,6 +2800,8 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
   } else if (auto *me = std::get_if<ast::ExprMatch>(&expr.kind)) {
     collectFreeVarsInExpr(me->scrutinee->value, bound, freeVars);
     for (const auto &arm : me->arms) {
+      if (arm.guard)
+        collectFreeVarsInExpr(arm.guard->value, bound, freeVars);
       if (arm.body)
         collectFreeVarsInExpr(arm.body->value, bound, freeVars);
     }

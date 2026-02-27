@@ -1778,10 +1778,9 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     SymbolTableScopeT loopScope(symbolTable);
     MutableTableScopeT loopMutScope(mutableVars);
 
-    // Bind loop variable: load index, cast to i32
+    // Bind loop variable: load index as i64
     auto idx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-    auto i32Var = builder.create<mlir::arith::TruncIOp>(location, builder.getI32Type(), idx);
-    declareVariable(loopVarName, i32Var);
+    declareVariable(loopVarName, idx);
 
     // Generate body with continue guards
     pushDropScope();
@@ -2457,7 +2456,10 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
   {
     SymbolTableScopeT loopScope(symbolTable);
     MutableTableScopeT loopMutScope(mutableVars);
-    generateBlock(stmt.body);
+    pushDropScope();
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                       location);
+    popDropScope();
   }
 
   auto *bodyBlock = builder.getInsertionBlock();

@@ -834,16 +834,16 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 /// - The actor must not be used after this call.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
+pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return;
+        return 0;
     }
 
     // Remove from live tracking. If the actor was already consumed by
     // cleanup_all_actors (returns false), skip freeing to avoid
     // double-free.
     if !untrack_actor(actor) {
-        return;
+        return 0;
     }
 
     // SAFETY: Caller guarantees `actor` is valid.
@@ -868,8 +868,15 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
         std::thread::yield_now();
     }
 
+    let state = a.actor_state.load(Ordering::Acquire);
+    if state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32 {
+        crate::set_last_error("actor still running after timeout");
+        return -2;
+    }
+
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
+    0
 }
 
 // ── Budget API ──────────────────────────────────────────────────────────
@@ -1928,15 +1935,16 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 /// - The actor must not be used after this call.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
+pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return;
+        return 0;
     }
 
     if !untrack_actor(actor) {
-        return;
+        return 0;
     }
 
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
+    0
 }

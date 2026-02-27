@@ -127,7 +127,8 @@ impl HewWireBuf {
 
     /// Read `count` bytes at the current read position (without copying).
     fn peek(&self, count: usize) -> Option<*const u8> {
-        if self.read_pos + count > self.len {
+        let end = self.read_pos.checked_add(count)?;
+        if end > self.len {
             return None;
         }
         if self.data.is_null() {
@@ -904,7 +905,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 let rp = unsafe { (*buf).read_pos };
                 // SAFETY: caller guarantees `buf` is valid — reading length.
                 let bl = unsafe { (*buf).len };
-                if rp + 4 > bl {
+                if bl.saturating_sub(rp) < 4 {
                     return -1;
                 }
                 // SAFETY: caller guarantees `buf` is valid.
@@ -917,7 +918,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 let rp = unsafe { (*buf).read_pos };
                 // SAFETY: caller guarantees `buf` is valid — reading length.
                 let bl = unsafe { (*buf).len };
-                if rp + 8 > bl {
+                if bl.saturating_sub(rp) < 8 {
                     return -1;
                 }
                 // SAFETY: caller guarantees `buf` is valid.

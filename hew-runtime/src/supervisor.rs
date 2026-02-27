@@ -1513,10 +1513,12 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     if !spec.init_state.is_null() {
         // SAFETY: init_state was allocated with libc::malloc.
         unsafe { libc::free(spec.init_state) };
+        spec.init_state = ptr::null_mut();
     }
     if !spec.name.is_null() {
         // SAFETY: name was allocated with libc::strdup.
         unsafe { libc::free(spec.name.cast::<c_void>()) };
+        spec.name = ptr::null_mut();
     }
 
     // Swap-remove to avoid shifting all elements.

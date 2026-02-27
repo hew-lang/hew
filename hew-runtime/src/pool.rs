@@ -64,8 +64,8 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
     }
 
     let strategy = match strategy {
+        0 => PoolStrategy::RoundRobin,
         1 => PoolStrategy::Random,
-        2 => PoolStrategy::RoundRobin,
         _ => PoolStrategy::RoundRobin,
     };
 

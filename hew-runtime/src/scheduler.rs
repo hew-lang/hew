@@ -359,7 +359,10 @@ fn worker_loop(id: usize, local: &WorkDeque) {
 
         // 5. Park on per-worker condvar until notified or timeout.
         let parker = &sched.parkers[id];
-        let guard = parker.mutex.lock().unwrap();
+        let guard = match parker.mutex.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }

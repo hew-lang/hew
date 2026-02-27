@@ -982,13 +982,16 @@ pub unsafe extern "C" fn hew_noise_key_load(
 ///
 /// The caller must `free()` the returned pointer.
 ///
-/// # Panics
-///
-/// Panics if the Noise pattern string is invalid or keypair generation fails.
+/// Returns null if the pattern is invalid or keypair generation fails.
 #[no_mangle]
 pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
-    let builder = Builder::new(NOISE_PATTERN.parse().expect("valid pattern"));
-    let mut keypair = builder.generate_keypair().expect("keypair generation");
+    let Ok(params) = NOISE_PATTERN.parse() else {
+        return ptr::null_mut();
+    };
+    let builder = Builder::new(params);
+    let Ok(mut keypair) = builder.generate_keypair() else {
+        return ptr::null_mut();
+    };
 
     // Allocate and copy public key.
     // SAFETY: malloc with a valid size.

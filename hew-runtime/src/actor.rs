@@ -253,11 +253,13 @@ static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
 /// Register an actor in the live tracking set.
 fn track_actor(actor: *mut HewActor) {
-    if let Ok(mut guard) = LIVE_ACTORS.lock() {
-        guard
-            .get_or_insert_with(HashSet::new)
-            .insert(ActorPtr(actor));
-    }
+    let mut guard = match LIVE_ACTORS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    guard
+        .get_or_insert_with(HashSet::new)
+        .insert(ActorPtr(actor));
 }
 
 /// Remove an actor from the live tracking set.
@@ -265,10 +267,12 @@ fn track_actor(actor: *mut HewActor) {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
 fn untrack_actor(actor: *mut HewActor) -> bool {
-    if let Ok(mut guard) = LIVE_ACTORS.lock() {
-        if let Some(set) = guard.as_mut() {
-            return set.remove(&ActorPtr(actor));
-        }
+    let mut guard = match LIVE_ACTORS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if let Some(set) = guard.as_mut() {
+        return set.remove(&ActorPtr(actor));
     }
     false
 }

@@ -86,7 +86,7 @@ fn line_comment<'s>(_lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::Skip {
     logos::Skip
 }
 
-fn block_comment<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::Skip {
+fn block_comment<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::FilterResult<(), ()> {
     let bytes = lex.remainder().as_bytes();
     let mut depth: u32 = 1;
     let mut i = 0;
@@ -98,7 +98,7 @@ fn block_comment<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::Skip {
             depth -= 1;
             if depth == 0 {
                 lex.bump(i + 2);
-                return logos::Skip;
+                return logos::FilterResult::Skip;
             }
             i += 2;
         } else {
@@ -107,7 +107,7 @@ fn block_comment<'s>(lex: &mut logos::Lexer<'s, Token<'s>>) -> logos::Skip {
     }
     // Unterminated — bump rest so we don't loop forever.
     lex.bump(bytes.len());
-    logos::Skip
+    logos::FilterResult::Error(())
 }
 
 // ---------------------------------------------------------------------------

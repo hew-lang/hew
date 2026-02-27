@@ -1,0 +1,69 @@
+fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int, n: int, start_node: int) -> int {
+    let INF = 999999;
+    let dist: Vec<int> = Vec::new();
+    var i = 0;
+    while i < n {
+        dist.push(INF);
+        i = i + 1;
+    }
+    dist.set(start_node, 0);
+
+    var iter = 0;
+    while iter < n - 1 {
+        var e = 0;
+        while e < num_edges {
+            let u = edge_src.get(e);
+            let v = edge_dst.get(e);
+            let w = edge_wt.get(e);
+            let nd = dist.get(u) + w;
+            if dist.get(u) < INF {
+                if nd < dist.get(v) {
+                    dist.set(v, nd);
+                }
+            }
+            e = e + 1;
+        }
+        iter = iter + 1;
+    }
+
+    var total = 0;
+    i = 0;
+    while i < n {
+        total = total + dist.get(i);
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() {
+    let n = 50;
+    let edge_src: Vec<int> = Vec::new();
+    let edge_dst: Vec<int> = Vec::new();
+    let edge_wt: Vec<int> = Vec::new();
+
+    var src = 0;
+    while src < n {
+        var dst = 1;
+        while dst <= 3 {
+            let neighbor = (src + dst) % n;
+            let weight = (src + dst) % 10 + 1;
+            edge_src.push(src);
+            edge_dst.push(neighbor);
+            edge_wt.push(weight);
+            dst = dst + 1;
+        }
+        src = src + 1;
+    }
+    let num_edges = edge_src.len();
+
+    let iters = 20000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + bellman_ford(edge_src, edge_dst, edge_wt, num_edges, n, 0);
+        i = i + 1;
+    }
+    println("bench_bellman_ford");
+    println(checksum);
+    println(iters);
+}

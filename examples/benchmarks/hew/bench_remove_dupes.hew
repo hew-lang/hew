@@ -1,0 +1,35 @@
+fn remove_dupes(arr: Vec<int>) -> int {
+    let n = arr.len();
+    if n == 0 {
+        return 0;
+    }
+    var write = 1;
+    var read = 1;
+    while read < n {
+        if arr.get(read) != arr.get(write - 1) {
+            arr.set(write, arr.get(read));
+            write = write + 1;
+        }
+        read = read + 1;
+    }
+    return write;
+}
+
+fn main() {
+    let iters = 200000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        let arr: Vec<int> = Vec::new();
+        var k = 0;
+        while k < 1000 {
+            arr.push(k / 3);
+            k = k + 1;
+        }
+        checksum = checksum + remove_dupes(arr);
+        i = i + 1;
+    }
+    println("bench_remove_dupes");
+    println(checksum);
+    println(iters);
+}

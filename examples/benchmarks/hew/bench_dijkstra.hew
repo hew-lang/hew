@@ -1,0 +1,104 @@
+fn build_weighted_graph(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
+    var i = 0;
+    while i <= n {
+        adj_offsets.push(0);
+        i = i + 1;
+    }
+
+    var src = 0;
+    while src < n {
+        let start = adj_offsets.get(src);
+        var count = 0;
+        var dst = 1;
+        while dst <= 5 {
+            let neighbor = (src + dst) % n;
+            let weight = (src + dst) % 10 + 1;
+            adj_nodes.push(neighbor);
+            adj_weights.push(weight);
+            count = count + 1;
+            dst = dst + 1;
+        }
+        let extra = (src * 7 + 3) % n;
+        let ew = (src * 3 + 1) % 15 + 1;
+        adj_nodes.push(extra);
+        adj_weights.push(ew);
+        count = count + 1;
+        adj_offsets.set(src + 1, start + count);
+        src = src + 1;
+    }
+    return 0;
+}
+
+fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> int {
+    let INF = 999999;
+    let dist: Vec<int> = Vec::new();
+    let used: Vec<int> = Vec::new();
+    var i = 0;
+    while i < n {
+        dist.push(INF);
+        used.push(0);
+        i = i + 1;
+    }
+    dist.set(start_node, 0);
+
+    var iter = 0;
+    while iter < n {
+        var u = 0 - 1;
+        var best_dist = INF;
+        var v = 0;
+        while v < n {
+            if used.get(v) == 0 {
+                if dist.get(v) < best_dist {
+                    best_dist = dist.get(v);
+                    u = v;
+                }
+            }
+            v = v + 1;
+        }
+
+        if u < 0 {
+            iter = n;
+        } else {
+            used.set(u, 1);
+
+            var e = adj_offsets.get(u);
+            while e < adj_offsets.get(u + 1) {
+                let neighbor = adj_nodes.get(e);
+                let w = adj_weights.get(e);
+                let new_dist = dist.get(u) + w;
+                if new_dist < dist.get(neighbor) {
+                    dist.set(neighbor, new_dist);
+                }
+                e = e + 1;
+            }
+            iter = iter + 1;
+        }
+    }
+
+    var total = 0;
+    i = 0;
+    while i < n {
+        total = total + dist.get(i);
+        i = i + 1;
+    }
+    return total;
+}
+
+fn main() {
+    let n = 50;
+    let adj_nodes: Vec<int> = Vec::new();
+    let adj_weights: Vec<int> = Vec::new();
+    let adj_offsets: Vec<int> = Vec::new();
+    build_weighted_graph(adj_nodes, adj_weights, adj_offsets, n);
+
+    let iters = 50000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + dijkstra(adj_nodes, adj_weights, adj_offsets, n, 0);
+        i = i + 1;
+    }
+    println("bench_dijkstra");
+    println(checksum);
+    println(iters);
+}

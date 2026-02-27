@@ -1,0 +1,105 @@
+fn build_dag(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_degree: Vec<int>, n: int) -> int {
+    var i = 0;
+    while i <= n {
+        adj_offsets.push(0);
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        in_degree.push(0);
+        i = i + 1;
+    }
+
+    var src = 0;
+    while src < n {
+        let start = adj_offsets.get(src);
+        var count = 0;
+        var dst = 1;
+        while dst <= 3 {
+            let neighbor = src + dst;
+            if neighbor < n {
+                adj_nodes.push(neighbor);
+                count = count + 1;
+            }
+            dst = dst + 1;
+        }
+        let extra = (src * 3 + 7) % n;
+        if extra > src {
+            adj_nodes.push(extra);
+            count = count + 1;
+        }
+        adj_offsets.set(src + 1, start + count);
+        src = src + 1;
+    }
+
+    src = 0;
+    while src < n {
+        var e = adj_offsets.get(src);
+        while e < adj_offsets.get(src + 1) {
+            let neighbor = adj_nodes.get(e);
+            in_degree.set(neighbor, in_degree.get(neighbor) + 1);
+            e = e + 1;
+        }
+        src = src + 1;
+    }
+    return 0;
+}
+
+fn topological_sort(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_deg_orig: Vec<int>, n: int) -> int {
+    let in_deg: Vec<int> = Vec::new();
+    let queue: Vec<int> = Vec::new();
+    var i = 0;
+    while i < n {
+        in_deg.push(in_deg_orig.get(i));
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < n {
+        if in_deg.get(i) == 0 {
+            queue.push(i);
+        }
+        i = i + 1;
+    }
+
+    var head = 0;
+    var count = 0;
+    var order_sum = 0;
+
+    while head < queue.len() {
+        let node = queue.get(head);
+        head = head + 1;
+        order_sum = order_sum + node;
+        count = count + 1;
+
+        var e = adj_offsets.get(node);
+        while e < adj_offsets.get(node + 1) {
+            let neighbor = adj_nodes.get(e);
+            in_deg.set(neighbor, in_deg.get(neighbor) - 1);
+            if in_deg.get(neighbor) == 0 {
+                queue.push(neighbor);
+            }
+            e = e + 1;
+        }
+    }
+    return count * 1000 + order_sum % 1000;
+}
+
+fn main() {
+    let n = 50;
+    let adj_nodes: Vec<int> = Vec::new();
+    let adj_offsets: Vec<int> = Vec::new();
+    let in_degree: Vec<int> = Vec::new();
+    build_dag(adj_nodes, adj_offsets, in_degree, n);
+
+    let iters = 100000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + topological_sort(adj_nodes, adj_offsets, in_degree, n);
+        i = i + 1;
+    }
+    println("bench_topological_sort");
+    println(checksum);
+    println(iters);
+}

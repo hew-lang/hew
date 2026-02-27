@@ -1,0 +1,79 @@
+// Benchmark: Jump Search
+// Jumps ahead by sqrt(n) steps, then does linear search in the block.
+
+fn isqrt(n: int) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    var x = n;
+    var y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+fn jump_search(v: Vec<int>, target: int) -> int {
+    let n = v.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    let step = isqrt(n);
+    var prev = 0;
+    var curr = step;
+    var found = 0 - 1;
+    var done = 0;
+    // Jump ahead
+    while curr < n {
+        if done == 0 {
+            if v.get(curr) >= target {
+                var j = prev;
+                while j <= curr {
+                    if v.get(j) == target {
+                        if found == 0 - 1 {
+                            found = j;
+                        }
+                    }
+                    j = j + 1;
+                }
+                done = 1;
+            }
+        }
+        if done == 0 {
+            prev = curr + 1;
+        }
+        curr = curr + step;
+    }
+    // Search remaining elements
+    if done == 0 {
+        var j = prev;
+        while j < n {
+            if v.get(j) == target {
+                if found == 0 - 1 {
+                    found = j;
+                }
+            }
+            j = j + 1;
+        }
+    }
+    return found;
+}
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10000 {
+        v.push(i);
+        i = i + 1;
+    }
+    let iters = 1000000;
+    var iter = 0;
+    var sum = 0;
+    while iter < iters {
+        sum = sum + jump_search(v, 7777);
+        iter = iter + 1;
+    }
+    println(iters);
+    println(sum);
+}

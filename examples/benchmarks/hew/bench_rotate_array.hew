@@ -1,0 +1,39 @@
+fn reverse_range(arr: Vec<int>, start: int, end: int) {
+    var lo = start;
+    var hi = end;
+    while lo < hi {
+        let tmp = arr.get(lo);
+        arr.set(lo, arr.get(hi));
+        arr.set(hi, tmp);
+        lo = lo + 1;
+        hi = hi - 1;
+    }
+}
+
+fn rotate_array(arr: Vec<int>, k: int) -> int {
+    let n = arr.len();
+    let rot = k % n;
+    reverse_range(arr, 0, n - 1);
+    reverse_range(arr, 0, rot - 1);
+    reverse_range(arr, rot, n - 1);
+    return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
+}
+
+fn main() {
+    let iters = 100000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        let arr: Vec<int> = Vec::new();
+        var k = 0;
+        while k < 1000 {
+            arr.push(k);
+            k = k + 1;
+        }
+        checksum = checksum + rotate_array(arr, 337);
+        i = i + 1;
+    }
+    println("bench_rotate_array");
+    println(checksum);
+    println(iters);
+}

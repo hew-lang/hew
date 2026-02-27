@@ -1,0 +1,38 @@
+// Benchmark: Binary Search
+// Repeatedly halves the search space by comparing the middle element.
+
+fn binary_search(v: Vec<int>, target: int) -> int {
+    var lo = 0;
+    var hi = v.len() - 1;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let val = v.get(mid);
+        if val == target {
+            return mid;
+        }
+        if val < target {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return 0 - 1;
+}
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10000 {
+        v.push(i);
+        i = i + 1;
+    }
+    let iters = 1000000;
+    var iter = 0;
+    var sum = 0;
+    while iter < iters {
+        sum = sum + binary_search(v, 7777);
+        iter = iter + 1;
+    }
+    println(iters);
+    println(sum);
+}

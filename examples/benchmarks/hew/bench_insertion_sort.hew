@@ -1,0 +1,40 @@
+fn insertion_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    var i = 1;
+    while i < n {
+        let key = v.get(i);
+        var j = i - 1;
+        while j >= 0 {
+            if v.get(j) > key {
+                v.set(j + 1, v.get(j));
+                j = j - 1;
+            } else {
+                j = 0 - 1;
+            }
+        }
+        v.set(j + 1, key);
+        i = i + 1;
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+fn main() {
+    let iters = 100000;
+    var i = 0;
+    while i < iters {
+        let v = make_test_array();
+        insertion_sort(v);
+        i = i + 1;
+    }
+    println(iters);
+}

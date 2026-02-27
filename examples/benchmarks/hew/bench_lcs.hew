@@ -1,0 +1,60 @@
+fn lcs(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
+    let cols = n + 1;
+    let total = (m + 1) * cols;
+    let dp: Vec<int> = Vec::new();
+    var idx = 0;
+    while idx < total {
+        dp.push(0);
+        idx = idx + 1;
+    }
+
+    var i = 1;
+    while i <= m {
+        var j = 1;
+        while j <= n {
+            if a.get(i - 1) == b.get(j - 1) {
+                dp.set(i * cols + j, dp.get((i - 1) * cols + (j - 1)) + 1);
+            } else {
+                let top = dp.get((i - 1) * cols + j);
+                let left = dp.get(i * cols + (j - 1));
+                if top > left {
+                    dp.set(i * cols + j, top);
+                } else {
+                    dp.set(i * cols + j, left);
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return dp.get(m * cols + n);
+}
+
+fn main() {
+    let m = 50;
+    let n = 50;
+
+    let a: Vec<int> = Vec::new();
+    let b: Vec<int> = Vec::new();
+    var k = 0;
+    while k < m {
+        a.push(k % 7);
+        k = k + 1;
+    }
+    k = 0;
+    while k < n {
+        b.push(k % 9);
+        k = k + 1;
+    }
+
+    let iters = 50000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + lcs(a, b, m, n);
+        i = i + 1;
+    }
+    println("bench_lcs");
+    println(checksum);
+    println(iters);
+}

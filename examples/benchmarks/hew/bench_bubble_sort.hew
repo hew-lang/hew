@@ -1,0 +1,39 @@
+fn bubble_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    var i = 0;
+    while i < n {
+        var j = 0;
+        while j < n - 1 - i {
+            let a = v.get(j);
+            let b = v.get(j + 1);
+            if a > b {
+                v.set(j, b);
+                v.set(j + 1, a);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+fn main() {
+    let iters = 50000;
+    var i = 0;
+    while i < iters {
+        let v = make_test_array();
+        bubble_sort(v);
+        i = i + 1;
+    }
+    println(iters);
+}

@@ -1,0 +1,48 @@
+fn max_subarray(arr: Vec<int>) -> int {
+    let n = arr.len();
+    var max_ending = arr.get(0);
+    var max_so_far = arr.get(0);
+    var i = 1;
+    while i < n {
+        let val = arr.get(i);
+        if val > max_ending + val {
+            max_ending = val;
+        } else {
+            max_ending = max_ending + val;
+        }
+        if max_ending > max_so_far {
+            max_so_far = max_ending;
+        }
+        i = i + 1;
+    }
+    return max_so_far;
+}
+
+fn main() {
+    let arr: Vec<int> = Vec::new();
+    var k = 0;
+    while k < 1000 {
+        let rem = k % 3;
+        if rem == 0 {
+            arr.push(k % 7 + 1);
+        } else {
+            if rem == 1 {
+                arr.push(0 - (k % 5 + 1));
+            } else {
+                arr.push(k % 10);
+            }
+        }
+        k = k + 1;
+    }
+
+    let iters = 500000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + max_subarray(arr);
+        i = i + 1;
+    }
+    println("bench_max_subarray");
+    println(checksum);
+    println(iters);
+}

@@ -1,0 +1,55 @@
+fn partition(v: Vec<int>, low: int, high: int) -> int {
+    let pivot = v.get(high);
+    var i = low - 1;
+    var j = low;
+    while j < high {
+        if v.get(j) <= pivot {
+            i = i + 1;
+            let tmp = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, tmp);
+        }
+        j = j + 1;
+    }
+    let tmp = v.get(i + 1);
+    v.set(i + 1, v.get(high));
+    v.set(high, tmp);
+    i + 1
+}
+
+fn quick_sort_range(v: Vec<int>, low: int, high: int) {
+    if low < high {
+        let pi = partition(v, low, high);
+        quick_sort_range(v, low, pi - 1);
+        quick_sort_range(v, pi + 1, high);
+    }
+}
+
+fn quick_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    if n > 1 {
+        quick_sort_range(v, 0, n - 1);
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+fn main() {
+    let iters = 100000;
+    var i = 0;
+    while i < iters {
+        let v = make_test_array();
+        quick_sort(v);
+        i = i + 1;
+    }
+    println(iters);
+}

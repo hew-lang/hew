@@ -1,0 +1,25 @@
+fn fast_power(base: int, exp: int) -> int {
+    var result = 1;
+    var b = base;
+    var e = exp;
+    while e > 0 {
+        if e % 2 == 1 {
+            result = result * b;
+        }
+        b = b * b;
+        e = e / 2;
+    }
+    result
+}
+
+fn main() {
+    let iters = 5000000;
+    var i = 0;
+    var sum = 0;
+    while i < iters {
+        sum = sum + fast_power(2, 30);
+        i = i + 1;
+    }
+    println(iters);
+    println(sum);
+}

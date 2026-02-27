@@ -1,0 +1,28 @@
+fn catalan(n: int) -> int {
+    let dp = Vec::new();
+    dp.push(1);
+    dp.push(1);
+    var i = 2;
+    while i <= n {
+        dp.push(0);
+        var j = 0;
+        while j < i {
+            dp.set(i, dp.get(i) + dp.get(j) * dp.get(i - 1 - j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    dp.get(n)
+}
+
+fn main() {
+    let iters = 500000;
+    var i = 0;
+    var sum = 0;
+    while i < iters {
+        sum = sum + catalan(15);
+        i = i + 1;
+    }
+    println(iters);
+    println(sum);
+}

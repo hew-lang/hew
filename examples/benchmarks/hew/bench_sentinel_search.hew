@@ -1,0 +1,41 @@
+// Benchmark: Sentinel Search
+// Places target at end of array to eliminate bounds check in loop.
+
+fn sentinel_search(v: Vec<int>, target: int) -> int {
+    let n = v.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    let last = v.get(n - 1);
+    v.set(n - 1, target);
+    var i = 0;
+    while v.get(i) != target {
+        i = i + 1;
+    }
+    v.set(n - 1, last);
+    if i < n - 1 {
+        return i;
+    }
+    if last == target {
+        return n - 1;
+    }
+    return 0 - 1;
+}
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10000 {
+        v.push(i);
+        i = i + 1;
+    }
+    let iters = 100000;
+    var iter = 0;
+    var sum = 0;
+    while iter < iters {
+        sum = sum + sentinel_search(v, 7777);
+        iter = iter + 1;
+    }
+    println(iters);
+    println(sum);
+}

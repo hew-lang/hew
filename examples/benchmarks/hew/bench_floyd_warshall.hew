@@ -1,0 +1,97 @@
+fn floyd_warshall(n: int, edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int) -> int {
+    let INF = 999999;
+    let total = n * n;
+    let dist: Vec<int> = Vec::new();
+    var idx = 0;
+    while idx < total {
+        dist.push(INF);
+        idx = idx + 1;
+    }
+
+    var i = 0;
+    while i < n {
+        dist.set(i * n + i, 0);
+        i = i + 1;
+    }
+
+    var e = 0;
+    while e < num_edges {
+        let u = edge_src.get(e);
+        let v = edge_dst.get(e);
+        let w = edge_wt.get(e);
+        if w < dist.get(u * n + v) {
+            dist.set(u * n + v, w);
+        }
+        e = e + 1;
+    }
+
+    var k = 0;
+    while k < n {
+        i = 0;
+        while i < n {
+            var j = 0;
+            while j < n {
+                let through_k = dist.get(i * n + k) + dist.get(k * n + j);
+                if through_k < dist.get(i * n + j) {
+                    dist.set(i * n + j, through_k);
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        k = k + 1;
+    }
+
+    var sum = 0;
+    i = 0;
+    while i < n {
+        var j = 0;
+        while j < n {
+            let d = dist.get(i * n + j);
+            if d < INF {
+                sum = sum + d;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return sum;
+}
+
+fn main() {
+    let n = 30;
+    let edge_src: Vec<int> = Vec::new();
+    let edge_dst: Vec<int> = Vec::new();
+    let edge_wt: Vec<int> = Vec::new();
+
+    var src = 0;
+    while src < n {
+        var dst = 1;
+        while dst <= 3 {
+            let neighbor = (src + dst) % n;
+            let weight = (src + dst) % 10 + 1;
+            edge_src.push(src);
+            edge_dst.push(neighbor);
+            edge_wt.push(weight);
+            dst = dst + 1;
+        }
+        let extra = (src * 7 + 3) % n;
+        let ew = (src * 3 + 1) % 15 + 1;
+        edge_src.push(src);
+        edge_dst.push(extra);
+        edge_wt.push(ew);
+        src = src + 1;
+    }
+    let num_edges = edge_src.len();
+
+    let iters = 5000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + floyd_warshall(n, edge_src, edge_dst, edge_wt, num_edges);
+        i = i + 1;
+    }
+    println("bench_floyd_warshall");
+    println(checksum);
+    println(iters);
+}

@@ -1,0 +1,47 @@
+fn caesar_checksum(s: String, lower: String, table: Vec<i32>) -> i32 {
+    let n = s.len();
+    var checksum = 0;
+    var i = 0;
+    while i < n {
+        var found = 0 - 1;
+        var p = 0;
+        while p < 26 {
+            if s.char_at(i) == lower.char_at(p) {
+                found = p;
+                p = 26;
+            } else {
+                p = p + 1;
+            }
+        }
+        if found >= 0 {
+            let mapped = table.get(found);
+            checksum = checksum + mapped;
+        }
+        i = i + 1;
+    }
+    checksum
+}
+
+fn main() {
+    let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
+    let lower = "abcdefghijklmnopqrstuvwxyz";
+
+    let table: Vec<i32> = Vec::new();
+    var k = 0;
+    while k < 26 {
+        let shifted = (k + 13) % 26;
+        table.push(shifted + 97);
+        k = k + 1;
+    }
+
+    let iters = 200000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + caesar_checksum(s, lower, table);
+        i = i + 1;
+    }
+    println("bench_caesar_cipher");
+    println(checksum);
+    println(iters);
+}

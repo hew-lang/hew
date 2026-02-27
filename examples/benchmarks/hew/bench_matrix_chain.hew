@@ -1,0 +1,54 @@
+fn matrix_chain(dims: Vec<int>, n: int) -> int {
+    let INF = 999999;
+    let total = n * n;
+    let dp: Vec<int> = Vec::new();
+    var idx = 0;
+    while idx < total {
+        dp.push(0);
+        idx = idx + 1;
+    }
+
+    var length = 2;
+    while length <= n {
+        var i = 0;
+        while i <= n - length {
+            let j = i + length - 1;
+            dp.set(i * n + j, INF);
+            var k = i;
+            while k < j {
+                let cost = dp.get(i * n + k) + dp.get((k + 1) * n + j) + dims.get(i) * dims.get(k + 1) * dims.get(j + 1);
+                if cost < dp.get(i * n + j) {
+                    dp.set(i * n + j, cost);
+                }
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        length = length + 1;
+    }
+    return dp.get(0 * n + (n - 1));
+}
+
+fn main() {
+    let num_matrices = 10;
+    let n = num_matrices;
+    let num_dims = num_matrices + 1;
+
+    let dims: Vec<int> = Vec::new();
+    var k = 0;
+    while k < num_dims {
+        dims.push(k % 7 * 5 + 10);
+        k = k + 1;
+    }
+
+    let iters = 50000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + matrix_chain(dims, n);
+        i = i + 1;
+    }
+    println("bench_matrix_chain");
+    println(checksum);
+    println(iters);
+}

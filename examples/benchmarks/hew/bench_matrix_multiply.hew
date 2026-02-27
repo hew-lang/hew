@@ -1,0 +1,51 @@
+fn matrix_multiply(a: Vec<int>, b: Vec<int>, n: int) -> int {
+    let c: Vec<int> = Vec::new();
+    let total = n * n;
+    var idx = 0;
+    while idx < total {
+        c.push(0);
+        idx = idx + 1;
+    }
+
+    var i = 0;
+    while i < n {
+        var j = 0;
+        while j < n {
+            var sum = 0;
+            var k = 0;
+            while k < n {
+                sum = sum + a.get(i * n + k) * b.get(k * n + j);
+                k = k + 1;
+            }
+            c.set(i * n + j, sum);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return c.get(0) + c.get(total / 2) + c.get(total - 1);
+}
+
+fn main() {
+    let n = 20;
+    let total = n * n;
+
+    let a: Vec<int> = Vec::new();
+    let b: Vec<int> = Vec::new();
+    var k = 0;
+    while k < total {
+        a.push(k % 7 + 1);
+        b.push(k % 5 + 1);
+        k = k + 1;
+    }
+
+    let iters = 10000;
+    var checksum = 0;
+    var i = 0;
+    while i < iters {
+        checksum = checksum + matrix_multiply(a, b, n);
+        i = i + 1;
+    }
+    println("bench_matrix_multiply");
+    println(checksum);
+    println(iters);
+}

@@ -1580,9 +1580,45 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
     return nullptr;
 
   auto operandType = operandVal.getType();
+
+  // Handle Option? — unwrap Some or propagate None
+  if (auto optType = mlir::dyn_cast<hew::OptionEnumType>(operandType)) {
+    auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), operandVal);
+    auto zeroTag = createIntConstant(builder, location, builder.getI32Type(), 0);
+    auto isNone =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, zeroTag);
+
+    auto innerType = optType.getInnerType();
+    auto someFieldIndex = enumPayloadFieldIndex("__Option", /*variantIndex=*/1);
+
+    mlir::Type funcRetType;
+    if (currentFunction && currentFunction.getResultTypes().size() == 1)
+      funcRetType = currentFunction.getResultTypes()[0];
+
+    auto *noneBlock = currentFunction.addBlock();
+    auto *someBlock = currentFunction.addBlock();
+
+    builder.create<mlir::cf::CondBranchOp>(location, isNone, noneBlock, someBlock);
+
+    builder.setInsertionPointToStart(noneBlock);
+    if (funcRetType && mlir::isa<hew::OptionEnumType>(funcRetType)) {
+      mlir::Value noneResult = builder.create<hew::EnumConstructOp>(
+          location, funcRetType, /*variant_index=*/0, builder.getStringAttr("Option"),
+          mlir::ValueRange{}, /*payload_positions=*/nullptr);
+      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{noneResult});
+    } else {
+      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+    }
+
+    builder.setInsertionPointToStart(someBlock);
+    auto someVal = builder.create<hew::EnumExtractPayloadOp>(location, innerType, operandVal,
+                                                             /*field_index=*/someFieldIndex);
+    return someVal;
+  }
+
   auto resType = mlir::dyn_cast<hew::ResultEnumType>(operandType);
   if (!resType) {
-    emitError(location) << "? operator requires a Result type";
+    emitError(location) << "? operator requires a Result or Option type";
     return nullptr;
   }
 

@@ -1717,6 +1717,13 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     loopVarName = "_for_var";
   }
 
+  // Determine if the range is over an unsigned type
+  bool rangeIsUnsigned = false;
+  if (rangeExpr.left) {
+    if (auto *ty = resolvedTypeOf(rangeExpr.left->span))
+      rangeIsUnsigned = isUnsignedTypeExpr(*ty);
+  }
+
   // Use scf.while instead of scf.for to support break/continue.
   // This mirrors the pattern in generateForCollectionStmt.
   auto i64Type = builder.getI64Type();
@@ -1756,8 +1763,9 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
 
   auto isActive = builder.create<mlir::memref::LoadOp>(location, activeFlag, mlir::ValueRange{});
   auto curIdx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-  auto cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt, curIdx, ubI64);
+  auto cond = builder.create<mlir::arith::CmpIOp>(
+      location, rangeIsUnsigned ? mlir::arith::CmpIPredicate::ult : mlir::arith::CmpIPredicate::slt,
+      curIdx, ubI64);
   auto combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
 
   if (returnFlag) {

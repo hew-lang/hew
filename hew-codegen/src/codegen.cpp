@@ -2786,7 +2786,6 @@ struct RuntimeCallOpLowering : public mlir::OpConversionPattern<hew::RuntimeCall
   }
 };
 
-// ── Trait dispatch op lowering ─────────────────────────────────────────────
 // ── Trait dispatch op lowering (vtable-based O(1) dispatch) ────────────────
 
 struct TraitDispatchOpLowering : public mlir::OpConversionPattern<hew::TraitDispatchOp> {

@@ -1852,6 +1852,9 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
 
   // 3. Wrap the log emission in scf.if(enabled).
   builder.create<mlir::scf::IfOp>(location, enabled, [&](mlir::OpBuilder &b, mlir::Location loc) {
+    // Track heap-allocated intermediates for cleanup.
+    std::vector<mlir::Value> ownedTemps;
+
     // Generate the message string from the first positional arg.
     mlir::Value msgStr = nullptr;
     if (!args.empty()) {
@@ -1866,6 +1869,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
           if (isUnsignedTypeExpr(*argType))
             toStr->setAttr("is_unsigned", b.getBoolAttr(true));
         msgStr = toStr;
+        ownedTemps.push_back(toStr);
       }
     } else {
       // No args at all — use empty string.
@@ -1880,6 +1884,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       auto actorPrefixSym = getOrCreateGlobalString(actorPrefix);
       auto actorPrefixStr =
           b.create<hew::ConstantOp>(loc, strRefType, b.getStringAttr(actorPrefixSym));
+      ownedTemps.push_back(msgStr);
       msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorPrefixStr);
 
       // " actor_id=<runtime_id>" (runtime value)
@@ -1896,8 +1901,11 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
                                        mlir::ValueRange{})
               .getResult();
       auto actorIdStr = b.create<hew::ToStringOp>(loc, strRefType, actorId);
+      ownedTemps.push_back(actorIdStr);
 
+      ownedTemps.push_back(msgStr);
       msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorIdPrefixStr);
+      ownedTemps.push_back(msgStr);
       msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorIdStr);
     }
 
@@ -1931,7 +1939,9 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       }
 
       // Concat: msgStr + " key=" + valStr
+      ownedTemps.push_back(msgStr);
       msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, prefixStr);
+      ownedTemps.push_back(msgStr);
       msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, valStr);
     }
 
@@ -1947,6 +1957,10 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
     b.create<hew::RuntimeCallOp>(loc, mlir::TypeRange{},
                                  mlir::SymbolRefAttr::get(&context, "hew_log_emit"),
                                  mlir::ValueRange{levelConst, msgPtr});
+
+    // Free all heap-allocated intermediate strings.
+    for (auto temp : ownedTemps)
+      emitStringDrop(temp);
 
     b.create<mlir::scf::YieldOp>(loc);
   });
@@ -3262,6 +3276,11 @@ mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
     builder.create<mlir::LLVM::StoreOp>(location, bodyResult, resultPtr);
 
     builder.create<hew::TaskSetResultOp>(location, taskArg, resultPtr, sizeVal);
+    // Free the temp buffer after result is copied into task
+    auto freeFuncType = mlir::FunctionType::get(&context, {ptrType}, {});
+    getOrCreateExternFunc("free", freeFuncType);
+    builder.create<mlir::func::CallOp>(location, "free", mlir::TypeRange{},
+                                       mlir::ValueRange{resultPtr});
   }
 
   builder.create<hew::TaskCompleteOp>(location, taskArg);

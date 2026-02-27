@@ -733,7 +733,17 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto operandType = operandVal.getType();
     if (isPointerLikeType(operandType)) {
       auto fieldName = fa->field;
+      // When accessing self.field, use currentActorName for precise lookup
+      std::string targetStructName;
+      if (!currentActorName.empty()) {
+        if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+          if (baseIdent->name == "self")
+            targetStructName = currentActorName;
+        }
+      }
       for (const auto &[typeName, stInfo] : structTypes) {
+        if (!targetStructName.empty() && typeName != targetStructName)
+          continue;
         auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(stInfo.mlirType);
         if (!structType)
           continue;
@@ -1862,6 +1872,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
@@ -1922,6 +1933,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
+  loopBreakValueStack.pop_back();
 
   builder.setInsertionPointAfter(whileOp);
 }

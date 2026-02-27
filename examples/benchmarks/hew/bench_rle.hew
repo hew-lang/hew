@@ -23,14 +23,15 @@ fn rle_count(s: string) -> int {
     return runs;
 }
 
+const ITERS: int = 500000;
+
 fn main() {
     let s = "aaabbccccdddddeee";
-    let iters = 500000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + rle_count(s);
     }
     println("bench_rle");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

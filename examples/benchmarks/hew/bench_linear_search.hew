@@ -10,16 +10,17 @@ fn linear_search(v: Vec<int>, target: int) -> int {
     return 0 - 1;
 }
 
+const ITERS: int = 100000;
+
 fn main() {
     let v: Vec<int> = Vec::new();
     for i in 0..10000 {
         v.push(i);
     }
-    let iters = 100000;
     var sum = 0;
-    for iter in 0..iters {
+    for iter in 0..ITERS {
         sum = sum + linear_search(v, 7777);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

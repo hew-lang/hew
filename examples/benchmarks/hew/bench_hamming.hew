@@ -6,18 +6,19 @@ fn hamming_distance(a: string, b: string) -> int {
             dist = dist + 1;
         }
     }
-    return dist;
+    dist
 }
+
+const ITERS: int = 500000;
 
 fn main() {
     let a = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     let b = "aXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuX";
-    let iters = 500000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + hamming_distance(a, b);
     }
     println("bench_hamming");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

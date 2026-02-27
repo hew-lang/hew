@@ -70,19 +70,20 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
     return total;
 }
 
+const ITERS: int = 50000;
+
 fn main() {
     let n = 50;
     let adj_nodes: Vec<int> = Vec::new();
     let adj_weights: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
-    build_weighted_graph(adj_nodes, adj_weights, adj_offsets, n);
+    let _ = build_weighted_graph(adj_nodes, adj_weights, adj_offsets, n);
 
-    let iters = 50000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + dijkstra(adj_nodes, adj_weights, adj_offsets, n, 0);
     }
     println("bench_dijkstra");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

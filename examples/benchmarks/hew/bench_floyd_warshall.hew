@@ -42,6 +42,8 @@ fn floyd_warshall(n: int, edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<i
     return sum;
 }
 
+const ITERS: int = 5000;
+
 fn main() {
     let n = 30;
     let edge_src: Vec<int> = Vec::new();
@@ -66,12 +68,11 @@ fn main() {
     }
     let num_edges = edge_src.len();
 
-    let iters = 5000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + floyd_warshall(n, edge_src, edge_dst, edge_wt, num_edges);
     }
     println("bench_floyd_warshall");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

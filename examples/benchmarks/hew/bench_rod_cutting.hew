@@ -21,6 +21,8 @@ fn rod_cutting(prices: Vec<int>, n: int) -> int {
     return dp.get(n);
 }
 
+const ITERS: int = 100000;
+
 fn main() {
     let n = 50;
     let prices: Vec<int> = Vec::new();
@@ -28,12 +30,11 @@ fn main() {
         prices.push(k % 10 + 1 + k / 5);
     }
 
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + rod_cutting(prices, n);
     }
     println("bench_rod_cutting");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

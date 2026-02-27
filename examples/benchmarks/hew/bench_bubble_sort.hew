@@ -23,11 +23,12 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
+const ITERS: int = 50000;
+
 fn main() {
-    let iters = 50000;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let v = make_test_array();
-        bubble_sort(v);
+        let _ = bubble_sort(v);
     }
-    println(iters);
+    println(ITERS);
 }

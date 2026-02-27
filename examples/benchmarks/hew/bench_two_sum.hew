@@ -12,6 +12,8 @@ fn two_sum(arr: Vec<int>, target: int) -> int {
     return 0 - 1;
 }
 
+const ITERS: int = 10000;
+
 fn main() {
     let arr: Vec<int> = Vec::new();
     for k in 0..1000 {
@@ -19,12 +21,11 @@ fn main() {
     }
     let target = 998 + 999;
 
-    let iters = 10000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + two_sum(arr, target);
     }
     println("bench_two_sum");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

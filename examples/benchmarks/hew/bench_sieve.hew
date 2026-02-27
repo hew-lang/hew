@@ -27,12 +27,13 @@ fn sieve(n: int) -> int {
     count
 }
 
+const ITERS: int = 10000;
+
 fn main() {
-    let iters = 10000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + sieve(10000);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

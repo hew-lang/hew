@@ -25,6 +25,8 @@ fn matrix_chain(dims: Vec<int>, n: int) -> int {
     return dp.get(0 * n + (n - 1));
 }
 
+const ITERS: int = 50000;
+
 fn main() {
     let num_matrices = 10;
     let n = num_matrices;
@@ -35,12 +37,11 @@ fn main() {
         dims.push(k % 7 * 5 + 10);
     }
 
-    let iters = 50000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + matrix_chain(dims, n);
     }
     println("bench_matrix_chain");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

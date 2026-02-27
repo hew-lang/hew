@@ -16,14 +16,15 @@ fn reverse_string(s: String) -> i32 {
     checksum
 }
 
+const ITERS: int = 200000;
+
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
-    let iters = 200000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + reverse_string(s);
     }
     println("bench_string_reverse");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

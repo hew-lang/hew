@@ -11,12 +11,13 @@ fn catalan(n: int) -> int {
     dp.get(n)
 }
 
+const ITERS: int = 500000;
+
 fn main() {
-    let iters = 500000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + catalan(15);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

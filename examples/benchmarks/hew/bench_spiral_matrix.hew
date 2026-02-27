@@ -54,14 +54,15 @@ fn spiral_matrix(n: int) -> int {
     return mat.get(0) + mat.get(total / 2) + mat.get(total - 1);
 }
 
+const ITERS: int = 50000;
+
 fn main() {
     let n = 20;
-    let iters = 50000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + spiral_matrix(n);
     }
     println("bench_spiral_matrix");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

@@ -16,6 +16,8 @@ fn max_subarray(arr: Vec<int>) -> int {
     return max_so_far;
 }
 
+const ITERS: int = 500000;
+
 fn main() {
     let arr: Vec<int> = Vec::new();
     for k in 0..1000 {
@@ -31,12 +33,11 @@ fn main() {
         }
     }
 
-    let iters = 500000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + max_subarray(arr);
     }
     println("bench_max_subarray");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

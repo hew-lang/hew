@@ -12,12 +12,13 @@ fn pascal(n: int) -> int {
     row.get(n / 2)
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + pascal(20);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

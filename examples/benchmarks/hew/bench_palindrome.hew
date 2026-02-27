@@ -10,16 +10,17 @@ fn is_palindrome(s: string) -> bool {
     return true;
 }
 
+const ITERS: int = 500000;
+
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzzyxwvutsrqponmlkjihgfedcba";
-    let iters = 500000;
     var count = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         if is_palindrome(s) {
             count = count + 1;
         }
     }
     println("bench_palindrome");
     println(count);
-    println(iters);
+    println(ITERS);
 }

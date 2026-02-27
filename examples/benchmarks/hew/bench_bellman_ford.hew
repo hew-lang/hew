@@ -27,6 +27,8 @@ fn bellman_ford(edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_e
     return total;
 }
 
+const ITERS: int = 20000;
+
 fn main() {
     let n = 50;
     let edge_src: Vec<int> = Vec::new();
@@ -44,12 +46,11 @@ fn main() {
     }
     let num_edges = edge_src.len();
 
-    let iters = 20000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + bellman_ford(edge_src, edge_dst, edge_wt, num_edges, n, 0);
     }
     println("bench_bellman_ford");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

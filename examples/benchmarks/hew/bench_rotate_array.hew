@@ -16,13 +16,14 @@ fn rotate_array(arr: Vec<int>, k: int) -> int {
     reverse_range(arr, 0, n - 1);
     reverse_range(arr, 0, rot - 1);
     reverse_range(arr, rot, n - 1);
-    return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
+    arr.get(0) + arr.get(n / 2) + arr.get(n - 1)
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let arr: Vec<int> = Vec::new();
         for k in 0..1000 {
             arr.push(k);
@@ -31,5 +32,5 @@ fn main() {
     }
     println("bench_rotate_array");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

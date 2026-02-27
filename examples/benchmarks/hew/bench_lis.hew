@@ -24,6 +24,8 @@ fn lis(arr: Vec<int>, n: int) -> int {
     return best;
 }
 
+const ITERS: int = 5000;
+
 fn main() {
     let n = 500;
     let arr: Vec<int> = Vec::new();
@@ -31,12 +33,11 @@ fn main() {
         arr.push((k * 37 + 13) % 100);
     }
 
-    let iters = 5000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + lis(arr, n);
     }
     println("bench_lis");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

@@ -26,10 +26,11 @@ fn dutch_flag(arr: Vec<int>) -> int {
     return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let arr: Vec<int> = Vec::new();
         for k in 0..1000 {
             arr.push(k % 3);
@@ -38,5 +39,5 @@ fn main() {
     }
     println("bench_dutch_flag");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

@@ -29,6 +29,8 @@ fn knapsack(weights: Vec<int>, values: Vec<int>, n: int, cap: int) -> int {
     return dp.get(n * cols + cap);
 }
 
+const ITERS: int = 50000;
+
 fn main() {
     let n = 20;
     let cap = 100;
@@ -40,12 +42,11 @@ fn main() {
         values.push(k % 15 + 3);
     }
 
-    let iters = 50000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + knapsack(weights, values, n, cap);
     }
     println("bench_knapsack");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

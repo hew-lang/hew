@@ -55,8 +55,8 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
                     }
                 } else {
                     color.set(node, 2);
-                    stack.pop();
-                    stack_phase.pop();
+                    let _ = stack.pop();
+                    let _ = stack_phase.pop();
                 }
             }
         }
@@ -64,18 +64,19 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
     return has_cycle;
 }
 
+const ITERS: int = 200000;
+
 fn main() {
     let n = 50;
     let adj_nodes: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
-    build_directed_graph(adj_nodes, adj_offsets, n);
+    let _ = build_directed_graph(adj_nodes, adj_offsets, n);
 
-    let iters = 200000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + detect_cycle(adj_nodes, adj_offsets, n);
     }
     println("bench_detect_cycle");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

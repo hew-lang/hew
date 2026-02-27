@@ -20,6 +20,8 @@ fn caesar_checksum(s: String, lower: String, table: Vec<i32>) -> i32 {
     checksum
 }
 
+const ITERS: int = 200000;
+
 fn main() {
     let s = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
     let lower = "abcdefghijklmnopqrstuvwxyz";
@@ -30,12 +32,11 @@ fn main() {
         table.push(shifted + 97);
     }
 
-    let iters = 200000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + caesar_checksum(s, lower, table);
     }
     println("bench_caesar_cipher");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

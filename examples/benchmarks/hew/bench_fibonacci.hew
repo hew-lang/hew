@@ -9,12 +9,13 @@ fn fibonacci(n: int) -> int {
     a
 }
 
+const ITERS: int = 1000000;
+
 fn main() {
-    let iters = 1000000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + fibonacci(30);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

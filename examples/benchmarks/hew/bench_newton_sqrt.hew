@@ -11,12 +11,13 @@ fn newton_sqrt(n: int) -> int {
     x
 }
 
+const ITERS: int = 5000000;
+
 fn main() {
-    let iters = 5000000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + newton_sqrt(1000000);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

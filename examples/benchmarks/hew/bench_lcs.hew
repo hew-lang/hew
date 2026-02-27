@@ -28,6 +28,8 @@ fn lcs(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
     return dp.get(m * cols + n);
 }
 
+const ITERS: int = 50000;
+
 fn main() {
     let m = 50;
     let n = 50;
@@ -41,12 +43,11 @@ fn main() {
         b.push(k % 9);
     }
 
-    let iters = 50000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + lcs(a, b, m, n);
     }
     println("bench_lcs");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

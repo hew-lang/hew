@@ -9,12 +9,13 @@ fn gcd(a: int, b: int) -> int {
     x
 }
 
+const ITERS: int = 5000000;
+
 fn main() {
-    let iters = 5000000;
     var sum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         sum = sum + gcd(1071, 462);
     }
-    println(iters);
+    println(ITERS);
     println(sum);
 }

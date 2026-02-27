@@ -15,10 +15,11 @@ fn remove_dupes(arr: Vec<int>) -> int {
     return write;
 }
 
+const ITERS: int = 200000;
+
 fn main() {
-    let iters = 200000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let arr: Vec<int> = Vec::new();
         for k in 0..1000 {
             arr.push(k / 3);
@@ -27,5 +28,5 @@ fn main() {
     }
     println("bench_remove_dupes");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

@@ -17,6 +17,8 @@ fn matrix_multiply(a: Vec<int>, b: Vec<int>, n: int) -> int {
     return c.get(0) + c.get(total / 2) + c.get(total - 1);
 }
 
+const ITERS: int = 10000;
+
 fn main() {
     let n = 20;
     let total = n * n;
@@ -28,12 +30,11 @@ fn main() {
         b.push(k % 5 + 1);
     }
 
-    let iters = 10000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + matrix_multiply(a, b, n);
     }
     println("bench_matrix_multiply");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

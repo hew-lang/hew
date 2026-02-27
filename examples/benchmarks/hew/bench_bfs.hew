@@ -49,18 +49,19 @@ fn bfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> i
     return count;
 }
 
+const ITERS: int = 100000;
+
 fn main() {
     let n = 50;
     let adj_nodes: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
-    build_graph(adj_nodes, adj_offsets, n);
+    let _ = build_graph(adj_nodes, adj_offsets, n);
 
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + bfs(adj_nodes, adj_offsets, n, 0);
     }
     println("bench_bfs");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

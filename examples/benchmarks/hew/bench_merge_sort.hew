@@ -65,11 +65,12 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let v = make_test_array();
-        merge_sort(v);
+        let _ = merge_sort(v);
     }
-    println(iters);
+    println(ITERS);
 }

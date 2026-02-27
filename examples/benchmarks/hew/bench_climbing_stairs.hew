@@ -9,17 +9,18 @@ fn climbing_stairs(n: int) -> int {
     for i in 2..(n + 1) {
         dp.set(i, dp.get(i - 1) + dp.get(i - 2));
     }
-    return dp.get(n);
+    dp.get(n)
 }
+
+const ITERS: int = 5000000;
 
 fn main() {
     let n = 50;
-    let iters = 5000000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + climbing_stairs(n);
     }
     println("bench_climbing_stairs");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

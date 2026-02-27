@@ -25,10 +25,11 @@ fn merge_sorted(a: Vec<int>, b: Vec<int>) -> int {
     return result.get(0) + result.get(result.len() / 2) + result.get(result.len() - 1);
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let a: Vec<int> = Vec::new();
         let b: Vec<int> = Vec::new();
         for k in 0..500 {
@@ -39,5 +40,5 @@ fn main() {
     }
     println("bench_merge_sorted");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

@@ -75,11 +75,12 @@ fn make_test_array() -> Vec<int> {
     v
 }
 
+const ITERS: int = 100000;
+
 fn main() {
-    let iters = 100000;
-    for i in 0..iters {
+    for i in 0..ITERS {
         let v = make_test_array();
-        radix_sort(v);
+        let _ = radix_sort(v);
     }
-    println(iters);
+    println(ITERS);
 }

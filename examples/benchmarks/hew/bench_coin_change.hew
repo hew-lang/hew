@@ -21,6 +21,8 @@ fn coin_change(coins: Vec<int>, num_coins: int, amount: int) -> int {
     return dp.get(amount);
 }
 
+const ITERS: int = 100000;
+
 fn main() {
     let coins: Vec<int> = Vec::new();
     coins.push(1);
@@ -32,12 +34,11 @@ fn main() {
     let num_coins = 6;
     let amount = 500;
 
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + coin_change(coins, num_coins, amount);
     }
     println("bench_coin_change");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

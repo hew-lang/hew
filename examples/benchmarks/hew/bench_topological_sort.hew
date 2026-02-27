@@ -85,19 +85,20 @@ fn topological_sort(adj_nodes: Vec<int>, adj_offsets: Vec<int>, in_deg_orig: Vec
     return count * 1000 + order_sum % 1000;
 }
 
+const ITERS: int = 100000;
+
 fn main() {
     let n = 50;
     let adj_nodes: Vec<int> = Vec::new();
     let adj_offsets: Vec<int> = Vec::new();
     let in_degree: Vec<int> = Vec::new();
-    build_dag(adj_nodes, adj_offsets, in_degree, n);
+    let _ = build_dag(adj_nodes, adj_offsets, in_degree, n);
 
-    let iters = 100000;
     var checksum = 0;
-    for i in 0..iters {
+    for i in 0..ITERS {
         checksum = checksum + topological_sort(adj_nodes, adj_offsets, in_degree, n);
     }
     println("bench_topological_sort");
     println(checksum);
-    println(iters);
+    println(ITERS);
 }

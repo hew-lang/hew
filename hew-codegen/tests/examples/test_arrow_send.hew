@@ -1,0 +1,9 @@
+// Regression: <- send operator for lambda actors
+fn main() {
+    let printer = spawn (x: i32) => {
+        println(x);
+    };
+    printer <- 42;
+    printer <- 100;
+    sleep_ms(100);
+}

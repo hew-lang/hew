@@ -160,6 +160,50 @@ mlir::Value MLIRGen::generateMatchImpl(mlir::Value scrutinee,
   if (arms.empty())
     return nullptr;
 
+  // If the scrutinee is a raw value from HashMapGetOp and the match arms
+  // use Option patterns (Some/None), wrap the raw value into Option<V>
+  // by checking contains_key and constructing Some(val) or None.
+  if (auto hmGet = scrutinee.getDefiningOp<hew::HashMapGetOp>()) {
+    bool hasOptionPatterns = false;
+    for (const auto &arm : arms) {
+      if (auto *ctor = std::get_if<ast::PatConstructor>(&arm.pattern.value.kind))
+        if (ctor->name == "Some")
+          hasOptionPatterns = true;
+      if (auto *ident = std::get_if<ast::PatIdentifier>(&arm.pattern.value.kind))
+        if (ident->name == "None")
+          hasOptionPatterns = true;
+    }
+    if (hasOptionPatterns) {
+      auto mapValue = hmGet.getMap();
+      auto keyValue = hmGet.getKey();
+      auto valueType = scrutinee.getType();
+      auto optionType = hew::OptionEnumType::get(&context, valueType);
+
+      auto exists =
+          builder
+              .create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, keyValue)
+              .getResult();
+
+      auto ifOp =
+          builder.create<mlir::scf::IfOp>(location, optionType, exists, /*withElseRegion=*/true);
+
+      builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      auto someVal = builder.create<hew::EnumConstructOp>(
+          location, optionType, /*variant_index=*/1, builder.getStringAttr("Option"),
+          mlir::ValueRange{scrutinee}, /*payload_positions=*/nullptr);
+      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{someVal});
+
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      auto noneVal = builder.create<hew::EnumConstructOp>(
+          location, optionType, /*variant_index=*/0, builder.getStringAttr("Option"),
+          mlir::ValueRange{}, /*payload_positions=*/nullptr);
+      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{noneVal});
+
+      builder.setInsertionPointAfter(ifOp);
+      scrutinee = ifOp.getResult(0);
+    }
+  }
+
   // Generate a chain of if/else for each arm
   // Wildcards and catch-all patterns are handled inside generateMatchArmsChain
   return generateMatchArmsChain(scrutinee, arms, 0, resultType, location);

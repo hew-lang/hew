@@ -250,6 +250,13 @@ impl Drop for RecursionGuard {
     }
 }
 
+/// Snapshot of parser position for speculative (backtracking) parses.
+struct SavedPos {
+    pos: usize,
+    error_count: usize,
+    angle_mutation_count: usize,
+}
+
 /// Parser state wrapping a token stream.
 #[derive(Debug)]
 pub struct Parser<'src> {
@@ -261,6 +268,9 @@ pub struct Parser<'src> {
     /// so that `s.launch`, `s.cancel()` can be desugared
     /// to the corresponding AST nodes.
     scope_binding: Option<String>,
+    /// Stack of token mutations performed by `eat_closing_angle`, so they can
+    /// be rolled back on speculative-parse backtrack.
+    angle_mutations: Vec<(usize, (Token<'src>, Span))>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +319,7 @@ impl<'src> Parser<'src> {
             errors,
             depth: Cell::new(0),
             scope_binding: None,
+            angle_mutations: Vec::new(),
         }
     }
 
@@ -423,6 +434,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterGreater => {
                 // `>>` → consume first `>`, leave `>` for the outer context
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::Greater, remaining_span);
@@ -430,6 +443,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterEqual => {
                 // `>=` → consume `>`, leave `=`
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::Equal, remaining_span);
@@ -437,6 +452,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterGreaterEqual => {
                 // `>>=` → consume first `>`, leave `>=`
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::GreaterEqual, remaining_span);
@@ -540,13 +557,22 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn save_pos(&self) -> (usize, usize) {
-        (self.pos, self.errors.len())
+    fn save_pos(&self) -> SavedPos {
+        SavedPos {
+            pos: self.pos,
+            error_count: self.errors.len(),
+            angle_mutation_count: self.angle_mutations.len(),
+        }
     }
 
-    fn restore_pos(&mut self, saved: (usize, usize)) {
-        self.pos = saved.0;
-        self.errors.truncate(saved.1);
+    fn restore_pos(&mut self, saved: SavedPos) {
+        self.pos = saved.pos;
+        self.errors.truncate(saved.error_count);
+        // Undo any token mutations made by eat_closing_angle since this save point
+        while self.angle_mutations.len() > saved.angle_mutation_count {
+            let (idx, tok) = self.angle_mutations.pop().unwrap();
+            self.tokens[idx] = tok;
+        }
     }
 
     /// Collect consecutive doc comment tokens with the given prefix and return
@@ -2946,7 +2972,8 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::Float(s) => {
-                if let Ok(val) = s.parse::<f64>() {
+                let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+                if let Ok(val) = cleaned.parse::<f64>() {
                     self.advance();
                     Expr::Literal(Literal::Float(val))
                 } else {
@@ -2961,6 +2988,15 @@ impl<'src> Parser<'src> {
                     .and_then(|s| s.strip_suffix('"'))
                     .unwrap_or(s);
                 let s = unescape_string(s);
+                self.advance();
+                Expr::Literal(Literal::String(s))
+            }
+            Token::RawString(s) => {
+                let s = s
+                    .strip_prefix("r\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(s)
+                    .to_string();
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -4748,5 +4784,19 @@ mod tests {
         } else {
             panic!("expected import item");
         }
+    }
+
+    #[test]
+    fn parse_float_with_underscore_separators() {
+        let source = "fn main() { let x = 1_000.5; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_raw_string_literal() {
+        let source = r#"fn main() { let x = r"hello\nworld"; }"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 } // mod tests

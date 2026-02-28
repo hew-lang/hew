@@ -4,11 +4,11 @@ pub fn greet(name: String) -> String {
 }
 
 /// Add two integers.
-pub fn add(a: i32, b: i32) -> i32 {
+pub fn add(a: int, b: int) -> int {
     a + b
 }
 
 /// This is private and should NOT be accessible.
-fn secret() -> i32 {
+fn secret() -> int {
     42
 }

@@ -1,12 +1,12 @@
-fn double(x: i32) -> i32 {
+fn double(x: int) -> int {
     x * 2
 }
 
-fn triple(x: i32) -> i32 {
+fn triple(x: int) -> int {
     x * 3
 }
 
-fn dispatch(path: string) -> i32 {
+fn dispatch(path: string) -> int {
     match path {
         "/" => 200,
         "/about" => 301,

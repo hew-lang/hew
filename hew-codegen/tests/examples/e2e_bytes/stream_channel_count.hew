@@ -5,7 +5,7 @@ fn main() {
 
     sink.close();
 
-    var count = 0;
+    var count: int = 0;
     for await item in input {
         count = count + 1;
     }

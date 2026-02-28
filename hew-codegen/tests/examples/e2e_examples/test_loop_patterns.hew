@@ -18,8 +18,8 @@ fn test_bare_loop_break() -> int {
 }
 
 fn test_loop_continue() -> int {
-    var i = 0;
-    var sum = 0;
+    var i: int = 0;
+    var sum: int = 0;
     while i < 10 {
         i = i + 1;
         if i % 2 == 0 {
@@ -38,7 +38,7 @@ fn test_loop_continue() -> int {
 }
 
 fn test_for_range() -> int {
-    var sum = 0;
+    var sum: int = 0;
     for i in 0 .. 5 {
         sum = sum + i;
     }
@@ -53,7 +53,7 @@ fn test_for_range() -> int {
 }
 
 fn test_for_range_start() -> int {
-    var sum = 0;
+    var sum: int = 0;
     for i in 3 .. 7 {
         sum = sum + i;
     }
@@ -68,10 +68,10 @@ fn test_for_range_start() -> int {
 }
 
 fn test_nested_loops() -> int {
-    var count = 0;
-    var i = 0;
+    var count: int = 0;
+    var i: int = 0;
     while i < 3 {
-        var j = 0;
+        var j: int = 0;
         while j < 3 {
             count = count + 1;
             j = j + 1;

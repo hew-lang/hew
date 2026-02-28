@@ -2,8 +2,8 @@
 // Exercises: Recursion, Vec operations, array construction
 fn merge(left: Vec<int>, right: Vec<int>) -> Vec<int> {
     let result: Vec<int> = Vec::new();
-    var i = 0;
-    var j = 0;
+    var i: int = 0;
+    var j: int = 0;
     let left_len = left.len();
     let right_len = right.len();
     while i < left_len {
@@ -37,7 +37,7 @@ fn sort(arr: Vec<int>) -> Vec<int> {
     let mid = len / 2;
     let left: Vec<int> = Vec::new();
     let right: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < mid {
         left.push(arr.get(i));
         i = i + 1;
@@ -53,7 +53,7 @@ fn sort(arr: Vec<int>) -> Vec<int> {
 
 fn print_vec(v: Vec<int>) {
     let len = v.len();
-    var i = 0;
+    var i: int = 0;
     while i < len {
         if i > 0 {
             print(" ");

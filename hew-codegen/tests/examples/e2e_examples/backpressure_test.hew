@@ -16,7 +16,7 @@ fn main() {
     println("=== Backpressure Test ===");
     let worker = spawn SlowWorker(id: 1);
     // Send multiple messages - bounded mailbox (capacity 4) will apply backpressure
-    var i = 0;
+    var i: int = 0;
     while i < 8 {
         worker.process(i);
         i = i + 1;

@@ -1,6 +1,6 @@
 fn main() {
     // break exits the for loop early
-    var sum: i32 = 0;
+    var sum: int = 0;
     for i in 0 .. 10 {
         if i == 5 {
             break;
@@ -10,7 +10,7 @@ fn main() {
     println(sum);
 
     // continue skips current iteration
-    var sum2: i32 = 0;
+    var sum2: int = 0;
     for i in 0 .. 10 {
         if i % 2 == 0 {
             continue;
@@ -20,7 +20,7 @@ fn main() {
     println(sum2);
 
     // nested break (inner only)
-    var count: i32 = 0;
+    var count: int = 0;
     for i in 0 .. 5 {
         for j in 0 .. 5 {
             if j == 2 {

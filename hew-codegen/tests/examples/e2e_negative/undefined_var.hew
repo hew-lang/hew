@@ -1,5 +1,5 @@
 // Negative test: using an undefined variable must produce a compile error.
-fn main() -> i32 {
+fn main() -> int {
     println(undefined_var);
     0
 }

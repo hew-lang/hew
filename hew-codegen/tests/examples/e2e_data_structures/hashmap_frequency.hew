@@ -22,7 +22,7 @@ fn main() -> int {
     var count2 = 0;
     var count3 = 0;
     var count4 = 0;
-    var i = 0;
+    var i: int = 0;
     while i < data.len() {
         let val = data.get(i);
         if val == 1 {

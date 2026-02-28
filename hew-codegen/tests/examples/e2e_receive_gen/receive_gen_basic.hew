@@ -2,7 +2,7 @@ actor Counter {
     let max: int;
 
     receive gen fn count_up() -> int {
-        var i = 0;
+        var i: int = 0;
         while i < self.max {
             yield i;
             i = i + 1;

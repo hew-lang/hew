@@ -696,6 +696,9 @@ add_e2e_file_test(supervisor_stop_cov       e2e_coverage supervisor_stop)
 add_e2e_file_test(lambda_send               e2e_coverage lambda_send)
 add_e2e_file_test(regex_literal             e2e_coverage regex_literal)
 add_e2e_file_test(cast_numeric              e2e_coverage cast_numeric)
+add_e2e_file_test(coverage_narrowing_check  e2e_coverage narrowing_check)
+add_e2e_file_test(coverage_var_reassign_drop e2e_coverage var_reassign_drop)
+add_e2e_file_test(coverage_match_exhaustive e2e_coverage match_exhaustive)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

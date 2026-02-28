@@ -13,7 +13,7 @@ fn main() {
     };
     let chunked = raw.chunks(5);
 
-    var count = 0;
+    var count: int = 0;
     for await chunk in chunked {
         println(chunk);
         count = count + 1;

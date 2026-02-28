@@ -5,8 +5,8 @@ actor Worker {
     receive fn work(n: int) {
 
         // Do some computation
-        var sum = 0;
-        var i = 0;
+        var sum: int = 0;
+        var i: int = 0;
         while i < n {
             sum = sum + i;
             i = i + 1;

@@ -11,7 +11,7 @@ actor Consumer {
 actor Producer {
     let produced: int;
     receive fn produce(count: int) {
-        var i = 0;
+        var i: int = 0;
         while i < count {
             self.produced = self.produced + 1;
             println(f"Produced item {self.produced}");

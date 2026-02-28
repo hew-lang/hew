@@ -2,7 +2,7 @@
 // Mutations inside the closure are visible in the outer scope and vice versa.
 
 fn main() {
-    var count = 0;
+    var count: int = 0;
     let inc = () => {
         count = count + 1;
     };

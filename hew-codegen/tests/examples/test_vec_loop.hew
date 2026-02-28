@@ -1,13 +1,13 @@
 fn main() {
     let v: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < 5 {
         v.push(i * 10);
         i = i + 1;
     }
     println(v.len());
     i = 0;
-    var sum = 0;
+    var sum: int = 0;
     while i < v.len() {
         sum = sum + v.get(i);
         i = i + 1;

@@ -5,7 +5,7 @@ fn main() -> int {
 
     // Vec: 10000 pushes
     let v: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < 10000 {
         v.push(i);
         i = i + 1;
@@ -15,7 +15,7 @@ fn main() -> int {
     println(" elements");
 
     // Vec: 10000 reads
-    var sum = 0;
+    var sum: int = 0;
     i = 0;
     while i < 10000 {
         sum = sum + v.get(i);

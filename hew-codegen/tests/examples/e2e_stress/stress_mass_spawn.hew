@@ -21,7 +21,7 @@ actor Worker {
 
 fn main() {
     let collector = spawn Collector(count: 0);
-    var i = 0;
+    var i: int = 0;
     while i < 500 {
         let w = spawn Worker(id: i, collector: collector);
         w.work();

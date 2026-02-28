@@ -11,7 +11,7 @@ fn main() {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };
-    var count = 0;
+    var count: int = 0;
     for await line in raw.lines() {
         count = count + 1;
     }

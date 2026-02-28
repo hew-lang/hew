@@ -4,7 +4,7 @@ fn main() {
     println("=== String Lifecycle ===");
 
     // Print many strings
-    var i = 0;
+    var i: int = 0;
     while i < 10 {
         println(f"Line {i}");
         i = i + 1;

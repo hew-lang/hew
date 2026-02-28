@@ -9,7 +9,7 @@ fn make_processor(values: Vec<Case>) -> fn() {
     let bonus = 7;
 
     return () => {
-        var total = 0;
+        var total: int = 0;
 
         for entry in values {
             total = total + match entry {

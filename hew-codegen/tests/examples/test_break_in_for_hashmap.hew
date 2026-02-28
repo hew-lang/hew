@@ -6,7 +6,7 @@ fn main() {
     m.insert("c", 30);
 
     // Break out of hashmap iteration after first entry
-    var count = 0;
+    var count: int = 0;
     for (k, v) in m {
         count = count + 1;
         break;
@@ -15,7 +15,7 @@ fn main() {
 
     // Nested: for-hashmap inside loop
     var passes = 0;
-    var sum = 0;
+    var sum: int = 0;
     loop {
         for (k, v) in m {
             sum = sum + 1;

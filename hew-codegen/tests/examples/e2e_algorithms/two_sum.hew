@@ -2,7 +2,7 @@
 // Exercises: HashMap lookup, iteration, function returns
 fn two_sum(nums: Vec<int>, target: int) -> int {
     let seen: HashMap<String, int> = HashMap::new();
-    var i = 0;
+    var i: int = 0;
     var found = 0;
     let len = nums.len();
     while i < len {
@@ -10,7 +10,7 @@ fn two_sum(nums: Vec<int>, target: int) -> int {
         let complement = target - num;
         // Build key from complement
         // Since HashMap uses string keys, we use index tracking
-        var j = 0;
+        var j: int = 0;
         while j < i {
             let other = nums.get(j);
             if num + other == target {

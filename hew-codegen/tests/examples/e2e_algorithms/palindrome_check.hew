@@ -5,7 +5,7 @@ fn is_palindrome(arr: Vec<int>) -> int {
     if len <= 1 {
         return 1;
     }
-    var left = 0;
+    var left: int = 0;
     var right = len - 1;
     while left < right {
         if arr.get(left) != arr.get(right) {

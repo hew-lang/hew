@@ -8,7 +8,7 @@ fn main() {
     sink.write("three");
     sink.close();
 
-    var count = 0;
+    var count: int = 0;
     for await item in input {
         println(item);
         count = count + 1;

@@ -1,7 +1,7 @@
 // Tests ActorStopOpLowering and ActorCloseOpLowering — zero E2E coverage.
 // stop(ref) sends a stop signal; close(ref) closes the actor's mailbox.
 actor Worker {
-    let count: i32;
+    let count: int;
     receive fn tick() {
         self.count = self.count + 1;
         print("tick ");

@@ -1,7 +1,7 @@
 actor Streamer {
 
     receive gen fn from_range(start: int, count: int) -> int {
-        var i = 0;
+        var i: int = 0;
         while i < count {
             yield start + i;
             i = i + 1;

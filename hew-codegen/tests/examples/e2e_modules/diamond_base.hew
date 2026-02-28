@@ -1,2 +1,2 @@
-pub fn base_value() -> i32 { 100 }
+pub fn base_value() -> int { 100 }
 pub const BASE_NAME: string = "diamond";

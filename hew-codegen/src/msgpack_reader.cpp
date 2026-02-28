@@ -231,9 +231,25 @@ static ast::Literal parseLiteral(const msgpack::object &obj) {
   if (name == "Bool")
     return ast::LitBool{getBool(*payload)};
   if (name == "Char") {
-    // Rust char serializes as a string
+    // Rust char serializes as a UTF-8 string — decode full codepoint
     auto s = getString(*payload);
-    return ast::LitChar{s.empty() ? '\0' : s[0]};
+    if (s.empty())
+      return ast::LitChar{0};
+    auto c = static_cast<unsigned char>(s[0]);
+    char32_t cp;
+    if (c < 0x80) {
+      cp = c;
+    } else if ((c >> 5) == 0x6 && s.size() >= 2) {
+      cp = (char32_t(c & 0x1F) << 6) | (s[1] & 0x3F);
+    } else if ((c >> 4) == 0xE && s.size() >= 3) {
+      cp = (char32_t(c & 0x0F) << 12) | (char32_t(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    } else if ((c >> 3) == 0x1E && s.size() >= 4) {
+      cp = (char32_t(c & 0x07) << 18) | (char32_t(s[1] & 0x3F) << 12) |
+           (char32_t(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    } else {
+      cp = c; // fallback to raw byte
+    }
+    return ast::LitChar{cp};
   }
   if (name == "Duration")
     return ast::LitDuration{getInt(*payload)};
@@ -836,6 +852,13 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
     e.index = std::make_unique<ast::Spanned<ast::Expr>>(
         parseSpanned<ast::Expr>(mapReq(*payload, "index"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Cast") {
+    ast::ExprCast e;
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.ty = parseSpanned<ast::TypeExpr>(mapReq(*payload, "ty"), parseTypeExpr);
     return ast::Expr{std::move(e), {}};
   }
   if (name == "PostfixTry") {

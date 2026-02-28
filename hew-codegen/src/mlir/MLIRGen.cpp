@@ -3264,6 +3264,28 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
   }
 }
 
+void MLIRGen::emitDropForVariable(const std::string &varName) {
+  // Find the drop entry for this variable
+  for (auto &scope : dropScopes) {
+    for (auto &entry : scope) {
+      if (entry.varName == varName) {
+        auto val = lookupVariable(varName);
+        if (!val)
+          return;
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
+        mlir::Value dropVal = val;
+        if (mlir::isa<hew::ClosureType>(val.getType()))
+          dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
+        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !entry.isUserDrop)
+          dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
+        builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, entry.dropFuncName,
+                                    entry.isUserDrop);
+        return;
+      }
+    }
+  }
+}
+
 void MLIRGen::emitDropsForScope(const std::vector<DropEntry> &scope) {
   if (scope.empty())
     return;

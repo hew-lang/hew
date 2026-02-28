@@ -3,7 +3,7 @@
 fn is_valid(s: Vec<int>) -> int {
     // Encode chars as ints: ( = 1, ) = 2, [ = 3, ] = 4, { = 5, } = 6
     let stack: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     let len = s.len();
     while i < len {
         let ch = s.get(i);

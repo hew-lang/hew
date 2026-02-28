@@ -2,13 +2,13 @@
 // Exercises: Vec push, set, get operations
 fn main() {
     let v: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < 5 {
         v.push(i * 10);
         i = i + 1;
     }
     v.set(2, 99);
-    var j = 0;
+    var j: int = 0;
     while j < 5 {
         println(v.get(j));
         j = j + 1;

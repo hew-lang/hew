@@ -532,6 +532,8 @@ private:
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
   void unregisterDroppable(const std::string &varName);
+  /// Emit a drop for a single variable if it has a registered drop function.
+  void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);
   void emitDropsForCurrentScope();
   void emitAllDrops();

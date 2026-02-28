@@ -2,7 +2,7 @@ actor Fibonacci {
     let limit: int;
 
     receive gen fn sequence() -> int {
-        var a = 0;
+        var a: int = 0;
         var b = 1;
         while a < self.limit {
             yield a;

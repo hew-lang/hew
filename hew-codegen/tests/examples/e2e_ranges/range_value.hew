@@ -1,6 +1,6 @@
 fn main() {
     let r = 0..5;
-    var s = 0;
+    var s: int = 0;
     for i in r {
         s = s + i;
     }

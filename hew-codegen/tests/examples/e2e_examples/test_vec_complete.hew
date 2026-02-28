@@ -121,7 +121,7 @@ fn test_vec_string() -> int {
 fn test_vec_multiple_ops() -> int {
     let v: Vec<int> = Vec::new();
     // Push several values
-    var i = 0;
+    var i: int = 0;
     while i < 5 {
         v.push(i * 10);
         i = i + 1;

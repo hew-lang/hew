@@ -3,7 +3,7 @@
 fn count_primes(limit: int) -> int {
     // Use Vec<int> where 1 = prime candidate, 0 = composite
     let is_prime: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < limit {
         if i < 2 {
             is_prime.push(0);
@@ -27,7 +27,7 @@ fn count_primes(limit: int) -> int {
         p = p + 1;
     }
     // Count primes by trial division (simpler approach)
-    var count = 0;
+    var count: int = 0;
     var n = 2;
     while n < limit {
         var is_p = 1;

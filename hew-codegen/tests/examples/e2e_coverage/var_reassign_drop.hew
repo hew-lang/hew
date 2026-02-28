@@ -1,0 +1,15 @@
+// Test: var reassignment drops old owned value
+// Verifies that reassigning a mutable string variable doesn't leak.
+
+fn make_greeting(name: String) -> String {
+    "Hello, " + name + "!"
+}
+
+fn main() {
+    var msg = make_greeting("Alice");
+    println(msg);
+    msg = make_greeting("Bob");
+    println(msg);
+    msg = "final";
+    println(msg);
+}

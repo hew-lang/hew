@@ -35,8 +35,8 @@ fn test_lambda() {
 
 // 4. Loops with var
 fn test_loops() {
-    var total = 0;
-    var i = 0;
+    var total: int = 0;
+    var i: int = 0;
     while i < 5 {
         total = total + i;
         i = i + 1;
@@ -52,11 +52,11 @@ fn test_strings() {
 }
 
 // 6. Nested function calls
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: int, b: int) -> int {
     a + b
 }
 
-fn mul(a: i32, b: i32) -> i32 {
+fn mul(a: int, b: int) -> int {
     a * b
 }
 
@@ -68,7 +68,7 @@ fn test_nested_calls() {
 }
 
 // 7. Fibonacci via recursion
-fn fib(n: i32) -> i32 {
+fn fib(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -84,7 +84,7 @@ fn test_fibonacci() {
 }
 
 // 8. Const declaration
-const MAX_SIZE: i32 = 100;
+const MAX_SIZE: int = 100;
 
 // 9. Comparison operators
 fn test_comparisons() {

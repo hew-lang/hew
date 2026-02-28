@@ -141,6 +141,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
     return generateBlockExpr(blockExpr->block);
+  if (auto *cast = std::get_if<ast::ExprCast>(&expr.kind)) {
+    auto location = currentLoc;
+    auto value = generateExpression(cast->expr->value);
+    if (!value)
+      return nullptr;
+    currentLoc = location;
+    auto targetType = convertType(cast->ty.value);
+    bool isUnsigned = isUnsignedTypeExpr(cast->ty.value);
+    return coerceType(value, targetType, location, isUnsigned);
+  }
   if (auto *pf = std::get_if<ast::ExprPostfixTry>(&expr.kind))
     return generatePostfixExpr(*pf);
   if (auto *me = std::get_if<ast::ExprMatch>(&expr.kind))
@@ -1567,7 +1577,13 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                  isPointerLikeType(expectedType)) {
         args[i] = builder.create<hew::BitcastOp>(location, expectedType, args[i]);
       } else if (actualType != expectedType) {
-        args[i] = coerceType(args[i], expectedType, location);
+        bool argUnsigned = false;
+        if (i < call.args.size()) {
+          auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[i]).span);
+          if (argType && isUnsignedTypeExpr(*argType))
+            argUnsigned = true;
+        }
+        args[i] = coerceType(args[i], expectedType, location, argUnsigned);
       }
     }
     auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);

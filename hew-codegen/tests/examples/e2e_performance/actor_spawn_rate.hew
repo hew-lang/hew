@@ -12,7 +12,7 @@ fn main() {
     println("=== Actor Spawn Rate ===");
 
     // Spawn 100 actors
-    var i = 0;
+    var i: int = 0;
     while i < 100 {
         let a = spawn Ephemeral(id: i);
         a.ping(0);

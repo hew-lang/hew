@@ -1284,6 +1284,9 @@ fn collect_expr_folding(
             add_region(source, lo, span, r);
             collect_block_folding(source, lo, body, r);
         }
+        Expr::Cast { expr: inner, .. } => {
+            collect_expr_folding(source, lo, &inner.0, &inner.1, r);
+        }
         _ => {}
     }
 }
@@ -1652,6 +1655,9 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             }
         }
         Expr::PostfixTry(inner) => {
+            collect_locals_from_expr(&inner.0, offset, locals);
+        }
+        Expr::Cast { expr: inner, .. } => {
             collect_locals_from_expr(&inner.0, offset, locals);
         }
         Expr::Select { arms, timeout } => {
@@ -2728,6 +2734,9 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
         Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
             collect_refs_in_expr(&inner.0, &inner.1, name, spans);
         }
+        Expr::Cast { expr: inner, .. } => {
+            collect_refs_in_expr(&inner.0, &inner.1, name, spans);
+        }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
                 collect_refs_in_expr(&s.0, &s.1, name, spans);
@@ -3325,6 +3334,9 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         }
         Expr::PostfixTry(p) => {
             collect_calls_in_expr(p.as_ref(), calls);
+        }
+        Expr::Cast { expr, .. } => {
+            collect_calls_in_expr(expr.as_ref(), calls);
         }
         Expr::Yield(Some(y)) => {
             collect_calls_in_expr(y.as_ref(), calls);
@@ -3978,6 +3990,9 @@ fn collect_inlay_hints_from_expr(
             for arm in arms {
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
+        }
+        Expr::Cast { expr: inner, .. } => {
+            collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
         }
         _ => {}
     }

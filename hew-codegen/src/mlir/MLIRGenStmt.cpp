@@ -1239,6 +1239,11 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     mlir::Value current = lookupVariable(name);
     if (current)
       rhs = coerceType(rhs, current.getType(), location);
+    // Drop old owned value before overwriting to prevent memory leaks.
+    // Only safe when RHS is a fresh allocation (not loaded from another
+    // variable), to avoid double-free from shared ownership.
+    if (rhs && !rhs.getDefiningOp<mlir::memref::LoadOp>() && !mlir::isa<mlir::BlockArgument>(rhs))
+      emitDropForVariable(name);
     storeVariable(name, rhs);
   }
 }

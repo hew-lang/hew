@@ -6,12 +6,12 @@ fn mat_get(m: Vec<int>, cols: int, row: int, col: int) -> int {
 
 fn mat_mul(a: Vec<int>, b: Vec<int>, n: int) -> Vec<int> {
     let result: Vec<int> = Vec::new();
-    var i = 0;
+    var i: int = 0;
     while i < n {
-        var j = 0;
+        var j: int = 0;
         while j < n {
-            var sum = 0;
-            var k = 0;
+            var sum: int = 0;
+            var k: int = 0;
             while k < n {
                 sum = sum + mat_get(a, n, i, k) * mat_get(b, n, k, j);
                 k = k + 1;
@@ -25,9 +25,9 @@ fn mat_mul(a: Vec<int>, b: Vec<int>, n: int) -> Vec<int> {
 }
 
 fn print_matrix(m: Vec<int>, n: int) {
-    var i = 0;
+    var i: int = 0;
     while i < n {
-        var j = 0;
+        var j: int = 0;
         while j < n {
             if j > 0 {
                 print(" ");

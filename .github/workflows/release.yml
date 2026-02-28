@@ -147,7 +147,8 @@ jobs:
             -DLLVM_ENABLE_PROJECTS="mlir" `
             -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
             -DLLVM_BUILD_TOOLS=ON `
-            -DLLVM_BUILD_UTILS=OFF `
+            -DLLVM_BUILD_UTILS=ON `
+            -DLLVM_INSTALL_UTILS=ON `
             -DLLVM_INCLUDE_TESTS=OFF `
             -DLLVM_INCLUDE_BENCHMARKS=OFF `
             -DLLVM_INCLUDE_EXAMPLES=OFF `

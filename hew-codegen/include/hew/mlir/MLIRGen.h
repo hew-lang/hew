@@ -213,7 +213,9 @@ private:
 
   // ── Select/Join helpers ───────────────────────────────────────────
   /// Resolve actor type name from an expression (e.g., variable holding actor).
-  std::string resolveActorTypeName(const ast::Expr &expr);
+  /// Checks resolvedTypeOf (from type checker), identifier-based actorVarTypes,
+  /// and field-access-based actorFieldTypes.
+  std::string resolveActorTypeName(const ast::Expr &expr, const ast::Span *span = nullptr);
 
   /// Pack argument values into a stack-allocated buffer for sending.
   /// Returns (data_ptr, data_size) as (!llvm.ptr, i64).
@@ -221,6 +223,16 @@ private:
                                                       mlir::Location location);
 
   // ── Helpers ──────────────────────────────────────────────────────
+  /// Join currentModulePath into a "::" delimited key string.
+  std::string currentModuleKey() const;
+
+  /// Look up a function through imported module paths.
+  mlir::func::FuncOp lookupImportedFunc(llvm::StringRef typeName, llvm::StringRef funcName);
+
+  /// Emit a RuntimeCallOp, returning the result (or nullptr for void calls).
+  mlir::Value emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType, mlir::ValueRange args,
+                              mlir::Location location);
+
   mlir::Location loc(const ast::Span &span);
 
   /// Get or create an extern function declaration.

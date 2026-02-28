@@ -248,6 +248,20 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
   llvm::report_fatal_error("createDefaultValue: unhandled type");
 }
 
+/// Build an I64ArrayAttr for explicit enum payload positions, or nullptr
+/// if positions are the default (1, 2, 3, ...).
+inline mlir::ArrayAttr buildPayloadPositionsAttr(mlir::OpBuilder &builder,
+                                                 llvm::ArrayRef<int64_t> positions,
+                                                 size_t payloadCount) {
+  if (positions.size() != payloadCount)
+    return nullptr;
+  for (size_t i = 0; i < positions.size(); ++i) {
+    if (positions[i] != static_cast<int64_t>(i) + 1)
+      return builder.getI64ArrayAttr(positions);
+  }
+  return nullptr;
+}
+
 /// Check if a statement might contain a return (recursively).
 inline bool stmtMightContainReturn(const ast::Stmt &s) {
   return std::holds_alternative<ast::StmtReturn>(s.kind) ||

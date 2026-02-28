@@ -492,20 +492,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         args.push_back(indexVal);
 
         auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-        if (!callee) {
-          std::string modKey;
-          for (const auto &seg : currentModulePath)
-            modKey += (modKey.empty() ? "" : "::") + seg;
-          auto impIt = moduleImports.find(modKey);
-          if (impIt != moduleImports.end()) {
-            for (const auto &impPath : impIt->second) {
-              std::string tryName = mangleName(impPath, structType.getName().str(), "get");
-              callee = module.lookupSymbol<mlir::func::FuncOp>(tryName);
-              if (callee)
-                break;
-            }
-          }
-        }
+        if (!callee)
+          callee = lookupImportedFunc(structType.getName(), "get");
         if (callee) {
           auto funcType = callee.getFunctionType();
           for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
@@ -536,32 +524,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         return nullptr;
 
       // Resolve actor type
-      std::string actorTypeName;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
-        auto it = actorVarTypes.find(ie->name);
-        if (it != actorVarTypes.end())
-          actorTypeName = it->second;
-      }
-      if (actorTypeName.empty()) {
-        if (auto *faInner = std::get_if<ast::ExprFieldAccess>(&mc->receiver->value.kind)) {
-          std::string baseName;
-          if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&faInner->object->value.kind)) {
-            if (baseIdent->name == "self" && !currentActorName.empty())
-              baseName = currentActorName;
-            else {
-              auto baseIt = actorVarTypes.find(baseIdent->name);
-              if (baseIt != actorVarTypes.end())
-                baseName = baseIt->second;
-            }
-          }
-          if (!baseName.empty()) {
-            auto key = baseName + "." + faInner->field;
-            auto aft = actorFieldTypes.find(key);
-            if (aft != actorFieldTypes.end() && actorRegistry.count(aft->second))
-              actorTypeName = aft->second;
-          }
-        }
-      }
+      std::string actorTypeName = resolveActorTypeName(mc->receiver->value, &mc->receiver->span);
 
       if (!actorTypeName.empty()) {
         auto actorIt = actorRegistry.find(actorTypeName);
@@ -886,6 +849,57 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       isUnsigned = isUnsignedTypeExpr(*lhsType);
   }
 
+  // Hoist actor-pointer detection for pointer comparison operators.
+  bool isActorPtr = false;
+  if (isPtr) {
+    if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
+      if (actorVarTypes.count(ie->name))
+        isActorPtr = true;
+    if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
+      if (actorVarTypes.count(ie->name))
+        isActorPtr = true;
+  }
+
+  // Helper: string ordering comparison via compare() method.
+  auto ptrOrderingCmp = [&](mlir::arith::CmpIPredicate pred) -> mlir::Value {
+    if (isActorPtr) {
+      emitError(location, "ordering comparison on actor references is not supported");
+      return nullptr;
+    }
+    auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                         builder.getStringAttr("compare"), lhs,
+                                                         mlir::ValueRange{rhs});
+    auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+    return builder.create<mlir::arith::CmpIOp>(location, pred, cmpResult.getResult(), zero)
+        .getResult();
+  };
+
+  // Helper: pointer equality/inequality via PtrToInt (actors) or equals() (strings).
+  auto ptrEqualityCmp = [&](mlir::arith::CmpIPredicate pred) -> mlir::Value {
+    if (isActorPtr) {
+      auto i64Type = builder.getI64Type();
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      mlir::Value lhsPtr = lhs, rhsPtr = rhs;
+      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(lhs.getType()))
+        lhsPtr = builder.create<hew::BitcastOp>(location, ptrType, lhs);
+      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(rhs.getType()))
+        rhsPtr = builder.create<hew::BitcastOp>(location, ptrType, rhs);
+      auto lhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, lhsPtr);
+      auto rhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, rhsPtr);
+      return builder.create<mlir::arith::CmpIOp>(location, pred, lhsI, rhsI).getResult();
+    }
+    // String equality: equals() returns non-zero on match.
+    auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                        builder.getStringAttr("equals"), lhs,
+                                                        mlir::ValueRange{rhs});
+    auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+    // For ==, check equals() != 0; for !=, check equals() == 0.
+    auto stringPred = (pred == mlir::arith::CmpIPredicate::eq) ? mlir::arith::CmpIPredicate::ne
+                                                               : mlir::arith::CmpIPredicate::eq;
+    return builder.create<mlir::arith::CmpIOp>(location, stringPred, eqResult.getResult(), zero)
+        .getResult();
+  };
+
   switch (expr.op) {
   // Arithmetic
   case ast::BinaryOp::Add:
@@ -921,28 +935,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLT, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      // Actor pointers cannot be ordered — only equality comparison is valid
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (isActorPtr) {
-        emitError(location, "ordering comparison on actor references is not supported");
-        return nullptr;
-      }
-      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                           builder.getStringAttr("compare"), lhs,
-                                                           mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt,
-                                       cmpResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrOrderingCmp(mlir::arith::CmpIPredicate::slt);
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ult
@@ -954,27 +948,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLE, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (isActorPtr) {
-        emitError(location, "ordering comparison on actor references is not supported");
-        return nullptr;
-      }
-      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                           builder.getStringAttr("compare"), lhs,
-                                                           mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sle,
-                                       cmpResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrOrderingCmp(mlir::arith::CmpIPredicate::sle);
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ule
@@ -986,27 +961,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGT, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (isActorPtr) {
-        emitError(location, "ordering comparison on actor references is not supported");
-        return nullptr;
-      }
-      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                           builder.getStringAttr("compare"), lhs,
-                                                           mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sgt,
-                                       cmpResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrOrderingCmp(mlir::arith::CmpIPredicate::sgt);
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ugt
@@ -1018,27 +974,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGE, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      if (isActorPtr) {
-        emitError(location, "ordering comparison on actor references is not supported");
-        return nullptr;
-      }
-      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                           builder.getStringAttr("compare"), lhs,
-                                                           mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sge,
-                                       cmpResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrOrderingCmp(mlir::arith::CmpIPredicate::sge);
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::uge
@@ -1050,39 +987,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OEQ, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind)) {
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      }
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind)) {
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      }
-      if (isActorPtr) {
-        auto i64Type = builder.getI64Type();
-        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-        mlir::Value lhsPtr = lhs, rhsPtr = rhs;
-        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(lhs.getType()))
-          lhsPtr = builder.create<hew::BitcastOp>(location, ptrType, lhs);
-        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(rhs.getType()))
-          rhsPtr = builder.create<hew::BitcastOp>(location, ptrType, rhs);
-        auto lhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, lhsPtr);
-        auto rhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, rhsPtr);
-        return builder
-            .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, lhsI, rhsI)
-            .getResult();
-      }
-      auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                          builder.getStringAttr("equals"), lhs,
-                                                          mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
-                                       eqResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrEqualityCmp(mlir::arith::CmpIPredicate::eq);
     return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, lhs, rhs)
         .getResult();
   case ast::BinaryOp::NotEqual:
@@ -1090,39 +996,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::ONE, lhs, rhs)
           .getResult();
-    if (isPtr) {
-      bool isActorPtr = false;
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind)) {
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      }
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind)) {
-        if (actorVarTypes.count(ie->name))
-          isActorPtr = true;
-      }
-      if (isActorPtr) {
-        auto i64Type = builder.getI64Type();
-        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-        mlir::Value lhsPtr = lhs, rhsPtr = rhs;
-        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(lhs.getType()))
-          lhsPtr = builder.create<hew::BitcastOp>(location, ptrType, lhs);
-        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(rhs.getType()))
-          rhsPtr = builder.create<hew::BitcastOp>(location, ptrType, rhs);
-        auto lhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, lhsPtr);
-        auto rhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, rhsPtr);
-        return builder
-            .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, lhsI, rhsI)
-            .getResult();
-      }
-      auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                          builder.getStringAttr("equals"), lhs,
-                                                          mlir::ValueRange{rhs});
-      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder
-          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                       eqResult.getResult(), zero)
-          .getResult();
-    }
+    if (isPtr)
+      return ptrEqualityCmp(mlir::arith::CmpIPredicate::ne);
     return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, lhs, rhs)
         .getResult();
 
@@ -1307,59 +1182,58 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     return generatePrintCall(call, /*newline=*/false);
   }
 
-  // Check for named builtins
-  auto builtinResult = generateBuiltinCall(calleeName, call.args, location);
-  static const char *builtinNames[] = {"println_str",
-                                       "print_str",
-                                       "println_int",
-                                       "print_int",
-                                       "println_f64",
-                                       "print_f64",
-                                       "println_bool",
-                                       "print_bool",
-                                       "sqrt",
-                                       "abs",
-                                       "min",
-                                       "max",
-                                       "string_concat",
-                                       "string_length",
-                                       "string_equals",
-                                       "sleep_ms",
-                                       "string_char_at",
-                                       "string_slice",
-                                       "read_file",
-                                       "string_find",
-                                       "string_contains",
-                                       "string_starts_with",
-                                       "string_ends_with",
-                                       "string_trim",
-                                       "string_replace",
-                                       "string_to_int",
-                                       "string_from_int",
-                                       "int_to_string",
-                                       "char_to_string",
-                                       "substring",
-                                       "stop",
-                                       "close",
-                                       "link",
-                                       "unlink",
-                                       "monitor",
-                                       "demonitor",
-                                       "supervisor_child",
-                                       "supervisor_stop",
-                                       "panic",
-                                       "assert",
-                                       "assert_eq",
-                                       "assert_ne",
-                                       "Vec::new",
-                                       "Vec::from",
-                                       "HashMap::new",
-                                       "HashSet::new",
-                                       "bytes::new",
-                                       "bytes::from"};
-  for (const auto *bn : builtinNames) {
-    if (calleeName == bn)
-      return builtinResult;
+  // Check for named builtins (O(1) lookup before calling generateBuiltinCall).
+  {
+    static const llvm::StringSet<> builtinNames = {"println_str",
+                                                   "print_str",
+                                                   "println_int",
+                                                   "print_int",
+                                                   "println_f64",
+                                                   "print_f64",
+                                                   "println_bool",
+                                                   "print_bool",
+                                                   "sqrt",
+                                                   "abs",
+                                                   "min",
+                                                   "max",
+                                                   "string_concat",
+                                                   "string_length",
+                                                   "string_equals",
+                                                   "sleep_ms",
+                                                   "string_char_at",
+                                                   "string_slice",
+                                                   "read_file",
+                                                   "string_find",
+                                                   "string_contains",
+                                                   "string_starts_with",
+                                                   "string_ends_with",
+                                                   "string_trim",
+                                                   "string_replace",
+                                                   "string_to_int",
+                                                   "string_from_int",
+                                                   "int_to_string",
+                                                   "char_to_string",
+                                                   "substring",
+                                                   "stop",
+                                                   "close",
+                                                   "link",
+                                                   "unlink",
+                                                   "monitor",
+                                                   "demonitor",
+                                                   "supervisor_child",
+                                                   "supervisor_stop",
+                                                   "panic",
+                                                   "assert",
+                                                   "assert_eq",
+                                                   "assert_ne",
+                                                   "Vec::new",
+                                                   "Vec::from",
+                                                   "HashMap::new",
+                                                   "HashSet::new",
+                                                   "bytes::new",
+                                                   "bytes::from"};
+    if (builtinNames.contains(calleeName))
+      return generateBuiltinCall(calleeName, call.args, location);
   }
 
   // Check if this is an enum variant constructor: Some(42), Ok(val), etc.
@@ -1456,18 +1330,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
               argVal = coerceType(argVal, vi->payloadTypes[i], location);
             payloads.push_back(argVal);
           }
-          mlir::ArrayAttr payloadPositionsAttr = nullptr;
-          if (vi && vi->payloadPositions.size() == payloads.size()) {
-            bool needsExplicitPositions = false;
-            for (size_t i = 0; i < vi->payloadPositions.size(); ++i) {
-              if (vi->payloadPositions[i] != static_cast<int64_t>(i) + 1) {
-                needsExplicitPositions = true;
-                break;
-              }
-            }
-            if (needsExplicitPositions)
-              payloadPositionsAttr = builder.getI64ArrayAttr(vi->payloadPositions);
-          }
+          auto payloadPositionsAttr =
+              vi ? buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size())
+                 : nullptr;
           mlir::Value result = builder.create<hew::EnumConstructOp>(
               location, enumInfo.mlirType, static_cast<int32_t>(variantIndex),
               builder.getStringAttr(enumName), payloads, payloadPositionsAttr);
@@ -1486,9 +1351,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     callee = module.lookupSymbol<mlir::func::FuncOp>(calleeName);
   // Try alias resolution: e.g. hello → mylib.greet (scoped to current module)
   if (!callee) {
-    std::string modKey;
-    for (const auto &seg : currentModulePath)
-      modKey += (modKey.empty() ? "" : "::") + seg;
+    auto modKey = currentModuleKey();
     auto aliasIt = aliasToFunction.find(modKey + "::" + calleeName);
     if (aliasIt != aliasToFunction.end()) {
       const auto &[origPath, origName] = aliasIt->second;
@@ -1497,21 +1360,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     }
   }
   // Try imported module paths (for cross-module calls like diamond deps).
-  // Search direct and transitive imports of the current module.
-  if (!callee) {
-    std::string modKey;
-    for (const auto &seg : currentModulePath)
-      modKey += (modKey.empty() ? "" : "::") + seg;
-    auto impIt = moduleImports.find(modKey);
-    if (impIt != moduleImports.end()) {
-      for (const auto &impPath : impIt->second) {
-        std::string impMangled = mangleName(impPath, "", calleeName);
-        callee = module.lookupSymbol<mlir::func::FuncOp>(impMangled);
-        if (callee)
-          break;
-      }
-    }
-  }
+  if (!callee)
+    callee = lookupImportedFunc("", calleeName);
   mlir::FunctionType calleeFuncType = callee ? callee.getFunctionType() : nullptr;
 
   llvm::SmallVector<mlir::Value, 4> args;
@@ -1956,18 +1806,8 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
             return nullptr;
           }
         }
-        mlir::ArrayAttr payloadPositionsAttr = nullptr;
-        if (vi->payloadPositions.size() == payloads.size()) {
-          bool needsExplicitPositions = false;
-          for (size_t i = 0; i < vi->payloadPositions.size(); ++i) {
-            if (vi->payloadPositions[i] != static_cast<int64_t>(i) + 1) {
-              needsExplicitPositions = true;
-              break;
-            }
-          }
-          if (needsExplicitPositions)
-            payloadPositionsAttr = builder.getI64ArrayAttr(vi->payloadPositions);
-        }
+        auto payloadPositionsAttr =
+            buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size());
         return builder.create<hew::EnumConstructOp>(
             location, enumInfo.mlirType, static_cast<int32_t>(varIt->second.second),
             builder.getStringAttr(enumName), payloads, payloadPositionsAttr);
@@ -2779,6 +2619,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   if (!receiver)
     return nullptr;
 
+  // Local wrapper around member emitRuntimeCall, capturing `location`.
+  auto rtCall = [&](llvm::StringRef callee, mlir::Type resultType,
+                    mlir::ValueRange args) -> mlir::Value {
+    return emitRuntimeCall(callee, resultType, args, location);
+  };
+
   // Check if receiver is a typed handle (http.Server, net.Connection, etc.)
   if (auto handleTy = mlir::dyn_cast<hew::HandleType>(receiver.getType())) {
     const auto handleType = handleTy.getHandleKind().str();
@@ -2796,25 +2642,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       argVals.push_back(val);
     }
 
-    auto emitRuntimeCall = [&](llvm::StringRef callee, mlir::Type resultType,
-                               mlir::ValueRange args) -> mlir::Value {
-      auto calleeAttr = mlir::SymbolRefAttr::get(&context, callee);
-      if (resultType) {
-        auto op = builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{resultType},
-                                                     calleeAttr, args);
-        return op.getResult();
-      }
-      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr, args);
-      return nullptr;
-    };
-
     // http.Server methods
     if (handleType == "http.Server") {
       if (method == "accept")
-        return emitRuntimeCall("hew_http_server_recv",
-                               hew::HandleType::get(&context, "http.Request"), argVals);
+        return rtCall("hew_http_server_recv", hew::HandleType::get(&context, "http.Request"),
+                      argVals);
       if (method == "close") {
-        emitRuntimeCall("hew_http_server_close", {}, argVals);
+        rtCall("hew_http_server_close", {}, argVals);
         return nullptr;
       }
     }
@@ -2822,26 +2656,23 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // http.Request methods
     if (handleType == "http.Request") {
       if (method == "path")
-        return emitRuntimeCall("hew_http_request_path", hew::StringRefType::get(&context),
-                               {receiver});
+        return rtCall("hew_http_request_path", hew::StringRefType::get(&context), {receiver});
       if (method == "method")
-        return emitRuntimeCall("hew_http_request_method", hew::StringRefType::get(&context),
-                               {receiver});
+        return rtCall("hew_http_request_method", hew::StringRefType::get(&context), {receiver});
       if (method == "body")
-        return emitRuntimeCall("hew_http_request_body", hew::StringRefType::get(&context), argVals);
+        return rtCall("hew_http_request_body", hew::StringRefType::get(&context), argVals);
       if (method == "header")
-        return emitRuntimeCall("hew_http_request_header", hew::StringRefType::get(&context),
-                               argVals);
+        return rtCall("hew_http_request_header", hew::StringRefType::get(&context), argVals);
       if (method == "respond")
-        return emitRuntimeCall("hew_http_respond", i32Type, argVals);
+        return rtCall("hew_http_respond", i32Type, argVals);
       if (method == "respond_text")
-        return emitRuntimeCall("hew_http_respond_text", i32Type, argVals);
+        return rtCall("hew_http_respond_text", i32Type, argVals);
       if (method == "respond_json")
-        return emitRuntimeCall("hew_http_respond_json", i32Type, argVals);
+        return rtCall("hew_http_respond_json", i32Type, argVals);
       if (method == "respond_stream")
-        return emitRuntimeCall("hew_http_respond_stream", ptrType, argVals);
+        return rtCall("hew_http_respond_stream", ptrType, argVals);
       if (method == "free") {
-        emitRuntimeCall("hew_http_request_free", {}, argVals);
+        rtCall("hew_http_request_free", {}, argVals);
         return nullptr;
       }
     }
@@ -2849,23 +2680,23 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // net.Listener methods
     if (handleType == "net.Listener") {
       if (method == "accept")
-        return emitRuntimeCall("hew_tcp_accept", i32Type, argVals);
+        return rtCall("hew_tcp_accept", i32Type, argVals);
       if (method == "close")
-        return emitRuntimeCall("hew_tcp_close", i32Type, argVals);
+        return rtCall("hew_tcp_close", i32Type, argVals);
     }
 
     // net.Connection methods
     if (handleType == "net.Connection") {
       if (method == "read")
-        return emitRuntimeCall("hew_tcp_read", ptrType, argVals);
+        return rtCall("hew_tcp_read", ptrType, argVals);
       if (method == "write")
-        return emitRuntimeCall("hew_tcp_write", i32Type, argVals);
+        return rtCall("hew_tcp_write", i32Type, argVals);
       if (method == "close")
-        return emitRuntimeCall("hew_tcp_close", i32Type, argVals);
+        return rtCall("hew_tcp_close", i32Type, argVals);
       if (method == "set_read_timeout")
-        return emitRuntimeCall("hew_tcp_set_read_timeout", i32Type, argVals);
+        return rtCall("hew_tcp_set_read_timeout", i32Type, argVals);
       if (method == "set_write_timeout")
-        return emitRuntimeCall("hew_tcp_set_write_timeout", i32Type, argVals);
+        return rtCall("hew_tcp_set_write_timeout", i32Type, argVals);
     }
 
     // regex.Pattern methods
@@ -2888,9 +2719,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // process.Child methods
     if (handleType == "process.Child") {
       if (method == "wait")
-        return emitRuntimeCall("hew_process_wait", i32Type, argVals);
+        return rtCall("hew_process_wait", i32Type, argVals);
       if (method == "kill")
-        return emitRuntimeCall("hew_process_kill", i32Type, argVals);
+        return rtCall("hew_process_kill", i32Type, argVals);
     }
   }
 
@@ -2946,34 +2777,22 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         argVals.push_back(val);
       }
 
-      auto emitRuntimeCall = [&](llvm::StringRef callee, mlir::Type resultType,
-                                 mlir::ValueRange args) -> mlir::Value {
-        auto calleeAttr = mlir::SymbolRefAttr::get(&context, callee);
-        if (resultType) {
-          auto op = builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{resultType},
-                                                       calleeAttr, args);
-          return op.getResult();
-        }
-        builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr, args);
-        return nullptr;
-      };
-
       if (handleType == "net.Listener") {
         if (method == "accept")
-          return emitRuntimeCall("hew_tcp_accept", i32Type, argVals);
+          return rtCall("hew_tcp_accept", i32Type, argVals);
         if (method == "close")
-          return emitRuntimeCall("hew_tcp_close", i32Type, argVals);
+          return rtCall("hew_tcp_close", i32Type, argVals);
       }
       if (handleType == "net.Connection") {
         if (method == "read")
-          return emitRuntimeCall("hew_tcp_read", vecType, argVals);
+          return rtCall("hew_tcp_read", vecType, argVals);
         if (method == "read_string") {
-          auto bytes = emitRuntimeCall("hew_tcp_read", vecType, argVals);
-          return emitRuntimeCall("hew_bytes_to_string", hew::StringRefType::get(&context),
-                                 mlir::ValueRange{bytes});
+          auto bytes = rtCall("hew_tcp_read", vecType, argVals);
+          return rtCall("hew_bytes_to_string", hew::StringRefType::get(&context),
+                        mlir::ValueRange{bytes});
         }
         if (method == "write") {
-          emitRuntimeCall("hew_tcp_write", {}, argVals);
+          rtCall("hew_tcp_write", {}, argVals);
           return nullptr;
         }
         if (method == "write_string") {
@@ -2981,57 +2800,23 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
             emitError(location) << ".write_string() requires one argument";
             return nullptr;
           }
-          auto bytes =
-              emitRuntimeCall("hew_string_to_bytes", vecType, mlir::ValueRange{argVals[1]});
-          emitRuntimeCall("hew_tcp_write", {}, mlir::ValueRange{receiver, bytes});
+          auto bytes = rtCall("hew_string_to_bytes", vecType, mlir::ValueRange{argVals[1]});
+          rtCall("hew_tcp_write", {}, mlir::ValueRange{receiver, bytes});
           return nullptr;
         }
         if (method == "close")
-          return emitRuntimeCall("hew_tcp_close", i32Type, argVals);
+          return rtCall("hew_tcp_close", i32Type, argVals);
         if (method == "set_read_timeout")
-          return emitRuntimeCall("hew_tcp_set_read_timeout", i32Type, argVals);
+          return rtCall("hew_tcp_set_read_timeout", i32Type, argVals);
         if (method == "set_write_timeout")
-          return emitRuntimeCall("hew_tcp_set_write_timeout", i32Type, argVals);
+          return rtCall("hew_tcp_set_write_timeout", i32Type, argVals);
       }
     }
   }
 
   // Check if receiver is an actor (ptr type + tracked in actorVarTypes)
   if (isPointerLikeType(receiverType)) {
-    std::string actorTypeName;
-    // Prefer resolved type from the type checker
-    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
-      actorTypeName = typeExprToActorName(*typeExpr);
-    // Fall back to identifier-based map lookup
-    if (actorTypeName.empty()) {
-      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-        auto it = actorVarTypes.find(ie->name);
-        if (it != actorVarTypes.end())
-          actorTypeName = it->second;
-      }
-    }
-
-    // If the receiver is a field access (e.g. self.target)
-    if (actorTypeName.empty()) {
-      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&mc.receiver->value.kind)) {
-        std::string baseName;
-        if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-          if (baseIdent->name == "self" && !currentActorName.empty()) {
-            baseName = currentActorName;
-          } else {
-            auto baseIt = actorVarTypes.find(baseIdent->name);
-            if (baseIt != actorVarTypes.end())
-              baseName = baseIt->second;
-          }
-        }
-        if (!baseName.empty()) {
-          auto key = baseName + "." + fa->field;
-          auto aft = actorFieldTypes.find(key);
-          if (aft != actorFieldTypes.end() && actorRegistry.count(aft->second))
-            actorTypeName = aft->second;
-        }
-      }
-    }
+    std::string actorTypeName = resolveActorTypeName(mc.receiver->value, &mc.receiver->span);
 
     if (!actorTypeName.empty()) {
       auto actorIt = actorRegistry.find(actorTypeName);
@@ -3181,20 +2966,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // If not found in current module, try imported module paths.
   // This handles cross-module struct methods (e.g. bench.Suite.add defined
   // in std::bench but called from bench_basic).
-  if (!callee) {
-    std::string modKey;
-    for (const auto &seg : currentModulePath)
-      modKey += (modKey.empty() ? "" : "::") + seg;
-    auto impIt = moduleImports.find(modKey);
-    if (impIt != moduleImports.end()) {
-      for (const auto &impPath : impIt->second) {
-        std::string tryName = mangleName(impPath, structType.getName().str(), methodName);
-        callee = module.lookupSymbol<mlir::func::FuncOp>(tryName);
-        if (callee)
-          break;
-      }
-    }
-  }
+  if (!callee)
+    callee = lookupImportedFunc(structType.getName(), methodName);
   if (!callee) {
     emitError(location) << "undefined method '" << methodName << "' on type '"
                         << structType.getName() << "'";
@@ -3878,10 +3651,6 @@ mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
 }
 
 // ============================================================================
-// scope.cancel()
-// ============================================================================
-
-// ============================================================================
 // scope.spawn { body } — identical to scope.launch for now
 // ============================================================================
 
@@ -4050,10 +3819,62 @@ mlir::Value MLIRGen::generateScopeCancelExpr() {
 }
 
 // ============================================================================
+// Helper: join currentModulePath into a "::" delimited key
+// ============================================================================
+
+std::string MLIRGen::currentModuleKey() const {
+  std::string key;
+  for (const auto &seg : currentModulePath)
+    key += (key.empty() ? "" : "::") + seg;
+  return key;
+}
+
+// ============================================================================
+// Helper: look up a function through imported module paths
+// ============================================================================
+
+mlir::func::FuncOp MLIRGen::lookupImportedFunc(llvm::StringRef typeName, llvm::StringRef funcName) {
+  auto modKey = currentModuleKey();
+  auto impIt = moduleImports.find(modKey);
+  if (impIt == moduleImports.end())
+    return nullptr;
+  for (const auto &impPath : impIt->second) {
+    std::string tryName = mangleName(impPath, typeName.str(), funcName.str());
+    if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(tryName))
+      return callee;
+  }
+  return nullptr;
+}
+
+// ============================================================================
+// Helper: emit a RuntimeCallOp
+// ============================================================================
+
+mlir::Value MLIRGen::emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType,
+                                     mlir::ValueRange args, mlir::Location location) {
+  auto calleeAttr = mlir::SymbolRefAttr::get(&context, callee);
+  if (resultType) {
+    auto op =
+        builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{resultType}, calleeAttr, args);
+    return op.getResult();
+  }
+  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr, args);
+  return nullptr;
+}
+
+// ============================================================================
 // Helper: resolve actor type name from an expression
 // ============================================================================
 
-std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr) {
+std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span *span) {
+  // Prefer resolved type from the type checker when a span is available.
+  if (span) {
+    if (auto *typeExpr = resolvedTypeOf(*span)) {
+      auto name = typeExprToActorName(*typeExpr);
+      if (!name.empty())
+        return name;
+    }
+  }
   if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
     auto it = actorVarTypes.find(ie->name);
     if (it != actorVarTypes.end())
@@ -4134,7 +3955,8 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     if (!receiver)
       return nullptr;
 
-    std::string actorTypeName = resolveActorTypeName(mcPtr->receiver->value);
+    std::string actorTypeName =
+        resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
     if (actorTypeName.empty()) {
       emitError(location) << "cannot resolve actor type for select arm source";
       return nullptr;
@@ -4332,7 +4154,8 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     if (!receiver)
       return nullptr;
 
-    std::string actorTypeName = resolveActorTypeName(mcPtr->receiver->value);
+    std::string actorTypeName =
+        resolveActorTypeName(mcPtr->receiver->value, &mcPtr->receiver->span);
     if (actorTypeName.empty()) {
       emitError(location) << "cannot resolve actor type for join element";
       return nullptr;

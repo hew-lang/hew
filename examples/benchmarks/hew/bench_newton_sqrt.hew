@@ -1,0 +1,23 @@
+fn newton_sqrt(n: int) -> int {
+    if n == 0 {
+        return 0;
+    }
+    var x = n;
+    var y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+const ITERS: int = 5000000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + newton_sqrt(1000000);
+    }
+    println(ITERS);
+    println(sum);
+}

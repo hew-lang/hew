@@ -1,0 +1,279 @@
+// Monotonic Decreasing Stack
+// Maintains elements in decreasing order from bottom to top.
+// Used to find next-greater-element for each position in an array.
+
+fn stack_new() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v
+}
+
+fn stack_push(s: Vec<int>, val: int) -> int {
+    s.push(val);
+    0
+}
+
+fn stack_pop(s: Vec<int>) -> int {
+    s.pop()
+}
+
+fn stack_peek(s: Vec<int>) -> int {
+    s.get(s.len() - 1)
+}
+
+fn stack_is_empty(s: Vec<int>) -> bool {
+    s.len() == 0
+}
+
+fn stack_size(s: Vec<int>) -> int {
+    s.len()
+}
+
+// Find next greater element for each position in arr.
+// Returns Vec<int> where result[i] = next greater element for arr[i], or -1 if none.
+// Uses monotonic decreasing stack of indices.
+fn next_greater_element(arr: Vec<int>) -> Vec<int> {
+    let n = arr.len();
+    let result: Vec<int> = Vec::new();
+    for i in 0..n {
+        result.push(0 - 1);
+    }
+    let stk = stack_new();
+    for i in 0..n {
+        let val = arr.get(i);
+        // Pop all indices whose values are less than current
+        while !stack_is_empty(stk) {
+            let top_idx = stack_peek(stk);
+            if arr.get(top_idx) < val {
+                stack_pop(stk);
+                result.set(top_idx, val);
+            } else {
+                break;
+            }
+        }
+        stack_push(stk, i);
+    }
+    result
+}
+
+// Push onto monotonic decreasing stack, return number of elements popped
+fn mono_push(stk: Vec<int>, val: int) -> int {
+    var popped = 0;
+    while !stack_is_empty(stk) {
+        if stack_peek(stk) < val {
+            stack_pop(stk);
+            popped = popped + 1;
+        } else {
+            break;
+        }
+    }
+    stack_push(stk, val);
+    popped
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: Basic monotonic stack property
+    let stk = stack_new();
+    mono_push(stk, 5);
+    mono_push(stk, 3);
+    mono_push(stk, 1);
+    // Stack should be [5, 3, 1] (decreasing)
+    if stack_size(stk) == 3 {
+        if stack_peek(stk) == 1 {
+            println("PASS: monotonic decreasing");
+            passed = passed + 1;
+        } else {
+            println("FAIL: monotonic decreasing");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: monotonic decreasing");
+        failed = failed + 1;
+    }
+
+    // Test 2: Push larger element pops smaller ones
+    let popped = mono_push(stk, 4);
+    // 4 > 1, 4 > 3, but 4 < 5, so stack becomes [5, 4], popped = 2
+    if popped == 2 {
+        if stack_size(stk) == 2 {
+            if stack_peek(stk) == 4 {
+                println("PASS: push pops smaller");
+                passed = passed + 1;
+            } else {
+                println("FAIL: push pops smaller");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: push pops smaller");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: push pops smaller");
+        failed = failed + 1;
+    }
+
+    // Test 3: Push equal doesn't pop
+    mono_push(stk, 4);
+    // 4 is not < 4, so stack = [5, 4, 4]
+    if stack_size(stk) == 3 {
+        println("PASS: equal no pop");
+        passed = passed + 1;
+    } else {
+        println("FAIL: equal no pop");
+        failed = failed + 1;
+    }
+
+    // Test 4: Next greater element - basic case
+    // arr = [4, 5, 2, 10, 8]
+    // NGE = [5, 10, 10, -1, -1]
+    let arr: Vec<int> = Vec::new();
+    arr.push(4);
+    arr.push(5);
+    arr.push(2);
+    arr.push(10);
+    arr.push(8);
+    let nge = next_greater_element(arr);
+    var nge_ok = 1;
+    if nge.get(0) != 5 { nge_ok = 0; }
+    if nge.get(1) != 10 { nge_ok = 0; }
+    if nge.get(2) != 10 { nge_ok = 0; }
+    if nge.get(3) != 0 - 1 { nge_ok = 0; }
+    if nge.get(4) != 0 - 1 { nge_ok = 0; }
+    if nge_ok == 1 {
+        println("PASS: NGE basic");
+        passed = passed + 1;
+    } else {
+        println("FAIL: NGE basic");
+        failed = failed + 1;
+    }
+
+    // Test 5: NGE - all increasing
+    // arr = [1, 2, 3, 4, 5]
+    // NGE = [2, 3, 4, 5, -1]
+    let arr2: Vec<int> = Vec::new();
+    arr2.push(1);
+    arr2.push(2);
+    arr2.push(3);
+    arr2.push(4);
+    arr2.push(5);
+    let nge2 = next_greater_element(arr2);
+    var nge2_ok = 1;
+    if nge2.get(0) != 2 { nge2_ok = 0; }
+    if nge2.get(1) != 3 { nge2_ok = 0; }
+    if nge2.get(2) != 4 { nge2_ok = 0; }
+    if nge2.get(3) != 5 { nge2_ok = 0; }
+    if nge2.get(4) != 0 - 1 { nge2_ok = 0; }
+    if nge2_ok == 1 {
+        println("PASS: NGE increasing");
+        passed = passed + 1;
+    } else {
+        println("FAIL: NGE increasing");
+        failed = failed + 1;
+    }
+
+    // Test 6: NGE - all decreasing
+    // arr = [5, 4, 3, 2, 1]
+    // NGE = [-1, -1, -1, -1, -1]
+    let arr3: Vec<int> = Vec::new();
+    arr3.push(5);
+    arr3.push(4);
+    arr3.push(3);
+    arr3.push(2);
+    arr3.push(1);
+    let nge3 = next_greater_element(arr3);
+    var nge3_ok = 1;
+    for i in 0..5 {
+        if nge3.get(i) != 0 - 1 { nge3_ok = 0; }
+    }
+    if nge3_ok == 1 {
+        println("PASS: NGE decreasing");
+        passed = passed + 1;
+    } else {
+        println("FAIL: NGE decreasing");
+        failed = failed + 1;
+    }
+
+    // Test 7: NGE - single element
+    let arr4: Vec<int> = Vec::new();
+    arr4.push(42);
+    let nge4 = next_greater_element(arr4);
+    if nge4.get(0) == 0 - 1 {
+        println("PASS: NGE single");
+        passed = passed + 1;
+    } else {
+        println("FAIL: NGE single");
+        failed = failed + 1;
+    }
+
+    // Test 8: NGE - duplicates
+    // arr = [3, 3, 3]
+    // NGE = [-1, -1, -1] (no strictly greater)
+    let arr5: Vec<int> = Vec::new();
+    arr5.push(3);
+    arr5.push(3);
+    arr5.push(3);
+    let nge5 = next_greater_element(arr5);
+    var nge5_ok = 1;
+    for i in 0..3 {
+        if nge5.get(i) != 0 - 1 { nge5_ok = 0; }
+    }
+    if nge5_ok == 1 {
+        println("PASS: NGE duplicates");
+        passed = passed + 1;
+    } else {
+        println("FAIL: NGE duplicates");
+        failed = failed + 1;
+    }
+
+    // Test 9: Empty stack operations
+    let empty_stk = stack_new();
+    if stack_is_empty(empty_stk) {
+        if stack_size(empty_stk) == 0 {
+            println("PASS: empty stack");
+            passed = passed + 1;
+        } else {
+            println("FAIL: empty stack");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: empty stack");
+        failed = failed + 1;
+    }
+
+    // Test 10: Push all then pop all from monotonic stack
+    let stk2 = stack_new();
+    let p = mono_push(stk2, 10);
+    // Push 20 > 10, so 10 is popped
+    let p2 = mono_push(stk2, 20);
+    if p == 0 {
+        if p2 == 1 {
+            if stack_peek(stk2) == 20 {
+                println("PASS: mono push sequence");
+                passed = passed + 1;
+            } else {
+                println("FAIL: mono push sequence");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: mono push sequence");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: mono push sequence");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

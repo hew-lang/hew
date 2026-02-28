@@ -1,0 +1,249 @@
+// Ring Buffer with fixed capacity
+// Layout: Vec<int> = [capacity, head, tail, count, data...]
+// head = read position, tail = write position
+
+fn rb_create(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(capacity);  // index 0: capacity
+    v.push(0);         // index 1: head (read pos)
+    v.push(0);         // index 2: tail (write pos)
+    v.push(0);         // index 3: count
+    for i in 0..capacity {
+        v.push(0);     // data starts at index 4
+    }
+    v
+}
+
+fn rb_capacity(rb: Vec<int>) -> int {
+    rb.get(0)
+}
+
+fn rb_count(rb: Vec<int>) -> int {
+    rb.get(3)
+}
+
+fn rb_is_empty(rb: Vec<int>) -> bool {
+    rb.get(3) == 0
+}
+
+fn rb_is_full(rb: Vec<int>) -> bool {
+    rb.get(3) == rb.get(0)
+}
+
+fn rb_available(rb: Vec<int>) -> int {
+    rb.get(0) - rb.get(3)
+}
+
+fn rb_write(rb: Vec<int>, val: int) -> bool {
+    let cap = rb.get(0);
+    let count = rb.get(3);
+    if count == cap {
+        return false;
+    }
+    let tail = rb.get(2);
+    rb.set(4 + tail, val);
+    let new_tail = (tail + 1) % cap;
+    rb.set(2, new_tail);
+    rb.set(3, count + 1);
+    true
+}
+
+fn rb_read(rb: Vec<int>) -> int {
+    let count = rb.get(3);
+    if count == 0 {
+        return 0 - 1;
+    }
+    let head = rb.get(1);
+    let cap = rb.get(0);
+    let val = rb.get(4 + head);
+    let new_head = (head + 1) % cap;
+    rb.set(1, new_head);
+    rb.set(3, count - 1);
+    val
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    let rb = rb_create(4);
+
+    // Test 1: Initially empty
+    if rb_is_empty(rb) {
+        if !rb_is_full(rb) {
+            println("PASS: initially empty");
+            passed = passed + 1;
+        } else {
+            println("FAIL: initially empty");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: initially empty");
+        failed = failed + 1;
+    }
+
+    // Test 2: Available space
+    if rb_available(rb) == 4 {
+        println("PASS: available = capacity");
+        passed = passed + 1;
+    } else {
+        println("FAIL: available = capacity");
+        failed = failed + 1;
+    }
+
+    // Test 3: Write and read single element
+    rb_write(rb, 10);
+    let v1 = rb_read(rb);
+    if v1 == 10 {
+        println("PASS: write/read single");
+        passed = passed + 1;
+    } else {
+        println("FAIL: write/read single");
+        failed = failed + 1;
+    }
+
+    // Test 4: Write multiple, read in order (FIFO)
+    rb_write(rb, 20);
+    rb_write(rb, 30);
+    rb_write(rb, 40);
+    let r1 = rb_read(rb);
+    let r2 = rb_read(rb);
+    let r3 = rb_read(rb);
+    if r1 == 20 {
+        if r2 == 30 {
+            if r3 == 40 {
+                println("PASS: FIFO order");
+                passed = passed + 1;
+            } else {
+                println("FAIL: FIFO order");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: FIFO order");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: FIFO order");
+        failed = failed + 1;
+    }
+
+    // Test 5: Fill to capacity
+    rb_write(rb, 1);
+    rb_write(rb, 2);
+    rb_write(rb, 3);
+    rb_write(rb, 4);
+    if rb_is_full(rb) {
+        if rb_available(rb) == 0 {
+            println("PASS: full buffer");
+            passed = passed + 1;
+        } else {
+            println("FAIL: full buffer");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: full buffer");
+        failed = failed + 1;
+    }
+
+    // Test 6: Write to full buffer fails
+    let w = rb_write(rb, 99);
+    if !w {
+        println("PASS: write full fails");
+        passed = passed + 1;
+    } else {
+        println("FAIL: write full fails");
+        failed = failed + 1;
+    }
+
+    // Test 7: Read from full, verify values
+    let f1 = rb_read(rb);
+    let f2 = rb_read(rb);
+    let f3 = rb_read(rb);
+    let f4 = rb_read(rb);
+    if f1 == 1 {
+        if f2 == 2 {
+            if f3 == 3 {
+                if f4 == 4 {
+                    println("PASS: read all from full");
+                    passed = passed + 1;
+                } else {
+                    println("FAIL: read all from full");
+                    failed = failed + 1;
+                }
+            } else {
+                println("FAIL: read all from full");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: read all from full");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: read all from full");
+        failed = failed + 1;
+    }
+
+    // Test 8: Wraparound behavior
+    // head and tail have wrapped around; write more to verify correctness
+    rb_write(rb, 100);
+    rb_write(rb, 200);
+    let w1 = rb_read(rb);
+    let w2 = rb_read(rb);
+    if w1 == 100 {
+        if w2 == 200 {
+            println("PASS: wraparound");
+            passed = passed + 1;
+        } else {
+            println("FAIL: wraparound");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: wraparound");
+        failed = failed + 1;
+    }
+
+    // Test 9: Read from empty returns sentinel
+    let empty_val = rb_read(rb);
+    if empty_val == 0 - 1 {
+        println("PASS: read empty sentinel");
+        passed = passed + 1;
+    } else {
+        println("FAIL: read empty sentinel");
+        failed = failed + 1;
+    }
+
+    // Test 10: Interleaved read/write across wraparound
+    let rb2 = rb_create(3);
+    rb_write(rb2, 10);
+    rb_write(rb2, 20);
+    rb_read(rb2);
+    rb_write(rb2, 30);
+    rb_read(rb2);
+    rb_write(rb2, 40);
+    let i1 = rb_read(rb2);
+    let i2 = rb_read(rb2);
+    if i1 == 30 {
+        if i2 == 40 {
+            println("PASS: interleaved wraparound");
+            passed = passed + 1;
+        } else {
+            println("FAIL: interleaved wraparound");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: interleaved wraparound");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

@@ -1,0 +1,77 @@
+// Pascal's triangle - compute binomial coefficient C(n,k)
+fn binomial(n: int, k: int) -> int {
+    // Use iterative multiplication to avoid overflow
+    if k > n {
+        return 0;
+    }
+    var kk = k;
+    if kk > n - kk {
+        kk = n - kk;
+    }
+    var result = 1;
+    for i in 0..kk {
+        result = result * (n - i);
+        result = result / (i + 1);
+    }
+    result
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    // C(n,0) = 1
+    total = total + 1;
+    passed = passed + check("C(0,0)=1", binomial(0, 0), 1);
+    total = total + 1;
+    passed = passed + check("C(5,0)=1", binomial(5, 0), 1);
+
+    // C(n,1) = n
+    total = total + 1;
+    passed = passed + check("C(5,1)=5", binomial(5, 1), 5);
+
+    // Specific values
+    total = total + 1;
+    passed = passed + check("C(5,2)=10", binomial(5, 2), 10);
+    total = total + 1;
+    passed = passed + check("C(10,3)=120", binomial(10, 3), 120);
+    total = total + 1;
+    passed = passed + check("C(10,5)=252", binomial(10, 5), 252);
+    total = total + 1;
+    passed = passed + check("C(20,10)=184756", binomial(20, 10), 184756);
+
+    // Print row 5 of Pascal's triangle
+    println("Row 5:");
+    var k = 0;
+    while k <= 5 {
+        print(binomial(5, k));
+        print(" ");
+        k = k + 1;
+    }
+    println("");
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

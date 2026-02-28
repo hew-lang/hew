@@ -1,0 +1,24 @@
+fn hamming_distance(a: string, b: string) -> int {
+    let n = a.len();
+    var dist = 0;
+    for i in 0..n {
+        if a.char_at(i) != b.char_at(i) {
+            dist = dist + 1;
+        }
+    }
+    dist
+}
+
+const ITERS: int = 500000;
+
+fn main() {
+    let a = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv";
+    let b = "aXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuvXxyzaXcdeXghijXlmnopXrstuX";
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + hamming_distance(a, b);
+    }
+    println("bench_hamming");
+    println(checksum);
+    println(ITERS);
+}

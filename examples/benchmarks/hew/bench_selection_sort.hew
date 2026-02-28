@@ -1,0 +1,37 @@
+fn selection_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    for i in 0..n {
+        var min_idx = i;
+        var j = i + 1;
+        while j < n {
+            if v.get(j) < v.get(min_idx) {
+                min_idx = j;
+            }
+            j = j + 1;
+        }
+        let tmp = v.get(i);
+        v.set(i, v.get(min_idx));
+        v.set(min_idx, tmp);
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+const ITERS: int = 50000;
+
+fn main() {
+    for i in 0..ITERS {
+        let v = make_test_array();
+        let _ = selection_sort(v);
+    }
+    println(ITERS);
+}

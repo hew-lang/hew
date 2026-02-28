@@ -1,0 +1,297 @@
+// Frequency Counter - Count element frequencies and find top-k elements
+// Uses custom hash map implementation
+
+fn hash(key: int, capacity: int) -> int {
+    let h = key % capacity;
+    if h < 0 {
+        h + capacity
+    } else {
+        h
+    }
+}
+
+fn make_keys(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    let EMPTY = 0 - 1;
+    for i in 0..capacity {
+        v.push(EMPTY);
+    }
+    v
+}
+
+fn make_vals(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    for i in 0..capacity {
+        v.push(0);
+    }
+    v
+}
+
+fn find_slot(keys: Vec<int>, key: int) -> int {
+    let capacity = keys.len();
+    let EMPTY = 0 - 1;
+    var idx = hash(key, capacity);
+    var i = 0;
+    while i < capacity {
+        let k = keys.get(idx);
+        if k == key {
+            return idx;
+        }
+        if k == EMPTY {
+            return idx;
+        }
+        idx = (idx + 1) % capacity;
+        i = i + 1;
+    }
+    0 - 1
+}
+
+fn count_element(keys: Vec<int>, vals: Vec<int>, key: int) {
+    let EMPTY = 0 - 1;
+    let slot = find_slot(keys, key);
+    if slot >= 0 {
+        let k = keys.get(slot);
+        if k == EMPTY {
+            keys.set(slot, key);
+            vals.set(slot, 1);
+        } else {
+            vals.set(slot, vals.get(slot) + 1);
+        }
+    }
+}
+
+fn get_freq(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
+    let EMPTY = 0 - 1;
+    let slot = find_slot(keys, key);
+    if slot >= 0 {
+        let k = keys.get(slot);
+        if k == key {
+            return vals.get(slot);
+        }
+    }
+    0
+}
+
+// Count frequencies of all elements in data array
+fn count_all(data: Vec<int>, keys: Vec<int>, vals: Vec<int>) {
+    let len = data.len();
+    for i in 0..len {
+        count_element(keys, vals, data.get(i));
+    }
+}
+
+// Find the key with the highest frequency
+fn find_top1(keys: Vec<int>, vals: Vec<int>) -> int {
+    let capacity = keys.len();
+    let EMPTY = 0 - 1;
+    var best_key = EMPTY;
+    var best_val = 0;
+    for i in 0..capacity {
+        let k = keys.get(i);
+        if k != EMPTY {
+            let v = vals.get(i);
+            if v > best_val {
+                best_val = v;
+                best_key = k;
+            }
+        }
+    }
+    best_key
+}
+
+// Find top-k frequent elements, returned in result Vec
+fn find_topk(keys: Vec<int>, vals: Vec<int>, k: int, result: Vec<int>) {
+    let capacity = keys.len();
+    let EMPTY = 0 - 1;
+    // Make a copy of vals to mark used entries
+    let used: Vec<int> = Vec::new();
+    for i in 0..capacity {
+        used.push(0);
+    }
+    var found = 0;
+    while found < k {
+        var best_idx = 0 - 1;
+        var best_val = 0;
+        for i in 0..capacity {
+            let ki = keys.get(i);
+            if ki != EMPTY {
+                if used.get(i) == 0 {
+                    let v = vals.get(i);
+                    if v > best_val {
+                        best_val = v;
+                        best_idx = i;
+                    }
+                }
+            }
+        }
+        if best_idx >= 0 {
+            result.push(keys.get(best_idx));
+            used.set(best_idx, 1);
+            found = found + 1;
+        } else {
+            found = k;
+        }
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test data: [1, 2, 3, 1, 2, 1, 4, 2, 1, 3]
+    // Frequencies: 1->4, 2->3, 3->2, 4->1
+    let data: Vec<int> = Vec::new();
+    data.push(1);
+    data.push(2);
+    data.push(3);
+    data.push(1);
+    data.push(2);
+    data.push(1);
+    data.push(4);
+    data.push(2);
+    data.push(1);
+    data.push(3);
+
+    let cap = 32;
+    let keys = make_keys(cap);
+    let vals = make_vals(cap);
+    count_all(data, keys, vals);
+
+    // Test 1: Frequency of element 1
+    let f1 = get_freq(keys, vals, 1);
+    if f1 == 4 {
+        println("PASS: frequency of 1");
+        passed = passed + 1;
+    } else {
+        print("FAIL: frequency of 1, got ");
+        println(f1);
+        failed = failed + 1;
+    }
+
+    // Test 2: Frequency of element 2
+    let f2 = get_freq(keys, vals, 2);
+    if f2 == 3 {
+        println("PASS: frequency of 2");
+        passed = passed + 1;
+    } else {
+        print("FAIL: frequency of 2, got ");
+        println(f2);
+        failed = failed + 1;
+    }
+
+    // Test 3: Frequency of element 3
+    let f3 = get_freq(keys, vals, 3);
+    if f3 == 2 {
+        println("PASS: frequency of 3");
+        passed = passed + 1;
+    } else {
+        println("FAIL: frequency of 3");
+        failed = failed + 1;
+    }
+
+    // Test 4: Frequency of element 4
+    let f4 = get_freq(keys, vals, 4);
+    if f4 == 1 {
+        println("PASS: frequency of 4");
+        passed = passed + 1;
+    } else {
+        println("FAIL: frequency of 4");
+        failed = failed + 1;
+    }
+
+    // Test 5: Frequency of non-existent element
+    let f5 = get_freq(keys, vals, 99);
+    if f5 == 0 {
+        println("PASS: frequency of non-existent");
+        passed = passed + 1;
+    } else {
+        println("FAIL: frequency of non-existent");
+        failed = failed + 1;
+    }
+
+    // Test 6: Top-1 most frequent
+    let top1 = find_top1(keys, vals);
+    if top1 == 1 {
+        println("PASS: top-1 frequent");
+        passed = passed + 1;
+    } else {
+        println("FAIL: top-1 frequent");
+        failed = failed + 1;
+    }
+
+    // Test 7: Top-3 frequent elements
+    let result: Vec<int> = Vec::new();
+    find_topk(keys, vals, 3, result);
+    if result.len() == 3 {
+        let r0 = result.get(0);
+        let r1 = result.get(1);
+        let r2 = result.get(2);
+        // Should be 1(freq=4), 2(freq=3), 3(freq=2)
+        if r0 == 1 {
+            if r1 == 2 {
+                if r2 == 3 {
+                    println("PASS: top-3 frequent");
+                    passed = passed + 1;
+                } else {
+                    println("FAIL: top-3 frequent");
+                    failed = failed + 1;
+                }
+            } else {
+                println("FAIL: top-3 frequent");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: top-3 frequent");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: top-3 frequent (wrong count)");
+        failed = failed + 1;
+    }
+
+    // Test 8: Larger dataset
+    let data2: Vec<int> = Vec::new();
+    // 5 appears 10 times, 6 appears 5 times, 7 appears 1 time
+    for i in 0..10 {
+        data2.push(5);
+    }
+    for i in 0..5 {
+        data2.push(6);
+    }
+    data2.push(7);
+    let keys2 = make_keys(cap);
+    let vals2 = make_vals(cap);
+    count_all(data2, keys2, vals2);
+    let g5 = get_freq(keys2, vals2, 5);
+    let g6 = get_freq(keys2, vals2, 6);
+    let g7 = get_freq(keys2, vals2, 7);
+    if g5 == 10 {
+        if g6 == 5 {
+            if g7 == 1 {
+                println("PASS: larger dataset");
+                passed = passed + 1;
+            } else {
+                println("FAIL: larger dataset");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: larger dataset");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: larger dataset");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

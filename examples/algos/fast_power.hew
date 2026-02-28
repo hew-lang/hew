@@ -1,0 +1,57 @@
+// Exponentiation by squaring (fast power)
+fn fast_pow(base: int, exp: int) -> int {
+    var result = 1;
+    var b = base;
+    var e = exp;
+    while e > 0 {
+        if e % 2 == 1 {
+            result = result * b;
+        }
+        b = b * b;
+        e = e / 2;
+    }
+    result
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("2^10=1024", fast_pow(2, 10), 1024);
+    total = total + 1;
+    passed = passed + check("3^5=243", fast_pow(3, 5), 243);
+    total = total + 1;
+    passed = passed + check("7^0=1", fast_pow(7, 0), 1);
+    total = total + 1;
+    passed = passed + check("5^3=125", fast_pow(5, 3), 125);
+    total = total + 1;
+    passed = passed + check("2^20=1048576", fast_pow(2, 20), 1048576);
+    total = total + 1;
+    passed = passed + check("1^100=1", fast_pow(1, 100), 1);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

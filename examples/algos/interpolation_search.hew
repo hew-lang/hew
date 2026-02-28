@@ -1,0 +1,194 @@
+// Interpolation Search - estimate position using value distribution
+
+fn interpolation_search(arr: Vec<int>, target: int) -> int {
+    let n = arr.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    var low = 0;
+    var high = n - 1;
+    var result = 0 - 1;
+    var done = false;
+    while low <= high {
+        if done { break; }
+        let lo_val = arr.get(low);
+        let hi_val = arr.get(high);
+        if lo_val == hi_val {
+            if lo_val == target {
+                result = low;
+            }
+            done = true;
+        } else if target < lo_val {
+            done = true;
+        } else if target > hi_val {
+            done = true;
+        } else {
+            let pos = low + ((target - lo_val) * (high - low)) / (hi_val - lo_val);
+            let pos_val = arr.get(pos);
+            if pos_val == target {
+                result = pos;
+                done = true;
+            } else if pos_val < target {
+                low = pos + 1;
+            } else if pos > 0 {
+                high = pos - 1;
+            } else {
+                done = true;
+            }
+        }
+    }
+    result
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: uniformly distributed data
+    let v1: Vec<int> = Vec::new();
+    v1.push(10);
+    v1.push(20);
+    v1.push(30);
+    v1.push(40);
+    v1.push(50);
+    v1.push(60);
+    v1.push(70);
+    v1.push(80);
+    v1.push(90);
+    v1.push(100);
+    let r1 = interpolation_search(v1, 70);
+    if r1 == 6 {
+        println("Test 1 - find 70: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 1 - find 70: FAIL (got ");
+        print(r1);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 2: find first element
+    let v2: Vec<int> = Vec::new();
+    v2.push(10);
+    v2.push(20);
+    v2.push(30);
+    v2.push(40);
+    v2.push(50);
+    let r2 = interpolation_search(v2, 10);
+    if r2 == 0 {
+        println("Test 2 - find first: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 2 - find first: FAIL (got ");
+        print(r2);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 3: find last element
+    let v3: Vec<int> = Vec::new();
+    v3.push(10);
+    v3.push(20);
+    v3.push(30);
+    v3.push(40);
+    v3.push(50);
+    let r3 = interpolation_search(v3, 50);
+    if r3 == 4 {
+        println("Test 3 - find last: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 3 - find last: FAIL (got ");
+        print(r3);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 4: not found
+    let v4: Vec<int> = Vec::new();
+    v4.push(10);
+    v4.push(20);
+    v4.push(30);
+    v4.push(40);
+    v4.push(50);
+    let r4 = interpolation_search(v4, 25);
+    if r4 == 0 - 1 {
+        println("Test 4 - not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 4 - not found: FAIL (got ");
+        print(r4);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 5: empty array
+    let v5: Vec<int> = Vec::new();
+    let r5 = interpolation_search(v5, 5);
+    if r5 == 0 - 1 {
+        println("Test 5 - empty array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 5 - empty array: FAIL (got ");
+        print(r5);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 6: single element found
+    let v6: Vec<int> = Vec::new();
+    v6.push(42);
+    let r6 = interpolation_search(v6, 42);
+    if r6 == 0 {
+        println("Test 6 - single found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 6 - single found: FAIL (got ");
+        print(r6);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 7: target below range
+    let v7: Vec<int> = Vec::new();
+    v7.push(10);
+    v7.push(20);
+    v7.push(30);
+    let r7 = interpolation_search(v7, 5);
+    if r7 == 0 - 1 {
+        println("Test 7 - below range: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 7 - below range: FAIL (got ");
+        print(r7);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 8: target above range
+    let v8: Vec<int> = Vec::new();
+    v8.push(10);
+    v8.push(20);
+    v8.push(30);
+    let r8 = interpolation_search(v8, 35);
+    if r8 == 0 - 1 {
+        println("Test 8 - above range: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 8 - above range: FAIL (got ");
+        print(r8);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    print(passed);
+    print(" passed, ");
+    print(failed);
+    println(" failed");
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

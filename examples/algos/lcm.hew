@@ -1,0 +1,55 @@
+// LCM using GCD
+fn gcd(a: int, b: int) -> int {
+    var x = a;
+    var y = b;
+    while y != 0 {
+        let temp = y;
+        y = x % y;
+        x = temp;
+    }
+    x
+}
+
+fn lcm(a: int, b: int) -> int {
+    let g = gcd(a, b);
+    (a / g) * b
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("lcm(4,6)=12", lcm(4, 6), 12);
+    total = total + 1;
+    passed = passed + check("lcm(3,7)=21", lcm(3, 7), 21);
+    total = total + 1;
+    passed = passed + check("lcm(12,18)=36", lcm(12, 18), 36);
+    total = total + 1;
+    passed = passed + check("lcm(5,10)=10", lcm(5, 10), 10);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

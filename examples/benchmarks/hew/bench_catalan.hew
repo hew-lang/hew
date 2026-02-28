@@ -1,0 +1,23 @@
+fn catalan(n: int) -> int {
+    let dp = Vec::new();
+    dp.push(1);
+    dp.push(1);
+    for i in 2..(n + 1) {
+        dp.push(0);
+        for j in 0..i {
+            dp.set(i, dp.get(i) + dp.get(j) * dp.get(i - 1 - j));
+        }
+    }
+    dp.get(n)
+}
+
+const ITERS: int = 500000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + catalan(15);
+    }
+    println(ITERS);
+    println(sum);
+}

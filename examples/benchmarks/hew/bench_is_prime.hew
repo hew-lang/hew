@@ -1,0 +1,24 @@
+fn is_prime(n: int) -> int {
+    if n < 2 {
+        return 0;
+    }
+    var i = 2;
+    while i * i <= n {
+        if n % i == 0 {
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + is_prime(104729);
+    }
+    println(ITERS);
+    println(sum);
+}

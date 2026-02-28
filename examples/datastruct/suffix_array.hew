@@ -1,0 +1,309 @@
+// Simplified Suffix Array for integer sequences
+// Build suffix array (sorted suffix indices), compute LCP, search for patterns.
+// Uses integer sequences instead of strings to avoid Vec<String>.
+
+// Compare suffixes starting at positions a and b in text
+// Returns: negative if suffix_a < suffix_b, 0 if equal, positive if suffix_a > suffix_b
+fn compare_suffixes(text: Vec<int>, a: int, b: int) -> int {
+    let n = text.len();
+    var i = a;
+    var j = b;
+    while i < n {
+        if j >= n {
+            return 1;
+        }
+        if text.get(i) < text.get(j) {
+            return 0 - 1;
+        }
+        if text.get(i) > text.get(j) {
+            return 1;
+        }
+        i = i + 1;
+        j = j + 1;
+    }
+    if j < n {
+        0 - 1
+    } else {
+        0
+    }
+}
+
+// Build suffix array using insertion sort (O(n^2 * n) but simple)
+fn build_suffix_array(text: Vec<int>) -> Vec<int> {
+    let n = text.len();
+    let sa: Vec<int> = Vec::new();
+    for i in 0..n {
+        sa.push(i);
+    }
+    // Insertion sort on suffix indices
+    var i = 1;
+    while i < n {
+        let key = sa.get(i);
+        var j = i - 1;
+        var done = false;
+        while !done {
+            if j < 0 {
+                done = true;
+            } else {
+                let cmp = compare_suffixes(text, sa.get(j), key);
+                if cmp > 0 {
+                    sa.set(j + 1, sa.get(j));
+                    j = j - 1;
+                } else {
+                    done = true;
+                }
+            }
+        }
+        sa.set(j + 1, key);
+        i = i + 1;
+    }
+    sa
+}
+
+// Compute LCP array from text and suffix array
+// lcp[i] = length of longest common prefix between sa[i-1] and sa[i]
+fn build_lcp_array(text: Vec<int>, sa: Vec<int>) -> Vec<int> {
+    let n = sa.len();
+    let lcp: Vec<int> = Vec::new();
+    lcp.push(0);
+    var i = 1;
+    while i < n {
+        let a = sa.get(i - 1);
+        let b = sa.get(i);
+        var l = 0;
+        while a + l < n {
+            if b + l >= n {
+                break;
+            }
+            if text.get(a + l) != text.get(b + l) {
+                break;
+            }
+            l = l + 1;
+        }
+        lcp.push(l);
+        i = i + 1;
+    }
+    lcp
+}
+
+// Search for pattern in text using suffix array (binary search)
+// Returns index in text where pattern starts, or -1 if not found
+fn sa_search(text: Vec<int>, sa: Vec<int>, pattern: Vec<int>) -> int {
+    let n = sa.len();
+    let plen = pattern.len();
+    var lo = 0;
+    var hi = n - 1;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let suffix_start = sa.get(mid);
+        let cmp = compare_prefix(text, suffix_start, pattern);
+        if cmp == 0 {
+            return suffix_start;
+        } else if cmp < 0 {
+            lo = mid + 1;
+        } else {
+            if mid == 0 {
+                return 0 - 1;
+            }
+            hi = mid - 1;
+        }
+    }
+    0 - 1
+}
+
+// Compare pattern against text starting at pos
+// Returns <0 if text suffix < pattern, 0 if match, >0 if text suffix > pattern
+fn compare_prefix(text: Vec<int>, pos: int, pattern: Vec<int>) -> int {
+    let n = text.len();
+    let plen = pattern.len();
+    var i = 0;
+    while i < plen {
+        if pos + i >= n {
+            return 0 - 1;
+        }
+        if text.get(pos + i) < pattern.get(i) {
+            return 0 - 1;
+        }
+        if text.get(pos + i) > pattern.get(i) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Text: [3, 1, 4, 1, 5, 9, 2, 6]
+    let text: Vec<int> = Vec::new();
+    text.push(3);
+    text.push(1);
+    text.push(4);
+    text.push(1);
+    text.push(5);
+    text.push(9);
+    text.push(2);
+    text.push(6);
+
+    let sa = build_suffix_array(text);
+
+    // Test 1: Suffix array has correct length
+    if sa.len() == 8 {
+        println("PASS: SA length");
+        passed = passed + 1;
+    } else {
+        println("FAIL: SA length");
+        failed = failed + 1;
+    }
+
+    // Test 2: Suffix array is sorted
+    var sorted = 1;
+    var i = 1;
+    while i < sa.len() {
+        let cmp = compare_suffixes(text, sa.get(i - 1), sa.get(i));
+        if cmp > 0 {
+            sorted = 0;
+        }
+        i = i + 1;
+    }
+    if sorted == 1 {
+        println("PASS: SA is sorted");
+        passed = passed + 1;
+    } else {
+        println("FAIL: SA is sorted");
+        failed = failed + 1;
+    }
+
+    // Test 3: All indices present (sum = 0+1+2+...+7 = 28)
+    var sum = 0;
+    for j in 0..8 {
+        sum = sum + sa.get(j);
+    }
+    if sum == 28 {
+        println("PASS: SA all indices present");
+        passed = passed + 1;
+    } else {
+        println("FAIL: SA all indices present");
+        failed = failed + 1;
+    }
+
+    // Test 4: Search for pattern [1, 4] -> should find at index 1
+    let pat1: Vec<int> = Vec::new();
+    pat1.push(1);
+    pat1.push(4);
+    let pos1 = sa_search(text, sa, pat1);
+    if pos1 == 1 {
+        println("PASS: search [1,4]");
+        passed = passed + 1;
+    } else {
+        print("FAIL: search [1,4] got ");
+        println(pos1);
+        failed = failed + 1;
+    }
+
+    // Test 5: Search for pattern [9, 2, 6] -> should find at index 5
+    let pat2: Vec<int> = Vec::new();
+    pat2.push(9);
+    pat2.push(2);
+    pat2.push(6);
+    let pos2 = sa_search(text, sa, pat2);
+    if pos2 == 5 {
+        println("PASS: search [9,2,6]");
+        passed = passed + 1;
+    } else {
+        print("FAIL: search [9,2,6] got ");
+        println(pos2);
+        failed = failed + 1;
+    }
+
+    // Test 6: Search for pattern not in text -> -1
+    let pat3: Vec<int> = Vec::new();
+    pat3.push(7);
+    pat3.push(7);
+    let pos3 = sa_search(text, sa, pat3);
+    if pos3 == 0 - 1 {
+        println("PASS: search not found");
+        passed = passed + 1;
+    } else {
+        println("FAIL: search not found");
+        failed = failed + 1;
+    }
+
+    // Test 7: LCP array
+    let lcp = build_lcp_array(text, sa);
+    if lcp.len() == 8 {
+        if lcp.get(0) == 0 {
+            println("PASS: LCP array basics");
+            passed = passed + 1;
+        } else {
+            println("FAIL: LCP array basics");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: LCP array basics");
+        failed = failed + 1;
+    }
+
+    // Test 8: LCP detects shared prefixes
+    // Text with repeated prefix: [1, 2, 3, 1, 2, 4]
+    let text2: Vec<int> = Vec::new();
+    text2.push(1);
+    text2.push(2);
+    text2.push(3);
+    text2.push(1);
+    text2.push(2);
+    text2.push(4);
+    let sa2 = build_suffix_array(text2);
+    let lcp2 = build_lcp_array(text2, sa2);
+    // Suffixes starting with [1,2,...] should have LCP >= 2
+    var found_lcp2 = false;
+    for k in 1..lcp2.len() {
+        if lcp2.get(k) >= 2 {
+            found_lcp2 = true;
+        }
+    }
+    if found_lcp2 {
+        println("PASS: LCP shared prefix");
+        passed = passed + 1;
+    } else {
+        println("FAIL: LCP shared prefix");
+        failed = failed + 1;
+    }
+
+    // Test 9: Search single element
+    let pat4: Vec<int> = Vec::new();
+    pat4.push(5);
+    let pos4 = sa_search(text, sa, pat4);
+    if pos4 == 4 {
+        println("PASS: search single element");
+        passed = passed + 1;
+    } else {
+        print("FAIL: search single expected 4 got ");
+        println(pos4);
+        failed = failed + 1;
+    }
+
+    // Test 10: Search full text
+    let pos5 = sa_search(text, sa, text);
+    if pos5 == 0 {
+        println("PASS: search full text");
+        passed = passed + 1;
+    } else {
+        println("FAIL: search full text");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

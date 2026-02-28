@@ -3295,6 +3295,9 @@ bool MLIRGen::isTemporaryString(mlir::Value v) {
   // Block arguments are NOT temporaries
   if (mlir::isa<mlir::BlockArgument>(v))
     return false;
+  // Vec/HashMap .get() returns a borrowed reference — NOT a temporary
+  if (v.getDefiningOp<hew::VecGetOp>() || v.getDefiningOp<hew::HashMapGetOp>())
+    return false;
   // Everything else is a temporary: StringConcatOp, ToStringOp, RuntimeCallOp, etc.
   return true;
 }

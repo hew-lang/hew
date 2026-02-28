@@ -137,6 +137,7 @@ private:
   void generateIfStmt(const ast::StmtIf &stmt);
   mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt);
   void generateWhileStmt(const ast::StmtWhile &stmt);
+  bool isExprLoopInvariant(const ast::Expr &expr);
   void generateForStmt(const ast::StmtFor &stmt);
   void generateForAwaitStmt(const ast::StmtFor &stmt);
   void generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &rangeExpr);
@@ -310,6 +311,11 @@ private:
   // the memref stores an `!llvm.ptr` to a heap cell, and lookupVariable /
   // storeVariable perform double indirection through it.
   llvm::DenseMap<mlir::Value, mlir::Type> heapCellValueTypes;
+
+  // ── Hoisted loop-invariant values ────────────────────────────────
+  // Maps AST expression pointers to pre-computed MLIR values so that
+  // generateExpression returns the cached result instead of re-emitting code.
+  llvm::DenseMap<const ast::Expr *, mlir::Value> hoistedValues;
 
   // ── Global strings deduplication ─────────────────────────────────
   std::unordered_map<std::string, std::string> globalStrings;

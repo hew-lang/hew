@@ -1,0 +1,248 @@
+// Ordered (Sorted) Linked List using Vec<i32> with index-based pointers
+// Node layout: [value, next] pairs at i*2, i*2+1
+// Maintains sorted order on insert
+
+fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 2) }
+fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 2 + 1) }
+fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 2 + 1, nx); }
+
+fn alloc_node(n: Vec<i32>, val: i32) -> i32 {
+    let idx = n.len() / 2;
+    n.push(val);
+    n.push(-1);
+    idx
+}
+
+// Insert in sorted order, returns new head
+fn insert_sorted(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    let nd = alloc_node(n, val);
+    if head == -1 { return nd; }
+    if val <= node_val(n, head) {
+        set_next(n, nd, head);
+        return nd;
+    }
+    var prev = head;
+    var curr = node_next(n, head);
+    var done = 0;
+    while curr != -1 {
+        if done == 0 {
+            if val <= node_val(n, curr) {
+                set_next(n, prev, nd);
+                set_next(n, nd, curr);
+                done = 1;
+            }
+        }
+        if done == 0 {
+            prev = curr;
+            curr = node_next(n, curr);
+        } else {
+            curr = -1;
+        }
+    }
+    if done == 0 {
+        set_next(n, prev, nd);
+    }
+    head
+}
+
+// Search for value, returns node index or -1
+fn search(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    var curr = head;
+    while curr != -1 {
+        if node_val(n, curr) == val { return curr; }
+        if node_val(n, curr) > val { return -1; }
+        curr = node_next(n, curr);
+    }
+    -1
+}
+
+// Delete first occurrence, returns new head
+fn delete_val(n: Vec<i32>, head: i32, val: i32) -> i32 {
+    if head == -1 { return -1; }
+    if node_val(n, head) == val { return node_next(n, head); }
+    var prev = head;
+    var curr = node_next(n, head);
+    while curr != -1 {
+        if node_val(n, curr) == val {
+            set_next(n, prev, node_next(n, curr));
+            return head;
+        }
+        if node_val(n, curr) > val { return head; }
+        prev = curr;
+        curr = node_next(n, curr);
+    }
+    head
+}
+
+fn traverse(n: Vec<i32>, head: i32, result: Vec<i32>) {
+    var curr = head;
+    while curr != -1 {
+        result.push(node_val(n, curr));
+        curr = node_next(n, curr);
+    }
+}
+
+fn list_len(n: Vec<i32>, head: i32) -> i32 {
+    var c = 0;
+    var curr = head;
+    while curr != -1 { c = c + 1; curr = node_next(n, curr); }
+    c
+}
+
+fn is_sorted(n: Vec<i32>, head: i32) -> i32 {
+    if head == -1 { return 1; }
+    var curr = head;
+    var nx = node_next(n, head);
+    while nx != -1 {
+        if node_val(n, curr) > node_val(n, nx) { return 0; }
+        curr = nx;
+        nx = node_next(n, curr);
+    }
+    1
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() != b.len() { return 0; }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) { return 0; }
+    }
+    1
+}
+
+// --- Tests ---
+
+fn test_sorted_insert() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_sorted(n, head, 50);
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 30);
+    head = insert_sorted(n, head, 20);
+    head = insert_sorted(n, head, 40);
+    let r: Vec<i32> = Vec::new();
+    traverse(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(20); e.push(30); e.push(40); e.push(50);
+    if vecs_equal(r, e) == 1 {
+        println("PASS: sorted insert");
+        return 1;
+    }
+    println("FAIL: sorted insert");
+    0
+}
+
+fn test_duplicates() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_sorted(n, head, 20);
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 20);
+    head = insert_sorted(n, head, 10);
+    if is_sorted(n, head) == 1 {
+        if list_len(n, head) == 4 {
+            println("PASS: duplicates");
+            return 1;
+        }
+    }
+    println("FAIL: duplicates");
+    0
+}
+
+fn test_search() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 30);
+    head = insert_sorted(n, head, 50);
+    let found = search(n, head, 30);
+    let not_found = search(n, head, 25);
+    if found != -1 {
+        if node_val(n, found) == 30 {
+            if not_found == -1 {
+                println("PASS: search");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: search");
+    0
+}
+
+fn test_delete() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 20);
+    head = insert_sorted(n, head, 30);
+    head = insert_sorted(n, head, 40);
+    head = delete_val(n, head, 20);
+    let r: Vec<i32> = Vec::new();
+    traverse(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(30); e.push(40);
+    if vecs_equal(r, e) == 1 {
+        if is_sorted(n, head) == 1 {
+            println("PASS: delete");
+            return 1;
+        }
+    }
+    println("FAIL: delete");
+    0
+}
+
+fn test_invariant_after_many() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    // Insert in scrambled order
+    head = insert_sorted(n, head, 70);
+    head = insert_sorted(n, head, 20);
+    head = insert_sorted(n, head, 90);
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 50);
+    head = insert_sorted(n, head, 80);
+    head = insert_sorted(n, head, 30);
+    head = insert_sorted(n, head, 60);
+    head = insert_sorted(n, head, 40);
+    head = insert_sorted(n, head, 100);
+    if is_sorted(n, head) == 1 {
+        if list_len(n, head) == 10 {
+            println("PASS: invariant after many inserts");
+            return 1;
+        }
+    }
+    println("FAIL: invariant after many inserts");
+    0
+}
+
+fn test_delete_nonexistent() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = insert_sorted(n, head, 10);
+    head = insert_sorted(n, head, 30);
+    head = delete_val(n, head, 20);
+    if list_len(n, head) == 2 {
+        if is_sorted(n, head) == 1 {
+            println("PASS: delete nonexistent");
+            return 1;
+        }
+    }
+    println("FAIL: delete nonexistent");
+    0
+}
+
+fn main() {
+    println("=== Ordered List Tests ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_sorted_insert();
+    passed = passed + test_duplicates();
+    passed = passed + test_search();
+    passed = passed + test_delete();
+    passed = passed + test_invariant_after_many();
+    passed = passed + test_delete_nonexistent();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+}

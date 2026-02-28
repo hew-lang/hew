@@ -1,0 +1,208 @@
+// Directed Graph - Build, query in/out-degree, transpose, DFS path check
+
+fn out_degree(adj_offsets: Vec<int>, node: int) -> int {
+    adj_offsets.get(node + 1) - adj_offsets.get(node)
+}
+
+fn has_path_dfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, src: int, dst: int) -> bool {
+    if src == dst {
+        return true;
+    }
+    let visited: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        visited.push(0);
+    }
+    // Stack-based DFS
+    let stack: Vec<int> = Vec::new();
+    stack.push(src);
+    visited.set(src, 1);
+    while stack.len() > 0 {
+        let node = stack.pop();
+        let start = adj_offsets.get(node);
+        let end = adj_offsets.get(node + 1);
+        var i = start;
+        while i < end {
+            let nb = adj_nodes.get(i);
+            if nb == dst {
+                return true;
+            }
+            if visited.get(nb) == 0 {
+                visited.set(nb, 1);
+                stack.push(nb);
+            }
+            i = i + 1;
+        }
+    }
+    false
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let num_nodes = 6;
+
+    // Directed edges: 0->1, 0->2, 1->3, 2->1, 2->4, 3->5, 4->3, 4->5
+    let esrc: Vec<int> = Vec::new();
+    let edst: Vec<int> = Vec::new();
+    esrc.push(0); edst.push(1);
+    esrc.push(0); edst.push(2);
+    esrc.push(1); edst.push(3);
+    esrc.push(2); edst.push(1);
+    esrc.push(2); edst.push(4);
+    esrc.push(3); edst.push(5);
+    esrc.push(4); edst.push(3);
+    esrc.push(4); edst.push(5);
+    let num_edges = esrc.len();
+
+    // Build forward graph
+    let degree: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        degree.push(0);
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        degree.set(s, degree.get(s) + 1);
+    }
+    let adj_offsets: Vec<int> = Vec::new();
+    adj_offsets.push(0);
+    for i in 0..num_nodes {
+        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+    }
+    let adj_nodes: Vec<int> = Vec::new();
+    let total = adj_offsets.get(num_nodes);
+    for i in 0..total {
+        adj_nodes.push(0);
+    }
+    let pos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        pos.push(adj_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        adj_nodes.set(pos.get(s), d);
+        pos.set(s, pos.get(s) + 1);
+    }
+
+    // Compute in-degree
+    let in_deg: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        in_deg.push(0);
+    }
+    for i in 0..num_edges {
+        let d = edst.get(i);
+        in_deg.set(d, in_deg.get(d) + 1);
+    }
+
+    // Test 1: Out-degree of node 0 = 2
+    if out_degree(adj_offsets, 0) == 2 {
+        println("PASS: out-degree(0) = 2");
+        passed = passed + 1;
+    } else {
+        println("FAIL: out-degree(0)");
+        failed = failed + 1;
+    }
+
+    // Test 2: Out-degree of node 5 = 0 (sink)
+    if out_degree(adj_offsets, 5) == 0 {
+        println("PASS: out-degree(5) = 0 (sink)");
+        passed = passed + 1;
+    } else {
+        println("FAIL: out-degree(5)");
+        failed = failed + 1;
+    }
+
+    // Test 3: In-degree of node 3 = 2 (from 1 and 4)
+    if in_deg.get(3) == 2 {
+        println("PASS: in-degree(3) = 2");
+        passed = passed + 1;
+    } else {
+        println("FAIL: in-degree(3)");
+        failed = failed + 1;
+    }
+
+    // Test 4: In-degree of node 0 = 0 (source)
+    if in_deg.get(0) == 0 {
+        println("PASS: in-degree(0) = 0 (source)");
+        passed = passed + 1;
+    } else {
+        println("FAIL: in-degree(0)");
+        failed = failed + 1;
+    }
+
+    // Test 5: Path from 0 to 5 exists
+    if has_path_dfs(adj_nodes, adj_offsets, num_nodes, 0, 5) {
+        println("PASS: path 0->5 exists");
+        passed = passed + 1;
+    } else {
+        println("FAIL: path 0->5");
+        failed = failed + 1;
+    }
+
+    // Test 6: No path from 5 to 0 (5 is a sink)
+    if has_path_dfs(adj_nodes, adj_offsets, num_nodes, 5, 0) {
+        println("FAIL: path 5->0 should not exist");
+        failed = failed + 1;
+    } else {
+        println("PASS: no path 5->0");
+        passed = passed + 1;
+    }
+
+    // Build transpose graph (reverse all edges)
+    let tdeg: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        tdeg.push(0);
+    }
+    for i in 0..num_edges {
+        let d = edst.get(i);
+        tdeg.set(d, tdeg.get(d) + 1);
+    }
+    let t_offsets: Vec<int> = Vec::new();
+    t_offsets.push(0);
+    for i in 0..num_nodes {
+        t_offsets.push(t_offsets.get(i) + tdeg.get(i));
+    }
+    let t_nodes: Vec<int> = Vec::new();
+    for i in 0..total {
+        t_nodes.push(0);
+    }
+    let tpos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        tpos.push(t_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        t_nodes.set(tpos.get(d), s);
+        tpos.set(d, tpos.get(d) + 1);
+    }
+
+    // Test 7: In transpose, path from 5 to 0 exists
+    if has_path_dfs(t_nodes, t_offsets, num_nodes, 5, 0) {
+        println("PASS: transpose path 5->0 exists");
+        passed = passed + 1;
+    } else {
+        println("FAIL: transpose path 5->0");
+        failed = failed + 1;
+    }
+
+    // Test 8: In transpose, no path from 0 to 5
+    if has_path_dfs(t_nodes, t_offsets, num_nodes, 0, 5) {
+        println("FAIL: transpose path 0->5 should not exist");
+        failed = failed + 1;
+    } else {
+        println("PASS: no transpose path 0->5");
+        passed = passed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

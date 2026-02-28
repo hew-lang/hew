@@ -1,0 +1,55 @@
+// Benchmark: Exponential Search
+// Finds range by doubling index, then binary searches within that range.
+
+fn binary_search_range(v: Vec<int>, target: int, lo_in: int, hi_in: int) -> int {
+    var lo = lo_in;
+    var hi = hi_in;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let val = v.get(mid);
+        if val == target {
+            return mid;
+        }
+        if val < target {
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return 0 - 1;
+}
+
+fn exponential_search(v: Vec<int>, target: int) -> int {
+    let n = v.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    if v.get(0) == target {
+        return 0;
+    }
+    var bound = 1;
+    while bound < n {
+        if v.get(bound) >= target {
+            // Binary search in [bound/2, bound]
+            return binary_search_range(v, target, bound / 2, bound);
+        }
+        bound = bound * 2;
+    }
+    // Binary search in [bound/2, n-1]
+    return binary_search_range(v, target, bound / 2, n - 1);
+}
+
+const ITERS: int = 1000000;
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    for i in 0..10000 {
+        v.push(i);
+    }
+    var sum = 0;
+    for iter in 0..ITERS {
+        sum = sum + exponential_search(v, 7777);
+    }
+    println(ITERS);
+    println(sum);
+}

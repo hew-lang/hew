@@ -1,0 +1,26 @@
+fn is_palindrome(s: string) -> bool {
+    let n = s.len();
+    let half = n / 2;
+    for i in 0..half {
+        let j = n - 1 - i;
+        if s.char_at(i) != s.char_at(j) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const ITERS: int = 500000;
+
+fn main() {
+    let s = "abcdefghijklmnopqrstuvwxyzzyxwvutsrqponmlkjihgfedcba";
+    var count = 0;
+    for i in 0..ITERS {
+        if is_palindrome(s) {
+            count = count + 1;
+        }
+    }
+    println("bench_palindrome");
+    println(count);
+    println(ITERS);
+}

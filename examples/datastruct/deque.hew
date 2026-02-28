@@ -1,0 +1,160 @@
+// Deque - Double-ended queue using Vec<int>
+// Uses a Vec where index 0 = head pointer, rest is data
+// push_front shifts elements, push_back appends
+
+fn deque_new() -> Vec<int> {
+    let d: Vec<int> = Vec::new();
+    d.push(0); // head pointer
+    d
+}
+
+fn deque_size(d: Vec<int>) -> int {
+    let head = d.get(0);
+    d.len() - 1 - head
+}
+
+fn deque_is_empty(d: Vec<int>) -> int {
+    if deque_size(d) == 0 { 1 } else { 0 }
+}
+
+fn deque_push_back(d: Vec<int>, val: int) {
+    d.push(val);
+}
+
+fn deque_push_front(d: Vec<int>, val: int) {
+    // If there's space before head, use it
+    let head = d.get(0);
+    if head > 0 {
+        let new_head = head - 1;
+        d.set(0, new_head);
+        d.set(new_head + 1, val);
+    } else {
+        // Shift all elements right by 1
+        d.push(0); // extend length
+        let sz = d.len();
+        var i = sz - 1;
+        while i > 1 {
+            let prev = d.get(i - 1);
+            d.set(i, prev);
+            i = i - 1;
+        }
+        d.set(1, val);
+    }
+}
+
+fn deque_pop_back(d: Vec<int>) -> int {
+    d.pop()
+}
+
+fn deque_pop_front(d: Vec<int>) -> int {
+    let head = d.get(0);
+    let val = d.get(head + 1);
+    d.set(0, head + 1);
+    val
+}
+
+fn deque_peek_front(d: Vec<int>) -> int {
+    let head = d.get(0);
+    d.get(head + 1)
+}
+
+fn deque_peek_back(d: Vec<int>) -> int {
+    d.get(d.len() - 1)
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    // Test 1: new deque is empty
+    total = total + 1;
+    let d = deque_new();
+    let r1 = if deque_is_empty(d) == 1 { 1 } else { 0 };
+    passed = passed + run_test("new deque is empty", r1);
+
+    // Test 2: push_back and size
+    total = total + 1;
+    deque_push_back(d, 10);
+    deque_push_back(d, 20);
+    deque_push_back(d, 30);
+    let r2 = if deque_size(d) == 3 { 1 } else { 0 };
+    passed = passed + run_test("push_back and size", r2);
+
+    // Test 3: peek front and back
+    total = total + 1;
+    var r3 = 0;
+    if deque_peek_front(d) == 10 {
+        if deque_peek_back(d) == 30 {
+            r3 = 1;
+        }
+    }
+    passed = passed + run_test("peek front/back", r3);
+
+    // Test 4: pop_front FIFO
+    total = total + 1;
+    let f1 = deque_pop_front(d);
+    let r4 = if f1 == 10 { 1 } else { 0 };
+    passed = passed + run_test("pop_front returns front", r4);
+
+    // Test 5: pop_back LIFO
+    total = total + 1;
+    let b1 = deque_pop_back(d);
+    let r5 = if b1 == 30 { 1 } else { 0 };
+    passed = passed + run_test("pop_back returns back", r5);
+
+    // Test 6: remaining element
+    total = total + 1;
+    var r6 = 0;
+    if deque_size(d) == 1 {
+        if deque_peek_front(d) == 20 {
+            r6 = 1;
+        }
+    }
+    passed = passed + run_test("remaining element is 20", r6);
+
+    // Test 7: push_front
+    total = total + 1;
+    deque_push_front(d, 5);
+    var r7 = 0;
+    if deque_peek_front(d) == 5 {
+        if deque_size(d) == 2 {
+            r7 = 1;
+        }
+    }
+    passed = passed + run_test("push_front", r7);
+
+    // Test 8: mixed operations
+    total = total + 1;
+    let d2 = deque_new();
+    deque_push_back(d2, 1);
+    deque_push_back(d2, 2);
+    deque_push_back(d2, 3);
+    let front = deque_pop_front(d2);
+    let back = deque_pop_back(d2);
+    var r8 = 0;
+    if front == 1 {
+        if back == 3 {
+            if deque_size(d2) == 1 {
+                r8 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("mixed front/back ops", r8);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

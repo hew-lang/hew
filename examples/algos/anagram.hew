@@ -1,0 +1,41 @@
+// Anagram check using letter frequency counting
+
+fn is_anagram(a: String, b: String) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let alpha = "abcdefghijklmnopqrstuvwxyz";
+    for k in 0..26 {
+        var ca = 0;
+        var cb = 0;
+        for i in 0..a.len() {
+            if a.char_at(i) == alpha.char_at(k) {
+                ca = ca + 1;
+            }
+        }
+        for i in 0..b.len() {
+            if b.char_at(i) == alpha.char_at(k) {
+                cb = cb + 1;
+            }
+        }
+        if ca != cb {
+            return false;
+        }
+    }
+    true
+}
+
+fn main() {
+    var pass = true;
+
+    if !is_anagram("listen", "silent") { pass = false; println("FAIL listen/silent"); }
+    if is_anagram("hello", "world") { pass = false; println("FAIL hello/world"); }
+    if !is_anagram("abc", "cba") { pass = false; println("FAIL abc/cba"); }
+    if is_anagram("ab", "abc") { pass = false; println("FAIL ab/abc"); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

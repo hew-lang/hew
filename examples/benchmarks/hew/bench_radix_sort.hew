@@ -1,0 +1,86 @@
+fn get_max(v: Vec<int>) -> int {
+    let n = v.len();
+    var max_val = v.get(0);
+    var i = 1;
+    while i < n {
+        if v.get(i) > max_val {
+            max_val = v.get(i);
+        }
+        i = i + 1;
+    }
+    max_val
+}
+
+fn count_sort_by_exp(v: Vec<int>, exp: int) {
+    let n = v.len();
+    let output: Vec<int> = Vec::new();
+    let count: Vec<int> = Vec::new();
+    var i = 0;
+    while i < 10 {
+        count.push(0);
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        output.push(0);
+        i = i + 1;
+    }
+    i = 0;
+    while i < n {
+        let idx = (v.get(i) / exp) % 10;
+        count.set(idx, count.get(idx) + 1);
+        i = i + 1;
+    }
+    i = 1;
+    while i < 10 {
+        count.set(i, count.get(i) + count.get(i - 1));
+        i = i + 1;
+    }
+    i = n - 1;
+    while i >= 0 {
+        let idx = (v.get(i) / exp) % 10;
+        let pos = count.get(idx) - 1;
+        output.set(pos, v.get(i));
+        count.set(idx, count.get(idx) - 1);
+        i = i - 1;
+    }
+    i = 0;
+    while i < n {
+        v.set(i, output.get(i));
+        i = i + 1;
+    }
+}
+
+fn radix_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    if n == 0 {
+        return v;
+    }
+    let max_val = get_max(v);
+    var exp = 1;
+    while max_val / exp > 0 {
+        count_sort_by_exp(v, exp);
+        exp = exp * 10;
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    for i in 0..ITERS {
+        let v = make_test_array();
+        let _ = radix_sort(v);
+    }
+    println(ITERS);
+}

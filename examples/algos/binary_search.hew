@@ -1,0 +1,153 @@
+// Binary Search - search sorted array by halving the search range
+
+fn binary_search(arr: Vec<int>, target: int) -> int {
+    var low = 0;
+    var high = arr.len() - 1;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let val = arr.get(mid);
+        if val == target {
+            return mid;
+        } else if val < target {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    0 - 1
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: find element in sorted array
+    let v1: Vec<int> = Vec::new();
+    v1.push(2);
+    v1.push(5);
+    v1.push(8);
+    v1.push(12);
+    v1.push(16);
+    v1.push(23);
+    v1.push(38);
+    v1.push(56);
+    v1.push(72);
+    v1.push(91);
+    let r1 = binary_search(v1, 23);
+    if r1 == 5 {
+        println("Test 1 - find 23: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 1 - find 23: FAIL (got ");
+        print(r1);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 2: find first element
+    let v2: Vec<int> = Vec::new();
+    v2.push(2);
+    v2.push(5);
+    v2.push(8);
+    v2.push(12);
+    v2.push(16);
+    let r2 = binary_search(v2, 2);
+    if r2 == 0 {
+        println("Test 2 - find first: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 2 - find first: FAIL (got ");
+        print(r2);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 3: find last element
+    let v3: Vec<int> = Vec::new();
+    v3.push(2);
+    v3.push(5);
+    v3.push(8);
+    v3.push(12);
+    v3.push(16);
+    let r3 = binary_search(v3, 16);
+    if r3 == 4 {
+        println("Test 3 - find last: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 3 - find last: FAIL (got ");
+        print(r3);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 4: element not found
+    let v4: Vec<int> = Vec::new();
+    v4.push(2);
+    v4.push(5);
+    v4.push(8);
+    v4.push(12);
+    v4.push(16);
+    let r4 = binary_search(v4, 10);
+    if r4 == 0 - 1 {
+        println("Test 4 - not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 4 - not found: FAIL (got ");
+        print(r4);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 5: empty array
+    let v5: Vec<int> = Vec::new();
+    let r5 = binary_search(v5, 5);
+    if r5 == 0 - 1 {
+        println("Test 5 - empty array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 5 - empty array: FAIL (got ");
+        print(r5);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 6: single element found
+    let v6: Vec<int> = Vec::new();
+    v6.push(42);
+    let r6 = binary_search(v6, 42);
+    if r6 == 0 {
+        println("Test 6 - single found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 6 - single found: FAIL (got ");
+        print(r6);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 7: single element not found
+    let v7: Vec<int> = Vec::new();
+    v7.push(42);
+    let r7 = binary_search(v7, 99);
+    if r7 == 0 - 1 {
+        println("Test 7 - single not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 7 - single not found: FAIL (got ");
+        print(r7);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    print(passed);
+    print(" passed, ");
+    print(failed);
+    println(" failed");
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

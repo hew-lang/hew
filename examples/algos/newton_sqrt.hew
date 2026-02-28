@@ -1,0 +1,58 @@
+// Integer square root using Newton's method
+fn isqrt(n: int) -> int {
+    if n <= 0 {
+        return 0;
+    }
+    var x = n;
+    var y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("sqrt(0)=0", isqrt(0), 0);
+    total = total + 1;
+    passed = passed + check("sqrt(1)=1", isqrt(1), 1);
+    total = total + 1;
+    passed = passed + check("sqrt(4)=2", isqrt(4), 2);
+    total = total + 1;
+    passed = passed + check("sqrt(100)=10", isqrt(100), 10);
+    total = total + 1;
+    passed = passed + check("sqrt(144)=12", isqrt(144), 12);
+    total = total + 1;
+    passed = passed + check("sqrt(10000)=100", isqrt(10000), 100);
+    total = total + 1;
+    passed = passed + check("sqrt(2)=1 (floor)", isqrt(2), 1);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

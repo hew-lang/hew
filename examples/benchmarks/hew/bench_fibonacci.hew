@@ -1,0 +1,21 @@
+fn fibonacci(n: int) -> int {
+    var a = 0;
+    var b = 1;
+    for i in 0..n {
+        let temp = b;
+        b = a + b;
+        a = temp;
+    }
+    a
+}
+
+const ITERS: int = 1000000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + fibonacci(30);
+    }
+    println(ITERS);
+    println(sum);
+}

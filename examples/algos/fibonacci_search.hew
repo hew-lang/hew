@@ -1,0 +1,209 @@
+// Fibonacci Search - search sorted array using Fibonacci number steps
+
+fn fibonacci_search(arr: Vec<int>, target: int) -> int {
+    let n = arr.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+
+    // Find smallest Fibonacci number >= n
+    var fib_m2 = 0; // F(k-2)
+    var fib_m1 = 1; // F(k-1)
+    var fib = 1;     // F(k)
+    while fib < n {
+        fib_m2 = fib_m1;
+        fib_m1 = fib;
+        fib = fib_m2 + fib_m1;
+    }
+
+    var offset = 0 - 1;
+
+    while fib > 1 {
+        // Compute index to compare
+        var i = offset + fib_m2;
+        if i >= n - 1 {
+            i = n - 1;
+        }
+        // Make sure i is valid (at least 0)
+        if i < 0 {
+            i = 0;
+        }
+
+        let val = arr.get(i);
+        if val < target {
+            fib = fib_m1;
+            fib_m1 = fib_m2;
+            fib_m2 = fib - fib_m1;
+            offset = i;
+        } else if val > target {
+            fib = fib_m2;
+            fib_m1 = fib_m1 - fib_m2;
+            fib_m2 = fib - fib_m1;
+        } else {
+            return i;
+        }
+    }
+
+    // Check the last remaining element
+    if fib_m1 == 1 {
+        let check = offset + 1;
+        if check < n {
+            if arr.get(check) == target {
+                return check;
+            }
+        }
+    }
+
+    0 - 1
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: find element in sorted array
+    let v1: Vec<int> = Vec::new();
+    v1.push(10);
+    v1.push(22);
+    v1.push(35);
+    v1.push(40);
+    v1.push(45);
+    v1.push(50);
+    v1.push(80);
+    v1.push(82);
+    v1.push(85);
+    v1.push(90);
+    v1.push(100);
+    let r1 = fibonacci_search(v1, 85);
+    if r1 == 8 {
+        println("Test 1 - find 85: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 1 - find 85: FAIL (got ");
+        print(r1);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 2: find first element
+    let v2: Vec<int> = Vec::new();
+    v2.push(10);
+    v2.push(20);
+    v2.push(30);
+    v2.push(40);
+    v2.push(50);
+    let r2 = fibonacci_search(v2, 10);
+    if r2 == 0 {
+        println("Test 2 - find first: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 2 - find first: FAIL (got ");
+        print(r2);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 3: find last element
+    let v3: Vec<int> = Vec::new();
+    v3.push(10);
+    v3.push(20);
+    v3.push(30);
+    v3.push(40);
+    v3.push(50);
+    let r3 = fibonacci_search(v3, 50);
+    if r3 == 4 {
+        println("Test 3 - find last: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 3 - find last: FAIL (got ");
+        print(r3);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 4: not found
+    let v4: Vec<int> = Vec::new();
+    v4.push(10);
+    v4.push(20);
+    v4.push(30);
+    v4.push(40);
+    v4.push(50);
+    let r4 = fibonacci_search(v4, 25);
+    if r4 == 0 - 1 {
+        println("Test 4 - not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 4 - not found: FAIL (got ");
+        print(r4);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 5: empty array
+    let v5: Vec<int> = Vec::new();
+    let r5 = fibonacci_search(v5, 5);
+    if r5 == 0 - 1 {
+        println("Test 5 - empty array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 5 - empty array: FAIL (got ");
+        print(r5);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 6: single element found
+    let v6: Vec<int> = Vec::new();
+    v6.push(42);
+    let r6 = fibonacci_search(v6, 42);
+    if r6 == 0 {
+        println("Test 6 - single found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 6 - single found: FAIL (got ");
+        print(r6);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 7: single element not found
+    let v7: Vec<int> = Vec::new();
+    v7.push(42);
+    let r7 = fibonacci_search(v7, 99);
+    if r7 == 0 - 1 {
+        println("Test 7 - single not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 7 - single not found: FAIL (got ");
+        print(r7);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 8: two elements found second
+    let v8: Vec<int> = Vec::new();
+    v8.push(5);
+    v8.push(15);
+    let r8 = fibonacci_search(v8, 15);
+    if r8 == 1 {
+        println("Test 8 - two elem second: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 8 - two elem second: FAIL (got ");
+        print(r8);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    print(passed);
+    print(" passed, ");
+    print(failed);
+    println(" failed");
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

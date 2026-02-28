@@ -1,0 +1,265 @@
+// 2D Matrix using flat Vec<int>
+// Layout: [rows, cols, data...] where data[r*cols + c] = element at (r,c)
+
+fn mat_create(rows: int, cols: int) -> Vec<int> {
+    let m: Vec<int> = Vec::new();
+    m.push(rows);
+    m.push(cols);
+    let total = rows * cols;
+    for i in 0..total {
+        m.push(0);
+    }
+    m
+}
+
+fn mat_rows(m: Vec<int>) -> int {
+    m.get(0)
+}
+
+fn mat_cols(m: Vec<int>) -> int {
+    m.get(1)
+}
+
+fn mat_get(m: Vec<int>, r: int, c: int) -> int {
+    let cols = m.get(1);
+    m.get(2 + r * cols + c)
+}
+
+fn mat_set(m: Vec<int>, r: int, c: int, val: int) -> int {
+    let cols = m.get(1);
+    m.set(2 + r * cols + c, val);
+    0
+}
+
+fn mat_transpose(m: Vec<int>) -> Vec<int> {
+    let rows = m.get(0);
+    let cols = m.get(1);
+    let t = mat_create(cols, rows);
+    for r in 0..rows {
+        for c in 0..cols {
+            let val = mat_get(m, r, c);
+            mat_set(t, c, r, val);
+        }
+    }
+    t
+}
+
+fn mat_add(a: Vec<int>, b: Vec<int>) -> Vec<int> {
+    let rows = mat_rows(a);
+    let cols = mat_cols(a);
+    let result = mat_create(rows, cols);
+    for r in 0..rows {
+        for c in 0..cols {
+            let sum = mat_get(a, r, c) + mat_get(b, r, c);
+            mat_set(result, r, c, sum);
+        }
+    }
+    result
+}
+
+fn mat_multiply(a: Vec<int>, b: Vec<int>) -> Vec<int> {
+    let a_rows = mat_rows(a);
+    let a_cols = mat_cols(a);
+    let b_cols = mat_cols(b);
+    let result = mat_create(a_rows, b_cols);
+    for r in 0..a_rows {
+        for c in 0..b_cols {
+            var sum = 0;
+            for k in 0..a_cols {
+                sum = sum + mat_get(a, r, k) * mat_get(b, k, c);
+            }
+            mat_set(result, r, c, sum);
+        }
+    }
+    result
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: Create and get/set
+    let m = mat_create(3, 3);
+    mat_set(m, 0, 0, 1);
+    mat_set(m, 0, 1, 2);
+    mat_set(m, 0, 2, 3);
+    mat_set(m, 1, 0, 4);
+    mat_set(m, 1, 1, 5);
+    mat_set(m, 1, 2, 6);
+    mat_set(m, 2, 0, 7);
+    mat_set(m, 2, 1, 8);
+    mat_set(m, 2, 2, 9);
+    if mat_get(m, 0, 0) == 1 {
+        if mat_get(m, 1, 1) == 5 {
+            if mat_get(m, 2, 2) == 9 {
+                println("PASS: create and get/set");
+                passed = passed + 1;
+            } else {
+                println("FAIL: create and get/set");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: create and get/set");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: create and get/set");
+        failed = failed + 1;
+    }
+
+    // Test 2: Dimensions
+    if mat_rows(m) == 3 {
+        if mat_cols(m) == 3 {
+            println("PASS: dimensions");
+            passed = passed + 1;
+        } else {
+            println("FAIL: dimensions");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: dimensions");
+        failed = failed + 1;
+    }
+
+    // Test 3: Transpose
+    // Transpose of [[1,2,3],[4,5,6],[7,8,9]] = [[1,4,7],[2,5,8],[3,6,9]]
+    let t = mat_transpose(m);
+    var t_ok = 1;
+    if mat_get(t, 0, 1) != 4 { t_ok = 0; }
+    if mat_get(t, 0, 2) != 7 { t_ok = 0; }
+    if mat_get(t, 1, 0) != 2 { t_ok = 0; }
+    if mat_get(t, 2, 0) != 3 { t_ok = 0; }
+    if mat_get(t, 1, 1) != 5 { t_ok = 0; }
+    if t_ok == 1 {
+        println("PASS: transpose");
+        passed = passed + 1;
+    } else {
+        println("FAIL: transpose");
+        failed = failed + 1;
+    }
+
+    // Test 4: Matrix addition
+    // A = [[1,2],[3,4]], B = [[5,6],[7,8]], A+B = [[6,8],[10,12]]
+    let a = mat_create(2, 2);
+    mat_set(a, 0, 0, 1);
+    mat_set(a, 0, 1, 2);
+    mat_set(a, 1, 0, 3);
+    mat_set(a, 1, 1, 4);
+    let b = mat_create(2, 2);
+    mat_set(b, 0, 0, 5);
+    mat_set(b, 0, 1, 6);
+    mat_set(b, 1, 0, 7);
+    mat_set(b, 1, 1, 8);
+    let sum = mat_add(a, b);
+    var add_ok = 1;
+    if mat_get(sum, 0, 0) != 6 { add_ok = 0; }
+    if mat_get(sum, 0, 1) != 8 { add_ok = 0; }
+    if mat_get(sum, 1, 0) != 10 { add_ok = 0; }
+    if mat_get(sum, 1, 1) != 12 { add_ok = 0; }
+    if add_ok == 1 {
+        println("PASS: matrix addition");
+        passed = passed + 1;
+    } else {
+        println("FAIL: matrix addition");
+        failed = failed + 1;
+    }
+
+    // Test 5: Matrix multiplication
+    // A = [[1,2],[3,4]], B = [[5,6],[7,8]]
+    // A*B = [[1*5+2*7, 1*6+2*8],[3*5+4*7, 3*6+4*8]] = [[19,22],[43,50]]
+    let prod = mat_multiply(a, b);
+    var mul_ok = 1;
+    if mat_get(prod, 0, 0) != 19 { mul_ok = 0; }
+    if mat_get(prod, 0, 1) != 22 { mul_ok = 0; }
+    if mat_get(prod, 1, 0) != 43 { mul_ok = 0; }
+    if mat_get(prod, 1, 1) != 50 { mul_ok = 0; }
+    if mul_ok == 1 {
+        println("PASS: matrix multiply");
+        passed = passed + 1;
+    } else {
+        println("FAIL: matrix multiply");
+        failed = failed + 1;
+    }
+
+    // Test 6: Identity matrix multiplication
+    // I = [[1,0],[0,1]], A*I = A
+    let id = mat_create(2, 2);
+    mat_set(id, 0, 0, 1);
+    mat_set(id, 1, 1, 1);
+    let ai = mat_multiply(a, id);
+    var id_ok = 1;
+    if mat_get(ai, 0, 0) != 1 { id_ok = 0; }
+    if mat_get(ai, 0, 1) != 2 { id_ok = 0; }
+    if mat_get(ai, 1, 0) != 3 { id_ok = 0; }
+    if mat_get(ai, 1, 1) != 4 { id_ok = 0; }
+    if id_ok == 1 {
+        println("PASS: identity multiply");
+        passed = passed + 1;
+    } else {
+        println("FAIL: identity multiply");
+        failed = failed + 1;
+    }
+
+    // Test 7: Non-square matrix
+    // A = [[1,2,3],[4,5,6]] (2x3), B = [[7,8],[9,10],[11,12]] (3x2)
+    // A*B = [[1*7+2*9+3*11, 1*8+2*10+3*12],[4*7+5*9+6*11, 4*8+5*10+6*12]]
+    //     = [[58, 64],[139, 154]]
+    let c = mat_create(2, 3);
+    mat_set(c, 0, 0, 1);
+    mat_set(c, 0, 1, 2);
+    mat_set(c, 0, 2, 3);
+    mat_set(c, 1, 0, 4);
+    mat_set(c, 1, 1, 5);
+    mat_set(c, 1, 2, 6);
+    let d = mat_create(3, 2);
+    mat_set(d, 0, 0, 7);
+    mat_set(d, 0, 1, 8);
+    mat_set(d, 1, 0, 9);
+    mat_set(d, 1, 1, 10);
+    mat_set(d, 2, 0, 11);
+    mat_set(d, 2, 1, 12);
+    let cd = mat_multiply(c, d);
+    var ns_ok = 1;
+    if mat_get(cd, 0, 0) != 58 { ns_ok = 0; }
+    if mat_get(cd, 0, 1) != 64 { ns_ok = 0; }
+    if mat_get(cd, 1, 0) != 139 { ns_ok = 0; }
+    if mat_get(cd, 1, 1) != 154 { ns_ok = 0; }
+    if mat_rows(cd) != 2 { ns_ok = 0; }
+    if mat_cols(cd) != 2 { ns_ok = 0; }
+    if ns_ok == 1 {
+        println("PASS: non-square multiply");
+        passed = passed + 1;
+    } else {
+        println("FAIL: non-square multiply");
+        failed = failed + 1;
+    }
+
+    // Test 8: Transpose of non-square
+    let ct = mat_transpose(c);
+    var nst_ok = 1;
+    if mat_rows(ct) != 3 { nst_ok = 0; }
+    if mat_cols(ct) != 2 { nst_ok = 0; }
+    if mat_get(ct, 0, 0) != 1 { nst_ok = 0; }
+    if mat_get(ct, 1, 0) != 2 { nst_ok = 0; }
+    if mat_get(ct, 2, 0) != 3 { nst_ok = 0; }
+    if mat_get(ct, 0, 1) != 4 { nst_ok = 0; }
+    if nst_ok == 1 {
+        println("PASS: non-square transpose");
+        passed = passed + 1;
+    } else {
+        println("FAIL: non-square transpose");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

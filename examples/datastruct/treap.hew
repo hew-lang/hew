@@ -1,0 +1,327 @@
+// Treap: BST by key, heap by priority
+// Each node: [key, priority, left, right] = 4 slots
+// NIL = -1 means no child
+
+fn node_key(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4) }
+fn node_pri(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 1) }
+fn node_left(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 2) }
+fn node_right(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 4 + 3) }
+fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 2, v); 0 }
+fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 4 + 3, v); 0 }
+
+fn add_node(nodes: Vec<i32>, key: i32, pri: i32, NIL: i32) -> i32 {
+    let idx = nodes.len() / 4;
+    nodes.push(key);
+    nodes.push(pri);
+    nodes.push(NIL);
+    nodes.push(NIL);
+    idx
+}
+
+// Right rotate: y is root, x = y.left
+fn right_rotate(nodes: Vec<i32>, y: i32) -> i32 {
+    let x = node_left(nodes, y);
+    let t2 = node_right(nodes, x);
+    let _ = set_right(nodes, x, y);
+    let _ = set_left(nodes, y, t2);
+    x
+}
+
+// Left rotate: x is root, y = x.right
+fn left_rotate(nodes: Vec<i32>, x: i32) -> i32 {
+    let y = node_right(nodes, x);
+    let t2 = node_left(nodes, y);
+    let _ = set_left(nodes, y, x);
+    let _ = set_right(nodes, x, t2);
+    y
+}
+
+// Insert into treap, returns new root
+fn treap_insert(nodes: Vec<i32>, root: i32, key: i32, pri: i32, NIL: i32) -> i32 {
+    if root == NIL {
+        return add_node(nodes, key, pri, NIL);
+    }
+    // Track path from root to insertion point
+    let path: Vec<i32> = Vec::new();
+    let dirs: Vec<i32> = Vec::new();
+    var cur = root;
+    var placed = false;
+    while !placed {
+        let cur_key = node_key(nodes, cur);
+        if key < cur_key {
+            let left = node_left(nodes, cur);
+            if left == NIL {
+                let new_idx = add_node(nodes, key, pri, NIL);
+                let _ = set_left(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(0);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(0);
+                cur = left;
+            }
+        } else {
+            let right = node_right(nodes, cur);
+            if right == NIL {
+                let new_idx = add_node(nodes, key, pri, NIL);
+                let _ = set_right(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(1);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(1);
+                cur = right;
+            }
+        }
+    }
+    // Fix heap property by rotating up from bottom
+    var new_root = root;
+    while path.len() > 0 {
+        let parent = path.pop();
+        let dir = dirs.pop();
+        var child = NIL;
+        if dir == 0 {
+            child = node_left(nodes, parent);
+        } else {
+            child = node_right(nodes, parent);
+        }
+        // If child priority > parent priority, rotate
+        if child != NIL {
+            if node_pri(nodes, child) > node_pri(nodes, parent) {
+                var new_subtree = NIL;
+                if dir == 0 {
+                    new_subtree = right_rotate(nodes, parent);
+                } else {
+                    new_subtree = left_rotate(nodes, parent);
+                }
+                // Update grandparent
+                if path.len() > 0 {
+                    let gp = path.get(path.len() - 1);
+                    let gp_dir = dirs.get(dirs.len() - 1);
+                    if gp_dir == 0 {
+                        let _ = set_left(nodes, gp, new_subtree);
+                    } else {
+                        let _ = set_right(nodes, gp, new_subtree);
+                    }
+                } else {
+                    new_root = new_subtree;
+                }
+            }
+        }
+    }
+    new_root
+}
+
+// Inorder traversal
+fn inorder(nodes: Vec<i32>, root: i32, result: Vec<i32>, NIL: i32) -> i32 {
+    if root == NIL {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    var cur = root;
+    var running = true;
+    while running {
+        while cur != NIL {
+            stack.push(cur);
+            cur = node_left(nodes, cur);
+        }
+        if stack.len() == 0 {
+            running = false;
+        } else {
+            cur = stack.pop();
+            result.push(node_key(nodes, cur));
+            cur = node_right(nodes, cur);
+        }
+    }
+    0
+}
+
+// Verify BST property
+fn check_bst(nodes: Vec<i32>, root: i32, NIL: i32) -> bool {
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if result.len() <= 1 {
+        return true;
+    }
+    var i = 1;
+    while i < result.len() {
+        if result.get(i) <= result.get(i - 1) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// Verify max-heap property on priorities
+fn check_heap(nodes: Vec<i32>, root: i32, NIL: i32) -> bool {
+    if root == NIL {
+        return true;
+    }
+    let stack: Vec<i32> = Vec::new();
+    stack.push(root);
+    var ok = true;
+    while stack.len() > 0 {
+        let cur = stack.pop();
+        let l = node_left(nodes, cur);
+        let r = node_right(nodes, cur);
+        if l != NIL {
+            if node_pri(nodes, l) > node_pri(nodes, cur) {
+                ok = false;
+            }
+            stack.push(l);
+        }
+        if r != NIL {
+            if node_pri(nodes, r) > node_pri(nodes, cur) {
+                ok = false;
+            }
+            stack.push(r);
+        }
+    }
+    ok
+}
+
+fn test_basic_treap() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    // key, priority pairs
+    root = treap_insert(nodes, root, 5, 10, NIL);
+    root = treap_insert(nodes, root, 3, 20, NIL);
+    root = treap_insert(nodes, root, 7, 5, NIL);
+    root = treap_insert(nodes, root, 1, 15, NIL);
+    root = treap_insert(nodes, root, 4, 8, NIL);
+    let bst_ok = check_bst(nodes, root, NIL);
+    let heap_ok = check_heap(nodes, root, NIL);
+    if bst_ok {
+        if heap_ok {
+            println("PASS: treap BST + heap properties");
+            return 1;
+        }
+    }
+    print("FAIL: treap bst="); print(bst_ok);
+    print(" heap="); println(heap_ok);
+    0
+}
+
+fn test_inorder_sorted() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = treap_insert(nodes, root, 10, 50, NIL);
+    root = treap_insert(nodes, root, 5, 30, NIL);
+    root = treap_insert(nodes, root, 15, 40, NIL);
+    root = treap_insert(nodes, root, 3, 25, NIL);
+    root = treap_insert(nodes, root, 7, 35, NIL);
+    root = treap_insert(nodes, root, 12, 20, NIL);
+    root = treap_insert(nodes, root, 20, 45, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    var ok = true;
+    if result.len() != 7 { ok = false; }
+    if ok {
+        if result.get(0) != 3 { ok = false; }
+        if result.get(1) != 5 { ok = false; }
+        if result.get(2) != 7 { ok = false; }
+        if result.get(3) != 10 { ok = false; }
+        if result.get(4) != 12 { ok = false; }
+        if result.get(5) != 15 { ok = false; }
+        if result.get(6) != 20 { ok = false; }
+    }
+    if ok {
+        println("PASS: treap inorder is sorted");
+        1
+    } else {
+        println("FAIL: treap inorder not sorted");
+        0
+    }
+}
+
+fn test_high_priority_at_root() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = treap_insert(nodes, root, 5, 10, NIL);
+    root = treap_insert(nodes, root, 3, 100, NIL); // highest priority
+    root = treap_insert(nodes, root, 7, 20, NIL);
+    // Node with priority 100 (key=3) should be at root
+    let root_pri = node_pri(nodes, root);
+    if root_pri == 100 {
+        println("PASS: highest priority at root");
+        1
+    } else {
+        print("FAIL: root priority expected 100 got ");
+        println(root_pri);
+        0
+    }
+}
+
+fn test_sequential_inserts() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    // Use simple pseudo-random priorities
+    var pri = 17;
+    var i = 1;
+    while i <= 15 {
+        pri = (pri * 31 + 7) - ((pri * 31 + 7) / 100) * 100;
+        root = treap_insert(nodes, root, i, pri, NIL);
+        i = i + 1;
+    }
+    let bst_ok = check_bst(nodes, root, NIL);
+    let heap_ok = check_heap(nodes, root, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, root, result, NIL);
+    if bst_ok {
+        if heap_ok {
+            if result.len() == 15 {
+                println("PASS: sequential inserts maintain properties");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: sequential inserts");
+    0
+}
+
+fn test_single_node() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = treap_insert(nodes, root, 42, 99, NIL);
+    let bst_ok = check_bst(nodes, root, NIL);
+    let heap_ok = check_heap(nodes, root, NIL);
+    if bst_ok {
+        if heap_ok {
+            if node_key(nodes, root) == 42 {
+                println("PASS: single node treap");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: single node treap");
+    0
+}
+
+fn main() {
+    println("=== Treap ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_treap();
+    passed = passed + test_inorder_sorted();
+    passed = passed + test_high_priority_at_root();
+    passed = passed + test_sequential_inserts();
+    passed = passed + test_single_node();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

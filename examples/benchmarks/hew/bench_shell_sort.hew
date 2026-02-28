@@ -1,0 +1,43 @@
+fn shell_sort(v: Vec<int>) -> Vec<int> {
+    let n = v.len();
+    var gap = n / 2;
+    while gap > 0 {
+        var i = gap;
+        while i < n {
+            let temp = v.get(i);
+            var j = i;
+            while j >= gap {
+                if v.get(j - gap) > temp {
+                    v.set(j, v.get(j - gap));
+                    j = j - gap;
+                } else {
+                    j = 0;
+                }
+            }
+            v.set(j, temp);
+            i = i + 1;
+        }
+        gap = gap / 2;
+    }
+    v
+}
+
+fn make_test_array() -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    var i = 100;
+    while i > 0 {
+        v.push(i);
+        i = i - 1;
+    }
+    v
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    for i in 0..ITERS {
+        let v = make_test_array();
+        let _ = shell_sort(v);
+    }
+    println(ITERS);
+}

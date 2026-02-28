@@ -1,0 +1,243 @@
+// Persistent (Immutable) Stack using linked list nodes in Vec<int>
+// Each node: [value, next_node_index] stored in a flat Vec<int>
+// next_node_index = -1 means end of stack
+// Push creates a new version (new head), old versions remain accessible.
+
+// Node storage: pairs of [value, next] in a Vec<int>
+// Node i is at positions i*2 and i*2+1
+
+fn ps_new() -> int {
+    // Empty stack is represented by -1 (no head node)
+    0 - 1
+}
+
+// Push value onto stack version 'head', return new version (new head index)
+fn ps_push(store: Vec<int>, head: int, value: int) -> int {
+    let idx = store.len() / 2;
+    store.push(value);
+    store.push(head);
+    idx
+}
+
+// Peek at top value of stack version 'head'
+fn ps_peek(store: Vec<int>, head: int) -> int {
+    if head < 0 {
+        return 0 - 1;
+    }
+    store.get(head * 2)
+}
+
+// Pop from stack version 'head', return new head (previous version)
+fn ps_pop(store: Vec<int>, head: int) -> int {
+    if head < 0 {
+        return 0 - 1;
+    }
+    store.get(head * 2 + 1)
+}
+
+// Check if stack version is empty
+fn ps_is_empty(head: int) -> bool {
+    head < 0
+}
+
+// Get size of stack version
+fn ps_size(store: Vec<int>, head: int) -> int {
+    var count = 0;
+    var curr = head;
+    while curr >= 0 {
+        count = count + 1;
+        curr = store.get(curr * 2 + 1);
+    }
+    count
+}
+
+// Collect stack elements into a Vec (top to bottom order)
+fn ps_collect(store: Vec<int>, head: int) -> Vec<int> {
+    let result: Vec<int> = Vec::new();
+    var curr = head;
+    while curr >= 0 {
+        result.push(store.get(curr * 2));
+        curr = store.get(curr * 2 + 1);
+    }
+    result
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    let store: Vec<int> = Vec::new();
+
+    // v0 = empty stack
+    let v0 = ps_new();
+
+    // Test 1: Empty stack
+    if ps_is_empty(v0) {
+        if ps_size(store, v0) == 0 {
+            println("PASS: empty stack");
+            passed = passed + 1;
+        } else {
+            println("FAIL: empty stack");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: empty stack");
+        failed = failed + 1;
+    }
+
+    // v1 = push 10 onto v0
+    let v1 = ps_push(store, v0, 10);
+
+    // Test 2: Push creates new version
+    if ps_peek(store, v1) == 10 {
+        if ps_size(store, v1) == 1 {
+            println("PASS: push first element");
+            passed = passed + 1;
+        } else {
+            println("FAIL: push first element");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: push first element");
+        failed = failed + 1;
+    }
+
+    // v2 = push 20 onto v1
+    let v2 = ps_push(store, v1, 20);
+
+    // Test 3: Second push
+    if ps_peek(store, v2) == 20 {
+        if ps_size(store, v2) == 2 {
+            println("PASS: push second element");
+            passed = passed + 1;
+        } else {
+            println("FAIL: push second element");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: push second element");
+        failed = failed + 1;
+    }
+
+    // v3 = push 30 onto v2
+    let v3 = ps_push(store, v2, 30);
+
+    // Test 4: Old version v1 is still accessible
+    if ps_peek(store, v1) == 10 {
+        if ps_size(store, v1) == 1 {
+            println("PASS: old version v1 intact");
+            passed = passed + 1;
+        } else {
+            println("FAIL: old version v1 intact");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: old version v1 intact");
+        failed = failed + 1;
+    }
+
+    // Test 5: Old version v2 is still accessible
+    if ps_peek(store, v2) == 20 {
+        if ps_size(store, v2) == 2 {
+            println("PASS: old version v2 intact");
+            passed = passed + 1;
+        } else {
+            println("FAIL: old version v2 intact");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: old version v2 intact");
+        failed = failed + 1;
+    }
+
+    // Test 6: Pop from v3 gives v2's head
+    let v3_popped = ps_pop(store, v3);
+    if ps_peek(store, v3_popped) == 20 {
+        if ps_size(store, v3_popped) == 2 {
+            println("PASS: pop from v3");
+            passed = passed + 1;
+        } else {
+            println("FAIL: pop from v3");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: pop from v3");
+        failed = failed + 1;
+    }
+
+    // Test 7: v3 still unchanged after pop (persistence)
+    if ps_peek(store, v3) == 30 {
+        if ps_size(store, v3) == 3 {
+            println("PASS: v3 unchanged after pop");
+            passed = passed + 1;
+        } else {
+            println("FAIL: v3 unchanged after pop");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: v3 unchanged after pop");
+        failed = failed + 1;
+    }
+
+    // Test 8: Branch from v1 (create divergent history)
+    // v4 = push 99 onto v1
+    let v4 = ps_push(store, v1, 99);
+    if ps_peek(store, v4) == 99 {
+        if ps_size(store, v4) == 2 {
+            // v4 = [99, 10], v2 = [20, 10], v3 = [30, 20, 10]
+            println("PASS: branching history");
+            passed = passed + 1;
+        } else {
+            println("FAIL: branching history");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: branching history");
+        failed = failed + 1;
+    }
+
+    // Test 9: Collect v3 elements (top to bottom: 30, 20, 10)
+    let items = ps_collect(store, v3);
+    var col_ok = 1;
+    if items.len() != 3 { col_ok = 0; }
+    if col_ok == 1 {
+        if items.get(0) != 30 { col_ok = 0; }
+        if items.get(1) != 20 { col_ok = 0; }
+        if items.get(2) != 10 { col_ok = 0; }
+    }
+    if col_ok == 1 {
+        println("PASS: collect v3");
+        passed = passed + 1;
+    } else {
+        println("FAIL: collect v3");
+        failed = failed + 1;
+    }
+
+    // Test 10: Collect v4 elements (top to bottom: 99, 10)
+    let items4 = ps_collect(store, v4);
+    var col4_ok = 1;
+    if items4.len() != 2 { col4_ok = 0; }
+    if col4_ok == 1 {
+        if items4.get(0) != 99 { col4_ok = 0; }
+        if items4.get(1) != 10 { col4_ok = 0; }
+    }
+    if col4_ok == 1 {
+        println("PASS: collect v4 (branch)");
+        passed = passed + 1;
+    } else {
+        println("FAIL: collect v4 (branch)");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

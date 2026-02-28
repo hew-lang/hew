@@ -1,0 +1,280 @@
+// Consistent Hash Ring
+// Maps keys to nodes. Adding/removing nodes moves minimal keys.
+// Ring positions stored in sorted Vec<int>, node IDs in parallel Vec<int>.
+
+fn hash_pos(key: int, ring_size: int) -> int {
+    let h = (key * 2654435761) % ring_size;
+    if h < 0 {
+        h + ring_size
+    } else {
+        h
+    }
+}
+
+fn node_hash(node_id: int, replica: int, ring_size: int) -> int {
+    let key = node_id * 1000 + replica;
+    hash_pos(key, ring_size)
+}
+
+// Insert position into sorted arrays, maintaining sort order
+fn sorted_insert(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int) {
+    let len = positions.len();
+    // Find insertion point
+    var insert_at = len;
+    for i in 0..len {
+        if positions.get(i) > pos {
+            insert_at = i;
+            // break out by setting i to len (no break in for)
+            return sorted_insert_at(positions, nodes, pos, node_id, insert_at);
+        }
+        if positions.get(i) == pos {
+            // Duplicate position, skip
+            return;
+        }
+    }
+    sorted_insert_at(positions, nodes, pos, node_id, insert_at);
+}
+
+fn sorted_insert_at(positions: Vec<int>, nodes: Vec<int>, pos: int, node_id: int, insert_at: int) {
+    let len = positions.len();
+    // Add placeholder at end
+    positions.push(0);
+    nodes.push(0);
+    // Shift elements right
+    var j = len;
+    while j > insert_at {
+        positions.set(j, positions.get(j - 1));
+        nodes.set(j, nodes.get(j - 1));
+        j = j - 1;
+    }
+    positions.set(insert_at, pos);
+    nodes.set(insert_at, node_id);
+}
+
+fn add_node(positions: Vec<int>, nodes: Vec<int>, node_id: int, ring_size: int, replicas: int) {
+    for r in 0..replicas {
+        let pos = node_hash(node_id, r, ring_size);
+        sorted_insert(positions, nodes, pos, node_id);
+    }
+}
+
+fn remove_node(positions: Vec<int>, nodes: Vec<int>, node_id: int) {
+    // Remove all entries for this node (compact in place)
+    let len = positions.len();
+    var write = 0;
+    for read in 0..len {
+        if nodes.get(read) != node_id {
+            positions.set(write, positions.get(read));
+            nodes.set(write, nodes.get(read));
+            write = write + 1;
+        }
+    }
+    // Pop removed entries
+    var to_remove = len - write;
+    while to_remove > 0 {
+        let _ = positions.pop();
+        let _ = nodes.pop();
+        to_remove = to_remove - 1;
+    }
+}
+
+fn lookup(positions: Vec<int>, nodes: Vec<int>, key: int, ring_size: int) -> int {
+    let len = positions.len();
+    if len == 0 {
+        return 0 - 1;
+    }
+    let pos = hash_pos(key, ring_size);
+    // Find first position >= pos (binary-like scan)
+    for i in 0..len {
+        if positions.get(i) >= pos {
+            return nodes.get(i);
+        }
+    }
+    // Wrap around to first node
+    nodes.get(0)
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let ring_size = 10000;
+    let replicas = 3;
+    let positions: Vec<int> = Vec::new();
+    let nodes: Vec<int> = Vec::new();
+
+    // Test 1: Add nodes and verify lookup returns valid node
+    add_node(positions, nodes, 1, ring_size, replicas);
+    add_node(positions, nodes, 2, ring_size, replicas);
+    add_node(positions, nodes, 3, ring_size, replicas);
+    let n1 = lookup(positions, nodes, 100, ring_size);
+    let n2 = lookup(positions, nodes, 200, ring_size);
+    let n3 = lookup(positions, nodes, 300, ring_size);
+    var valid = true;
+    if n1 < 1 { valid = false; }
+    if n1 > 3 { valid = false; }
+    if n2 < 1 { valid = false; }
+    if n2 > 3 { valid = false; }
+    if n3 < 1 { valid = false; }
+    if n3 > 3 { valid = false; }
+    if valid {
+        println("PASS: lookup returns valid node");
+        passed = passed + 1;
+    } else {
+        println("FAIL: lookup returns valid node");
+        failed = failed + 1;
+    }
+
+    // Test 2: Same key always maps to same node
+    let na = lookup(positions, nodes, 42, ring_size);
+    let nb = lookup(positions, nodes, 42, ring_size);
+    if na == nb {
+        println("PASS: consistent mapping");
+        passed = passed + 1;
+    } else {
+        println("FAIL: consistent mapping");
+        failed = failed + 1;
+    }
+
+    // Test 3: Different keys can map to different nodes
+    var seen_different = false;
+    let first_node = lookup(positions, nodes, 0, ring_size);
+    for k in 1..50 {
+        let node = lookup(positions, nodes, k, ring_size);
+        if node != first_node {
+            seen_different = true;
+        }
+    }
+    if seen_different {
+        println("PASS: keys map to different nodes");
+        passed = passed + 1;
+    } else {
+        println("FAIL: keys map to different nodes");
+        failed = failed + 1;
+    }
+
+    // Record mappings before adding a node
+    let before: Vec<int> = Vec::new();
+    var num_keys = 100;
+    for k in 0..num_keys {
+        let key = k * 37;
+        let node = lookup(positions, nodes, key, ring_size);
+        before.push(node);
+    }
+
+    // Add a 4th node
+    add_node(positions, nodes, 4, ring_size, replicas);
+
+    // Test 4: After adding node, most keys stay on same node
+    var same_count = 0;
+    for k in 0..num_keys {
+        let key = k * 37;
+        let new_node = lookup(positions, nodes, key, ring_size);
+        let old_node = before.get(k);
+        if new_node == old_node {
+            same_count = same_count + 1;
+        }
+    }
+    // With consistent hashing, most keys (>50%) should stay
+    if same_count > 50 {
+        print("PASS: key stability after add (");
+        print(same_count);
+        println(" of 100 unchanged)");
+        passed = passed + 1;
+    } else {
+        print("FAIL: key stability after add (");
+        print(same_count);
+        println(" of 100 unchanged)");
+        failed = failed + 1;
+    }
+
+    // Test 5: New node gets some keys
+    var node4_count = 0;
+    for k in 0..num_keys {
+        let key = k * 37;
+        let node = lookup(positions, nodes, key, ring_size);
+        if node == 4 {
+            node4_count = node4_count + 1;
+        }
+    }
+    if node4_count > 0 {
+        print("PASS: new node gets keys (");
+        print(node4_count);
+        println(")");
+        passed = passed + 1;
+    } else {
+        println("FAIL: new node gets keys");
+        failed = failed + 1;
+    }
+
+    // Test 6: Remove a node, keys redistribute
+    remove_node(positions, nodes, 2);
+    var node2_count = 0;
+    for k in 0..num_keys {
+        let key = k * 37;
+        let node = lookup(positions, nodes, key, ring_size);
+        if node == 2 {
+            node2_count = node2_count + 1;
+        }
+    }
+    if node2_count == 0 {
+        println("PASS: removed node gets no keys");
+        passed = passed + 1;
+    } else {
+        println("FAIL: removed node gets no keys");
+        failed = failed + 1;
+    }
+
+    // Test 7: Distribution across remaining nodes
+    var c1 = 0;
+    var c3 = 0;
+    var c4 = 0;
+    for k in 0..num_keys {
+        let key = k * 37;
+        let node = lookup(positions, nodes, key, ring_size);
+        if node == 1 { c1 = c1 + 1; }
+        if node == 3 { c3 = c3 + 1; }
+        if node == 4 { c4 = c4 + 1; }
+    }
+    // All three remaining nodes should have at least some keys
+    if c1 > 0 {
+        if c3 > 0 {
+            if c4 > 0 {
+                println("PASS: distribution across nodes");
+                passed = passed + 1;
+            } else {
+                println("FAIL: distribution across nodes");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: distribution across nodes");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: distribution across nodes");
+        failed = failed + 1;
+    }
+
+    // Test 8: Empty ring returns -1
+    let ep: Vec<int> = Vec::new();
+    let en: Vec<int> = Vec::new();
+    let empty_result = lookup(ep, en, 42, ring_size);
+    if empty_result == 0 - 1 {
+        println("PASS: empty ring lookup");
+        passed = passed + 1;
+    } else {
+        println("FAIL: empty ring lookup");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

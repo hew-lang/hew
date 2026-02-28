@@ -1,0 +1,67 @@
+fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
+    for i in 0..(n + 1) {
+        adj_offsets.push(0);
+    }
+
+    for src in 0..n {
+        let start = adj_offsets.get(src);
+        var count = 0;
+        for dst in 1..6 {
+            let neighbor = (src + dst) % n;
+            adj_nodes.push(neighbor);
+            count = count + 1;
+        }
+        let extra1 = (src * 7 + 3) % n;
+        adj_nodes.push(extra1);
+        count = count + 1;
+        adj_offsets.set(src + 1, start + count);
+    }
+    return 0;
+}
+
+fn bfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> int {
+    let visited: Vec<int> = Vec::new();
+    let queue: Vec<int> = Vec::new();
+    for i in 0..n {
+        visited.push(0);
+    }
+
+    visited.set(start_node, 1);
+    queue.push(start_node);
+    var head = 0;
+    var count = 0;
+
+    while head < queue.len() {
+        let node = queue.get(head);
+        head = head + 1;
+        count = count + 1;
+
+        var e = adj_offsets.get(node);
+        while e < adj_offsets.get(node + 1) {
+            let neighbor = adj_nodes.get(e);
+            if visited.get(neighbor) == 0 {
+                visited.set(neighbor, 1);
+                queue.push(neighbor);
+            }
+            e = e + 1;
+        }
+    }
+    return count;
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    let n = 50;
+    let adj_nodes: Vec<int> = Vec::new();
+    let adj_offsets: Vec<int> = Vec::new();
+    let _ = build_graph(adj_nodes, adj_offsets, n);
+
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + bfs(adj_nodes, adj_offsets, n, 0);
+    }
+    println("bench_bfs");
+    println(checksum);
+    println(ITERS);
+}

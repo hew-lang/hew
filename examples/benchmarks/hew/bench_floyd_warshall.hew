@@ -1,0 +1,78 @@
+fn floyd_warshall(n: int, edge_src: Vec<int>, edge_dst: Vec<int>, edge_wt: Vec<int>, num_edges: int) -> int {
+    let INF = 999999;
+    let total = n * n;
+    let dist: Vec<int> = Vec::new();
+    for idx in 0..total {
+        dist.push(INF);
+    }
+
+    for i in 0..n {
+        dist.set(i * n + i, 0);
+    }
+
+    for e in 0..num_edges {
+        let u = edge_src.get(e);
+        let v = edge_dst.get(e);
+        let w = edge_wt.get(e);
+        if w < dist.get(u * n + v) {
+            dist.set(u * n + v, w);
+        }
+    }
+
+    for k in 0..n {
+        for i in 0..n {
+            for j in 0..n {
+                let through_k = dist.get(i * n + k) + dist.get(k * n + j);
+                if through_k < dist.get(i * n + j) {
+                    dist.set(i * n + j, through_k);
+                }
+            }
+        }
+    }
+
+    var sum = 0;
+    for i in 0..n {
+        for j in 0..n {
+            let d = dist.get(i * n + j);
+            if d < INF {
+                sum = sum + d;
+            }
+        }
+    }
+    return sum;
+}
+
+const ITERS: int = 5000;
+
+fn main() {
+    let n = 30;
+    let edge_src: Vec<int> = Vec::new();
+    let edge_dst: Vec<int> = Vec::new();
+    let edge_wt: Vec<int> = Vec::new();
+
+    for src in 0..n {
+        var dst = 1;
+        while dst <= 3 {
+            let neighbor = (src + dst) % n;
+            let weight = (src + dst) % 10 + 1;
+            edge_src.push(src);
+            edge_dst.push(neighbor);
+            edge_wt.push(weight);
+            dst = dst + 1;
+        }
+        let extra = (src * 7 + 3) % n;
+        let ew = (src * 3 + 1) % 15 + 1;
+        edge_src.push(src);
+        edge_dst.push(extra);
+        edge_wt.push(ew);
+    }
+    let num_edges = edge_src.len();
+
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + floyd_warshall(n, edge_src, edge_dst, edge_wt, num_edges);
+    }
+    println("bench_floyd_warshall");
+    println(checksum);
+    println(ITERS);
+}

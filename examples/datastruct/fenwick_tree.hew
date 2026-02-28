@@ -1,0 +1,225 @@
+// Fenwick Tree (Binary Indexed Tree)
+// 1-indexed array for prefix sum queries and point updates
+
+fn fw_update(tree: Vec<i32>, n: i32, idx: i32, delta: i32) -> i32 {
+    var i = idx;
+    while i <= n {
+        tree.set(i, tree.get(i) + delta);
+        // i += i & (-i) -- since no negative literals, compute lowest set bit
+        let neg_i = 0 - i;
+        // In two's complement, -i = ~i + 1. Bitwise AND gives lowest set bit.
+        // We simulate: i & (-i) using the fact that for power-of-2 decomposition
+        // we can find the lowest set bit by: while ((i >> k) & 1) == 0, k++; lsb = 1 << k
+        var lsb = 1;
+        var tmp = i;
+        var found = false;
+        while !found {
+            if tmp - (tmp / 2) * 2 == 1 {
+                found = true;
+            } else {
+                lsb = lsb * 2;
+                tmp = tmp / 2;
+            }
+        }
+        i = i + lsb;
+    }
+    0
+}
+
+fn fw_query(tree: Vec<i32>, idx: i32) -> i32 {
+    var sum = 0;
+    var i = idx;
+    while i > 0 {
+        sum = sum + tree.get(i);
+        // i -= i & (-i)
+        var lsb = 1;
+        var tmp = i;
+        var found = false;
+        while !found {
+            if tmp - (tmp / 2) * 2 == 1 {
+                found = true;
+            } else {
+                lsb = lsb * 2;
+                tmp = tmp / 2;
+            }
+        }
+        i = i - lsb;
+    }
+    sum
+}
+
+// Range sum query [l, r] (1-indexed)
+fn fw_range_query(tree: Vec<i32>, l: i32, r: i32) -> i32 {
+    if l <= 1 {
+        return fw_query(tree, r);
+    }
+    fw_query(tree, r) - fw_query(tree, l - 1)
+}
+
+fn init_fenwick(n: i32) -> Vec<i32> {
+    let tree: Vec<i32> = Vec::new();
+    var i = 0;
+    while i <= n {
+        tree.push(0);
+        i = i + 1;
+    }
+    tree
+}
+
+// Brute force sum for verification
+fn brute_force_sum(arr: Vec<i32>, l: i32, r: i32) -> i32 {
+    var sum = 0;
+    var i = l;
+    while i <= r {
+        sum = sum + arr.get(i);
+        i = i + 1;
+    }
+    sum
+}
+
+fn test_basic_prefix_sum() -> i32 {
+    let n = 8;
+    let tree = init_fenwick(n);
+    // Insert values 1..8
+    var i = 1;
+    while i <= n {
+        let _ = fw_update(tree, n, i, i);
+        i = i + 1;
+    }
+    // Prefix sum [1..4] = 1+2+3+4 = 10
+    let s1 = fw_query(tree, 4);
+    // Prefix sum [1..8] = 36
+    let s2 = fw_query(tree, 8);
+    if s1 == 10 {
+        if s2 == 36 {
+            println("PASS: basic prefix sum");
+            return 1;
+        }
+    }
+    print("FAIL: prefix sums s1="); print(s1);
+    print(" s2="); println(s2);
+    0
+}
+
+fn test_range_query() -> i32 {
+    let n = 6;
+    let tree = init_fenwick(n);
+    // arr = [_, 1, 3, 5, 7, 9, 11] (1-indexed, ignore 0)
+    let _ = fw_update(tree, n, 1, 1);
+    let _ = fw_update(tree, n, 2, 3);
+    let _ = fw_update(tree, n, 3, 5);
+    let _ = fw_update(tree, n, 4, 7);
+    let _ = fw_update(tree, n, 5, 9);
+    let _ = fw_update(tree, n, 6, 11);
+    // Range [2,4] = 3+5+7 = 15
+    let r1 = fw_range_query(tree, 2, 4);
+    // Range [3,6] = 5+7+9+11 = 32
+    let r2 = fw_range_query(tree, 3, 6);
+    // Range [1,1] = 1
+    let r3 = fw_range_query(tree, 1, 1);
+    var ok = true;
+    if r1 != 15 { ok = false; }
+    if r2 != 32 { ok = false; }
+    if r3 != 1 { ok = false; }
+    if ok {
+        println("PASS: range queries");
+        1
+    } else {
+        print("FAIL: ranges r1="); print(r1);
+        print(" r2="); print(r2);
+        print(" r3="); println(r3);
+        0
+    }
+}
+
+fn test_point_update() -> i32 {
+    let n = 5;
+    let tree = init_fenwick(n);
+    let _ = fw_update(tree, n, 1, 2);
+    let _ = fw_update(tree, n, 2, 4);
+    let _ = fw_update(tree, n, 3, 6);
+    let _ = fw_update(tree, n, 4, 8);
+    let _ = fw_update(tree, n, 5, 10);
+    // Total = 30
+    let before = fw_query(tree, 5);
+    // Update index 3: add 5 (6 -> 11)
+    let _ = fw_update(tree, n, 3, 5);
+    let after = fw_query(tree, 5);
+    if before == 30 {
+        if after == 35 {
+            println("PASS: point update");
+            return 1;
+        }
+    }
+    print("FAIL: update before="); print(before);
+    print(" after="); println(after);
+    0
+}
+
+fn test_brute_force_verify() -> i32 {
+    let n = 10;
+    let tree = init_fenwick(n);
+    let arr: Vec<i32> = Vec::new();
+    arr.push(0); // index 0 unused
+    // Fill with values
+    var i = 1;
+    while i <= n {
+        let val = i * 3;
+        arr.push(val);
+        let _ = fw_update(tree, n, i, val);
+        i = i + 1;
+    }
+    // Test all prefix sums against brute force
+    var ok = true;
+    i = 1;
+    while i <= n {
+        let fw_sum = fw_query(tree, i);
+        let bf_sum = brute_force_sum(arr, 1, i);
+        if fw_sum != bf_sum {
+            ok = false;
+        }
+        i = i + 1;
+    }
+    if ok {
+        println("PASS: brute force verification");
+        1
+    } else {
+        println("FAIL: brute force verification mismatch");
+        0
+    }
+}
+
+fn test_single_element() -> i32 {
+    let tree = init_fenwick(1);
+    let _ = fw_update(tree, 1, 1, 42);
+    let s = fw_query(tree, 1);
+    if s == 42 {
+        println("PASS: single element");
+        1
+    } else {
+        print("FAIL: single element got ");
+        println(s);
+        0
+    }
+}
+
+fn main() {
+    println("=== Fenwick Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_prefix_sum();
+    passed = passed + test_range_query();
+    passed = passed + test_point_update();
+    passed = passed + test_brute_force_verify();
+    passed = passed + test_single_element();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

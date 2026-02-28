@@ -1,0 +1,304 @@
+// Binary Tree using Vec<i32> with index-based pointers
+// Each node: [value, left, right] = 3 slots
+// NIL = -1 means no child
+
+fn add_node(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
+    let idx = nodes.len() / 3;
+    nodes.push(val);
+    nodes.push(NIL);
+    nodes.push(NIL);
+    idx
+}
+
+// Insert level-order using a queue (returns 0 on success)
+fn insert_level_order(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
+    let count = nodes.len() / 3;
+    if count == 0 {
+        let _ = add_node(nodes, val, NIL);
+        return 0;
+    }
+    let queue: Vec<i32> = Vec::new();
+    queue.push(0);
+    var head = 0;
+    var done = false;
+    while head < queue.len() {
+        if !done {
+            let cur = queue.get(head);
+            head = head + 1;
+            let left = nodes.get(cur * 3 + 1);
+            if left == NIL {
+                let new_idx = add_node(nodes, val, NIL);
+                nodes.set(cur * 3 + 1, new_idx);
+                done = true;
+            } else {
+                queue.push(left);
+                let right = nodes.get(cur * 3 + 2);
+                if right == NIL {
+                    let new_idx = add_node(nodes, val, NIL);
+                    nodes.set(cur * 3 + 2, new_idx);
+                    done = true;
+                } else {
+                    queue.push(right);
+                }
+            }
+        } else {
+            head = queue.len();
+        }
+    }
+    0
+}
+
+// Iterative inorder traversal using stack
+fn inorder(nodes: Vec<i32>, result: Vec<i32>, NIL: i32) -> i32 {
+    if nodes.len() == 0 {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    var cur = 0;
+    var running = true;
+    while running {
+        while cur != NIL {
+            stack.push(cur);
+            cur = nodes.get(cur * 3 + 1);
+        }
+        if stack.len() == 0 {
+            running = false;
+        } else {
+            cur = stack.pop();
+            result.push(nodes.get(cur * 3));
+            cur = nodes.get(cur * 3 + 2);
+        }
+    }
+    0
+}
+
+// Iterative preorder traversal
+fn preorder(nodes: Vec<i32>, result: Vec<i32>, NIL: i32) -> i32 {
+    if nodes.len() == 0 {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    stack.push(0);
+    while stack.len() > 0 {
+        let cur = stack.pop();
+        result.push(nodes.get(cur * 3));
+        let r = nodes.get(cur * 3 + 2);
+        if r != NIL {
+            stack.push(r);
+        }
+        let l = nodes.get(cur * 3 + 1);
+        if l != NIL {
+            stack.push(l);
+        }
+    }
+    0
+}
+
+// Iterative postorder using two stacks
+fn postorder(nodes: Vec<i32>, result: Vec<i32>, NIL: i32) -> i32 {
+    if nodes.len() == 0 {
+        return 0;
+    }
+    let s1: Vec<i32> = Vec::new();
+    let s2: Vec<i32> = Vec::new();
+    s1.push(0);
+    while s1.len() > 0 {
+        let cur = s1.pop();
+        s2.push(cur);
+        let l = nodes.get(cur * 3 + 1);
+        if l != NIL {
+            s1.push(l);
+        }
+        let r = nodes.get(cur * 3 + 2);
+        if r != NIL {
+            s1.push(r);
+        }
+    }
+    while s2.len() > 0 {
+        let cur = s2.pop();
+        result.push(nodes.get(cur * 3));
+    }
+    0
+}
+
+// Height calculation using iterative approach with node heights
+fn height(nodes: Vec<i32>, NIL: i32) -> i32 {
+    let count = nodes.len() / 3;
+    if count == 0 {
+        return 0;
+    }
+    // Compute height for each node bottom-up
+    let heights: Vec<i32> = Vec::new();
+    for i in 0..count {
+        heights.push(0);
+    }
+    // Process nodes in reverse order (leaves first)
+    var i = count - 1;
+    while i >= 0 {
+        let l = nodes.get(i * 3 + 1);
+        let r = nodes.get(i * 3 + 2);
+        var lh = 0;
+        var rh = 0;
+        if l != NIL {
+            lh = heights.get(l);
+        }
+        if r != NIL {
+            rh = heights.get(r);
+        }
+        var mx = lh;
+        if rh > mx {
+            mx = rh;
+        }
+        heights.set(i, mx + 1);
+        i = i - 1;
+    }
+    heights.get(0)
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    var i = 0;
+    while i < a.len() {
+        if a.get(i) != b.get(i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+fn print_vec(v: Vec<i32>) -> i32 {
+    for i in 0..v.len() {
+        print(v.get(i));
+        print(" ");
+    }
+    println("");
+    0
+}
+
+fn test_inorder() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    //        1
+    //       / \
+    //      2   3
+    //     / \ / \
+    //    4  5 6  7
+    for i in 1..8 {
+        let _ = insert_level_order(nodes, i, NIL);
+    }
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, result, NIL);
+    let expected: Vec<i32> = Vec::new();
+    expected.push(4); expected.push(2); expected.push(5);
+    expected.push(1); expected.push(6); expected.push(3); expected.push(7);
+    if vecs_equal(result, expected) {
+        println("PASS: inorder traversal");
+        1
+    } else {
+        print("FAIL: inorder, got: ");
+        let _ = print_vec(result);
+        0
+    }
+}
+
+fn test_preorder() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    for i in 1..8 {
+        let _ = insert_level_order(nodes, i, NIL);
+    }
+    let result: Vec<i32> = Vec::new();
+    let _ = preorder(nodes, result, NIL);
+    let expected: Vec<i32> = Vec::new();
+    expected.push(1); expected.push(2); expected.push(4);
+    expected.push(5); expected.push(3); expected.push(6); expected.push(7);
+    if vecs_equal(result, expected) {
+        println("PASS: preorder traversal");
+        1
+    } else {
+        print("FAIL: preorder, got: ");
+        let _ = print_vec(result);
+        0
+    }
+}
+
+fn test_postorder() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    for i in 1..8 {
+        let _ = insert_level_order(nodes, i, NIL);
+    }
+    let result: Vec<i32> = Vec::new();
+    let _ = postorder(nodes, result, NIL);
+    let expected: Vec<i32> = Vec::new();
+    expected.push(4); expected.push(5); expected.push(2);
+    expected.push(6); expected.push(7); expected.push(3); expected.push(1);
+    if vecs_equal(result, expected) {
+        println("PASS: postorder traversal");
+        1
+    } else {
+        print("FAIL: postorder, got: ");
+        let _ = print_vec(result);
+        0
+    }
+}
+
+fn test_height() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    for i in 1..8 {
+        let _ = insert_level_order(nodes, i, NIL);
+    }
+    let h = height(nodes, NIL);
+    if h == 3 {
+        println("PASS: height = 3");
+        1
+    } else {
+        print("FAIL: height expected 3 got ");
+        println(h);
+        0
+    }
+}
+
+fn test_single_node() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = insert_level_order(nodes, 42, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, result, NIL);
+    let h = height(nodes, NIL);
+    if result.len() == 1 {
+        if result.get(0) == 42 {
+            if h == 1 {
+                println("PASS: single node");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: single node");
+    0
+}
+
+fn main() {
+    println("=== Binary Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_inorder();
+    passed = passed + test_preorder();
+    passed = passed + test_postorder();
+    passed = passed + test_height();
+    passed = passed + test_single_node();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

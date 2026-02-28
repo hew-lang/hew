@@ -1,0 +1,33 @@
+// Hamming distance: count positions where characters differ
+
+fn hamming(a: String, b: String) -> i32 {
+    var dist = 0;
+    for i in 0..a.len() {
+        if a.char_at(i) != b.char_at(i) {
+            dist = dist + 1;
+        }
+    }
+    dist
+}
+
+fn main() {
+    var pass = true;
+
+    let d1 = hamming("karolin", "kathrin");
+    if d1 != 3 { pass = false; println("FAIL karolin/kathrin expected 3 got:"); println(d1); }
+
+    let d2 = hamming("abc", "abc");
+    if d2 != 0 { pass = false; println("FAIL abc/abc expected 0 got:"); println(d2); }
+
+    let d3 = hamming("abc", "xyz");
+    if d3 != 3 { pass = false; println("FAIL abc/xyz expected 3 got:"); println(d3); }
+
+    let d4 = hamming("hello", "hxllo");
+    if d4 != 1 { pass = false; println("FAIL hello/hxllo expected 1 got:"); println(d4); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

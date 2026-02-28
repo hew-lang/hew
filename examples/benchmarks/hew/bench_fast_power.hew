@@ -1,0 +1,24 @@
+fn fast_power(base: int, exp: int) -> int {
+    var result = 1;
+    var b = base;
+    var e = exp;
+    while e > 0 {
+        if e % 2 == 1 {
+            result = result * b;
+        }
+        b = b * b;
+        e = e / 2;
+    }
+    result
+}
+
+const ITERS: int = 5000000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + fast_power(2, 30);
+    }
+    println(ITERS);
+    println(sum);
+}

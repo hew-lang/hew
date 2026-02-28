@@ -1,0 +1,153 @@
+// Priority Queue - using sorted insertion into Vec<int>
+// Smallest element is at the end (easy to pop)
+// Insert maintains descending order so extract_min is O(1) pop
+
+fn pq_insert(pq: Vec<int>, val: int) {
+    // Insert val maintaining descending order (largest first, smallest last)
+    pq.push(val);
+    var i = pq.len() - 1;
+    var done = 0;
+    while i > 0 {
+        if done == 0 {
+            let prev = pq.get(i - 1);
+            if prev < val {
+                pq.set(i, prev);
+                i = i - 1;
+            } else {
+                pq.set(i, val);
+                done = 1;
+            }
+        } else {
+            i = 0;
+        }
+    }
+    if done == 0 {
+        pq.set(0, val);
+    }
+}
+
+fn pq_extract_min(pq: Vec<int>) -> int {
+    pq.pop()
+}
+
+fn pq_peek_min(pq: Vec<int>) -> int {
+    pq.get(pq.len() - 1)
+}
+
+fn pq_size(pq: Vec<int>) -> int {
+    pq.len()
+}
+
+fn pq_is_empty(pq: Vec<int>) -> int {
+    if pq.len() == 0 { 1 } else { 0 }
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    let pq: Vec<int> = Vec::new();
+
+    // Test 1: empty
+    total = total + 1;
+    let r1 = if pq_is_empty(pq) == 1 { 1 } else { 0 };
+    passed = passed + run_test("new pq is empty", r1);
+
+    // Test 2: insert and peek min
+    total = total + 1;
+    pq_insert(pq, 30);
+    pq_insert(pq, 10);
+    pq_insert(pq, 20);
+    let r2 = if pq_peek_min(pq) == 10 { 1 } else { 0 };
+    passed = passed + run_test("peek min after insert", r2);
+
+    // Test 3: extract min returns smallest
+    total = total + 1;
+    let m1 = pq_extract_min(pq);
+    let r3 = if m1 == 10 { 1 } else { 0 };
+    passed = passed + run_test("extract_min returns 10", r3);
+
+    // Test 4: next min is 20
+    total = total + 1;
+    let m2 = pq_extract_min(pq);
+    let r4 = if m2 == 20 { 1 } else { 0 };
+    passed = passed + run_test("next extract_min is 20", r4);
+
+    // Test 5: last is 30
+    total = total + 1;
+    let m3 = pq_extract_min(pq);
+    let r5 = if m3 == 30 { 1 } else { 0 };
+    passed = passed + run_test("last extract_min is 30", r5);
+
+    // Test 6: insert duplicates
+    total = total + 1;
+    pq_insert(pq, 5);
+    pq_insert(pq, 5);
+    pq_insert(pq, 3);
+    let d1 = pq_extract_min(pq);
+    let d2 = pq_extract_min(pq);
+    let d3 = pq_extract_min(pq);
+    var r6 = 0;
+    if d1 == 3 {
+        if d2 == 5 {
+            if d3 == 5 {
+                r6 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("duplicates handled", r6);
+
+    // Test 7: ascending insert order
+    total = total + 1;
+    let pq2: Vec<int> = Vec::new();
+    pq_insert(pq2, 1);
+    pq_insert(pq2, 2);
+    pq_insert(pq2, 3);
+    pq_insert(pq2, 4);
+    pq_insert(pq2, 5);
+    var r7 = 1;
+    var prev_val = 0;
+    for i in 0..5 {
+        let v = pq_extract_min(pq2);
+        if v < prev_val {
+            r7 = 0;
+        }
+        prev_val = v;
+    }
+    passed = passed + run_test("ascending insert order", r7);
+
+    // Test 8: descending insert order
+    total = total + 1;
+    let pq3: Vec<int> = Vec::new();
+    pq_insert(pq3, 50);
+    pq_insert(pq3, 40);
+    pq_insert(pq3, 30);
+    pq_insert(pq3, 20);
+    pq_insert(pq3, 10);
+    let e1 = pq_extract_min(pq3);
+    let e2 = pq_extract_min(pq3);
+    var r8 = 0;
+    if e1 == 10 {
+        if e2 == 20 {
+            r8 = 1;
+        }
+    }
+    passed = passed + run_test("descending insert order", r8);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

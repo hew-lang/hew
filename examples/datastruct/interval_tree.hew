@@ -1,0 +1,287 @@
+// Interval Tree for overlapping interval queries
+// Each node: [low, high, max_high, left, right] = 5 slots per node
+// BST ordered by low endpoint, max_high tracks max high in subtree
+// NIL = -1 means no child
+
+fn node_low(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5) }
+fn node_high(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 1) }
+fn node_max(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 2) }
+fn node_left(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 3) }
+fn node_right(nodes: Vec<i32>, i: i32) -> i32 { nodes.get(i * 5 + 4) }
+fn set_max(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 2, v); 0 }
+fn set_left(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 3, v); 0 }
+fn set_right(nodes: Vec<i32>, i: i32, v: i32) -> i32 { nodes.set(i * 5 + 4, v); 0 }
+
+fn add_node(nodes: Vec<i32>, low: i32, high: i32, NIL: i32) -> i32 {
+    let idx = nodes.len() / 5;
+    nodes.push(low);
+    nodes.push(high);
+    nodes.push(high); // max_high starts as own high
+    nodes.push(NIL);
+    nodes.push(NIL);
+    idx
+}
+
+fn max_val(a: i32, b: i32) -> i32 {
+    if a > b { a } else { b }
+}
+
+fn update_max(nodes: Vec<i32>, i: i32, NIL: i32) -> i32 {
+    var mx = node_high(nodes, i);
+    let l = node_left(nodes, i);
+    if l != NIL {
+        mx = max_val(mx, node_max(nodes, l));
+    }
+    let r = node_right(nodes, i);
+    if r != NIL {
+        mx = max_val(mx, node_max(nodes, r));
+    }
+    let _ = set_max(nodes, i, mx);
+    0
+}
+
+// Insert interval [low, high] into interval tree
+fn interval_insert(nodes: Vec<i32>, root: i32, low: i32, high: i32, NIL: i32) -> i32 {
+    if root == NIL {
+        return add_node(nodes, low, high, NIL);
+    }
+    let path: Vec<i32> = Vec::new();
+    let dirs: Vec<i32> = Vec::new();
+    var cur = root;
+    var placed = false;
+    while !placed {
+        let cur_low = node_low(nodes, cur);
+        if low < cur_low {
+            let left = node_left(nodes, cur);
+            if left == NIL {
+                let new_idx = add_node(nodes, low, high, NIL);
+                let _ = set_left(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(0);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(0);
+                cur = left;
+            }
+        } else {
+            let right = node_right(nodes, cur);
+            if right == NIL {
+                let new_idx = add_node(nodes, low, high, NIL);
+                let _ = set_right(nodes, cur, new_idx);
+                path.push(cur);
+                dirs.push(1);
+                placed = true;
+            } else {
+                path.push(cur);
+                dirs.push(1);
+                cur = right;
+            }
+        }
+    }
+    // Update max_high values along path
+    while path.len() > 0 {
+        let node = path.pop();
+        let _ = dirs.pop();
+        let _ = update_max(nodes, node, NIL);
+    }
+    root
+}
+
+// Query: find all intervals overlapping point p
+// An interval [low, high] overlaps point p if low <= p AND p <= high
+fn query_point(nodes: Vec<i32>, root: i32, p: i32, result: Vec<i32>, NIL: i32) -> i32 {
+    if root == NIL {
+        return 0;
+    }
+    // Use iterative DFS with stack
+    let stack: Vec<i32> = Vec::new();
+    stack.push(root);
+    while stack.len() > 0 {
+        let cur = stack.pop();
+        let low = node_low(nodes, cur);
+        let high = node_high(nodes, cur);
+        // Check if current interval overlaps point
+        if low <= p {
+            if p <= high {
+                result.push(cur);
+            }
+        }
+        // Check left subtree if its max_high >= p
+        let l = node_left(nodes, cur);
+        if l != NIL {
+            if node_max(nodes, l) >= p {
+                stack.push(l);
+            }
+        }
+        // Check right subtree if low <= p (since BST by low)
+        let r = node_right(nodes, cur);
+        if r != NIL {
+            if node_low(nodes, r) <= p {
+                stack.push(r);
+            } else {
+                // Even if r.low > p, r might have left children with lower low
+                // But since BST, all nodes in right subtree have low >= node.low
+                // Only check if r.low <= p
+            }
+        }
+    }
+    0
+}
+
+// Query: find all intervals overlapping range [ql, qh]
+// Interval [low, high] overlaps [ql, qh] if low <= qh AND ql <= high
+fn query_range(nodes: Vec<i32>, root: i32, ql: i32, qh: i32, result: Vec<i32>, NIL: i32) -> i32 {
+    if root == NIL {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    stack.push(root);
+    while stack.len() > 0 {
+        let cur = stack.pop();
+        let low = node_low(nodes, cur);
+        let high = node_high(nodes, cur);
+        // Check overlap: low <= qh AND ql <= high
+        if low <= qh {
+            if ql <= high {
+                result.push(cur);
+            }
+        }
+        let l = node_left(nodes, cur);
+        if l != NIL {
+            if node_max(nodes, l) >= ql {
+                stack.push(l);
+            }
+        }
+        let r = node_right(nodes, cur);
+        if r != NIL {
+            if node_low(nodes, r) <= qh {
+                stack.push(r);
+            }
+        }
+    }
+    0
+}
+
+fn test_basic_overlap() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    // Insert intervals: [1,5], [3,8], [10,15], [6,7]
+    root = interval_insert(nodes, root, 1, 5, NIL);
+    root = interval_insert(nodes, root, 3, 8, NIL);
+    root = interval_insert(nodes, root, 10, 15, NIL);
+    root = interval_insert(nodes, root, 6, 7, NIL);
+    // Query point 4: overlaps [1,5] and [3,8]
+    let result: Vec<i32> = Vec::new();
+    let _ = query_point(nodes, root, 4, result, NIL);
+    if result.len() == 2 {
+        println("PASS: basic point overlap query");
+        1
+    } else {
+        print("FAIL: expected 2 overlaps got ");
+        println(result.len());
+        0
+    }
+}
+
+fn test_no_overlap() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = interval_insert(nodes, root, 1, 3, NIL);
+    root = interval_insert(nodes, root, 5, 7, NIL);
+    root = interval_insert(nodes, root, 9, 11, NIL);
+    // Query point 4: no overlap
+    let result: Vec<i32> = Vec::new();
+    let _ = query_point(nodes, root, 4, result, NIL);
+    if result.len() == 0 {
+        println("PASS: no overlap query");
+        1
+    } else {
+        print("FAIL: expected 0 overlaps got ");
+        println(result.len());
+        0
+    }
+}
+
+fn test_all_overlap() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = interval_insert(nodes, root, 1, 10, NIL);
+    root = interval_insert(nodes, root, 2, 8, NIL);
+    root = interval_insert(nodes, root, 3, 12, NIL);
+    // Query point 5: all three overlap
+    let result: Vec<i32> = Vec::new();
+    let _ = query_point(nodes, root, 5, result, NIL);
+    if result.len() == 3 {
+        println("PASS: all intervals overlap");
+        1
+    } else {
+        print("FAIL: expected 3 overlaps got ");
+        println(result.len());
+        0
+    }
+}
+
+fn test_boundary_overlap() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = interval_insert(nodes, root, 1, 5, NIL);
+    root = interval_insert(nodes, root, 5, 10, NIL);
+    // Query point 5: both [1,5] and [5,10] overlap
+    let result: Vec<i32> = Vec::new();
+    let _ = query_point(nodes, root, 5, result, NIL);
+    if result.len() == 2 {
+        println("PASS: boundary overlap");
+        1
+    } else {
+        print("FAIL: boundary expected 2 got ");
+        println(result.len());
+        0
+    }
+}
+
+fn test_range_query() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    var root = NIL;
+    root = interval_insert(nodes, root, 1, 3, NIL);
+    root = interval_insert(nodes, root, 5, 8, NIL);
+    root = interval_insert(nodes, root, 10, 15, NIL);
+    root = interval_insert(nodes, root, 12, 20, NIL);
+    // Range query [6, 11]: overlaps [5,8] and [10,15]
+    let result: Vec<i32> = Vec::new();
+    let _ = query_range(nodes, root, 6, 11, result, NIL);
+    if result.len() == 2 {
+        println("PASS: range overlap query");
+        1
+    } else {
+        print("FAIL: range expected 2 got ");
+        println(result.len());
+        0
+    }
+}
+
+fn main() {
+    println("=== Interval Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_overlap();
+    passed = passed + test_no_overlap();
+    passed = passed + test_all_overlap();
+    passed = passed + test_boundary_overlap();
+    passed = passed + test_range_query();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

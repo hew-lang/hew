@@ -1,0 +1,278 @@
+// Cuckoo Hashing with 2 hash functions and 2 tables
+// Insert displaces existing elements on collision
+
+fn hash1(key: int, capacity: int) -> int {
+    let h = key % capacity;
+    if h < 0 {
+        h + capacity
+    } else {
+        h
+    }
+}
+
+fn hash2(key: int, capacity: int) -> int {
+    // Use capacity-1 as modulus to avoid systematic collisions
+    let m = capacity - 1;
+    let h = (key * 11 + 7) % m;
+    if h < 0 {
+        h + m
+    } else {
+        h
+    }
+}
+
+fn make_table(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    let EMPTY = 0 - 1;
+    for i in 0..capacity {
+        v.push(EMPTY);
+    }
+    v
+}
+
+fn cuckoo_insert(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+    let capacity = t1.len();
+    let EMPTY = 0 - 1;
+    let max_loops = capacity * 2;
+
+    // Check if already present
+    let idx1 = hash1(key, capacity);
+    if t1.get(idx1) == key {
+        return true;
+    }
+    let idx2 = hash2(key, capacity);
+    if t2.get(idx2) == key {
+        return true;
+    }
+
+    var cur = key;
+    var i = 0;
+    while i < max_loops {
+        // Try table 1
+        let pos1 = hash1(cur, capacity);
+        let old1 = t1.get(pos1);
+        t1.set(pos1, cur);
+        if old1 == EMPTY {
+            return true;
+        }
+        cur = old1;
+
+        // Try table 2
+        let pos2 = hash2(cur, capacity);
+        let old2 = t2.get(pos2);
+        t2.set(pos2, cur);
+        if old2 == EMPTY {
+            return true;
+        }
+        cur = old2;
+
+        i = i + 1;
+    }
+    false
+}
+
+fn cuckoo_lookup(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+    let capacity = t1.len();
+    let idx1 = hash1(key, capacity);
+    if t1.get(idx1) == key {
+        return true;
+    }
+    let idx2 = hash2(key, capacity);
+    if t2.get(idx2) == key {
+        return true;
+    }
+    false
+}
+
+fn cuckoo_remove(t1: Vec<int>, t2: Vec<int>, key: int) -> bool {
+    let capacity = t1.len();
+    let EMPTY = 0 - 1;
+    let idx1 = hash1(key, capacity);
+    if t1.get(idx1) == key {
+        t1.set(idx1, EMPTY);
+        return true;
+    }
+    let idx2 = hash2(key, capacity);
+    if t2.get(idx2) == key {
+        t2.set(idx2, EMPTY);
+        return true;
+    }
+    false
+}
+
+fn cuckoo_size(t1: Vec<int>, t2: Vec<int>) -> int {
+    let capacity = t1.len();
+    let EMPTY = 0 - 1;
+    var count = 0;
+    for i in 0..capacity {
+        if t1.get(i) != EMPTY {
+            count = count + 1;
+        }
+        if t2.get(i) != EMPTY {
+            count = count + 1;
+        }
+    }
+    count
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let cap = 16;
+    let t1 = make_table(cap);
+    let t2 = make_table(cap);
+
+    // Test 1: Basic insert and lookup
+    let _ = cuckoo_insert(t1, t2, 5);
+    let _ = cuckoo_insert(t1, t2, 10);
+    let _ = cuckoo_insert(t1, t2, 15);
+    if cuckoo_lookup(t1, t2, 5) {
+        if cuckoo_lookup(t1, t2, 10) {
+            if cuckoo_lookup(t1, t2, 15) {
+                println("PASS: insert and lookup");
+                passed = passed + 1;
+            } else {
+                println("FAIL: insert and lookup");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: insert and lookup");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: insert and lookup");
+        failed = failed + 1;
+    }
+
+    // Test 2: Lookup missing key
+    if cuckoo_lookup(t1, t2, 99) {
+        println("FAIL: lookup missing");
+        failed = failed + 1;
+    } else {
+        println("PASS: lookup missing");
+        passed = passed + 1;
+    }
+
+    // Test 3: Size
+    let sz = cuckoo_size(t1, t2);
+    if sz == 3 {
+        println("PASS: size");
+        passed = passed + 1;
+    } else {
+        print("FAIL: size, got ");
+        println(sz);
+        failed = failed + 1;
+    }
+
+    // Test 4: Duplicate insert doesn't increase size
+    let _ = cuckoo_insert(t1, t2, 5);
+    let sz2 = cuckoo_size(t1, t2);
+    if sz2 == 3 {
+        println("PASS: duplicate insert");
+        passed = passed + 1;
+    } else {
+        print("FAIL: duplicate insert, size ");
+        println(sz2);
+        failed = failed + 1;
+    }
+
+    // Test 5: Remove
+    let _ = cuckoo_remove(t1, t2, 10);
+    if cuckoo_lookup(t1, t2, 10) {
+        println("FAIL: remove");
+        failed = failed + 1;
+    } else {
+        let sz3 = cuckoo_size(t1, t2);
+        if sz3 == 2 {
+            println("PASS: remove");
+            passed = passed + 1;
+        } else {
+            println("FAIL: remove");
+            failed = failed + 1;
+        }
+    }
+
+    // Test 6: Displacement chains - insert keys that collide in table 1
+    let t1b = make_table(16);
+    let t2b = make_table(16);
+    var all_ok = true;
+    // Keys 3, 19, 35 all hash to 3 in table 1 (mod 16), causing displacements
+    let _ = cuckoo_insert(t1b, t2b, 3);
+    let _ = cuckoo_insert(t1b, t2b, 19);
+    let _ = cuckoo_insert(t1b, t2b, 35);
+    if !cuckoo_lookup(t1b, t2b, 3) {
+        all_ok = false;
+    }
+    if !cuckoo_lookup(t1b, t2b, 19) {
+        all_ok = false;
+    }
+    if !cuckoo_lookup(t1b, t2b, 35) {
+        all_ok = false;
+    }
+    if all_ok {
+        println("PASS: displacement chains");
+        passed = passed + 1;
+    } else {
+        println("FAIL: displacement chains");
+        failed = failed + 1;
+    }
+
+    // Test 7: Remove and re-insert
+    let _ = cuckoo_remove(t1b, t2b, 19);
+    let _ = cuckoo_insert(t1b, t2b, 19);
+    if cuckoo_lookup(t1b, t2b, 19) {
+        println("PASS: remove and re-insert");
+        passed = passed + 1;
+    } else {
+        println("FAIL: remove and re-insert");
+        failed = failed + 1;
+    }
+
+    // Test 8: Multiple elements test
+    let t1c = make_table(32);
+    let t2c = make_table(32);
+    var insert_ok = true;
+    for i in 0..20 {
+        let ok = cuckoo_insert(t1c, t2c, i * 3);
+        if !ok {
+            insert_ok = false;
+        }
+    }
+    var lookup_ok = true;
+    for i in 0..20 {
+        if !cuckoo_lookup(t1c, t2c, i * 3) {
+            lookup_ok = false;
+        }
+    }
+    if insert_ok {
+        if lookup_ok {
+            let szc = cuckoo_size(t1c, t2c);
+            if szc == 20 {
+                println("PASS: multiple elements");
+                passed = passed + 1;
+            } else {
+                print("FAIL: multiple elements, size ");
+                println(szc);
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: multiple elements lookup");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: multiple elements insert");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

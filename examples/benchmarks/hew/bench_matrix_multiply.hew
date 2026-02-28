@@ -1,0 +1,40 @@
+fn matrix_multiply(a: Vec<int>, b: Vec<int>, n: int) -> int {
+    let c: Vec<int> = Vec::new();
+    let total = n * n;
+    for idx in 0..total {
+        c.push(0);
+    }
+
+    for i in 0..n {
+        for j in 0..n {
+            var sum = 0;
+            for k in 0..n {
+                sum = sum + a.get(i * n + k) * b.get(k * n + j);
+            }
+            c.set(i * n + j, sum);
+        }
+    }
+    return c.get(0) + c.get(total / 2) + c.get(total - 1);
+}
+
+const ITERS: int = 10000;
+
+fn main() {
+    let n = 20;
+    let total = n * n;
+
+    let a: Vec<int> = Vec::new();
+    let b: Vec<int> = Vec::new();
+    for k in 0..total {
+        a.push(k % 7 + 1);
+        b.push(k % 5 + 1);
+    }
+
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + matrix_multiply(a, b, n);
+    }
+    println("bench_matrix_multiply");
+    println(checksum);
+    println(ITERS);
+}

@@ -1,0 +1,25 @@
+fn gcd(a: int, b: int) -> int {
+    var x = a;
+    var y = b;
+    while y != 0 {
+        let temp = y;
+        y = x % temp;
+        x = temp;
+    }
+    x
+}
+
+fn lcm(a: int, b: int) -> int {
+    a / gcd(a, b) * b
+}
+
+const ITERS: int = 5000000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + lcm(1071, 462);
+    }
+    println(ITERS);
+    println(sum);
+}

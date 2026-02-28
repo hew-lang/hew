@@ -1,0 +1,60 @@
+fn edit_distance(a: Vec<int>, b: Vec<int>, m: int, n: int) -> int {
+    let cols = n + 1;
+    let total = (m + 1) * cols;
+    let dp: Vec<int> = Vec::new();
+    for idx in 0..total {
+        dp.push(0);
+    }
+
+    for i in 0..(m + 1) {
+        dp.set(i * cols + 0, i);
+    }
+    for j in 0..(n + 1) {
+        dp.set(0 * cols + j, j);
+    }
+
+    for i in 1..(m + 1) {
+        for j in 1..(n + 1) {
+            if a.get(i - 1) == b.get(j - 1) {
+                dp.set(i * cols + j, dp.get((i - 1) * cols + (j - 1)));
+            } else {
+                let rep = dp.get((i - 1) * cols + (j - 1)) + 1;
+                let del = dp.get((i - 1) * cols + j) + 1;
+                let ins = dp.get(i * cols + (j - 1)) + 1;
+                var best = rep;
+                if del < best {
+                    best = del;
+                }
+                if ins < best {
+                    best = ins;
+                }
+                dp.set(i * cols + j, best);
+            }
+        }
+    }
+    return dp.get(m * cols + n);
+}
+
+const ITERS: int = 50000;
+
+fn main() {
+    let m = 50;
+    let n = 50;
+
+    let a: Vec<int> = Vec::new();
+    let b: Vec<int> = Vec::new();
+    for k in 0..m {
+        a.push(k % 11);
+    }
+    for k in 0..n {
+        b.push(k % 13);
+    }
+
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + edit_distance(a, b, m, n);
+    }
+    println("bench_edit_distance");
+    println(checksum);
+    println(ITERS);
+}

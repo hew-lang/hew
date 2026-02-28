@@ -1,0 +1,276 @@
+// Strongly Connected Components - Kosaraju's Algorithm (2 DFS passes)
+// Pass 1: DFS on original graph, record finish order
+// Pass 2: DFS on transpose graph in reverse finish order
+
+fn build_directed(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: Vec<int>, adj_offsets: Vec<int>) {
+    let num_edges = esrc.len();
+    let degree: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        degree.push(0);
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        degree.set(s, degree.get(s) + 1);
+    }
+    adj_offsets.push(0);
+    for i in 0..num_nodes {
+        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+    }
+    let total = adj_offsets.get(num_nodes);
+    for i in 0..total {
+        adj_nodes.push(0);
+    }
+    let pos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        pos.push(adj_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        adj_nodes.set(pos.get(s), d);
+        pos.set(s, pos.get(s) + 1);
+    }
+}
+
+fn dfs_finish_order(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, order: Vec<int>) {
+    // Iterative DFS recording finish order
+    let visited: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        visited.push(0);
+    }
+    // Stack entries: node*2 for "enter", node*2+1 for "exit"
+    let stack: Vec<int> = Vec::new();
+    for start in 0..num_nodes {
+        if visited.get(start) == 0 {
+            stack.push(start * 2);
+            while stack.len() > 0 {
+                let entry = stack.pop();
+                let node = entry / 2;
+                let is_exit = entry % 2;
+                if is_exit == 1 {
+                    order.push(node);
+                } else {
+                    if visited.get(node) == 0 {
+                        visited.set(node, 1);
+                        stack.push(node * 2 + 1);
+                        let s = adj_offsets.get(node);
+                        let e = adj_offsets.get(node + 1);
+                        var j = e - 1;
+                        while j >= s {
+                            let nb = adj_nodes.get(j);
+                            if visited.get(nb) == 0 {
+                                stack.push(nb * 2);
+                            }
+                            j = j - 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assign_components(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, order: Vec<int>, comp: Vec<int>) {
+    // DFS on transpose in reverse finish order
+    for i in 0..num_nodes {
+        comp.push(0 - 1);
+    }
+    var comp_id = 0;
+    var idx = order.len() - 1;
+    loop {
+        if idx < 0 {
+            break;
+        }
+        let node = order.get(idx);
+        if comp.get(node) == (0 - 1) {
+            let stack: Vec<int> = Vec::new();
+            stack.push(node);
+            comp.set(node, comp_id);
+            while stack.len() > 0 {
+                let cur = stack.pop();
+                let s = adj_offsets.get(cur);
+                let e = adj_offsets.get(cur + 1);
+                var j = s;
+                while j < e {
+                    let nb = adj_nodes.get(j);
+                    if comp.get(nb) == (0 - 1) {
+                        comp.set(nb, comp_id);
+                        stack.push(nb);
+                    }
+                    j = j + 1;
+                }
+            }
+            comp_id = comp_id + 1;
+        }
+        idx = idx - 1;
+    }
+}
+
+fn count_components(comp: Vec<int>, num_nodes: int) -> int {
+    var max_c = 0;
+    for i in 0..num_nodes {
+        let c = comp.get(i);
+        if c > max_c {
+            max_c = c;
+        }
+    }
+    max_c + 1
+}
+
+fn same_component(comp: Vec<int>, a: int, b: int) -> bool {
+    comp.get(a) == comp.get(b)
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let num_nodes = 8;
+
+    // Graph with 3 known SCCs:
+    // SCC1: {0,1,2} via 0->1->2->0
+    // SCC2: {3,4} via 3->4->3
+    // SCC3: {5,6,7} via 5->6->7->5
+    // Cross edges: 2->3, 4->5 (one-way, not creating larger SCCs)
+    let esrc: Vec<int> = Vec::new();
+    let edst: Vec<int> = Vec::new();
+    // SCC1
+    esrc.push(0); edst.push(1);
+    esrc.push(1); edst.push(2);
+    esrc.push(2); edst.push(0);
+    // SCC2
+    esrc.push(3); edst.push(4);
+    esrc.push(4); edst.push(3);
+    // SCC3
+    esrc.push(5); edst.push(6);
+    esrc.push(6); edst.push(7);
+    esrc.push(7); edst.push(5);
+    // Cross edges
+    esrc.push(2); edst.push(3);
+    esrc.push(4); edst.push(5);
+    let num_edges = esrc.len();
+
+    // Build forward graph
+    let fwd_nodes: Vec<int> = Vec::new();
+    let fwd_offsets: Vec<int> = Vec::new();
+    build_directed(num_nodes, esrc, edst, fwd_nodes, fwd_offsets);
+
+    // Build transpose graph
+    let tsrc: Vec<int> = Vec::new();
+    let tdst: Vec<int> = Vec::new();
+    for i in 0..num_edges {
+        tsrc.push(edst.get(i));
+        tdst.push(esrc.get(i));
+    }
+    let rev_nodes: Vec<int> = Vec::new();
+    let rev_offsets: Vec<int> = Vec::new();
+    build_directed(num_nodes, tsrc, tdst, rev_nodes, rev_offsets);
+
+    // Pass 1: DFS on forward graph, get finish order
+    let order: Vec<int> = Vec::new();
+    dfs_finish_order(fwd_nodes, fwd_offsets, num_nodes, order);
+
+    // Pass 2: Assign components using transpose in reverse finish order
+    let comp: Vec<int> = Vec::new();
+    assign_components(rev_nodes, rev_offsets, num_nodes, order, comp);
+
+    // Test 1: Exactly 3 SCCs
+    let nc = count_components(comp, num_nodes);
+    if nc == 3 {
+        println("PASS: 3 SCCs found");
+        passed = passed + 1;
+    } else {
+        print("FAIL: expected 3 SCCs, got ");
+        println(nc);
+        failed = failed + 1;
+    }
+
+    // Test 2: 0,1,2 in same component
+    if same_component(comp, 0, 1) {
+        if same_component(comp, 1, 2) {
+            println("PASS: {0,1,2} in same SCC");
+            passed = passed + 1;
+        } else {
+            println("FAIL: {0,1,2} SCC");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: {0,1,2} SCC");
+        failed = failed + 1;
+    }
+
+    // Test 3: 3,4 in same component
+    if same_component(comp, 3, 4) {
+        println("PASS: {3,4} in same SCC");
+        passed = passed + 1;
+    } else {
+        println("FAIL: {3,4} SCC");
+        failed = failed + 1;
+    }
+
+    // Test 4: 5,6,7 in same component
+    if same_component(comp, 5, 6) {
+        if same_component(comp, 6, 7) {
+            println("PASS: {5,6,7} in same SCC");
+            passed = passed + 1;
+        } else {
+            println("FAIL: {5,6,7} SCC");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: {5,6,7} SCC");
+        failed = failed + 1;
+    }
+
+    // Test 5: 0 and 3 in different components
+    if same_component(comp, 0, 3) {
+        println("FAIL: 0 and 3 should differ");
+        failed = failed + 1;
+    } else {
+        println("PASS: 0 and 3 in different SCCs");
+        passed = passed + 1;
+    }
+
+    // Test 6: 3 and 5 in different components
+    if same_component(comp, 3, 5) {
+        println("FAIL: 3 and 5 should differ");
+        failed = failed + 1;
+    } else {
+        println("PASS: 3 and 5 in different SCCs");
+        passed = passed + 1;
+    }
+
+    // Test 7: 0 and 7 in different components
+    if same_component(comp, 0, 7) {
+        println("FAIL: 0 and 7 should differ");
+        failed = failed + 1;
+    } else {
+        println("PASS: 0 and 7 in different SCCs");
+        passed = passed + 1;
+    }
+
+    // Test 8: All nodes assigned a component (no -1)
+    var all_assigned = true;
+    for i in 0..num_nodes {
+        if comp.get(i) < 0 {
+            all_assigned = false;
+        }
+    }
+    if all_assigned {
+        println("PASS: all nodes assigned");
+        passed = passed + 1;
+    } else {
+        println("FAIL: some nodes unassigned");
+        failed = failed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

@@ -1,0 +1,62 @@
+// Kadane's algorithm for maximum subarray sum
+
+fn main() {
+    let nums: Vec<i32> = Vec::new();
+    // [-2,1,-3,4,-1,2,1,-5,4] -> max sum = 6 (subarray [4,-1,2,1])
+    nums.push(0 - 2);
+    nums.push(1);
+    nums.push(0 - 3);
+    nums.push(4);
+    nums.push(0 - 1);
+    nums.push(2);
+    nums.push(1);
+    nums.push(0 - 5);
+    nums.push(4);
+
+    var max_sum = nums.get(0);
+    var cur_sum = nums.get(0);
+    var i = 1;
+    while i < nums.len() {
+        let val = nums.get(i);
+        if val > cur_sum + val {
+            cur_sum = val;
+        } else {
+            cur_sum = cur_sum + val;
+        }
+        if cur_sum > max_sum {
+            max_sum = cur_sum;
+        }
+        i = i + 1;
+    }
+
+    var pass = true;
+    if max_sum != 6 { pass = false; println("FAIL expected 6 got:"); println(max_sum); }
+
+    // Test 2: all negative [-1,-2,-3] -> -1
+    let nums2: Vec<i32> = Vec::new();
+    nums2.push(0 - 1);
+    nums2.push(0 - 2);
+    nums2.push(0 - 3);
+    var ms2 = nums2.get(0);
+    var cs2 = nums2.get(0);
+    var j = 1;
+    while j < nums2.len() {
+        let val = nums2.get(j);
+        if val > cs2 + val {
+            cs2 = val;
+        } else {
+            cs2 = cs2 + val;
+        }
+        if cs2 > ms2 {
+            ms2 = cs2;
+        }
+        j = j + 1;
+    }
+    if ms2 != 0 - 1 { pass = false; println("FAIL expected -1 got:"); println(ms2); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

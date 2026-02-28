@@ -1,0 +1,26 @@
+fn climbing_stairs(n: int) -> int {
+    let dp: Vec<int> = Vec::new();
+    for idx in 0..(n + 1) {
+        dp.push(0);
+    }
+    dp.set(0, 1);
+    dp.set(1, 1);
+
+    for i in 2..(n + 1) {
+        dp.set(i, dp.get(i - 1) + dp.get(i - 2));
+    }
+    dp.get(n)
+}
+
+const ITERS: int = 5000000;
+
+fn main() {
+    let n = 50;
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + climbing_stairs(n);
+    }
+    println("bench_climbing_stairs");
+    println(checksum);
+    println(ITERS);
+}

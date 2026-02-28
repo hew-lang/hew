@@ -1,0 +1,62 @@
+// Benchmark: Fibonacci Search
+// Uses Fibonacci numbers to divide the search space.
+
+fn fibonacci_search(v: Vec<int>, target: int) -> int {
+    let n = v.len();
+    if n == 0 {
+        return 0 - 1;
+    }
+    var fib2 = 0;
+    var fib1 = 1;
+    var fib = fib2 + fib1;
+    while fib < n {
+        fib2 = fib1;
+        fib1 = fib;
+        fib = fib2 + fib1;
+    }
+    var offset = 0 - 1;
+    while fib > 1 {
+        var i = offset + fib2;
+        if i >= n - 1 {
+            i = n - 1;
+        }
+        let val = v.get(i);
+        if val < target {
+            fib = fib1;
+            fib1 = fib2;
+            fib2 = fib - fib1;
+            offset = i;
+        } else {
+            if val > target {
+                fib = fib2;
+                fib1 = fib1 - fib2;
+                fib2 = fib - fib1;
+            } else {
+                return i;
+            }
+        }
+    }
+    if fib1 == 1 {
+        if offset + 1 < n {
+            if v.get(offset + 1) == target {
+                return offset + 1;
+            }
+        }
+    }
+    return 0 - 1;
+}
+
+const ITERS: int = 1000000;
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    for i in 0..10000 {
+        v.push(i);
+    }
+    var sum = 0;
+    for iter in 0..ITERS {
+        sum = sum + fibonacci_search(v, 7777);
+    }
+    println(ITERS);
+    println(sum);
+}

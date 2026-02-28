@@ -1,0 +1,185 @@
+// Segment Tree for range sum queries
+// Uses array-based representation: node i has children 2*i+1 and 2*i+2
+// Tree stored in a flat array of size 4*n
+
+fn seg_build(tree: Vec<i32>, arr: Vec<i32>, node: i32, start: i32, end: i32) -> i32 {
+    if start == end {
+        tree.set(node, arr.get(start));
+        return 0;
+    }
+    let mid = (start + end) / 2;
+    let _ = seg_build(tree, arr, 2 * node + 1, start, mid);
+    let _ = seg_build(tree, arr, 2 * node + 2, mid + 1, end);
+    tree.set(node, tree.get(2 * node + 1) + tree.get(2 * node + 2));
+    0
+}
+
+fn seg_query(tree: Vec<i32>, node: i32, start: i32, end: i32, l: i32, r: i32) -> i32 {
+    if r < start {
+        return 0;
+    }
+    if l > end {
+        return 0;
+    }
+    if l <= start {
+        if end <= r {
+            return tree.get(node);
+        }
+    }
+    let mid = (start + end) / 2;
+    let left_sum = seg_query(tree, 2 * node + 1, start, mid, l, r);
+    let right_sum = seg_query(tree, 2 * node + 2, mid + 1, end, l, r);
+    left_sum + right_sum
+}
+
+fn seg_update(tree: Vec<i32>, node: i32, start: i32, end: i32, idx: i32, val: i32) -> i32 {
+    if start == end {
+        tree.set(node, val);
+        return 0;
+    }
+    let mid = (start + end) / 2;
+    if idx <= mid {
+        let _ = seg_update(tree, 2 * node + 1, start, mid, idx, val);
+    } else {
+        let _ = seg_update(tree, 2 * node + 2, mid + 1, end, idx, val);
+    }
+    tree.set(node, tree.get(2 * node + 1) + tree.get(2 * node + 2));
+    0
+}
+
+fn init_tree(size: i32) -> Vec<i32> {
+    let tree: Vec<i32> = Vec::new();
+    for i in 0..4 * size {
+        tree.push(0);
+    }
+    tree
+}
+
+fn test_basic_query() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    let n = arr.len();
+    let tree = init_tree(n);
+    let _ = seg_build(tree, arr, 0, 0, n - 1);
+    // Query full range
+    let total = seg_query(tree, 0, 0, n - 1, 0, n - 1);
+    // 1+3+5+7+9+11 = 36
+    if total == 36 {
+        println("PASS: segment tree full range sum");
+        1
+    } else {
+        print("FAIL: full sum expected 36 got ");
+        println(total);
+        0
+    }
+}
+
+fn test_partial_query() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    let n = arr.len();
+    let tree = init_tree(n);
+    let _ = seg_build(tree, arr, 0, 0, n - 1);
+    // Query [1,3] => 3+5+7 = 15
+    let s1 = seg_query(tree, 0, 0, n - 1, 1, 3);
+    // Query [0,0] => 1
+    let s2 = seg_query(tree, 0, 0, n - 1, 0, 0);
+    // Query [2,4] => 5+7+9 = 21
+    let s3 = seg_query(tree, 0, 0, n - 1, 2, 4);
+    var ok = true;
+    if s1 != 15 { ok = false; }
+    if s2 != 1 { ok = false; }
+    if s3 != 21 { ok = false; }
+    if ok {
+        println("PASS: segment tree partial queries");
+        1
+    } else {
+        print("FAIL: partial queries s1="); print(s1);
+        print(" s2="); print(s2);
+        print(" s3="); println(s3);
+        0
+    }
+}
+
+fn test_point_update() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(1); arr.push(3); arr.push(5); arr.push(7); arr.push(9); arr.push(11);
+    let n = arr.len();
+    let tree = init_tree(n);
+    let _ = seg_build(tree, arr, 0, 0, n - 1);
+    // Update index 2 from 5 to 10
+    let _ = seg_update(tree, 0, 0, n - 1, 2, 10);
+    // Full sum should be 36 - 5 + 10 = 41
+    let total = seg_query(tree, 0, 0, n - 1, 0, n - 1);
+    // Query [1,3] should be 3+10+7 = 20
+    let partial = seg_query(tree, 0, 0, n - 1, 1, 3);
+    if total == 41 {
+        if partial == 20 {
+            println("PASS: segment tree point update");
+            return 1;
+        }
+    }
+    print("FAIL: update total="); print(total);
+    print(" partial="); println(partial);
+    0
+}
+
+fn test_single_element() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(42);
+    let tree = init_tree(1);
+    let _ = seg_build(tree, arr, 0, 0, 0);
+    let s = seg_query(tree, 0, 0, 0, 0, 0);
+    if s == 42 {
+        println("PASS: segment tree single element");
+        1
+    } else {
+        println("FAIL: segment tree single element");
+        0
+    }
+}
+
+fn test_multiple_updates() -> i32 {
+    let arr: Vec<i32> = Vec::new();
+    arr.push(2); arr.push(4); arr.push(6); arr.push(8);
+    let n = arr.len();
+    let tree = init_tree(n);
+    let _ = seg_build(tree, arr, 0, 0, n - 1);
+    // Update multiple positions
+    let _ = seg_update(tree, 0, 0, n - 1, 0, 1);
+    let _ = seg_update(tree, 0, 0, n - 1, 3, 3);
+    // New array: [1, 4, 6, 3], sum = 14
+    let total = seg_query(tree, 0, 0, n - 1, 0, n - 1);
+    // [1,2] = 1+4+6 = 11
+    let partial = seg_query(tree, 0, 0, n - 1, 0, 2);
+    if total == 14 {
+        if partial == 11 {
+            println("PASS: segment tree multiple updates");
+            return 1;
+        }
+    }
+    print("FAIL: multiple updates total="); print(total);
+    print(" partial="); println(partial);
+    0
+}
+
+fn main() {
+    println("=== Segment Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_basic_query();
+    passed = passed + test_partial_query();
+    passed = passed + test_point_update();
+    passed = passed + test_single_element();
+    passed = passed + test_multiple_updates();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

@@ -567,6 +567,25 @@ pub unsafe extern "C" fn hew_string_char_at(s: *const c_char, idx: i32) -> i32 {
     i32::from(unsafe { *s.cast::<u8>().add(i) })
 }
 
+/// Abort with an out-of-bounds message for string `char_at`.
+///
+/// # Safety
+///
+/// Always aborts — safe to call from any context.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
+    // SAFETY: writing to stderr and aborting is always safe.
+    unsafe {
+        let msg = b"PANIC: String index out of bounds\n";
+        #[cfg(not(target_os = "windows"))]
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+        #[cfg(target_os = "windows")]
+        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        let _ = (index, len);
+        libc::abort();
+    }
+}
+
 /// Create a one-character string from a character code. Caller must `free`.
 ///
 /// # Safety

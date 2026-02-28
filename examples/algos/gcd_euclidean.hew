@@ -1,0 +1,52 @@
+// GCD using Euclidean algorithm
+fn gcd(a: int, b: int) -> int {
+    var x = a;
+    var y = b;
+    while y != 0 {
+        let temp = y;
+        y = x % y;
+        x = temp;
+    }
+    x
+}
+
+fn check(name: String, got: int, expected: int) -> int {
+    if got == expected {
+        println("PASS: " + name);
+        1
+    } else {
+        println("FAIL: " + name);
+        print("  expected: ");
+        println(expected);
+        print("  got: ");
+        println(got);
+        0
+    }
+}
+
+fn main() {
+    var passed = 0;
+    var total = 0;
+
+    total = total + 1;
+    passed = passed + check("gcd(12,8)=4", gcd(12, 8), 4);
+    total = total + 1;
+    passed = passed + check("gcd(17,13)=1", gcd(17, 13), 1);
+    total = total + 1;
+    passed = passed + check("gcd(100,75)=25", gcd(100, 75), 25);
+    total = total + 1;
+    passed = passed + check("gcd(48,18)=6", gcd(48, 18), 6);
+    total = total + 1;
+    passed = passed + check("gcd(0,5)=5", gcd(0, 5), 5);
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print(" / ");
+    println(total);
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

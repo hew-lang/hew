@@ -1,0 +1,241 @@
+// Sparse Array using sorted linked list of (index, value) pairs
+// Node layout: [idx, value, next] = 3 slots per node
+// Sorted by idx for efficient traversal
+
+fn node_idx(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3) }
+fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 1) }
+fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 3 + 2) }
+fn set_val(n: Vec<i32>, i: i32, v: i32) { n.set(i * 3 + 1, v); }
+fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 3 + 2, nx); }
+
+fn alloc_node(n: Vec<i32>, idx: i32, val: i32) -> i32 {
+    let node = n.len() / 3;
+    n.push(idx);
+    n.push(val);
+    n.push(-1);
+    node
+}
+
+// Set value at sparse index. Insert or update. Returns new head.
+fn sparse_set(n: Vec<i32>, head: i32, idx: i32, val: i32) -> i32 {
+    if head == -1 {
+        return alloc_node(n, idx, val);
+    }
+    // Update if idx matches head
+    if node_idx(n, head) == idx {
+        set_val(n, head, val);
+        return head;
+    }
+    // Insert before head
+    if idx < node_idx(n, head) {
+        let nd = alloc_node(n, idx, val);
+        set_next(n, nd, head);
+        return nd;
+    }
+    // Walk to find position
+    var prev = head;
+    var curr = node_next(n, head);
+    var done = 0;
+    while curr != -1 {
+        if done == 0 {
+            if node_idx(n, curr) == idx {
+                set_val(n, curr, val);
+                done = 1;
+            } else {
+                if idx < node_idx(n, curr) {
+                    let nd = alloc_node(n, idx, val);
+                    set_next(n, prev, nd);
+                    set_next(n, nd, curr);
+                    done = 1;
+                }
+            }
+        }
+        if done == 0 {
+            prev = curr;
+            curr = node_next(n, curr);
+        } else {
+            curr = -1;
+        }
+    }
+    if done == 0 {
+        let nd = alloc_node(n, idx, val);
+        set_next(n, prev, nd);
+    }
+    head
+}
+
+// Get value at sparse index. Returns default_val if not present.
+fn sparse_get(n: Vec<i32>, head: i32, idx: i32, default_val: i32) -> i32 {
+    var curr = head;
+    while curr != -1 {
+        if node_idx(n, curr) == idx { return node_val(n, curr); }
+        if node_idx(n, curr) > idx { return default_val; }
+        curr = node_next(n, curr);
+    }
+    default_val
+}
+
+// Collect (idx, val) pairs into result vec as [idx0, val0, idx1, val1, ...]
+fn iterate(n: Vec<i32>, head: i32, result: Vec<i32>) {
+    var curr = head;
+    while curr != -1 {
+        result.push(node_idx(n, curr));
+        result.push(node_val(n, curr));
+        curr = node_next(n, curr);
+    }
+}
+
+// Count stored elements
+fn sparse_len(n: Vec<i32>, head: i32) -> i32 {
+    var c = 0;
+    var curr = head;
+    while curr != -1 { c = c + 1; curr = node_next(n, curr); }
+    c
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() != b.len() { return 0; }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) { return 0; }
+    }
+    1
+}
+
+// --- Tests ---
+
+fn test_set_and_get() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = sparse_set(n, head, 100, 10);
+    head = sparse_set(n, head, 500, 50);
+    head = sparse_set(n, head, 1000, 99);
+    let v1 = sparse_get(n, head, 100, 0);
+    let v2 = sparse_get(n, head, 500, 0);
+    let v3 = sparse_get(n, head, 1000, 0);
+    if v1 == 10 {
+        if v2 == 50 {
+            if v3 == 99 {
+                println("PASS: set and get");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: set and get");
+    0
+}
+
+fn test_get_missing() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = sparse_set(n, head, 10, 100);
+    let v = sparse_get(n, head, 5, -999);
+    if v == -999 {
+        println("PASS: get missing");
+        return 1;
+    }
+    println("FAIL: get missing");
+    0
+}
+
+fn test_update() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = sparse_set(n, head, 42, 100);
+    head = sparse_set(n, head, 42, 200);
+    let v = sparse_get(n, head, 42, 0);
+    if v == 200 {
+        if sparse_len(n, head) == 1 {
+            println("PASS: update");
+            return 1;
+        }
+    }
+    println("FAIL: update");
+    0
+}
+
+fn test_sorted_order() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = sparse_set(n, head, 1000, 1);
+    head = sparse_set(n, head, 10, 2);
+    head = sparse_set(n, head, 500, 3);
+    head = sparse_set(n, head, 50, 4);
+    let r: Vec<i32> = Vec::new();
+    iterate(n, head, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(10); e.push(2);
+    e.push(50); e.push(4);
+    e.push(500); e.push(3);
+    e.push(1000); e.push(1);
+    if vecs_equal(r, e) == 1 {
+        println("PASS: sorted order");
+        return 1;
+    }
+    println("FAIL: sorted order");
+    0
+}
+
+fn test_sparse_pattern() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    // Only store at indices 0, 100, 10000
+    head = sparse_set(n, head, 0, 1);
+    head = sparse_set(n, head, 100, 2);
+    head = sparse_set(n, head, 10000, 3);
+    // Accessing gaps should return default
+    let g1 = sparse_get(n, head, 1, 0);
+    let g2 = sparse_get(n, head, 50, 0);
+    let g3 = sparse_get(n, head, 5000, 0);
+    if g1 == 0 {
+        if g2 == 0 {
+            if g3 == 0 {
+                if sparse_len(n, head) == 3 {
+                    println("PASS: sparse pattern");
+                    return 1;
+                }
+            }
+        }
+    }
+    println("FAIL: sparse pattern");
+    0
+}
+
+fn test_iterate() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    var head = -1;
+    head = sparse_set(n, head, 5, 50);
+    head = sparse_set(n, head, 2, 20);
+    head = sparse_set(n, head, 8, 80);
+    let r: Vec<i32> = Vec::new();
+    iterate(n, head, r);
+    // Should be sorted by index: (2,20), (5,50), (8,80)
+    if r.len() == 6 {
+        if r.get(0) == 2 {
+            if r.get(2) == 5 {
+                if r.get(4) == 8 {
+                    println("PASS: iterate");
+                    return 1;
+                }
+            }
+        }
+    }
+    println("FAIL: iterate");
+    0
+}
+
+fn main() {
+    println("=== Sparse List Tests ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_set_and_get();
+    passed = passed + test_get_missing();
+    passed = passed + test_update();
+    passed = passed + test_sorted_order();
+    passed = passed + test_sparse_pattern();
+    passed = passed + test_iterate();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+}

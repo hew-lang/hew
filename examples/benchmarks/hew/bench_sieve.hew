@@ -1,0 +1,39 @@
+fn sieve(n: int) -> int {
+    let flags = Vec::new();
+    var i = 0;
+    while i <= n {
+        flags.push(1);
+        i = i + 1;
+    }
+    flags.set(0, 0);
+    flags.set(1, 0);
+    var p = 2;
+    while p * p <= n {
+        if flags.get(p) == 1 {
+            var j = p * p;
+            while j <= n {
+                flags.set(j, 0);
+                j = j + p;
+            }
+        }
+        p = p + 1;
+    }
+    var count = 0;
+    var k = 0;
+    while k <= n {
+        count = count + flags.get(k);
+        k = k + 1;
+    }
+    count
+}
+
+const ITERS: int = 10000;
+
+fn main() {
+    var sum = 0;
+    for i in 0..ITERS {
+        sum = sum + sieve(10000);
+    }
+    println(ITERS);
+    println(sum);
+}

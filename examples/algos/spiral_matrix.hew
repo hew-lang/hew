@@ -1,0 +1,86 @@
+// Generate NxN spiral matrix using flat Vec<i32> (row-major)
+
+fn main() {
+    let n = 3;
+    let total = n * n;
+    let mat: Vec<i32> = Vec::new();
+    for i in 0..total {
+        mat.push(0);
+    }
+
+    var top = 0;
+    var bottom = n - 1;
+    var left = 0;
+    var right = n - 1;
+    var num = 1;
+
+    while num <= total {
+        // Fill top row left to right
+        var col = left;
+        while col <= right {
+            mat.set(top * n + col, num);
+            num = num + 1;
+            col = col + 1;
+        }
+        top = top + 1;
+
+        // Fill right column top to bottom
+        var row = top;
+        while row <= bottom {
+            mat.set(row * n + right, num);
+            num = num + 1;
+            row = row + 1;
+        }
+        right = right - 1;
+
+        // Fill bottom row right to left
+        if top <= bottom {
+            col = right;
+            while col >= left {
+                mat.set(bottom * n + col, num);
+                num = num + 1;
+                col = col - 1;
+            }
+            bottom = bottom - 1;
+        }
+
+        // Fill left column bottom to top
+        if left <= right {
+            row = bottom;
+            while row >= top {
+                mat.set(row * n + left, num);
+                num = num + 1;
+                row = row - 1;
+            }
+            left = left + 1;
+        }
+    }
+
+    // Expected 3x3 spiral:
+    // 1 2 3
+    // 8 9 4
+    // 7 6 5
+    let expected: Vec<i32> = Vec::new();
+    expected.push(1); expected.push(2); expected.push(3);
+    expected.push(8); expected.push(9); expected.push(4);
+    expected.push(7); expected.push(6); expected.push(5);
+
+    var pass = true;
+    for i in 0..total {
+        if mat.get(i) != expected.get(i) {
+            pass = false;
+            println("FAIL at index:");
+            println(i);
+            println("expected:");
+            println(expected.get(i));
+            println("got:");
+            println(mat.get(i));
+        }
+    }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

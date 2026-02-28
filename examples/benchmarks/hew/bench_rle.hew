@@ -1,0 +1,37 @@
+fn rle_count(s: string) -> int {
+    let n = s.len();
+    if n == 0 {
+        return 0;
+    }
+    var runs = 0;
+    var i = 0;
+    while i < n {
+        let ch = s.char_at(i);
+        var run_len = 1;
+        var j = i + 1;
+        while j < n {
+            if s.char_at(j) != ch {
+                j = n;
+            } else {
+                run_len = run_len + 1;
+                j = j + 1;
+            }
+        }
+        runs = runs + run_len;
+        i = i + run_len;
+    }
+    return runs;
+}
+
+const ITERS: int = 500000;
+
+fn main() {
+    let s = "aaabbccccdddddeee";
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + rle_count(s);
+    }
+    println("bench_rle");
+    println(checksum);
+    println(ITERS);
+}

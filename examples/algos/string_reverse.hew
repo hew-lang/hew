@@ -1,0 +1,34 @@
+// String reverse by building new string char by char
+
+fn reverse(s: String) -> String {
+    let n = s.len();
+    var result = "";
+    var i = n;
+    while i > 0 {
+        i = i - 1;
+        result = result + s.slice(i, i + 1);
+    }
+    result
+}
+
+fn main() {
+    var pass = true;
+
+    let r1 = reverse("hello");
+    if r1 != "olleh" { pass = false; println("FAIL hello got:"); println(r1); }
+
+    let r2 = reverse("a");
+    if r2 != "a" { pass = false; println("FAIL a got:"); println(r2); }
+
+    let r3 = reverse("");
+    if r3 != "" { pass = false; println("FAIL empty got:"); println(r3); }
+
+    let r4 = reverse("abcd");
+    if r4 != "dcba" { pass = false; println("FAIL abcd got:"); println(r4); }
+
+    if pass {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

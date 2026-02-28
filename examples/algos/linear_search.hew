@@ -1,0 +1,136 @@
+// Linear Search - scan each element sequentially, return index or -1
+
+fn linear_search(arr: Vec<int>, target: int) -> int {
+    var i = 0;
+    while i < arr.len() {
+        if arr.get(i) == target {
+            return i;
+        }
+        i = i + 1;
+    }
+    0 - 1
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Test 1: find element in middle
+    let v1: Vec<int> = Vec::new();
+    v1.push(10);
+    v1.push(20);
+    v1.push(30);
+    v1.push(40);
+    v1.push(50);
+    let r1 = linear_search(v1, 30);
+    if r1 == 2 {
+        println("Test 1 - find middle: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 1 - find middle: FAIL (got ");
+        print(r1);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 2: find first element
+    let v2: Vec<int> = Vec::new();
+    v2.push(10);
+    v2.push(20);
+    v2.push(30);
+    let r2 = linear_search(v2, 10);
+    if r2 == 0 {
+        println("Test 2 - find first: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 2 - find first: FAIL (got ");
+        print(r2);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 3: find last element
+    let v3: Vec<int> = Vec::new();
+    v3.push(10);
+    v3.push(20);
+    v3.push(30);
+    let r3 = linear_search(v3, 30);
+    if r3 == 2 {
+        println("Test 3 - find last: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 3 - find last: FAIL (got ");
+        print(r3);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 4: element not found
+    let v4: Vec<int> = Vec::new();
+    v4.push(10);
+    v4.push(20);
+    v4.push(30);
+    let r4 = linear_search(v4, 99);
+    if r4 == 0 - 1 {
+        println("Test 4 - not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 4 - not found: FAIL (got ");
+        print(r4);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 5: empty array
+    let v5: Vec<int> = Vec::new();
+    let r5 = linear_search(v5, 5);
+    if r5 == 0 - 1 {
+        println("Test 5 - empty array: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 5 - empty array: FAIL (got ");
+        print(r5);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 6: single element found
+    let v6: Vec<int> = Vec::new();
+    v6.push(42);
+    let r6 = linear_search(v6, 42);
+    if r6 == 0 {
+        println("Test 6 - single found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 6 - single found: FAIL (got ");
+        print(r6);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Test 7: single element not found
+    let v7: Vec<int> = Vec::new();
+    v7.push(42);
+    let r7 = linear_search(v7, 99);
+    if r7 == 0 - 1 {
+        println("Test 7 - single not found: PASS");
+        passed = passed + 1;
+    } else {
+        print("Test 7 - single not found: FAIL (got ");
+        print(r7);
+        println(")");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    print(passed);
+    print(" passed, ");
+    print(failed);
+    println(" failed");
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

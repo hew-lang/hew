@@ -1,0 +1,271 @@
+// Greedy Graph Coloring
+// Assign colors (ints starting from 0) so no two adjacent nodes share a color
+
+fn build_undirected(num_nodes: int, esrc: Vec<int>, edst: Vec<int>, adj_nodes: Vec<int>, adj_offsets: Vec<int>) {
+    let num_edges = esrc.len();
+    let degree: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        degree.push(0);
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        degree.set(s, degree.get(s) + 1);
+        degree.set(d, degree.get(d) + 1);
+    }
+    adj_offsets.push(0);
+    for i in 0..num_nodes {
+        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+    }
+    let total = adj_offsets.get(num_nodes);
+    for i in 0..total {
+        adj_nodes.push(0);
+    }
+    let pos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        pos.push(adj_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        adj_nodes.set(pos.get(s), d);
+        pos.set(s, pos.get(s) + 1);
+        adj_nodes.set(pos.get(d), s);
+        pos.set(d, pos.get(d) + 1);
+    }
+}
+
+fn greedy_color(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, colors: Vec<int>) {
+    // Initialize all colors to -1 (uncolored)
+    for i in 0..num_nodes {
+        colors.push(0 - 1);
+    }
+    // Track which colors are used by neighbors
+    let used: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        used.push(0);
+    }
+    for node in 0..num_nodes {
+        // Mark colors used by neighbors
+        let s = adj_offsets.get(node);
+        let e = adj_offsets.get(node + 1);
+        var j = s;
+        while j < e {
+            let nb = adj_nodes.get(j);
+            let c = colors.get(nb);
+            if c >= 0 {
+                if c < num_nodes {
+                    used.set(c, 1);
+                }
+            }
+            j = j + 1;
+        }
+        // Find smallest unused color
+        var chosen = 0;
+        while chosen < num_nodes {
+            if used.get(chosen) == 0 {
+                colors.set(node, chosen);
+                chosen = num_nodes;
+            } else {
+                chosen = chosen + 1;
+            }
+        }
+        // Reset used array for marked colors
+        j = s;
+        while j < e {
+            let nb = adj_nodes.get(j);
+            let c = colors.get(nb);
+            if c >= 0 {
+                if c < num_nodes {
+                    used.set(c, 0);
+                }
+            }
+            j = j + 1;
+        }
+    }
+}
+
+fn is_valid_coloring(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int, colors: Vec<int>) -> bool {
+    for node in 0..num_nodes {
+        let my_c = colors.get(node);
+        let s = adj_offsets.get(node);
+        let e = adj_offsets.get(node + 1);
+        var j = s;
+        while j < e {
+            let nb = adj_nodes.get(j);
+            if colors.get(nb) == my_c {
+                return false;
+            }
+            j = j + 1;
+        }
+    }
+    true
+}
+
+fn count_colors(colors: Vec<int>, num_nodes: int) -> int {
+    var max_c = 0;
+    for i in 0..num_nodes {
+        let c = colors.get(i);
+        if c > max_c {
+            max_c = c;
+        }
+    }
+    max_c + 1
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Graph 1: Petersen-like structure, 6 nodes
+    // 0-1, 0-2, 0-3, 1-2, 1-4, 2-5, 3-4, 3-5, 4-5
+    let n1 = 6;
+    let s1: Vec<int> = Vec::new();
+    let d1: Vec<int> = Vec::new();
+    s1.push(0); d1.push(1);
+    s1.push(0); d1.push(2);
+    s1.push(0); d1.push(3);
+    s1.push(1); d1.push(2);
+    s1.push(1); d1.push(4);
+    s1.push(2); d1.push(5);
+    s1.push(3); d1.push(4);
+    s1.push(3); d1.push(5);
+    s1.push(4); d1.push(5);
+    let an1: Vec<int> = Vec::new();
+    let ao1: Vec<int> = Vec::new();
+    build_undirected(n1, s1, d1, an1, ao1);
+
+    let colors1: Vec<int> = Vec::new();
+    greedy_color(an1, ao1, n1, colors1);
+
+    // Test 1: Valid coloring
+    if is_valid_coloring(an1, ao1, n1, colors1) {
+        println("PASS: graph1 valid coloring");
+        passed = passed + 1;
+    } else {
+        println("FAIL: graph1 valid coloring");
+        failed = failed + 1;
+    }
+
+    // Test 2: Uses at most 4 colors (chromatic number <= 4 for this graph)
+    let nc1 = count_colors(colors1, n1);
+    if nc1 <= 4 {
+        println("PASS: graph1 uses <= 4 colors");
+        passed = passed + 1;
+    } else {
+        println("FAIL: graph1 color count");
+        failed = failed + 1;
+    }
+
+    // Graph 2: Bipartite (4-cycle: 0-1-2-3-0), should need exactly 2 colors
+    let n2 = 4;
+    let s2: Vec<int> = Vec::new();
+    let d2: Vec<int> = Vec::new();
+    s2.push(0); d2.push(1);
+    s2.push(1); d2.push(2);
+    s2.push(2); d2.push(3);
+    s2.push(3); d2.push(0);
+    let an2: Vec<int> = Vec::new();
+    let ao2: Vec<int> = Vec::new();
+    build_undirected(n2, s2, d2, an2, ao2);
+
+    let colors2: Vec<int> = Vec::new();
+    greedy_color(an2, ao2, n2, colors2);
+
+    // Test 3: Valid coloring
+    if is_valid_coloring(an2, ao2, n2, colors2) {
+        println("PASS: bipartite valid coloring");
+        passed = passed + 1;
+    } else {
+        println("FAIL: bipartite valid coloring");
+        failed = failed + 1;
+    }
+
+    // Test 4: Bipartite uses exactly 2 colors
+    let nc2 = count_colors(colors2, n2);
+    if nc2 == 2 {
+        println("PASS: bipartite uses 2 colors");
+        passed = passed + 1;
+    } else {
+        println("FAIL: bipartite color count");
+        failed = failed + 1;
+    }
+
+    // Graph 3: Triangle (K3), needs exactly 3 colors
+    let n3 = 3;
+    let s3: Vec<int> = Vec::new();
+    let d3: Vec<int> = Vec::new();
+    s3.push(0); d3.push(1);
+    s3.push(1); d3.push(2);
+    s3.push(2); d3.push(0);
+    let an3: Vec<int> = Vec::new();
+    let ao3: Vec<int> = Vec::new();
+    build_undirected(n3, s3, d3, an3, ao3);
+
+    let colors3: Vec<int> = Vec::new();
+    greedy_color(an3, ao3, n3, colors3);
+
+    // Test 5: Valid coloring
+    if is_valid_coloring(an3, ao3, n3, colors3) {
+        println("PASS: triangle valid coloring");
+        passed = passed + 1;
+    } else {
+        println("FAIL: triangle valid coloring");
+        failed = failed + 1;
+    }
+
+    // Test 6: Triangle uses 3 colors
+    let nc3 = count_colors(colors3, n3);
+    if nc3 == 3 {
+        println("PASS: triangle uses 3 colors");
+        passed = passed + 1;
+    } else {
+        println("FAIL: triangle color count");
+        failed = failed + 1;
+    }
+
+    // Graph 4: Star graph (0 connected to 1,2,3,4), needs 2 colors
+    let n4 = 5;
+    let s4: Vec<int> = Vec::new();
+    let d4: Vec<int> = Vec::new();
+    s4.push(0); d4.push(1);
+    s4.push(0); d4.push(2);
+    s4.push(0); d4.push(3);
+    s4.push(0); d4.push(4);
+    let an4: Vec<int> = Vec::new();
+    let ao4: Vec<int> = Vec::new();
+    build_undirected(n4, s4, d4, an4, ao4);
+
+    let colors4: Vec<int> = Vec::new();
+    greedy_color(an4, ao4, n4, colors4);
+
+    // Test 7: Valid coloring
+    if is_valid_coloring(an4, ao4, n4, colors4) {
+        println("PASS: star valid coloring");
+        passed = passed + 1;
+    } else {
+        println("FAIL: star valid coloring");
+        failed = failed + 1;
+    }
+
+    // Test 8: Star uses 2 colors
+    let nc4 = count_colors(colors4, n4);
+    if nc4 == 2 {
+        println("PASS: star uses 2 colors");
+        passed = passed + 1;
+    } else {
+        println("FAIL: star color count");
+        failed = failed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

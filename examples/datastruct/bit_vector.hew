@@ -1,0 +1,245 @@
+// Bit Vector using Vec<int> where each int stores 32 bits
+// Operations: set_bit, clear_bit, get_bit, count_ones
+
+fn bv_create(num_bits: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    let num_words = (num_bits + 31) / 32;
+    for i in 0..num_words {
+        v.push(0);
+    }
+    v
+}
+
+fn bv_set_bit(bv: Vec<int>, bit: int) -> int {
+    let word = bit / 32;
+    let offset = bit % 32;
+    let mask = bv_shl(1, offset);
+    let old = bv.get(word);
+    bv.set(word, bv_or(old, mask));
+    1
+}
+
+fn bv_clear_bit(bv: Vec<int>, bit: int) -> int {
+    let word = bit / 32;
+    let offset = bit % 32;
+    let mask = bv_shl(1, offset);
+    let old = bv.get(word);
+    // If bit is set, subtract the mask to clear it
+    if bv_get_ith_bit(old, offset) == 1 {
+        bv.set(word, old - mask);
+    }
+    1
+}
+
+fn bv_get_bit(bv: Vec<int>, bit: int) -> int {
+    let word = bit / 32;
+    let offset = bit % 32;
+    let mask = bv_shl(1, offset);
+    let val = bv_and(bv.get(word), mask);
+    if val != 0 {
+        1
+    } else {
+        0
+    }
+}
+
+// Shift left by repeated doubling
+fn bv_shl(val: int, shift: int) -> int {
+    var result = val;
+    for i in 0..shift {
+        result = result * 2;
+    }
+    result
+}
+
+// Bitwise AND via bit-by-bit extraction
+fn bv_and(a: int, b: int) -> int {
+    var result = 0;
+    for i in 0..32 {
+        let bit_a = bv_get_ith_bit(a, i);
+        let bit_b = bv_get_ith_bit(b, i);
+        if bit_a == 1 {
+            if bit_b == 1 {
+                result = result + bv_shl(1, i);
+            }
+        }
+    }
+    result
+}
+
+// Bitwise OR via bit-by-bit
+fn bv_or(a: int, b: int) -> int {
+    var result = 0;
+    for i in 0..32 {
+        let bit_a = bv_get_ith_bit(a, i);
+        let bit_b = bv_get_ith_bit(b, i);
+        if bit_a == 1 {
+            result = result + bv_shl(1, i);
+        } else if bit_b == 1 {
+            result = result + bv_shl(1, i);
+        }
+    }
+    result
+}
+
+// Bitwise XOR via bit-by-bit
+fn bv_xor(a: int, b: int) -> int {
+    var result = 0;
+    for i in 0..32 {
+        let bit_a = bv_get_ith_bit(a, i);
+        let bit_b = bv_get_ith_bit(b, i);
+        if bit_a != bit_b {
+            result = result + bv_shl(1, i);
+        }
+    }
+    result
+}
+
+// Extract i-th bit from val using division
+fn bv_get_ith_bit(val: int, i: int) -> int {
+    let shifted = val / bv_shl(1, i);
+    shifted % 2
+}
+
+// Count set bits across entire bit vector
+fn bv_count_ones(bv: Vec<int>) -> int {
+    var count = 0;
+    let num_words = bv.len();
+    for w in 0..num_words {
+        let word = bv.get(w);
+        for b in 0..32 {
+            if bv_get_ith_bit(word, b) == 1 {
+                count = count + 1;
+            }
+        }
+    }
+    count
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+
+    // Create bit vector with 64 bits (2 words)
+    let bv = bv_create(64);
+
+    // Test 1: Initial state - all bits zero
+    let c0 = bv_count_ones(bv);
+    if c0 == 0 {
+        println("PASS: initial all zeros");
+        passed = passed + 1;
+    } else {
+        println("FAIL: initial all zeros");
+        failed = failed + 1;
+    }
+
+    // Test 2: Set bit 0
+    bv_set_bit(bv, 0);
+    if bv_get_bit(bv, 0) == 1 {
+        println("PASS: set bit 0");
+        passed = passed + 1;
+    } else {
+        println("FAIL: set bit 0");
+        failed = failed + 1;
+    }
+
+    // Test 3: Set bit 31 (last bit of first word)
+    bv_set_bit(bv, 31);
+    if bv_get_bit(bv, 31) == 1 {
+        println("PASS: set bit 31");
+        passed = passed + 1;
+    } else {
+        println("FAIL: set bit 31");
+        failed = failed + 1;
+    }
+
+    // Test 4: Set bit 32 (first bit of second word)
+    bv_set_bit(bv, 32);
+    if bv_get_bit(bv, 32) == 1 {
+        println("PASS: set bit 32");
+        passed = passed + 1;
+    } else {
+        println("FAIL: set bit 32");
+        failed = failed + 1;
+    }
+
+    // Test 5: Unset bit should be 0
+    if bv_get_bit(bv, 5) == 0 {
+        println("PASS: unset bit is 0");
+        passed = passed + 1;
+    } else {
+        println("FAIL: unset bit is 0");
+        failed = failed + 1;
+    }
+
+    // Test 6: Count ones (bits 0, 31, 32 are set)
+    let c1 = bv_count_ones(bv);
+    if c1 == 3 {
+        println("PASS: count ones = 3");
+        passed = passed + 1;
+    } else {
+        print("FAIL: count ones expected 3 got ");
+        println(c1);
+        failed = failed + 1;
+    }
+
+    // Test 7: Clear bit 31
+    bv_clear_bit(bv, 31);
+    if bv_get_bit(bv, 31) == 0 {
+        println("PASS: clear bit 31");
+        passed = passed + 1;
+    } else {
+        println("FAIL: clear bit 31");
+        failed = failed + 1;
+    }
+
+    // Test 8: Count after clear (bits 0, 32 remain)
+    let c2 = bv_count_ones(bv);
+    if c2 == 2 {
+        println("PASS: count after clear = 2");
+        passed = passed + 1;
+    } else {
+        print("FAIL: count after clear expected 2 got ");
+        println(c2);
+        failed = failed + 1;
+    }
+
+    // Test 9: Set multiple bits and count
+    bv_set_bit(bv, 10);
+    bv_set_bit(bv, 20);
+    bv_set_bit(bv, 40);
+    bv_set_bit(bv, 50);
+    let c3 = bv_count_ones(bv);
+    if c3 == 6 {
+        println("PASS: set multiple, count = 6");
+        passed = passed + 1;
+    } else {
+        print("FAIL: set multiple expected 6 got ");
+        println(c3);
+        failed = failed + 1;
+    }
+
+    // Test 10: Set already-set bit is idempotent
+    bv_set_bit(bv, 10);
+    let c4 = bv_count_ones(bv);
+    if c4 == 6 {
+        println("PASS: set idempotent");
+        passed = passed + 1;
+    } else {
+        print("FAIL: set idempotent expected 6 got ");
+        println(c4);
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

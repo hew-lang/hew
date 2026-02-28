@@ -1,0 +1,112 @@
+// Stack - LIFO data structure using Vec<int>
+
+fn stack_new() -> Vec<int> {
+    let s: Vec<int> = Vec::new();
+    s
+}
+
+fn stack_push(s: Vec<int>, val: int) {
+    s.push(val);
+}
+
+fn stack_pop(s: Vec<int>) -> int {
+    s.pop()
+}
+
+fn stack_peek(s: Vec<int>) -> int {
+    s.get(s.len() - 1)
+}
+
+fn stack_size(s: Vec<int>) -> int {
+    s.len()
+}
+
+fn stack_is_empty(s: Vec<int>) -> int {
+    if s.len() == 0 { 1 } else { 0 }
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    // Test 1: new stack is empty
+    total = total + 1;
+    let s = stack_new();
+    let r1 = if stack_is_empty(s) == 1 { 1 } else { 0 };
+    passed = passed + run_test("new stack is empty", r1);
+
+    // Test 2: push and size
+    total = total + 1;
+    stack_push(s, 10);
+    stack_push(s, 20);
+    stack_push(s, 30);
+    let r2 = if stack_size(s) == 3 { 1 } else { 0 };
+    passed = passed + run_test("push and size", r2);
+
+    // Test 3: peek returns top
+    total = total + 1;
+    let r3 = if stack_peek(s) == 30 { 1 } else { 0 };
+    passed = passed + run_test("peek returns top", r3);
+
+    // Test 4: pop returns LIFO order
+    total = total + 1;
+    let p1 = stack_pop(s);
+    let p2 = stack_pop(s);
+    let p3 = stack_pop(s);
+    var r4 = 0;
+    if p1 == 30 {
+        if p2 == 20 {
+            if p3 == 10 {
+                r4 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("pop LIFO order", r4);
+
+    // Test 5: stack empty after popping all
+    total = total + 1;
+    let r5 = if stack_is_empty(s) == 1 { 1 } else { 0 };
+    passed = passed + run_test("empty after pop all", r5);
+
+    // Test 6: push after empty
+    total = total + 1;
+    stack_push(s, 99);
+    var r6 = 0;
+    if stack_size(s) == 1 {
+        if stack_peek(s) == 99 {
+            r6 = 1;
+        }
+    }
+    passed = passed + run_test("push after empty", r6);
+
+    // Test 7: many elements
+    total = total + 1;
+    let s2 = stack_new();
+    for i in 0..100 {
+        stack_push(s2, i);
+    }
+    var r7 = 0;
+    if stack_size(s2) == 100 {
+        if stack_peek(s2) == 99 {
+            r7 = 1;
+        }
+    }
+    passed = passed + run_test("100 elements", r7);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

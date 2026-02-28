@@ -1,0 +1,207 @@
+// Weighted Graph - Compressed adjacency list with weights
+// adj_nodes: neighbor node IDs, adj_weights: edge weights (parallel), adj_offsets: per-node start
+
+fn get_degree(adj_offsets: Vec<int>, node: int) -> int {
+    adj_offsets.get(node + 1) - adj_offsets.get(node)
+}
+
+fn get_weight(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, src: int, dst: int) -> int {
+    let start = adj_offsets.get(src);
+    let end = adj_offsets.get(src + 1);
+    var i = start;
+    while i < end {
+        if adj_nodes.get(i) == dst {
+            return adj_weights.get(i);
+        }
+        i = i + 1;
+    }
+    0 - 1
+}
+
+fn min_weight_neighbor(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
+    let start = adj_offsets.get(node);
+    let end = adj_offsets.get(node + 1);
+    if start == end {
+        return 0 - 1;
+    }
+    var best = adj_weights.get(start);
+    var i = start + 1;
+    while i < end {
+        let w = adj_weights.get(i);
+        if w < best {
+            best = w;
+        }
+        i = i + 1;
+    }
+    best
+}
+
+fn max_weight_neighbor(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
+    let start = adj_offsets.get(node);
+    let end = adj_offsets.get(node + 1);
+    if start == end {
+        return 0 - 1;
+    }
+    var best = adj_weights.get(start);
+    var i = start + 1;
+    while i < end {
+        let w = adj_weights.get(i);
+        if w > best {
+            best = w;
+        }
+        i = i + 1;
+    }
+    best
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let num_nodes = 5;
+
+    // Weighted edges: (src, dst, weight)
+    // 0-1:4, 0-2:2, 1-2:5, 1-3:10, 2-3:3, 2-4:8, 3-4:7
+    let esrc: Vec<int> = Vec::new();
+    let edst: Vec<int> = Vec::new();
+    let ewt: Vec<int> = Vec::new();
+    esrc.push(0); edst.push(1); ewt.push(4);
+    esrc.push(0); edst.push(2); ewt.push(2);
+    esrc.push(1); edst.push(2); ewt.push(5);
+    esrc.push(1); edst.push(3); ewt.push(10);
+    esrc.push(2); edst.push(3); ewt.push(3);
+    esrc.push(2); edst.push(4); ewt.push(8);
+    esrc.push(3); edst.push(4); ewt.push(7);
+    let num_edges = esrc.len();
+
+    // Count degrees (undirected)
+    let degree: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        degree.push(0);
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        degree.set(s, degree.get(s) + 1);
+        degree.set(d, degree.get(d) + 1);
+    }
+
+    // Build offsets
+    let adj_offsets: Vec<int> = Vec::new();
+    adj_offsets.push(0);
+    for i in 0..num_nodes {
+        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+    }
+
+    // Fill adj_nodes and adj_weights
+    let total = adj_offsets.get(num_nodes);
+    let adj_nodes: Vec<int> = Vec::new();
+    let adj_weights: Vec<int> = Vec::new();
+    for i in 0..total {
+        adj_nodes.push(0);
+        adj_weights.push(0);
+    }
+    let pos: Vec<int> = Vec::new();
+    for i in 0..num_nodes {
+        pos.push(adj_offsets.get(i));
+    }
+    for i in 0..num_edges {
+        let s = esrc.get(i);
+        let d = edst.get(i);
+        let w = ewt.get(i);
+        adj_nodes.set(pos.get(s), d);
+        adj_weights.set(pos.get(s), w);
+        pos.set(s, pos.get(s) + 1);
+        adj_nodes.set(pos.get(d), s);
+        adj_weights.set(pos.get(d), w);
+        pos.set(d, pos.get(d) + 1);
+    }
+
+    // Test 1: Weight of edge (0,1) = 4
+    let w01 = get_weight(adj_nodes, adj_weights, adj_offsets, 0, 1);
+    if w01 == 4 {
+        println("PASS: weight(0,1) = 4");
+        passed = passed + 1;
+    } else {
+        println("FAIL: weight(0,1)");
+        failed = failed + 1;
+    }
+
+    // Test 2: Weight of edge (1,3) = 10
+    let w13 = get_weight(adj_nodes, adj_weights, adj_offsets, 1, 3);
+    if w13 == 10 {
+        println("PASS: weight(1,3) = 10");
+        passed = passed + 1;
+    } else {
+        println("FAIL: weight(1,3)");
+        failed = failed + 1;
+    }
+
+    // Test 3: Symmetric weight (2,0) = 2
+    let w20 = get_weight(adj_nodes, adj_weights, adj_offsets, 2, 0);
+    if w20 == 2 {
+        println("PASS: weight(2,0) = 2 symmetric");
+        passed = passed + 1;
+    } else {
+        println("FAIL: weight(2,0)");
+        failed = failed + 1;
+    }
+
+    // Test 4: Non-existent edge returns -1
+    let wnone = get_weight(adj_nodes, adj_weights, adj_offsets, 0, 4);
+    if wnone == (0 - 1) {
+        println("PASS: no edge (0,4) returns -1");
+        passed = passed + 1;
+    } else {
+        println("FAIL: no edge (0,4)");
+        failed = failed + 1;
+    }
+
+    // Test 5: Min weight from node 2 = 2 (edge to 0)
+    let minw = min_weight_neighbor(adj_nodes, adj_weights, adj_offsets, 2);
+    if minw == 2 {
+        println("PASS: min weight from node 2 = 2");
+        passed = passed + 1;
+    } else {
+        println("FAIL: min weight from node 2");
+        failed = failed + 1;
+    }
+
+    // Test 6: Max weight from node 2 = 8 (edge to 4)
+    let maxw = max_weight_neighbor(adj_nodes, adj_weights, adj_offsets, 2);
+    if maxw == 8 {
+        println("PASS: max weight from node 2 = 8");
+        passed = passed + 1;
+    } else {
+        println("FAIL: max weight from node 2");
+        failed = failed + 1;
+    }
+
+    // Test 7: Degree of node 2 = 4
+    if get_degree(adj_offsets, 2) == 4 {
+        println("PASS: degree(2) = 4");
+        passed = passed + 1;
+    } else {
+        println("FAIL: degree(2)");
+        failed = failed + 1;
+    }
+
+    // Test 8: Total directed entries = 14 (7 edges * 2)
+    if adj_nodes.len() == 14 {
+        println("PASS: total entries = 14");
+        passed = passed + 1;
+    } else {
+        println("FAIL: total entries");
+        failed = failed + 1;
+    }
+
+    println("---");
+    print("Passed: ");
+    print(passed);
+    print("/");
+    println(8);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

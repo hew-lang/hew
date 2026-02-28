@@ -1,0 +1,68 @@
+fn spiral_matrix(n: int) -> int {
+    let total = n * n;
+    let mat: Vec<int> = Vec::new();
+    for idx in 0..total {
+        mat.push(0);
+    }
+
+    var top = 0;
+    var bottom = n - 1;
+    var left = 0;
+    var right = n - 1;
+    var num = 1;
+
+    while top <= bottom {
+        if left <= right {
+            var col = left;
+            while col <= right {
+                mat.set(top * n + col, num);
+                num = num + 1;
+                col = col + 1;
+            }
+            top = top + 1;
+
+            var row = top;
+            while row <= bottom {
+                mat.set(row * n + right, num);
+                num = num + 1;
+                row = row + 1;
+            }
+            right = right - 1;
+
+            if top <= bottom {
+                var col2 = right;
+                while col2 >= left {
+                    mat.set(bottom * n + col2, num);
+                    num = num + 1;
+                    col2 = col2 - 1;
+                }
+                bottom = bottom - 1;
+            }
+
+            if left <= right {
+                var row2 = bottom;
+                while row2 >= top {
+                    mat.set(row2 * n + left, num);
+                    num = num + 1;
+                    row2 = row2 - 1;
+                }
+                left = left + 1;
+            }
+        }
+    }
+
+    return mat.get(0) + mat.get(total / 2) + mat.get(total - 1);
+}
+
+const ITERS: int = 50000;
+
+fn main() {
+    let n = 20;
+    var checksum = 0;
+    for i in 0..ITERS {
+        checksum = checksum + spiral_matrix(n);
+    }
+    println("bench_spiral_matrix");
+    println(checksum);
+    println(ITERS);
+}

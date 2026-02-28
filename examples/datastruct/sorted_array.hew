@@ -1,0 +1,187 @@
+// Sorted Array - maintains sorted order on insert using binary search
+// All elements in Vec<int> are kept in ascending order
+
+fn sa_find_insert_pos(arr: Vec<int>, val: int) -> int {
+    // Binary search for insertion point
+    var lo = 0;
+    var hi = arr.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if arr.get(mid) < val {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+fn sa_insert(arr: Vec<int>, val: int) {
+    let pos = sa_find_insert_pos(arr, val);
+    // Append and shift right
+    arr.push(0);
+    var i = arr.len() - 1;
+    while i > pos {
+        let prev = arr.get(i - 1);
+        arr.set(i, prev);
+        i = i - 1;
+    }
+    arr.set(pos, val);
+}
+
+fn sa_search(arr: Vec<int>, val: int) -> int {
+    // Binary search, returns index or -1
+    var lo = 0;
+    var hi = arr.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let m = arr.get(mid);
+        if m == val {
+            return mid;
+        }
+        if m < val {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    0 - 1
+}
+
+fn sa_remove(arr: Vec<int>, val: int) -> int {
+    let idx = sa_search(arr, val);
+    if idx < 0 {
+        return 0;
+    }
+    // Shift left
+    var i = idx;
+    while i < arr.len() - 1 {
+        let next = arr.get(i + 1);
+        arr.set(i, next);
+        i = i + 1;
+    }
+    let _ = arr.pop();
+    1
+}
+
+fn sa_is_sorted(arr: Vec<int>) -> int {
+    if arr.len() < 2 {
+        return 1;
+    }
+    for i in 0..(arr.len() - 1) {
+        if arr.get(i) > arr.get(i + 1) {
+            return 0;
+        }
+    }
+    1
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    let arr: Vec<int> = Vec::new();
+
+    // Test 1: insert maintains sorted order
+    total = total + 1;
+    sa_insert(arr, 30);
+    sa_insert(arr, 10);
+    sa_insert(arr, 50);
+    sa_insert(arr, 20);
+    sa_insert(arr, 40);
+    let r1 = if sa_is_sorted(arr) == 1 { 1 } else { 0 };
+    passed = passed + run_test("insert maintains sorted", r1);
+
+    // Test 2: correct values [10, 20, 30, 40, 50]
+    total = total + 1;
+    var r2 = 0;
+    if arr.get(0) == 10 {
+        if arr.get(1) == 20 {
+            if arr.get(2) == 30 {
+                if arr.get(3) == 40 {
+                    if arr.get(4) == 50 {
+                        r2 = 1;
+                    }
+                }
+            }
+        }
+    }
+    passed = passed + run_test("correct sorted values", r2);
+
+    // Test 3: search finds existing
+    total = total + 1;
+    let idx = sa_search(arr, 30);
+    let r3 = if idx == 2 { 1 } else { 0 };
+    passed = passed + run_test("search finds 30 at idx 2", r3);
+
+    // Test 4: search returns -1 for missing
+    total = total + 1;
+    let idx2 = sa_search(arr, 99);
+    let r4 = if idx2 < 0 { 1 } else { 0 };
+    passed = passed + run_test("search missing returns -1", r4);
+
+    // Test 5: remove element
+    total = total + 1;
+    let removed = sa_remove(arr, 30);
+    var r5 = 0;
+    if removed == 1 {
+        if arr.len() == 4 {
+            if sa_is_sorted(arr) == 1 {
+                r5 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("remove keeps sorted", r5);
+
+    // Test 6: remove missing returns 0
+    total = total + 1;
+    let removed2 = sa_remove(arr, 99);
+    let r6 = if removed2 == 0 { 1 } else { 0 };
+    passed = passed + run_test("remove missing returns 0", r6);
+
+    // Test 7: insert duplicates
+    total = total + 1;
+    sa_insert(arr, 20);
+    sa_insert(arr, 20);
+    var r7 = 0;
+    if sa_is_sorted(arr) == 1 {
+        if arr.len() == 6 {
+            r7 = 1;
+        }
+    }
+    passed = passed + run_test("duplicates maintain sorted", r7);
+
+    // Test 8: many elements
+    total = total + 1;
+    let arr2: Vec<int> = Vec::new();
+    // Insert in reverse order
+    var j = 50;
+    while j > 0 {
+        j = j - 1;
+        sa_insert(arr2, j);
+    }
+    var r8 = 0;
+    if arr2.len() == 50 {
+        if sa_is_sorted(arr2) == 1 {
+            r8 = 1;
+        }
+    }
+    passed = passed + run_test("50 reverse inserts sorted", r8);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

@@ -1,0 +1,43 @@
+fn dutch_flag(arr: Vec<int>) -> int {
+    let n = arr.len();
+    var low = 0;
+    var mid = 0;
+    var high = n - 1;
+
+    while mid <= high {
+        let val = arr.get(mid);
+        if val == 0 {
+            let tmp = arr.get(low);
+            arr.set(low, arr.get(mid));
+            arr.set(mid, tmp);
+            low = low + 1;
+            mid = mid + 1;
+        } else {
+            if val == 1 {
+                mid = mid + 1;
+            } else {
+                let tmp = arr.get(high);
+                arr.set(high, arr.get(mid));
+                arr.set(mid, tmp);
+                high = high - 1;
+            }
+        }
+    }
+    return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    var checksum = 0;
+    for i in 0..ITERS {
+        let arr: Vec<int> = Vec::new();
+        for k in 0..1000 {
+            arr.push(k % 3);
+        }
+        checksum = checksum + dutch_flag(arr);
+    }
+    println("bench_dutch_flag");
+    println(checksum);
+    println(ITERS);
+}

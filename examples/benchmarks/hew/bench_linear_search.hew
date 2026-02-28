@@ -1,0 +1,26 @@
+// Benchmark: Linear Search
+// Searches sequentially through the array from start to end.
+
+fn linear_search(v: Vec<int>, target: int) -> int {
+    for i in 0..v.len() {
+        if v.get(i) == target {
+            return i;
+        }
+    }
+    return 0 - 1;
+}
+
+const ITERS: int = 100000;
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    for i in 0..10000 {
+        v.push(i);
+    }
+    var sum = 0;
+    for iter in 0..ITERS {
+        sum = sum + linear_search(v, 7777);
+    }
+    println(ITERS);
+    println(sum);
+}

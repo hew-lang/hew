@@ -1,0 +1,258 @@
+// Trie for integer digit sequences using Vec<i32>
+// Each node: 10 children (digits 0-9) + is_end flag = 11 slots per node
+// NIL = -1 means no child
+
+fn new_trie_node(nodes: Vec<i32>, NIL: i32) -> i32 {
+    let idx = nodes.len() / 11;
+    for i in 0..10 {
+        nodes.push(NIL);
+    }
+    nodes.push(0); // is_end = 0 (false)
+    idx
+}
+
+fn get_child(nodes: Vec<i32>, node: i32, digit: i32) -> i32 {
+    nodes.get(node * 11 + digit)
+}
+
+fn set_child(nodes: Vec<i32>, node: i32, digit: i32, child: i32) -> i32 {
+    nodes.set(node * 11 + digit, child);
+    0
+}
+
+fn set_end(nodes: Vec<i32>, node: i32) -> i32 {
+    nodes.set(node * 11 + 10, 1);
+    0
+}
+
+fn is_end(nodes: Vec<i32>, node: i32) -> bool {
+    nodes.get(node * 11 + 10) == 1
+}
+
+// Get digits of a number into a vec (handles 0 specially)
+fn get_digits(num: i32, digits: Vec<i32>) -> i32 {
+    if num == 0 {
+        digits.push(0);
+        return 0;
+    }
+    var n = num;
+    let tmp: Vec<i32> = Vec::new();
+    while n > 0 {
+        tmp.push(n - (n / 10) * 10);
+        n = n / 10;
+    }
+    // Reverse
+    var i = tmp.len() - 1;
+    while i >= 0 {
+        digits.push(tmp.get(i));
+        i = i - 1;
+    }
+    0
+}
+
+fn trie_insert(nodes: Vec<i32>, num: i32, NIL: i32) -> i32 {
+    let digits: Vec<i32> = Vec::new();
+    let _ = get_digits(num, digits);
+    var cur = 0;
+    for i in 0..digits.len() {
+        let d = digits.get(i);
+        let child = get_child(nodes, cur, d);
+        if child == NIL {
+            let new_node = new_trie_node(nodes, NIL);
+            let _ = set_child(nodes, cur, d, new_node);
+            cur = new_node;
+        } else {
+            cur = child;
+        }
+    }
+    let _ = set_end(nodes, cur);
+    0
+}
+
+fn trie_search(nodes: Vec<i32>, num: i32, NIL: i32) -> bool {
+    let digits: Vec<i32> = Vec::new();
+    let _ = get_digits(num, digits);
+    var cur = 0;
+    var found = true;
+    for i in 0..digits.len() {
+        if found {
+            let d = digits.get(i);
+            let child = get_child(nodes, cur, d);
+            if child == NIL {
+                found = false;
+            } else {
+                cur = child;
+            }
+        }
+    }
+    if found {
+        return is_end(nodes, cur);
+    }
+    false
+}
+
+fn trie_starts_with(nodes: Vec<i32>, prefix: i32, NIL: i32) -> bool {
+    let digits: Vec<i32> = Vec::new();
+    let _ = get_digits(prefix, digits);
+    var cur = 0;
+    var found = true;
+    for i in 0..digits.len() {
+        if found {
+            let d = digits.get(i);
+            let child = get_child(nodes, cur, d);
+            if child == NIL {
+                found = false;
+            } else {
+                cur = child;
+            }
+        }
+    }
+    found
+}
+
+fn test_insert_and_search() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = new_trie_node(nodes, NIL); // root
+    let _ = trie_insert(nodes, 123, NIL);
+    let _ = trie_insert(nodes, 456, NIL);
+    let _ = trie_insert(nodes, 789, NIL);
+    let f1 = trie_search(nodes, 123, NIL);
+    let f2 = trie_search(nodes, 456, NIL);
+    let f3 = trie_search(nodes, 789, NIL);
+    let f4 = trie_search(nodes, 124, NIL);
+    let f5 = trie_search(nodes, 12, NIL);
+    if f1 {
+        if f2 {
+            if f3 {
+                if !f4 {
+                    if !f5 {
+                        println("PASS: trie insert and search");
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    println("FAIL: trie insert and search");
+    0
+}
+
+fn test_starts_with() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = new_trie_node(nodes, NIL);
+    let _ = trie_insert(nodes, 1234, NIL);
+    let _ = trie_insert(nodes, 1256, NIL);
+    let _ = trie_insert(nodes, 789, NIL);
+    let s1 = trie_starts_with(nodes, 12, NIL);
+    let s2 = trie_starts_with(nodes, 123, NIL);
+    let s3 = trie_starts_with(nodes, 7, NIL);
+    let s4 = trie_starts_with(nodes, 13, NIL);
+    let s5 = trie_starts_with(nodes, 999, NIL);
+    if s1 {
+        if s2 {
+            if s3 {
+                if !s4 {
+                    if !s5 {
+                        println("PASS: trie starts_with");
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    println("FAIL: trie starts_with");
+    0
+}
+
+fn test_zero() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = new_trie_node(nodes, NIL);
+    let _ = trie_insert(nodes, 0, NIL);
+    let found = trie_search(nodes, 0, NIL);
+    if found {
+        println("PASS: trie handles zero");
+        1
+    } else {
+        println("FAIL: trie handles zero");
+        0
+    }
+}
+
+fn test_overlapping_numbers() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = new_trie_node(nodes, NIL);
+    let _ = trie_insert(nodes, 1, NIL);
+    let _ = trie_insert(nodes, 12, NIL);
+    let _ = trie_insert(nodes, 123, NIL);
+    let f1 = trie_search(nodes, 1, NIL);
+    let f2 = trie_search(nodes, 12, NIL);
+    let f3 = trie_search(nodes, 123, NIL);
+    let f4 = trie_search(nodes, 1234, NIL);
+    if f1 {
+        if f2 {
+            if f3 {
+                if !f4 {
+                    println("PASS: trie overlapping prefixes");
+                    return 1;
+                }
+            }
+        }
+    }
+    println("FAIL: trie overlapping prefixes");
+    0
+}
+
+fn test_many_numbers() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = new_trie_node(nodes, NIL);
+    // Insert 100, 200, ..., 900
+    var i = 1;
+    while i <= 9 {
+        let _ = trie_insert(nodes, i * 100, NIL);
+        i = i + 1;
+    }
+    var all_found = true;
+    i = 1;
+    while i <= 9 {
+        if !trie_search(nodes, i * 100, NIL) {
+            all_found = false;
+        }
+        i = i + 1;
+    }
+    // Check that 150 is not found
+    let not_found = !trie_search(nodes, 150, NIL);
+    if all_found {
+        if not_found {
+            println("PASS: trie many numbers");
+            return 1;
+        }
+    }
+    println("FAIL: trie many numbers");
+    0
+}
+
+fn main() {
+    println("=== Trie ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_insert_and_search();
+    passed = passed + test_starts_with();
+    passed = passed + test_zero();
+    passed = passed + test_overlapping_numbers();
+    passed = passed + test_many_numbers();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

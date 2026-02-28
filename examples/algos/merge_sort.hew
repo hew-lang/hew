@@ -1,0 +1,128 @@
+// Merge Sort - divide and conquer with auxiliary Vec
+
+fn merge_sort(v: Vec<int>) {
+    let n = v.len();
+    if n >= 2 {
+        // Bottom-up merge sort
+        var width = 1;
+        while width < n {
+            var start = 0;
+            while start < n {
+                let mid = start + width;
+                var end = start + width + width;
+                if mid > n {
+                    start = start + width + width;
+                } else {
+                    if end > n {
+                        end = n;
+                    }
+                    let aux: Vec<int> = Vec::new();
+                    var i = start;
+                    var j = mid;
+                    while i < mid {
+                        if j < end {
+                            if v.get(i) <= v.get(j) {
+                                aux.push(v.get(i));
+                                i = i + 1;
+                            } else {
+                                aux.push(v.get(j));
+                                j = j + 1;
+                            }
+                        } else {
+                            aux.push(v.get(i));
+                            i = i + 1;
+                        }
+                    }
+                    while j < end {
+                        aux.push(v.get(j));
+                        j = j + 1;
+                    }
+                    for k in 0..aux.len() {
+                        v.set(start + k, aux.get(k));
+                    }
+                    start = start + width + width;
+                }
+            }
+            width = width * 2;
+        }
+    }
+}
+
+fn vec_eq(a: Vec<int>, b: Vec<int>) -> int {
+    if a.len() != b.len() {
+        return 0;
+    }
+    var i = 0;
+    while i < a.len() {
+        if a.get(i) != b.get(i) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+fn make_vec_5(a: int, b: int, c: int, d: int, e: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    v.push(a);
+    v.push(b);
+    v.push(c);
+    v.push(d);
+    v.push(e);
+    v
+}
+
+fn run_test(name: String, input: Vec<int>, expected: Vec<int>) -> int {
+    merge_sort(input);
+    let pass = vec_eq(input, expected);
+    if pass == 1 {
+        println(f"Test {name} ... PASS");
+    } else {
+        println(f"Test {name} ... FAIL");
+    }
+    pass
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    total = total + 1;
+    passed = passed + run_test("reverse", make_vec_5(5, 4, 3, 2, 1), make_vec_5(1, 2, 3, 4, 5));
+
+    total = total + 1;
+    passed = passed + run_test("sorted", make_vec_5(1, 2, 3, 4, 5), make_vec_5(1, 2, 3, 4, 5));
+
+    total = total + 1;
+    passed = passed + run_test("duplicates", make_vec_5(3, 1, 3, 1, 2), make_vec_5(1, 1, 2, 3, 3));
+
+    total = total + 1;
+    let single: Vec<int> = Vec::new();
+    single.push(42);
+    let exp_single: Vec<int> = Vec::new();
+    exp_single.push(42);
+    passed = passed + run_test("single", single, exp_single);
+
+    total = total + 1;
+    let empty: Vec<int> = Vec::new();
+    let exp_empty: Vec<int> = Vec::new();
+    passed = passed + run_test("empty", empty, exp_empty);
+
+    // Test 6: larger input
+    total = total + 1;
+    let big: Vec<int> = Vec::new();
+    big.push(9); big.push(3); big.push(7); big.push(1); big.push(5);
+    big.push(8); big.push(2); big.push(6); big.push(4); big.push(0);
+    let exp_big: Vec<int> = Vec::new();
+    for x in 0..10 {
+        exp_big.push(x);
+    }
+    passed = passed + run_test("ten_elements", big, exp_big);
+
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAIL");
+    }
+}

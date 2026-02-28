@@ -1,0 +1,49 @@
+// Matrix Chain Multiplication
+// Dimensions: [10, 30, 5, 60] -> minimum operations = 4500
+// Matrices: A1(10x30), A2(30x5), A3(5x60)
+
+fn main() {
+    let dims: Vec<i32> = Vec::new();
+    dims.push(10);
+    dims.push(30);
+    dims.push(5);
+    dims.push(60);
+
+    let n = dims.len() - 1;
+    let INF = 999999;
+
+    // dp[i][j] = min cost to multiply matrices i..j (0-indexed)
+    // Flat array: n x n
+    let dp: Vec<i32> = Vec::new();
+    for i in 0..(n * n) {
+        dp.push(0);
+    }
+
+    // chain length l from 2 to n
+    var l = 2;
+    while l <= n {
+        var i = 0;
+        while i <= n - l {
+            let j = i + l - 1;
+            dp.set(i * n + j, INF);
+            var k = i;
+            while k < j {
+                let cost = dp.get(i * n + k) + dp.get((k + 1) * n + j) + dims.get(i) * dims.get(k + 1) * dims.get(j + 1);
+                if cost < dp.get(i * n + j) {
+                    dp.set(i * n + j, cost);
+                }
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        l = l + 1;
+    }
+
+    let result = dp.get(0 * n + (n - 1));
+    println(result);
+    if result == 4500 {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

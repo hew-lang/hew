@@ -1,0 +1,237 @@
+// Counting Map - Frequency counter using hash map
+// Counts occurrences of integer keys
+
+fn hash(key: int, capacity: int) -> int {
+    let h = key % capacity;
+    if h < 0 {
+        h + capacity
+    } else {
+        h
+    }
+}
+
+fn make_keys(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    let EMPTY = 0 - 1;
+    for i in 0..capacity {
+        v.push(EMPTY);
+    }
+    v
+}
+
+fn make_vals(capacity: int) -> Vec<int> {
+    let v: Vec<int> = Vec::new();
+    for i in 0..capacity {
+        v.push(0);
+    }
+    v
+}
+
+fn cm_find_slot(keys: Vec<int>, key: int) -> int {
+    let capacity = keys.len();
+    let EMPTY = 0 - 1;
+    var idx = hash(key, capacity);
+    var i = 0;
+    while i < capacity {
+        let k = keys.get(idx);
+        if k == key {
+            return idx;
+        }
+        if k == EMPTY {
+            return idx;
+        }
+        idx = (idx + 1) % capacity;
+        i = i + 1;
+    }
+    0 - 1
+}
+
+fn cm_increment(keys: Vec<int>, vals: Vec<int>, key: int) {
+    let EMPTY = 0 - 1;
+    let slot = cm_find_slot(keys, key);
+    if slot >= 0 {
+        let k = keys.get(slot);
+        if k == EMPTY {
+            keys.set(slot, key);
+            vals.set(slot, 1);
+        } else {
+            let cur = vals.get(slot);
+            vals.set(slot, cur + 1);
+        }
+    }
+}
+
+fn cm_get_count(keys: Vec<int>, vals: Vec<int>, key: int) -> int {
+    let EMPTY = 0 - 1;
+    let slot = cm_find_slot(keys, key);
+    if slot >= 0 {
+        let k = keys.get(slot);
+        if k == key {
+            return vals.get(slot);
+        }
+    }
+    0
+}
+
+fn cm_most_frequent(keys: Vec<int>, vals: Vec<int>) -> int {
+    let capacity = keys.len();
+    let EMPTY = 0 - 1;
+    var best_key = 0;
+    var best_count = 0;
+    for i in 0..capacity {
+        let k = keys.get(i);
+        if k != EMPTY {
+            let c = vals.get(i);
+            if c > best_count {
+                best_count = c;
+                best_key = k;
+            }
+        }
+    }
+    best_key
+}
+
+fn main() {
+    var passed = 0;
+    var failed = 0;
+    let cap = 32;
+    let keys = make_keys(cap);
+    let vals = make_vals(cap);
+
+    // Test 1: Count single key
+    cm_increment(keys, vals, 5);
+    cm_increment(keys, vals, 5);
+    cm_increment(keys, vals, 5);
+    let c5 = cm_get_count(keys, vals, 5);
+    if c5 == 3 {
+        println("PASS: count single key");
+        passed = passed + 1;
+    } else {
+        println("FAIL: count single key");
+        failed = failed + 1;
+    }
+
+    // Test 2: Count multiple keys
+    cm_increment(keys, vals, 10);
+    cm_increment(keys, vals, 10);
+    cm_increment(keys, vals, 15);
+    let c10 = cm_get_count(keys, vals, 10);
+    let c15 = cm_get_count(keys, vals, 15);
+    if c10 == 2 {
+        if c15 == 1 {
+            println("PASS: count multiple keys");
+            passed = passed + 1;
+        } else {
+            println("FAIL: count multiple keys");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: count multiple keys");
+        failed = failed + 1;
+    }
+
+    // Test 3: Get count of non-existent key
+    let cn = cm_get_count(keys, vals, 999);
+    if cn == 0 {
+        println("PASS: non-existent key count");
+        passed = passed + 1;
+    } else {
+        println("FAIL: non-existent key count");
+        failed = failed + 1;
+    }
+
+    // Test 4: Most frequent
+    let mf = cm_most_frequent(keys, vals);
+    if mf == 5 {
+        println("PASS: most frequent");
+        passed = passed + 1;
+    } else {
+        println("FAIL: most frequent");
+        failed = failed + 1;
+    }
+
+    // Test 5: Frequency counting simulation (like word counting)
+    // Simulate: tokens = [1, 2, 1, 3, 2, 1, 4, 2, 1]
+    let keys2 = make_keys(cap);
+    let vals2 = make_vals(cap);
+    // token 1 appears 4 times
+    cm_increment(keys2, vals2, 1);
+    cm_increment(keys2, vals2, 2);
+    cm_increment(keys2, vals2, 1);
+    cm_increment(keys2, vals2, 3);
+    cm_increment(keys2, vals2, 2);
+    cm_increment(keys2, vals2, 1);
+    cm_increment(keys2, vals2, 4);
+    cm_increment(keys2, vals2, 2);
+    cm_increment(keys2, vals2, 1);
+    let f1 = cm_get_count(keys2, vals2, 1);
+    let f2 = cm_get_count(keys2, vals2, 2);
+    let f3 = cm_get_count(keys2, vals2, 3);
+    let f4 = cm_get_count(keys2, vals2, 4);
+    if f1 == 4 {
+        if f2 == 3 {
+            if f3 == 1 {
+                if f4 == 1 {
+                    println("PASS: frequency simulation");
+                    passed = passed + 1;
+                } else {
+                    println("FAIL: frequency simulation");
+                    failed = failed + 1;
+                }
+            } else {
+                println("FAIL: frequency simulation");
+                failed = failed + 1;
+            }
+        } else {
+            println("FAIL: frequency simulation");
+            failed = failed + 1;
+        }
+    } else {
+        println("FAIL: frequency simulation");
+        failed = failed + 1;
+    }
+
+    // Test 6: Most frequent after simulation
+    let mf2 = cm_most_frequent(keys2, vals2);
+    if mf2 == 1 {
+        println("PASS: most frequent after simulation");
+        passed = passed + 1;
+    } else {
+        println("FAIL: most frequent after simulation");
+        failed = failed + 1;
+    }
+
+    // Test 7: Increment existing further
+    cm_increment(keys2, vals2, 2);
+    cm_increment(keys2, vals2, 2);
+    let f2b = cm_get_count(keys2, vals2, 2);
+    if f2b == 5 {
+        println("PASS: increment further");
+        passed = passed + 1;
+    } else {
+        println("FAIL: increment further");
+        failed = failed + 1;
+    }
+
+    // Test 8: Most frequent changes after updates
+    let mf3 = cm_most_frequent(keys2, vals2);
+    if mf3 == 2 {
+        println("PASS: most frequent updated");
+        passed = passed + 1;
+    } else {
+        println("FAIL: most frequent updated");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("---");
+    print("Passed: ");
+    println(passed);
+    print("Failed: ");
+    println(failed);
+    if failed == 0 {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

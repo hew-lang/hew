@@ -1,0 +1,133 @@
+// Two-Stack Queue - Queue implemented with two stacks
+// inbox: push here, outbox: pop from here
+// When outbox empty, transfer all from inbox to outbox (reverses order = FIFO)
+
+fn transfer(inbox: Vec<int>, outbox: Vec<int>) {
+    while inbox.len() > 0 {
+        let val = inbox.pop();
+        outbox.push(val);
+    }
+}
+
+fn tsq_enqueue(inbox: Vec<int>, val: int) {
+    inbox.push(val);
+}
+
+fn tsq_dequeue(inbox: Vec<int>, outbox: Vec<int>) -> int {
+    if outbox.len() == 0 {
+        transfer(inbox, outbox);
+    }
+    outbox.pop()
+}
+
+fn tsq_peek(inbox: Vec<int>, outbox: Vec<int>) -> int {
+    if outbox.len() == 0 {
+        transfer(inbox, outbox);
+    }
+    outbox.get(outbox.len() - 1)
+}
+
+fn tsq_size(inbox: Vec<int>, outbox: Vec<int>) -> int {
+    inbox.len() + outbox.len()
+}
+
+fn tsq_is_empty(inbox: Vec<int>, outbox: Vec<int>) -> int {
+    if tsq_size(inbox, outbox) == 0 { 1 } else { 0 }
+}
+
+fn run_test(name: String, passed: int) -> int {
+    if passed == 1 {
+        println(f"PASS: {name}");
+    } else {
+        println(f"FAIL: {name}");
+    }
+    passed
+}
+
+fn main() {
+    var total = 0;
+    var passed = 0;
+
+    let inbox: Vec<int> = Vec::new();
+    let outbox: Vec<int> = Vec::new();
+
+    // Test 1: empty
+    total = total + 1;
+    let r1 = if tsq_is_empty(inbox, outbox) == 1 { 1 } else { 0 };
+    passed = passed + run_test("new queue is empty", r1);
+
+    // Test 2: enqueue and size
+    total = total + 1;
+    tsq_enqueue(inbox, 10);
+    tsq_enqueue(inbox, 20);
+    tsq_enqueue(inbox, 30);
+    let r2 = if tsq_size(inbox, outbox) == 3 { 1 } else { 0 };
+    passed = passed + run_test("enqueue 3 size=3", r2);
+
+    // Test 3: peek returns first enqueued (FIFO)
+    total = total + 1;
+    let r3 = if tsq_peek(inbox, outbox) == 10 { 1 } else { 0 };
+    passed = passed + run_test("peek returns first", r3);
+
+    // Test 4: dequeue FIFO order
+    total = total + 1;
+    let d1 = tsq_dequeue(inbox, outbox);
+    let d2 = tsq_dequeue(inbox, outbox);
+    let d3 = tsq_dequeue(inbox, outbox);
+    var r4 = 0;
+    if d1 == 10 {
+        if d2 == 20 {
+            if d3 == 30 {
+                r4 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("dequeue FIFO order", r4);
+
+    // Test 5: empty after all dequeued
+    total = total + 1;
+    let r5 = if tsq_is_empty(inbox, outbox) == 1 { 1 } else { 0 };
+    passed = passed + run_test("empty after dequeue all", r5);
+
+    // Test 6: interleaved enqueue/dequeue
+    total = total + 1;
+    tsq_enqueue(inbox, 1);
+    tsq_enqueue(inbox, 2);
+    let id1 = tsq_dequeue(inbox, outbox); // should be 1
+    tsq_enqueue(inbox, 3);
+    let id2 = tsq_dequeue(inbox, outbox); // should be 2
+    let id3 = tsq_dequeue(inbox, outbox); // should be 3
+    var r6 = 0;
+    if id1 == 1 {
+        if id2 == 2 {
+            if id3 == 3 {
+                r6 = 1;
+            }
+        }
+    }
+    passed = passed + run_test("interleaved ops FIFO", r6);
+
+    // Test 7: many elements
+    total = total + 1;
+    let in2: Vec<int> = Vec::new();
+    let out2: Vec<int> = Vec::new();
+    for i in 0..50 {
+        tsq_enqueue(in2, i);
+    }
+    var r7 = 1;
+    for i in 0..50 {
+        let val = tsq_dequeue(in2, out2);
+        if val != i {
+            r7 = 0;
+        }
+    }
+    passed = passed + run_test("50 elements FIFO", r7);
+
+    // Summary
+    println(f"{passed}/{total} tests passed");
+    if passed == total {
+        println("ALL PASS");
+    } else {
+        println("SOME FAILED");
+    }
+}

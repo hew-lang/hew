@@ -1,0 +1,288 @@
+// Binary Search Tree using Vec<i32> with index-based pointers
+// Each node: [value, left, right] = 3 slots
+// NIL = -1 means no child
+
+fn add_node(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
+    let idx = nodes.len() / 3;
+    nodes.push(val);
+    nodes.push(NIL);
+    nodes.push(NIL);
+    idx
+}
+
+fn bst_insert(nodes: Vec<i32>, val: i32, NIL: i32) -> i32 {
+    if nodes.len() == 0 {
+        let _ = add_node(nodes, val, NIL);
+        return 0;
+    }
+    var cur = 0;
+    var placed = false;
+    while !placed {
+        let cur_val = nodes.get(cur * 3);
+        if val < cur_val {
+            let left = nodes.get(cur * 3 + 1);
+            if left == NIL {
+                let new_idx = add_node(nodes, val, NIL);
+                nodes.set(cur * 3 + 1, new_idx);
+                placed = true;
+            } else {
+                cur = left;
+            }
+        } else {
+            let right = nodes.get(cur * 3 + 2);
+            if right == NIL {
+                let new_idx = add_node(nodes, val, NIL);
+                nodes.set(cur * 3 + 2, new_idx);
+                placed = true;
+            } else {
+                cur = right;
+            }
+        }
+    }
+    0
+}
+
+fn bst_search(nodes: Vec<i32>, val: i32, NIL: i32) -> bool {
+    if nodes.len() == 0 {
+        return false;
+    }
+    var cur = 0;
+    while cur != NIL {
+        let cur_val = nodes.get(cur * 3);
+        if val == cur_val {
+            return true;
+        } else if val < cur_val {
+            cur = nodes.get(cur * 3 + 1);
+        } else {
+            cur = nodes.get(cur * 3 + 2);
+        }
+    }
+    false
+}
+
+fn bst_min(nodes: Vec<i32>, NIL: i32) -> i32 {
+    var cur = 0;
+    var left = nodes.get(cur * 3 + 1);
+    while left != NIL {
+        cur = left;
+        left = nodes.get(cur * 3 + 1);
+    }
+    nodes.get(cur * 3)
+}
+
+fn bst_max(nodes: Vec<i32>, NIL: i32) -> i32 {
+    var cur = 0;
+    var right = nodes.get(cur * 3 + 2);
+    while right != NIL {
+        cur = right;
+        right = nodes.get(cur * 3 + 2);
+    }
+    nodes.get(cur * 3)
+}
+
+// Iterative inorder traversal
+fn inorder(nodes: Vec<i32>, result: Vec<i32>, NIL: i32) -> i32 {
+    if nodes.len() == 0 {
+        return 0;
+    }
+    let stack: Vec<i32> = Vec::new();
+    var cur = 0;
+    var running = true;
+    while running {
+        while cur != NIL {
+            stack.push(cur);
+            cur = nodes.get(cur * 3 + 1);
+        }
+        if stack.len() == 0 {
+            running = false;
+        } else {
+            cur = stack.pop();
+            result.push(nodes.get(cur * 3));
+            cur = nodes.get(cur * 3 + 2);
+        }
+    }
+    0
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    var i = 0;
+    while i < a.len() {
+        if a.get(i) != b.get(i) {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+fn print_vec(v: Vec<i32>) -> i32 {
+    for i in 0..v.len() {
+        print(v.get(i));
+        print(" ");
+    }
+    println("");
+    0
+}
+
+fn test_insert_and_inorder() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    // Insert [5, 3, 7, 1, 4, 6, 8]
+    let _ = bst_insert(nodes, 5, NIL);
+    let _ = bst_insert(nodes, 3, NIL);
+    let _ = bst_insert(nodes, 7, NIL);
+    let _ = bst_insert(nodes, 1, NIL);
+    let _ = bst_insert(nodes, 4, NIL);
+    let _ = bst_insert(nodes, 6, NIL);
+    let _ = bst_insert(nodes, 8, NIL);
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, result, NIL);
+    // Inorder of BST should be sorted: 1 3 4 5 6 7 8
+    let expected: Vec<i32> = Vec::new();
+    expected.push(1); expected.push(3); expected.push(4); expected.push(5);
+    expected.push(6); expected.push(7); expected.push(8);
+    if vecs_equal(result, expected) {
+        println("PASS: BST inorder is sorted");
+        1
+    } else {
+        print("FAIL: BST inorder, got: ");
+        let _ = print_vec(result);
+        0
+    }
+}
+
+fn test_search() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = bst_insert(nodes, 5, NIL);
+    let _ = bst_insert(nodes, 3, NIL);
+    let _ = bst_insert(nodes, 7, NIL);
+    let _ = bst_insert(nodes, 1, NIL);
+    let _ = bst_insert(nodes, 4, NIL);
+    let _ = bst_insert(nodes, 6, NIL);
+    let _ = bst_insert(nodes, 8, NIL);
+    let f5 = bst_search(nodes, 5, NIL);
+    let f1 = bst_search(nodes, 1, NIL);
+    let f8 = bst_search(nodes, 8, NIL);
+    let f4 = bst_search(nodes, 4, NIL);
+    let f9 = bst_search(nodes, 9, NIL);
+    let f0 = bst_search(nodes, 0, NIL);
+    let f2 = bst_search(nodes, 2, NIL);
+    if f5 {
+        if f1 {
+            if f8 {
+                if f4 {
+                    if !f9 {
+                        if !f0 {
+                            if !f2 {
+                                println("PASS: BST search");
+                                return 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println("FAIL: BST search");
+    0
+}
+
+fn test_min_max() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = bst_insert(nodes, 5, NIL);
+    let _ = bst_insert(nodes, 3, NIL);
+    let _ = bst_insert(nodes, 7, NIL);
+    let _ = bst_insert(nodes, 1, NIL);
+    let _ = bst_insert(nodes, 4, NIL);
+    let _ = bst_insert(nodes, 6, NIL);
+    let _ = bst_insert(nodes, 8, NIL);
+    let mn = bst_min(nodes, NIL);
+    let mx = bst_max(nodes, NIL);
+    if mn == 1 {
+        if mx == 8 {
+            println("PASS: BST min/max");
+            return 1;
+        }
+    }
+    print("FAIL: BST min=");
+    print(mn);
+    print(" max=");
+    println(mx);
+    0
+}
+
+fn test_sorted_insert() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    // Insert in sorted order (worst case for BST)
+    for i in 1..11 {
+        let _ = bst_insert(nodes, i, NIL);
+    }
+    let result: Vec<i32> = Vec::new();
+    let _ = inorder(nodes, result, NIL);
+    var ok = true;
+    if result.len() != 10 {
+        ok = false;
+    } else {
+        for j in 0..10 {
+            if result.get(j) != j + 1 {
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println("PASS: BST sorted insert");
+        1
+    } else {
+        println("FAIL: BST sorted insert");
+        0
+    }
+}
+
+fn test_single_element() -> i32 {
+    let NIL = 0 - 1;
+    let nodes: Vec<i32> = Vec::new();
+    let _ = bst_insert(nodes, 42, NIL);
+    let found = bst_search(nodes, 42, NIL);
+    let not_found = bst_search(nodes, 99, NIL);
+    let mn = bst_min(nodes, NIL);
+    let mx = bst_max(nodes, NIL);
+    if found {
+        if !not_found {
+            if mn == 42 {
+                if mx == 42 {
+                    println("PASS: BST single element");
+                    return 1;
+                }
+            }
+        }
+    }
+    println("FAIL: BST single element");
+    0
+}
+
+fn main() {
+    println("=== Binary Search Tree ===");
+    var passed = 0;
+    let total = 5;
+    passed = passed + test_insert_and_inorder();
+    passed = passed + test_search();
+    passed = passed + test_min_max();
+    passed = passed + test_sorted_insert();
+    passed = passed + test_single_element();
+    println("");
+    print(passed);
+    print("/");
+    print(total);
+    println(" tests passed");
+    if passed == total {
+        println("PASS");
+    } else {
+        println("FAIL");
+    }
+}

@@ -1,0 +1,261 @@
+// LRU Cache using doubly-linked list + linear scan for key lookup
+// Node layout: [key, value, prev, next] = 4 slots per node
+// Most recently used at front (head), least recently used at back (tail)
+
+fn node_key(n: Vec<i32>, i: i32) -> i32 { n.get(i * 4) }
+fn node_val(n: Vec<i32>, i: i32) -> i32 { n.get(i * 4 + 1) }
+fn node_prev(n: Vec<i32>, i: i32) -> i32 { n.get(i * 4 + 2) }
+fn node_next(n: Vec<i32>, i: i32) -> i32 { n.get(i * 4 + 3) }
+fn set_val(n: Vec<i32>, i: i32, v: i32) { n.set(i * 4 + 1, v); }
+fn set_prev(n: Vec<i32>, i: i32, p: i32) { n.set(i * 4 + 2, p); }
+fn set_next(n: Vec<i32>, i: i32, nx: i32) { n.set(i * 4 + 3, nx); }
+
+fn alloc_node(n: Vec<i32>, key: i32, val: i32) -> i32 {
+    let idx = n.len() / 4;
+    n.push(key);
+    n.push(val);
+    n.push(-1);
+    n.push(-1);
+    idx
+}
+
+// meta[0] = head, meta[1] = tail, meta[2] = size, meta[3] = capacity
+fn cache_head(m: Vec<i32>) -> i32 { m.get(0) }
+fn cache_tail(m: Vec<i32>) -> i32 { m.get(1) }
+fn cache_size(m: Vec<i32>) -> i32 { m.get(2) }
+fn cache_cap(m: Vec<i32>) -> i32 { m.get(3) }
+fn set_head(m: Vec<i32>, h: i32) { m.set(0, h); }
+fn set_tail(m: Vec<i32>, t: i32) { m.set(1, t); }
+fn set_size(m: Vec<i32>, s: i32) { m.set(2, s); }
+
+fn new_cache(capacity: i32) -> Vec<i32> {
+    let m: Vec<i32> = Vec::new();
+    m.push(-1);
+    m.push(-1);
+    m.push(0);
+    m.push(capacity);
+    m
+}
+
+// Remove node from its current position in the list
+fn detach(n: Vec<i32>, m: Vec<i32>, idx: i32) {
+    let p = node_prev(n, idx);
+    let nx = node_next(n, idx);
+    if p != -1 {
+        set_next(n, p, nx);
+    } else {
+        set_head(m, nx);
+    }
+    if nx != -1 {
+        set_prev(n, nx, p);
+    } else {
+        set_tail(m, p);
+    }
+    set_prev(n, idx, -1);
+    set_next(n, idx, -1);
+}
+
+// Push node to front (most recently used)
+fn push_front(n: Vec<i32>, m: Vec<i32>, idx: i32) {
+    let h = cache_head(m);
+    set_next(n, idx, h);
+    set_prev(n, idx, -1);
+    if h != -1 {
+        set_prev(n, h, idx);
+    } else {
+        set_tail(m, idx);
+    }
+    set_head(m, idx);
+}
+
+// Find node by key (linear scan), returns node index or -1
+fn find_key(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
+    var curr = cache_head(m);
+    while curr != -1 {
+        if node_key(n, curr) == key {
+            return curr;
+        }
+        curr = node_next(n, curr);
+    }
+    -1
+}
+
+// Get value for key, moves to front. Returns -1 if not found.
+fn cache_get(n: Vec<i32>, m: Vec<i32>, key: i32) -> i32 {
+    let idx = find_key(n, m, key);
+    if idx == -1 { return -1; }
+    detach(n, m, idx);
+    push_front(n, m, idx);
+    node_val(n, idx)
+}
+
+// Put key-value pair. Evicts LRU if at capacity.
+fn cache_put(n: Vec<i32>, m: Vec<i32>, key: i32, val: i32) {
+    let idx = find_key(n, m, key);
+    if idx != -1 {
+        set_val(n, idx, val);
+        detach(n, m, idx);
+        push_front(n, m, idx);
+    } else {
+        if cache_size(m) >= cache_cap(m) {
+            // Evict tail (LRU)
+            let t = cache_tail(m);
+            detach(n, m, t);
+            set_size(m, cache_size(m) - 1);
+        }
+        let nd = alloc_node(n, key, val);
+        push_front(n, m, nd);
+        set_size(m, cache_size(m) + 1);
+    }
+}
+
+// Collect keys in order from head to tail
+fn collect_keys(n: Vec<i32>, m: Vec<i32>, result: Vec<i32>) {
+    var curr = cache_head(m);
+    while curr != -1 {
+        result.push(node_key(n, curr));
+        curr = node_next(n, curr);
+    }
+}
+
+fn vecs_equal(a: Vec<i32>, b: Vec<i32>) -> i32 {
+    if a.len() != b.len() { return 0; }
+    for i in 0..a.len() {
+        if a.get(i) != b.get(i) { return 0; }
+    }
+    1
+}
+
+// --- Tests ---
+
+fn test_put_and_get() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(3);
+    cache_put(n, m, 1, 100);
+    cache_put(n, m, 2, 200);
+    cache_put(n, m, 3, 300);
+    let v1 = cache_get(n, m, 1);
+    let v2 = cache_get(n, m, 2);
+    let v3 = cache_get(n, m, 3);
+    if v1 == 100 {
+        if v2 == 200 {
+            if v3 == 300 {
+                println("PASS: put and get");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: put and get");
+    0
+}
+
+fn test_eviction() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(2);
+    cache_put(n, m, 1, 100);
+    cache_put(n, m, 2, 200);
+    cache_put(n, m, 3, 300);
+    // Key 1 should be evicted (LRU)
+    let v1 = cache_get(n, m, 1);
+    let v2 = cache_get(n, m, 2);
+    let v3 = cache_get(n, m, 3);
+    if v1 == -1 {
+        if v2 == 200 {
+            if v3 == 300 {
+                println("PASS: eviction");
+                return 1;
+            }
+        }
+    }
+    println("FAIL: eviction");
+    0
+}
+
+fn test_access_updates_order() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(3);
+    cache_put(n, m, 1, 100);
+    cache_put(n, m, 2, 200);
+    cache_put(n, m, 3, 300);
+    // Access key 1, making it most recent
+    let _v = cache_get(n, m, 1);
+    // Now add key 4, should evict key 2 (now LRU)
+    cache_put(n, m, 4, 400);
+    let v2 = cache_get(n, m, 2);
+    let v1 = cache_get(n, m, 1);
+    if v2 == -1 {
+        if v1 == 100 {
+            println("PASS: access updates order");
+            return 1;
+        }
+    }
+    println("FAIL: access updates order");
+    0
+}
+
+fn test_update_value() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(3);
+    cache_put(n, m, 1, 100);
+    cache_put(n, m, 1, 999);
+    let v = cache_get(n, m, 1);
+    if v == 999 {
+        if cache_size(m) == 1 {
+            println("PASS: update value");
+            return 1;
+        }
+    }
+    println("FAIL: update value");
+    0
+}
+
+fn test_order_after_operations() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(3);
+    cache_put(n, m, 1, 10);
+    cache_put(n, m, 2, 20);
+    cache_put(n, m, 3, 30);
+    // Order: 3(front) -> 2 -> 1(back)
+    let _v = cache_get(n, m, 1);
+    // Order: 1(front) -> 3 -> 2(back)
+    let r: Vec<i32> = Vec::new();
+    collect_keys(n, m, r);
+    let e: Vec<i32> = Vec::new();
+    e.push(1); e.push(3); e.push(2);
+    if vecs_equal(r, e) == 1 {
+        println("PASS: order after operations");
+        return 1;
+    }
+    println("FAIL: order after operations");
+    0
+}
+
+fn test_miss() -> i32 {
+    let n: Vec<i32> = Vec::new();
+    let m = new_cache(2);
+    cache_put(n, m, 1, 100);
+    let v = cache_get(n, m, 99);
+    if v == -1 {
+        println("PASS: cache miss");
+        return 1;
+    }
+    println("FAIL: cache miss");
+    0
+}
+
+fn main() {
+    println("=== LRU Cache Tests ===");
+    var passed = 0;
+    let total = 6;
+    passed = passed + test_put_and_get();
+    passed = passed + test_eviction();
+    passed = passed + test_access_updates_order();
+    passed = passed + test_update_value();
+    passed = passed + test_order_after_operations();
+    passed = passed + test_miss();
+    println("");
+    print("Passed: ");
+    print(passed);
+    println(f"/{total}");
+    if passed == total { println("OVERALL: PASS"); } else { println("OVERALL: FAIL"); }
+}

@@ -93,6 +93,10 @@
 - Codegen: range type mismatch between start and end now coerced (was silently ignored)
 - Runtime: Vec strdup calls abort on NULL (OOM safety, consistent with HashMap)
 - Serialization: normalization now covers Trait, TypeBodyItem::Variant, Const, TypeAlias items
+- Codegen: ToStringOp now promotes f32 to f64 before calling hew_float_to_string (fixes garbled output)
+- Codegen: AssertOp/AssertEqOp/AssertNeOp now handle i8, i16, and f32 types (fixes ABI mismatch)
+- Codegen: VecNewOp struct layout now correct for f32 fields (was using 8-byte size instead of 4)
+- Codegen: lambda capture analysis now covers Spawn, SpawnLambdaActor, Scope, ScopeLaunch, ScopeSpawn, Select, Join, Range, Timeout, Yield, Unsafe expressions
 
 ### Changed
 

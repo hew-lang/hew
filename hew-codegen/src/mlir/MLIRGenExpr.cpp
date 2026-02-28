@@ -3394,8 +3394,71 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
       collectFreeVarsInExpr(arep->value->value, bound, freeVars);
     if (arep->count)
       collectFreeVarsInExpr(arep->count->value, bound, freeVars);
+  } else if (auto *spawn = std::get_if<ast::ExprSpawn>(&expr.kind)) {
+    if (spawn->target)
+      collectFreeVarsInExpr(spawn->target->value, bound, freeVars);
+    for (const auto &[name, arg] : spawn->args) {
+      (void)name;
+      if (arg)
+        collectFreeVarsInExpr(arg->value, bound, freeVars);
+    }
+  } else if (auto *spawnLambda = std::get_if<ast::ExprSpawnLambdaActor>(&expr.kind)) {
+    auto lambdaBound = bound;
+    for (const auto &param : spawnLambda->params)
+      lambdaBound.insert(param.name);
+    lambdaBound.insert("self");
+    lambdaBound.insert("println_int");
+    lambdaBound.insert("println_str");
+    lambdaBound.insert("print_int");
+    lambdaBound.insert("print_str");
+    if (spawnLambda->body)
+      collectFreeVarsInExpr(spawnLambda->body->value, lambdaBound, freeVars);
+  } else if (auto *scope = std::get_if<ast::ExprScope>(&expr.kind)) {
+    auto scopeBound = bound;
+    if (scope->binding)
+      scopeBound.insert(*scope->binding);
+    collectFreeVarsInBlock(scope->block, scopeBound, freeVars);
+  } else if (auto *scopeLaunch = std::get_if<ast::ExprScopeLaunch>(&expr.kind)) {
+    collectFreeVarsInBlock(scopeLaunch->block, bound, freeVars);
+  } else if (auto *scopeSpawn = std::get_if<ast::ExprScopeSpawn>(&expr.kind)) {
+    collectFreeVarsInBlock(scopeSpawn->block, bound, freeVars);
+  } else if (auto *selectE = std::get_if<ast::ExprSelect>(&expr.kind)) {
+    for (const auto &arm : selectE->arms) {
+      if (arm.source)
+        collectFreeVarsInExpr(arm.source->value, bound, freeVars);
+      auto armBound = bound;
+      addPatternBindingsToSet(arm.binding.value, armBound);
+      if (arm.body)
+        collectFreeVarsInExpr(arm.body->value, armBound, freeVars);
+    }
+    if (selectE->timeout && *selectE->timeout) {
+      const auto &timeout = **selectE->timeout;
+      if (timeout.duration)
+        collectFreeVarsInExpr(timeout.duration->value, bound, freeVars);
+      if (timeout.body)
+        collectFreeVarsInExpr(timeout.body->value, bound, freeVars);
+    }
+  } else if (auto *join = std::get_if<ast::ExprJoin>(&expr.kind)) {
+    for (const auto &e : join->exprs)
+      if (e)
+        collectFreeVarsInExpr(e->value, bound, freeVars);
+  } else if (auto *range = std::get_if<ast::ExprRange>(&expr.kind)) {
+    if (range->start && *range->start)
+      collectFreeVarsInExpr((*range->start)->value, bound, freeVars);
+    if (range->end && *range->end)
+      collectFreeVarsInExpr((*range->end)->value, bound, freeVars);
+  } else if (auto *timeout = std::get_if<ast::ExprTimeout>(&expr.kind)) {
+    if (timeout->expr)
+      collectFreeVarsInExpr(timeout->expr->value, bound, freeVars);
+    if (timeout->duration)
+      collectFreeVarsInExpr(timeout->duration->value, bound, freeVars);
+  } else if (auto *yieldE = std::get_if<ast::ExprYield>(&expr.kind)) {
+    if (yieldE->value && *yieldE->value)
+      collectFreeVarsInExpr((*yieldE->value)->value, bound, freeVars);
+  } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+    collectFreeVarsInBlock(unsafeE->block, bound, freeVars);
   }
-  // Literal, Lambda (nested), Spawn, Scope, etc. — skip
+  // Literal, Lambda (nested), ScopeCancel, Regex literal, Cooperate, etc. — skip
 }
 
 void MLIRGen::collectFreeVarsInStmt(const ast::Stmt &stmt, std::set<std::string> &bound,

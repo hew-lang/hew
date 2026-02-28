@@ -549,3 +549,25 @@ implementation agents and a pragmatic code reviewer:
   all skipped by the `_ => {}` wildcard.
 
 **Test results**: 329/329 codegen e2e (100%), 1534+ Rust tests, zero warnings.
+
+### Quality Sprint 11: Type-Dispatch Gaps, Capture Analysis Completeness
+
+Eleventh round dispatched four deep-analysis agents targeting LLVM lowering,
+control flow, expression codegen, and concurrency safety:
+
+- **ToStringOp f32**: `hew_float_to_string` expects f64, but f32 values were
+  passed without promotion. Added `ExtFOp` to widen f32→f64 before the call.
+- **Assert lowering gaps**: AssertOp only handled i1/i32, AssertEqOp/AssertNeOp
+  only handled i32/i64/f64/string/pointer. Added i8/i16 widening (ExtSIOp→i64)
+  and f32 promotion (ExtFOp→f64) across all three assert operations.
+- **VecNewOp struct sizing**: f32 struct fields fell through to the default
+  (size=8, align=8) instead of correct (size=4, align=4). Added explicit f32
+  case in the struct size computation loop.
+- **Capture analysis completeness**: `collectFreeVarsInExpr` was missing 14
+  expression variants. Added: ExprSpawn, ExprSpawnLambdaActor, ExprScope,
+  ExprScopeLaunch, ExprScopeSpawn, ExprSelect, ExprJoin, ExprRange,
+  ExprTimeout, ExprYield, ExprUnsafe. All legitimately skippable variants
+  confirmed (ExprLiteral, ExprLambda, ExprScopeCancel, ExprRegexLiteral,
+  ExprCooperate).
+
+**Test results**: 329/329 codegen e2e (100%), 1534+ Rust tests, zero warnings.

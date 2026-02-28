@@ -399,3 +399,20 @@ wraps EVERY expression statement in a return-flag `scf.if` block.Values
 defined inside the if-block don't dominate uses outside it. Return-flag
 guards must only activate for statements that can structurally contain
 returns (if, match, while, for, loop) — not general expression statements.
+
+### 55. Every type-dispatching lowering must handle ALL supported types
+
+ToStringOp, AssertOp, AssertEqOp, AssertNeOp, and VecNewOp all had if/else
+chains that handled the "common" types (i32, i64, f64) but missed f32, i8,
+and i16. When the dispatch chain doesn't match, values get passed to runtime
+functions with the wrong ABI (f32 passed where f64 is expected, i8 passed
+where i64 is expected). Every lowering pattern must enumerate ALL types:
+i1, i8, i16, i32, i64, f32, f64, index, string_ref, pointer.
+
+### 56. Capture analysis and builtin rewriting share the same completeness risk
+
+Both `collectFreeVarsInExpr` (C++) and `rewrite_builtin_calls_in_expr` (Rust)
+recursively traverse expression trees. Both had the same bug: a catch-all
+`else` / `_ => {}` that silently skipped new expression variants. Any time
+a new Expr variant is added to the AST, BOTH visitors must be updated.
+Consider a compile-time assertion or exhaustive match to prevent silent gaps.

@@ -1208,6 +1208,8 @@ struct AssertOpLowering : public mlir::OpConversionPattern<hew::AssertOp> {
     auto condType = cond.getType();
     if (condType.isInteger(1)) {
       cond = rewriter.create<mlir::arith::ExtUIOp>(loc, i64Type, cond);
+    } else if (condType.isInteger(8) || condType.isInteger(16)) {
+      cond = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, cond);
     } else if (condType.isInteger(32)) {
       cond = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, cond);
     }
@@ -1252,6 +1254,15 @@ struct AssertEqOpLowering : public mlir::OpConversionPattern<hew::AssertEqOp> {
       funcName = "hew_assert_eq_str";
       auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
       funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
+    } else if (leftType.isInteger(8) || leftType.isInteger(16)) {
+      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
+      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
+    } else if (leftType.isF32()) {
+      funcName = "hew_assert_eq_f64";
+      left = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), left);
+      right = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), right);
+      funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(32)) {
       // Widen i32 to i64
       left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
@@ -1298,6 +1309,15 @@ struct AssertNeOpLowering : public mlir::OpConversionPattern<hew::AssertNeOp> {
       funcName = "hew_assert_ne_str";
       auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
       funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
+    } else if (leftType.isInteger(8) || leftType.isInteger(16)) {
+      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
+      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
+    } else if (leftType.isF32()) {
+      funcName = "hew_assert_ne_f64";
+      left = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), left);
+      right = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), right);
+      funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(32)) {
       left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
       right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
@@ -1679,6 +1699,10 @@ struct VecNewOpLowering : public mlir::OpConversionPattern<hew::VecNewOp> {
           } else if (fieldTy.isInteger(8) || fieldTy.isInteger(1)) {
             fieldSize = 1;
             fieldAlign = 1;
+          } else if (auto ft = mlir::dyn_cast<mlir::FloatType>(fieldTy);
+                     ft && ft.getWidth() == 32) {
+            fieldSize = 4;
+            fieldAlign = 4;
           } else {
             fieldSize = 8;
             fieldAlign = 8;
@@ -3128,6 +3152,8 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
       funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
     } else if (origType.isF64() || origType.isF32()) {
       funcName = "hew_float_to_string";
+      if (origType.isF32())
+        arg = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), arg);
     } else if (mlir::isa<mlir::IntegerType>(origType)) {
       // Other int widths — extend to i64
       funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";

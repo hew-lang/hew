@@ -1,19 +1,23 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_pipe_test.txt", "alpha\nbeta\ngamma"); }
+    let tmp = os.temp_dir();
+    let src_path = tmp + "/hew_pipe_test.txt";
+    let out_path = tmp + "/hew_pipe_out.txt";
+    unsafe { hew_file_write(src_path, "alpha\nbeta\ngamma"); }
 
-    let source = match stream.from_file("/tmp/hew_pipe_test.txt") {
+    let source = match stream.from_file(src_path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };
-    let dest = match stream.to_file("/tmp/hew_pipe_out.txt") {
+    let dest = match stream.to_file(out_path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };
     stream.pipe(source, dest);
 
-    let result = unsafe { hew_file_read("/tmp/hew_pipe_out.txt") };
+    let result = unsafe { hew_file_read(out_path) };
     println(result);
 }

@@ -1,9 +1,12 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_method_forawait.txt", "one\ntwo\nthree\n"); }
-    let raw = match stream.from_file("/tmp/hew_method_forawait.txt") {
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_method_forawait.txt";
+    unsafe { hew_file_write(path, "one\ntwo\nthree\n"); }
+    let raw = match stream.from_file(path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };

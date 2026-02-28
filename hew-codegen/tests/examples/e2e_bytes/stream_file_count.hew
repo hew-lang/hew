@@ -1,10 +1,13 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_stream_test.txt", "apple\nbanana\ncherry\n"); }
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_stream_test.txt";
+    unsafe { hew_file_write(path, "apple\nbanana\ncherry\n"); }
 
-    let raw = match stream.from_file("/tmp/hew_stream_test.txt") {
+    let raw = match stream.from_file(path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };

@@ -1,17 +1,20 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
+    let tmp = os.temp_dir();
     // Test error path: file does not exist
-    let result = stream.from_file("/tmp/hew_nonexistent_12345.txt");
+    let result = stream.from_file(tmp + "/hew_nonexistent_12345.txt");
     match result {
         Ok(_) => { println("FAIL: expected Err"); },
         Err(e) => { println("OK: got error"); },
     }
 
     // Test success path: file exists
-    let _ = fs.write("/tmp/hew_result_ok.txt", "hello");
-    let result2 = stream.from_file("/tmp/hew_result_ok.txt");
+    let ok_path = tmp + "/hew_result_ok.txt";
+    let _ = fs.write(ok_path, "hello");
+    let result2 = stream.from_file(ok_path);
     match result2 {
         Ok(s) => {
             let data = s.collect();

@@ -1450,6 +1450,7 @@ pub extern "C" fn hew_panic() {
     // scheduler's sigsetjmp frame). If recovery context exists, longjmps
     // directly — never returns. If no context, returns and we fall through
     // to the null dereference.
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         crate::signal::try_direct_longjmp();
     }

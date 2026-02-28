@@ -4,9 +4,18 @@ fn main() {
     m.insert("y", 20);
     m.insert("z", 30);
     println(m.len());
-    println(m.get("x"));
-    println(m.get("y"));
-    println(m.get("z"));
+    match m.get("x") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match m.get("y") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match m.get("z") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
     println(m.contains_key("x"));
     println(m.contains_key("w"));
 }

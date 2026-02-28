@@ -11,9 +11,18 @@ fn main() {
     println(m.len());
 
     // get
-    println(m.get("x"));
-    println(m.get("y"));
-    println(m.get("z"));
+    match m.get("x") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match m.get("y") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match m.get("z") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
 
     // contains_key
     println(m.contains_key("x"));
@@ -21,7 +30,10 @@ fn main() {
 
     // overwrite
     m.insert("x", 100);
-    println(m.get("x"));
+    match m.get("x") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
     println(m.len());
 
     // remove

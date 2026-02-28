@@ -30,8 +30,16 @@ fn main() -> int {
     m.insert("key2", 2);
     m.insert("key3", 3);
     m.insert("key4", 4);
-    let v0 = m.get("key0");
-    let v4 = m.get("key4");
+    var v0 = 0;
+    var v4 = 0;
+    match m.get("key0") {
+        Some(v) => { v0 = v; },
+        None => {},
+    }
+    match m.get("key4") {
+        Some(v) => { v4 = v; },
+        None => {},
+    }
     print("HashMap: key0=");
     print(v0);
     println(f", key4={v4}");

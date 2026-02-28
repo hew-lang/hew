@@ -130,11 +130,11 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   // Invoke hew build --emit-json via popen
   static std::string hewCli = findHewCli();
 #ifdef _WIN32
-  // On Windows _popen() routes through cmd.exe /c. The CRT quotes the
-  // whole command string for CreateProcess, and cmd.exe then strips the
-  // first and last '"' — mangling any interior quotes.  Avoid quoting
-  // paths here; temp_directory_path() and HEW_CLI are space-free.
-  std::string cmd = hewCli + " build " + tmpPath + " --emit-json 2>NUL";
+  // _popen() routes through cmd.exe /c which mis-parses interior \"
+  // escapes the CRT adds.  Wrapping the whole string in an extra pair of
+  // quotes makes cmd /c strip only the outer quotes and pass the interior
+  // ones through to the child process unchanged.
+  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>NUL\"";
 #else
   std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>/dev/null";
 #endif

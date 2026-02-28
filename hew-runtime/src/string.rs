@@ -749,7 +749,7 @@ pub unsafe extern "C" fn hew_string_index_of(
 // String literals in `.rodata` fall within these bounds — we must not
 // free them.
 
-#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
 unsafe extern "C" {
     #[link_name = "__executable_start"]
     static EXEC_START: u8;
@@ -760,13 +760,65 @@ unsafe extern "C" {
 /// Returns `true` if `ptr` points into the binary's loaded segments
 /// (text, rodata, data, bss).  Such pointers must never be passed to
 /// `free`.
-#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
 fn is_static_string(ptr: *const u8) -> bool {
     let addr = ptr as usize;
     // SAFETY: These are linker-defined symbols provided by the ELF linker;
     // taking their address is safe and gives the loaded extent of the binary.
     let start = (&raw const EXEC_START) as usize;
     let end = (&raw const EXEC_END) as usize;
+    addr >= start && addr < end
+}
+
+/// macOS Mach-O version: uses `_mh_execute_header` and segment commands
+/// to determine the loaded extent of the main executable.
+#[cfg(target_os = "macos")]
+fn is_static_string(ptr: *const u8) -> bool {
+    // On macOS, __executable_start and _end don't exist. Instead we use
+    // the mach_header to walk load commands and find the executable's
+    // virtual memory extent.
+    unsafe extern "C" {
+        // Provided by the Mach-O linker for the main executable.
+        #[link_name = "_mh_execute_header"]
+        static MH_HEADER: u8;
+    }
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static CACHED_START: AtomicUsize = AtomicUsize::new(0);
+    static CACHED_END: AtomicUsize = AtomicUsize::new(0);
+
+    let mut start = CACHED_START.load(Ordering::Relaxed);
+    let mut end = CACHED_END.load(Ordering::Relaxed);
+    if start == 0 {
+        // Walk Mach-O load commands to find vmaddr range.
+        let header = &raw const MH_HEADER;
+        // mach_header_64: magic(4) + cpu(4) + cpusub(4) + filetype(4) + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4) = 32 bytes
+        let ncmds = unsafe { *((header as usize + 16) as *const u32) };
+        let mut cmd_ptr = header as usize + 32; // past mach_header_64
+        let mut lo = usize::MAX;
+        let mut hi = 0usize;
+        for _ in 0..ncmds {
+            let cmd = unsafe { *(cmd_ptr as *const u32) };
+            let cmdsize = unsafe { *((cmd_ptr + 4) as *const u32) } as usize;
+            // LC_SEGMENT_64 = 0x19
+            if cmd == 0x19 {
+                // segment_command_64: cmd(4) + cmdsize(4) + segname(16) + vmaddr(8) + vmsize(8)
+                let vmaddr = unsafe { *((cmd_ptr + 24) as *const u64) } as usize;
+                let vmsize = unsafe { *((cmd_ptr + 32) as *const u64) } as usize;
+                if vmsize > 0 {
+                    lo = lo.min(vmaddr);
+                    hi = hi.max(vmaddr + vmsize);
+                }
+            }
+            cmd_ptr += cmdsize;
+        }
+        // The file vmaddrs are relative to the image base; add the slide.
+        let slide = header as usize - lo;
+        start = lo + slide;
+        end = hi + slide;
+        CACHED_START.store(start, Ordering::Relaxed);
+        CACHED_END.store(end, Ordering::Relaxed);
+    }
+    let addr = ptr as usize;
     addr >= start && addr < end
 }
 

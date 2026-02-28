@@ -551,6 +551,7 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
             rewrite_builtin_calls_in_expr(right);
         }
         Expr::Unary { operand, .. } => rewrite_builtin_calls_in_expr(operand),
+        Expr::Cast { expr, .. } => rewrite_builtin_calls_in_expr(expr),
         Expr::If {
             condition,
             then_block,
@@ -958,6 +959,10 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
         Expr::Unary { operand, .. } => {
             normalize_expr_types(operand);
         }
+        Expr::Cast { expr, ty } => {
+            normalize_expr_types(expr);
+            normalize_type_expr(&mut ty.0);
+        }
         Expr::FieldAccess { object, .. } => {
             normalize_expr_types(object);
         }
@@ -1330,6 +1335,7 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
             enrich_expr(right, tco);
         }
         Expr::Unary { operand: inner, .. }
+        | Expr::Cast { expr: inner, .. }
         | Expr::Await(inner)
         | Expr::PostfixTry(inner)
         | Expr::Yield(Some(inner)) => {

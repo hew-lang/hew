@@ -2352,7 +2352,27 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key)
         return true;
       key = coerceType(key, keyType, location);
-      resultOut = builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
+      // Wrap raw value in Option<V>: check contains_key, then get or None
+      auto optionType = hew::OptionEnumType::get(&context, valueType);
+      auto exists =
+          builder.create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, key)
+              .getResult();
+      auto ifOp =
+          builder.create<mlir::scf::IfOp>(location, optionType, exists, /*withElseRegion=*/true);
+      builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      auto rawVal =
+          builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
+      auto someVal = builder.create<hew::EnumConstructOp>(
+          location, optionType, /*variant_index=*/1, builder.getStringAttr("Option"),
+          mlir::ValueRange{rawVal}, /*payload_positions=*/nullptr);
+      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{someVal});
+      builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+      auto noneVal = builder.create<hew::EnumConstructOp>(
+          location, optionType, /*variant_index=*/0, builder.getStringAttr("Option"),
+          mlir::ValueRange{}, /*payload_positions=*/nullptr);
+      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{noneVal});
+      builder.setInsertionPointAfter(ifOp);
+      resultOut = ifOp.getResult(0);
       return true;
     }
     if (method == "remove") {

@@ -1,0 +1,4 @@
+# Force LF line endings for test expected output files
+# This prevents CRLF issues when comparing test output on Windows
+*.expected text eol=lf
+*.hew text eol=lf

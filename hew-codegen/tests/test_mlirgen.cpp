@@ -130,7 +130,11 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
   // Invoke hew build --emit-json via popen
   static std::string hewCli = findHewCli();
 #ifdef _WIN32
-  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>NUL";
+  // _popen() routes through cmd.exe /c which mis-parses interior \"
+  // escapes the CRT adds.  Wrapping the whole string in an extra pair of
+  // quotes makes cmd /c strip only the outer quotes and pass the interior
+  // ones through to the child process unchanged.
+  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>NUL\"";
 #else
   std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>/dev/null";
 #endif
@@ -197,10 +201,10 @@ static void test_simple_add() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn add(a: i32, b: i32) -> i32 {
+fn add(a: int, b: int) -> int {
     a + b
 }
-fn main() -> i32 {
+fn main() -> int {
     add(5, 3)
 }
   )",
@@ -238,14 +242,14 @@ static void test_fibonacci() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn fibonacci(n: i32) -> i32 {
+fn fibonacci(n: int) -> int {
     if n <= 1 {
         n
     } else {
         fibonacci(n - 1) + fibonacci(n - 2)
     }
 }
-fn main() -> i32 {
+fn main() -> int {
     let n = 10;
     let result = fibonacci(n);
     println(result);
@@ -273,7 +277,7 @@ fn main() -> i32 {
     return;
   }
 
-  // Check fibonacci signature: (i32) -> i32
+  // Check fibonacci signature: (int) -> int
   if (fib.getNumArguments() != 1) {
     FAIL("fibonacci should have 1 argument");
     module.getOperation()->destroy();
@@ -298,9 +302,9 @@ static void test_mutable_variables() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn main() -> i32 {
+fn main() -> int {
     let x = 5;
-    var y: i32 = 10;
+    var y: int = 10;
     y = y + x;
     y
 }
@@ -354,7 +358,7 @@ static void test_print() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn main() -> i32 {
+fn main() -> int {
     println(42);
     0
 }
@@ -395,9 +399,9 @@ static void test_while_loop() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn main() -> i32 {
-    var sum: i32 = 0;
-    var i: i32 = 1;
+fn main() -> int {
+    var sum: int = 0;
+    var i: int = 1;
     while i <= 10 {
         sum = sum + i;
         i = i + 1;
@@ -435,14 +439,14 @@ static void test_if_else_expr() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn abs(x: i32) -> i32 {
+fn abs(x: int) -> int {
     if x < 0 {
         0 - x
     } else {
         x
     }
 }
-fn main() -> i32 {
+fn main() -> int {
     abs(-5)
 }
   )",
@@ -476,7 +480,7 @@ static void test_arithmetic() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn compute(a: i32, b: i32) -> i32 {
+fn compute(a: int, b: int) -> int {
     let sum = a + b;
     let diff = a - b;
     let prod = a * b;
@@ -484,7 +488,7 @@ fn compute(a: i32, b: i32) -> i32 {
     let rem = a % b;
     sum + diff + prod + quot + rem
 }
-fn main() -> i32 {
+fn main() -> int {
     compute(10, 3)
 }
   )");
@@ -529,10 +533,10 @@ static void test_comparisons() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn test_cmp(a: i32, b: i32) -> i32 {
+fn test_cmp(a: int, b: int) -> int {
     if a < b { 1 } else { 0 }
 }
-fn main() -> i32 {
+fn main() -> int {
     test_cmp(3, 5)
 }
   )");
@@ -567,13 +571,13 @@ static void test_return_stmt() {
   // Early return inside structured control flow (scf.if) requires more complex
   // lowering (return-flag pattern or cf.cond_br) which will be added later.
   auto module = generateMLIR(ctx, R"(
-fn identity(x: i32) -> i32 {
+fn identity(x: int) -> int {
     return x;
 }
-fn add_one(x: i32) -> i32 {
+fn add_one(x: int) -> int {
     return x + 1;
 }
-fn main() -> i32 {
+fn main() -> int {
     identity(add_one(5))
 }
   )");
@@ -613,7 +617,7 @@ fn test_and(a: bool, b: bool) -> bool {
 fn test_or(a: bool, b: bool) -> bool {
     a || b
 }
-fn main() -> i32 {
+fn main() -> int {
     0
 }
   )");
@@ -647,10 +651,10 @@ static void test_unary_ops() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn negate(x: i32) -> i32 {
+fn negate(x: int) -> int {
     0 - x
 }
-fn main() -> i32 {
+fn main() -> int {
     negate(5)
 }
   )");
@@ -682,8 +686,8 @@ static void test_compound_assignment() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn main() -> i32 {
-    var x: i32 = 10;
+fn main() -> int {
+    var x: int = 10;
     x += 5;
     x -= 2;
     x *= 3;
@@ -726,13 +730,13 @@ static void test_function_calls() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn double(x: i32) -> i32 {
+fn double(x: int) -> int {
     x * 2
 }
-fn add_doubled(a: i32, b: i32) -> i32 {
+fn add_doubled(a: int, b: int) -> int {
     double(a) + double(b)
 }
-fn main() -> i32 {
+fn main() -> int {
     add_doubled(3, 4)
 }
   )");
@@ -774,7 +778,7 @@ static void test_void_function() {
 fn greet() {
     println(42);
 }
-fn main() -> i32 {
+fn main() -> int {
     greet();
     0
 }
@@ -810,7 +814,7 @@ static void test_result_constructors_without_payload_positions() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn main() -> i32 {
+fn main() -> int {
     Ok(7);
     Err(9);
     0
@@ -856,10 +860,10 @@ static void test_unresolved_named_type_fails() {
   mlir::MLIRContext ctx;
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
-fn takes_unknown(x: MissingType) -> i32 {
+fn takes_unknown(x: MissingType) -> int {
     0
 }
-fn main() -> i32 {
+fn main() -> int {
     takes_unknown(1)
 }
   )");
@@ -883,10 +887,10 @@ static void test_wire_encode_uses_heap_buffer() {
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
 wire type Packet {
-    id: i32 @1;
-    value: i32 @2;
+    id: int @1;
+    value: int @2;
 }
-fn main() -> i32 {
+fn main() -> int {
     0
 }
   )");
@@ -945,18 +949,18 @@ static void test_wire_enum_mixed_payload_layout() {
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
 wire enum Mixed {
-    Int(i32);
+    Int(int);
     Big(i64);
     Text(String);
     Unit;
 }
 
 wire type Packet {
-    id: i32 @1;
+    id: int @1;
     note: String @2;
 }
 
-fn main() -> i32 {
+fn main() -> int {
     let _a = Int(7);
     let _b = Big(7000000000);
     let _c = Text("hello");
@@ -1045,13 +1049,13 @@ static void test_wire_enum_mixed_payload_match_positions() {
   initContext(ctx);
   auto module = generateMLIR(ctx, R"(
 wire enum Mixed {
-    Int(i32);
+    Int(int);
     Big(i64);
     Text(String);
     Unit;
 }
 
-fn main() -> i32 {
+fn main() -> int {
     let m = Big(9);
     match m {
         Big(x) if x > 0 => 1,
@@ -1109,7 +1113,7 @@ static void test_unresolved_generic_substitution_type_fails() {
 fn identity<T>(x: T) -> T {
     x
 }
-fn main() -> i32 {
+fn main() -> int {
     let _ = identity<MissingType>(42);
     0
 }

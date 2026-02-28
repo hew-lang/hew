@@ -1,0 +1,14 @@
+fn main() -> int {
+    let v: Vec<string> = Vec::new();
+    v.push("hello");
+    v.push("world");
+    assert_eq(v.len(), 2);
+    assert_eq(v.get(0), "hello");
+    v.set(0, "hi");
+    assert_eq(v.get(0), "hi");
+    let popped = v.pop();
+    assert_eq(popped, "world");
+    assert_eq(v.len(), 1);
+    println("PASS: vec_string_ops");
+    0
+}

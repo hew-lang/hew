@@ -1,7 +1,11 @@
 import std::fs;
 
 fn main() {
-    // Test file existence check (we know /dev/null exists)
-    let exists = unsafe { hew_file_exists("/dev/null") };
+    // Write a temporary file, verify it exists, then clean up.
+    // Avoids platform-specific paths like /dev/null (absent on Windows).
+    let tmp = "_hew_test_fs_exists.tmp";
+    fs.write(tmp, "ok");
+    let exists = unsafe { hew_file_exists(tmp) };
     println(exists);
+    fs.delete(tmp);
 }

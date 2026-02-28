@@ -689,3 +689,55 @@ false => 42 }` was typed as Never instead of I64. Fixed by skipping
   skipped unhandled patterns. Changed to `emitError` for fail-fast.
 
 **Test results**: 333/333 codegen e2e (100%), 1088+ Rust workspace tests, zero failures.
+
+### Quality Sprint 17: Deep Hash/Vec Audit + Match Safety
+
+Dispatched 5 parallel audit agents (Opus 4.6, GPT 5.1 Codex, Sonnet 4.5,
+GPT 5.2 Codex, Gemini 3 Pro) for deep Hash/Vec correctness analysis across
+all compiler layers (type checker → serialization → MLIR gen → LLVM lowering
+→ runtime). Then dispatched 4 fix agents and 5 more audit agents for broader
+coverage.
+
+**HashMap.get() Option return** (breaking change):
+
+- `HashMap.get()` previously returned raw `T` at MLIR level, with a fragile
+  match-time wrapping hack that only worked for inline `match m.get("x")`.
+  Using `let g = m.get("x"); match g { ... }` broke because the match
+  couldn't trace back through the memref store to find the HashMapGetOp.
+- Fixed by wrapping the raw value in `Option<T>` at the expression level:
+  `contains_key` check → `scf.IfOp` → `EnumConstructOp(Some)` / `(None)`.
+- Removed 40-line special-case hack from MLIRGenMatch.cpp.
+- Updated all HashMap test code to use `match` with `Some/None` patterns.
+
+**Non-exhaustive match trap**:
+
+- Match fallthrough previously called `createDefaultValue` — silently
+  returning zero/undef when no arm matched. Now emits `hew.panic`
+  (traps at runtime).
+- Exhaustiveness warnings now cover all types (int, float, string),
+  not just enums/bool/Option/Result. The `_ => {}` catchall in
+  `check_exhaustiveness` replaced with proper identifier-or-wildcard check.
+
+**Vec runtime hardening**:
+
+- Added `hew_vec_set_ptr` and `hew_vec_pop_ptr` for pointer-type vectors.
+- All 6 `hew_vec_push_*` functions now use `checked_add` for overflow
+  protection on `len + 1`.
+- `hew_vec_append` now validates `elem_size` and `elem_kind` match between
+  source and destination vectors before memcpy.
+
+**Broader audit findings** (5 additional agents):
+
+- Enum/match codegen (Opus 4.6): Found match trap + exhaustiveness bugs (fixed).
+  Confirmed Option/Result tag indices consistent across all code paths.
+- For-in iterator (GPT 5.1 Codex): Vec iteration captures length once — stale
+  if body mutates Vec. Design tradeoff, not a bug (OOB crash is correct).
+- String operations (Sonnet 4.5): No bugs found. All string ops properly owned.
+- Struct/impl (GPT 5.2): Pointer-like field access scans all struct types by
+  field name — collision risk if multiple structs share field names. Low priority.
+- Closure/lambda (Gemini 3 Pro): Captured owned types shallow-copied without
+  suppressing outer drop (potential use-after-free). Closure env uses null
+  destructor (captured resources leaked). Design limitations, not crashes in
+  typical use.
+
+**Test results**: 335/335 codegen e2e (100%, +2 new), 324/324 runtime, zero warnings.

@@ -83,6 +83,21 @@ pub fn pid() -> i32 {
     hew_pid()
 }
 
+/// Returns the system temporary directory path.
+///
+/// Uses the platform-appropriate temp directory (e.g. `/tmp` on Unix,
+/// `%TEMP%` on Windows). Trailing separators are stripped.
+///
+/// # Examples
+///
+/// ```
+/// let tmp = os.temp_dir();
+/// let path = tmp + "/myfile.txt";
+/// ```
+pub fn temp_dir() -> String {
+    hew_temp_dir()
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
@@ -96,4 +111,5 @@ extern "C" {
     fn hew_home_dir() -> String;
     fn hew_hostname() -> String;
     fn hew_pid() -> i32;
+    fn hew_temp_dir() -> String;
 }

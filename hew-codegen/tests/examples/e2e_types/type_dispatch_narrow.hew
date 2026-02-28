@@ -38,8 +38,10 @@ fn test_hashmap_i32_values() -> int {
     let m: HashMap<string, i32> = HashMap::new();
     let val: i32 = 42;
     m.insert("key1", val);
-    let got = m.get("key1");
-    println(f"hashmap i32 got: {got}");
+    match m.get("key1") {
+        Some(got) => println(f"hashmap i32 got: {got}"),
+        None => println("hashmap i32 got: none"),
+    }
     println("PASS: hashmap_i32_values");
     0
 }

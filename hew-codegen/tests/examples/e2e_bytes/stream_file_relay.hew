@@ -1,5 +1,6 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn relay_file(path: string, sink: Sink) {
     let raw = match stream.from_file(path) {
@@ -14,11 +15,13 @@ fn relay_file(path: string, sink: Sink) {
 }
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_relay_test.txt", "helloworld_test"); }
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_relay_test.txt";
+    unsafe { hew_file_write(path, "helloworld_test"); }
 
     let (sink, input) = stream.channel(8);
 
-    relay_file("/tmp/hew_relay_test.txt", sink);
+    relay_file(path, sink);
 
     var count = 0;
     for await item in input {

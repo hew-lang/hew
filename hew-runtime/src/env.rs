@@ -161,6 +161,24 @@ pub unsafe extern "C" fn hew_cwd() -> *mut c_char {
     string_to_malloc(s)
 }
 
+/// Return the system temporary directory as a malloc-allocated C string.
+///
+/// Uses `std::env::temp_dir()` which respects `TMPDIR`/`TMP`/`TEMP` env vars.
+/// Trailing path separators are stripped for cross-platform consistency.
+///
+/// # Safety
+///
+/// No preconditions. The returned pointer must be freed with `libc::free`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
+    let mut tmp = std::env::temp_dir().to_string_lossy().into_owned();
+    // Strip trailing separator for consistent path concatenation.
+    while tmp.ends_with('/') || tmp.ends_with('\\') {
+        tmp.pop();
+    }
+    string_to_malloc(&tmp)
+}
+
 /// Return the home directory as a malloc-allocated C string.
 /// Returns null if unavailable.
 ///
@@ -317,5 +335,14 @@ mod tests {
         // SAFETY: no preconditions.
         let pid = unsafe { hew_pid() };
         assert!(pid > 0);
+    }
+
+    #[test]
+    fn test_temp_dir_returns_nonempty() {
+        let ptr = unsafe { hew_temp_dir() };
+        let text = unsafe { read_and_free(ptr) };
+        assert!(!text.is_empty());
+        // Should not end with a separator.
+        assert!(!text.ends_with('/') && !text.ends_with('\\'));
     }
 }

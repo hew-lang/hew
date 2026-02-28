@@ -1,0 +1,21 @@
+fn main() -> int {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("greeting", "hello");
+    m.insert("target", "world");
+    assert_eq(m.len(), 2);
+    match m.get("greeting") {
+        Some(val) => assert_eq(val, "hello"),
+        None => assert_eq(1, 0),
+    }
+    assert_eq(m.contains_key("target"), true);
+    m.remove("target");
+    assert_eq(m.len(), 1);
+    assert_eq(m.contains_key("target"), false);
+    // Verify removed key returns None
+    match m.get("target") {
+        Some(val) => assert_eq(1, 0),
+        None => assert_eq(1, 1),
+    }
+    println("PASS: hashmap_string_vals");
+    0
+}

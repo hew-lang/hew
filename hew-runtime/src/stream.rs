@@ -277,8 +277,11 @@ impl StreamBacking for LinesStream {
             // Check if there's a complete line already buffered.
             if let Some(pos) = self.buf.iter().position(|&b| b == b'\n') {
                 let mut line: Vec<u8> = self.buf.drain(..=pos).collect();
-                // Strip the trailing newline delimiter.
+                // Strip the trailing newline delimiter (and \r for CRLF).
                 if line.last() == Some(&b'\n') {
+                    line.pop();
+                }
+                if line.last() == Some(&b'\r') {
                     line.pop();
                 }
                 return Some(line);

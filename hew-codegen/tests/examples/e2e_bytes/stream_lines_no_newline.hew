@@ -1,10 +1,13 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_nonl_test.txt", "first\nsecond"); }
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_nonl_test.txt";
+    unsafe { hew_file_write(path, "first\nsecond"); }
 
-    let raw = match stream.from_file("/tmp/hew_nonl_test.txt") {
+    let raw = match stream.from_file(path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };

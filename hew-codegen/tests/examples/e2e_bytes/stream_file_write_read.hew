@@ -1,8 +1,11 @@
 import std::fs;
 import std::stream;
+import std::os;
 
 fn main() {
-    let sink = match stream.to_file("/tmp/hew_stream_wr_test.txt") {
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_stream_wr_test.txt";
+    let sink = match stream.to_file(path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };
@@ -12,7 +15,7 @@ fn main() {
     sink.flush();
     sink.close();
 
-    let raw = match stream.from_file("/tmp/hew_stream_wr_test.txt") {
+    let raw = match stream.from_file(path) {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };

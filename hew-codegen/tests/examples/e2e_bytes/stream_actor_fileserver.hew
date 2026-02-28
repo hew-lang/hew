@@ -1,5 +1,6 @@
 import std::stream;
 import std::fs;
+import std::os;
 
 actor FileServer {
     receive fn serve(path: string, sink: Sink) {
@@ -16,12 +17,14 @@ actor FileServer {
 }
 
 fn main() {
-    unsafe { hew_file_write("/tmp/hew_serve_test.txt", "alpha\nbeta\ngamma\n"); }
+    let tmp = os.temp_dir();
+    let path = tmp + "/hew_serve_test.txt";
+    unsafe { hew_file_write(path, "alpha\nbeta\ngamma\n"); }
 
     let (sink, input) = stream.channel(8);
 
     let server = spawn FileServer;
-    server.serve("/tmp/hew_serve_test.txt", sink);
+    server.serve(path, sink);
 
     for await line in input {
         println(line);

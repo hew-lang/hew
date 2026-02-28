@@ -26,7 +26,10 @@ fn main() {
     print("Map length: ");
     println(m.len());
     print("get(one): ");
-    println(m.get("one"));
+    match m.get("one") {
+        Some(v) => println(v),
+        None => println("none"),
+    }
     print("has three: ");
     println(m.contains_key("three"));
 

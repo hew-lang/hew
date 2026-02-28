@@ -2288,6 +2288,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   // scf.while loop
   auto whileOp =
@@ -2387,7 +2388,17 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
 
+  auto breakValueAlloca = loopBreakValueStack.back();
+  loopBreakValueStack.pop_back();
+
   builder.setInsertionPointAfter(whileOp);
+
+  if (breakValueAlloca) {
+    lastBreakValue =
+        builder.create<mlir::memref::LoadOp>(location, breakValueAlloca, mlir::ValueRange{});
+  } else {
+    lastBreakValue = nullptr;
+  }
 }
 
 void MLIRGen::generateForString(const ast::StmtFor &stmt, mlir::Value collection,
@@ -2467,6 +2478,7 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   // scf.while loop
   auto whileOp =
@@ -2550,7 +2562,17 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
 
+  auto breakValueAlloca = loopBreakValueStack.back();
+  loopBreakValueStack.pop_back();
+
   builder.setInsertionPointAfter(whileOp);
+
+  if (breakValueAlloca) {
+    lastBreakValue =
+        builder.create<mlir::memref::LoadOp>(location, breakValueAlloca, mlir::ValueRange{});
+  } else {
+    lastBreakValue = nullptr;
+  }
 
   // Free the temporary keys vec
   builder.create<hew::VecFreeOp>(location, keysVec);

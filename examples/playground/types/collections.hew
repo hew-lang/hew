@@ -30,7 +30,7 @@ fn main() {
     print("has three: ");
     println(m.contains_key("three"));
 
-    m.remove("two");
+    let _ = m.remove("two");
     print("After remove, length: ");
     println(m.len());
 }

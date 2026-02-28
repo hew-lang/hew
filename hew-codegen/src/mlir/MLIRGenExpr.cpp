@@ -981,6 +981,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     emitWarning(location) << "range operator used outside of for loop";
     return nullptr;
 
+  case ast::BinaryOp::Send:
+    builder.create<hew::ActorSendOp>(location, lhs, builder.getI32IntegerAttr(0),
+                                     mlir::ValueRange{rhs});
+    return nullptr;
+
   default:
     emitWarning(location) << "unsupported binary operator";
     return nullptr;

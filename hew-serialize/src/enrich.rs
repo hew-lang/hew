@@ -1007,6 +1007,7 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
         }
         Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
+                normalize_expr_types(&mut arm.source);
                 normalize_expr_types(&mut arm.body);
             }
             if let Some(ref mut t) = timeout {
@@ -1391,6 +1392,7 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
         }
         Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
+                enrich_expr(&mut arm.source, tco);
                 enrich_expr(&mut arm.body, tco);
             }
             if let Some(ref mut t) = timeout {

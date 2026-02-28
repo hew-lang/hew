@@ -62,6 +62,7 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
+#include <climits>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -1165,6 +1166,11 @@ struct SleepOpLowering : public mlir::OpConversionPattern<hew::SleepOp> {
     getOrInsertFuncDecl(module, rewriter, "hew_sleep_ms", funcType);
     mlir::Value msVal = adaptor.getDurationMs();
     if (msVal.getType().isInteger(64)) {
+      auto i64Type = rewriter.getI64Type();
+      auto maxI32 = rewriter.create<mlir::arith::ConstantIntOp>(loc, i64Type, (int64_t)INT32_MAX);
+      auto cmp =
+          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sgt, msVal, maxI32);
+      msVal = rewriter.create<mlir::arith::SelectOp>(loc, cmp, maxI32, msVal);
       msVal = rewriter.create<mlir::arith::TruncIOp>(loc, i32Type, msVal);
     }
     rewriter.create<mlir::func::CallOp>(loc, "hew_sleep_ms", mlir::TypeRange{},
@@ -1768,6 +1774,15 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
       auto vecPtr = adaptor.getVec();
       auto value = adaptor.getValue();
 
+      // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
+      if (suffix == "_i32" && valType != rewriter.getI32Type()) {
+        if (valType.isInteger(1) || valType.isInteger(8))
+          value = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), value);
+        else
+          value = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), value);
+        valType = rewriter.getI32Type();
+      }
+
       auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
 
@@ -1885,13 +1900,18 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
       auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
 
-      // GEP to element and load
+      // GEP to element and load (use i32 stride for narrow types)
       mlir::Type elemStorageType = resultType;
+      if (suffix == "_i32" && !resultType.isInteger(32))
+        elemStorageType = rewriter.getI32Type();
       auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
           loc, ptrType, elemStorageType, dataPtr,
           mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, resultType, elemPtr);
-      rewriter.replaceOp(op, loaded.getResult());
+      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, elemStorageType, elemPtr);
+      mlir::Value result = loaded.getResult();
+      if (elemStorageType != resultType)
+        result = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, result);
+      rewriter.replaceOp(op, result);
     } else if (suffix == "_generic") {
       // For struct elements: get returns a pointer, then load the struct
       auto idxType = adaptor.getIndex().getType();
@@ -1937,6 +1957,15 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
       auto vecPtr = adaptor.getVec();
       auto index = adaptor.getIndex();
       auto value = adaptor.getValue();
+
+      // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
+      if (suffix == "_i32" && valType != rewriter.getI32Type()) {
+        if (valType.isInteger(1) || valType.isInteger(8))
+          value = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), value);
+        else
+          value = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), value);
+        valType = rewriter.getI32Type();
+      }
 
       auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});

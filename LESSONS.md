@@ -416,3 +416,11 @@ recursively traverse expression trees. Both had the same bug: a catch-all
 `else` / `_ => {}` that silently skipped new expression variants. Any time
 a new Expr variant is added to the AST, BOTH visitors must be updated.
 Consider a compile-time assertion or exhaustive match to prevent silent gaps.
+
+### 57. Suffix remapping creates a mismatch between value type and storage type
+
+When `vecElemSuffixWithPtr` maps i1/i8/i16 to `_i32`, the inline fast path
+must also remap the value and GEP element type to i32. The suffix determines
+which runtime function is called (and thus the element stride), but the GEP
+and load/store instructions use the MLIR value type. Both must agree on the
+element size or pointer arithmetic will be wrong.

@@ -571,3 +571,21 @@ control flow, expression codegen, and concurrency safety:
   ExprCooperate).
 
 **Test results**: 329/329 codegen e2e (100%), 1534+ Rust tests, zero warnings.
+
+### Quality Sprint 12: Vec Memory Corruption, Sleep Safety
+
+Twelfth round fixed critical memory corruption and safety issues:
+
+- **Vec<bool>/Vec<i8>/Vec<i16> inline path**: The `vecElemSuffixWithPtr`
+  function maps narrow integer types to `_i32` suffix, routing through the
+  inline fast path. But GEP used the original type (1-2 byte stride) while
+  the runtime stores these as i32 elements (4-byte stride). Fixed by widening
+  values to i32 before GEP/Store (push/set) and truncating after Load (get).
+  Added `vec_bool` e2e test to verify correctness.
+- **SleepOp truncation**: i64→i32 truncation without bounds check. Values
+  > INT32_MAX silently wrapped. Added saturating clamp to INT32_MAX.
+- **String interpolation**: Investigation found the `j > 1` guard is actually
+  correct — `partValues[0]` is tracked separately in `ownedTemps` during
+  the part-generation phase if it's a temporary.
+
+**Test results**: 330/330 codegen e2e (100%, +1 new), 1534+ Rust tests.

@@ -97,6 +97,8 @@
 - Codegen: AssertOp/AssertEqOp/AssertNeOp now handle i8, i16, and f32 types (fixes ABI mismatch)
 - Codegen: VecNewOp struct layout now correct for f32 fields (was using 8-byte size instead of 4)
 - Codegen: lambda capture analysis now covers Spawn, SpawnLambdaActor, Scope, ScopeLaunch, ScopeSpawn, Select, Join, Range, Timeout, Yield, Unsafe expressions
+- Codegen: Vec<bool>/Vec<i8>/Vec<i16> inline push/get/set now use correct i32 element stride (fixes memory corruption)
+- Codegen: SleepOp saturates i64→i32 truncation at INT32_MAX (prevents silent wrap)
 
 ### Changed
 

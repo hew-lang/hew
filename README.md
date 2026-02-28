@@ -35,18 +35,16 @@ See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
 The compiler has three layers: **Rust frontend** → **MLIR middle layer** → **LLVM backend**.
 
 ```
-source.hew → [hew: Rust frontend]
-               ├─ Lexer (hew-lexer)
-               ├─ Parser (hew-parser)
-               ├─ Type Checker (hew-types)
-               ├─ MessagePack Serialize (hew-serialize)
-               └─ [hew-codegen: C++ MLIR middle layer]
-                    ├─ MessagePack AST → Hew dialect MLIR
-                    ├─ Hew dialect lowering → func/arith/scf/llvm
-                    └─ LLVM backend → .o (x86_64, wasm32, etc.)
-               └─ [hew: linker invocation]
-                    └─ cc .o + libhew_runtime.a → executable
+source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
+               (hew-lexer) (hew-parser) (hew-types)    (hew-serialize)
+                                                             │
+                                        ┌────────────────────┘
+                                        ▼ stdin (MessagePack AST)
+               hew-codegen (C++): MLIRGen → Hew dialect → LLVM dialect → LLVM IR → .o
+               hew (Rust):        cc .o + libhew_runtime.a → executable
 ```
+
+> **Detailed diagrams:** See [`docs/diagrams.md`](docs/diagrams.md) for Mermaid sequence diagrams, state machines, and architecture visuals covering the full compilation pipeline, MLIR lowering stages, actor lifecycle, message flow, runtime layers, and wire protocol format.
 
 ## Repository Structure
 

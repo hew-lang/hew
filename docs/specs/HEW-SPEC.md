@@ -3959,6 +3959,8 @@ These operations require preemptive OS threads, which the current WASM runtime d
 
 ### 8.1 Pipeline Overview
 
+> **Visual diagrams:** See [`docs/diagrams.md`](../diagrams.md) for Mermaid sequence diagrams and flowcharts of the compilation pipeline and MLIR lowering stages.
+
 ```
 Source (.hew) → hew (Rust: lex/parse/typecheck) → MessagePack AST → hew-codegen (C++: MLIRGen → MLIR → LLVM IR → native)
 ```
@@ -4083,6 +4085,8 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 - Timer wheels for supervision windows and timeouts
 
 ### 9.1 Actor lifecycle state machine
+
+> **Visual diagrams:** See [`docs/diagrams.md`](../diagrams.md) for state machine diagrams of actor lifecycle, supervisor, and distributed node states.
 
 The actor state machine governs the lifecycle of an actor instance within the runtime scheduler. This is distinct from the **task state machine** (§4.1), which governs individual tasks spawned within an actor.
 

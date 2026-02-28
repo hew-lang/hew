@@ -106,7 +106,7 @@ struct TraitInfo {
 #[derive(Debug, Clone)]
 struct TraitAssociatedTypeInfo {
     name: String,
-    bounds: Vec<TraitBound>,
+    _bounds: Vec<TraitBound>,
     default: Option<Spanned<TypeExpr>>,
 }
 
@@ -123,7 +123,7 @@ struct ImplAliasEntry {
     expr: Spanned<TypeExpr>,
     resolved: Option<Ty>,
     resolving: bool,
-    from_trait_default: bool,
+    _from_trait_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -885,7 +885,7 @@ impl Checker {
                     default,
                 } => associated_types.push(TraitAssociatedTypeInfo {
                     name: name.clone(),
-                    bounds: bounds.clone(),
+                    _bounds: bounds.clone(),
                     default: default.clone(),
                 }),
             }
@@ -914,7 +914,7 @@ impl Checker {
                     expr: alias.ty.clone(),
                     resolved: None,
                     resolving: false,
-                    from_trait_default: false,
+                    _from_trait_default: false,
                 },
             );
         }
@@ -931,7 +931,7 @@ impl Checker {
                                 expr: default.clone(),
                                 resolved: None,
                                 resolving: false,
-                                from_trait_default: true,
+                                _from_trait_default: true,
                             },
                         );
                     }
@@ -2557,9 +2557,7 @@ impl Checker {
                             span: span.clone(),
                             message: format!("binding `{name}` has unit type and carries no value"),
                             notes: vec![],
-                            suggestions: vec![
-                                "remove the binding or use `let _ = ...;`".to_string()
-                            ],
+                            suggestions: vec!["prefix with underscore: `_name`".to_string()],
                         });
                     }
                     self.check_shadowing(name, &pattern.1);
@@ -2743,7 +2741,7 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_stmt(&scr_ty, arms);
+                self.check_match_stmt(&scr_ty, arms, span);
             }
             Stmt::Defer(expr) => {
                 self.synthesize(&expr.0, &expr.1);
@@ -2751,7 +2749,7 @@ impl Checker {
         }
     }
 
-    fn check_match_stmt(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm]) {
+    fn check_match_stmt(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
         for arm in arms {
             self.env.push_scope();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
@@ -2763,6 +2761,8 @@ impl Checker {
             self.synthesize(&arm.body.0, &arm.body.1);
             self.env.pop_scope();
         }
+
+        self.check_exhaustiveness(scrutinee_ty, arms, span);
     }
 
     /// Synthesize: infer the type of an expression (bottom-up).
@@ -6132,7 +6132,7 @@ impl Checker {
     fn check_exhaustiveness(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
         let has_wildcard = arms
             .iter()
-            .any(|a| matches!(a.pattern.0, Pattern::Wildcard | Pattern::Identifier(_)));
+            .any(|a| matches!(a.pattern.0, Pattern::Wildcard));
         if has_wildcard {
             return;
         }
@@ -6141,16 +6141,26 @@ impl Checker {
             Ty::Named { name, .. } => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if !td.variants.is_empty() {
+                        let mut has_binding_identifier = false;
                         let covered: Vec<_> = arms
                             .iter()
-                            .filter_map(|a| {
-                                if let Pattern::Constructor { name, .. } = &a.pattern.0 {
-                                    Some(name.clone())
-                                } else {
-                                    None
+                            .filter_map(|a| match &a.pattern.0 {
+                                Pattern::Constructor { name, .. }
+                                | Pattern::Struct { name, .. } => Some(name.clone()),
+                                Pattern::Identifier(id) => {
+                                    if td.variants.contains_key(id) {
+                                        Some(id.clone())
+                                    } else {
+                                        has_binding_identifier = true;
+                                        None
+                                    }
                                 }
+                                _ => None,
                             })
                             .collect();
+                        if has_binding_identifier {
+                            return;
+                        }
                         let missing: Vec<_> = td
                             .variants
                             .keys()
@@ -6158,16 +6168,28 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.report_error(
-                                TypeErrorKind::NonExhaustiveMatch,
-                                span,
-                                format!("non-exhaustive match: missing {}", names.join(", ")),
-                            );
+                            self.warnings.push(TypeError {
+                                severity: crate::error::Severity::Warning,
+                                kind: TypeErrorKind::NonExhaustiveMatch,
+                                span: span.clone(),
+                                message: format!(
+                                    "non-exhaustive match: missing {}",
+                                    names.join(", ")
+                                ),
+                                notes: vec![],
+                                suggestions: vec![],
+                            });
                         }
                     }
                 }
             }
             Ty::Bool => {
+                if arms
+                    .iter()
+                    .any(|a| matches!(a.pattern.0, Pattern::Identifier(_)))
+                {
+                    return;
+                }
                 let has_true = arms
                     .iter()
                     .any(|a| matches!(a.pattern.0, Pattern::Literal(Literal::Bool(true))));
@@ -6175,27 +6197,100 @@ impl Checker {
                     .iter()
                     .any(|a| matches!(a.pattern.0, Pattern::Literal(Literal::Bool(false))));
                 if !has_true || !has_false {
-                    self.report_error(
-                        TypeErrorKind::NonExhaustiveMatch,
-                        span,
-                        "non-exhaustive match: missing bool variant".to_string(),
-                    );
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::NonExhaustiveMatch,
+                        span: span.clone(),
+                        message: "non-exhaustive match: missing bool variant".to_string(),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
                 }
             }
             Ty::Option(_) => {
-                let has_some = arms.iter().any(
-                    |a| matches!(&a.pattern.0, Pattern::Constructor { name, .. } if name == "Some"),
-                );
-                let has_none = arms.iter().any(|a| {
-                    matches!(&a.pattern.0, Pattern::Constructor { name, .. } if name == "None")
-                        || matches!(a.pattern.0, Pattern::Identifier(ref n) if n == "None")
-                });
+                let mut has_binding_identifier = false;
+                let mut has_some = false;
+                let mut has_none = false;
+                for arm in arms {
+                    match &arm.pattern.0 {
+                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                            if name == "Some" =>
+                        {
+                            has_some = true;
+                        }
+                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                            if name == "None" =>
+                        {
+                            has_none = true;
+                        }
+                        Pattern::Identifier(name) if name == "Some" => {
+                            has_some = true;
+                        }
+                        Pattern::Identifier(name) if name == "None" => {
+                            has_none = true;
+                        }
+                        Pattern::Identifier(_) => {
+                            has_binding_identifier = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if has_binding_identifier {
+                    return;
+                }
                 if !has_some || !has_none {
-                    self.report_error(
-                        TypeErrorKind::NonExhaustiveMatch,
-                        span,
-                        "non-exhaustive match: Option requires Some and None arms".to_string(),
-                    );
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::NonExhaustiveMatch,
+                        span: span.clone(),
+                        message: "non-exhaustive match: Option requires Some and None arms"
+                            .to_string(),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
+                }
+            }
+            Ty::Result { .. } => {
+                let mut has_binding_identifier = false;
+                let mut has_ok = false;
+                let mut has_err = false;
+                for arm in arms {
+                    match &arm.pattern.0 {
+                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                            if name == "Ok" =>
+                        {
+                            has_ok = true;
+                        }
+                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                            if name == "Err" =>
+                        {
+                            has_err = true;
+                        }
+                        Pattern::Identifier(name) if name == "Ok" => {
+                            has_ok = true;
+                        }
+                        Pattern::Identifier(name) if name == "Err" => {
+                            has_err = true;
+                        }
+                        Pattern::Identifier(_) => {
+                            has_binding_identifier = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if has_binding_identifier {
+                    return;
+                }
+                if !has_ok || !has_err {
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::NonExhaustiveMatch,
+                        span: span.clone(),
+                        message: "non-exhaustive match: Result requires Ok and Err arms"
+                            .to_string(),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
                 }
             }
             _ => {}
@@ -7081,23 +7176,26 @@ mod tests {
     fn typecheck_match_statement_exhaustive_enum_ok() {
         let (errors, _) = parse_and_check(concat!(
             "enum Light { Red; Green; }\n",
-            "fn main() { let v = Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
+            "fn main() { let v: Light = Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
         ));
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
     #[test]
-    #[ignore = "known gap: match-as-statement skips exhaustiveness checking (check_match_stmt)"]
-    fn typecheck_match_statement_missing_variant_errors() {
-        let (errors, _) = parse_and_check(concat!(
+    fn typecheck_match_statement_missing_variant_warns() {
+        let (errors, warnings) = parse_and_check(concat!(
             "enum Light { Red; Green; }\n",
-            "fn main() { let v = Red; match v { Red => 1, } let _done = 0; }\n",
+            "fn main() { let v: Light = Red; match v { Red => 1, } let _done = 0; }\n",
         ));
         assert!(
-            errors
+            errors.is_empty(),
+            "expected only a warning but got errors: {errors:?}"
+        );
+        assert!(
+            warnings
                 .iter()
-                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
-            "expected non-exhaustive match error, got: {errors:?}"
+                .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match warning, got: {warnings:?}"
         );
     }
 

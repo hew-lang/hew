@@ -7,7 +7,7 @@
 
 use hew_parser::ast::{
     ActorDecl, Block, CallArg, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param,
-    Program, Span, Spanned, Stmt, TraitBound, TypeExpr, Visibility,
+    Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
 };
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;

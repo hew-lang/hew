@@ -13,7 +13,6 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
 }
 
 #[test]
-#[ignore = "exhaustiveness checking not fully implemented for match expressions"]
 fn test_non_exhaustive_match() {
     let output = typecheck(
         r#"
@@ -30,9 +29,29 @@ fn test_non_exhaustive_match() {
     "#,
     );
     assert!(output
-        .errors
+        .warnings
         .iter()
-        .any(|e| e.kind == TypeErrorKind::NonExhaustiveMatch));
+        .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
+}
+
+#[test]
+fn test_non_exhaustive_match_stmt() {
+    let output = typecheck(
+        r#"
+        enum Color { Red; Green; Blue; }
+        fn main() {
+            let color: Color = Red;
+            match color {
+                Red => {},
+                Green => {},
+            }
+        }
+    "#,
+    );
+    assert!(output
+        .warnings
+        .iter()
+        .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch));
 }
 
 #[test]

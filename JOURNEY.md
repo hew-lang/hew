@@ -324,3 +324,19 @@ bugs over style concerns.
 - 314/316 codegen e2e tests passing
 - 870+ Rust workspace tests passing
 - Clean builds across all crates
+
+### Quality Sprint 2: Deeper Issues
+
+Second round of multi-model analysis found 8 more issues after the initial
+correctness fixes:
+
+- **Match exhaustiveness in statements**: `match` in statement position never
+  checked for missing variants. Now calls `check_exhaustiveness()` same as
+  match expressions.
+- **Empty struct literals**: `Foo {}` failed to parse for zero-field structs.
+  Parser struct-init lookahead now recognizes `Name {}` pattern.
+- **C++ AST deserialization crashes**: IfLet, ArrayRepeat, and generic lambda
+  type_params had no C++ counterpart — codegen crashed on "unknown variant".
+  Added structs and parse cases.
+- **Zero warnings**: Cleaned all Rust compiler warnings (unused fields,
+  imports, stale suggestion text).

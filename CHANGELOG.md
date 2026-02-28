@@ -31,11 +31,15 @@
 - Type checker: reject match arms using variants from wrong enum type
 - Type checker: bare `return;` in non-unit functions now produces error
 - Type checker: `dyn (A + B)` now unifies with `dyn (B + A)` (order-independent)
+- Type checker: match statements now check exhaustiveness (missing variants warn)
 - Parser: missing parameter type annotation now reports error instead of silent drop
 - Parser: `pub(invalid)` now defaults to private instead of silently promoting to pub
 - Parser: string interpolation sub-parser errors now propagated to parent
+- Parser: empty struct literal `Foo {}` now parses correctly for zero-field structs
 - Codegen: compound assignment switches now have default case (prevents UB)
+- Codegen: IfLet, ArrayRepeat, generic lambda type_params now deserialize without crash
 - Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
+- Zero compiler warnings across entire Rust workspace
 
 ### Changed
 

@@ -221,3 +221,18 @@ Claude Opus caught parser inconsistencies and operator precedence issues. GPT-5.
 Codex found type coercion and unification bugs. Gemini found runtime memory safety
 issues. Claude Sonnet found codegen UB and missing verification. Each model has
 blind spots the others compensate for.
+
+### 32. Match expressions and match statements need identical checks
+
+When a language has both match-as-expression and match-as-statement, the
+type checker must apply the same validation to both. The expression handler
+had exhaustiveness checking but the statement handler didn't — an easy
+oversight when the two codepaths diverged early.
+
+### 33. Struct literal parsing requires explicit empty-struct lookahead
+
+When `{}` after an identifier can mean either "empty struct literal" or
+"block expression", the parser needs explicit handling for the empty case.
+The standard lookahead of `ident: expr` inside braces fails when there are
+no fields. Adding `peek == RightBrace` as a struct-init condition is the
+minimal fix.

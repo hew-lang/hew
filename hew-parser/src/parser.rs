@@ -3359,8 +3359,10 @@ impl<'src> Parser<'src> {
                     // Look ahead to disambiguate struct init vs block
                     let saved_pos = self.save_pos();
                     self.advance(); // consume {
-                    let is_struct_init = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
-                    {
+                    let is_struct_init = if self.peek() == Some(&Token::RightBrace) {
+                        // Empty struct literal: Foo {}
+                        true
+                    } else if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         self.advance();
                         self.peek() == Some(&Token::Colon)
                     } else {

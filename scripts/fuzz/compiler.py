@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generative fuzzing of the Hew compiler.
 
-Generates adversarial inputs across 48 categories and feeds them to
+Generates adversarial inputs across 50 categories and feeds them to
 ``hew build`` (and ``hew check`` for differential testing) to find
 crashes, panics (ICEs), or hangs.
 
@@ -9,7 +9,7 @@ Unlike fuzz-grammar.py (which requires Grammarinator and the ANTLR grammar),
 this script has **no external dependencies** — it uses pure-Python random
 generation and mutation.
 
-Categories span three areas:
+Categories span four areas:
 
   **Input edge cases** (17 categories):
     empty, unicode, types, syntax, actors, interpolation, scope, deep,
@@ -25,6 +25,10 @@ Categories span three areas:
   **Compiler testing techniques** (9 categories):
     differential (check vs build), cross_feature, error_cascade,
     type_infer, recursion, oracle, comments, whitespace, well_typed
+
+  **Pipeline depth testing** (2 categories):
+    oracle_exec   — build + run + verify stdout matches expected output
+    emit_ir       — stress --emit-mlir and --emit-llvm lowering paths
 
 Usage:
     ./scripts/fuzz/compiler.py                   # default: all categories
@@ -74,6 +78,8 @@ class Stats:
     crash: int = 0
     hang: int = 0
     ice: int = 0
+    oracle_pass: int = 0
+    oracle_fail: int = 0
 
 
 @dataclass
@@ -190,6 +196,147 @@ def _save_issue(ctx: FuzzContext, issue: Issue, source: str | bytes) -> None:
 def _report(issue: Issue | None) -> None:
     if issue is not None:
         print(f"  !! {issue.status}: {issue.label}")
+
+
+def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
+                       expected_stdout: str) -> Issue | None:
+    """Build, run, and verify stdout matches *expected_stdout*.
+
+    Returns an Issue for crashes, ICEs, hangs, and wrong output.
+    """
+    ctx.stats.total += 1
+    tmpfile = ctx.workdir / "input.hew"
+    outfile = ctx.workdir / "output"
+
+    with open(tmpfile, "w") as f:
+        f.write(source)
+
+    # Build
+    try:
+        build = subprocess.run(
+            [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile)],
+            capture_output=True, text=True, timeout=ctx.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        ctx.stats.hang += 1
+        issue = Issue("hang", f"{label}/build", _clip(source))
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+    finally:
+        tmpfile.unlink(missing_ok=True)
+
+    if build.returncode != 0:
+        combined = build.stdout + build.stderr
+        lower = combined.lower()
+        ice_markers = ("thread '", "rust_backtrace", "internal compiler error",
+                       "has overflowed its stack", "panicked at")
+        if any(m in lower for m in ice_markers):
+            ctx.stats.ice += 1
+            issue = Issue("ICE", f"{label}/build", _clip(source), combined[:2000])
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        if build.returncode < 0:
+            ctx.stats.crash += 1
+            issue = Issue("crash", f"{label}/build", _clip(source), combined[:2000], build.returncode)
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        # Compile error on an oracle program — that's a spec regression
+        ctx.stats.oracle_fail += 1
+        issue = Issue("oracle_compile_fail", label, _clip(source), combined[:2000])
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+
+    # Run
+    try:
+        run = subprocess.run(
+            [str(outfile)], capture_output=True, text=True, timeout=ctx.timeout,
+        )
+    except subprocess.TimeoutExpired:
+        ctx.stats.hang += 1
+        issue = Issue("hang", f"{label}/run", _clip(source))
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+    finally:
+        outfile.unlink(missing_ok=True)
+
+    if run.returncode < 0:
+        ctx.stats.crash += 1
+        issue = Issue("runtime_crash", label, _clip(source),
+                      f"signal {-run.returncode}\nstdout: {run.stdout[:500]}\nstderr: {run.stderr[:500]}",
+                      run.returncode)
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+
+    actual = run.stdout.rstrip("\n")
+    expected = expected_stdout.rstrip("\n")
+    if actual != expected:
+        ctx.stats.oracle_fail += 1
+        issue = Issue("wrong_output", label, _clip(source),
+                      f"expected:\n{expected}\nactual:\n{actual}")
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+
+    ctx.stats.ok += 1
+    ctx.stats.oracle_pass += 1
+    return None
+
+
+def run_emit_hew(ctx: FuzzContext, source: str, label: str,
+                 emit_flag: str) -> Issue | None:
+    """Run ``hew build --emit-mlir`` or ``--emit-llvm`` to stress IR lowering."""
+    ctx.stats.total += 1
+    tmpfile = ctx.workdir / "input.hew"
+    outfile = ctx.workdir / "output"
+
+    with open(tmpfile, "w") as f:
+        f.write(source)
+
+    try:
+        proc = subprocess.run(
+            [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile), emit_flag],
+            capture_output=True, text=True, timeout=ctx.timeout,
+        )
+        combined = proc.stdout + proc.stderr
+
+        if proc.returncode == 0:
+            ctx.stats.ok += 1
+            return None
+
+        lower = combined.lower()
+        ice_markers = ("thread '", "rust_backtrace", "internal compiler error",
+                       "has overflowed its stack", "panicked at")
+        if any(m in lower for m in ice_markers):
+            ctx.stats.ice += 1
+            issue = Issue("ICE", f"{label}/{emit_flag}", _clip(source), combined[:2000])
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        if proc.returncode < 0:
+            ctx.stats.crash += 1
+            issue = Issue("crash", f"{label}/{emit_flag}", _clip(source), combined[:2000], proc.returncode)
+            ctx.issues.append(issue)
+            _save_issue(ctx, issue, source)
+            return issue
+        # Expected error (type error, unsupported feature in IR) — not a bug
+        ctx.stats.error += 1
+        return None
+
+    except subprocess.TimeoutExpired:
+        ctx.stats.hang += 1
+        issue = Issue("hang", f"{label}/{emit_flag}", _clip(source))
+        ctx.issues.append(issue)
+        _save_issue(ctx, issue, source)
+        return issue
+    finally:
+        tmpfile.unlink(missing_ok=True)
+        outfile.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2183,52 +2330,541 @@ def fuzz_method_chains(ctx: FuzzContext) -> None:
 
 
 def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
-    """Generate random programs that are more likely to be well-typed,
-    using a structured approach (CSmith-inspired)."""
-    for i in range(n):
-        num_fns = random.randint(0, 3)
-        fns = []
-        fn_names = []
-        for j in range(num_fns):
-            name = f"f{j}"
-            fn_names.append(name)
-            ret_ty = random.choice(["i32", "i64", "f64", "bool", "string"])
-            nparams = random.randint(0, 3)
-            params = ", ".join(f"p{k}: {random.choice(['i32', 'i64', 'f64'])}" for k in range(nparams))
-            if ret_ty in ("i32", "i64", "f64"):
-                body_expr = " + ".join(f"p{k}" for k in range(nparams)) if nparams > 0 else str(random.randint(0, 100))
-            elif ret_ty == "bool":
-                body_expr = random.choice(["true", "false"])
-            else:
-                body_expr = f'"{name}"'
-            fns.append(f"fn {name}({params}) -> {ret_ty} {{ {body_expr} }}")
+    """Generate random programs that are guaranteed well-typed,
+    using a structured approach (CSmith-inspired).
 
-        # Main body: mix of let bindings, println, if/else, for
-        main_stmts = []
-        vars_defined: list[str] = []
-        for _ in range(random.randint(2, 10)):
-            choice = random.randint(0, 5)
+    Covers: arithmetic, let/var, if/else, while, for-in, match,
+    closures, string interpolation, actors, type decls, enums, Vec.
+    """
+    for i in range(n):
+        parts: list[str] = []
+        main_stmts: list[str] = []
+        int_vars: list[str] = []
+        str_vars: list[str] = []
+        fn_names: list[tuple[str, int]] = []   # (name, nparams)
+        actor_names: list[tuple[str, str]] = [] # (ActorName, receive_fn_name)
+
+        # --- Helper functions ---
+        num_fns = random.randint(0, 3)
+        for j in range(num_fns):
+            name = f"helper_{j}"
+            nparams = random.randint(0, 3)
+            params = ", ".join(f"p{k}: i32" for k in range(nparams))
+            if nparams > 0:
+                body = " + ".join(f"p{k}" for k in range(nparams))
+            else:
+                body = str(random.randint(0, 100))
+            parts.append(f"fn {name}({params}) -> i32 {{ {body} }}")
+            fn_names.append((name, nparams))
+
+        # --- Type declarations ---
+        if random.random() < 0.4:
+            tname = f"Data{i}"
+            nfields = random.randint(1, 3)
+            fields = "\n".join(f"  let f{k}: i32;" for k in range(nfields))
+            parts.append(f"type {tname} {{\n{fields}\n}}")
+            field_init = ", ".join(f"f{k}: {random.randint(0, 50)}" for k in range(nfields))
+            vname = f"obj_{i}"
+            main_stmts.append(f"let {vname} = {tname} {{ {field_init} }};")
+            main_stmts.append(f"println({vname}.f0);")
+
+        # --- Enum declarations ---
+        if random.random() < 0.3:
+            ename = f"Kind{i}"
+            variants = [f"V{k}" for k in range(random.randint(2, 4))]
+            vdecls = "\n".join(f"  {v};" for v in variants)
+            parts.append(f"enum {ename} {{\n{vdecls}\n}}")
+            chosen = random.choice(variants)
+            main_stmts.append(f'let _ek = {ename}::{chosen};')
+
+        # --- Actor declarations ---
+        if random.random() < 0.35:
+            aname = f"Worker{i}"
+            recv_name = f"do_work_{i}"
+            parts.append(
+                f"actor {aname} {{\n"
+                f"  let acc: i32;\n"
+                f"  receive fn {recv_name}(n: i32) {{\n"
+                f"    self.acc = self.acc + n;\n"
+                f"  }}\n"
+                f"  receive fn report() -> i32 {{ self.acc }}\n"
+                f"}}"
+            )
+            actor_names.append((aname, recv_name))
+
+        # --- Main body statements ---
+        for _ in range(random.randint(3, 12)):
+            choice = random.randint(0, 11)
+
             if choice <= 1:
-                vname = f"v{len(vars_defined)}"
+                # let binding
+                vname = f"lv{len(int_vars)}"
                 val = str(random.randint(-100, 100))
                 main_stmts.append(f"let {vname} = {val};")
-                vars_defined.append(vname)
-            elif choice == 2 and vars_defined:
-                v = random.choice(vars_defined)
-                main_stmts.append(f"println({v});")
-            elif choice == 3:
-                main_stmts.append(f"println({random.randint(0, 1000)});")
-            elif choice == 4 and fn_names:
-                fn = random.choice(fn_names)
-                main_stmts.append(f"println({fn}());")
+                int_vars.append(vname)
+
+            elif choice == 2:
+                # var with mutation
+                vname = f"mv{len(int_vars)}"
+                main_stmts.append(f"var {vname} = {random.randint(0, 50)};")
+                int_vars.append(vname)
+                main_stmts.append(f"{vname} = {vname} + {random.randint(1, 10)};")
+
+            elif choice == 3 and int_vars:
+                # println existing var
+                main_stmts.append(f"println({random.choice(int_vars)});")
+
+            elif choice == 4:
+                # for-in loop
+                lo = random.randint(0, 3)
+                hi = lo + random.randint(1, 8)
+                ivar = f"fi{len(int_vars)}"
+                main_stmts.append(f"for {ivar} in {lo}..{hi} {{ println({ivar}); }}")
+
             elif choice == 5:
-                main_stmts.append(f"for _i in 0..{random.randint(0, 5)} {{ println(1); }}")
+                # if-else expression
+                a = random.randint(-10, 10)
+                b = random.randint(-10, 10)
+                op = random.choice(["<", ">", "==", "!=", "<=", ">="])
+                tv = random.randint(0, 100)
+                fv = random.randint(0, 100)
+                vname = f"ie{len(int_vars)}"
+                main_stmts.append(f"let {vname} = if {a} {op} {b} {{ {tv} }} else {{ {fv} }};")
+                int_vars.append(vname)
+
+            elif choice == 6:
+                # match expression on integer
+                val = random.randint(0, 3)
+                arms = ", ".join(f"{k} => {random.randint(10, 99)}" for k in range(4))
+                vname = f"me{len(int_vars)}"
+                main_stmts.append(f"let {vname} = match {val} {{ {arms}, _ => 0 }};")
+                int_vars.append(vname)
+
+            elif choice == 7:
+                # while loop
+                limit = random.randint(2, 8)
+                wvar = f"wi{len(int_vars)}"
+                main_stmts.append(f"var {wvar} = 0;")
+                main_stmts.append(f"while {wvar} < {limit} {{ {wvar} = {wvar} + 1; }}")
+                int_vars.append(wvar)
+
+            elif choice == 8:
+                # string interpolation
+                val = random.randint(0, 999)
+                svar = f"si{len(str_vars)}"
+                main_stmts.append(f'let {svar} = f"n={{{val}}}";')
+                str_vars.append(svar)
+                main_stmts.append(f"println({svar});")
+
+            elif choice == 9 and fn_names:
+                # call a helper function
+                fname, nparams = random.choice(fn_names)
+                args = ", ".join(str(random.randint(0, 20)) for _ in range(nparams))
+                vname = f"fr{len(int_vars)}"
+                main_stmts.append(f"let {vname} = {fname}({args});")
+                int_vars.append(vname)
+
+            elif choice == 10 and actor_names:
+                # spawn and send to actor
+                aname, recv_fn = random.choice(actor_names)
+                avar = f"ar{len(int_vars)}"
+                main_stmts.append(f"let {avar} = spawn {aname};")
+                main_stmts.append(f"{avar}.{recv_fn}({random.randint(1, 50)});")
+                main_stmts.append(f"sleep_ms(50);")
+
             else:
-                main_stmts.append(f"println({random.randint(0, 100)});")
+                # fallback: print literal
+                main_stmts.append(f"println({random.randint(0, 1000)});")
 
         body = "\n  ".join(main_stmts)
-        src = "\n".join(fns) + f"\nfn main() {{\n  {body}\n}}"
+        src = "\n".join(parts) + f"\nfn main() {{\n  {body}\n}}"
         _report(run_hew(ctx, src, f"welltyped/{i}"))
+
+
+def fuzz_oracle_exec(ctx: FuzzContext) -> None:
+    """Programs with known expected output — build, run, and verify stdout.
+
+    Each entry is (label, source, expected_stdout).  Any mismatch is a
+    spec regression — the compiler produced wrong code.
+    """
+    programs: list[tuple[str, str, str]] = [
+        # --- Arithmetic ---
+        ("arith_basic", "fn main() { println(2 + 3 * 4); }", "14"),
+        ("arith_parens", "fn main() { println((2 + 3) * 4); }", "20"),
+        ("arith_neg", "fn main() { println(-5 + 3); }", "-2"),
+        ("arith_mod", "fn main() { println(17 % 5); }", "2"),
+        ("arith_div", "fn main() { println(15 / 4); }", "3"),
+
+        # --- Variables ---
+        ("var_let", "fn main() { let x = 42; println(x); }", "42"),
+        ("var_mut", (
+            "fn main() {\n"
+            "  var x = 1;\n"
+            "  x = x + 10;\n"
+            "  x = x * 2;\n"
+            "  println(x);\n"
+            "}"
+        ), "22"),
+
+        # --- Booleans ---
+        ("bool_and", "fn main() { println(true && true); }", "true"),
+        ("bool_and_false", "fn main() { println(true && false); }", "false"),
+        ("bool_or", "fn main() { println(false || true); }", "true"),
+        ("bool_not", "fn main() { println(!false); }", "true"),
+
+        # --- Strings ---
+        ("string_hello", 'fn main() { println("hello"); }', "hello"),
+        ("string_concat", 'fn main() { println("ab" + "cd"); }', "abcd"),
+        ("string_interp", (
+            "fn main() {\n"
+            "  let x = 42;\n"
+            '  println(f"val={x}");\n'
+            "}"
+        ), "val=42"),
+        ("string_interp_expr", (
+            "fn main() {\n"
+            "  let a = 3;\n"
+            "  let b = 7;\n"
+            '  println(f"{a + b}");\n'
+            "}"
+        ), "10"),
+        ("string_len", (
+            "fn main() {\n"
+            '  let s = "hello";\n'
+            "  println(s.len());\n"
+            "}"
+        ), "5"),
+
+        # --- Control flow ---
+        ("if_true", "fn main() { if true { println(1); } }", "1"),
+        ("if_else", (
+            "fn main() { let x = if 3 > 5 { 10 } else { 20 }; println(x); }"
+        ), "20"),
+        ("while_sum", (
+            "fn main() {\n"
+            "  var i = 0; var s = 0;\n"
+            "  while i < 5 { s = s + i; i = i + 1; }\n"
+            "  println(s);\n"
+            "}"
+        ), "10"),
+        ("while_break", (
+            "fn main() {\n"
+            "  var i = 0;\n"
+            "  while true { if i >= 3 { break; } i = i + 1; }\n"
+            "  println(i);\n"
+            "}"
+        ), "3"),
+        ("while_continue", (
+            "fn main() {\n"
+            "  var i = 0; var s = 0;\n"
+            "  while i < 6 {\n"
+            "    i = i + 1;\n"
+            "    if i == 3 { continue; }\n"
+            "    s = s + i;\n"
+            "  }\n"
+            "  println(s);\n"
+            "}"
+        ), "18"),  # 1+2+4+5+6 = 18
+        ("for_range", (
+            "fn main() {\n"
+            "  var s = 0;\n"
+            "  for i in 0..5 { s = s + i; }\n"
+            "  println(s);\n"
+            "}"
+        ), "10"),
+        ("loop_break", (
+            "fn main() {\n"
+            "  var c = 0;\n"
+            "  loop { c = c + 1; if c == 5 { break; } }\n"
+            "  println(c);\n"
+            "}"
+        ), "5"),
+
+        # --- Match ---
+        ("match_int", (
+            "fn main() {\n"
+            "  let x = 2;\n"
+            "  let r = match x { 1 => 10, 2 => 20, 3 => 30, _ => 0 };\n"
+            "  println(r);\n"
+            "}"
+        ), "20"),
+        ("match_wildcard", (
+            "fn main() {\n"
+            "  let x = 99;\n"
+            "  let r = match x { 1 => 10, _ => -1 };\n"
+            "  println(r);\n"
+            "}"
+        ), "-1"),
+        ("match_block", (
+            "fn main() {\n"
+            "  let x = 1;\n"
+            "  let r = match x {\n"
+            "    1 => { let a = 10; let b = 20; a + b },\n"
+            "    _ => 0,\n"
+            "  };\n"
+            "  println(r);\n"
+            "}"
+        ), "30"),
+
+        # --- Functions ---
+        ("fn_basic", (
+            "fn add(a: i32, b: i32) -> i32 { a + b }\n"
+            "fn main() { println(add(3, 4)); }"
+        ), "7"),
+        ("fn_recursive", (
+            "fn fib(n: i32) -> i32 {\n"
+            "  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n"
+            "}\n"
+            "fn main() { println(fib(10)); }"
+        ), "55"),
+        ("fn_mutual_recursion", (
+            "fn is_even(n: i32) -> bool { if n == 0 { true } else { is_odd(n - 1) } }\n"
+            "fn is_odd(n: i32) -> bool { if n == 0 { false } else { is_even(n - 1) } }\n"
+            "fn main() { println(is_even(10)); }"
+        ), "true"),
+        ("fn_early_return", (
+            "fn first_pos(a: i32, b: i32, c: i32) -> i32 {\n"
+            "  if a > 0 { return a; }\n"
+            "  if b > 0 { return b; }\n"
+            "  c\n"
+            "}\n"
+            "fn main() { println(first_pos(-1, -2, 7)); }"
+        ), "7"),
+        ("fn_nested_calls", (
+            "fn f(x: i32) -> i32 { x + 1 }\n"
+            "fn g(x: i32) -> i32 { f(x * 2) }\n"
+            "fn h(x: i32) -> i32 { g(x + 3) }\n"
+            "fn main() { println(h(5)); }"  # (5+3)*2+1 = 17
+        ), "17"),
+
+        # --- Closures ---
+        ("closure_basic", (
+            "fn main() {\n"
+            "  let double = (x) => x * 2;\n"
+            "  println(double(21));\n"
+            "}"
+        ), "42"),
+        ("closure_capture", (
+            "fn main() {\n"
+            "  let offset = 100;\n"
+            "  let add_offset = (x) => x + offset;\n"
+            "  println(add_offset(5));\n"
+            "}"
+        ), "105"),
+        ("closure_multi_capture", (
+            "fn main() {\n"
+            "  let a = 3;\n"
+            "  let b = 7;\n"
+            "  let sum_with = (c) => a + b + c;\n"
+            "  println(sum_with(10));\n"
+            "}"
+        ), "20"),
+
+        # --- Type declarations ---
+        ("type_basic", (
+            "type Point { x: i32; y: i32; }\n"
+            "fn main() {\n"
+            "  let p = Point { x: 3, y: 4 };\n"
+            "  println(p.x + p.y);\n"
+            "}"
+        ), "7"),
+
+        # --- Vec ---
+        ("vec_push_len", (
+            "fn main() {\n"
+            "  let v: Vec<i32> = Vec::new();\n"
+            "  v.push(10); v.push(20); v.push(30);\n"
+            "  println(v.len());\n"
+            "}"
+        ), "3"),
+        ("vec_get", (
+            "fn main() {\n"
+            "  let v: Vec<i32> = Vec::new();\n"
+            "  v.push(42);\n"
+            "  println(v.get(0));\n"
+            "}"
+        ), "42"),
+        ("vec_pop", (
+            "fn main() {\n"
+            "  let v: Vec<i32> = Vec::new();\n"
+            "  v.push(1); v.push(2); v.push(3);\n"
+            "  let last = v.pop();\n"
+            "  println(last);\n"
+            "  println(v.len());\n"
+            "}"
+        ), "3\n2"),
+
+        # --- Actors ---
+        ("actor_basic", (
+            "actor Counter {\n"
+            "  let count: i32;\n"
+            "  receive fn inc(n: i32) {\n"
+            "    self.count = self.count + n;\n"
+            "    println(self.count);\n"
+            "  }\n"
+            "}\n"
+            "fn main() {\n"
+            "  let c = spawn Counter;\n"
+            "  c.inc(5);\n"
+            "  c.inc(3);\n"
+            "  sleep_ms(200);\n"
+            "}"
+        ), "5\n8"),
+        ("actor_query", (
+            "actor Acc {\n"
+            "  let val: i32;\n"
+            "  receive fn add(n: i32) { self.val = self.val + n; }\n"
+            "  receive fn get() -> i32 { self.val }\n"
+            "}\n"
+            "fn main() {\n"
+            "  let a = spawn Acc;\n"
+            "  a.add(10);\n"
+            "  a.add(20);\n"
+            "  let v = a.get();\n"
+            "  println(v);\n"
+            "  sleep_ms(100);\n"
+            "}"
+        ), "30"),
+
+        # --- Comparisons ---
+        ("cmp_chain", (
+            "fn main() {\n"
+            "  println(1 < 2);\n"
+            "  println(2 > 3);\n"
+            "  println(5 == 5);\n"
+            "  println(5 != 6);\n"
+            "  println(3 <= 3);\n"
+            "  println(4 >= 5);\n"
+            "}"
+        ), "true\nfalse\ntrue\ntrue\ntrue\nfalse"),
+
+        # --- Complex expressions ---
+        ("expr_nested_parens", (
+            "fn main() { println(((2 + 3) * (4 - 1)) / 3); }"
+        ), "5"),
+        ("expr_if_in_let", (
+            "fn main() {\n"
+            "  let a = 10;\n"
+            "  let b = if a > 5 { a * 2 } else { a };\n"
+            "  println(b);\n"
+            "}"
+        ), "20"),
+    ]
+
+    for label, src, expected in programs:
+        _report(run_and_verify_hew(ctx, src, f"oracle_exec/{label}", expected))
+
+
+def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
+    """Stress-test MLIR and LLVM IR lowering via --emit-mlir and --emit-llvm.
+
+    Uses well-typed programs that should compile.  Any crash or ICE during
+    IR emission is a lowering bug, even if linking would succeed.
+    """
+    # Corpus of programs covering different codegen paths
+    corpus: list[tuple[str, str]] = [
+        ("arith", "fn main() { println(2 + 3 * 4); }"),
+        ("string", 'fn main() { println("hello"); }'),
+        ("interp", 'fn main() { let x = 42; println(f"val={x}"); }'),
+        ("for_loop", "fn main() { var s = 0; for i in 0..10 { s = s + i; } println(s); }"),
+        ("while_loop", "fn main() { var x = 1; while x < 100 { x = x * 2; } println(x); }"),
+        ("match_expr", "fn main() { let r = match 2 { 1 => 10, 2 => 20, _ => 0 }; println(r); }"),
+        ("if_expr", "fn main() { let x = if true { 1 } else { 0 }; println(x); }"),
+        ("fn_call", "fn add(a: i32, b: i32) -> i32 { a + b }\nfn main() { println(add(3, 4)); }"),
+        ("recursion", (
+            "fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\n"
+            "fn main() { println(fib(10)); }"
+        )),
+        ("closure", "fn main() { let f = (x) => x * 2; println(f(21)); }"),
+        ("vec_ops", (
+            "fn main() {\n"
+            "  let v: Vec<i32> = Vec::new();\n"
+            "  v.push(1); v.push(2); v.push(3);\n"
+            "  println(v.len());\n"
+            "}"
+        )),
+        ("type_decl", (
+            "type Pt { x: i32; y: i32; }\n"
+            "fn main() { let p = Pt { x: 1, y: 2 }; println(p.x); }"
+        )),
+        ("enum_decl", (
+            "enum Dir { Up; Down; Left; Right; }\n"
+            "fn main() { let d = Dir::Up; println(0); }"
+        )),
+        ("actor", (
+            "actor Cnt {\n"
+            "  let v: i32;\n"
+            "  receive fn inc(n: i32) { self.v = self.v + n; }\n"
+            "  receive fn get() -> i32 { self.v }\n"
+            "}\n"
+            "fn main() { let c = spawn Cnt; c.inc(1); sleep_ms(50); }"
+        )),
+        ("bool_logic", "fn main() { println(true && false || true); }"),
+        ("early_return", (
+            "fn check(n: i32) -> i32 { if n < 0 { return -1; } n * 2 }\n"
+            "fn main() { println(check(-5)); println(check(3)); }"
+        )),
+        ("nested_match", (
+            "fn main() {\n"
+            "  let x = 1;\n"
+            "  let y = 2;\n"
+            "  let r = match x {\n"
+            "    1 => match y { 2 => 100, _ => 0 },\n"
+            "    _ => -1,\n"
+            "  };\n"
+            "  println(r);\n"
+            "}"
+        )),
+        ("var_mutation", (
+            "fn main() { var x = 0; x = x + 1; x = x + 2; x = x + 3; println(x); }"
+        )),
+        ("string_ops", (
+            "fn main() {\n"
+            '  let s = "hello";\n'
+            "  println(s.len());\n"
+            '  println(s + " world");\n'
+            "}"
+        )),
+        ("multi_fn", (
+            "fn a(x: i32) -> i32 { x + 1 }\n"
+            "fn b(x: i32) -> i32 { a(x) * 2 }\n"
+            "fn c(x: i32) -> i32 { b(x) + a(x) }\n"
+            "fn main() { println(c(5)); }"
+        )),
+    ]
+
+    # Also generate randomized programs for broader coverage
+    for idx in range(n):
+        num_fns = random.randint(0, 2)
+        fns = []
+        for j in range(num_fns):
+            nparams = random.randint(1, 3)
+            params = ", ".join(f"p{k}: i32" for k in range(nparams))
+            body = " + ".join(f"p{k}" for k in range(nparams))
+            fns.append(f"fn gen_{idx}_{j}({params}) -> i32 {{ {body} }}")
+
+        stmts = []
+        for _ in range(random.randint(1, 5)):
+            c = random.randint(0, 4)
+            if c == 0:
+                stmts.append(f"let x{len(stmts)} = {random.randint(-50, 50)};")
+            elif c == 1:
+                stmts.append(f"println({random.randint(0, 100)});")
+            elif c == 2:
+                stmts.append(f"for _i in 0..{random.randint(1, 3)} {{ println(1); }}")
+            elif c == 3:
+                v = random.randint(0, 3)
+                stmts.append(f"let m{len(stmts)} = match {v} {{ 0 => 10, 1 => 20, _ => 0 }};")
+            else:
+                stmts.append(f"var w{len(stmts)} = 0; while w{len(stmts)} < {random.randint(1, 3)} {{ w{len(stmts)} = w{len(stmts)} + 1; }}")
+
+        body = "\n  ".join(stmts)
+        src = "\n".join(fns) + f"\nfn main() {{\n  {body}\n}}"
+        corpus.append((f"gen_{idx}", src))
+
+    for label, src in corpus:
+        for flag in ("--emit-mlir", "--emit-llvm"):
+            _report(run_emit_hew(ctx, src, f"emit_ir/{label}", flag))
 
 CATEGORIES: dict[str, tuple[str, object]] = {
     # --- Original categories ---
@@ -2284,6 +2920,9 @@ CATEGORIES: dict[str, tuple[str, object]] = {
     "comments":      ("Comment placement edge cases",           fuzz_comment_placement),
     "whitespace":    ("Whitespace sensitivity",                 fuzz_whitespace),
     "well_typed":    ("Random well-typed programs (CSmith-like)", fuzz_random_well_typed),
+    # --- Pipeline depth testing ---
+    "oracle_exec":   ("Execution oracle (build+run+verify output)", fuzz_oracle_exec),
+    "emit_ir":       ("IR lowering stress (--emit-mlir/--emit-llvm)", fuzz_emit_ir),
 }
 
 
@@ -2372,6 +3011,9 @@ def main() -> None:
     print(f"  Crashes:  {s.crash}")
     print(f"  Hangs:    {s.hang}")
     print(f"  ICEs:     {s.ice}")
+    if s.oracle_pass or s.oracle_fail:
+        print(f"  Oracle pass: {s.oracle_pass}")
+        print(f"  Oracle fail: {s.oracle_fail}")
 
     if ctx.issues:
         print()
@@ -2395,7 +3037,7 @@ def main() -> None:
     if not ctx.keep:
         shutil.rmtree(workdir)
 
-    if s.crash > 0 or s.ice > 0:
+    if s.crash > 0 or s.ice > 0 or s.oracle_fail > 0:
         sys.exit(1)
 
 

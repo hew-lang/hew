@@ -351,7 +351,9 @@ pub unsafe extern "C" fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64 {
     }
 }
 
-/// Get a string pointer at `index`. Returns an internal pointer. Aborts if out of bounds.
+/// Get a string pointer at `index`. Aborts if out of bounds.
+///
+/// **Note:** Returns a `strdup`'d copy. The caller must `free()` the returned string.
 ///
 /// # Safety
 ///
@@ -364,7 +366,12 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
         if index >= (*v).len {
             abort_oob(index, (*v).len);
         }
-        (*v).data.cast::<*const c_char>().add(index).read()
+        let raw = (*v).data.cast::<*const c_char>().add(index).read();
+        if raw.is_null() {
+            core::ptr::null()
+        } else {
+            libc::strdup(raw)
+        }
     }
 }
 

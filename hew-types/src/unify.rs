@@ -277,14 +277,19 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 });
             }
 
-            // Check that all traits match in order
-            for (a_bound, b_bound) in a_traits.iter().zip(b_traits.iter()) {
-                if a_bound.trait_name != b_bound.trait_name {
+            // Compare as sets: for each bound in a, find a matching bound in b by trait_name
+            let mut matched = vec![false; b_traits.len()];
+            for a_bound in a_traits.iter() {
+                let Some(idx) = b_traits.iter().enumerate().position(|(i, b_bound)| {
+                    !matched[i] && b_bound.trait_name == a_bound.trait_name
+                }) else {
                     return Err(UnifyError::Mismatch {
                         expected: a.clone(),
                         actual: b.clone(),
                     });
-                }
+                };
+                matched[idx] = true;
+                let b_bound = &b_traits[idx];
                 if a_bound.args.len() != b_bound.args.len() {
                     return Err(UnifyError::ArityMismatch {
                         expected: a_bound.args.len(),

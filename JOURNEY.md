@@ -284,3 +284,43 @@ struct enum variants, array repeat, visibility modifiers, trait bound enforcemen
 multi-trait dyn, range first-class, unsafe enforcement, timeout codegen, HashSet,
 generic lambdas, if-let patterns, custom indexing, associated types, s.spawn syntax,
 ARM coroutines, and WASM platform warnings.
+
+## Quality & Correctness Sprint — February 2026
+
+Five frontier models analyzed the codebase in parallel, identifying 25+ issues
+across parser, type system, codegen, runtime, and tests. Priority: correctness
+bugs over style concerns.
+
+### Correctness Fixes
+
+- **Cross-enum variant matching**: Match arms from wrong enums silently type-checked.
+  Fixed `lookup_variant_types` to only search the scrutinee's enum.
+- **Bare return in non-unit fns**: `return;` in `fn -> int` compiled silently.
+  Added `ReturnTypeMismatch` error kind.
+- **Trait object ordering**: `dyn (A + B)` != `dyn (B + A)` in unification.
+  Changed to set-based comparison.
+
+### Safety Fixes
+
+- **Compound assign UB**: Three codegen switch statements had no default case,
+  leaving `mlir::Value` uninitialized. Added error-emitting defaults.
+- **HashMap/Vec string getters**: Returned internal pointers that become dangling
+  after mutation. Now return `strdup` copies.
+
+### Parser Quality
+
+- Missing param type annotation: silent drop → error message
+- `pub(invalid)`: silent promotion to pub → defaults to private
+- String interpolation errors: silently lost → propagated to parent
+
+### Test Coverage
+
+- Registered 4 unregistered e2e test directories (ranges, chars, for labels, tail call)
+- Added negative type checker tests (mutability, arity)
+- Added trait object ordering unification test
+
+### Current State
+
+- 314/316 codegen e2e tests passing
+- 870+ Rust workspace tests passing
+- Clean builds across all crates

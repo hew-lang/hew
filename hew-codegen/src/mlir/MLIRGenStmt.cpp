@@ -528,11 +528,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         collectionVarTypes[varName] = collStr;
     }
 
+    // Vec/HashMap string getters now return owned (strdup'd) copies
     bool isBorrowedGetString = false;
-    if (value && mlir::isa<hew::StringRefType>(value.getType()) && value.getDefiningOp()) {
-      auto *defOp = value.getDefiningOp();
-      isBorrowedGetString = mlir::isa<hew::VecGetOp, hew::HashMapGetOp>(defOp);
-    }
 
     // Register drop functions from type annotation
     if (stmt.ty) {
@@ -594,10 +591,9 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
           isStringExpr = std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
                          std::holds_alternative<ast::ExprCall>(vk);
           // Method calls that produce OWNED strings should be dropped.
-          // But .get() on Vec/HashMap returns a borrowed reference — NOT owned.
+          // .get() on Vec/HashMap now returns strdup'd owned copies.
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&vk)) {
-            if (mc->method != "get")
-              isStringExpr = true;
+            isStringExpr = true;
           }
         }
         if (!isBorrowedGetString && isStringExpr)
@@ -834,6 +830,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                         ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, current, rhs)
                         : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, current, rhs);
                 break;
+              default:
+                emitError(location, "unsupported compound assignment operator");
+                return;
               }
               rhs = result;
             }
@@ -950,6 +949,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                 ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, currentFieldVal, rhs)
                 : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, currentFieldVal, rhs);
         break;
+      default:
+        emitError(location, "unsupported compound assignment operator");
+        return;
       }
       rhs = result;
     }
@@ -1085,6 +1087,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                    ? builder.create<mlir::arith::ShRUIOp>(location, current, rhs).getResult()
                    : builder.create<mlir::arith::ShRSIOp>(location, current, rhs).getResult();
       break;
+    default:
+      emitError(location, "unsupported compound assignment operator");
+      return;
     }
     storeVariable(name, result);
   } else {

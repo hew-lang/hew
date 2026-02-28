@@ -355,6 +355,8 @@ pub unsafe extern "C" fn hew_hashmap_get_i32(m: *mut HewHashMap, key: *const c_c
 
 /// Get the string value for `key`. Returns null if the key is not found.
 ///
+/// **Note:** Returns a `strdup`'d copy. The caller must `free()` the returned string.
+///
 /// # Safety
 ///
 /// `m` must be a valid `HewHashMap` pointer. `key` must be a valid C string.
@@ -369,7 +371,12 @@ pub unsafe extern "C" fn hew_hashmap_get_str_impl(
         if idx < 0 {
             return ptr::null();
         }
-        (*(*m).entries.add(idx as usize)).value_str
+        let raw = (*(*m).entries.add(idx as usize)).value_str;
+        if raw.is_null() {
+            ptr::null()
+        } else {
+            libc::strdup(raw)
+        }
     }
 }
 

@@ -164,6 +164,7 @@ fn parse_string_parts(
     suffix_len: usize,
     expr_open: &str,
     span_start: usize,
+    errors: &mut Vec<ParseError>,
 ) -> Vec<StringPart> {
     let inner = &raw[prefix_len..raw.len() - suffix_len];
     let inner_offset = span_start + prefix_len;
@@ -268,7 +269,9 @@ fn parse_string_parts(
             let expr_text = &inner[expr_start_byte..expr_end_byte];
             if !expr_text.is_empty() {
                 let mut sub_parser = Parser::new(expr_text);
-                if let Some((expr, sub_span)) = sub_parser.parse_expr() {
+                let parsed = sub_parser.parse_expr();
+                errors.extend(sub_parser.errors.into_iter());
+                if let Some((expr, sub_span)) = parsed {
                     let adjusted_start = inner_offset + expr_start_byte + sub_span.start;
                     let adjusted_end = inner_offset + expr_start_byte + sub_span.end;
                     parts.push(StringPart::Expr((expr, adjusted_start..adjusted_end)));
@@ -767,11 +770,11 @@ impl<'src> Parser<'src> {
                 }
                 _ => {
                     self.error("expected 'package' or 'super' after 'pub('".to_string());
-                    return Visibility::Pub;
+                    return Visibility::Private;
                 }
             };
             if self.expect(&Token::RightParen).is_none() {
-                return Visibility::Pub;
+                return Visibility::Private;
             }
             vis
         } else {
@@ -2608,6 +2611,9 @@ impl<'src> Parser<'src> {
             }
 
             if !self.eat(&Token::Colon) {
+                self.error(format!(
+                    "expected ':' and type annotation for parameter '{name}'"
+                ));
                 break;
             }
 
@@ -3273,7 +3279,7 @@ impl<'src> Parser<'src> {
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
                 self.advance();
-                let parts = parse_string_parts(&s, 2, 1, "{", start);
+                let parts = parse_string_parts(&s, 2, 1, "{", start, &mut self.errors);
                 Expr::InterpolatedString(parts)
             }
             Token::RegexLiteral(s) => {

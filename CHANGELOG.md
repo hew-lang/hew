@@ -26,6 +26,17 @@
 - Generic lambda syntax support (<T>(x: T) => expr)
 - Coroutine support for aarch64 (ARM64) architecture
 
+### Fixed
+
+- Type checker: reject match arms using variants from wrong enum type
+- Type checker: bare `return;` in non-unit functions now produces error
+- Type checker: `dyn (A + B)` now unifies with `dyn (B + A)` (order-independent)
+- Parser: missing parameter type annotation now reports error instead of silent drop
+- Parser: `pub(invalid)` now defaults to private instead of silently promoting to pub
+- Parser: string interpolation sub-parser errors now propagated to parent
+- Codegen: compound assignment switches now have default case (prevents UB)
+- Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
+
 ### Changed
 
 - Improved WASM target error messages for unsupported concurrency operations

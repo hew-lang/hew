@@ -200,3 +200,24 @@ issue when agents don't have full context of surrounding code.
 after parsing `Self` as a named type, the parser must check for `::` and combine
 into `Self::TypeName`. Without this, trait methods returning `Self::Item` fail
 to parse with "expected `;`, found `::`" errors.
+
+### 29. Cross-enum variant fallback is a type-safety hole
+
+When match pattern resolution can't find a variant in the scrutinee's type, falling
+back to a global search across all types is dangerous. It means `match color { Shape::Circle => }`
+silently type-checks. The fix is simple: when the scrutinee type is known, only search
+that type's variants.
+
+### 30. String getters returning internal pointers create invisible use-after-free
+
+C-ABI string getters (HashMap.get_str, Vec.get_str) that return pointers into
+internal storage create lifetime hazards invisible to both the compiler and the
+generated code. Returning strdup'd copies is safer, though it adds allocation cost.
+The codegen must be aware that returned strings need freeing.
+
+### 31. Multi-model code review catches different bug classes
+
+Claude Opus caught parser inconsistencies and operator precedence issues. GPT-5.1
+Codex found type coercion and unification bugs. Gemini found runtime memory safety
+issues. Claude Sonnet found codegen UB and missing verification. Each model has
+blind spots the others compensate for.

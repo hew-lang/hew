@@ -645,6 +645,12 @@ foreach(HEW_FILE ${JUNIOR_HEWS})
   endif()
 endforeach()
 
+# ── Missing E2E test registrations ────────────────────────────────────────────
+add_e2e_file_test(ranges               e2e_ranges range_value)
+add_e2e_file_test(char_literals        e2e_char_literals char_literals)
+add_e2e_file_test(for_labels           e2e_for_labels for_labels)
+add_e2e_file_test(tail_call            e2e_tail_call tail_call)
+
 # ── Coverage tests (ops with zero prior E2E coverage) ────────────────────────
 add_e2e_file_test(coverage_assert_ops         e2e_coverage assert_ops)
 add_e2e_file_test(coverage_string_case        e2e_coverage string_case_methods)

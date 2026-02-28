@@ -234,6 +234,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   // Check if this is a Constructor pattern (e.g., Some(x))
   auto *ctorPatPtr = std::get_if<ast::PatConstructor>(&pattern.kind);
   bool isConstructorPattern = (ctorPatPtr != nullptr);
+  auto *tuplePatPtr = std::get_if<ast::PatTuple>(&pattern.kind);
+  bool isTuplePattern = (tuplePatPtr != nullptr);
 
   bool isWildcard =
       (std::get_if<ast::PatWildcard>(&pattern.kind) != nullptr ||
@@ -273,6 +275,36 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
     return enumPayloadFieldIndex(enumName, static_cast<int32_t>(variantIndex),
                                  static_cast<int64_t>(payloadOrdinal));
+  };
+
+  // Helper function for binding tuple pattern fields recursively
+  std::function<void(const ast::PatTuple &, mlir::Value)> bindTuplePatternFields;
+  bindTuplePatternFields = [&](const ast::PatTuple &tp, mlir::Value tupleValue) -> void {
+    for (size_t i = 0; i < tp.elements.size(); ++i) {
+      const auto &elem = tp.elements[i];
+
+      // Extract the i-th element from the tuple value
+      mlir::Value elemVal;
+      if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(tupleValue.getType())) {
+        elemVal = builder.create<hew::TupleExtractOp>(location, hewTuple.getElementTypes()[i],
+                                                      tupleValue, static_cast<int64_t>(i));
+      } else {
+        elemVal = builder.create<mlir::LLVM::ExtractValueOp>(
+            location, tupleValue, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
+      }
+
+      // Bind the pattern element recursively
+      if (auto *elemIdent = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
+        declareVariable(elemIdent->name, elemVal);
+      } else if (auto *elemTuple = std::get_if<ast::PatTuple>(&elem->value.kind)) {
+        // Recursively handle nested tuple patterns
+        bindTuplePatternFields(*elemTuple, elemVal);
+      } else if (std::holds_alternative<ast::PatWildcard>(elem->value.kind)) {
+        // Wildcards don't bind, skip
+        continue;
+      }
+      // Other nested pattern types could be added here (PatStruct, etc.)
+    }
   };
 
   auto bindStructPatternFields = [&](const ast::PatStruct &sp) {
@@ -364,6 +396,11 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       if (auto *sp = std::get_if<ast::PatStruct>(&aPat.kind)) {
         bindStructPatternFields(*sp);
       }
+
+      // If this is a tuple pattern, bind elements as variables
+      if (auto *tp = std::get_if<ast::PatTuple>(&aPat.kind)) {
+        bindTuplePatternFields(*tp, scrutinee);
+      }
     }
 
     if (a.body) {
@@ -432,8 +469,9 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   };
 
   // Wildcard or last arm without guard: generate body directly
-  if ((isWildcard && !arm.guard) || (isLast && !isLiteral && !isEnumVariantPattern &&
-                                     !isConstructorPattern && !isOrPattern && !arm.guard)) {
+  if ((isWildcard && !arm.guard) ||
+      (isLast && !isLiteral && !isEnumVariantPattern && !isConstructorPattern && !isOrPattern &&
+       !isTuplePattern && !arm.guard)) {
     return generateArmBody(arm);
   }
 
@@ -635,6 +673,20 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     SymbolTableScopeT guardScope(symbolTable);
     MutableTableScopeT guardMutScope(mutableVars);
     bindStructPatternFields(*structPatPtr);
+    auto guardCond = generateExpression(arm.guard->value);
+    if (!guardCond)
+      return nullptr;
+    return generateTagMatch(guardCond);
+  }
+
+  // Tuple pattern: irrefutable unless guarded
+  if (isTuplePattern && !arm.guard) {
+    return generateArmBody(arm);
+  }
+  if (isTuplePattern && arm.guard) {
+    SymbolTableScopeT guardScope(symbolTable);
+    MutableTableScopeT guardMutScope(mutableVars);
+    bindTuplePatternFields(*tuplePatPtr, scrutinee);
     auto guardCond = generateExpression(arm.guard->value);
     if (!guardCond)
       return nullptr;

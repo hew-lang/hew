@@ -1,0 +1,28 @@
+// Test tuple pattern matching in match expressions
+// Tests irrefutable tuple destructuring
+
+fn main() {
+    let pair = (42, 99);
+    
+    // Simple tuple destructuring
+    let sum = match pair {
+        (a, b) => a + b,
+    };
+    println(sum);
+    
+    // Nested tuple destructuring
+    let nested = ((1, 2), (3, 4));
+    let total = match nested {
+        ((a, b), (c, d)) => a + b + c + d,
+    };
+    println(total);
+    
+    // Wildcard in tuple
+    let with_wildcard = (100, 200);
+    let extracted = match with_wildcard {
+        (value, _) => value,
+    };
+    println(extracted);
+    
+    println("Tuple pattern test passed");
+}

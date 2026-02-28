@@ -1,0 +1,16 @@
+fn main() -> int {
+    let v: Vec<bool> = Vec::new();
+    v.push(true);
+    v.push(false);
+    v.push(true);
+    println(v.len());
+    if v[0] {
+        println("first is true");
+    }
+    if v[1] {
+        println("second is true");
+    } else {
+        println("second is false");
+    }
+    return 0;
+}

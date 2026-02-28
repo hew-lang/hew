@@ -1,8 +1,8 @@
 import std::bench;
 
-fn work() -> i32 {
-    var sum = 0;
-    var i = 0;
+fn work() -> i64 {
+    var sum: i64 = 0;
+    var i: i64 = 0;
     while i < 10 {
         sum = sum + i;
         i = i + 1;

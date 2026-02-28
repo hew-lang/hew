@@ -2323,13 +2323,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   };
 
   // HashSet<T> method dispatcher
-  auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType,
+  auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType, mlir::Value argValue,
                                mlir::Value &resultOut) -> bool {
     if (method == "insert") {
-      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
-      if (!val)
+      if (!argValue) {
+        emitError(location) << "HashSet::insert requires an argument";
         return true;
-      val = coerceType(val, elemType, location);
+      }
+      auto val = coerceType(argValue, elemType, location);
       // Call hew_hashset_insert_int or hew_hashset_insert_string based on element type
       std::string funcName;
       if (elemType.isInteger(64)) {
@@ -2348,10 +2349,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       return true;
     }
     if (method == "contains") {
-      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
-      if (!val)
+      if (!argValue) {
+        emitError(location) << "HashSet::contains requires an argument";
         return true;
-      val = coerceType(val, elemType, location);
+      }
+      auto val = coerceType(argValue, elemType, location);
       std::string funcName;
       if (elemType.isInteger(64)) {
         funcName = "hew_hashset_contains_int";
@@ -2369,10 +2371,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       return true;
     }
     if (method == "remove") {
-      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
-      if (!val)
+      if (!argValue) {
+        emitError(location) << "HashSet::remove requires an argument";
         return true;
-      val = coerceType(val, elemType, location);
+      }
+      auto val = coerceType(argValue, elemType, location);
       std::string funcName;
       if (elemType.isInteger(64)) {
         funcName = "hew_hashset_remove_int";
@@ -2441,17 +2444,25 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       // For now, determine element type from method arguments
       // TODO: Store element type information in the HandleType or track it separately
       mlir::Type elemType = i64Type; // Default to i64
+      mlir::Value argValue;
+      const bool methodRequiresArg =
+          method == "insert" || method == "contains" || method == "remove";
 
-      // Try to infer element type from first argument if present
-      if (!mc.args.empty()) {
-        auto argExpr = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        if (argExpr && argExpr.getType()) {
-          elemType = argExpr.getType();
+      if (methodRequiresArg) {
+        if (mc.args.empty()) {
+          emitError(location) << "HashSet method '" << method << "' requires an argument";
+          return mlir::Value{};
+        }
+        argValue = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!argValue)
+          return mlir::Value{};
+        if (argValue.getType()) {
+          elemType = argValue.getType();
         }
       }
 
       mlir::Value setResult;
-      if (emitHashSetMethod(receiver, elemType, setResult))
+      if (emitHashSetMethod(receiver, elemType, argValue, setResult))
         return setResult;
       emitError(location) << "unknown method '" << method << "' on HashSet";
       return mlir::Value{};

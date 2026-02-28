@@ -982,6 +982,74 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
 
     if (auto vecType = mlir::dyn_cast<hew::VecType>(collectionVal.getType())) {
       rhsVal = coerceType(rhsVal, vecType.getElementType(), location);
+      if (stmt.op) {
+        auto currentVal = builder.create<hew::VecGetOp>(location, vecType.getElementType(),
+                                                        collectionVal, indexVal);
+        bool isFloat = llvm::isa<mlir::FloatType>(vecType.getElementType());
+        bool isUnsigned = false;
+        if (mlir::isa<mlir::IntegerType>(vecType.getElementType()))
+          if (auto *ty = resolvedTypeOf(stmt.target.span))
+            isUnsigned = isUnsignedTypeExpr(*ty);
+        mlir::Value result;
+        switch (*stmt.op) {
+        case ast::CompoundAssignOp::Add:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::AddFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::AddIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Subtract:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::SubFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::SubIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Multiply:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::MulFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::MulIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Divide:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, currentVal, rhsVal)
+              : isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::DivUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Modulo:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, currentVal, rhsVal)
+              : isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitAnd:
+          result = (mlir::Value)builder.create<mlir::arith::AndIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitOr:
+          result = (mlir::Value)builder.create<mlir::arith::OrIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitXor:
+          result = (mlir::Value)builder.create<mlir::arith::XOrIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Shl:
+          result = (mlir::Value)builder.create<mlir::arith::ShLIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Shr:
+          result =
+              isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, currentVal, rhsVal);
+          break;
+        default:
+          emitError(location, "unsupported compound assignment operator");
+          return;
+        }
+        rhsVal = result;
+      }
       builder.create<hew::VecSetOp>(location, collectionVal, indexVal, rhsVal);
       return;
     }
@@ -1009,6 +1077,74 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
       auto elemPtr = builder.create<mlir::LLVM::GEPOp>(
           location, ptrType, llvmArrayType, alloca, mlir::ValueRange{zero.getResult(), indexVal});
+      if (stmt.op) {
+        auto currentVal =
+            builder.create<mlir::LLVM::LoadOp>(location, hewArrayType.getElementType(), elemPtr);
+        bool isFloat = llvm::isa<mlir::FloatType>(hewArrayType.getElementType());
+        bool isUnsigned = false;
+        if (mlir::isa<mlir::IntegerType>(hewArrayType.getElementType()))
+          if (auto *ty = resolvedTypeOf(stmt.target.span))
+            isUnsigned = isUnsignedTypeExpr(*ty);
+        mlir::Value result;
+        switch (*stmt.op) {
+        case ast::CompoundAssignOp::Add:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::AddFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::AddIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Subtract:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::SubFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::SubIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Multiply:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::MulFOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::MulIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Divide:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, currentVal, rhsVal)
+              : isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::DivUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Modulo:
+          result =
+              isFloat
+                  ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, currentVal, rhsVal)
+              : isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitAnd:
+          result = (mlir::Value)builder.create<mlir::arith::AndIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitOr:
+          result = (mlir::Value)builder.create<mlir::arith::OrIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::BitXor:
+          result = (mlir::Value)builder.create<mlir::arith::XOrIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Shl:
+          result = (mlir::Value)builder.create<mlir::arith::ShLIOp>(location, currentVal, rhsVal);
+          break;
+        case ast::CompoundAssignOp::Shr:
+          result =
+              isUnsigned
+                  ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, currentVal, rhsVal)
+                  : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, currentVal, rhsVal);
+          break;
+        default:
+          emitError(location, "unsupported compound assignment operator");
+          return;
+        }
+        rhsVal = result;
+      }
       builder.create<mlir::LLVM::StoreOp>(location, rhsVal, elemPtr);
       auto updatedArray = builder.create<mlir::LLVM::LoadOp>(location, llvmArrayType, alloca);
       auto updatedHewArray =

@@ -1592,6 +1592,7 @@ static std::string vecElemSuffix(mlir::Type elemType) {
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
+  // Bool (i1) and i32 both use the default no-suffix version (hew_vec_new)
   return "";
 }
 

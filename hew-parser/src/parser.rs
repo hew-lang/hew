@@ -341,7 +341,6 @@ impl<'src> Parser<'src> {
         for (t, s) in raw_tokens {
             let span = s.start..s.end;
             if matches!(t, Token::Error) {
-                eprintln!("LEX ERROR at {}..{}", span.start, span.end);
                 errors.push(ParseError {
                     message: "unexpected character".to_string(),
                     span,
@@ -793,6 +792,50 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Parse a function declaration with optional `async`/`gen` modifiers.
+    /// The current token must be `fn`, `async`, or `gen`.
+    fn parse_fn_with_modifiers(
+        &mut self,
+        vis: Visibility,
+        is_pure: bool,
+        attrs: Vec<Attribute>,
+        doc_comment: &Option<String>,
+    ) -> Option<Item> {
+        let (is_async, is_gen) = match self.peek() {
+            Some(Token::Fn) => {
+                self.advance();
+                (false, false)
+            }
+            Some(Token::Async) => {
+                self.advance();
+                if self.eat(&Token::Gen) {
+                    if !self.eat(&Token::Fn) {
+                        self.error("expected 'fn' after 'async gen'".to_string());
+                        return None;
+                    }
+                    (true, true)
+                } else if self.eat(&Token::Fn) {
+                    (true, false)
+                } else {
+                    self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
+                    return None;
+                }
+            }
+            Some(Token::Gen) => {
+                self.advance();
+                if !self.eat(&Token::Fn) {
+                    self.error("expected 'fn' after 'gen'".to_string());
+                    return None;
+                }
+                (false, true)
+            }
+            _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
+        };
+        let mut f = self.parse_function(is_async, is_gen, vis, is_pure, attrs)?;
+        f.doc_comment.clone_from(doc_comment);
+        Some(Item::Function(f))
+    }
+
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
     fn parse_item(&mut self) -> Option<Spanned<Item>> {
         // Collect any outer doc comments (`///`) and attributes before this item.
@@ -819,42 +862,8 @@ impl<'src> Parser<'src> {
                 let vis = self.parse_visibility();
                 let is_pure = self.eat(&Token::Pure);
                 match self.peek() {
-                    Some(Token::Fn) => {
-                        self.advance();
-                        let mut f = self.parse_function(false, false, vis, is_pure, attrs)?;
-                        f.doc_comment.clone_from(&doc_comment);
-                        Item::Function(f)
-                    }
-                    Some(Token::Async) => {
-                        self.advance();
-                        if self.eat(&Token::Gen) {
-                            if self.eat(&Token::Fn) {
-                                let mut f = self.parse_function(true, true, vis, is_pure, attrs)?;
-                                f.doc_comment.clone_from(&doc_comment);
-                                Item::Function(f)
-                            } else {
-                                self.error("expected 'fn' after 'async gen'".to_string());
-                                return None;
-                            }
-                        } else if self.eat(&Token::Fn) {
-                            let mut f = self.parse_function(true, false, vis, is_pure, attrs)?;
-                            f.doc_comment.clone_from(&doc_comment);
-                            Item::Function(f)
-                        } else {
-                            self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
-                            return None;
-                        }
-                    }
-                    Some(Token::Gen) => {
-                        self.advance();
-                        if self.eat(&Token::Fn) {
-                            let mut f = self.parse_function(false, true, vis, is_pure, attrs)?;
-                            f.doc_comment.clone_from(&doc_comment);
-                            Item::Function(f)
-                        } else {
-                            self.error("expected 'fn' after 'gen'".to_string());
-                            return None;
-                        }
+                    Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => {
+                        self.parse_fn_with_modifiers(vis, is_pure, attrs, &doc_comment)?
                     }
                     Some(Token::Struct) => {
                         self.error("use 'type' instead of 'struct' to declare types".to_string());
@@ -910,74 +919,20 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
-            Some(Token::Fn) => {
-                self.advance();
-                let mut f = self.parse_function(false, false, Visibility::Private, false, attrs)?;
-                f.doc_comment.clone_from(&doc_comment);
-                Item::Function(f)
+            Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => {
+                self.parse_fn_with_modifiers(Visibility::Private, false, attrs, &doc_comment)?
             }
             Some(Token::Pure) => {
                 self.advance();
                 match self.peek() {
-                    Some(Token::Fn) => {
-                        self.advance();
-                        let mut f =
-                            self.parse_function(false, false, Visibility::Private, true, attrs)?;
-                        f.doc_comment.clone_from(&doc_comment);
-                        Item::Function(f)
-                    }
-                    Some(Token::Gen) => {
-                        self.advance();
-                        if self.eat(&Token::Fn) {
-                            let mut f =
-                                self.parse_function(false, true, Visibility::Private, true, attrs)?;
-                            f.doc_comment.clone_from(&doc_comment);
-                            Item::Function(f)
-                        } else {
-                            self.error("expected 'fn' after 'pure gen'".to_string());
-                            return None;
-                        }
-                    }
+                    Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => self
+                        .parse_fn_with_modifiers(Visibility::Private, true, attrs, &doc_comment)?,
                     _ => {
                         self.error(
                             "'pure' can only be applied to function declarations".to_string(),
                         );
                         return None;
                     }
-                }
-            }
-            Some(Token::Async) => {
-                self.advance();
-                if self.eat(&Token::Gen) {
-                    if self.eat(&Token::Fn) {
-                        let mut f =
-                            self.parse_function(true, true, Visibility::Private, false, attrs)?;
-                        f.doc_comment.clone_from(&doc_comment);
-                        Item::Function(f)
-                    } else {
-                        self.error("expected 'fn' after 'async gen'".to_string());
-                        return None;
-                    }
-                } else if self.eat(&Token::Fn) {
-                    let mut f =
-                        self.parse_function(true, false, Visibility::Private, false, attrs)?;
-                    f.doc_comment.clone_from(&doc_comment);
-                    Item::Function(f)
-                } else {
-                    self.error("expected 'fn' or 'gen fn' after 'async'".to_string());
-                    return None;
-                }
-            }
-            Some(Token::Gen) => {
-                self.advance();
-                if self.eat(&Token::Fn) {
-                    let mut f =
-                        self.parse_function(false, true, Visibility::Private, false, attrs)?;
-                    f.doc_comment.clone_from(&doc_comment);
-                    Item::Function(f)
-                } else {
-                    self.error("expected 'fn' after 'gen'".to_string());
-                    return None;
                 }
             }
             Some(Token::Struct) => {

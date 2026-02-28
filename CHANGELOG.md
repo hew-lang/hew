@@ -34,12 +34,18 @@
 - Type checker: match statements now check exhaustiveness (missing variants warn)
 - Type checker: `Self` in generic impls now resolves to full type (e.g., `Pair<T>` not bare `Pair`)
 - Type checker: `dyn Trait<Args>` method dispatch now substitutes bound type args into signatures
+- Type checker: lambda arity mismatch now detected (1-param lambda can't pass as `fn(int,int)->int`)
+- Type checker: OR-patterns (`Some(x) | None`) now counted in exhaustiveness checks
 - Parser: missing parameter type annotation now reports error instead of silent drop
 - Parser: `pub(invalid)` now defaults to private instead of silently promoting to pub
 - Parser: string interpolation sub-parser errors now propagated to parent
 - Parser: empty struct literal `Foo {}` now parses correctly for zero-field structs
 - Parser: invalid escape sequences now report error instead of silent failure
 - Parser: positional args after named args now skipped instead of producing malformed AST
+- Codegen: indexed compound assignment (`v[i] += 1`) now applies the operator (was silently dropping it)
+- Codegen: HashSet insert/contains/remove no longer double-evaluate argument expressions
+- Codegen: Vec<bool> now uses consistent runtime suffixes (fixes data corruption)
+- Codegen: tuple patterns in match expressions now destructure correctly (was silently skipped)
 - Codegen: return statements now evaluate expression before dropping locals (fixes use-after-free)
 - Codegen: labeled break/continue now deactivates ALL intermediate loops (fixes infinite loop with 3+ nesting)
 - Codegen: labeled break/continue now drops resources in ALL intermediate scopes (fixes leaks)
@@ -50,10 +56,12 @@
 - Codegen: TypeExpr::Infer now deserializes in C++ (was crashing with unknown variant)
 - Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
 - Zero compiler warnings across entire Rust workspace
+- All 321 codegen e2e tests pass (bench_basic stdlib fixed)
 
 ### Changed
 
 - Function call results can be silently discarded — no more `let _ =` required
+- Parser: deduplicated function modifier handling (extracted `parse_fn_with_modifiers`)
 - Improved WASM target error messages for unsupported concurrency operations
 
 ## v0.1.5 — 2026-02-28

@@ -346,6 +346,9 @@ add_e2e_file_test_sorted(hashmap_forin    e2e_hashmap_forin hashmap_forin)
 # HashMapKeysOp: for-in over a HashMap produces key iteration via HashMapKeysOp
 add_e2e_file_test(hashmap_keys    e2e_collections hashmap_keys)
 
+# Compound assignment on indexed targets
+add_e2e_file_test(indexed_compound  e2e_compound_assign indexed_compound)
+
 # Memory (7 tests)
 add_e2e_file_test(actor_termination   e2e_memory actor_termination_cleanup)
 add_e2e_file_test(closure_capture     e2e_memory closure_capture_safety)
@@ -654,6 +657,8 @@ add_e2e_file_test(ranges               e2e_ranges range_value)
 add_e2e_file_test(char_literals        e2e_char_literals char_literals)
 add_e2e_file_test(for_labels           e2e_for_labels for_labels)
 add_e2e_file_test(tail_call            e2e_tail_call tail_call)
+add_e2e_file_test(vec_bool             e2e_vec vec_bool)
+add_e2e_file_test(tuple_pattern        e2e_match tuple_pattern)
 
 # ── Coverage tests (ops with zero prior E2E coverage) ────────────────────────
 add_e2e_file_test(coverage_assert_ops         e2e_coverage assert_ops)

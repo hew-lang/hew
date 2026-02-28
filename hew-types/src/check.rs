@@ -3138,6 +3138,7 @@ impl Checker {
                 return_type.as_ref(),
                 body,
                 None,
+                span,
             ),
 
             // Await
@@ -3441,6 +3442,7 @@ impl Checker {
                 return_type.as_ref(),
                 body,
                 Some((expected_params, ret)),
+                span,
             ),
 
             // Integer literal can coerce to any integer type
@@ -5119,6 +5121,7 @@ impl Checker {
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
         expected: Option<(&[Ty], &Ty)>,
+        span: &Span,
     ) -> Ty {
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -5142,6 +5145,21 @@ impl Checker {
         self.env.push_scope();
         let prev_in_generator = self.in_generator;
         self.in_generator = false;
+
+        // Check arity mismatch: lambda parameter count must match expected function type
+        if let Some((expected_params, _)) = &expected {
+            if params.len() != expected_params.len() {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::ArityMismatch,
+                    span.clone(),
+                    format!(
+                        "lambda has {} parameters but expected function type has {}",
+                        params.len(),
+                        expected_params.len()
+                    ),
+                ));
+            }
+        }
 
         let mut param_tys = Vec::new();
         for (i, p) in params.iter().enumerate() {
@@ -6277,11 +6295,26 @@ impl Checker {
     }
 
     fn check_exhaustiveness(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
-        let has_wildcard = arms
-            .iter()
-            .any(|a| matches!(a.pattern.0, Pattern::Wildcard));
-        if has_wildcard {
-            return;
+        fn visit_or_patterns<'a, F: FnMut(&'a Pattern)>(pattern: &'a Pattern, f: &mut F) {
+            match pattern {
+                Pattern::Or(left, right) => {
+                    visit_or_patterns(&left.0, f);
+                    visit_or_patterns(&right.0, f);
+                }
+                _ => f(pattern),
+            }
+        }
+
+        let mut has_wildcard = false;
+        for arm in arms {
+            visit_or_patterns(&arm.pattern.0, &mut |pattern| {
+                if matches!(pattern, Pattern::Wildcard) {
+                    has_wildcard = true;
+                }
+            });
+            if has_wildcard {
+                return;
+            }
         }
 
         match scrutinee_ty {
@@ -6289,22 +6322,21 @@ impl Checker {
                 if let Some(td) = self.lookup_type_def(name) {
                     if !td.variants.is_empty() {
                         let mut has_binding_identifier = false;
-                        let covered: Vec<_> = arms
-                            .iter()
-                            .filter_map(|a| match &a.pattern.0 {
+                        let mut covered = Vec::new();
+                        for arm in arms {
+                            visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                                 Pattern::Constructor { name, .. }
-                                | Pattern::Struct { name, .. } => Some(name.clone()),
+                                | Pattern::Struct { name, .. } => covered.push(name.clone()),
                                 Pattern::Identifier(id) => {
                                     if td.variants.contains_key(id) {
-                                        Some(id.clone())
+                                        covered.push(id.clone());
                                     } else {
                                         has_binding_identifier = true;
-                                        None
                                     }
                                 }
-                                _ => None,
-                            })
-                            .collect();
+                                _ => {}
+                            });
+                        }
                         if has_binding_identifier {
                             return;
                         }
@@ -6331,18 +6363,26 @@ impl Checker {
                 }
             }
             Ty::Bool => {
-                if arms
-                    .iter()
-                    .any(|a| matches!(a.pattern.0, Pattern::Identifier(_)))
-                {
+                let mut has_binding_identifier = false;
+                let mut has_true = false;
+                let mut has_false = false;
+                for arm in arms {
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
+                        Pattern::Identifier(_) => {
+                            has_binding_identifier = true;
+                        }
+                        Pattern::Literal(Literal::Bool(true)) => {
+                            has_true = true;
+                        }
+                        Pattern::Literal(Literal::Bool(false)) => {
+                            has_false = true;
+                        }
+                        _ => {}
+                    });
+                }
+                if has_binding_identifier {
                     return;
                 }
-                let has_true = arms
-                    .iter()
-                    .any(|a| matches!(a.pattern.0, Pattern::Literal(Literal::Bool(true))));
-                let has_false = arms
-                    .iter()
-                    .any(|a| matches!(a.pattern.0, Pattern::Literal(Literal::Bool(false))));
                 if !has_true || !has_false {
                     self.warnings.push(TypeError {
                         severity: crate::error::Severity::Warning,
@@ -6359,7 +6399,7 @@ impl Checker {
                 let mut has_some = false;
                 let mut has_none = false;
                 for arm in arms {
-                    match &arm.pattern.0 {
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                         Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
                             if name == "Some" =>
                         {
@@ -6380,7 +6420,7 @@ impl Checker {
                             has_binding_identifier = true;
                         }
                         _ => {}
-                    }
+                    });
                 }
                 if has_binding_identifier {
                     return;
@@ -6402,7 +6442,7 @@ impl Checker {
                 let mut has_ok = false;
                 let mut has_err = false;
                 for arm in arms {
-                    match &arm.pattern.0 {
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                         Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
                             if name == "Ok" =>
                         {
@@ -6423,7 +6463,7 @@ impl Checker {
                             has_binding_identifier = true;
                         }
                         _ => {}
-                    }
+                    });
                 }
                 if has_binding_identifier {
                     return;
@@ -7083,8 +7123,8 @@ mod tests {
     #[test]
     fn typecheck_nested_function_calls() {
         let source = concat!(
-            "fn double(x: i32) -> i32 { x * 2 }\n",
-            "fn main() -> i32 { double(double(5)) }\n"
+            "fn double(x: i32) -> i32 { let two: i32 = 2; x * two }\n",
+            "fn main() -> i32 { let x: i32 = 5; double(double(x)) }\n"
         );
         let result = hew_parser::parse(source);
         assert!(
@@ -7138,7 +7178,8 @@ mod tests {
 
     #[test]
     fn typecheck_if_branch_type_consistency() {
-        let source = "fn main() -> i32 {\n    if true { 1 } else { 2 }\n}";
+        let source =
+            "fn main() -> i32 {\n    if true { let x: i32 = 1; x } else { let y: i32 = 2; y }\n}";
         let result = hew_parser::parse(source);
         assert!(
             result.errors.is_empty(),
@@ -7260,7 +7301,7 @@ mod tests {
     fn typecheck_recursive_function() {
         let source = concat!(
             "fn factorial(n: i32) -> i32 {\n",
-            "    if n <= 1 { 1 } else { n * factorial(n - 1) }\n",
+            "    let one: i32 = 1; if n <= one { one } else { n * factorial(n - one) }\n",
             "}\n"
         );
         let result = hew_parser::parse(source);

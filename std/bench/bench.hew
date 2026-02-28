@@ -21,7 +21,7 @@ import std::time::datetime;
 
 pub type BenchResult {
     name: String;
-    iterations: i32;
+    iterations: i64;
     avg_ns: i64;
     min_ns: i64;
     max_ns: i64;
@@ -49,7 +49,7 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(self: Suite, name: String, iterations: i32, f: fn());
+    fn add(self: Suite, name: String, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
     fn report(self: Suite);
@@ -59,13 +59,13 @@ trait SuiteMethods {
 }
 
 impl SuiteMethods for Suite {
-    fn add(self: Suite, name: String, iterations: i32, f: fn()) {
+    fn add(self: Suite, name: String, iterations: i64, f: fn()) {
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {
             warmup = 1;
         }
-        var wi = 0;
+        var wi: i64 = 0;
         while wi < warmup {
             f();
             wi = wi + 1;
@@ -75,7 +75,7 @@ impl SuiteMethods for Suite {
         var min_ns: i64 = 9223372036854775807;
         var max_ns: i64 = 0;
         var total_ns: i64 = 0;
-        var i = 0;
+        var i: i64 = 0;
         while i < iterations {
             let start = datetime.now_nanos();
             f();
@@ -105,7 +105,7 @@ impl SuiteMethods for Suite {
 
     fn report(self: Suite) {
         println(f"=== {self.name} ===");
-        var i = 0;
+        var i: i32 = 0;
         while i < self.results.len() {
             let r = self.results.get(i);
             let avg_str = format_time(r.avg_ns);
@@ -118,14 +118,14 @@ impl SuiteMethods for Suite {
     }
 
     fn report_json(self: Suite) {
-        var json = f"{{\"suite\":\"{self.name}\",\"benchmarks\":[";
-        var i = 0;
+        var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
+        var i: i32 = 0;
         while i < self.results.len() {
             let r = self.results.get(i);
             if i > 0 {
                 json = json + ",";
             }
-            json = json + f"{{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}}}";
+            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\}";
             i = i + 1;
         }
         json = json + "]}";

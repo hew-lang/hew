@@ -372,3 +372,34 @@ serialization. Found 8 correctness bugs, fixed all:
 
 **Test results**: 317/318 codegen e2e (up from 314/316), 252 type checker,
 111 parser tests pass. Only pre-existing bench stdlib parse error remains.
+
+### Quality Sprint 4: Full Test Suite Green
+
+Fourth round found 9 more issues, all fixed. Achieved **321/321 codegen
+tests passing** (100%) for the first time.
+
+- **Indexed compound assignment**: `v[i] += 1` was silently dropping the
+  operator, becoming `v[i] = 1`. Added VecGetOp→compound-op→VecSetOp pattern
+  matching the field-access handler. Also fixed for arrays.
+- **HashSet double evaluation**: `s.insert(expr)` generated `expr` twice —
+  once for type inference, once in the method call. Refactored to pass
+  pre-generated values to `emitHashSetMethod`.
+- **Vec<bool> suffix mismatch**: `vecElemSuffix` returned `""` for i1 but
+  `vecElemSuffixWithPtr` returned `"_i32"`. Vec creation used wrong runtime
+  function. Fixed to use consistent `_i32` suffix for bool.
+- **Tuple pattern matching**: `PatTuple` fell through to catch-all warning
+  in match codegen. Added full tuple destructuring with `TupleExtractOp`.
+- **Lambda arity**: 1-param lambda silently passed as `fn(int,int)->int`.
+  Added arity check in `check_lambda` before parameter processing.
+- **OR-pattern exhaustiveness**: `Some(x) | None => ...` spuriously warned
+  about missing arms because `Pattern::Or` wasn't decomposed. Added recursive
+  OR-pattern handling in `check_exhaustiveness`.
+- **Parser deduplication**: Extracted `parse_fn_with_modifiers` to eliminate
+  ~160 lines of duplicated async/gen/pure modifier handling.
+- **Numeric narrowing revert**: The i64→i32 width restriction broke the
+  language (Hew's `int` = i64, used everywhere as array indices, etc.).
+  Reverted to allow same-sign integer coercion — correct for Hew's design.
+- **Bench stdlib fixed**: The above revert also fixed the bench stdlib's
+  i64/i32 division, making `e2e_bench_bench_basic` pass.
+
+**Test results**: 321/321 codegen e2e (100%), 259 type checker, 111 parser.

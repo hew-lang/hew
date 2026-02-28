@@ -266,3 +266,32 @@ the fix because normal scope cleanup handled both scopes. Only a
 pragmatic code review identified that 3+ nesting was needed to exercise
 the intermediate-scope drop logic. Tests should match the complexity of
 the bug they're verifying.
+
+### 38. Compound assignment must be checked everywhere assignment occurs
+
+When adding compound assignment operators (`+=`, `-=`, etc.), every
+assignment path must handle them: simple variable assignment, field
+assignment, AND indexed assignment. The indexed case was missed because
+VecSetOp takes the value directly — there's no separate "read-modify-write"
+in the IR, so it must be manually synthesized.
+
+### 39. Don't restrict core type coercions without understanding the language design
+
+Adding an integer width restriction (i64→i32 rejected) seemed correct from
+a type-safety perspective but broke the entire language because Hew's `int`
+type is i64 and is used ubiquitously for array indices, loop counters, etc.
+Understanding the language's design philosophy (convenience over strict
+width typing) is critical before adding restrictions.
+
+### 40. Double-evaluation in codegen is a category of bug, not a one-off
+
+The HashSet arg double-evaluation is the same class of bug as any "generate
+for type info, then generate again for the actual op" pattern. When codegen
+inspects an expression to determine types, it must NOT call
+generateExpression — use AST type info or pass the generated value through.
+
+### 41. 100% test pass rate is achievable and meaningful
+
+Going from 314/316 to 317/318 to 321/321 across sprints shows that
+persistent, methodical quality work pays compound returns. Each sprint fixes
+the bugs that the previous sprint's fixes revealed.

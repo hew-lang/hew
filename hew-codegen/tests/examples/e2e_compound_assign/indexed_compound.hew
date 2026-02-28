@@ -1,0 +1,12 @@
+fn main() {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v[0] += 5;
+    v[1] -= 3;
+    v[2] *= 2;
+    println(v[0]);
+    println(v[1]);
+    println(v[2]);
+}

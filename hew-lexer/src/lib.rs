@@ -26,9 +26,6 @@ pub fn lex(source: &str) -> Vec<(Token<'_>, Span)> {
             Ok(t) => t,
             Err(()) => Token::Error,
         };
-        if matches!(tok, Token::Error) {
-            eprintln!("LEXFN ERROR at {}..{}", span.start, span.end);
-        }
         out.push((
             tok,
             Span {

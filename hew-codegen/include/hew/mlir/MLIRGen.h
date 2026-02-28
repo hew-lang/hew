@@ -233,6 +233,32 @@ private:
   mlir::Value emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType, mlir::ValueRange args,
                               mlir::Location location);
 
+  /// Apply a compound assignment arithmetic operation to (lhs, rhs).
+  /// Returns the result value, or nullptr on unsupported operator.
+  mlir::Value emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value lhs, mlir::Value rhs,
+                                  bool isFloat, bool isUnsigned, mlir::Location location);
+
+  /// If returnFlag is set, AND the given condition with "not returned".
+  /// Returns the (possibly tightened) condition.
+  mlir::Value andNotReturned(mlir::Value cond, mlir::Location location);
+
+  /// Ensure the current insertion block has a terminator; inserts scf.yield
+  /// if missing.
+  void ensureYieldTerminator(mlir::Location location);
+
+  /// Allocate loop-control flags (active, continue), push onto stacks, and
+  /// register optional label.  Returns {activeFlag, continueFlag}.
+  struct LoopControl {
+    mlir::Value activeFlag;
+    mlir::Value continueFlag;
+    std::string labelName;
+  };
+  LoopControl pushLoopControl(const std::optional<std::string> &label, mlir::Location location);
+
+  /// Pop loop-control stacks, erase label entries, and load break-value
+  /// (if any) into lastBreakValue.
+  void popLoopControl(const LoopControl &lc, mlir::Operation *whileOp);
+
   mlir::Location loc(const ast::Span &span);
 
   /// Get or create an extern function declaration.

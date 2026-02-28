@@ -1272,9 +1272,11 @@ struct AssertEqOpLowering : public mlir::OpConversionPattern<hew::AssertEqOp> {
       left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
       right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
-    } else {
-      // Default: i64
+    } else if (leftType.isInteger(64) || mlir::isa<mlir::IndexType>(leftType)) {
+      // i64 or index: pass through directly
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
+    } else {
+      return op->emitError("unsupported type for assert_eq");
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
@@ -1326,8 +1328,10 @@ struct AssertNeOpLowering : public mlir::OpConversionPattern<hew::AssertNeOp> {
       left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
       right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
-    } else {
+    } else if (leftType.isInteger(64) || mlir::isa<mlir::IndexType>(leftType)) {
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
+    } else {
+      return op->emitError("unsupported type for assert_ne");
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);

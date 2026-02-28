@@ -74,7 +74,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Windows and macOS x86_64 MLIR builds can be flaky — don't block the release
     continue-on-error: ${{ startsWith(matrix.target, 'windows') || matrix.target == 'darwin-x86_64' }}
-    timeout-minutes: 120
+    # 180 min to accommodate first-run LLVM build from source on Windows (~90-120 min)
+    timeout-minutes: 180
 
     steps:
       - name: Checkout code
@@ -113,6 +114,67 @@ jobs:
         if: startsWith(matrix.target, 'windows')
         run: choco install ninja cmake -y
         shell: pwsh
+
+      - name: Setup MSVC environment (Windows)
+        if: startsWith(matrix.target, 'windows')
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Restore LLVM+MLIR cache (Windows)
+        if: startsWith(matrix.target, 'windows')
+        id: cache-llvm-windows
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\llvm-21
+          key: llvm-mlir-21.1.8-win64-msvc-v2
+
+      - name: Build LLVM+MLIR from source (Windows)
+        if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Sparse clone only needed directories
+          git clone --depth 1 --branch llvmorg-21.1.8 `
+            --filter=blob:none --sparse `
+            https://github.com/llvm/llvm-project.git C:\llvm-src
+          Push-Location C:\llvm-src
+          git sparse-checkout set llvm mlir cmake third-party
+          Pop-Location
+
+          cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX="C:\llvm-21" `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
+            -DLLVM_ENABLE_PROJECTS="mlir" `
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64" `
+            -DLLVM_BUILD_TOOLS=ON `
+            -DLLVM_BUILD_UTILS=OFF `
+            -DLLVM_INCLUDE_TESTS=OFF `
+            -DLLVM_INCLUDE_BENCHMARKS=OFF `
+            -DLLVM_INCLUDE_EXAMPLES=OFF `
+            -DLLVM_INCLUDE_DOCS=OFF `
+            -DLLVM_ENABLE_BINDINGS=OFF `
+            -DLLVM_ENABLE_ZLIB=OFF `
+            -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_ENABLE_ASSERTIONS=OFF `
+            -DLLVM_BUILD_LLVM_DYLIB=OFF `
+            -DLLVM_LINK_LLVM_DYLIB=OFF `
+            -DMLIR_BUILD_MLIR_C_DYLIB=OFF `
+            -DMLIR_ENABLE_BINDINGS_PYTHON=OFF `
+            -DBUILD_SHARED_LIBS=OFF
+
+          cmake --build C:\llvm-build --config Release
+          cmake --install C:\llvm-build --config Release
+
+          # Clean up source and build dirs to save cache space
+          Remove-Item -Recurse -Force C:\llvm-src
+          Remove-Item -Recurse -Force C:\llvm-build
+
+      - name: Save LLVM+MLIR cache (Windows)
+        if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\llvm-21
+          key: llvm-mlir-21.1.8-win64-msvc-v2
 
       # ── Rust toolchain ──────────────────────────────────────────────────
 
@@ -180,17 +242,16 @@ jobs:
             -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
 
       - name: Configure hew-codegen (Windows)
-        if: startsWith(matrix.target, 'windows') && false
-        # LLVM+MLIR cmake development files are not available via Chocolatey.
-        # Windows codegen requires building LLVM from source or a pre-built image.
-        # Skipped for now — Windows releases ship Rust binaries only.
+        if: startsWith(matrix.target, 'windows')
         run: |
           cd hew-codegen
           cmake -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=cl `
+            -DCMAKE_CXX_COMPILER=cl `
             -DHEW_STATIC_LINK=ON `
-            -DLLVM_DIR="C:/Program Files/LLVM/lib/cmake/llvm" `
-            -DMLIR_DIR="C:/Program Files/LLVM/lib/cmake/mlir"
+            -DLLVM_DIR="C:\llvm-21\lib\cmake\llvm" `
+            -DMLIR_DIR="C:\llvm-21\lib\cmake\mlir"
         shell: pwsh
 
       - name: Build hew-codegen
@@ -246,14 +307,8 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
+          Copy-Item "hew-codegen/build/src/hew-codegen.exe"                      "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
-
-          # hew-codegen may not be available on Windows (MLIR not packaged)
-          if (Test-Path "hew-codegen/build/src/hew-codegen.exe") {
-            Copy-Item "hew-codegen/build/src/hew-codegen.exe" "${ArchiveName}/bin/"
-          } else {
-            Write-Output "::warning::hew-codegen not built — Windows archive ships without codegen"
-          }
 
           # Standard library sources
           Copy-Item "std/*.hew" "${ArchiveName}/std/" -ErrorAction SilentlyContinue

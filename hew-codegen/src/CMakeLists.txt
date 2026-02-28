@@ -119,13 +119,18 @@ if(HEW_STATIC_LINK)
 
   # Redirect the monolithic shared LLVM target to a static archive.
   # Every MLIR target lists "LLVM" (shared) in INTERFACE_LINK_LIBRARIES.
-  # We redirect it to LLVMSupport.a (a harmless duplicate since we already
-  # link all needed static LLVM components) and clear its interface deps.
+  # We redirect it to a static LLVMSupport (a harmless duplicate since we
+  # already link all needed static LLVM components) and clear its interface deps.
   if(TARGET LLVM)
     get_target_property(_llvm_type LLVM TYPE)
     if(_llvm_type STREQUAL "SHARED_LIBRARY" OR _llvm_type STREQUAL "UNKNOWN_LIBRARY")
+      if(MSVC)
+        set(_llvm_support_lib "${LLVM_LIBRARY_DIR}/LLVMSupport.lib")
+      else()
+        set(_llvm_support_lib "${LLVM_LIBRARY_DIR}/libLLVMSupport.a")
+      endif()
       set_target_properties(LLVM PROPERTIES
-        IMPORTED_LOCATION "${LLVM_LIBRARY_DIR}/libLLVMSupport.a"
+        IMPORTED_LOCATION "${_llvm_support_lib}"
         IMPORTED_SONAME ""
         INTERFACE_LINK_LIBRARIES "")
     endif()

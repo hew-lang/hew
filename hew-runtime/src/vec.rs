@@ -792,7 +792,11 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
         if src_len == 0 {
             return;
         }
-        ensure_cap(dst, (*dst).len + src_len);
+        let new_len = match (*dst).len.checked_add(src_len) {
+            Some(v) => v,
+            None => libc::abort(),
+        };
+        ensure_cap(dst, new_len);
         let elem_size = (*dst).elem_size;
         let dst_ptr = (*dst).data.add((*dst).len * elem_size);
         if (*dst).elem_kind == ElemKind::String {

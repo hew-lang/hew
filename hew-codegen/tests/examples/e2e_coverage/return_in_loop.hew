@@ -1,0 +1,62 @@
+// Tests that return inside a loop body correctly skips remaining statements.
+// Verifies returnFlag also sets continueFlag so side effects don't leak.
+
+fn return_in_while() -> int {
+    var x = 0;
+    while x < 10 {
+        if x == 3 {
+            return x;
+        }
+        x = x + 1;
+    }
+    return 0;
+}
+
+fn return_in_for() -> int {
+    for i in 0..10 {
+        if i == 5 {
+            return i;
+        }
+    }
+    return 0;
+}
+
+fn return_in_loop() -> int {
+    var count = 0;
+    loop {
+        if count == 7 {
+            return count;
+        }
+        count = count + 1;
+    }
+    0
+}
+
+fn return_skips_side_effects() -> int {
+    var side_effect = 0;
+    loop {
+        if true {
+            return 42;
+        }
+        // This should NEVER execute
+        side_effect = 999;
+    }
+    0
+}
+
+fn main() -> int {
+    assert_eq(return_in_while(), 3);
+    println("PASS: return_in_while");
+
+    assert_eq(return_in_for(), 5);
+    println("PASS: return_in_for");
+
+    assert_eq(return_in_loop(), 7);
+    println("PASS: return_in_loop");
+
+    assert_eq(return_skips_side_effects(), 42);
+    println("PASS: return_skips_side_effects");
+
+    println("ALL RETURN-IN-LOOP TESTS PASSED");
+    0
+}

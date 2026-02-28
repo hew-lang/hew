@@ -1,0 +1,5 @@
+PASS: return_in_while
+PASS: return_in_for
+PASS: return_in_loop
+PASS: return_skips_side_effects
+ALL RETURN-IN-LOOP TESTS PASSED

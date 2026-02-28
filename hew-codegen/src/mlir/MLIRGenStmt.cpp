@@ -2970,6 +2970,11 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
     }
     auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
     builder.create<mlir::memref::StoreOp>(location, trueVal, returnFlag);
+    // Also set the innermost continue flag so that remaining statements
+    // in the current loop iteration are skipped.
+    if (!loopContinueStack.empty()) {
+      builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack.back());
+    }
   } else {
     // At function top level: emit defers then drops before return
     emitDeferredCalls();
@@ -3190,14 +3195,16 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
 
   // For labeled breaks, deactivate ALL intermediate loops (not just innermost)
   if (stmt.label && targetActive != loopActiveStack.back()) {
+    auto trueVal = createIntConstant(builder, location, i1Type, 1);
     for (size_t i = loopActiveStack.size(); i > 0; --i) {
       if (loopActiveStack[i - 1] == targetActive)
         break;
       builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack[i - 1]);
-    }
-    if (!loopContinueStack.empty()) {
-      auto trueVal = createIntConstant(builder, location, i1Type, 1);
-      builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack.back());
+      // Also set continue flag for each intermediate loop so remaining
+      // body statements in that iteration are skipped
+      if (i - 1 < loopContinueStack.size()) {
+        builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack[i - 1]);
+      }
     }
   }
 }

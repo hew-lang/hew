@@ -1645,6 +1645,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i1Type = builder.getI1Type();
   auto i64Type = builder.getI64Type();
+  std::string labelName;
 
   // Generate the stream pointer expression.
   mlir::Value streamPtr = generateExpression(stmt.iterable.value);
@@ -1673,6 +1674,11 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
+  if (stmt.label) {
+    labelName = *stmt.label;
+    labeledActiveFlags[labelName] = activeFlag;
+    labeledContinueFlags[labelName] = continueFlag;
+  }
 
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
@@ -1758,6 +1764,10 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
+  if (!labelName.empty()) {
+    labeledActiveFlags.erase(labelName);
+    labeledContinueFlags.erase(labelName);
+  }
 
   builder.setInsertionPointAfter(whileOp);
 
@@ -2203,6 +2213,10 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
+  if (!labelName.empty()) {
+    labeledActiveFlags.erase(labelName);
+    labeledContinueFlags.erase(labelName);
+  }
 
   builder.setInsertionPointAfter(whileOp);
 
@@ -2328,6 +2342,10 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
+  if (!labelName.empty()) {
+    labeledActiveFlags.erase(labelName);
+    labeledContinueFlags.erase(labelName);
+  }
 
   builder.setInsertionPointAfter(whileOp);
 }
@@ -2727,6 +2745,10 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
 
   auto breakValueAlloca = loopBreakValueStack.back();
   loopBreakValueStack.pop_back();
+  if (!labelName.empty()) {
+    labeledActiveFlags.erase(labelName);
+    labeledContinueFlags.erase(labelName);
+  }
 
   builder.setInsertionPointAfter(whileOp);
 
@@ -2910,6 +2932,10 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
 
   auto breakValueAlloca = loopBreakValueStack.back();
   loopBreakValueStack.pop_back();
+  if (!labelName.empty()) {
+    labeledActiveFlags.erase(labelName);
+    labeledContinueFlags.erase(labelName);
+  }
 
   builder.setInsertionPointAfter(whileOp);
 

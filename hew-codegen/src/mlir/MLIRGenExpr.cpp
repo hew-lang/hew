@@ -610,13 +610,12 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
 
     // Ensure types match
     if (startVal.getType() != endVal.getType()) {
-      // Try to coerce if one is index type (implementation detail omitted for brevity, assuming
-      // matching types for now) Actually, let's just error if types mismatch for now
+      endVal = coerceType(endVal, startVal.getType(), currentLoc);
     }
 
     if (range->inclusive) {
       // For inclusive range ..=, add 1 to end value (assuming integer)
-      if (endVal.getType().isInteger(64) || endVal.getType().isIndex()) {
+      if (endVal.getType().isIntOrIndex()) {
         auto one = createIntConstant(builder, currentLoc, endVal.getType(), 1);
         endVal = builder.create<mlir::arith::AddIOp>(currentLoc, endVal, one);
       } else {
@@ -2225,9 +2224,10 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
     // Free the final concatenated message string.
     emitStringDrop(msgStr);
 
-    // Free all heap-allocated intermediate strings.
+    // Free all heap-allocated intermediate strings (skip msgStr to avoid double-free).
     for (auto temp : ownedTemps)
-      emitStringDrop(temp);
+      if (temp != msgStr)
+        emitStringDrop(temp);
 
     b.create<mlir::scf::YieldOp>(loc);
   });

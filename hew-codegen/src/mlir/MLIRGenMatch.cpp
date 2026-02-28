@@ -152,6 +152,19 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
   if (std::get_if<ast::PatWildcard>(&pattern.kind)) {
     return createIntConstant(builder, location, builder.getI1Type(), 1);
   }
+  if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
+    auto varIt = variantLookup.find(identPat->name);
+    if (varIt != variantLookup.end()) {
+      // Enum unit variant: compare tag
+      auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
+      auto tagVal = createIntConstant(builder, location, builder.getI32Type(),
+                                      static_cast<int64_t>(varIt->second.second));
+      return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag,
+                                                 tagVal);
+    }
+    // Variable binding: always matches (like wildcard)
+    return createIntConstant(builder, location, builder.getI1Type(), 1);
+  }
   return nullptr;
 }
 

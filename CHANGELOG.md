@@ -85,6 +85,14 @@
 - Serialization: `rewrite_builtin_calls` now traverses all expression variants (InterpolatedString, PostfixTry, Await, Yield, Send, Range, Unsafe, Join, Timeout, ScopeLaunch, ScopeSpawn, Scope, SpawnLambdaActor, Match, Lambda, Spawn, StructInit, Select)
 - Zero compiler warnings across entire Rust workspace
 - All 329 codegen e2e tests pass (up from 321)
+- Codegen: log emit double-free fixed — non-string args no longer freed twice in ownedTemps cleanup
+- Codegen: labeled loop flags (activeFlags/continueFlags) now cleaned up in all 5 for-loop variants
+- Codegen: `for await` stream loops now support labeled break/continue
+- Codegen: or-pattern with enum unit variants now generates correct tag comparison (was always-true)
+- Codegen: inclusive range `..=` now accepts all integer widths (was only i64/index)
+- Codegen: range type mismatch between start and end now coerced (was silently ignored)
+- Runtime: Vec strdup calls abort on NULL (OOM safety, consistent with HashMap)
+- Serialization: normalization now covers Trait, TypeBodyItem::Variant, Const, TypeAlias items
 
 ### Changed
 

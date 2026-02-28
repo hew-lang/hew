@@ -375,3 +375,27 @@ Every loop in Hew codegen must: (1) AND its condition with `!returnFlag`,
 (4) check for break/continue/return flow. The `loop {}` infinite loop
 missed item 1, and stream/generator/for-await loops missed item 2.
 Violating any item creates subtle flow control bugs.
+
+### 52. Always verify AST node semantics before treating as "always true"
+
+In `generateOrPatternCondition`, `PatIdentifier` can mean either a variable
+binding (always matches) or an enum unit variant (needs tag comparison).
+The initial fix blindly treated all PatIdentifier as always-true, which
+made enum or-patterns like `Red | Blue` match unconditionally. The pragmatic
+reviewer caught this before commit. When handling overloaded AST nodes,
+always check contextual information (like `variantLookup`).
+
+### 53. Symmetrical registration and cleanup prevents stale state
+
+Every for-loop variant registered labeled loop flags but only `while` and
+`loop` cleaned them up. The pattern of "register in setup, erase in cleanup"
+must be systematically applied whenever a new loop codegen path is added.
+A checklist pattern (setup label → use → cleanup label) prevents drift.
+
+### 54. SSA domination errors from over-eager return-flag guards
+
+Adding `StmtExpression` to `stmtMightContainReturn` broke SSA because it
+wraps EVERY expression statement in a return-flag `scf.if` block.Values
+defined inside the if-block don't dominate uses outside it. Return-flag
+guards must only activate for statements that can structurally contain
+returns (if, match, while, for, loop) — not general expression statements.

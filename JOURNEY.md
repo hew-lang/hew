@@ -520,3 +520,32 @@ followed by seven implementation agents and a pragmatic code reviewer:
   after the call, leaking memory on each log statement.
 
 **Test results**: 329/329 codegen e2e (100%), 1540+ Rust tests, zero warnings.
+
+### Quality Sprint 10: Double-Free, Label Cleanup, Normalization Gaps
+
+Tenth round dispatched five analysis agents (Claude Opus 4.6, GPT-5.1 Codex,
+Claude Sonnet 4.5, GPT-5.2 Codex, Gemini 3 Pro), followed by five
+implementation agents and a pragmatic code reviewer:
+
+- **Log emit double-free**: When `log.info(42)` (non-string) was called, the
+  `ToStringOp` result was both `msgStr` and in `ownedTemps`. Both were freed
+  independently, causing a double-free. Fixed with `temp != msgStr` guard.
+- **Labeled loop cleanup**: Five for-loop variants (`ForRange`, `ForVec`,
+  `ForHashMap`, `ForGenerator`, `ForStream`) registered labels but never erased
+  them from `labeledActiveFlags`/`labeledContinueFlags` on exit. Added cleanup
+  to all five, plus full label support for `ForStream` which had none.
+- **Or-pattern PatIdentifier**: `generateOrPatternCondition` returned nullptr
+  for `PatIdentifier`, which silently skipped or-patterns with variable bindings.
+  The initial fix (always-true) was caught by the pragmatic reviewer as wrong
+  for enum unit variants. Final fix checks `variantLookup` to distinguish
+  variable bindings (always-true) from enum variants (tag comparison).
+- **Vec strdup NULL checks**: Five strdup call sites in vec.rs now abort on
+  NULL, matching hashmap.rs behavior.
+- **ExprRange fixes**: Inclusive range widened from `i64|index` to all integer
+  types. Type mismatch between start and end now coerced instead of silently
+  producing a broken tuple.
+- **Serialization normalization**: Added normalization for `Item::Trait`,
+  `TypeBodyItem::Variant`, `Item::Const`, and `Item::TypeAlias` — previously
+  all skipped by the `_ => {}` wildcard.
+
+**Test results**: 329/329 codegen e2e (100%), 1534+ Rust tests, zero warnings.

@@ -275,6 +275,9 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
     unsafe {
         ensure_cap(v, (*v).len + 1);
         let duped = libc::strdup(val);
+        if duped.is_null() {
+            libc::abort();
+        }
         let slot = (*v).data.cast::<*mut c_char>().add((*v).len);
         slot.write(duped);
         (*v).len += 1;
@@ -370,7 +373,11 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
         if raw.is_null() {
             core::ptr::null()
         } else {
-            libc::strdup(raw)
+            let duped = libc::strdup(raw);
+            if duped.is_null() {
+                libc::abort();
+            }
+            duped
         }
     }
 }
@@ -466,7 +473,11 @@ pub unsafe extern "C" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const
         if !old.is_null() {
             libc::free(old.cast());
         }
-        slot.write(libc::strdup(val));
+        let duped = libc::strdup(val);
+        if duped.is_null() {
+            libc::abort();
+        }
+        slot.write(duped);
     }
 }
 
@@ -745,7 +756,11 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
                 let duped = if src_ptr.is_null() {
                     ptr::null_mut()
                 } else {
-                    libc::strdup(src_ptr)
+                    let result = libc::strdup(src_ptr);
+                    if result.is_null() {
+                        libc::abort();
+                    }
+                    result
                 };
                 (*new_v).data.cast::<*mut c_char>().add(i).write(duped);
             }
@@ -786,7 +801,11 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
                 let duped = if src_str.is_null() {
                     ptr::null_mut()
                 } else {
-                    libc::strdup(src_str)
+                    let result = libc::strdup(src_str);
+                    if result.is_null() {
+                        libc::abort();
+                    }
+                    result
                 };
                 dst_ptr.cast::<*mut c_char>().add(i).write(duped);
             }

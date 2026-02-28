@@ -710,9 +710,49 @@ fn normalize_item_types(item: &mut Item) {
                     hew_parser::ast::TypeBodyItem::Method(m) => {
                         normalize_fn_decl_types(m);
                     }
-                    _ => {}
+                    hew_parser::ast::TypeBodyItem::Variant(v) => match &mut v.kind {
+                        hew_parser::ast::VariantKind::Tuple(fields) => {
+                            for field_ty in fields {
+                                normalize_type_expr(&mut field_ty.0);
+                            }
+                        }
+                        hew_parser::ast::VariantKind::Struct(fields) => {
+                            for (_name, field_ty) in fields {
+                                normalize_type_expr(&mut field_ty.0);
+                            }
+                        }
+                        hew_parser::ast::VariantKind::Unit => {}
+                    },
                 }
             }
+        }
+        Item::Trait(trait_decl) => {
+            for trait_item in &mut trait_decl.items {
+                match trait_item {
+                    hew_parser::ast::TraitItem::Method(m) => {
+                        for param in &mut m.params {
+                            normalize_type_expr(&mut param.ty.0);
+                        }
+                        if let Some(ref mut rt) = m.return_type {
+                            normalize_type_expr(&mut rt.0);
+                        }
+                        if let Some(ref mut body) = m.body {
+                            normalize_block_types(body);
+                        }
+                    }
+                    hew_parser::ast::TraitItem::AssociatedType { default, .. } => {
+                        if let Some(ref mut default_ty) = default {
+                            normalize_type_expr(&mut default_ty.0);
+                        }
+                    }
+                }
+            }
+        }
+        Item::Const(const_decl) => {
+            normalize_type_expr(&mut const_decl.ty.0);
+        }
+        Item::TypeAlias(type_alias) => {
+            normalize_type_expr(&mut type_alias.ty.0);
         }
         _ => {}
     }
@@ -994,6 +1034,9 @@ fn enrich_item(item: &mut Item, tco: &TypeCheckOutput) {
             for method in &mut impl_decl.methods {
                 enrich_fn_decl(method, tco);
             }
+        }
+        Item::Const(const_decl) => {
+            enrich_expr(&mut const_decl.value, tco);
         }
         _ => {}
     }

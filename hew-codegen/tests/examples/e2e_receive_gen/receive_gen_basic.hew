@@ -5,7 +5,7 @@ actor Counter {
         var i: int = 0;
         while i < self.max {
             yield i;
-            i = (i + 1) as int;
+            i = i + 1;
         }
     }
 }

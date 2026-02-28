@@ -9,7 +9,7 @@ fn main() {
             result = i;
             break result;
         }
-        i = (i + 1) as int;
+        i = i + 1;
     }
     println(result);
 }

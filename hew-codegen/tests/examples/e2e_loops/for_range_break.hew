@@ -5,7 +5,7 @@ fn main() {
         if i == 5 {
             break;
         }
-        sum = (sum + i) as int;
+        sum = sum + i;
     }
     println(sum);
 
@@ -15,7 +15,7 @@ fn main() {
         if i % 2 == 0 {
             continue;
         }
-        sum2 = (sum2 + i) as int;
+        sum2 = sum2 + i;
     }
     println(sum2);
 
@@ -26,7 +26,7 @@ fn main() {
             if j == 2 {
                 break;
             }
-            count = (count + 1) as int;
+            count = count + 1;
         }
     }
     println(count);

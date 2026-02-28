@@ -30,7 +30,7 @@ fn main() {
             if x == 2 {
                 break;
             }
-            total = (total + x) as int;
+            total = total + x;
         }
         passes = passes + 1;
         if passes >= 3 {

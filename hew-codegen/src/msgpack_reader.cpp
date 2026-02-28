@@ -854,6 +854,13 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         parseSpanned<ast::Expr>(mapReq(*payload, "index"), parseExpr));
     return ast::Expr{std::move(e), {}};
   }
+  if (name == "Cast") {
+    ast::ExprCast e;
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.ty = parseSpanned<ast::TypeExpr>(mapReq(*payload, "ty"), parseTypeExpr);
+    return ast::Expr{std::move(e), {}};
+  }
   if (name == "PostfixTry") {
     ast::ExprPostfixTry e;
     e.inner =

@@ -11,7 +11,7 @@ fn is_palindrome(arr: Vec<int>) -> int {
         if arr.get(left) != arr.get(right) {
             return 0;
         }
-        left = (left + 1) as int;
+        left = left + 1;
         right = right - 1;
     }
     1

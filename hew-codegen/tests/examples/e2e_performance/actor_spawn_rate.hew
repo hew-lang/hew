@@ -16,7 +16,7 @@ fn main() {
     while i < 100 {
         let a = spawn Ephemeral(id: i);
         a.ping(0);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     sleep_ms(500);
     print("Spawned ");

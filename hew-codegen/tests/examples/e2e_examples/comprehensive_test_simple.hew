@@ -103,7 +103,7 @@ fn test_while_loops() -> int {
     var found_five = 0;
     while i < 10 {
         if i == 3 {
-            i = (i + 1) as int;
+            i = i + 1;
             continue;
         }
         if i == 5 {
@@ -112,8 +112,8 @@ fn test_while_loops() -> int {
         if i == 8 {
             break;
         }
-        sum = (sum + i) as int;
-        i = (i + 1) as int;
+        sum = sum + i;
+        i = i + 1;
     }
     // Should skip 3, break at 8: sum = 0+1+2+4+5+6+7 = 25
     if sum == 25 {
@@ -376,51 +376,51 @@ fn main() -> int {
     var passed = 0;
     var total: int = 0;
     // Run all tests and count results
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Arithmetic", test_arithmetic()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Variables", test_variables()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("If/Else", test_if_else()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("While Loops", test_while_loops()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Match", test_match()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Functions", test_functions()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Strings", test_strings()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Nested Calls", test_nested_calls()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Comparisons", test_comparisons()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Boolean Logic", test_boolean_logic()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Returns", test_returns()) == 1 {
         passed = passed + 1;
     }
-    total = (total + 1) as int;
+    total = total + 1;
     if run_test("Complex Expression", test_complex_expression()) == 1 {
         passed = passed + 1;
     }

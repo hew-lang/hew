@@ -4,7 +4,7 @@
 fn main() {
     var count: int = 0;
     let inc = () => {
-        count = (count + 1) as int;
+        count = count + 1;
     };
     inc();
     inc();

@@ -192,6 +192,10 @@ pub enum Expr {
         object: Box<Spanned<Expr>>,
         index: Box<Spanned<Expr>>,
     },
+    Cast {
+        expr: Box<Spanned<Expr>>,
+        ty: Spanned<TypeExpr>,
+    },
     PostfixTry(Box<Spanned<Expr>>),
     Range {
         start: Option<Box<Spanned<Expr>>>,

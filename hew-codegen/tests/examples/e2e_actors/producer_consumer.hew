@@ -15,7 +15,7 @@ actor Producer {
         while i < count {
             self.produced = self.produced + 1;
             println(f"Produced item {self.produced}");
-            i = (i + 1) as int;
+            i = i + 1;
         }
     }
 }

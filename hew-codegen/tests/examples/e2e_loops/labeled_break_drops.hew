@@ -20,7 +20,7 @@ fn main() -> int {
             if i == 0 {
                 break @outer;
             }
-            i = (i + 1) as int;
+            i = i + 1;
         }
     }
     println("after outer");
@@ -30,14 +30,14 @@ fn main() -> int {
     var count: int = 0;
     @outer2: while count < 1 {
         let c = Resource { id: 3 };
-        count = (count + 1) as int;
+        count = count + 1;
         var j: int = 0;
         while true {
             let d = Resource { id: 4 };
             if j == 0 {
                 continue @outer2;
             }
-            j = (j + 1) as int;
+            j = j + 1;
         }
     }
     println("after outer2");
@@ -55,9 +55,9 @@ fn main() -> int {
                 if m == 0 {
                     break @outer3;
                 }
-                m = (m + 1) as int;
+                m = m + 1;
             }
-            k = (k + 1) as int;
+            k = k + 1;
         }
     }
     println("after outer3");

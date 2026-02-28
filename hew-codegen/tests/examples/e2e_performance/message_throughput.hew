@@ -14,7 +14,7 @@ fn main() {
     var i: int = 0;
     while i < 1000 {
         counter.tick(i);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     sleep_ms(500);
     println("Sent 1000 messages");

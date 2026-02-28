@@ -8,7 +8,7 @@ fn main() {
     for (k, v) in m {
         print(k);
         println(f"={v}");
-        total = (total + v) as int;
+        total = total + v;
     }
     println(total);
 }

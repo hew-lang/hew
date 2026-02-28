@@ -13,7 +13,7 @@ fn main() {
     };
     var count: int = 0;
     for await line in raw.lines() {
-        count = (count + 1) as int;
+        count = count + 1;
     }
     println(count);
 }

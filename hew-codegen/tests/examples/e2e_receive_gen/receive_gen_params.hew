@@ -4,7 +4,7 @@ actor Streamer {
         var i: int = 0;
         while i < count {
             yield start + i;
-            i = (i + 1) as int;
+            i = i + 1;
         }
     }
 }

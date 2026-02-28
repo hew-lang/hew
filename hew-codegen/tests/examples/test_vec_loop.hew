@@ -3,14 +3,14 @@ fn main() {
     var i: int = 0;
     while i < 5 {
         v.push(i * 10);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     println(v.len());
     i = 0;
     var sum: int = 0;
     while i < v.len() {
-        (sum = sum + v.get(i)) as int;
-        i = (i + 1) as int;
+        sum = sum + v.get(i);
+        i = i + 1;
     }
     println(sum);
     let popped = v.pop();

@@ -12,19 +12,19 @@ fn merge(left: Vec<int>, right: Vec<int>) -> Vec<int> {
             let r = right.get(j);
             if l <= r {
                 result.push(l);
-                i = (i + 1) as int;
+                i = i + 1;
             } else {
                 result.push(r);
-                j = (j + 1) as int;
+                j = j + 1;
             }
         } else {
             result.push(left.get(i));
-            i = (i + 1) as int;
+            i = i + 1;
         }
     }
     while j < right_len {
         result.push(right.get(j));
-        j = (j + 1) as int;
+        j = j + 1;
     }
     result
 }
@@ -40,11 +40,11 @@ fn sort(arr: Vec<int>) -> Vec<int> {
     var i: int = 0;
     while i < mid {
         left.push(arr.get(i));
-        i = (i + 1) as int;
+        i = i + 1;
     }
     while i < len {
         right.push(arr.get(i));
-        i = (i + 1) as int;
+        i = i + 1;
     }
     let sorted_left = sort(left);
     let sorted_right = sort(right);
@@ -59,7 +59,7 @@ fn print_vec(v: Vec<int>) {
             print(" ");
         }
         print(v.get(i));
-        i = (i + 1) as int;
+        i = i + 1;
     }
     println("");
 }
@@ -88,7 +88,7 @@ fn main() -> int {
         if sorted.get(i) < sorted.get(i - 1) {
             ok = 0;
         }
-        i = (i + 1) as int;
+        i = i + 1;
     }
     if ok == 1 {
         println("PASS");

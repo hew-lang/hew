@@ -8,7 +8,7 @@ fn main() {
     // Break out of hashmap iteration after first entry
     var count: int = 0;
     for (k, v) in m {
-        count = (count + 1) as int;
+        count = count + 1;
         break;
     }
     println(count);
@@ -18,7 +18,7 @@ fn main() {
     var sum: int = 0;
     loop {
         for (k, v) in m {
-            sum = (sum + 1) as int;
+            sum = sum + 1;
             break;
         }
         passes = passes + 1;

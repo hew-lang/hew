@@ -5,7 +5,7 @@ fn allocate_vec(size: int) -> int {
     var i: int = 0;
     while i < size {
         v.push(i);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     let len = v.len();
     // v goes out of scope here

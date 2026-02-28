@@ -4,6 +4,6 @@ fn main() {
     var i: int = 0;
     while i < 5 {
         println(arr[i]);
-        i = (i + 1) as int;
+        i = i + 1;
     }
 }

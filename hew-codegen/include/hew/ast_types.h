@@ -416,6 +416,10 @@ struct ExprIndex {
   std::unique_ptr<Spanned<Expr>> object;
   std::unique_ptr<Spanned<Expr>> index;
 };
+struct ExprCast {
+  std::unique_ptr<Spanned<Expr>> expr;
+  Spanned<TypeExpr> ty;
+};
 struct ExprPostfixTry {
   std::unique_ptr<Spanned<Expr>> inner;
 };
@@ -448,8 +452,8 @@ struct Expr {
                ExprIf, ExprIfLet, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
-               ExprFieldAccess, ExprIndex, ExprPostfixTry, ExprRange, ExprAwait, ExprScopeLaunch,
-               ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat>
+               ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
+               ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };

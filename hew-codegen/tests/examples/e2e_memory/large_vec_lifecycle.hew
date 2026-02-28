@@ -8,7 +8,7 @@ fn main() -> int {
     var i: int = 0;
     while i < 10000 {
         v.push(i);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     print("Created vec with ");
     print(v.len());

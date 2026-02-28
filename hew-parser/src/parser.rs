@@ -3101,6 +3101,20 @@ impl<'src> Parser<'src> {
                     lhs = (Expr::PostfixTry(Box::new(lhs)), start..end);
                     continue;
                 }
+                Some(Token::As) => {
+                    self.advance();
+                    let ty = self.parse_type()?;
+                    let end = ty.1.end;
+                    let expr_start = lhs.1.start;
+                    lhs = (
+                        Expr::Cast {
+                            expr: Box::new(lhs),
+                            ty,
+                        },
+                        expr_start..end,
+                    );
+                    continue;
+                }
                 _ => {}
             }
 

@@ -27,7 +27,7 @@ fn is_valid(s: Vec<int>) -> int {
                 }
             }
         }
-        i = (i + 1) as int;
+        i = i + 1;
     }
     if stack.len() == 0 {
         1

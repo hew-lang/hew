@@ -57,7 +57,7 @@ fn main() -> int {
     var i: int = 0;
     while i < 1000 {
         v4.push(i * 2);
-        i = (i + 1) as int;
+        i = i + 1;
     }
     if v4.len() == 1000 {
         if v4.get(0) == 0 {
@@ -78,8 +78,8 @@ fn main() -> int {
     var sum: int = 0;
     var j: int = 0;
     while j < v5.len() {
-        (sum = sum + v5.get(j)) as int;
-        j = (j + 1) as int;
+        sum = sum + v5.get(j);
+        j = j + 1;
     }
     if sum == 15 {
         println("PASS: sum");

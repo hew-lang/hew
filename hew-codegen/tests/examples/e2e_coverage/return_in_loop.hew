@@ -7,7 +7,7 @@ fn return_in_while() -> int {
         if x == 3 {
             return x;
         }
-        x = (x + 1) as int;
+        x = x + 1;
     }
     return 0;
 }
@@ -27,7 +27,7 @@ fn return_in_loop() -> int {
         if count == 7 {
             return count;
         }
-        count = (count + 1) as int;
+        count = count + 1;
     }
     0
 }

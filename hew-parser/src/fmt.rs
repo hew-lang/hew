@@ -1523,6 +1523,11 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&index.0);
                 self.write("]");
             }
+            Expr::Cast { expr, ty } => {
+                self.format_expr(&expr.0);
+                self.write(" as ");
+                self.format_type_expr(&ty.0);
+            }
             Expr::PostfixTry(expr) => {
                 self.format_expr(&expr.0);
                 self.write("?");

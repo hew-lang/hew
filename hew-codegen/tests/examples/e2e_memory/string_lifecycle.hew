@@ -7,7 +7,7 @@ fn main() {
     var i: int = 0;
     while i < 10 {
         println(f"Line {i}");
-        i = (i + 1) as int;
+        i = i + 1;
     }
     println("String output completed");
     println("PASS");

@@ -26,7 +26,7 @@ fn main() -> int {
         if i == 1 {
             break;
         }
-        i = (i + 1) as int;
+        i = i + 1;
     }
     println("after break");
 
@@ -35,7 +35,7 @@ fn main() -> int {
     var j: int = 0;
     while j < 3 {
         let r = Resource { id: 30 + j };
-        j = (j + 1) as int;
+        j = j + 1;
         if j == 2 {
             continue;
         }

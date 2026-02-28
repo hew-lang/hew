@@ -15,15 +15,15 @@ fn roman_to_int(digits: Vec<int>) -> int {
         if i + 1 < len {
             let next = digits.get(i + 1);
             if curr < next {
-                (result = result + (next) as int - curr);
-                i = (i + 2) as int;
+                result = result + next - curr;
+                i = i + 2;
             } else {
-                result = (result + curr) as int;
-                i = (i + 1) as int;
+                result = result + curr;
+                i = i + 1;
             }
         } else {
-            result = (result + curr) as int;
-            i = (i + 1) as int;
+            result = result + curr;
+            i = i + 1;
         }
     }
     result

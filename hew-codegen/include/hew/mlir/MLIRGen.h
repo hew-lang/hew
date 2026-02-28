@@ -103,7 +103,6 @@ private:
     std::vector<std::string> paramNames;  // message parameter names
     std::vector<mlir::Type> paramTypes;   // message parameter types
     std::optional<mlir::Type> returnType; // return type (for await/ask)
-    bool isGenerator = false;             // true for receive gen fn
   };
   struct ActorInfo {
     std::string name;
@@ -129,6 +128,13 @@ private:
                                      const std::string &methodName,
                                      const std::vector<ast::CallArg> &args,
                                      mlir::Location location);
+  /// Generate args for an actor send/ask call, handling self-reference substitution.
+  std::optional<llvm::SmallVector<mlir::Value, 4>>
+  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location);
+  /// Emit the gen-next null-check, wrap, cleanup, and return sequence.
+  void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr,
+                         mlir::LLVM::LLVMStructType stateType, unsigned genFrameIdx,
+                         mlir::Type yieldType, mlir::Type wrapperType, mlir::Location location);
 
   // ── Statements ───────────────────────────────────────────────────
   void generateStatement(const ast::Stmt &stmt);
@@ -520,8 +526,6 @@ private:
 
   void generateForStreamStmt(const ast::StmtFor &stmt);
 
-  // Track which receive fns are generators: "ActorName.methodName" → true
-  std::unordered_map<std::string, bool> receiveGenFns;
   // Hidden __gen_frame field index in actor state struct:
   // "ActorName.methodName" → struct field index (for storing HewGenCtx*)
   std::unordered_map<std::string, unsigned> genFrameFieldIdx;

@@ -32,9 +32,20 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
     let la = unsafe { cstr_len(a) };
     // SAFETY: cstr_len handles null check internally; b is valid per contract.
     let lb = unsafe { cstr_len(b) };
-    let total = la + lb;
-    // SAFETY: Requesting total+1 bytes from malloc.
-    let result = unsafe { libc::malloc(total + 1) }.cast::<u8>();
+    let total = match la.checked_add(lb) {
+        Some(t) => t,
+        None => unsafe {
+            libc::abort();
+        },
+    };
+    let alloc_size = match total.checked_add(1) {
+        Some(s) => s,
+        None => unsafe {
+            libc::abort();
+        },
+    };
+    // SAFETY: Requesting alloc_size bytes from malloc.
+    let result = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
     cabi_guard!(result.is_null(), result.cast::<c_char>());
     if la > 0 {
         // SAFETY: a is valid for la bytes; result has total+1 bytes allocated.
@@ -522,6 +533,11 @@ pub unsafe extern "C" fn hew_string_split(
         if let Some(pos) = found {
             // SAFETY: Allocating a substring via malloc_copy and pushing.
             let part = unsafe { malloc_cstring(s_bytes[start..start + pos].as_ptr(), pos) };
+            if part.is_null() {
+                unsafe {
+                    libc::abort();
+                }
+            }
             // SAFETY: v is a valid HewVec and part is a valid C string.
             unsafe { crate::vec::hew_vec_push_str(v, part) };
             // SAFETY: part was allocated by malloc_copy.
@@ -531,6 +547,11 @@ pub unsafe extern "C" fn hew_string_split(
             let tail_len = s_bytes.len() - start;
             // SAFETY: Tail slice is within s_bytes bounds.
             let part = unsafe { malloc_cstring(s_bytes[start..].as_ptr(), tail_len) };
+            if part.is_null() {
+                unsafe {
+                    libc::abort();
+                }
+            }
             // SAFETY: v is a valid HewVec and part is a valid C string.
             unsafe { crate::vec::hew_vec_push_str(v, part) };
             // SAFETY: part was allocated by malloc_copy.

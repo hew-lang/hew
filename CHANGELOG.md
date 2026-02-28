@@ -99,6 +99,14 @@
 - Codegen: lambda capture analysis now covers Spawn, SpawnLambdaActor, Scope, ScopeLaunch, ScopeSpawn, Select, Join, Range, Timeout, Yield, Unsafe expressions
 - Codegen: Vec<bool>/Vec<i8>/Vec<i16> inline push/get/set now use correct i32 element stride (fixes memory corruption)
 - Codegen: SleepOp saturates i64→i32 truncation at INT32_MAX (prevents silent wrap)
+- Codegen: Vec<f32> now uses \_f64 runtime path with f32↔f64 promotion/truncation (fixes crash)
+- Codegen: VecPop now handles f32 and narrow int return type conversion
+- Codegen: Vec push/get/set/pop fallback paths now promote/truncate for f32 and narrow ints
+- Codegen: trait object default value uses null pointer for vtable (was i32(0), type violation)
+- Codegen: collectFreeVarsInStmt now handles StmtMatch, StmtBreak, StmtDefer
+- Runtime: string concat overflow check (checked_add before malloc)
+- Runtime: string split NULL check after malloc_cstring
+- Runtime: TCP framing overflow check before u32 cast
 
 ### Changed
 

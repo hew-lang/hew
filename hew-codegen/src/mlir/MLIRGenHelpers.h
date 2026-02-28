@@ -219,10 +219,9 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
   }
   if (mlir::isa<hew::HewTraitObjectType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    auto i32Type = mlir::IntegerType::get(type.getContext(), 32);
     auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    auto zeroTag = builder.create<mlir::arith::ConstantIntOp>(loc, i32Type, 0);
-    return builder.create<hew::TraitObjectCreateOp>(loc, type, nullPtr, zeroTag);
+    auto nullVtable = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
+    return builder.create<hew::TraitObjectCreateOp>(loc, type, nullPtr, nullVtable);
   }
   if (mlir::isa<hew::ClosureType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());

@@ -424,3 +424,19 @@ must also remap the value and GEP element type to i32. The suffix determines
 which runtime function is called (and thus the element stride), but the GEP
 and load/store instructions use the MLIR value type. Both must agree on the
 element size or pointer arithmetic will be wrong.
+
+### 58. Parallel suffix functions must stay in sync
+
+`vecElemSuffix` (for VecNew) and `vecElemSuffixWithPtr` (for push/get/set/pop)
+are separate functions that map element types to runtime function suffixes.
+When f32 support was added to `vecElemSuffixWithPtr` but not `vecElemSuffix`,
+Vec<f32> was created with wrong element size. Any duplicated dispatch logic
+must be updated in all copies simultaneously.
+
+### 59. Pragmatic code reviewers catch integration bugs that unit tests miss
+
+Sprint 13's pragmatic reviewer caught that Vec<f32> would crash even though
+all 330 tests passed — because no test exercised Vec<f32>. Static analysis
+by a reviewer found the inconsistency between two suffix functions that
+unit tests couldn't cover. Always run a pragmatic reviewer after implementation
+agents, especially for type-dispatch changes.

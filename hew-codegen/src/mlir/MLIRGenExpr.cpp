@@ -3507,6 +3507,22 @@ void MLIRGen::collectFreeVarsInStmt(const ast::Stmt &stmt, std::set<std::string>
     collectFreeVarsInBlock(fs->body, loopBound, freeVars);
   } else if (auto *ls2 = std::get_if<ast::StmtLoop>(&stmt.kind)) {
     collectFreeVarsInBlock(ls2->body, bound, freeVars);
+  } else if (auto *ms = std::get_if<ast::StmtMatch>(&stmt.kind)) {
+    collectFreeVarsInExpr(ms->scrutinee.value, bound, freeVars);
+    for (const auto &arm : ms->arms) {
+      auto armBound = bound;
+      addPatternBindingsToSet(arm.pattern.value, armBound);
+      if (arm.guard)
+        collectFreeVarsInExpr(arm.guard->value, armBound, freeVars);
+      if (arm.body)
+        collectFreeVarsInExpr(arm.body->value, armBound, freeVars);
+    }
+  } else if (auto *bs = std::get_if<ast::StmtBreak>(&stmt.kind)) {
+    if (bs->value)
+      collectFreeVarsInExpr(bs->value->value, bound, freeVars);
+  } else if (auto *ds = std::get_if<ast::StmtDefer>(&stmt.kind)) {
+    if (ds->expr)
+      collectFreeVarsInExpr(ds->expr->value, bound, freeVars);
   }
 }
 

@@ -589,3 +589,23 @@ Twelfth round fixed critical memory corruption and safety issues:
   the part-generation phase if it's a temporary.
 
 **Test results**: 330/330 codegen e2e (100%, +1 new), 1534+ Rust tests.
+
+### Quality Sprint 13: Vec<f32>, Trait Object, Capture Stmt, Runtime Safety
+
+Thirteenth round found and fixed remaining type-dispatch gaps, capture
+analysis holes, and runtime safety issues:
+
+- **Vec<f32>**: `vecElemSuffix` didn't handle f32, so `Vec::new()` for f32
+  used the wrong element size. `vecElemSuffixWithPtr` mapped f32→_f64, but
+  `vecElemSuffix` (used by VecNew) and VecPop were missing. Fixed by adding
+  f32→_f64 mapping to both suffix functions and adding f32↔f64 promotion/
+  truncation to ALL Vec operation paths (inline + fallback).
+- **Trait object default**: `createDefaultValue` used `ConstantIntOp(i32, 0)`
+  for vtable pointer, but TraitObjectCreateOp requires `!llvm.ptr`. Changed
+  to `LLVM::ZeroOp` null pointer.
+- **collectFreeVarsInStmt**: Missing StmtMatch (scrutinee + arm bodies),
+  StmtBreak (optional break value), and StmtDefer (deferred expression).
+- **Runtime**: Added checked_add overflow in string concat, NULL check after
+  malloc_cstring in string split, and u32 overflow guard in TCP framing.
+
+**Test results**: 330/330 codegen e2e (100%), 1534+ Rust tests, zero warnings.

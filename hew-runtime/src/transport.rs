@@ -373,6 +373,9 @@ fn parse_host_port(addr: &str) -> Option<SocketAddr> {
 
 /// Send exactly `buf` bytes over a socket with length-prefixed framing.
 fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
+    if data.len() > u32::MAX as usize {
+        return -1;
+    }
     #[expect(clippy::cast_possible_truncation, reason = "payload bounded by caller")]
     let frame_len = data.len() as u32;
     let header = frame_len.to_le_bytes();

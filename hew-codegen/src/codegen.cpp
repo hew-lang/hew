@@ -1646,6 +1646,8 @@ static std::string vecElemSuffix(mlir::Type elemType) {
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
+  if (elemType.isF32())
+    return "_f64";
   // Bool (i1) and i32 both use the default no-suffix version (hew_vec_new)
   return "";
 }
@@ -1664,6 +1666,8 @@ static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
+  if (elemType.isF32())
+    return "_f64";
   if (elemType.isInteger(32))
     return "_i32";
   return "_i32"; // default fallback
@@ -1774,6 +1778,12 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
       auto vecPtr = adaptor.getVec();
       auto value = adaptor.getValue();
 
+      // Promote f32 to f64 for Vec storage (runtime uses f64 slots)
+      if (suffix == "_f64" && valType.isF32()) {
+        value = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), value);
+        valType = rewriter.getF64Type();
+      }
+
       // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
       if (suffix == "_i32" && valType != rewriter.getI32Type()) {
         if (valType.isInteger(1) || valType.isInteger(8))
@@ -1833,10 +1843,23 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
           });
     } else {
       std::string funcName = "hew_vec_push" + suffix;
-      auto funcType = rewriter.getFunctionType({ptrType, valType}, {});
+      auto pushVal = adaptor.getValue();
+      auto pushType = valType;
+      // Promote f32→f64 or widen narrow ints for runtime call
+      if (suffix == "_f64" && valType.isF32()) {
+        pushVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), pushVal);
+        pushType = rewriter.getF64Type();
+      } else if (suffix == "_i32" && !valType.isInteger(32)) {
+        if (valType.isInteger(1) || valType.isInteger(8))
+          pushVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), pushVal);
+        else
+          pushVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), pushVal);
+        pushType = rewriter.getI32Type();
+      }
+      auto funcType = rewriter.getFunctionType({ptrType, pushType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
       rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                          mlir::ValueRange{adaptor.getVec(), adaptor.getValue()});
+                                          mlir::ValueRange{adaptor.getVec(), pushVal});
     }
     rewriter.eraseOp(op);
     return mlir::success();
@@ -1900,16 +1923,20 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
       auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
 
-      // GEP to element and load (use i32 stride for narrow types)
+      // GEP to element and load (use f64 stride for f32, i32 stride for narrow int types)
       mlir::Type elemStorageType = resultType;
-      if (suffix == "_i32" && !resultType.isInteger(32))
+      if (suffix == "_f64" && resultType.isF32())
+        elemStorageType = rewriter.getF64Type();
+      else if (suffix == "_i32" && !resultType.isInteger(32))
         elemStorageType = rewriter.getI32Type();
       auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
           loc, ptrType, elemStorageType, dataPtr,
           mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
       auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, elemStorageType, elemPtr);
       mlir::Value result = loaded.getResult();
-      if (elemStorageType != resultType)
+      if (suffix == "_f64" && resultType.isF32())
+        result = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, result);
+      else if (elemStorageType != resultType)
         result = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, result);
       rewriter.replaceOp(op, result);
     } else if (suffix == "_generic") {
@@ -1926,12 +1953,24 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
     } else {
       std::string funcName = "hew_vec_get" + suffix;
       auto idxType = adaptor.getIndex().getType();
-      auto funcType = rewriter.getFunctionType({ptrType, idxType}, {resultType});
+      mlir::Type callResultType = resultType;
+      if (suffix == "_f64" && resultType.isF32())
+        callResultType = rewriter.getF64Type();
+      if (suffix == "_i32" && !resultType.isInteger(32))
+        callResultType = rewriter.getI32Type();
+      auto funcType = rewriter.getFunctionType({ptrType, idxType}, {callResultType});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
       auto call = rewriter.create<mlir::func::CallOp>(
-          loc, funcName, mlir::TypeRange{resultType},
+          loc, funcName, mlir::TypeRange{callResultType},
           mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
-      rewriter.replaceOp(op, call.getResults());
+      mlir::Value getResult = call.getResult(0);
+      if (callResultType != resultType) {
+        if (callResultType.isF64() && resultType.isF32())
+          getResult = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, getResult);
+        else
+          getResult = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, getResult);
+      }
+      rewriter.replaceOp(op, getResult);
     }
     return mlir::success();
   }
@@ -1957,6 +1996,12 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
       auto vecPtr = adaptor.getVec();
       auto index = adaptor.getIndex();
       auto value = adaptor.getValue();
+
+      // Promote f32 to f64 for Vec storage (runtime uses f64 slots)
+      if (suffix == "_f64" && valType.isF32()) {
+        value = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), value);
+        valType = rewriter.getF64Type();
+      }
 
       // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
       if (suffix == "_i32" && valType != rewriter.getI32Type()) {
@@ -2019,11 +2064,23 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
     } else {
       std::string funcName = "hew_vec_set" + suffix;
       auto idxType = adaptor.getIndex().getType();
-      auto funcType = rewriter.getFunctionType({ptrType, idxType, valType}, {});
+      auto setVal = adaptor.getValue();
+      auto setType = valType;
+      if (suffix == "_f64" && valType.isF32()) {
+        setVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), setVal);
+        setType = rewriter.getF64Type();
+      } else if (suffix == "_i32" && !valType.isInteger(32)) {
+        if (valType.isInteger(1) || valType.isInteger(8))
+          setVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), setVal);
+        else
+          setVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), setVal);
+        setType = rewriter.getI32Type();
+      }
+      auto funcType = rewriter.getFunctionType({ptrType, idxType, setType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
       rewriter.create<mlir::func::CallOp>(
           loc, funcName, mlir::TypeRange{},
-          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), adaptor.getValue()});
+          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), setVal});
     }
     rewriter.eraseOp(op);
     return mlir::success();
@@ -2075,11 +2132,23 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
       suffix = vecElemSuffixWithPtr(resultType);
 
     std::string funcName = "hew_vec_pop" + suffix;
-    auto funcType = rewriter.getFunctionType({ptrType}, {resultType});
+    mlir::Type callResultType = resultType;
+    if (suffix == "_f64" && resultType.isF32())
+      callResultType = rewriter.getF64Type();
+    if (suffix == "_i32" && !resultType.isInteger(32))
+      callResultType = rewriter.getI32Type();
+    auto funcType = rewriter.getFunctionType({ptrType}, {callResultType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{resultType},
+    auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{callResultType},
                                                     mlir::ValueRange{adaptor.getVec()});
-    rewriter.replaceOp(op, call.getResults());
+    mlir::Value popResult = call.getResult(0);
+    if (callResultType != resultType) {
+      if (callResultType.isF64() && resultType.isF32())
+        popResult = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, popResult);
+      else
+        popResult = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, popResult);
+    }
+    rewriter.replaceOp(op, popResult);
     return mlir::success();
   }
 };

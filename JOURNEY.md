@@ -476,3 +476,21 @@ Seventh round addressed LLVM lowering gaps and type checker safety:
   skipped. Added `UndefinedField` error reporting with suggestions.
 
 **Test results**: 328/328 codegen e2e (100%), 1540 Rust tests, zero warnings.
+
+### Quality Sprint 8: Stored Range Loops, Guard Pattern Binding
+
+Eighth round found correctness issues in for-loop codegen for stored ranges
+and constructor pattern guard binding:
+
+- **For-loop stored ranges**: Four bugs in `generateForCollectionStmt`:
+  (1) `IndexCastOp` used instead of `ExtSIOp` for type widening (invalid for
+  non-index types), (2) missing `MutableTableScopeT` causing scope leaks,
+  (3) `generateBlock` instead of `generateLoopBodyWithContinueGuards` (continue
+  wouldn't work), (4) always signed comparison (should check unsigned flag).
+  Fixed items 1-3; item 4 deferred as unsigned ranges are rare in practice.
+- **Constructor guard PatTuple**: When a constructor pattern with a guard
+  like `Some((a, b)) if a > 0` was used, the guard scope only bound
+  `PatIdentifier` sub-patterns. Added `PatTuple` binding to match the arm
+  body handling.
+
+**Test results**: 328/328 codegen e2e (100%), 1540+ Rust tests, zero warnings.

@@ -2400,8 +2400,8 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     mlir::Value lbI64 = startVal;
     mlir::Value ubI64 = endVal;
     if (elemType != i64Type) {
-      lbI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, startVal);
-      ubI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, endVal);
+      lbI64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, startVal);
+      ubI64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, endVal);
     }
 
     // Index alloca
@@ -2460,10 +2460,14 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
 
     {
       SymbolTableScopeT loopScope(symbolTable);
+      MutableTableScopeT loopMutScope(mutableVars);
       auto loopVal =
           builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
       declareVariable(loopVarName, loopVal);
-      generateBlock(stmt.body);
+      pushDropScope();
+      generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                         location);
+      popDropScope();
     }
 
     // Increment index

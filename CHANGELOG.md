@@ -73,6 +73,9 @@
 - Codegen: `char_at` index extension uses zero-extend (prevents signed misinterpretation)
 - Type checker: type variables resolved before pattern matching (fixes false mismatches on generics)
 - Type checker: unknown fields in struct patterns now report `UndefinedField` error with suggestions
+- Codegen: for-loop over stored ranges uses ExtSIOp instead of IndexCastOp (fixes MLIR verification)
+- Codegen: for-loop over stored ranges now uses continue guards and MutableTableScopeT
+- Codegen: constructor pattern guards now bind PatTuple sub-patterns (e.g., `Some((a,b)) if a > 0`)
 - Zero compiler warnings across entire Rust workspace
 - All 328 codegen e2e tests pass (up from 321)
 

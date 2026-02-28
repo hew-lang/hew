@@ -232,9 +232,17 @@ mod platform {
         // Record crash metadata.
         ctx.crash_signal.store(sig, Ordering::Release);
         if !info.is_null() {
-            // SAFETY: info is valid in signal context. si_addr() accesses
+            // SAFETY: info is valid in signal context. si_addr accesses
             // the siginfo_t field (async-signal-safe read).
-            ctx.fault_addr = unsafe { (*info).si_addr() } as usize;
+            // On Linux it's a method, on macOS it's a field.
+            #[cfg(target_os = "linux")]
+            {
+                ctx.fault_addr = unsafe { (*info).si_addr() } as usize;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                ctx.fault_addr = unsafe { (*info).si_addr } as usize;
+            }
         }
 
         // Invalidate the jump buffer to prevent re-use.
@@ -301,7 +309,7 @@ mod platform {
                 ptr::null_mut(),
                 ALT_STACK_SIZE,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
                 -1,
                 0,
             )
@@ -504,9 +512,9 @@ mod platform {
     }
 }
 
-// ── Non-Linux stubs ─────────────────────────────────────────────────────
+// ── Non-Unix stubs (Windows, WASM) ──────────────────────────────────────
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 mod platform {
     use std::ffi::c_void;
 

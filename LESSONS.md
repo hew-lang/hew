@@ -501,3 +501,39 @@ every variant must be visited. Select arms have both source and body; both
 must be traversed in enrich_expr, normalize_expr_types, and
 rewrite_builtin_calls. Missing a child means that child's expressions
 won't get their types normalized or their builtin calls rewritten.
+
+### 69. HashMap.get() must return Option<T>, not raw T
+
+Returning raw T from HashMap.get() and relying on match-time wrapping is
+fragile — it only works for inline match expressions, not let-binding +
+match patterns. Wrap at the expression level: check contains_key, then
+construct Some(raw_get) or None via scf.IfOp. The internal values() method
+can still use HashMapGetOp directly (raw value) since it iterates known keys.
+
+### 70. Match fallthrough must trap, not return default values
+
+When no match arm matches at runtime (non-exhaustive match), returning
+zero/undef via createDefaultValue produces silently wrong results. Emit
+hew.panic (or llvm.trap) instead. The createDefaultValue after the panic
+is still needed for SSA type consistency but is unreachable code.
+
+### 71. Exhaustiveness checking must cover ALL types
+
+Integer, float, and string matches without a wildcard or binding pattern
+should warn — not just enum/bool/Option/Result. The catch-all in
+check_exhaustiveness must check for Pattern::Identifier (binding) as well
+as Pattern::Wildcard, since both are catch-all patterns for non-enum types.
+
+### 72. Vec push overflow requires checked arithmetic
+
+All hew*vec_push** functions compute len + 1 for the new length. If len
+is usize::MAX, this silently wraps to 0, causing ensure_cap to not grow
+and subsequent writes to corrupt memory. Use checked_add and abort on
+overflow. Store old len for slot calculation before updating (*v).len.
+
+### 73. Vec append requires type validation
+
+hew_vec_append blindly memcpys src data into dst without checking that
+elem_size and elem_kind match. Appending a Vec<f64> into a Vec<i32>
+would silently corrupt the destination. Validate both fields match before
+the copy, aborting if they differ.

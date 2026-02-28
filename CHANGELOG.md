@@ -117,13 +117,20 @@
 - Codegen: AssertEqOp/AssertNeOp fallthrough replaced with explicit i64/index check + error for unknown types
 - Codegen: unhandled match pattern now emits error instead of silent skip with warning
 - Runtime: Vec append overflow check (checked_add before ensure_cap)
-- All 333 codegen e2e tests pass (up from 321)
+- Codegen: HashMap.get() now returns Option<T> at MLIR level (fixes let-binding + match pattern)
+- Codegen: non-exhaustive match now traps at runtime instead of silently returning zero
+- Type checker: non-exhaustive match warning now covers all types (int, float, string), not just enums
+- Runtime: Vec push functions use checked_add for overflow protection
+- Runtime: Vec append validates elem_size/elem_kind match before memcpy
+- Runtime: added hew_vec_set_ptr and hew_vec_pop_ptr for pointer-type vectors
+- All 335 codegen e2e tests pass (up from 321)
 
 ### Changed
 
 - Function call results can be silently discarded — no more `let _ =` required
 - Parser: deduplicated function modifier handling (extracted `parse_fn_with_modifiers`)
 - Improved WASM target error messages for unsupported concurrency operations
+- **Breaking**: `HashMap.get(key)` now returns `Option<T>` instead of raw `T` — use `match` to unwrap
 
 ## v0.1.5 — 2026-02-28
 

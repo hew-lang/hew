@@ -1655,6 +1655,14 @@ impl Checker {
             }
         }
 
+        // Also seed actor receive fns — they appear as call_graph keys
+        // (e.g. "Actor::method") but aren't in fn_def_spans.
+        for caller in self.call_graph.keys() {
+            if caller.contains("::") && reachable.insert(caller.clone()) {
+                queue.push_back(caller.clone());
+            }
+        }
+
         // BFS through call graph
         while let Some(caller) = queue.pop_front() {
             if let Some(callees) = self.call_graph.get(&caller) {
@@ -1808,6 +1816,12 @@ impl Checker {
         self.in_pure_function = rf.is_pure;
         self.env.push_scope();
 
+        // Set current_function so calls within this receive fn are recorded
+        // in the call graph (enables dead-code reachability analysis).
+        let qualified_name = format!("{}::{}", actor_name, rf.name);
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
             for tp in type_params {
@@ -1860,6 +1874,7 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
+        self.current_function = prev_function;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }
@@ -6808,6 +6823,36 @@ mod tests {
                 .iter()
                 .any(|w| w.kind == TypeErrorKind::DeadCode),
             "should not warn for _ prefixed functions: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn no_warn_dead_code_called_from_actor_receive() {
+        let source = r#"
+fn fib(n: i32) -> i32 {
+    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }
+}
+actor Worker {
+    receive fn compute(n: i32) {
+        let r = fib(n);
+        println(r);
+    }
+}
+fn main() {
+    let w = spawn Worker();
+    w.compute(10);
+}
+"#;
+        let result = hew_parser::parse(source);
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("fib")),
+            "should not warn about function called from actor receive fn: {:?}",
             output.warnings
         );
     }

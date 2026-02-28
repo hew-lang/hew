@@ -510,6 +510,36 @@ mod platform {
         ctx.current_msg = ptr::null_mut();
         ctx.msg_type.store(0, Ordering::Relaxed);
     }
+
+    /// Attempt direct longjmp recovery from an intentional panic.
+    ///
+    /// On Unix the signal handler already works, but direct longjmp is
+    /// faster (skips the signal round-trip) and consistent with the
+    /// Windows implementation.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context.
+    pub(crate) unsafe fn try_direct_longjmp() {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        let ctx = unsafe { &mut *ctx };
+        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
+            return;
+        }
+        if ctx.in_recovery.swap(true, Ordering::Acquire) {
+            return;
+        }
+        // Record intentional panic as SIGSEGV equivalent.
+        ctx.crash_signal.store(libc::SIGSEGV, Ordering::Release);
+        ctx.fault_addr = 0;
+        ctx.jmp_buf_valid.store(false, Ordering::Release);
+        unsafe {
+            siglongjmp(&raw mut ctx.jmp_buf, 1);
+        }
+    }
 }
 
 // ── Windows implementation (Vectored Exception Handling) ────────────────
@@ -682,8 +712,14 @@ mod platform {
         ctx.fault_addr = record.exception_address as usize;
         ctx.jmp_buf_valid.store(false, Ordering::Release);
 
-        // Jump back to recovery point.
-        unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
+        // NOTE: We intentionally do NOT call longjmp here.
+        // On Windows x64, longjmp from a VEH handler corrupts the SEH
+        // unwind chain → STATUS_BAD_STACK (0xc0000028).
+        // Intentional panics go through try_direct_longjmp() in
+        // hew_panic() before the null dereference, so they never reach
+        // this handler. Real crashes (actual bugs) propagate normally.
+        ctx.in_recovery.store(false, Ordering::Release);
+        EXCEPTION_CONTINUE_SEARCH
     }
 
     // ── Public API ──────────────────────────────────────────────────────
@@ -801,6 +837,37 @@ mod platform {
         ctx.current_msg = ptr::null_mut();
         ctx.msg_type.store(0, Ordering::Relaxed);
     }
+
+    /// Attempt direct longjmp recovery from an intentional panic.
+    ///
+    /// Called by `hew_panic()` BEFORE the null dereference. If a recovery
+    /// context exists, longjmps directly from the actor's dispatch stack
+    /// back to the scheduler. This avoids the VEH handler entirely
+    /// (calling longjmp from a VEH handler causes STATUS_BAD_STACK on
+    /// Windows x64).
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a dispatch context (actor's stack frame chain
+    /// includes the scheduler's sigsetjmp frame).
+    pub(crate) unsafe fn try_direct_longjmp() {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        let ctx = unsafe { &mut *ctx };
+        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
+            return;
+        }
+        if ctx.in_recovery.swap(true, Ordering::Acquire) {
+            return;
+        }
+        // Record intentional panic as SIGSEGV equivalent.
+        ctx.crash_signal.store(11, Ordering::Release);
+        ctx.fault_addr = 0;
+        ctx.jmp_buf_valid.store(false, Ordering::Release);
+        unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
+    }
 }
 
 // ── WASM stubs ──────────────────────────────────────────────────────────
@@ -847,10 +914,17 @@ mod platform {
     }
 
     pub(crate) fn clear_dispatch_recovery() {}
+
+    /// No-op on WASM — no crash recovery.
+    ///
+    /// # Safety
+    ///
+    /// No-op on WASM.
+    pub(crate) unsafe fn try_direct_longjmp() {}
 }
 
 // Re-export platform-specific implementations.
 pub(crate) use platform::{
     clear_dispatch_recovery, handle_crash_recovery, init_crash_handling, init_worker_recovery,
-    mark_recovery_active, prepare_dispatch_recovery, sigsetjmp,
+    mark_recovery_active, prepare_dispatch_recovery, sigsetjmp, try_direct_longjmp,
 };

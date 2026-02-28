@@ -1442,11 +1442,22 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
 /// This function never returns.
 #[no_mangle]
 pub extern "C" fn hew_panic() {
-    // Use write_volatile to prevent LLVM from optimizing the null write
-    // into a trap instruction.
+    // Try direct longjmp recovery first. This avoids going through the
+    // signal/exception path, which is essential on Windows where longjmp
+    // from a VEH handler causes STATUS_BAD_STACK.
+    //
+    // SAFETY: Called from actor dispatch context (stack chain includes the
+    // scheduler's sigsetjmp frame). If recovery context exists, longjmps
+    // directly — never returns. If no context, returns and we fall through
+    // to the null dereference.
+    unsafe {
+        crate::signal::try_direct_longjmp();
+    }
+
+    // No recovery context — trigger a crash signal as fallback.
     //
     // SAFETY: Intentional null dereference to trigger SIGSEGV, which the
-    // SAFETY: crash signal handler catches and recovers from via siglongjmp.
+    // crash signal handler catches and recovers from via siglongjmp.
     unsafe {
         core::ptr::write_volatile(core::ptr::null_mut::<i32>(), 0xDEAD_i32);
     }

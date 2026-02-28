@@ -26,6 +26,7 @@ use crate::internal::types::HewActorState;
 use crate::mailbox::{
     self, hew_mailbox_has_messages, hew_mailbox_try_recv, hew_msg_node_free, HewMailbox,
 };
+use crate::set_last_error;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -214,7 +215,12 @@ pub extern "C" fn hew_sched_init() {
     };
     let mut lock = match sched.worker_handles.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
+        // scheduler integrity is lost; report error and bail.
+        Err(_) => {
+            set_last_error("hew_sched_init: mutex poisoned (a thread panicked)");
+            return;
+        }
     };
     *lock = handles;
 
@@ -243,11 +249,18 @@ pub extern "C" fn hew_sched_shutdown() {
     // Join worker threads.
     let mut handles = match sched.worker_handles.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
+        // scheduler integrity is lost; report error and bail.
+        Err(_) => {
+            set_last_error("hew_sched_shutdown: mutex poisoned (a thread panicked)");
+            return;
+        }
     };
     for handle in &mut *handles {
         if let Some(h) = handle.take() {
-            let _ = h.join();
+            if let Err(_) = h.join() {
+                eprintln!("hew: scheduler worker thread panicked during shutdown");
+            }
         }
     }
 
@@ -359,7 +372,14 @@ fn worker_loop(id: usize, local: &WorkDeque) {
 
         // 5. Park on per-worker condvar until notified or timeout.
         let parker = &sched.parkers[id];
-        let guard = parker.mutex.lock().unwrap();
+        let guard = match parker.mutex.lock() {
+            Ok(g) => g,
+            // Policy: per-scheduler state — poisoned parker means worker
+            // integrity is lost; shut down this worker.
+            Err(_) => panic!(
+                "hew: worker parker mutex poisoned (a thread panicked); cannot safely continue"
+            ),
+        };
         if sched.shutdown.load(Ordering::Acquire) {
             break;
         }

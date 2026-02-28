@@ -78,6 +78,10 @@ static bool needsZigzag(const std::string &ty) {
   return ty == "i8" || ty == "i16" || ty == "i32" || ty == "i64";
 }
 
+static bool isUnsignedWireType(const std::string &ty) {
+  return ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64";
+}
+
 /// Check if a wire type uses a varint encoding.
 static bool isVarintType(const std::string &ty) {
   return ty == "bool" || ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "i8" ||
@@ -566,10 +570,14 @@ void MLIRGen::generateWireToJson(const ast::WireDecl &decl) {
           mlir::SymbolRefAttr::get(&context, "hew_json_object_set_string"),
           mlir::ValueRange{objPtr, keyPtr, fv});
     } else {
-      // Integer types: sign-extend to i64
+      // Integer types: extend to i64 (zero-extend unsigned, sign-extend signed)
       mlir::Value v64 = fv;
-      if (fv.getType() == i32Type)
-        v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
+      if (fv.getType() == i32Type) {
+        if (isUnsignedWireType(field.ty))
+          v64 = builder.create<mlir::arith::ExtUIOp>(location, i64Type, fv);
+        else
+          v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
+      }
       builder.create<hew::RuntimeCallOp>(
           location, mlir::TypeRange{},
           mlir::SymbolRefAttr::get(&context, "hew_json_object_set_int"),
@@ -758,8 +766,12 @@ void MLIRGen::generateWireToYaml(const ast::WireDecl &decl) {
           mlir::ValueRange{objPtr, keyPtr, fv});
     } else {
       mlir::Value v64 = fv;
-      if (fv.getType() == i32Type)
-        v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
+      if (fv.getType() == i32Type) {
+        if (isUnsignedWireType(field.ty))
+          v64 = builder.create<mlir::arith::ExtUIOp>(location, i64Type, fv);
+        else
+          v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
+      }
       builder.create<hew::RuntimeCallOp>(
           location, mlir::TypeRange{},
           mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_int"),

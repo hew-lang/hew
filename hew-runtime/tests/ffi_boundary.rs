@@ -15,7 +15,8 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 // Re-export the C ABI functions under test.
 use hew_runtime::actor::{hew_actor_free, hew_actor_send, hew_actor_spawn};
@@ -719,8 +720,30 @@ fn mailbox_free_null_is_noop() {
 // Actor spawn/send/free via C ABI (without scheduler)
 // ═══════════════════════════════════════════════════════════════════════
 
-/// Counter incremented by our test dispatch function.
-static DISPATCH_COUNT: AtomicI32 = AtomicI32::new(0);
+/// Dispatch notification: tests wait on the condvar instead of polling
+/// with sleep, eliminating timing-dependent flakiness under load.
+static DISPATCH_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
+
+fn reset_dispatch_signal() {
+    *DISPATCH_SIGNAL.0.lock().unwrap() = 0;
+}
+
+fn wait_for_dispatches(expected: i32, timeout: Duration) -> bool {
+    let mut count = DISPATCH_SIGNAL.0.lock().unwrap();
+    let deadline = Instant::now() + timeout;
+    while *count < expected {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let (guard, result) = DISPATCH_SIGNAL.1.wait_timeout(count, remaining).unwrap();
+        count = guard;
+        if result.timed_out() && *count < expected {
+            return false;
+        }
+    }
+    true
+}
 
 /// Test dispatch function matching the Hew 4-param canonical signature.
 unsafe extern "C" fn test_dispatch(
@@ -729,7 +752,9 @@ unsafe extern "C" fn test_dispatch(
     _data: *mut c_void,
     _data_size: usize,
 ) {
-    DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    let mut count = DISPATCH_SIGNAL.0.lock().unwrap();
+    *count += 1;
+    DISPATCH_SIGNAL.1.notify_all();
 }
 
 #[test]
@@ -793,7 +818,7 @@ fn ensure_scheduler() {
 #[test]
 fn actor_send_dispatches_via_scheduler() {
     ensure_scheduler();
-    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    reset_dispatch_signal();
 
     unsafe {
         let mut state: i32 = 0;
@@ -812,16 +837,8 @@ fn actor_send_dispatches_via_scheduler() {
             size_of::<i32>(),
         );
 
-        // Give the scheduler time to dispatch.
-        for _ in 0..100 {
-            if DISPATCH_COUNT.load(Ordering::SeqCst) >= 1 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
         assert!(
-            DISPATCH_COUNT.load(Ordering::SeqCst) >= 1,
+            wait_for_dispatches(1, Duration::from_secs(10)),
             "dispatch was never called"
         );
 
@@ -833,8 +850,7 @@ fn actor_send_dispatches_via_scheduler() {
 fn actor_send_multiple_messages() {
     ensure_scheduler();
 
-    /// Thread-local counter for this test's dispatch.
-    static MULTI_COUNT: AtomicI32 = AtomicI32::new(0);
+    static MULTI_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
     unsafe extern "C" fn multi_dispatch(
         _state: *mut c_void,
@@ -842,10 +858,12 @@ fn actor_send_multiple_messages() {
         _data: *mut c_void,
         _data_size: usize,
     ) {
-        MULTI_COUNT.fetch_add(1, Ordering::SeqCst);
+        let mut count = MULTI_SIGNAL.0.lock().unwrap();
+        *count += 1;
+        MULTI_SIGNAL.1.notify_all();
     }
 
-    MULTI_COUNT.store(0, Ordering::SeqCst);
+    *MULTI_SIGNAL.0.lock().unwrap() = 0;
 
     unsafe {
         let mut state: i32 = 0;
@@ -867,14 +885,21 @@ fn actor_send_multiple_messages() {
         }
 
         // Wait for all to be dispatched.
-        for _ in 0..200 {
-            if MULTI_COUNT.load(Ordering::SeqCst) >= 10 {
-                break;
+        let done = {
+            let mut count = MULTI_SIGNAL.0.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while *count < 10 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let (guard, _) = MULTI_SIGNAL.1.wait_timeout(count, remaining).unwrap();
+                count = guard;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+            *count
+        };
 
-        assert_eq!(MULTI_COUNT.load(Ordering::SeqCst), 10);
+        assert_eq!(done, 10);
 
         hew_actor_free(actor);
     }
@@ -884,8 +909,7 @@ fn actor_send_multiple_messages() {
 fn actor_dispatch_receives_correct_data() {
     ensure_scheduler();
 
-    /// Stores the last received value.
-    static RECEIVED: AtomicI32 = AtomicI32::new(-1);
+    static DATA_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
 
     unsafe extern "C" fn data_dispatch(
         _state: *mut c_void,
@@ -895,11 +919,13 @@ fn actor_dispatch_receives_correct_data() {
     ) {
         if !data.is_null() && data_size >= size_of::<i32>() {
             let val = unsafe { *(data.cast::<i32>()) };
-            RECEIVED.store(val, Ordering::SeqCst);
+            let mut received = DATA_SIGNAL.0.lock().unwrap();
+            *received = val;
+            DATA_SIGNAL.1.notify_all();
         }
     }
 
-    RECEIVED.store(-1, Ordering::SeqCst);
+    *DATA_SIGNAL.0.lock().unwrap() = -1;
 
     unsafe {
         let mut state: i32 = 0;
@@ -917,14 +943,21 @@ fn actor_dispatch_receives_correct_data() {
             size_of::<i32>(),
         );
 
-        for _ in 0..100 {
-            if RECEIVED.load(Ordering::SeqCst) != -1 {
-                break;
+        let received = {
+            let mut val = DATA_SIGNAL.0.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while *val == -1 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let (guard, _) = DATA_SIGNAL.1.wait_timeout(val, remaining).unwrap();
+                val = guard;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+            *val
+        };
 
-        assert_eq!(RECEIVED.load(Ordering::SeqCst), 12345);
+        assert_eq!(received, 12345);
 
         hew_actor_free(actor);
     }
@@ -2541,8 +2574,8 @@ mod supervisor_nesting_tests {
             // Self-referencing returns -1.
             assert_eq!(hew_supervisor_add_child_supervisor(sup, sup), -1);
 
-            // Null supervisor child_count returns 0.
-            assert_eq!(hew_supervisor_child_count(std::ptr::null_mut()), 0);
+            // Null supervisor child_count returns -1.
+            assert_eq!(hew_supervisor_child_count(std::ptr::null_mut()), -1);
 
             hew_supervisor_stop(sup);
         }
@@ -3149,9 +3182,12 @@ mod rest_for_one_tests {
             hew_actor_trap(child1, 1);
 
             // Wait for the supervisor to restart children.
+            // Use a generous 10s deadline — under heavy workspace parallelism
+            // the supervisor's restart timer thread may be starved for CPU.
             let mut restarted = false;
-            for _ in 0..200 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 let c1 = hew_supervisor_get_child(sup, 1);
                 if !c1.is_null() && (*c1).id != id1_before {
                     restarted = true;
@@ -3261,8 +3297,9 @@ mod supervisor_escalation_tests {
 
             // Wait for first restart to complete.
             let mut first_restarted = false;
-            for _ in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 let c = hew_supervisor_get_child(child, 0);
                 if !c.is_null() && (*c).id != original_id {
                     first_restarted = true;
@@ -3284,8 +3321,9 @@ mod supervisor_escalation_tests {
 
             // Wait for escalation to propagate.
             let mut escalated = false;
-            for _ in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 if hew_supervisor_is_running(child) == 0 {
                     escalated = true;
                     break;
@@ -3298,8 +3336,9 @@ mod supervisor_escalation_tests {
 
             // Parent should have received the escalation and shut down.
             let mut parent_stopped = false;
-            for _ in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 if hew_supervisor_is_running(parent) == 0 {
                     parent_stopped = true;
                     break;

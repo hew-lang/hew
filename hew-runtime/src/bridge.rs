@@ -860,7 +860,9 @@ mod tests {
         let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
         assert!(len > 0);
 
-        let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
+        };
         assert_eq!(json, "{\"actors\":{}}");
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
@@ -895,7 +897,9 @@ mod tests {
 
         let mut len: usize = 0;
         let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
-        let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
+        };
 
         // Verify the JSON contains expected structure.
         assert!(json.contains("\"Counter\""));
@@ -951,7 +955,9 @@ mod tests {
         let name = b"Pinger";
         let mut len: usize = 0;
         let ptr = unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &mut len) };
-        let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
+        };
 
         assert!(json.contains("\"Pinger\""));
         assert!(json.contains("\"ping\""));
@@ -1006,8 +1012,9 @@ mod tests {
 
         let mut all_len: usize = 0;
         let all_ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut all_len) };
-        let json =
-            unsafe { std::str::from_utf8(std::slice::from_raw_parts(all_ptr, all_len)).unwrap() };
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(all_ptr, all_len)).unwrap_or_default()
+        };
 
         assert!(json.contains("\"Pinger\""));
         assert!(json.contains("\"Ponger\""));
@@ -1037,7 +1044,9 @@ mod tests {
 
         let mut len: usize = 0;
         let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
-        let json = unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap() };
+        let json = unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
+        };
 
         assert!(json.contains("\"return_type\":{\"type\":\"i64\",\"size\":8}"));
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };

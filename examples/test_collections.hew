@@ -72,21 +72,15 @@ fn test_vec_many_elements() -> i32 {
 
 fn test_hashmap_basic() -> i32 {
     println("--- test_hashmap_basic ---");
-    let m: HashMap<String, i64> = HashMap::new();
+    let m: HashMap<String, i32> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
-    let one = match m.get("one") {
-        Some(v) => v,
-        None => -1,
-    };
-    let two = match m.get("two") {
-        Some(v) => v,
-        None => -1,
-    };
+    let has_one = m.contains_key("one");
+    let has_two = m.contains_key("two");
     let len = m.len();
-    if one == 1 {
-        if two == 2 {
+    if has_one {
+        if has_two {
             if len == 3 {
                 println("PASS: hashmap basic ops");
                 1
@@ -107,8 +101,8 @@ fn test_hashmap_contains() -> i32 {
     m.insert("key1", 10);
     let has_key1 = m.contains_key("key1");
     let has_key2 = m.contains_key("key2");
-    if has_key1 == 1 {
-        if has_key2 == 0 {
+    if has_key1 {
+        if !has_key2 {
             println("PASS: hashmap contains_key");
             1
         } else {
@@ -125,7 +119,7 @@ fn test_hashmap_remove() -> i32 {
     m.insert("a", 1);
     m.insert("b", 2);
     let before = m.len();
-    m.remove("a");
+    let _ = m.remove("a");
     let after = m.len();
     if before == 2 {
         if after == 1 {

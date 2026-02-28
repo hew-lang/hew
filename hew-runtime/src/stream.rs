@@ -164,7 +164,9 @@ impl StreamBacking for ChannelStream {
 impl SinkBacking for ChannelSink {
     fn write_item(&mut self, data: &[u8]) {
         // Blocks (with backpressure) if the bounded channel is full.
-        let _ = self.tx.send(data.to_vec());
+        if self.tx.send(data.to_vec()).is_err() {
+            set_last_error("hew_sink_write: failed to send to channel sink".to_string());
+        }
     }
 
     fn flush(&mut self) {
@@ -238,15 +240,21 @@ struct FileWriteSink {
 
 impl SinkBacking for FileWriteSink {
     fn write_item(&mut self, data: &[u8]) {
-        let _ = self.writer.write_all(data);
+        if let Err(e) = self.writer.write_all(data) {
+            set_last_error(format!("hew_sink_write: file write failed: {e}"));
+        }
     }
 
     fn flush(&mut self) {
-        let _ = self.writer.flush();
+        if let Err(e) = self.writer.flush() {
+            set_last_error(format!("hew_sink_flush: file flush failed: {e}"));
+        }
     }
 
     fn close(&mut self) {
-        let _ = self.writer.flush();
+        if let Err(e) = self.writer.flush() {
+            set_last_error(format!("hew_sink_close: file flush failed: {e}"));
+        }
         // File is closed when the struct is dropped.
     }
 }
@@ -533,22 +541,25 @@ pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void 
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
     match s.inner.next() {
-        Some(item) if !item.is_empty() => {
+        Some(item) => {
             let len = item.len();
-            // SAFETY: libc::malloc returns a valid aligned pointer or null.
             // Allocate len + 1 for a NUL terminator so the buffer can be
             // used as a C string by hew_print_str / println.
+            // For empty items, this yields a 1-byte buffer containing '\0'.
+            // SAFETY: libc::malloc returns a valid aligned pointer or null.
             let buf = unsafe { libc::malloc(len + 1) };
             if buf.is_null() {
                 return ptr::null_mut();
             }
-            // SAFETY: buf is len+1 bytes allocated above; item.as_ptr() points to len bytes.
-            unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            if len > 0 {
+                // SAFETY: buf is len+1 bytes allocated above; item.as_ptr() points to len bytes.
+                unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            }
             // SAFETY: buf has len+1 bytes allocated; writing the null terminator at offset len.
             unsafe { *buf.cast::<u8>().add(len) = 0 };
             buf.cast::<c_void>()
         }
-        _ => ptr::null_mut(),
+        None => ptr::null_mut(),
     }
 }
 
@@ -571,22 +582,26 @@ pub unsafe extern "C" fn hew_stream_next_sized(
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
     match s.inner.next() {
-        Some(item) if !item.is_empty() => {
+        Some(item) => {
             let len = item.len();
             if !out_size.is_null() {
                 // SAFETY: Caller guarantees out_size is valid.
                 unsafe { *out_size = len };
             }
+            // For empty items, allocate 1 byte so the pointer is non-null.
+            let alloc_len = if len == 0 { 1 } else { len };
             // SAFETY: libc::malloc returns a valid aligned pointer or null.
-            let buf = unsafe { libc::malloc(len) };
+            let buf = unsafe { libc::malloc(alloc_len) };
             if buf.is_null() {
                 return ptr::null_mut();
             }
-            // SAFETY: buf is len bytes allocated above; item.as_ptr() points to len bytes.
-            unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            if len > 0 {
+                // SAFETY: buf is len bytes allocated above; item.as_ptr() points to len bytes.
+                unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
+            }
             buf.cast::<c_void>()
         }
-        _ => {
+        None => {
             if !out_size.is_null() {
                 // SAFETY: Caller guarantees out_size is valid.
                 unsafe { *out_size = 0 };

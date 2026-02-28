@@ -92,6 +92,27 @@ fn unescape_string(s: &str) -> String {
                 Some('r') => out.push('\r'),
                 Some('"') => out.push('"'),
                 Some('0') => out.push('\0'),
+                Some('x') => {
+                    // \xNN hex escape
+                    let hi = chars.next();
+                    let lo = chars.next();
+                    if let (Some(h), Some(l)) = (hi, lo) {
+                        if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                            out.push(byte as char);
+                        } else {
+                            out.push('\\');
+                            out.push('x');
+                            out.push(h);
+                            out.push(l);
+                        }
+                    } else {
+                        out.push('\\');
+                        out.push('x');
+                        if let Some(h) = hi {
+                            out.push(h);
+                        }
+                    }
+                }
                 Some('\\') | None => out.push('\\'),
                 Some(other) => {
                     // Unknown escape: preserve as-is
@@ -140,6 +161,20 @@ fn parse_string_parts(
                 'r' => literal_buf.push('\r'),
                 '"' => literal_buf.push('"'),
                 '0' => literal_buf.push('\0'),
+                'x' if idx + 3 < chars.len() => {
+                    let (_, h) = chars[idx + 2];
+                    let (_, l) = chars[idx + 3];
+                    if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                        literal_buf.push(byte as char);
+                    } else {
+                        literal_buf.push('\\');
+                        literal_buf.push('x');
+                        literal_buf.push(h);
+                        literal_buf.push(l);
+                    }
+                    idx += 4;
+                    continue;
+                }
                 '\\' => literal_buf.push('\\'),
                 '{' => literal_buf.push('{'),
                 '$' => literal_buf.push('$'),
@@ -250,6 +285,13 @@ impl Drop for RecursionGuard {
     }
 }
 
+/// Snapshot of parser position for speculative (backtracking) parses.
+struct SavedPos {
+    pos: usize,
+    error_count: usize,
+    angle_mutation_count: usize,
+}
+
 /// Parser state wrapping a token stream.
 #[derive(Debug)]
 pub struct Parser<'src> {
@@ -261,6 +303,9 @@ pub struct Parser<'src> {
     /// so that `s.launch`, `s.cancel()` can be desugared
     /// to the corresponding AST nodes.
     scope_binding: Option<String>,
+    /// Stack of token mutations performed by `eat_closing_angle`, so they can
+    /// be rolled back on speculative-parse backtrack.
+    angle_mutations: Vec<(usize, (Token<'src>, Span))>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -309,6 +354,7 @@ impl<'src> Parser<'src> {
             errors,
             depth: Cell::new(0),
             scope_binding: None,
+            angle_mutations: Vec::new(),
         }
     }
 
@@ -423,6 +469,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterGreater => {
                 // `>>` → consume first `>`, leave `>` for the outer context
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::Greater, remaining_span);
@@ -430,6 +478,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterEqual => {
                 // `>=` → consume `>`, leave `=`
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::Equal, remaining_span);
@@ -437,6 +487,8 @@ impl<'src> Parser<'src> {
             }
             Token::GreaterGreaterEqual => {
                 // `>>=` → consume first `>`, leave `>=`
+                self.angle_mutations
+                    .push((self.pos, self.tokens[self.pos].clone()));
                 let mid = span.start + 1;
                 let remaining_span = mid..span.end;
                 self.tokens[self.pos] = (Token::GreaterEqual, remaining_span);
@@ -488,29 +540,33 @@ impl<'src> Parser<'src> {
         Some(RecursionGuard(std::ptr::from_ref(&self.depth)))
     }
 
+    /// If the token is a contextual keyword, return its identifier name.
+    fn contextual_keyword_name(tok: &Token<'_>) -> Option<&'static str> {
+        match tok {
+            Token::After => Some("after"),
+            Token::From => Some("from"),
+            Token::Init => Some("init"),
+            Token::Child => Some("child"),
+            Token::Restart => Some("restart"),
+            Token::Budget => Some("budget"),
+            Token::Strategy => Some("strategy"),
+            Token::Permanent => Some("permanent"),
+            Token::Transient => Some("transient"),
+            Token::Temporary => Some("temporary"),
+            Token::OneForOne => Some("one_for_one"),
+            Token::OneForAll => Some("one_for_all"),
+            Token::RestForOne => Some("rest_for_one"),
+            Token::Wire => Some("wire"),
+            Token::Optional => Some("optional"),
+            Token::Deprecated => Some("deprecated"),
+            Token::Reserved => Some("reserved"),
+            _ => None,
+        }
+    }
+
     /// Returns true if the token can be used as an identifier (regular or contextual keyword).
     fn is_ident_token(tok: &Token<'_>) -> bool {
-        matches!(
-            tok,
-            Token::Identifier(_)
-                | Token::After
-                | Token::From
-                | Token::Init
-                | Token::Child
-                | Token::Restart
-                | Token::Budget
-                | Token::Strategy
-                | Token::Permanent
-                | Token::Transient
-                | Token::Temporary
-                | Token::OneForOne
-                | Token::OneForAll
-                | Token::RestForOne
-                | Token::Wire
-                | Token::Optional
-                | Token::Deprecated
-                | Token::Reserved
-        )
+        matches!(tok, Token::Identifier(_)) || Self::contextual_keyword_name(tok).is_some()
     }
 
     fn expect_ident(&mut self) -> Option<String> {
@@ -520,46 +576,8 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Some(name)
             }
-            // Contextual keywords that can also be used as identifiers
-            Some(
-                Token::After
-                | Token::From
-                | Token::Init
-                | Token::Child
-                | Token::Restart
-                | Token::Budget
-                | Token::Strategy
-                | Token::Permanent
-                | Token::Transient
-                | Token::Temporary
-                | Token::OneForOne
-                | Token::OneForAll
-                | Token::RestForOne
-                | Token::Wire
-                | Token::Optional
-                | Token::Deprecated
-                | Token::Reserved,
-            ) => {
-                let name = match self.peek().unwrap() {
-                    Token::After => "after",
-                    Token::From => "from",
-                    Token::Init => "init",
-                    Token::Child => "child",
-                    Token::Restart => "restart",
-                    Token::Budget => "budget",
-                    Token::Strategy => "strategy",
-                    Token::Permanent => "permanent",
-                    Token::Transient => "transient",
-                    Token::Temporary => "temporary",
-                    Token::OneForOne => "one_for_one",
-                    Token::OneForAll => "one_for_all",
-                    Token::RestForOne => "rest_for_one",
-                    Token::Wire => "wire",
-                    Token::Optional => "optional",
-                    Token::Deprecated => "deprecated",
-                    Token::Reserved => "reserved",
-                    _ => unreachable!(),
-                };
+            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
+                let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
                 self.advance();
                 Some(name.to_string())
             }
@@ -574,21 +592,34 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn save_pos(&self) -> (usize, usize) {
-        (self.pos, self.errors.len())
+    fn save_pos(&self) -> SavedPos {
+        SavedPos {
+            pos: self.pos,
+            error_count: self.errors.len(),
+            angle_mutation_count: self.angle_mutations.len(),
+        }
     }
 
-    fn restore_pos(&mut self, saved: (usize, usize)) {
-        self.pos = saved.0;
-        self.errors.truncate(saved.1);
+    fn restore_pos(&mut self, saved: SavedPos) {
+        self.pos = saved.pos;
+        self.errors.truncate(saved.error_count);
+        // Undo any token mutations made by eat_closing_angle since this save point
+        while self.angle_mutations.len() > saved.angle_mutation_count {
+            let (idx, tok) = self.angle_mutations.pop().unwrap();
+            self.tokens[idx] = tok;
+        }
     }
 
-    /// Collect consecutive outer doc comment (`///`) tokens and return
-    /// the concatenated content, or `None` if no doc comments are present.
-    fn collect_doc_comments(&mut self) -> Option<String> {
+    /// Collect consecutive doc comment tokens with the given prefix and return
+    /// the concatenated content, or `None` if no matching comments are present.
+    fn collect_doc_comments_with_prefix(
+        &mut self,
+        prefix: &str,
+        is_match: fn(&Token<'src>) -> Option<&'src str>,
+    ) -> Option<String> {
         let mut lines = Vec::new();
-        while let Some(Token::DocComment(s)) = self.peek() {
-            let content = s.strip_prefix("///").unwrap_or(s);
+        while let Some(s) = self.peek().and_then(is_match) {
+            let content = s.strip_prefix(prefix).unwrap_or(s);
             // Strip one leading space if present (conventional formatting)
             let content = content.strip_prefix(' ').unwrap_or(content);
             lines.push(content.to_string());
@@ -601,21 +632,22 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// Collect consecutive outer doc comment (`///`) tokens and return
+    /// the concatenated content, or `None` if no doc comments are present.
+    fn collect_doc_comments(&mut self) -> Option<String> {
+        self.collect_doc_comments_with_prefix("///", |t| match t {
+            Token::DocComment(s) => Some(s),
+            _ => None,
+        })
+    }
+
     /// Collect consecutive inner doc comment (`//!`) tokens at the start of
     /// the file and return the concatenated content.
     fn collect_inner_doc_comments(&mut self) -> Option<String> {
-        let mut lines = Vec::new();
-        while let Some(Token::InnerDocComment(s)) = self.peek() {
-            let content = s.strip_prefix("//!").unwrap_or(s);
-            let content = content.strip_prefix(' ').unwrap_or(content);
-            lines.push(content.to_string());
-            self.advance();
-        }
-        if lines.is_empty() {
-            None
-        } else {
-            Some(lines.join("\n"))
-        }
+        self.collect_doc_comments_with_prefix("//!", |t| match t {
+            Token::InnerDocComment(s) => Some(s),
+            _ => None,
+        })
     }
 
     // ── Program and Items ──
@@ -1185,7 +1217,11 @@ impl<'src> Parser<'src> {
             if let Some(item) = self.parse_trait_item() {
                 items.push(item);
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected trait item (fn or type), found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery
             }
         }
 
@@ -1326,7 +1362,11 @@ impl<'src> Parser<'src> {
                     methods.push(method);
                 }
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected 'fn' in impl body, found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery: skip the bad token
             }
         }
 
@@ -1480,7 +1520,9 @@ impl<'src> Parser<'src> {
                 let ty = self.parse_type()?;
                 // Skip optional `= expr` initializer
                 if self.eat(&Token::Equal) {
-                    let _ = self.parse_expr();
+                    if self.parse_expr().is_none() {
+                        self.error("expected expression for field initializer".to_string());
+                    }
                 }
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
@@ -1520,7 +1562,8 @@ impl<'src> Parser<'src> {
                     ty,
                 });
             } else {
-                self.advance();
+                self.error(format!("unexpected token in actor body: {:?}", self.peek()));
+                self.advance(); // error recovery
             }
         }
 
@@ -1754,20 +1797,14 @@ impl<'src> Parser<'src> {
                     });
                 }
                 _ => {
-                    // Skip unknown fields (e.g. max_restarts: 5, window: 10, children: [...])
+                    self.error(format!("unknown supervisor field: {:?}", self.peek()));
                     self.advance();
-                    if self.eat(&Token::Colon) {
-                        // Skip the value — may be an integer, identifier, or bracket list
-                        while !self.at_end()
-                            && self.peek() != Some(&Token::Semicolon)
-                            && self.peek() != Some(&Token::Comma)
-                            && self.peek() != Some(&Token::RightBrace)
-                        {
-                            self.advance();
-                        }
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
+                    // skip to next comma or closing brace
+                    while self.peek() != Some(&Token::Comma)
+                        && self.peek() != Some(&Token::RightBrace)
+                        && self.peek().is_some()
+                    {
+                        self.advance();
                     }
                 }
             }
@@ -1828,7 +1865,11 @@ impl<'src> Parser<'src> {
                     is_variadic,
                 });
             } else {
-                self.advance();
+                self.error(format!(
+                    "expected 'fn' in extern block, found {:?}",
+                    self.peek()
+                ));
+                self.advance(); // error recovery
             }
         }
 
@@ -2975,7 +3016,8 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::Float(s) => {
-                if let Ok(val) = s.parse::<f64>() {
+                let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+                if let Ok(val) = cleaned.parse::<f64>() {
                     self.advance();
                     Expr::Literal(Literal::Float(val))
                 } else {
@@ -2990,6 +3032,15 @@ impl<'src> Parser<'src> {
                     .and_then(|s| s.strip_suffix('"'))
                     .unwrap_or(s);
                 let s = unescape_string(s);
+                self.advance();
+                Expr::Literal(Literal::String(s))
+            }
+            Token::RawString(s) => {
+                let s = s
+                    .strip_prefix("r\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(s)
+                    .to_string();
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -3404,43 +3455,8 @@ impl<'src> Parser<'src> {
                 Expr::Cooperate
             }
             // Contextual keywords that can be used as identifiers in expressions
-            Token::After
-            | Token::From
-            | Token::Init
-            | Token::Child
-            | Token::Restart
-            | Token::Budget
-            | Token::Strategy
-            | Token::Permanent
-            | Token::Transient
-            | Token::Temporary
-            | Token::OneForOne
-            | Token::OneForAll
-            | Token::RestForOne
-            | Token::Wire
-            | Token::Optional
-            | Token::Deprecated
-            | Token::Reserved => {
-                let name = match self.peek().unwrap() {
-                    Token::After => "after",
-                    Token::From => "from",
-                    Token::Init => "init",
-                    Token::Child => "child",
-                    Token::Restart => "restart",
-                    Token::Budget => "budget",
-                    Token::Strategy => "strategy",
-                    Token::Permanent => "permanent",
-                    Token::Transient => "transient",
-                    Token::Temporary => "temporary",
-                    Token::OneForOne => "one_for_one",
-                    Token::OneForAll => "one_for_all",
-                    Token::RestForOne => "rest_for_one",
-                    Token::Wire => "wire",
-                    Token::Optional => "optional",
-                    Token::Deprecated => "deprecated",
-                    Token::Reserved => "reserved",
-                    _ => unreachable!(),
-                };
+            tok if Self::contextual_keyword_name(&tok).is_some() => {
+                let name = Self::contextual_keyword_name(&tok).unwrap();
                 self.advance();
                 Expr::Identifier(name.to_string())
             }
@@ -4253,6 +4269,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_interpolated_string_contains_expr_part() {
+        let result = parse(r#"fn main() { let s = f"hello {name}"; }"#);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((Expr::InterpolatedString(parts), _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected interpolated string");
+        };
+        assert!(parts.iter().any(|p| matches!(p, StringPart::Expr(_))));
+    }
+
+    #[test]
+    #[ignore = "known gap: interpolation parse errors silently dropped (sub-parser errors not propagated)"]
+    fn parse_interpolated_string_empty_expr_reports_error() {
+        let result = parse(r#"fn main() { let s = f"hello {}"; }"#);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse errors for malformed interpolation"
+        );
+    }
+
+    #[test]
     fn parse_deeply_nested_expr_produces_error() {
         // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).
         // Use a child thread with an explicit stack size to avoid the test
@@ -4785,5 +4828,30 @@ mod tests {
         } else {
             panic!("expected import item");
         }
+    }
+
+    #[test]
+    fn parse_float_with_underscore_separators() {
+        let source = "fn main() { let x = 1_000.5; }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_raw_string_literal() {
+        let source = r#"fn main() { let x = r"hello\nworld"; }"#;
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+    #[test]
+    fn test_hex_escape_in_string() {
+        // \x41 = 'A', \x42 = 'B'
+        assert_eq!(unescape_string(r"\x41\x42"), "AB");
+        // Mixed with normal text and other escapes
+        assert_eq!(unescape_string(r"hi\x21\n"), "hi!\n");
+        // Invalid hex digits preserved as-is
+        assert_eq!(unescape_string(r"\xZZ"), "\\xZZ");
+        // Truncated hex escape (only one char after \x)
+        assert_eq!(unescape_string("\\x4"), "\\x4");
     }
 } // mod tests

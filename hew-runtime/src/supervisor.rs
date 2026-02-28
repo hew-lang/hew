@@ -13,6 +13,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::scheduler;
+use crate::set_last_error;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -254,7 +255,13 @@ fn monotonic_time_ns() -> u64 {
     use std::time::Instant;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "monotonic ns since process start won't exceed u64"
+    )]
+    {
+        epoch.elapsed().as_nanos() as u64
+    }
 }
 
 /// Count restarts within the sliding window.
@@ -1274,7 +1281,8 @@ pub unsafe extern "C" fn hew_supervisor_get_child(
 )]
 pub unsafe extern "C" fn hew_supervisor_child_count(sup: *mut HewSupervisor) -> c_int {
     if sup.is_null() {
-        return 0;
+        set_last_error("hew_supervisor_child_count: supervisor is null");
+        return -1;
     }
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
@@ -1507,10 +1515,12 @@ pub unsafe extern "C" fn hew_supervisor_remove_child(
     if !spec.init_state.is_null() {
         // SAFETY: init_state was allocated with libc::malloc.
         unsafe { libc::free(spec.init_state) };
+        spec.init_state = ptr::null_mut();
     }
     if !spec.name.is_null() {
         // SAFETY: name was allocated with libc::strdup.
         unsafe { libc::free(spec.name.cast::<c_void>()) };
+        spec.name = ptr::null_mut();
     }
 
     // Swap-remove to avoid shifting all elements.

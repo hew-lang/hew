@@ -13,21 +13,26 @@
 //!    the next value from the yield channel.
 //! 3. Inside the generator thread, [`hew_gen_yield`] sends a value on the
 //!    yield channel, then blocks on the resume channel.
-//! 4. When the body returns, the thread sends a `GenValue { null, 0 }`
+//! 4. When the body returns, the thread sends a `GenValue { is_done: true }`
 //!    "done" sentinel and exits.
 //! 5. [`hew_gen_free`] cancels (if running) and joins the thread.
 
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 
+use crate::set_last_error;
+
 // ── Value envelope ──────────────────────────────────────────────────────
 
-/// Envelope for a yielded value.  A null `data` pointer signals "done".
+/// Envelope for a yielded value.
 struct GenValue {
     data: *mut c_void,
     size: usize,
+    /// `true` only on the final "done" sentinel sent when the body returns.
+    is_done: bool,
 }
 
 // SAFETY: `GenValue` only wraps a malloc'd pointer that is transferred
@@ -54,6 +59,8 @@ pub struct HewGenCtx {
     resume_rx: mpsc::Receiver<bool>,
     /// Join handle for the generator thread.
     handle: Option<thread::JoinHandle<()>>,
+    /// Set to `true` once the done sentinel has been received.
+    done: AtomicBool,
 }
 
 // SAFETY: The two threads partition access to the fields: the consumer
@@ -127,6 +134,7 @@ pub unsafe extern "C" fn hew_gen_ctx_create(
         resume_tx,
         resume_rx,
         handle: None,
+        done: AtomicBool::new(false),
     }));
 
     // Cast raw pointers to usize so the closure is Send (same pattern
@@ -154,6 +162,7 @@ pub unsafe extern "C" fn hew_gen_ctx_create(
             let _ = ctx_ref.yield_tx.send(GenValue {
                 data: ptr::null_mut(),
                 size: 0,
+                is_done: true,
             });
             if !arg_copy.is_null() {
                 // SAFETY: arg_copy was allocated with libc::malloc above.
@@ -182,6 +191,7 @@ pub unsafe extern "C" fn hew_gen_ctx_create(
         let _ = ctx_ref.yield_tx.send(GenValue {
             data: ptr::null_mut(),
             size: 0,
+            is_done: true,
         });
     });
 
@@ -232,6 +242,7 @@ pub unsafe extern "C" fn hew_gen_yield(
                 let _ = ctx_ref.yield_tx.send(GenValue {
                     data: ptr::null_mut(),
                     size: 0,
+                    is_done: true,
                 });
                 return false;
             }
@@ -247,7 +258,15 @@ pub unsafe extern "C" fn hew_gen_yield(
     let ctx_ref = unsafe { &*ctx };
 
     // Send the yielded value to the consumer.
-    if ctx_ref.yield_tx.send(GenValue { data, size }).is_err() {
+    if ctx_ref
+        .yield_tx
+        .send(GenValue {
+            data,
+            size,
+            is_done: false,
+        })
+        .is_err()
+    {
         // Consumer dropped — free the copy and let the body exit.
         if !data.is_null() {
             // SAFETY: data was allocated with libc::malloc above.
@@ -284,6 +303,15 @@ pub unsafe extern "C" fn hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize)
     // thread accesses resume_tx and yield_rx.
     let ctx_ref = unsafe { &*ctx };
 
+    // If the generator already completed, return null immediately
+    // without touching the channels (avoids deadlock on re-call).
+    if ctx_ref.done.load(Ordering::Acquire) {
+        if !out_size.is_null() {
+            unsafe { *out_size = 0 };
+        }
+        return ptr::null_mut();
+    }
+
     // Signal the generator thread to resume (or start).
     if ctx_ref.resume_tx.send(true).is_err() {
         // Generator thread already exited.
@@ -292,8 +320,9 @@ pub unsafe extern "C" fn hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize)
 
     // Wait for the next yielded value.
     match ctx_ref.yield_rx.recv() {
-        Ok(val) if val.data.is_null() => {
-            // "Done" sentinel.
+        Ok(val) if val.is_done => {
+            // "Done" sentinel — mark so subsequent calls return immediately.
+            ctx_ref.done.store(true, Ordering::Release);
             if !out_size.is_null() {
                 // SAFETY: out_size is valid per caller contract.
                 unsafe { *out_size = 0 };
@@ -305,10 +334,21 @@ pub unsafe extern "C" fn hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize)
                 // SAFETY: out_size is valid per caller contract.
                 unsafe { *out_size = val.size };
             }
-            val.data
+            if val.data.is_null() {
+                // Null-yield (not done): allocate a 1-byte buffer so the
+                // consumer sees a non-null pointer and doesn't stop early.
+                let buf = unsafe { libc::malloc(1) };
+                if !buf.is_null() {
+                    unsafe { *buf.cast::<u8>() = 0 };
+                }
+                buf
+            } else {
+                val.data
+            }
         }
         Err(_) => {
             // Channel closed — generator thread exited unexpectedly.
+            ctx_ref.done.store(true, Ordering::Release);
             ptr::null_mut()
         }
     }
@@ -338,7 +378,9 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
 
         // Join the generator thread.
         if let Some(handle) = (*ctx).handle.take() {
-            let _ = handle.join();
+            if let Err(_) = handle.join() {
+                set_last_error("generator thread panicked during execution");
+            }
         }
 
         drop(Box::from_raw(ctx));

@@ -1,0 +1,31 @@
+// Regression: break inside for-in-hashmap must work with nested loops.
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+    m.insert("a", 10);
+    m.insert("b", 20);
+    m.insert("c", 30);
+
+    // Break out of hashmap iteration after first entry
+    var count = 0;
+    for (k, v) in m {
+        count = count + 1;
+        break;
+    }
+    println(count);
+
+    // Nested: for-hashmap inside loop
+    var passes = 0;
+    var sum = 0;
+    loop {
+        for (k, v) in m {
+            sum = sum + 1;
+            break;
+        }
+        passes = passes + 1;
+        if passes >= 2 {
+            break;
+        }
+    }
+    // Each pass adds 1 from the hashmap break, 2 passes = 2
+    println(sum);
+}

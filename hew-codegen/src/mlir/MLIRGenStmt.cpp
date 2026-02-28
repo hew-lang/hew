@@ -246,6 +246,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1) {
           resultType = currentFunction.getResultTypes()[0];
         } else {
+          emitWarning(location) << "match result type not resolved; defaulting to i32";
           resultType = builder.getI32Type();
         }
         auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
@@ -305,6 +306,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       if (currentFunction && currentFunction.getResultTypes().size() == 1) {
         resultType = currentFunction.getResultTypes()[0];
       } else {
+        emitWarning(location) << "match result type not resolved; defaulting to i32";
         resultType = builder.getI32Type();
       }
       return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
@@ -733,7 +735,17 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto operandType = operandVal.getType();
     if (isPointerLikeType(operandType)) {
       auto fieldName = fa->field;
+      // When accessing self.field, use currentActorName for precise lookup
+      std::string targetStructName;
+      if (!currentActorName.empty()) {
+        if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+          if (baseIdent->name == "self")
+            targetStructName = currentActorName;
+        }
+      }
       for (const auto &[typeName, stInfo] : structTypes) {
+        if (!targetStructName.empty() && typeName != targetStructName)
+          continue;
         auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(stInfo.mlirType);
         if (!structType)
           continue;
@@ -746,7 +758,12 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
             // Handle compound assignment
             if (stmt.op) {
               auto current = builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr);
+              rhs = coerceType(rhs, field.type, location);
               bool isFloat = llvm::isa<mlir::FloatType>(field.type);
+              bool isUnsigned = false;
+              if (mlir::isa<mlir::IntegerType>(field.type))
+                if (auto *ty = resolvedTypeOf(stmt.target.span))
+                  isUnsigned = isUnsignedTypeExpr(*ty);
               mlir::Value result;
               switch (*stmt.op) {
               case ast::CompoundAssignOp::Add:
@@ -774,10 +791,32 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                 result = (mlir::Value)builder.create<mlir::arith::ShLIOp>(location, current, rhs);
                 break;
               case ast::CompoundAssignOp::Shr:
-                result = (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, current, rhs);
+                result =
+                    isUnsigned
+                        ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, current, rhs);
                 break;
-              default:
-                result = rhs;
+              case ast::CompoundAssignOp::Multiply:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::MulFOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::MulIOp>(location, current, rhs);
+                break;
+              case ast::CompoundAssignOp::Divide:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, current, rhs)
+                    : isUnsigned
+                        ? (mlir::Value)builder.create<mlir::arith::DivUIOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, current, rhs);
+                break;
+              case ast::CompoundAssignOp::Modulo:
+                result =
+                    isFloat
+                        ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, current, rhs)
+                    : isUnsigned
+                        ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, current, rhs)
+                        : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, current, rhs);
                 break;
               }
               rhs = result;
@@ -835,7 +874,12 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       auto currentFieldVal = builder.create<mlir::LLVM::ExtractValueOp>(
           location, currentStruct,
           llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
+      rhs = coerceType(rhs, targetField->type, location);
       bool isFloat = llvm::isa<mlir::FloatType>(targetField->type);
+      bool isUnsigned = false;
+      if (mlir::isa<mlir::IntegerType>(targetField->type))
+        if (auto *ty = resolvedTypeOf(stmt.target.span))
+          isUnsigned = isUnsignedTypeExpr(*ty);
       mlir::Value result;
       switch (*stmt.op) {
       case ast::CompoundAssignOp::Add:
@@ -860,12 +904,16 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         result =
             isFloat
                 ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, currentFieldVal, rhs)
+            : isUnsigned
+                ? (mlir::Value)builder.create<mlir::arith::DivUIOp>(location, currentFieldVal, rhs)
                 : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, currentFieldVal, rhs);
         break;
       case ast::CompoundAssignOp::Modulo:
         result =
             isFloat
                 ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, currentFieldVal, rhs)
+            : isUnsigned
+                ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, currentFieldVal, rhs)
                 : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, currentFieldVal, rhs);
         break;
       case ast::CompoundAssignOp::BitAnd:
@@ -881,7 +929,10 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         result = (mlir::Value)builder.create<mlir::arith::ShLIOp>(location, currentFieldVal, rhs);
         break;
       case ast::CompoundAssignOp::Shr:
-        result = (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, currentFieldVal, rhs);
+        result =
+            isUnsigned
+                ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, currentFieldVal, rhs)
+                : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, currentFieldVal, rhs);
         break;
       }
       rhs = result;
@@ -971,6 +1022,10 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     mlir::Value result;
     auto type = current.getType();
     bool isFloat = llvm::isa<mlir::FloatType>(type);
+    bool isUnsigned = false;
+    if (mlir::isa<mlir::IntegerType>(type))
+      if (auto *ty = resolvedTypeOf(stmt.target.span))
+        isUnsigned = isUnsignedTypeExpr(*ty);
 
     switch (*stmt.op) {
     case ast::CompoundAssignOp::Add:
@@ -987,11 +1042,15 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       break;
     case ast::CompoundAssignOp::Divide:
       result = isFloat ? builder.create<mlir::arith::DivFOp>(location, current, rhs).getResult()
-                       : builder.create<mlir::arith::DivSIOp>(location, current, rhs).getResult();
+               : isUnsigned
+                   ? builder.create<mlir::arith::DivUIOp>(location, current, rhs).getResult()
+                   : builder.create<mlir::arith::DivSIOp>(location, current, rhs).getResult();
       break;
     case ast::CompoundAssignOp::Modulo:
       result = isFloat ? builder.create<mlir::arith::RemFOp>(location, current, rhs).getResult()
-                       : builder.create<mlir::arith::RemSIOp>(location, current, rhs).getResult();
+               : isUnsigned
+                   ? builder.create<mlir::arith::RemUIOp>(location, current, rhs).getResult()
+                   : builder.create<mlir::arith::RemSIOp>(location, current, rhs).getResult();
       break;
     case ast::CompoundAssignOp::BitAnd:
       result = builder.create<mlir::arith::AndIOp>(location, current, rhs).getResult();
@@ -1006,7 +1065,9 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       result = builder.create<mlir::arith::ShLIOp>(location, current, rhs).getResult();
       break;
     case ast::CompoundAssignOp::Shr:
-      result = builder.create<mlir::arith::ShRSIOp>(location, current, rhs).getResult();
+      result = isUnsigned
+                   ? builder.create<mlir::arith::ShRUIOp>(location, current, rhs).getResult()
+                   : builder.create<mlir::arith::ShRSIOp>(location, current, rhs).getResult();
       break;
     }
     storeVariable(name, result);
@@ -1077,10 +1138,12 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   }
 
   mlir::Type resultType;
-  if (currentFunction && currentFunction.getResultTypes().size() == 1)
+  if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
-  else
+  } else {
+    emitWarning(location) << "if-statement result type not resolved; defaulting to i64";
     resultType = defaultIntType();
+  }
 
   bool hasElse = stmt.else_block.has_value();
   if (!hasElse) {
@@ -1670,6 +1733,13 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     loopVarName = "_for_var";
   }
 
+  // Determine if the range is over an unsigned type
+  bool rangeIsUnsigned = false;
+  if (rangeExpr.left) {
+    if (auto *ty = resolvedTypeOf(rangeExpr.left->span))
+      rangeIsUnsigned = isUnsignedTypeExpr(*ty);
+  }
+
   // Use scf.while instead of scf.for to support break/continue.
   // This mirrors the pattern in generateForCollectionStmt.
   auto i64Type = builder.getI64Type();
@@ -1709,8 +1779,9 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
 
   auto isActive = builder.create<mlir::memref::LoadOp>(location, activeFlag, mlir::ValueRange{});
   auto curIdx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-  auto cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt, curIdx, ubI64);
+  auto cond = builder.create<mlir::arith::CmpIOp>(
+      location, rangeIsUnsigned ? mlir::arith::CmpIPredicate::ult : mlir::arith::CmpIPredicate::slt,
+      curIdx, ubI64);
   auto combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
 
   if (returnFlag) {
@@ -1731,10 +1802,9 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     SymbolTableScopeT loopScope(symbolTable);
     MutableTableScopeT loopMutScope(mutableVars);
 
-    // Bind loop variable: load index, cast to i32
+    // Bind loop variable: load index as i64
     auto idx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-    auto i32Var = builder.create<mlir::arith::TruncIOp>(location, builder.getI32Type(), idx);
-    declareVariable(loopVarName, i32Var);
+    declareVariable(loopVarName, idx);
 
     // Generate body with continue guards
     pushDropScope();
@@ -1808,6 +1878,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
@@ -1868,6 +1939,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
 
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
+  loopBreakValueStack.pop_back();
 
   builder.setInsertionPointAfter(whileOp);
 }
@@ -2031,6 +2103,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   // scf.while loop
   auto whileOp =
@@ -2130,7 +2203,17 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
 
+  auto breakValueAlloca = loopBreakValueStack.back();
+  loopBreakValueStack.pop_back();
+
   builder.setInsertionPointAfter(whileOp);
+
+  if (breakValueAlloca) {
+    lastBreakValue =
+        builder.create<mlir::memref::LoadOp>(location, breakValueAlloca, mlir::ValueRange{});
+  } else {
+    lastBreakValue = nullptr;
+  }
 }
 
 void MLIRGen::generateForString(const ast::StmtFor &stmt, mlir::Value collection,
@@ -2210,6 +2293,7 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
 
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
+  loopBreakValueStack.push_back(nullptr);
 
   // scf.while loop
   auto whileOp =
@@ -2293,7 +2377,17 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   loopActiveStack.pop_back();
   loopContinueStack.pop_back();
 
+  auto breakValueAlloca = loopBreakValueStack.back();
+  loopBreakValueStack.pop_back();
+
   builder.setInsertionPointAfter(whileOp);
+
+  if (breakValueAlloca) {
+    lastBreakValue =
+        builder.create<mlir::memref::LoadOp>(location, breakValueAlloca, mlir::ValueRange{});
+  } else {
+    lastBreakValue = nullptr;
+  }
 
   // Free the temporary keys vec
   builder.create<hew::VecFreeOp>(location, keysVec);
@@ -2410,7 +2504,10 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
   {
     SymbolTableScopeT loopScope(symbolTable);
     MutableTableScopeT loopMutScope(mutableVars);
-    generateBlock(stmt.body);
+    pushDropScope();
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                       location);
+    popDropScope();
   }
 
   auto *bodyBlock = builder.getInsertionBlock();

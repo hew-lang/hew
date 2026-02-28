@@ -191,9 +191,14 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             }
         }
 
-        Ty::TraitObject { trait_name, .. } => TypeExpr::TraitObject(TraitBound {
+        Ty::TraitObject { trait_name, args } => TypeExpr::TraitObject(TraitBound {
             name: trait_name.clone(),
-            type_args: None,
+            type_args: if args.is_empty() {
+                None
+            } else {
+                let mapped: Option<Vec<_>> = args.iter().map(|a| ty_to_type_expr(a)).collect();
+                mapped
+            },
         }),
 
         Ty::Unit
@@ -267,6 +272,14 @@ fn normalize_type_expr(te: &mut TypeExpr) {
         }
         TypeExpr::Pointer { pointee, .. } => {
             normalize_type_expr(&mut pointee.0);
+        }
+        TypeExpr::TraitObject(TraitBound {
+            type_args: Some(ref mut args),
+            ..
+        }) => {
+            for arg in args.iter_mut() {
+                normalize_type_expr(&mut arg.0);
+            }
         }
         _ => {}
     }
@@ -421,6 +434,9 @@ fn rewrite_builtin_calls_in_block(block: &mut Block) {
     for stmt in &mut block.stmts {
         rewrite_builtin_calls_in_stmt(&mut stmt.0);
     }
+    if let Some(ref mut trailing) = block.trailing_expr {
+        rewrite_builtin_calls_in_expr(trailing);
+    }
 }
 
 fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
@@ -469,6 +485,9 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
         Stmt::Match { scrutinee, arms } => {
             rewrite_builtin_calls_in_expr(scrutinee);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    rewrite_builtin_calls_in_expr(guard);
+                }
                 rewrite_builtin_calls_in_expr(&mut arm.body);
             }
         }
@@ -661,6 +680,9 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
         Stmt::Match { scrutinee, arms } => {
             normalize_expr_types(scrutinee);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    normalize_expr_types(guard);
+                }
                 normalize_expr_types(&mut arm.body);
             }
         }
@@ -704,7 +726,15 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
         Expr::Match { scrutinee, arms } => {
             normalize_expr_types(scrutinee);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    normalize_expr_types(guard);
+                }
                 normalize_expr_types(&mut arm.body);
+            }
+        }
+        Expr::Array(elements) | Expr::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                normalize_expr_types(e);
             }
         }
         Expr::Lambda {
@@ -723,10 +753,20 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             }
             normalize_expr_types(body);
         }
-        Expr::Call { function, args, .. } => {
+        Expr::Call {
+            function,
+            args,
+            type_args,
+            ..
+        } => {
             normalize_expr_types(function);
             for arg in args.iter_mut() {
                 normalize_expr_types(arg.expr_mut());
+            }
+            if let Some(ref mut ta) = type_args {
+                for t in ta.iter_mut() {
+                    normalize_type_expr(&mut t.0);
+                }
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
@@ -789,9 +829,13 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
                 }
             }
         }
-        Expr::Select { arms, .. } => {
+        Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
                 normalize_expr_types(&mut arm.body);
+            }
+            if let Some(ref mut t) = timeout {
+                normalize_expr_types(&mut t.duration);
+                normalize_expr_types(&mut t.body);
             }
         }
         Expr::Range { start, end, .. } => {
@@ -882,6 +926,9 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) {
         Stmt::Match { scrutinee, arms } => {
             enrich_expr(scrutinee, tco);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    enrich_expr(guard, tco);
+                }
                 enrich_expr(&mut arm.body, tco);
             }
         }
@@ -944,7 +991,15 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
         Expr::Match { scrutinee, arms } => {
             enrich_expr(scrutinee, tco);
             for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    enrich_expr(guard, tco);
+                }
                 enrich_expr(&mut arm.body, tco);
+            }
+        }
+        Expr::Array(elements) | Expr::Tuple(elements) => {
+            for e in elements.iter_mut() {
+                enrich_expr(e, tco);
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
@@ -1128,9 +1183,13 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 }
             }
         }
-        Expr::Select { arms, .. } => {
+        Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
                 enrich_expr(&mut arm.body, tco);
+            }
+            if let Some(ref mut t) = timeout {
+                enrich_expr(&mut t.duration, tco);
+                enrich_expr(&mut t.body, tco);
             }
         }
         _ => {}

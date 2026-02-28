@@ -182,13 +182,12 @@ static FAULTS: Mutex<Vec<ActorFault>> = Mutex::new(Vec::new());
 /// simulate a crash (supervisor sees it as a SIGABRT-style failure).
 ///
 /// `actor_id` is the ID returned by `hew_actor_get_id()`.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     // Remove any existing crash fault for this actor.
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Crash { .. })));
     if count > 0 {
@@ -203,13 +202,12 @@ pub extern "C" fn hew_fault_inject_crash(actor_id: u64, count: u32) {
 /// dispatch of this actor.
 ///
 /// Set `ms = 0` to clear.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Delay { .. })));
     if ms > 0 {
         faults.push(ActorFault {
@@ -223,13 +221,12 @@ pub extern "C" fn hew_fault_inject_delay(actor_id: u64, ms: u32) {
 /// to this actor's mailbox.
 ///
 /// Set `count = 0` to clear.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_inject_drop(actor_id: u64, count: u32) {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     faults.retain(|f| !(f.actor_id == actor_id && matches!(f.kind, FaultKind::Drop { .. })));
     if count > 0 {
         faults.push(ActorFault {
@@ -240,35 +237,32 @@ pub extern "C" fn hew_fault_inject_drop(actor_id: u64, count: u32) {
 }
 
 /// Clear all faults for a specific actor.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear(actor_id: u64) {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     faults.retain(|f| f.actor_id != actor_id);
 }
 
 /// Clear all faults for all actors.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_clear_all() {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     faults.clear();
 }
 
 /// Return the number of active faults (for testing).
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_fault_count() -> u32 {
-    let faults = FAULTS.lock().unwrap();
+    let faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     #[expect(
         clippy::cast_possible_truncation,
         reason = "fault count will never exceed u32::MAX in practice"
@@ -283,7 +277,10 @@ pub extern "C" fn hew_fault_count() -> u32 {
 /// Returns `true` if a crash should be simulated (caller should mark
 /// the actor as `Crashed` and notify the supervisor).
 pub(crate) fn check_crash_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     for fault in faults.iter_mut() {
         if fault.actor_id == actor_id {
             if let FaultKind::Crash { remaining } = &mut fault.kind {
@@ -311,7 +308,10 @@ pub(crate) fn check_crash_fault(actor_id: u64) -> bool {
 ///
 /// Returns the delay in milliseconds (0 = no delay).
 pub(crate) fn check_delay_fault(actor_id: u64) -> u32 {
-    let faults = FAULTS.lock().unwrap();
+    let faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     for fault in &*faults {
         if fault.actor_id == actor_id {
             if let FaultKind::Delay { ms } = fault.kind {
@@ -326,7 +326,10 @@ pub(crate) fn check_delay_fault(actor_id: u64) -> u32 {
 ///
 /// Returns `true` if the message should be dropped.
 pub(crate) fn check_drop_fault(actor_id: u64) -> bool {
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     for fault in faults.iter_mut() {
         if fault.actor_id == actor_id {
             if let FaultKind::Drop { remaining } = &mut fault.kind {
@@ -356,16 +359,15 @@ pub(crate) fn check_drop_fault(actor_id: u64) -> bool {
 ///
 /// Clears the global seed, disables simulated time, and removes all
 /// faults. Intended for use in test teardown.
-///
-/// # Panics
-///
-/// Panics if the internal fault table mutex is poisoned.
 #[no_mangle]
 pub extern "C" fn hew_deterministic_reset() {
     GLOBAL_SEED.store(0, Ordering::Release);
     SIMTIME_ENABLED.store(false, Ordering::Release);
     SIMTIME_MS.store(0, Ordering::Release);
-    let mut faults = FAULTS.lock().unwrap();
+    let mut faults = match FAULTS.lock() {
+        Ok(guard) => guard,
+        Err(e) => e.into_inner(),
+    };
     faults.clear();
 }
 

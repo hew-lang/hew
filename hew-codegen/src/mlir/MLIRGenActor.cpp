@@ -564,6 +564,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     if (currentBlock &&
         (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
       if (!resultTypes.empty() && bodyValue) {
+        bodyValue = coerceType(bodyValue, resultTypes[0], location);
         builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyValue});
       } else {
         builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
@@ -976,6 +977,10 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   ActorReceiveInfo recvInfo;
   recvInfo.name = "receive";
   for (const auto &param : expr.params) {
+    if (!param.ty) {
+      emitWarning(location) << "actor receive parameter '" << param.name
+                            << "' has no type annotation; defaulting to i64";
+    }
     auto ty = param.ty ? convertType(param.ty->value) : builder.getI64Type();
     recvParamTypes.push_back(ty);
     recvInfo.paramTypes.push_back(ty);

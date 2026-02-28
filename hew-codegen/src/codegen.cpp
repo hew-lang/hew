@@ -130,21 +130,35 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     auto inputVal = adaptor.getInput();
     auto inputType = inputVal.getType();
     bool newline = op.getNewline();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     std::string funcName;
     mlir::FunctionType funcType;
 
-    // Promote sub-i32 integer types (e.g. i8 from u8/bytes) to i32
+    // Promote sub-i32 integer types (e.g. i8 from u8/byte) to i32.
+    // Use zero-extension for unsigned source types.
     if (inputType.isInteger(8) || inputType.isInteger(16)) {
-      inputVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), inputVal);
+      if (isUnsigned)
+        inputVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), inputVal);
+      else
+        inputVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), inputVal);
       inputType = rewriter.getI32Type();
     }
 
     if (inputType.isInteger(32)) {
-      funcName = newline ? "hew_println_i32" : "hew_print_i32";
+      if (isUnsigned) {
+        funcName = newline ? "hew_println_u32" : "hew_print_u32";
+      } else {
+        funcName = newline ? "hew_println_i32" : "hew_print_i32";
+      }
       funcType = rewriter.getFunctionType({rewriter.getI32Type()}, {});
     } else if (inputType.isInteger(64)) {
-      funcName = newline ? "hew_println_i64" : "hew_print_i64";
+      if (isUnsigned) {
+        funcName = newline ? "hew_println_u64" : "hew_print_u64";
+      } else {
+        funcName = newline ? "hew_println_i64" : "hew_print_i64";
+      }
       funcType = rewriter.getFunctionType({rewriter.getI64Type()}, {});
     } else if (inputType.isF64()) {
       funcName = newline ? "hew_println_f64" : "hew_print_f64";
@@ -236,6 +250,7 @@ struct ConstantOpLowering : public mlir::OpConversionPattern<hew::ConstantOp> {
       return mlir::success();
     }
 
+    op.emitError() << "unsupported constant type: " << value;
     return mlir::failure();
   }
 };
@@ -269,16 +284,24 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
     auto inputVal = adaptor.getInput();
     auto inputType = inputVal.getType();
     auto resultType = op.getType();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     // Int to float
     if (inputType.isIntOrIndex() && mlir::isa<mlir::FloatType>(resultType)) {
-      rewriter.replaceOpWithNewOp<mlir::arith::SIToFPOp>(op, resultType, inputVal);
+      if (isUnsigned)
+        rewriter.replaceOpWithNewOp<mlir::arith::UIToFPOp>(op, resultType, inputVal);
+      else
+        rewriter.replaceOpWithNewOp<mlir::arith::SIToFPOp>(op, resultType, inputVal);
       return mlir::success();
     }
 
     // Float to int
     if (mlir::isa<mlir::FloatType>(inputType) && resultType.isIntOrIndex()) {
-      rewriter.replaceOpWithNewOp<mlir::arith::FPToSIOp>(op, resultType, inputVal);
+      if (isUnsigned)
+        rewriter.replaceOpWithNewOp<mlir::arith::FPToUIOp>(op, resultType, inputVal);
+      else
+        rewriter.replaceOpWithNewOp<mlir::arith::FPToSIOp>(op, resultType, inputVal);
       return mlir::success();
     }
 
@@ -287,7 +310,10 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       auto inWidth = inputType.getIntOrFloatBitWidth();
       auto outWidth = resultType.getIntOrFloatBitWidth();
       if (outWidth > inWidth) {
-        rewriter.replaceOpWithNewOp<mlir::arith::ExtSIOp>(op, resultType, inputVal);
+        if (isUnsigned)
+          rewriter.replaceOpWithNewOp<mlir::arith::ExtUIOp>(op, resultType, inputVal);
+        else
+          rewriter.replaceOpWithNewOp<mlir::arith::ExtSIOp>(op, resultType, inputVal);
         return mlir::success();
       }
       if (outWidth < inWidth) {
@@ -299,6 +325,7 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       return mlir::success();
     }
 
+    op.emitError() << "unsupported cast: " << inputType << " to " << resultType;
     return mlir::failure();
   }
 };
@@ -2761,7 +2788,6 @@ struct RuntimeCallOpLowering : public mlir::OpConversionPattern<hew::RuntimeCall
   }
 };
 
-// ── Trait dispatch op lowering ─────────────────────────────────────────────
 // ── Trait dispatch op lowering (vtable-based O(1) dispatch) ────────────────
 
 struct TraitDispatchOpLowering : public mlir::OpConversionPattern<hew::TraitDispatchOp> {
@@ -2851,36 +2877,40 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
     auto loc = op.getLoc();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto origType = op.getValue().getType();
+    bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
+                      op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
     // Select runtime function based on operand type, extending small
     // integers to match the runtime function's parameter width.
+    // Use zero-extension for unsigned source types.
     std::string funcName;
     mlir::Value arg = adaptor.getValue();
     if (origType.isInteger(1)) {
       funcName = "hew_bool_to_string";
-    } else if (origType.isInteger(8)) {
-      // bytes/u8 values — extend to i32 for decimal conversion via hew_int_to_string.
+    } else if (origType.isInteger(8) || origType.isInteger(16)) {
+      // Sub-i32 values — extend to i32 for decimal conversion.
       // Note: char is i32 in MLIR and hits the i32 branch directly.
-      // Using hew_char_to_string here would emit the raw byte as a character
-      // (e.g. 0 → NUL → empty string), which is wrong for numeric u8 values.
-      funcName = "hew_int_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
-    } else if (origType.isInteger(16)) {
-      // i16 — extend to i32
-      funcName = "hew_int_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
+      funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
+      if (isUnsigned)
+        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), arg);
+      else
+        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
     } else if (origType.isInteger(32)) {
-      funcName = "hew_int_to_string";
+      funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
     } else if (origType.isInteger(64)) {
-      funcName = "hew_i64_to_string";
+      funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
     } else if (origType.isF64() || origType.isF32()) {
       funcName = "hew_float_to_string";
     } else if (mlir::isa<mlir::IntegerType>(origType)) {
       // Other int widths — extend to i64
-      funcName = "hew_i64_to_string";
-      arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
+      funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
+      if (isUnsigned)
+        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI64Type(), arg);
+      else
+        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
     } else {
-      funcName = "hew_i64_to_string"; // fallback
+      op.emitError() << "ToStringOp: cannot convert type to string: " << origType;
+      return mlir::failure();
     }
 
     auto funcType = rewriter.getFunctionType({arg.getType()}, {ptrType});
@@ -3087,7 +3117,7 @@ struct FuncPtrOpLowering : public mlir::OpConversionPattern<hew::FuncPtrOp> {
     // Look up the function to get its type
     auto funcOp = module.lookupSymbol<mlir::func::FuncOp>(funcName);
     if (!funcOp) {
-      // Function might not be declared yet — create a minimal declaration
+      op.emitError() << "runtime function not found: " << funcName;
       return mlir::failure();
     }
 
@@ -3304,6 +3334,27 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
         return mlir::LLVM::LLVMStructType::getLiteral(
             type.getContext(), {mlir::IntegerType::get(type.getContext(), 32), ok, err});
       });
+  // LLVMStructType may embed Hew dialect types (e.g. !hew.string_ref) when
+  // used for user-defined enum layouts.  Recursively convert body elements.
+  typeConverter.addConversion([&typeConverter](
+                                  mlir::LLVM::LLVMStructType type) -> std::optional<mlir::Type> {
+    if (type.isIdentified())
+      return mlir::Type(type);
+    auto body = type.getBody();
+    bool anyChanged = false;
+    llvm::SmallVector<mlir::Type, 4> converted;
+    for (auto elem : body) {
+      auto c = typeConverter.convertType(elem);
+      if (!c)
+        return std::nullopt;
+      converted.push_back(c);
+      if (c != elem)
+        anyChanged = true;
+    }
+    if (!anyChanged)
+      return mlir::Type(type);
+    return mlir::LLVM::LLVMStructType::getLiteral(type.getContext(), converted, type.isPacked());
+  });
   // Materializations: only allow boundary casts that map through the type
   // converter (plus explicit func ref <-> !llvm.ptr bridging).
   auto canMaterializeBoundaryCast = [&typeConverter](mlir::Type resultType, mlir::Type inputType) {

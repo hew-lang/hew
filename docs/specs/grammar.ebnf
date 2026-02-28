@@ -32,7 +32,6 @@ Item           = Attribute* Visibility? ( Import
                              | ImplDecl
                              | WireDecl
                              | FnDecl
-                             | AsyncFnDecl
                              | GenFnDecl
                              | AsyncGenFnDecl
                              | ExternBlock
@@ -137,7 +136,6 @@ Variadic       = ".." ;
 
 (* Functions *)
 FnDecl         = "pure"? "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
-AsyncFnDecl    = "pure"? "async" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
 GenFnDecl      = "pure"? "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 AsyncGenFnDecl = "pure"? "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 Params         = Param { "," Param } ;

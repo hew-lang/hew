@@ -1,0 +1,25 @@
+// Regression: enum variant match guards with short-circuit conditions
+enum Event {
+    Number(i32);
+    Text(String);
+    Empty;
+}
+
+fn classify(e: Event) -> i32 {
+    match e {
+        Number(n) if n != 0 && 100 / n > 5 => 3,
+        Number(n) if n == 0 || n < 0 => 2,
+        Number(_) => 1,
+        Text(s) if s.len() > 3 => 4,
+        Text(_) => 0,
+        Empty => -1,
+    }
+}
+
+fn main() {
+    println(classify(Number(20)));
+    println(classify(Number(0)));
+    println(classify(Text("hew")));
+    println(classify(Text("compiler")));
+    println(classify(Empty));
+}

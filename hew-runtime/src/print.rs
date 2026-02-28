@@ -126,3 +126,49 @@ pub unsafe extern "C" fn hew_println_str(s: *const c_char) {
     // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
     unsafe { libc::printf(c"%s\n".as_ptr(), s) };
 }
+
+/// Print a `u32` without trailing newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_print_u32(x: u32) {
+    // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain u32.
+    unsafe { libc::printf(c"%u".as_ptr(), x) };
+}
+
+/// Print a `u32` followed by a newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_u32(x: u32) {
+    // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain u32.
+    unsafe { libc::printf(c"%u\n".as_ptr(), x) };
+}
+
+/// Print a `u64` without trailing newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_print_u64(x: u64) {
+    // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain u64.
+    // Use %llu (unsigned long long) because `unsigned long` is 32-bit on wasm32.
+    unsafe { libc::printf(c"%llu".as_ptr(), x) };
+}
+
+/// Print a `u64` followed by a newline.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_println_u64(x: u64) {
+    // SAFETY: Format string is a valid NUL-terminated C literal; x is a plain u64.
+    // Use %llu (unsigned long long) because `unsigned long` is 32-bit on wasm32.
+    unsafe { libc::printf(c"%llu\n".as_ptr(), x) };
+}

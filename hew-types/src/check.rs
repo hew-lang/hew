@@ -3196,7 +3196,8 @@ impl Checker {
                             {
                                 #[expect(
                                     clippy::cast_sign_loss,
-                                    reason = "supervisor child index is always non-negative"
+                                    clippy::cast_possible_truncation,
+                                    reason = "supervisor child index is always non-negative and small"
                                 )]
                                 let i = *idx as usize;
                                 if i < children.len() {
@@ -3620,6 +3621,22 @@ impl Checker {
                         // Returns bool
                         Ty::Bool
                     }
+                    "values" => {
+                        if !args.is_empty() {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`HashMap::values` takes 0 arguments but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        Ty::Named {
+                            name: "Vec".to_string(),
+                            args: vec![val_ty],
+                        }
+                    }
                     "len" => Ty::I32,
                     "is_empty" => Ty::Bool,
                     _ => {
@@ -4038,6 +4055,18 @@ impl Checker {
             ) => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(sig) = td.methods.get(method) {
+                        if args.len() != sig.params.len() {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "method '{}' expects {} argument(s), found {}",
+                                    method,
+                                    sig.params.len(),
+                                    args.len(),
+                                ),
+                            );
+                        }
                         for (i, arg) in args.iter().enumerate() {
                             if let Some(param_ty) = sig.params.get(i) {
                                 // Substitute generic type params with concrete args
@@ -4059,6 +4088,18 @@ impl Checker {
                 // Try fn_sigs with Name::method pattern
                 let method_key = format!("{name}::{method}");
                 if let Some(sig) = self.lookup_fn_sig(&method_key) {
+                    if args.len() != sig.params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "method '{}' expects {} argument(s), found {}",
+                                method,
+                                sig.params.len(),
+                                args.len(),
+                            ),
+                        );
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -4082,6 +4123,18 @@ impl Checker {
             // Trait object method dispatch: look up methods from trait definition
             (Ty::TraitObject { trait_name, .. }, _) => {
                 if let Some(sig) = self.lookup_trait_method(trait_name, method) {
+                    if args.len() != sig.params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "method '{}' expects {} argument(s), found {}",
+                                method,
+                                sig.params.len(),
+                                args.len(),
+                            ),
+                        );
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -4874,6 +4927,37 @@ impl Checker {
                 param_name,
                 replacement,
             ))),
+            Ty::Stream(inner) => Ty::Stream(Box::new(self.substitute_named_param(
+                inner,
+                param_name,
+                replacement,
+            ))),
+            Ty::Sink(inner) => Ty::Sink(Box::new(self.substitute_named_param(
+                inner,
+                param_name,
+                replacement,
+            ))),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => Ty::Pointer {
+                is_mutable: *is_mutable,
+                pointee: Box::new(self.substitute_named_param(pointee, param_name, replacement)),
+            },
+            Ty::TraitObject { trait_name, args } => Ty::TraitObject {
+                trait_name: trait_name.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.substitute_named_param(a, param_name, replacement))
+                    .collect(),
+            },
+            Ty::Generator { yields, returns } => Ty::Generator {
+                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
+                returns: Box::new(self.substitute_named_param(returns, param_name, replacement)),
+            },
+            Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
+                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
+            },
             _ => ty.clone(),
         }
     }
@@ -4994,10 +5078,15 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.resolve_type_expr(&pointee.0)),
             },
-            TypeExpr::TraitObject(bound) => Ty::TraitObject {
-                trait_name: bound.name.clone(),
-                args: vec![],
-            },
+            TypeExpr::TraitObject(bound) => {
+                let args = bound.type_args.as_ref().map_or(vec![], |ta| {
+                    ta.iter().map(|t| self.resolve_type_expr(&t.0)).collect()
+                });
+                Ty::TraitObject {
+                    trait_name: bound.name.clone(),
+                    args,
+                }
+            }
             TypeExpr::Infer => Ty::Var(TypeVar::fresh()),
         }
     }
@@ -6131,6 +6220,42 @@ mod tests {
     }
 
     #[test]
+    fn typecheck_match_statement_exhaustive_enum_ok() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Light { Red; Green; }\n",
+            "fn main() { let v = Red; match v { Red => 1, Green => 2, } let _done = 0; }\n",
+        ));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    #[ignore = "known gap: match-as-statement skips exhaustiveness checking (check_match_stmt)"]
+    fn typecheck_match_statement_missing_variant_errors() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Light { Red; Green; }\n",
+            "fn main() { let v = Red; match v { Red => 1, } let _done = 0; }\n",
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "known gap: generic enum constructors lose type args during type checking"]
+    fn typecheck_generic_enum_constructor_infers_type_args() {
+        let (errors, _) = parse_and_check(concat!(
+            "enum Option<T> { Some(T); None; }\n",
+            "fn take_int(x: Option<int>) -> Option<int> { x }\n",
+            "fn take_string(x: Option<string>) -> Option<string> { x }\n",
+            "fn main() { take_int(Some(42)); take_string(Some(\"hello\")); }\n",
+        ));
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
     fn warn_unused_variable() {
         let source = "fn main() { let unused_var = 42; }";
         let result = hew_parser::parse(source);
@@ -6872,7 +6997,7 @@ mod tests {
         items: Vec<Spanned<Item>>,
     ) -> ImportDecl {
         ImportDecl {
-            path: path.iter().map(|s| s.to_string()).collect(),
+            path: path.iter().map(ToString::to_string).collect(),
             spec,
             file_path: None,
             resolved_items: Some(items),

@@ -253,11 +253,15 @@ static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
 /// Register an actor in the live tracking set.
 fn track_actor(actor: *mut HewActor) {
-    if let Ok(mut guard) = LIVE_ACTORS.lock() {
-        guard
-            .get_or_insert_with(HashSet::new)
-            .insert(ActorPtr(actor));
-    }
+    let mut guard = match LIVE_ACTORS.lock() {
+        Ok(g) => g,
+        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+        // data remains valid after a thread panic.
+        Err(e) => e.into_inner(),
+    };
+    guard
+        .get_or_insert_with(HashSet::new)
+        .insert(ActorPtr(actor));
 }
 
 /// Remove an actor from the live tracking set.
@@ -265,10 +269,14 @@ fn track_actor(actor: *mut HewActor) {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
 fn untrack_actor(actor: *mut HewActor) -> bool {
-    if let Ok(mut guard) = LIVE_ACTORS.lock() {
-        if let Some(set) = guard.as_mut() {
-            return set.remove(&ActorPtr(actor));
-        }
+    let mut guard = match LIVE_ACTORS.lock() {
+        Ok(g) => g,
+        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+        // data remains valid after a thread panic.
+        Err(e) => e.into_inner(),
+    };
+    if let Some(set) = guard.as_mut() {
+        return set.remove(&ActorPtr(actor));
     }
     false
 }
@@ -284,6 +292,8 @@ pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
         let mut guard = match LIVE_ACTORS.lock() {
             Ok(g) => g,
+            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+            // data remains valid after a thread panic.
             Err(e) => e.into_inner(),
         };
         match guard.as_mut() {
@@ -683,6 +693,8 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     let sent_local = {
         let guard = match LIVE_ACTORS.lock() {
             Ok(g) => g,
+            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
+            // data remains valid after a thread panic.
             Err(e) => e.into_inner(),
         };
         guard.as_ref().is_some_and(|set| {
@@ -830,16 +842,10 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 /// - The actor must not be used after this call.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
+pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return;
-    }
-
-    // Remove from live tracking. If the actor was already consumed by
-    // cleanup_all_actors (returns false), skip freeing to avoid
-    // double-free.
-    if !untrack_actor(actor) {
-        return;
+        crate::set_last_error("hew_actor_free: null actor pointer");
+        return -1;
     }
 
     // SAFETY: Caller guarantees `actor` is valid.
@@ -856,16 +862,31 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            // Actor didn't reach terminal state in time — proceed with
-            // cleanup to avoid hanging.  This can happen when freeing
-            // actors that were never fully scheduled.
             break;
         }
         std::thread::yield_now();
     }
 
+    let state = a.actor_state.load(Ordering::Acquire);
+    if state != HewActorState::Stopped as i32
+        && state != HewActorState::Crashed as i32
+        && state != HewActorState::Idle as i32
+    {
+        crate::set_last_error("actor still running after timeout");
+        return -2;
+    }
+
+    // Remove from live tracking. If the actor was already consumed by
+    // cleanup_all_actors (returns false), skip freeing to avoid
+    // double-free.
+    if !untrack_actor(actor) {
+        crate::set_last_error("hew_actor_free: actor already freed or not tracked");
+        return -1;
+    }
+
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
+    0
 }
 
 // ── Budget API ──────────────────────────────────────────────────────────
@@ -1924,15 +1945,16 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
 /// - The actor must not be used after this call.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) {
+pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
-        return;
+        return 0;
     }
 
     if !untrack_actor(actor) {
-        return;
+        return 0;
     }
 
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
+    0
 }

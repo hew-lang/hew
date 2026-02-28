@@ -37,8 +37,11 @@ static std::string getString(const msgpack::object &obj) {
 
 /// Get integer from msgpack object.
 static int64_t getInt(const msgpack::object &obj) {
-  if (obj.type == msgpack::type::POSITIVE_INTEGER)
+  if (obj.type == msgpack::type::POSITIVE_INTEGER) {
+    if (obj.via.u64 > static_cast<uint64_t>(INT64_MAX))
+      fail("unsigned value " + std::to_string(obj.via.u64) + " overflows int64_t");
     return static_cast<int64_t>(obj.via.u64);
+  }
   if (obj.type == msgpack::type::NEGATIVE_INTEGER)
     return obj.via.i64;
   fail("expected integer, got type " + std::to_string(obj.type));
@@ -49,7 +52,7 @@ static uint64_t getUint(const msgpack::object &obj) {
   if (obj.type == msgpack::type::POSITIVE_INTEGER)
     return obj.via.u64;
   if (obj.type == msgpack::type::NEGATIVE_INTEGER)
-    return static_cast<uint64_t>(obj.via.i64);
+    fail("negative value " + std::to_string(obj.via.i64) + " cannot be converted to uint64_t");
   fail("expected unsigned integer, got type " + std::to_string(obj.type));
 }
 

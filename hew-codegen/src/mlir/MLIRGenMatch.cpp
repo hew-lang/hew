@@ -101,6 +101,7 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
   // Fallback: if the type checker didn't record a type (e.g. statement
   // position or missing type info), use the scrutinee type to infer.
   if (!resultType) {
+    emitWarning(location) << "match expression type not resolved; inferring from scrutinee type";
     if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(scrutinee.getType()))
       resultType = rt.getOkType();
     else if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(scrutinee.getType()))
@@ -131,10 +132,12 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
       auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
                                                           builder.getStringAttr("equals"),
                                                           scrutinee, mlir::ValueRange{litVal});
-      auto one = createIntConstant(builder, location, builder.getI32Type(), 1);
-      return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                                 eqResult.getResult(), one);
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
+                                                 eqResult.getResult(), zero);
     }
+    if (litVal.getType() != scrType)
+      litVal = coerceType(litVal, scrType, location);
     return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, scrutinee,
                                                litVal);
   }
@@ -385,10 +388,12 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
                                                           builder.getStringAttr("equals"),
                                                           scrutinee, mlir::ValueRange{litVal});
-      auto one = createIntConstant(builder, location, builder.getI32Type(), 1);
-      cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                                 eqResult.getResult(), one);
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
+                                                 eqResult.getResult(), zero);
     } else {
+      if (litVal.getType() != scrType)
+        litVal = coerceType(litVal, scrType, location);
       cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
                                                  scrutinee, litVal);
     }
@@ -436,34 +441,56 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
       auto tag = extractTag(scrutinee);
       auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
-      mlir::Value cond =
+      mlir::Value tagCond =
           builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
               .getResult();
 
-      // Guard: AND with pattern condition (bind sub-pattern vars first)
+      // Guard: We must short-circuit to avoid extracting payload when tag doesn't match.
+      // Use scf.if to only evaluate guard (and extract payload) when tag matches.
       if (arm.guard) {
-        SymbolTableScopeT guardScope(symbolTable);
-        MutableTableScopeT guardMutScope(mutableVars);
-        for (size_t i = 0; i < ctor->patterns.size(); ++i) {
-          const auto &sp = ctor->patterns[i]->value;
-          if (auto *spIdent = std::get_if<ast::PatIdentifier>(&sp.kind)) {
-            if (isEnumLikeType(scrutinee.getType())) {
-              int64_t fieldIdx = payloadFieldIndexForVariant(ctorName, i);
-              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-              auto pv =
-                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-              declareVariable(spIdent->name, pv);
+        auto guardIfOp = builder.create<mlir::scf::IfOp>(location, builder.getI1Type(), tagCond,
+                                                         /*withElseRegion=*/true);
+
+        // Then region: tag matches, extract payload and evaluate guard
+        builder.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
+        {
+          SymbolTableScopeT guardScope(symbolTable);
+          MutableTableScopeT guardMutScope(mutableVars);
+          for (size_t i = 0; i < ctor->patterns.size(); ++i) {
+            const auto &sp = ctor->patterns[i]->value;
+            if (auto *spIdent = std::get_if<ast::PatIdentifier>(&sp.kind)) {
+              if (isEnumLikeType(scrutinee.getType())) {
+                int64_t fieldIdx = payloadFieldIndexForVariant(ctorName, i);
+                auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+                auto pv = builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee,
+                                                                    fieldIdx);
+                declareVariable(spIdent->name, pv);
+              }
             }
           }
+          auto guardCond = generateExpression(arm.guard->value);
+          if (!guardCond) {
+            emitError(location) << "failed to generate match guard expression";
+            return nullptr;
+          }
+          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{guardCond});
         }
-        auto guardCond = generateExpression(arm.guard->value);
-        if (guardCond)
-          cond = builder.create<mlir::arith::AndIOp>(location, cond, guardCond);
+
+        // Else region: tag doesn't match, return false
+        builder.setInsertionPointToStart(&guardIfOp.getElseRegion().front());
+        auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
+        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{falseVal});
+
+        builder.setInsertionPointAfter(guardIfOp);
+        mlir::Value cond = guardIfOp.getResult(0);
+        return generateTagMatch(cond);
       }
 
-      return generateTagMatch(cond);
+      // No guard: tag check is sufficient
+      return generateTagMatch(tagCond);
     }
-    // Unknown constructor, fall through
+    emitError(location) << "unknown constructor pattern '" << ctorName << "' in match arm";
+    return nullptr;
   }
 
   // Or-pattern: e.g., 1 | 2 | 3
@@ -513,5 +540,6 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   }
 
   // For other pattern types, skip to next arm
+  emitWarning(location) << "unhandled pattern kind in match arm; skipping";
   return generateMatchArmsChain(scrutinee, arms, idx + 1, resultType, location);
 }

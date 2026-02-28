@@ -478,7 +478,12 @@ unsafe extern "C" fn enc_send(
     };
     let frame_len = FRAME_HEADER_LEN + ct_len;
     let mut frame = vec![0u8; frame_len];
-    frame[..FRAME_HEADER_LEN].copy_from_slice(&(ct_len as u32).to_le_bytes());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "ciphertext length fits in u32 for practical messages"
+    )]
+    let ct_len_u32 = ct_len as u32;
+    frame[..FRAME_HEADER_LEN].copy_from_slice(&ct_len_u32.to_le_bytes());
     frame[FRAME_HEADER_LEN..].copy_from_slice(&ciphertext[..ct_len]);
 
     // Send encrypted data via inner transport.
@@ -545,6 +550,11 @@ unsafe extern "C" fn enc_recv(
     if n < 0 {
         return -1;
     }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "FRAME_HEADER_LEN is 4, fits in c_int"
+    )]
     if n < FRAME_HEADER_LEN as c_int {
         return -1;
     }
@@ -972,13 +982,16 @@ pub unsafe extern "C" fn hew_noise_key_load(
 ///
 /// The caller must `free()` the returned pointer.
 ///
-/// # Panics
-///
-/// Panics if the Noise pattern string is invalid or keypair generation fails.
+/// Returns null if the pattern is invalid or keypair generation fails.
 #[no_mangle]
 pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
-    let builder = Builder::new(NOISE_PATTERN.parse().expect("valid pattern"));
-    let mut keypair = builder.generate_keypair().expect("keypair generation");
+    let Ok(params) = NOISE_PATTERN.parse() else {
+        return ptr::null_mut();
+    };
+    let builder = Builder::new(params);
+    let Ok(mut keypair) = builder.generate_keypair() else {
+        return ptr::null_mut();
+    };
 
     // Allocate and copy public key.
     // SAFETY: malloc with a valid size.

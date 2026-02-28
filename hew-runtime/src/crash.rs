@@ -171,7 +171,13 @@ fn monotonic_time_ns() -> u64 {
     use std::time::Instant;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "monotonic ns since process start won't exceed u64"
+    )]
+    {
+        epoch.elapsed().as_nanos() as u64
+    }
 }
 
 // ── C ABI functions ─────────────────────────────────────────────────────

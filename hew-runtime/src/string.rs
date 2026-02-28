@@ -160,6 +160,24 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
     unsafe { malloc_cstring(buf.as_ptr(), len) }
 }
 
+/// Convert a `u32` to its decimal string representation. Caller must `free`.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_uint_to_string(n: u32) -> *mut c_char {
+    let mut buf = [0u8; 32];
+    let len = {
+        use std::io::Write;
+        let mut w: &mut [u8] = &mut buf;
+        let _ = write!(w, "{n}");
+        32 - w.len()
+    };
+    // SAFETY: buf contains len valid UTF-8 bytes from write!.
+    unsafe { malloc_cstring(buf.as_ptr(), len) }
+}
+
 /// Convert an `i64` to its decimal string representation. Caller must `free`.
 ///
 /// # Safety
@@ -167,6 +185,24 @@ pub unsafe extern "C" fn hew_int_to_string(n: i32) -> *mut c_char {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_i64_to_string(n: i64) -> *mut c_char {
+    let mut buf = [0u8; 32];
+    let len = {
+        use std::io::Write;
+        let mut w: &mut [u8] = &mut buf;
+        let _ = write!(w, "{n}");
+        32 - w.len()
+    };
+    // SAFETY: buf contains len valid UTF-8 bytes from write!.
+    unsafe { malloc_cstring(buf.as_ptr(), len) }
+}
+
+/// Convert a `u64` to its decimal string representation. Caller must `free`.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. No preconditions.
+#[no_mangle]
+pub unsafe extern "C" fn hew_u64_to_string(n: u64) -> *mut c_char {
     let mut buf = [0u8; 32];
     let len = {
         use std::io::Write;
@@ -216,6 +252,7 @@ pub unsafe extern "C" fn hew_float_to_string(f: f64) -> *mut c_char {
     if len < 0 {
         return std::ptr::null_mut();
     }
+    #[expect(clippy::cast_sign_loss, reason = "len >= 0 checked above")]
     let len = (len as usize).min(buf.len());
     // SAFETY: buf contains len valid bytes from snprintf.
     unsafe { malloc_cstring(buf.as_ptr(), len) }

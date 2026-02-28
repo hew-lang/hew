@@ -133,7 +133,7 @@
               "type": "ptr"
             }
           ],
-          "returns": "void"
+          "returns": "i32"
         },
         {
           "name": "hew_actor_set_budget",

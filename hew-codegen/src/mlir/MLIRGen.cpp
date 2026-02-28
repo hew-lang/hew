@@ -395,7 +395,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 // Type coercion
 // ============================================================================
 
-mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location) {
+mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
+                                bool isUnsigned) {
   if (!value || value.getType() == targetType)
     return value;
 
@@ -421,14 +422,21 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   // Numeric conversions go through hew.cast so the dialect folder /
   // canonicalizer can optimise cast chains before lowering.
   if ((srcIsInt && dstIsFloat) || (srcIsFloat && dstIsInt)) {
-    return builder.create<hew::CastOp>(location, targetType, value);
+    auto castOp = builder.create<hew::CastOp>(location, targetType, value);
+    if (isUnsigned)
+      castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return castOp;
   }
   // int -> int width conversion (e.g. i64 literal to i32 field, or i32 to i64)
   if (srcIsInt && dstIsInt) {
     auto srcWidth = mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
     auto dstWidth = mlir::cast<mlir::IntegerType>(targetType).getWidth();
-    if (srcWidth != dstWidth)
-      return builder.create<hew::CastOp>(location, targetType, value);
+    if (srcWidth != dstWidth) {
+      auto castOp = builder.create<hew::CastOp>(location, targetType, value);
+      if (isUnsigned)
+        castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+      return castOp;
+    }
   }
   // concrete struct → dyn Trait coercion
   if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(targetType)) {
@@ -522,43 +530,9 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       return builder.create<hew::ClosureCreateOp>(location, closureType, fnPtrVal, nullEnv);
     }
   }
+  emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
+                        << targetType;
   return value;
-}
-
-mlir::Value MLIRGen::coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                              mlir::Location location, mlir::Type mapType) {
-  mlir::Type targetType;
-  if (auto hmType = mlir::dyn_cast<hew::HashMapType>(mapType))
-    targetType = hmType.getValueType();
-  if (!targetType) {
-    bool valIsStr = collType.find(", string>") != std::string::npos ||
-                    collType.find(",string>") != std::string::npos ||
-                    collType.find(", String>") != std::string::npos ||
-                    collType.find(",String>") != std::string::npos;
-    bool valIsI64 = collType.find(", i64>") != std::string::npos ||
-                    collType.find(",i64>") != std::string::npos ||
-                    collType.find(", int>") != std::string::npos ||
-                    collType.find(",int>") != std::string::npos ||
-                    collType.find(", Int>") != std::string::npos ||
-                    collType.find(",Int>") != std::string::npos;
-    bool valIsF64 = collType.find(", f64>") != std::string::npos ||
-                    collType.find(",f64>") != std::string::npos ||
-                    collType.find(", float>") != std::string::npos ||
-                    collType.find(",float>") != std::string::npos ||
-                    collType.find(", Float>") != std::string::npos ||
-                    collType.find(",Float>") != std::string::npos;
-    if (valIsStr)
-      targetType = hew::StringRefType::get(&context);
-    else if (valIsI64)
-      targetType = builder.getIntegerType(64);
-    else if (valIsF64)
-      targetType = builder.getF64Type();
-  }
-  if (!targetType) {
-    emitError(location) << "cannot resolve HashMap value type from '" << collType << "'";
-    return val;
-  }
-  return coerceType(val, targetType, location);
 }
 
 // ============================================================================
@@ -773,8 +747,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_str / print_str: takes a string (ptr), prints it
   if (name == "println_str" || name == "print_str") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -785,20 +761,27 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_int / print_int: takes an integer, prints it
   if (name == "println_int" || name == "print_int") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
     bool newline = (name == "println_int");
-    builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+    auto printOp = builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+      if (isUnsignedTypeExpr(*argType))
+        printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
     return nullptr;
   }
 
   // println_f64 / print_f64: takes a float, prints it
   if (name == "println_f64" || name == "print_f64") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -809,8 +792,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // println_bool / print_bool: takes a bool, prints it
   if (name == "println_bool" || name == "print_bool") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto val = generateExpression(ast::callArgExpr(args[0]).value);
     if (!val)
       return nullptr;
@@ -821,8 +806,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // sqrt(x) -> f64
   if (name == "sqrt") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto arg = generateExpression(ast::callArgExpr(args[0]).value);
     if (!arg)
       return nullptr;
@@ -836,8 +823,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // abs(x) -> i64
   if (name == "abs") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto arg = generateExpression(ast::callArgExpr(args[0]).value);
     if (!arg)
       return nullptr;
@@ -852,8 +841,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // min(a, b) -> i64
   if (name == "min") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -867,8 +858,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // max(a, b) -> i64
   if (name == "max") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -882,8 +875,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_concat(a, b) -> string_ref
   if (name == "string_concat") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -894,8 +889,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_length(s) -> i32
   if (name == "string_length") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -907,8 +904,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_equals(a, b) -> i32
   if (name == "string_equals") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -921,8 +920,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // sleep_ms(ms) -> void
   if (name == "sleep_ms") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto ms = generateExpression(ast::callArgExpr(args[0]).value);
     if (!ms)
       return nullptr;
@@ -1029,8 +1030,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // stop(actor) -> void: stop an actor
   if (name == "stop") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto actorVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!actorVal)
       return nullptr;
@@ -1040,8 +1043,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // close(actor) -> void: close an actor's mailbox
   if (name == "close") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto actorVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!actorVal)
       return nullptr;
@@ -1051,8 +1056,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // link(actor_ref) — link current actor to target
   if (name == "link") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1064,8 +1071,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // unlink(actor_ref) — unlink current actor from target
   if (name == "unlink") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1076,8 +1085,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // monitor(actor_ref) -> i64 (ref_id)
   if (name == "monitor") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto targetVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!targetVal)
       return nullptr;
@@ -1088,8 +1099,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // demonitor(ref_id) — cancel a monitor by reference id
   if (name == "demonitor") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto refIdVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!refIdVal)
       return nullptr;
@@ -1099,8 +1112,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // supervisor_child(sup, index) -> actor_ptr or supervisor_ptr
   if (name == "supervisor_child") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto supVal = generateExpression(ast::callArgExpr(args[0]).value);
     auto idxVal = generateExpression(ast::callArgExpr(args[1]).value);
     if (!supVal || !idxVal)
@@ -1152,8 +1167,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // supervisor_stop(sup) -> void
   if (name == "supervisor_stop") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto supVal = generateExpression(ast::callArgExpr(args[0]).value);
     if (!supVal)
       return nullptr;
@@ -1182,8 +1199,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_char_at(s, idx) -> i32
   if (name == "string_char_at") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto idx = generateExpression(ast::callArgExpr(args[1]).value);
     if (!s || !idx)
@@ -1198,8 +1217,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_slice(s, start, end) -> string
   if (name == "string_slice" || name == "substring") {
-    if (args.size() < 3)
+    if (args.size() < 3) {
+      emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto start = generateExpression(ast::callArgExpr(args[1]).value);
     auto end = generateExpression(ast::callArgExpr(args[2]).value);
@@ -1217,8 +1238,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_find(haystack, needle) -> i32
   if (name == "string_find") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1231,8 +1254,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_contains(haystack, needle) -> bool
   if (name == "string_contains") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1245,8 +1270,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_starts_with(s, prefix) -> i32
   if (name == "string_starts_with") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1259,8 +1286,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_ends_with(s, suffix) -> i32
   if (name == "string_ends_with") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto a = generateExpression(ast::callArgExpr(args[0]).value);
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
@@ -1273,8 +1302,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_trim(s) -> string
   if (name == "string_trim") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -1286,8 +1317,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_replace(s, from, to) -> string
   if (name == "string_replace") {
-    if (args.size() < 3)
+    if (args.size() < 3) {
+      emitError(location) << name << " requires at least 3 arguments";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     auto from = generateExpression(ast::callArgExpr(args[1]).value);
     auto to = generateExpression(ast::callArgExpr(args[2]).value);
@@ -1302,8 +1335,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_to_int(s) -> i32
   if (name == "string_to_int") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
@@ -1315,19 +1350,26 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // string_from_int(n) / int_to_string(n) -> string
   if (name == "string_from_int" || name == "int_to_string") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto n = generateExpression(ast::callArgExpr(args[0]).value);
     if (!n)
       return nullptr;
-    return builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context), n)
-        .getResult();
+    auto toStr = builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context), n);
+    if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
+      if (isUnsignedTypeExpr(*argType))
+        toStr->setAttr("is_unsigned", builder.getBoolAttr(true));
+    return toStr.getResult();
   }
 
   // char_to_string(c) -> string
   if (name == "char_to_string") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto c = generateExpression(ast::callArgExpr(args[0]).value);
     if (!c)
       return nullptr;
@@ -1337,8 +1379,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // read_file(path) -> string
   if (name == "read_file") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto path = generateExpression(ast::callArgExpr(args[0]).value);
     if (!path)
       return nullptr;
@@ -1351,8 +1395,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert(cond) -> void: abort if cond is falsy
   if (name == "assert") {
-    if (args.empty())
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
       return nullptr;
+    }
     auto cond = generateExpression(ast::callArgExpr(args[0]).value);
     if (!cond)
       return nullptr;
@@ -1362,8 +1408,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert_eq(left, right) -> void: abort if left != right
   if (name == "assert_eq") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto left = generateExpression(ast::callArgExpr(args[0]).value);
     auto right = generateExpression(ast::callArgExpr(args[1]).value);
     if (!left || !right)
@@ -1374,8 +1422,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
 
   // assert_ne(left, right) -> void: abort if left == right
   if (name == "assert_ne") {
-    if (args.size() < 2)
+    if (args.size() < 2) {
+      emitError(location) << name << " requires at least 2 arguments";
       return nullptr;
+    }
     auto left = generateExpression(ast::callArgExpr(args[0]).value);
     auto right = generateExpression(ast::callArgExpr(args[1]).value);
     if (!left || !right)
@@ -1958,36 +2008,74 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       info.mlirType = builder.getI32Type();
     } else {
       // Build an LLVM struct type: { i32 tag, payload_fields... }
-      // Collect the types for each payload position using the widest type
+      //
+      // When all payload variants at each position have compatible types
+      // (all scalars or all the same type), we use a union-style layout
+      // where the widest type is selected per position.
+      // When types at a position are incompatible (e.g. i32 vs pointer),
+      // we fall back to per-variant fields so each variant gets its own
+      // dedicated struct slot — avoiding type mismatches in the verifier.
+
+      // Determine if union-style is safe for every position.
+      bool canUnionize = true;
+      for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields && canUnionize; ++fieldIdx) {
+        mlir::Type firstStorageTy = nullptr;
+        for (const auto &v : info.variants) {
+          if (fieldIdx >= v.payloadTypes.size())
+            continue;
+          auto storageTy = toLLVMStorageType(v.payloadTypes[fieldIdx]);
+          if (!firstStorageTy) {
+            firstStorageTy = storageTy;
+          } else if (firstStorageTy != storageTy) {
+            bool aScalar = mlir::isa<mlir::IntegerType, mlir::FloatType>(firstStorageTy);
+            bool bScalar = mlir::isa<mlir::IntegerType, mlir::FloatType>(storageTy);
+            if (!aScalar || !bScalar)
+              canUnionize = false;
+          }
+        }
+      }
+
       llvm::SmallVector<mlir::Type, 4> structFields;
       structFields.push_back(builder.getI32Type()); // tag
 
-      for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields; ++fieldIdx) {
-        mlir::Type fieldType = nullptr;
-        for (const auto &v : info.variants) {
-          if (fieldIdx < v.payloadTypes.size()) {
-            auto ty = v.payloadTypes[fieldIdx];
-            if (!fieldType) {
-              fieldType = ty;
-            } else if (fieldType != ty) {
-              // Mixed types at same position: use the larger one
-              // For simplicity, prefer f64 > i64 > i32 > i8
-              unsigned existingBits = 0, newBits = 0;
-              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(fieldType))
-                existingBits = intTy.getWidth();
-              if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(fieldType))
-                existingBits = fltTy.getWidth();
-              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
-                newBits = intTy.getWidth();
-              if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
-                newBits = fltTy.getWidth();
-              if (newBits > existingBits)
+      if (canUnionize) {
+        // Union-style: all variants share fields, use widest type per position
+        for (size_t fieldIdx = 0; fieldIdx < maxPayloadFields; ++fieldIdx) {
+          mlir::Type fieldType = nullptr;
+          for (const auto &v : info.variants) {
+            if (fieldIdx < v.payloadTypes.size()) {
+              auto ty = v.payloadTypes[fieldIdx];
+              if (!fieldType) {
                 fieldType = ty;
+              } else if (fieldType != ty) {
+                // Mixed scalar types at same position: use the wider one
+                unsigned existingBits = 0, newBits = 0;
+                if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(fieldType))
+                  existingBits = intTy.getWidth();
+                if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(fieldType))
+                  existingBits = fltTy.getWidth();
+                if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+                  newBits = intTy.getWidth();
+                if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+                  newBits = fltTy.getWidth();
+                if (newBits > existingBits)
+                  fieldType = ty;
+              }
             }
           }
+          if (fieldType)
+            structFields.push_back(fieldType);
         }
-        if (fieldType)
-          structFields.push_back(fieldType);
+      } else {
+        // Per-variant fields: each variant gets its own struct slots.
+        int64_t nextField = 1;
+        for (auto &v : info.variants) {
+          v.payloadPositions.clear();
+          for (const auto &pt : v.payloadTypes) {
+            v.payloadPositions.push_back(nextField++);
+            structFields.push_back(pt);
+          }
+        }
       }
 
       info.mlirType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);
@@ -2366,11 +2454,13 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
       mlir::Value normalValue = bodyValue;
       if (!normalValue)
         normalValue = createDefaultValue(builder, location, resultTypes[0]);
+      normalValue = coerceType(normalValue, resultTypes[0], location);
       builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
       builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
+      bodyValue = coerceType(bodyValue, resultTypes[0], location);
       builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyValue});
     } else {
       builder.create<mlir::func::ReturnOp>(location);

@@ -265,7 +265,13 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
     use std::time::Instant;
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as i64
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "monotonic ns since process start won't exceed i64"
+    )]
+    {
+        epoch.elapsed().as_nanos() as i64
+    }
 }
 
 #[cfg(test)]

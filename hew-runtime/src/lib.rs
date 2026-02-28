@@ -38,7 +38,10 @@ thread_local! {
 /// Set the last error message for the current thread.
 pub(crate) fn set_last_error(msg: impl Into<String>) {
     LAST_ERROR.with(|e| {
-        *e.borrow_mut() = Some(CString::new(msg.into()).unwrap_or_default());
+        *e.borrow_mut() =
+            Some(CString::new(msg.into()).unwrap_or_else(|_| {
+                CString::new("(error message contained embedded NUL)").unwrap()
+            }));
     });
 }
 

@@ -140,7 +140,13 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new() -> *mut HewVec {
     // SAFETY: forwarding to `hew_vec_new_with_elem_size`.
-    unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<i32>() as i64) }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<i32>() is 4, fits in i64"
+    )]
+    unsafe {
+        hew_vec_new_with_elem_size(core::mem::size_of::<i32>() as i64)
+    }
 }
 
 /// Create a new `HewVec` for string (`*const c_char`) elements.
@@ -151,6 +157,10 @@ pub unsafe extern "C" fn hew_vec_new() -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_str() -> *mut HewVec {
     // SAFETY: forwarding to `hew_vec_new_with_elem_size`.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<*const c_char>() is 4 or 8, fits in i64"
+    )]
     let v = unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<*const c_char>() as i64) };
     // SAFETY: v is non-null (hew_vec_new_with_elem_size aborts on OOM).
     unsafe { (*v).elem_kind = ElemKind::String };
@@ -165,7 +175,13 @@ pub unsafe extern "C" fn hew_vec_new_str() -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_i64() -> *mut HewVec {
     // SAFETY: forwarding to `hew_vec_new_with_elem_size`.
-    unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<i64>() as i64) }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<i64>() is 8, fits in i64"
+    )]
+    unsafe {
+        hew_vec_new_with_elem_size(core::mem::size_of::<i64>() as i64)
+    }
 }
 
 /// Create a new `HewVec` for `f64` elements.
@@ -176,7 +192,13 @@ pub unsafe extern "C" fn hew_vec_new_i64() -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_f64() -> *mut HewVec {
     // SAFETY: forwarding to `hew_vec_new_with_elem_size`.
-    unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<f64>() as i64) }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<f64>() is 8, fits in i64"
+    )]
+    unsafe {
+        hew_vec_new_with_elem_size(core::mem::size_of::<f64>() as i64)
+    }
 }
 
 /// Create a new `HewVec` for pointer-sized elements (e.g. `ActorRef`, handles).
@@ -187,7 +209,13 @@ pub unsafe extern "C" fn hew_vec_new_f64() -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_ptr() -> *mut HewVec {
     // SAFETY: forwarding to `hew_vec_new_with_elem_size`.
-    unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<*mut c_void>() as i64) }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "size_of::<*mut c_void>() is 4 or 8, fits in i64"
+    )]
+    unsafe {
+        hew_vec_new_with_elem_size(core::mem::size_of::<*mut c_void>() as i64)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +555,13 @@ pub unsafe extern "C" fn hew_vec_pop_f64(v: *mut HewVec) -> f64 {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
     // SAFETY: caller guarantees `v` is valid.
-    unsafe { (*v).len as i64 }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "vec length won't exceed i64::MAX"
+    )]
+    unsafe {
+        (*v).len as i64
+    }
 }
 
 /// Return whether the vec is empty.
@@ -677,7 +711,12 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let src = &*v;
-        let new_v = hew_vec_new_with_elem_size(src.elem_size as i64);
+        let new_v = hew_vec_new_with_elem_size(
+            #[expect(clippy::cast_possible_wrap, reason = "elem_size is small, fits in i64")]
+            {
+                src.elem_size as i64
+            },
+        );
         (*new_v).elem_kind = src.elem_kind;
         if src.len == 0 {
             return new_v;

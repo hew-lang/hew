@@ -18,7 +18,7 @@ fn main() {
     println(popped);
 
     // HashMap
-    let m: HashMap<string, i32> = HashMap::new();
+    let m: HashMap<String, i32> = HashMap::new();
     m.insert("one", 1);
     m.insert("two", 2);
     m.insert("three", 3);
@@ -30,7 +30,7 @@ fn main() {
     print("has three: ");
     println(m.contains_key("three"));
 
-    m.remove("two");
+    let _ = m.remove("two");
     print("After remove, length: ");
     println(m.len());
 }

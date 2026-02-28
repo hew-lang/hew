@@ -935,7 +935,11 @@ pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec
     for i in 0..len {
         // SAFETY: i < len, so index is in bounds.
         let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(clippy::cast_possible_truncation, reason = "byte values fit in u8")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "byte values fit in u8"
+        )]
         data.push(val as u8);
     }
     if stream.write_all(&data).is_err() {
@@ -978,7 +982,11 @@ pub unsafe extern "C" fn hew_bytes_to_string(vec: *mut crate::vec::HewVec) -> *m
     for i in 0..len {
         // SAFETY: i < len, so index is in bounds.
         let val = unsafe { crate::vec::hew_vec_get_i32(vec, i) };
-        #[expect(clippy::cast_possible_truncation, reason = "byte values fit in u8")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "byte values fit in u8"
+        )]
         bytes.push(val as u8);
     }
     // Strip embedded NUL bytes so CString::new succeeds.

@@ -57,6 +57,16 @@ public:
   /// Returns nullptr on failure.
   mlir::ModuleOp generate(const ast::Program &program);
 
+  /// Return true if the given TypeExpr refers to an unsigned integer type
+  /// (u8, u16, u32, u64, uint, byte).
+  static bool isUnsignedTypeExpr(const ast::TypeExpr &type) {
+    if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
+      return named->name == "u8" || named->name == "u16" || named->name == "u32" ||
+             named->name == "u64" || named->name == "uint" || named->name == "byte";
+    }
+    return false;
+  }
+
 private:
   // ── Type conversion ──────────────────────────────────────────────
   mlir::Type convertType(const ast::TypeExpr &type);
@@ -147,7 +157,7 @@ private:
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
   mlir::Value generateCallExpr(const ast::ExprCall &expr);
-  mlir::Value generateIfExpr(const ast::ExprIf &expr);
+  mlir::Value generateIfExpr(const ast::ExprIf &expr, const ast::Span &exprSpan);
   mlir::Value generateBlockExpr(const ast::Block &block);
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr);
@@ -228,11 +238,8 @@ private:
   std::string getOrCreateGlobalString(llvm::StringRef value);
 
   /// Coerce a value to a target type (e.g., int-to-float promotion).
-  mlir::Value coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location);
-
-  /// Coerce a value to the hashmap's declared value type based on collType.
-  mlir::Value coerceToHashMapValueType(mlir::Value val, const std::string &collType,
-                                       mlir::Location location, mlir::Type mapType = {});
+  mlir::Value coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
+                         bool isUnsigned = false);
 
   /// Generate remaining statements with return guards (recursive).
   /// Iterates stmts[startIdx..endIdx), then generates trailingExpr.

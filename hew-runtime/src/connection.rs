@@ -308,7 +308,9 @@ fn hew_connmgr_sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
 fn hew_connmgr_collect_finished_reconnect_workers(mgr: &HewConnMgr) {
     let mut workers = match mgr.reconnect_workers.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state — poisoned mutex means
+        // reconnect registry is corrupted.
+        Err(_) => panic!("hew: connmgr reconnect_workers mutex poisoned (a thread panicked); cannot safely continue"),
     };
     let mut idx = 0usize;
     while idx < workers.len() {
@@ -329,7 +331,11 @@ fn hew_connmgr_reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<Reconn
     }
     let conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state — poisoned mutex means
+        // connection registry is corrupted.
+        Err(_) => panic!(
+            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
+        ),
     };
     let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
     let reconnect = conn.reconnect.as_ref()?;
@@ -388,7 +394,9 @@ fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan
         Ok(worker) => {
             let mut workers = match mgr_ref.reconnect_workers.lock() {
                 Ok(g) => g,
-                Err(e) => e.into_inner(),
+                // Policy: per-connection-manager state — poisoned mutex means
+                // reconnect registry is corrupted.
+                Err(_) => panic!("hew: connmgr reconnect_workers mutex poisoned (a thread panicked); cannot safely continue"),
             };
             workers.push(worker);
         }
@@ -855,7 +863,9 @@ fn reader_loop(
             let mut decrypted = vec![0u8; read_len];
             let mut guard = match noise_transport.lock() {
                 Ok(g) => g,
-                Err(e) => e.into_inner(),
+                // Policy: per-connection state — poisoned noise transport means
+                // this connection's encryption state is corrupted.
+                Err(_) => panic!("hew: noise_transport mutex poisoned (a thread panicked); cannot safely continue"),
             };
             if let Some(noise) = guard.as_mut() {
                 let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
@@ -951,7 +961,14 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         let drained: Vec<ConnectionActor> = {
             let mut conns = match mgr.connections.lock() {
                 Ok(g) => g,
-                Err(e) => e.into_inner(),
+                // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+                // means connection registry is corrupted; report error and bail.
+                Err(_) => {
+                    set_last_error(
+                        "hew_connmgr_free: connections mutex poisoned (a thread panicked)",
+                    );
+                    return;
+                }
             };
             conns.drain(..).collect()
         };
@@ -971,7 +988,14 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         let workers = {
             let mut guard = match mgr.reconnect_workers.lock() {
                 Ok(g) => g,
-                Err(e) => e.into_inner(),
+                // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+                // means reconnect registry is corrupted; report error and bail.
+                Err(_) => {
+                    set_last_error(
+                        "hew_connmgr_free: reconnect_workers mutex poisoned (a thread panicked)",
+                    );
+                    return;
+                }
             };
             guard.drain(..).collect::<Vec<_>>()
         };
@@ -1033,7 +1057,12 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
     let mgr = unsafe { &*mgr };
     let mut conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_configure_reconnect: mutex poisoned (a thread panicked)");
+            return -1;
+        }
     };
     let Some(conn) = conns.iter_mut().find(|c| c.conn_id == conn_id) else {
         set_last_error(format!(
@@ -1091,7 +1120,12 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     {
         let conns = match mgr.connections.lock() {
             Ok(g) => g,
-            Err(e) => e.into_inner(),
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            Err(_) => {
+                set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
+                return -1;
+            }
         };
         if conns.iter().any(|c| c.conn_id == conn_id) {
             set_last_error(format!(
@@ -1173,7 +1207,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     if let Some(noise) = upgraded_noise {
         let mut guard = match actor.noise_transport.lock() {
             Ok(g) => g,
-            Err(e) => e.into_inner(),
+            // Policy: per-connection state (C-ABI) — poisoned noise transport
+            // means this connection's encryption state is corrupted.
+            Err(_) => {
+                set_last_error(
+                    "hew_connmgr_add: noise_transport mutex poisoned (a thread panicked)",
+                );
+                return -1;
+            }
         };
         *guard = Some(noise);
     }
@@ -1220,7 +1261,12 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
 
     let mut conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_add: mutex poisoned (a thread panicked)");
+            return -1;
+        }
     };
     if conns.iter().any(|c| c.conn_id == conn_id) {
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
@@ -1262,7 +1308,12 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
 
     let mut conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_remove: mutex poisoned (a thread panicked)");
+            return -1;
+        }
     };
 
     let idx = conns.iter().position(|c| c.conn_id == conn_id);
@@ -1344,7 +1395,12 @@ pub unsafe extern "C" fn hew_connmgr_send(
     {
         let conns = match mgr_ref.connections.lock() {
             Ok(g) => g,
-            Err(e) => e.into_inner(),
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            Err(_) => {
+                set_last_error("hew_connmgr_send: mutex poisoned (a thread panicked)");
+                return -1;
+            }
         };
         let conn = conns.iter().find(|c| c.conn_id == conn_id);
         match conn {
@@ -1369,7 +1425,14 @@ pub unsafe extern "C" fn hew_connmgr_send(
         {
             let mut guard = match noise_transport.lock() {
                 Ok(g) => g,
-                Err(e) => e.into_inner(),
+                // Policy: per-connection state (C-ABI) — poisoned noise transport
+                // means this connection's encryption state is corrupted.
+                Err(_) => {
+                    set_last_error(
+                        "hew_connmgr_send: noise_transport mutex poisoned (a thread panicked)",
+                    );
+                    return -1;
+                }
             };
             if let Some(noise) = guard.as_mut() {
                 let mut ciphertext = vec![0u8; encoded.len() + 16];
@@ -1416,13 +1479,19 @@ pub unsafe extern "C" fn hew_connmgr_send(
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_count(mgr: *mut HewConnMgr) -> c_int {
     if mgr.is_null() {
-        return 0;
+        set_last_error("hew_connmgr_count: manager is null");
+        return -1;
     }
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
     let conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_count: mutex poisoned (a thread panicked)");
+            return -1;
+        }
     };
     #[expect(
         clippy::cast_possible_truncation,
@@ -1460,7 +1529,12 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
     let conn_ids: Vec<c_int> = {
         let conns = match mgr_ref.connections.lock() {
             Ok(g) => g,
-            Err(e) => e.into_inner(),
+            // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+            // means connection registry is corrupted; report error and bail.
+            Err(_) => {
+                set_last_error("hew_connmgr_broadcast: mutex poisoned (a thread panicked)");
+                return 0;
+            }
         };
         conns
             .iter()
@@ -1497,7 +1571,12 @@ pub unsafe extern "C" fn hew_connmgr_last_activity(mgr: *mut HewConnMgr, conn_id
     let mgr = unsafe { &*mgr };
     let conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_last_activity: mutex poisoned (a thread panicked)");
+            return 0;
+        }
     };
     conns
         .iter()
@@ -1521,7 +1600,12 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
     let mgr = unsafe { &*mgr };
     let conns = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state (C-ABI) — poisoned mutex
+        // means connection registry is corrupted; report error and bail.
+        Err(_) => {
+            set_last_error("hew_connmgr_conn_state: mutex poisoned (a thread panicked)");
+            return CONN_STATE_CLOSED;
+        }
     };
     conns
         .iter()
@@ -1540,7 +1624,11 @@ pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
 
     let connections = match mgr.connections.lock() {
         Ok(g) => g,
-        Err(e) => e.into_inner(),
+        // Policy: per-connection-manager state — poisoned mutex means
+        // connection registry is corrupted.
+        Err(_) => panic!(
+            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
+        ),
     };
 
     let mut json = String::from("[");
@@ -1600,7 +1688,7 @@ mod tests {
         // SAFETY: testing null safety.
         unsafe {
             let null_mgr: *mut HewConnMgr = std::ptr::null_mut();
-            assert_eq!(hew_connmgr_count(null_mgr), 0);
+            assert_eq!(hew_connmgr_count(null_mgr), -1);
             assert_eq!(hew_connmgr_last_activity(null_mgr, 0), 0);
             assert_eq!(hew_connmgr_conn_state(null_mgr, 0), CONN_STATE_CLOSED);
             hew_connmgr_free(null_mgr); // should not crash

@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.1.5 — 2026-02-28
+
+### Added
+
+- 112 algorithm and data structure examples (sorting, searching, graphs, trees, heaps, etc.)
+- 57 Go-comparison benchmarks with ops/sec measurements
+- Inline Vec get/set/len/push for primitive types (2–5× speedup on native)
+- Inline string `char_at` (direct GEP+load with bounds check)
+- While-loop invariant hoisting (pre-evaluates loop-invariant conditions)
+- Inline Vec push fast path (store+len-increment when capacity allows)
+- `<-` send operator now works correctly in codegen
+
+### Fixed
+
+- Break stack desync in `for..in` Vec/HashMap loops (loopBreakValueStack push/pop)
+- `hew_actor_free` manifest ABI mismatch (void → i32)
+- Vec `<String>` double-free (exclude VecGetOp/HashMapGetOp from temporary drop)
+- HashMap.get() match wraps raw value in Option for Some/None patterns
+- WASM32 inline lowering: skip on non-64-bit targets (struct layout mismatch)
+- Windows `libc::write` type mismatch in string abort handler
+- Silent codegen fallbacks replaced with warnings/errors
+- Parser silent token skips replaced with error messages
+
+### Changed
+
+- Converted all counting `while` loops to idiomatic `for i in 0..N` range syntax
+- Code audit: 25 Mutex poison-recovery fixes, 5 unsafe UTF-8 fixes, ~70 Clippy warnings
+- Parser deduplication: extracted `contextual_keyword_name()` and `collect_doc_comments_with_prefix()`
+
 ## v0.1.4 — 2026-02-26
 
 ### Fixed

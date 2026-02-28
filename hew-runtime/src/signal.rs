@@ -622,7 +622,7 @@ mod platform {
     /// # Safety
     ///
     /// `env` must point to a valid, aligned `SigJmpBuf`.
-    #[naked]
+    #[unsafe(naked)]
     pub(crate) unsafe extern "C" fn sigsetjmp(
         _env: *mut SigJmpBuf,
         _savemask: libc::c_int,
@@ -656,7 +656,7 @@ mod platform {
     ///
     /// `env` must have been initialized by a prior `sigsetjmp` call whose
     /// frame is still live on the stack.
-    #[naked]
+    #[unsafe(naked)]
     unsafe extern "C" fn longjmp(_env: *mut SigJmpBuf, _val: i32) -> ! {
         // Windows x64 calling convention: RCX = env, EDX = val
         std::arch::naked_asm!(

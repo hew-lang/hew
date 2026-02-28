@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <functional>
 #include <string>
 
 using namespace hew;
@@ -140,6 +141,26 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
                                    static_cast<int64_t>(payloadOrdinal));
     };
 
+    std::function<void(const ast::PatTuple &, mlir::Value)> bindTuplePatternFields;
+    bindTuplePatternFields = [&](const ast::PatTuple &tp, mlir::Value tupleValue) -> void {
+      for (size_t j = 0; j < tp.elements.size(); ++j) {
+        const auto &elem = tp.elements[j];
+        mlir::Value elemVal;
+        if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(tupleValue.getType())) {
+          elemVal = builder.create<hew::TupleExtractOp>(location, hewTuple.getElementTypes()[j],
+                                                        tupleValue, static_cast<int64_t>(j));
+        } else {
+          elemVal = builder.create<mlir::LLVM::ExtractValueOp>(
+              location, tupleValue, llvm::ArrayRef<int64_t>{static_cast<int64_t>(j)});
+        }
+        if (auto *elemIdent = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
+          declareVariable(elemIdent->name, elemVal);
+        } else if (auto *elemTuple = std::get_if<ast::PatTuple>(&elem->value.kind)) {
+          bindTuplePatternFields(*elemTuple, elemVal);
+        }
+      }
+    };
+
     for (size_t i = 0; i < ctorPat->patterns.size(); ++i) {
       const auto &subPat = ctorPat->patterns[i]->value;
       if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
@@ -149,6 +170,14 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
           auto payloadVal =
               builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
           declareVariable(subIdent->name, payloadVal);
+        }
+      } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
+        if (isEnumLikeType(scrutinee.getType())) {
+          int64_t fieldIdx = payloadFieldIndexForVariant(ctorName, i);
+          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+          auto payloadVal =
+              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+          bindTuplePatternFields(*subTuple, payloadVal);
         }
       }
     }
@@ -262,6 +291,26 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
                                    static_cast<int64_t>(payloadOrdinal));
     };
 
+    std::function<void(const ast::PatTuple &, mlir::Value)> bindTuplePatternFields;
+    bindTuplePatternFields = [&](const ast::PatTuple &tp, mlir::Value tupleValue) -> void {
+      for (size_t j = 0; j < tp.elements.size(); ++j) {
+        const auto &elem = tp.elements[j];
+        mlir::Value elemVal;
+        if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(tupleValue.getType())) {
+          elemVal = builder.create<hew::TupleExtractOp>(location, hewTuple.getElementTypes()[j],
+                                                        tupleValue, static_cast<int64_t>(j));
+        } else {
+          elemVal = builder.create<mlir::LLVM::ExtractValueOp>(
+              location, tupleValue, llvm::ArrayRef<int64_t>{static_cast<int64_t>(j)});
+        }
+        if (auto *elemIdent = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
+          declareVariable(elemIdent->name, elemVal);
+        } else if (auto *elemTuple = std::get_if<ast::PatTuple>(&elem->value.kind)) {
+          bindTuplePatternFields(*elemTuple, elemVal);
+        }
+      }
+    };
+
     for (size_t i = 0; i < ctorPat->patterns.size(); ++i) {
       const auto &subPat = ctorPat->patterns[i]->value;
       if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
@@ -271,6 +320,14 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
           auto payloadVal =
               builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
           declareVariable(subIdent->name, payloadVal);
+        }
+      } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
+        if (isEnumLikeType(scrutinee.getType())) {
+          int64_t fieldIdx = payloadFieldIndexForVariant(ctorName, i);
+          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+          auto payloadVal =
+              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+          bindTuplePatternFields(*subTuple, payloadVal);
         }
       }
     }

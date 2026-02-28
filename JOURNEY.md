@@ -455,3 +455,24 @@ Codex).
   capture analysis) — fixed before commit.
 
 **Test results**: 327/327 codegen e2e (100%), 1539 Rust tests, zero warnings.
+
+### Quality Sprint 7: Float Types, Nested Patterns, Field Validation
+
+Seventh round addressed LLVM lowering gaps and type checker safety:
+
+- **f32 printing**: `PrintOpLowering` had no f32 case — values fell through
+  to `hew_print_i32`, producing garbage output. Added f32→f64 promotion.
+- **Float coercion**: `CastOpLowering` and `coerceType` had no f32↔f64
+  conversion path. Added `ExtFOp`/`TruncFOp` lowering and MLIR-level coercion.
+- **Nested patterns**: `Some((a, b))` silently skipped the tuple
+  destructuring inside enum payloads. Root cause was two bugs working
+  together — type checker passed unresolved `Ty::Var` to `bind_pattern`
+  (fixed with `subst.resolve()`), and codegen only handled `PatIdentifier`
+  sub-patterns in constructors (added `PatTuple` handling in match and
+  if-let paths).
+- **char_at bounds**: Sign extension (`ExtSIOp`) of i32 index to i64 could
+  misinterpret unsigned values. Changed to zero extension (`ExtUIOp`).
+- **Struct field errors**: Unknown fields in struct patterns were silently
+  skipped. Added `UndefinedField` error reporting with suggestions.
+
+**Test results**: 328/328 codegen e2e (100%), 1540 Rust tests, zero warnings.

@@ -67,8 +67,14 @@
 - Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
 - Runtime: HashMap strdup calls now abort on NULL (prevents silent corruption on OOM)
 - Runtime: `hew_string_compare` added for correct lexicographic string ordering
+- Codegen: f32 values now print correctly (promoted to f64, was falling through to i32 printer)
+- Codegen: f32↔f64 float coercion now handled via ExtFOp/TruncFOp (was missing)
+- Codegen: nested constructor patterns like `Some((a, b))` now destructure tuple payloads
+- Codegen: `char_at` index extension uses zero-extend (prevents signed misinterpretation)
+- Type checker: type variables resolved before pattern matching (fixes false mismatches on generics)
+- Type checker: unknown fields in struct patterns now report `UndefinedField` error with suggestions
 - Zero compiler warnings across entire Rust workspace
-- All 327 codegen e2e tests pass (up from 321)
+- All 328 codegen e2e tests pass (up from 321)
 
 ### Changed
 

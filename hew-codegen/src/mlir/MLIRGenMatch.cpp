@@ -387,6 +387,14 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
                   builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
               declareVariable(subIdent->name, payloadVal);
             }
+          } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
+            if (isEnumLikeType(scrutinee.getType())) {
+              int64_t fieldIdx = payloadFieldIndexForVariant(ctorName, i);
+              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+              auto payloadVal =
+                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+              bindTuplePatternFields(*subTuple, payloadVal);
+            }
           }
           // Wildcard sub-patterns: skip binding
         }

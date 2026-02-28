@@ -5399,6 +5399,7 @@ impl Checker {
 
     /// Pattern binding
     fn bind_pattern(&mut self, pattern: &Pattern, ty: &Ty, is_mutable: bool, span: &Span) {
+        let ty = &self.subst.resolve(ty);
         match pattern {
             Pattern::Wildcard | Pattern::Literal(_) => {}
             Pattern::Identifier(name) => {
@@ -5452,6 +5453,17 @@ impl Checker {
                                             span.clone(),
                                         );
                                     }
+                                } else {
+                                    let known: Vec<&str> =
+                                        variant_fields.iter().map(|(n, _)| n.as_str()).collect();
+                                    let similar =
+                                        crate::error::find_similar(&pf.name, known.into_iter());
+                                    self.report_error_with_suggestions(
+                                        TypeErrorKind::UndefinedField,
+                                        span,
+                                        format!("no field `{}` on variant `{name}`", pf.name),
+                                        similar,
+                                    );
                                 }
                             }
                         } else {
@@ -5468,6 +5480,17 @@ impl Checker {
                                             span.clone(),
                                         );
                                     }
+                                } else {
+                                    let similar = crate::error::find_similar(
+                                        &pf.name,
+                                        td.fields.keys().map(String::as_str),
+                                    );
+                                    self.report_error_with_suggestions(
+                                        TypeErrorKind::UndefinedField,
+                                        span,
+                                        format!("no field `{}` on type `{name}`", pf.name),
+                                        similar,
+                                    );
                                 }
                             }
                         }
@@ -7422,6 +7445,25 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
             "expected non-exhaustive match warning, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn typecheck_struct_pattern_unknown_field_errors() {
+        let (errors, _) = parse_and_check(concat!(
+            "type Point { x: int, y: int }\n",
+            "fn main() {\n",
+            "    let p = Point { x: 1, y: 2 };\n",
+            "    match p {\n",
+            "        Point { x, z } => x,\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::UndefinedField)),
+            "expected UndefinedField error for unknown field 'z', got: {errors:?}"
         );
     }
 

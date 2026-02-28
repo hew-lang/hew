@@ -667,6 +667,7 @@ add_e2e_file_test(tail_call            e2e_tail_call tail_call)
 add_e2e_file_test(vec_bool             e2e_vec vec_bool)
 add_e2e_file_test(tuple_pattern        e2e_match tuple_pattern)
 add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_last_arm)
+add_e2e_file_test(match_nested_pattern  e2e_match match_nested_pattern)
 add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
 add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
 

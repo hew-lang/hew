@@ -336,3 +336,17 @@ TypeExpr::Named causes "unresolved type" errors in C++ codegen. The correct
 approach is to return None — the backend handles these via built-in type
 logic, not through the expr_types map. Only map types that the C++ side
 actually looks up.
+
+### 47. Test all numeric type widths in lowering, not just the common ones
+
+The PrintOpLowering and CastOpLowering both handled i32, i64, f64 but
+missed f32. When adding a type-dispatching lowering pattern, check ALL
+possible types in the language's type system, not just the most common ones.
+
+### 48. Two bugs can mask each other in pattern matching
+
+Nested constructor patterns failed because (1) the type checker didn't
+resolve type variables before pattern matching AND (2) the codegen only
+handled PatIdentifier sub-patterns. Either fix alone would still leave
+the feature broken. When debugging, always check both the type checking
+and codegen sides of a feature.

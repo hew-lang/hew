@@ -1,0 +1,30 @@
+// Test nested sub-patterns in constructor pattern matching
+// Exercises: Some((a, b)) tuple destructuring inside Option
+
+fn main() {
+    // Test 1: Some((a, b)) - tuple nested in constructor
+    let opt: Option<(int, int)> = Some((10, 20));
+    let result = match opt {
+        Some((a, b)) => a + b,
+        None => -1,
+    };
+    println(result);
+
+    // Test 2: None case still works
+    let none_opt: Option<(int, int)> = None;
+    let result2 = match none_opt {
+        Some((a, b)) => a + b,
+        None => -1,
+    };
+    println(result2);
+
+    // Test 3: Using extracted values in computation
+    let opt3: Option<(int, int)> = Some((3, 7));
+    let result3 = match opt3 {
+        Some((x, y)) => x * y,
+        None => 0,
+    };
+    println(result3);
+
+    println("nested pattern test passed");
+}

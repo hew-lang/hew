@@ -459,6 +459,15 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       return castOp;
     }
   }
+  // float -> float width conversion (f32 ↔ f64)
+  if (srcIsFloat && dstIsFloat) {
+    auto srcWidth = mlir::cast<mlir::FloatType>(value.getType()).getWidth();
+    auto dstWidth = mlir::cast<mlir::FloatType>(targetType).getWidth();
+    if (srcWidth != dstWidth) {
+      auto castOp = builder.create<hew::CastOp>(location, targetType, value);
+      return castOp;
+    }
+  }
   // concrete struct → dyn Trait coercion
   if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(targetType)) {
     if (auto identStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType())) {

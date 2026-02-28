@@ -172,6 +172,12 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     } else if (inputType.isF64()) {
       funcName = newline ? "hew_println_f64" : "hew_print_f64";
       funcType = rewriter.getFunctionType({rewriter.getF64Type()}, {});
+    } else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(inputType);
+               floatType && floatType.getWidth() == 32) {
+      // f32: Promote to f64 for printing
+      inputVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), inputVal);
+      funcName = newline ? "hew_println_f64" : "hew_print_f64";
+      funcType = rewriter.getFunctionType({rewriter.getF64Type()}, {});
     } else if (inputType.isInteger(1)) {
       funcName = newline ? "hew_println_bool" : "hew_print_bool";
       funcType = rewriter.getFunctionType({rewriter.getI1Type()}, {});
@@ -296,8 +302,11 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
     bool isUnsigned = op->hasAttrOfType<mlir::BoolAttr>("is_unsigned") &&
                       op->getAttrOfType<mlir::BoolAttr>("is_unsigned").getValue();
 
+    bool srcIsFloat = mlir::isa<mlir::FloatType>(inputType);
+    bool dstIsFloat = mlir::isa<mlir::FloatType>(resultType);
+
     // Int to float
-    if (inputType.isIntOrIndex() && mlir::isa<mlir::FloatType>(resultType)) {
+    if (inputType.isIntOrIndex() && dstIsFloat) {
       if (isUnsigned)
         rewriter.replaceOpWithNewOp<mlir::arith::UIToFPOp>(op, resultType, inputVal);
       else
@@ -306,7 +315,7 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
     }
 
     // Float to int
-    if (mlir::isa<mlir::FloatType>(inputType) && resultType.isIntOrIndex()) {
+    if (srcIsFloat && resultType.isIntOrIndex()) {
       if (isUnsigned)
         rewriter.replaceOpWithNewOp<mlir::arith::FPToUIOp>(op, resultType, inputVal);
       else
@@ -327,6 +336,25 @@ struct CastOpLowering : public mlir::OpConversionPattern<hew::CastOp> {
       }
       if (outWidth < inWidth) {
         rewriter.replaceOpWithNewOp<mlir::arith::TruncIOp>(op, resultType, inputVal);
+        return mlir::success();
+      }
+      // Same width: just replace
+      rewriter.replaceOp(op, inputVal);
+      return mlir::success();
+    }
+
+    // Float to float conversion (f32 ↔ f64)
+    if (srcIsFloat && dstIsFloat) {
+      auto srcWidth = mlir::cast<mlir::FloatType>(inputType).getWidth();
+      auto dstWidth = mlir::cast<mlir::FloatType>(resultType).getWidth();
+      if (srcWidth < dstWidth) {
+        // f32 → f64: extend
+        rewriter.replaceOpWithNewOp<mlir::arith::ExtFOp>(op, resultType, inputVal);
+        return mlir::success();
+      }
+      if (srcWidth > dstWidth) {
+        // f64 → f32: truncate
+        rewriter.replaceOpWithNewOp<mlir::arith::TruncFOp>(op, resultType, inputVal);
         return mlir::success();
       }
       // Same width: just replace
@@ -3142,8 +3170,11 @@ struct StringMethodOpLowering : public mlir::OpConversionPattern<hew::StringMeth
       auto strPtr = adaptor.getReceiver();
       auto index = adaptor.getExtraArgs()[0];
 
-      // Extend i32 index to i64 for comparison with strlen result
-      auto index64 = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, index);
+      // Zero-extend index to i64 for comparison with strlen result.
+      // Use ExtUIOp (not ExtSIOp) to avoid misinterpreting large positive indices
+      // (e.g., u32 >= 2^31) as negative values. Negative signed indices become
+      // large unsigned values (e.g., -1 → 4294967295), which uge correctly catches.
+      auto index64 = rewriter.create<mlir::arith::ExtUIOp>(loc, i64Type, index);
 
       // Call strlen to get byte length
       auto strlenType = rewriter.getFunctionType({ptrType}, {i64Type});

@@ -101,6 +101,7 @@ pub struct TypeDef {
 struct TraitInfo {
     methods: Vec<TraitMethod>,
     associated_types: Vec<TraitAssociatedTypeInfo>,
+    type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,8 +214,8 @@ pub struct Checker {
     local_type_defs: HashSet<String>,
     /// Tracks which traits are defined locally (in the current compilation unit).
     local_trait_defs: HashSet<String>,
-    /// The type name of the current impl block target (for resolving `Self`).
-    current_self_type: Option<String>,
+    /// The type name and args of the current impl block target (for resolving `Self`).
+    current_self_type: Option<(String, Vec<Ty>)>,
     impl_alias_scopes: Vec<ImplAliasScope>,
     /// Names of functions that require an unsafe block to call.
     unsafe_functions: HashSet<String>,
@@ -694,6 +695,18 @@ impl Checker {
 
         let mut fields = HashMap::new();
         let mut variants = HashMap::new();
+        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let type_param_bounds =
+            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
+        let enum_return_args: Vec<Ty> = type_param_names
+            .iter()
+            .map(|name| Ty::Named {
+                name: name.clone(),
+                args: vec![],
+            })
+            .collect();
 
         for item in &td.body {
             match item {
@@ -704,7 +717,7 @@ impl Checker {
                 TypeBodyItem::Variant(variant) => {
                     let return_type = Ty::Named {
                         name: td.name.clone(),
-                        args: vec![],
+                        args: enum_return_args.clone(),
                     };
                     match &variant.kind {
                         VariantKind::Unit => {
@@ -712,8 +725,8 @@ impl Checker {
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
+                                    type_params: type_param_names.clone(),
+                                    type_param_bounds: type_param_bounds.clone(),
                                     param_names: vec![],
                                     params: vec![],
                                     return_type,
@@ -739,8 +752,8 @@ impl Checker {
                             self.fn_sigs.insert(
                                 variant.name.clone(),
                                 FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
+                                    type_params: type_param_names.clone(),
+                                    type_param_bounds: type_param_bounds.clone(),
                                     param_names: vec![],
                                     params: constructor_params,
                                     return_type,
@@ -770,9 +783,7 @@ impl Checker {
         let type_def = TypeDef {
             kind,
             name: td.name.clone(),
-            type_params: td.type_params.as_ref().map_or(vec![], |params| {
-                params.iter().map(|p| p.name.clone()).collect()
-            }),
+            type_params: type_param_names.clone(),
             fields,
             variants,
             methods: HashMap::new(),
@@ -890,9 +901,15 @@ impl Checker {
                 }),
             }
         }
+        let type_params = tr
+            .type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| p.name.clone()).collect())
+            .unwrap_or_default();
         TraitInfo {
             methods,
             associated_types,
+            type_params,
         }
     }
 
@@ -1100,12 +1117,21 @@ impl Checker {
             Item::Impl(id) => {
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
-                    name: type_name, ..
+                    name: type_name,
+                    type_args,
                 } = &id.target_type.0
                 {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    self.current_self_type = Some(type_name.clone());
+                    let self_type_args = type_args
+                        .as_ref()
+                        .map(|args| {
+                            args.iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.current_self_type = Some((type_name.clone(), self_type_args));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -1647,12 +1673,21 @@ impl Checker {
         for (item, span) in items {
             if let Item::Impl(id) = item {
                 if let TypeExpr::Named {
-                    name: type_name, ..
+                    name: type_name,
+                    type_args,
                 } = &id.target_type.0
                 {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    self.current_self_type = Some(type_name.clone());
+                    let self_type_args = type_args
+                        .as_ref()
+                        .map(|args| {
+                            args.iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    self.current_self_type = Some((type_name.clone(), self_type_args));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -1862,12 +1897,21 @@ impl Checker {
                 Item::Impl(id) => {
                     // Register impl methods for types defined in the module
                     if let TypeExpr::Named {
-                        name: type_name, ..
+                        name: type_name,
+                        type_args,
                     } = &id.target_type.0
                     {
                         // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
-                        self.current_self_type = Some(type_name.clone());
+                        let self_type_args = type_args
+                            .as_ref()
+                            .map(|args| {
+                                args.iter()
+                                    .map(|(te, _)| self.resolve_type_expr(te))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        self.current_self_type = Some((type_name.clone(), self_type_args));
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -2127,7 +2171,15 @@ impl Checker {
 
         // Bind params
         for p in &fd.params {
-            let ty = self.resolve_type_expr(&p.ty.0);
+            let mut ty = self.resolve_type_expr(&p.ty.0);
+            if p.name == "self" {
+                if let Some((self_name, self_args)) = &self.current_self_type {
+                    ty = Ty::Named {
+                        name: self_name.clone(),
+                        args: self_args.clone(),
+                    };
+                }
+            }
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
 
@@ -2267,7 +2319,8 @@ impl Checker {
 
     fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if let TypeExpr::Named {
-            name: type_name, ..
+            name: type_name,
+            type_args,
         } = &id.target_type.0
         {
             let target_is_struct = self
@@ -2298,7 +2351,15 @@ impl Checker {
 
             // Set current_self_type for resolving `Self` in parameters
             let prev_self_type = self.current_self_type.take();
-            self.current_self_type = Some(type_name.clone());
+            let self_type_args: Vec<Ty> = type_args
+                .as_ref()
+                .map(|args| {
+                    args.iter()
+                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
@@ -2323,7 +2384,7 @@ impl Checker {
                 // Bind self for methods that take it
                 let self_ty = Ty::Named {
                     name: type_name.clone(),
-                    args: vec![],
+                    args: self_type_args.clone(),
                 };
                 self.env.define("self".to_string(), self_ty, true);
                 // Use qualified name (e.g. Connection::close) so the fn_sigs
@@ -3635,6 +3696,45 @@ impl Checker {
                         VariantDef::Tuple(params) => params.clone(),
                         VariantDef::Struct(_) => continue,
                     };
+                    let type_param_count = td.type_params.len();
+                    if type_param_count == 0 {
+                        if let Some(type_args_provided) = type_args {
+                            if !type_args_provided.is_empty() {
+                                self.report_error(
+                                    TypeErrorKind::ArityMismatch,
+                                    span,
+                                    format!(
+                                        "this constructor takes 0 type argument(s) but {} were supplied",
+                                        type_args_provided.len()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    let mut inferred_args = Vec::new();
+                    if type_param_count > 0 {
+                        if let Some(type_args_provided) = type_args {
+                            if type_args_provided.len() != type_param_count {
+                                self.report_error(
+                                    TypeErrorKind::ArityMismatch,
+                                    span,
+                                    format!(
+                                        "this constructor takes {} type argument(s) but {} were supplied",
+                                        type_param_count,
+                                        type_args_provided.len()
+                                    ),
+                                );
+                            }
+                            inferred_args = type_args_provided
+                                .iter()
+                                .take(type_param_count)
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect();
+                        }
+                        while inferred_args.len() < type_param_count {
+                            inferred_args.push(Ty::Var(TypeVar::fresh()));
+                        }
+                    }
                     if args.len() != expected_params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -3649,12 +3749,29 @@ impl Checker {
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = expected_params.get(i) {
                             let (expr, span) = arg.expr();
-                            self.check_against(expr, span, param_ty);
+                            // Instantiate type parameters with inferred args
+                            let mut expected_ty = param_ty.clone();
+                            if !td.type_params.is_empty() {
+                                for (param, replacement) in
+                                    td.type_params.iter().zip(inferred_args.iter())
+                                {
+                                    expected_ty = self.substitute_named_param(
+                                        &expected_ty,
+                                        param,
+                                        replacement,
+                                    );
+                                }
+                            }
+                            self.check_against(expr, span, &expected_ty);
                         }
                     }
+                    let resolved_args: Vec<Ty> = inferred_args
+                        .iter()
+                        .map(|ty| self.subst.resolve(ty))
+                        .collect();
                     return Ty::Named {
                         name: type_name.clone(),
-                        args: vec![],
+                        args: resolved_args,
                     };
                 }
             }
@@ -4775,14 +4892,44 @@ impl Checker {
             (Ty::TraitObject { traits }, _) => {
                 // Try to find the method in any of the traits
                 let mut found_sig = None;
+                let mut found_bound = None;
                 for bound in traits {
                     if let Some(sig) = self.lookup_trait_method(&bound.trait_name, method) {
                         found_sig = Some(sig);
+                        found_bound = Some(bound);
                         break;
                     }
                 }
 
-                if let Some(sig) = found_sig {
+                if let Some(mut sig) = found_sig {
+                    // Apply type substitutions from bound's type arguments
+                    if let Some(bound) = found_bound {
+                        if let Some(trait_info) = self.trait_defs.get(&bound.trait_name) {
+                            let type_params = &trait_info.type_params;
+                            if type_params.len() == bound.args.len() {
+                                // Apply substitutions
+                                for (param_name, replacement) in
+                                    type_params.iter().zip(bound.args.iter())
+                                {
+                                    // Substitute in parameter types
+                                    for param_ty in &mut sig.params {
+                                        *param_ty = self.substitute_named_param(
+                                            param_ty,
+                                            param_name,
+                                            replacement,
+                                        );
+                                    }
+                                    // Substitute in return type
+                                    sig.return_type = self.substitute_named_param(
+                                        &sig.return_type,
+                                        param_name,
+                                        replacement,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     if args.len() != sig.params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -5788,10 +5935,10 @@ impl Checker {
             TypeExpr::Named { name, type_args } => {
                 // Handle `Self` type
                 if name == "Self" {
-                    if let Some(self_type_name) = &self.current_self_type {
+                    if let Some((self_type_name, self_type_args)) = &self.current_self_type {
                         return Ty::Named {
                             name: self_type_name.clone(),
-                            args: vec![],
+                            args: self_type_args.clone(),
                         };
                     }
                 }
@@ -8890,6 +9037,105 @@ fn main() {
 
         let mut checker = Checker::new();
         let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn test_self_with_generics_in_impl() {
+        let source = r#"
+            type Pair<T> {
+                first: T,
+                second: T,
+            }
+
+            impl<T> Pair<T> {
+                fn new(first: T, second: T) -> Self {
+                    return Pair { first: first, second: second };
+                }
+
+                fn swap(self) -> Self {
+                    return Pair { first: self.second, second: self.first };
+                }
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
+        );
+
+        // Verify that Self resolves to Pair<T>, not bare Pair
+        // The new method should return Pair<T>
+        let new_sig = checker
+            .fn_sigs
+            .get("Pair::new")
+            .expect("Pair::new should exist");
+        if let Ty::Named { name, args } = &new_sig.return_type {
+            assert_eq!(name, "Pair", "return type should be Pair");
+            assert_eq!(args.len(), 1, "Pair should have one type argument");
+        } else {
+            panic!("Expected Pair::new to return a named type");
+        }
+    }
+
+    #[test]
+    fn test_trait_object_type_args_substitution() {
+        // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
+        let source = r#"
+            trait Iterator<T> {
+                fn next(self: dyn Iterator<T>) -> Option<T>;
+            }
+
+            type Counter {
+                count: int;
+            }
+
+            impl Iterator<int> for Counter {
+                fn next(self: dyn Iterator<int>) -> Option<int> {
+                    Some(42)
+                }
+            }
+
+            fn test_iterator() -> int {
+                let iter: dyn Iterator<int> = Counter { count: 5 };
+                let result = iter.next(); // Should be Option<int>, not Option<T>
+                match result {
+                    Some(x) => x,
+                    None => 0
+                }
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+
+        if !output.errors.is_empty() {
+            for error in &output.errors {
+                println!("Type error: {}", error);
+            }
+        }
+
         assert!(
             output.errors.is_empty(),
             "type check errors: {:?}",

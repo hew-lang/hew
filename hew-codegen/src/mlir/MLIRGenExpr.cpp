@@ -3254,6 +3254,67 @@ void MLIRGen::collectFreeVarsInBlock(const ast::Block &block, const std::set<std
     collectFreeVarsInExpr(block.trailing_expr->value, localBound, freeVars);
 }
 
+void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
+                                 std::vector<CapturedVarInfo> &capturedVars,
+                                 mlir::Location location) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+
+  for (const auto &fv : freeVars) {
+    if (module.lookupSymbol<mlir::func::FuncOp>(fv) ||
+        module.lookupSymbol<mlir::func::FuncOp>(mangleName(currentModulePath, "", fv)))
+      continue;
+    if (variantLookup.count(fv))
+      continue;
+    if (moduleConstants.count(fv))
+      continue;
+
+    if (auto mutAlloca = mutableVars.lookup(fv)) {
+      auto originalSlot = mutAlloca;
+      auto remapIt = heapCellRebindings.find(mutAlloca);
+      if (remapIt != heapCellRebindings.end())
+        mutAlloca = remapIt->second;
+      auto cellIt = heapCellValueTypes.find(mutAlloca);
+      if (cellIt != heapCellValueTypes.end()) {
+        auto cellPtr = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
+        capturedVars.push_back({fv, cellPtr, true, cellIt->second});
+        continue;
+      }
+
+      auto val = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
+      auto valueType = val.getType();
+      auto cellSize =
+          builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(valueType));
+      auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
+      auto cellPtr = builder.create<hew::RcNewOp>(location, ptrType, nullPtr, cellSize, nullPtr);
+      builder.create<mlir::LLVM::StoreOp>(location, val, cellPtr);
+
+      auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
+      mlir::Value newAlloca;
+      if (returnFlag && currentFunction) {
+        auto savedIP = builder.saveInsertionPoint();
+        auto &entryBlock = currentFunction.front();
+        builder.setInsertionPointToStart(&entryBlock);
+        newAlloca = builder.create<mlir::memref::AllocaOp>(builder.getUnknownLoc(), ptrMemrefType);
+        builder.restoreInsertionPoint(savedIP);
+      } else {
+        newAlloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
+      }
+      builder.create<mlir::memref::StoreOp>(location, cellPtr, newAlloca);
+
+      auto internedName = intern(fv);
+      mutableVars.insert(internedName, newAlloca);
+      heapCellRebindings[originalSlot] = newAlloca;
+      heapCellValueTypes[newAlloca] = valueType;
+
+      capturedVars.push_back({fv, cellPtr, true, valueType});
+      continue;
+    }
+
+    if (auto val = lookupVariable(fv))
+      capturedVars.push_back({fv, val, false, nullptr});
+  }
+}
+
 // ============================================================================
 // Lambda expression generation
 // ============================================================================
@@ -3300,69 +3361,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   if (lam.body)
     collectFreeVarsInExpr(lam.body->value, paramNames, freeVars);
 
-  struct CapturedVar {
-    std::string name;
-    mlir::Value value;
-    bool isMutable = false;
-    mlir::Type valueType; // for mutable captures: the actual value type
-  };
-  std::vector<CapturedVar> capturedVars;
-  for (const auto &fv : freeVars) {
-    if (module.lookupSymbol<mlir::func::FuncOp>(fv) ||
-        module.lookupSymbol<mlir::func::FuncOp>(mangleName(currentModulePath, "", fv)))
-      continue;
-    if (variantLookup.count(fv))
-      continue;
-    if (moduleConstants.count(fv))
-      continue;
-
-    // Check if this is a mutable variable (in mutableVars)
-    auto mutAlloca = mutableVars.lookup(fv);
-    if (mutAlloca) {
-      auto cellIt = heapCellValueTypes.find(mutAlloca);
-      if (cellIt != heapCellValueTypes.end()) {
-        // Already a heap cell — just capture the cell pointer
-        auto cellPtr = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
-        capturedVars.push_back({fv, cellPtr, true, cellIt->second});
-      } else {
-        // Convert to heap cell for by-reference capture
-        auto val = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
-        auto valueType = val.getType();
-
-        // Allocate heap cell via hew.rc.new
-        auto cellSize =
-            builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(valueType));
-        auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-        auto cellPtr = builder.create<hew::RcNewOp>(location, ptrType, nullPtr, cellSize, nullPtr);
-        builder.create<mlir::LLVM::StoreOp>(location, val, cellPtr);
-
-        // Replace outer scope's mutable var entry with the cell pointer
-        auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
-        mlir::Value newAlloca;
-        if (returnFlag && currentFunction) {
-          auto savedIP = builder.saveInsertionPoint();
-          auto &entryBlock = currentFunction.front();
-          builder.setInsertionPointToStart(&entryBlock);
-          newAlloca =
-              builder.create<mlir::memref::AllocaOp>(builder.getUnknownLoc(), ptrMemrefType);
-          builder.restoreInsertionPoint(savedIP);
-        } else {
-          newAlloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
-        }
-        builder.create<mlir::memref::StoreOp>(location, cellPtr, newAlloca);
-
-        auto internedName = intern(fv);
-        mutableVars.insert(internedName, newAlloca);
-        heapCellValueTypes[newAlloca] = valueType;
-
-        capturedVars.push_back({fv, cellPtr, true, valueType});
-      }
-    } else {
-      auto val = lookupVariable(fv);
-      if (val)
-        capturedVars.push_back({fv, val, false, nullptr});
-    }
-  }
+  std::vector<CapturedVarInfo> capturedVars;
+  gatherCapturedVars(freeVars, capturedVars, location);
 
   mlir::Type returnType = nullptr;
   if (lam.return_type.has_value()) {
@@ -3533,7 +3533,14 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
 
   auto savedReturnFlag = returnFlag;
   returnFlag = nullptr;
-  auto bodyResult = generateBlock(se.block);
+  mlir::Value bodyResult = nullptr;
+  if (se.binding.has_value()) {
+    SymbolTableScopeT bindingScope(symbolTable);
+    declareVariable(*se.binding, scopePtr);
+    bodyResult = generateBlock(se.block);
+  } else {
+    bodyResult = generateBlock(se.block);
+  }
   returnFlag = savedReturnFlag;
 
   currentScopePtr = prevScope;
@@ -3573,6 +3580,46 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
+  std::set<std::string> boundNames;
+  std::set<std::string> freeVars;
+  collectFreeVarsInBlock(block, boundNames, freeVars);
+
+  std::vector<CapturedVarInfo> capturedVars;
+  gatherCapturedVars(freeVars, capturedVars, location);
+
+  llvm::SmallVector<mlir::Type, 4> capturedTypes;
+  mlir::LLVM::LLVMStructType envStructType = nullptr;
+  mlir::Value envPtrVal;
+  if (!capturedVars.empty()) {
+    for (const auto &cv : capturedVars)
+      capturedTypes.push_back(toLLVMStorageType(cv.value.getType()));
+    envStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, capturedTypes);
+
+    auto envSize =
+        builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(envStructType));
+
+    auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
+    envPtrVal = builder.create<hew::RcNewOp>(location, ptrType, nullPtr, envSize, nullPtr);
+
+    for (size_t i = 0; i < capturedVars.size(); ++i) {
+      if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
+        auto innerEnv =
+            builder.create<hew::ClosureGetEnvOp>(location, ptrType, capturedVars[i].value);
+        builder.create<hew::RcCloneOp>(location, ptrType, innerEnv);
+      }
+      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
+          location, ptrType, envStructType, envPtrVal,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
+      mlir::Value storeVal = capturedVars[i].value;
+      if (storeVal.getType() != capturedTypes[i]) {
+        storeVal = builder.create<hew::BitcastOp>(location, capturedTypes[i], storeVal);
+      }
+      builder.create<mlir::LLVM::StoreOp>(location, storeVal, gepOp);
+    }
+  } else {
+    envPtrVal = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
+  }
+
   auto savedIP = builder.saveInsertionPoint();
 
   std::string taskFnName = "__scope_task_" + std::to_string(taskCounter++);
@@ -3598,6 +3645,32 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
+
+  if (!capturedVars.empty()) {
+    auto envPtr = builder.create<hew::TaskGetEnvOp>(location, ptrType, taskArg);
+    for (size_t i = 0; i < capturedVars.size(); ++i) {
+      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
+          location, ptrType, envStructType, envPtr,
+          llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
+      auto loadedVal = builder.create<mlir::LLVM::LoadOp>(location, capturedTypes[i], gepOp);
+
+      if (capturedVars[i].isMutable) {
+        auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
+        auto alloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
+        builder.create<mlir::memref::StoreOp>(location, loadedVal, alloca);
+        auto internedName = intern(capturedVars[i].name);
+        mutableVars.insert(internedName, alloca);
+        heapCellValueTypes[alloca] = capturedVars[i].valueType;
+      } else {
+        mlir::Value capturedVal = loadedVal;
+        if (capturedTypes[i] != capturedVars[i].value.getType()) {
+          capturedVal =
+              builder.create<hew::BitcastOp>(location, capturedVars[i].value.getType(), loadedVal);
+        }
+        declareVariable(capturedVars[i].name, capturedVal);
+      }
+    }
+  }
 
   auto bodyResult = generateBlock(block);
 
@@ -3638,7 +3711,8 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
                                   mlir::SymbolRefAttr::get(builder.getContext(), taskFnName))
           .getResult();
 
-  auto taskPtr = builder.create<hew::ScopeLaunchOp>(location, ptrType, currentTaskScopePtr, fnPtr);
+  auto taskPtr =
+      builder.create<hew::ScopeLaunchOp>(location, ptrType, currentTaskScopePtr, fnPtr, envPtrVal);
 
   return taskPtr;
 }

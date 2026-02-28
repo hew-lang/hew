@@ -1719,23 +1719,26 @@ def Hew_ScopeLaunchOp : Hew_Op<"scope.launch"> {
   let summary = "Launch a task on a new thread within a scope.";
   let description = [{
     Creates a new task handle, registers it with the task scope, and
-    spawns it on a thread using the given function pointer.
+    spawns it on a thread using the given function pointer. The third
+    operand is an optional environment pointer (pass null when there are
+    no captured variables) that becomes accessible from the spawned task.
 
     Lowers to `hew_task_new()`, `hew_task_scope_spawn(scope, task)`,
-    and `hew_task_spawn_thread(task, fn_ptr)`.
+    `hew_task_set_env(task, env_ptr)`, and `hew_task_spawn_thread(task, fn_ptr)`.
 
     Returns the task handle pointer.
 
     Example:
     ```mlir
-    %task = hew.scope.launch %task_scope, %fn_ptr : (!llvm.ptr, !llvm.ptr) -> !llvm.ptr
+    %task = hew.scope.launch %task_scope, %fn_ptr, %env_ptr
+              : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> !llvm.ptr
     ```
   }];
 
-  let arguments = (ins AnyType:$task_scope, AnyType:$fn_ptr);
+  let arguments = (ins AnyType:$task_scope, AnyType:$fn_ptr, AnyType:$env_ptr);
   let results = (outs AnyType:$result);
 
-  let assemblyFormat = "$task_scope `,` $fn_ptr attr-dict `:` `(` type($task_scope) `,` type($fn_ptr) `)` `->` type($result)";
+  let assemblyFormat = "$task_scope `,` $fn_ptr `,` $env_ptr attr-dict `:` `(` type($task_scope) `,` type($fn_ptr) `,` type($env_ptr) `)` `->` type($result)";
 }
 
 def Hew_ScopeAwaitOp : Hew_Op<"scope.await"> {
@@ -1776,6 +1779,23 @@ def Hew_ScopeCancelOp : Hew_Op<"scope.cancel"> {
   let assemblyFormat = "$task_scope attr-dict `:` type($task_scope)";
 }
 
+def Hew_TaskGetEnvOp : Hew_Op<"task.get_env"> {
+  let summary = "Load the environment pointer stored on a task.";
+  let description = [{
+    Returns the opaque environment pointer previously associated with
+    a task via `hew_task_set_env`.  Lowers to `hew_task_get_env(task)`.
+
+    Example:
+    ```mlir
+    %env = hew.task.get_env %task : !llvm.ptr -> !llvm.ptr
+    ```
+  }];
+
+  let arguments = (ins AnyType:$task);
+  let results = (outs AnyType:$env);
+
+  let assemblyFormat = "$task attr-dict `:` type($task) `->` type($env)";
+}
 
 def Hew_TaskSetResultOp : Hew_Op<"task.set_result"> {
   let summary = "Store a result into a task handle.";

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::internal::types::{HewTaskError, HewTaskState};
+use crate::rc::hew_rc_drop;
 
 // ── Thread-local current task scope ────────────────────────────────────
 
@@ -61,6 +62,8 @@ pub struct HewTask {
     pub done_signal: Option<Arc<TaskDoneSignal>>,
     /// Thread join handle for the spawned worker thread.
     pub thread_handle: Option<std::thread::JoinHandle<()>>,
+    /// Captured environment pointer (Rc-allocated) for scope tasks.
+    pub env_ptr: *mut c_void,
 }
 
 /// Thread-safe signal for task completion notification.
@@ -130,6 +133,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
         next: ptr::null_mut(),
         done_signal: None,
         thread_handle: None,
+        env_ptr: ptr::null_mut(),
     });
     Box::into_raw(task)
 }
@@ -151,6 +155,37 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
         // SAFETY: result was malloc'd by hew_task_set_result.
         unsafe { libc::free(t.result) };
     }
+    if !t.env_ptr.is_null() {
+        unsafe { hew_rc_drop(t.env_ptr.cast()) };
+    }
+}
+
+/// Associate an environment pointer with a task.
+///
+/// # Safety
+///
+/// `task` must be a valid pointer returned by [`hew_task_new`]. `env` should
+/// either be null or an Rc-allocated pointer returned by `hew_rc_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_set_env(task: *mut HewTask, env: *mut c_void) {
+    if task.is_null() {
+        return;
+    }
+    let t = unsafe { &mut *task };
+    t.env_ptr = env;
+}
+
+/// Fetch the environment pointer associated with a task.
+///
+/// # Safety
+///
+/// `task` must be a valid pointer returned by [`hew_task_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_get_env(task: *mut HewTask) -> *mut c_void {
+    if task.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { (*task).env_ptr }
 }
 
 /// Get the task's result pointer, or null if not done.

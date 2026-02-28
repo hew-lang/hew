@@ -236,3 +236,33 @@ When `{}` after an identifier can mean either "empty struct literal" or
 The standard lookahead of `ident: expr` inside braces fails when there are
 no fields. Adding `peek == RightBrace` as a struct-init condition is the
 minimal fix.
+
+### 34. Drop ordering in return statements: evaluate first, then clean up
+
+In a language with deterministic destruction, `return expr` must evaluate
+`expr` while all locals are still alive, capture the result, THEN run
+destructors. The natural code structure of "clean up, then return" causes
+use-after-free when the return expression references locals. This is
+especially subtle with method calls like `return vec.get(0)`.
+
+### 35. Labeled control flow must deactivate ALL intermediate loops
+
+When `break @outer` targets a non-adjacent loop, every loop between the
+current position and the target must be deactivated. Only deactivating the
+innermost and outermost leaves intermediate loops spinning. This requires
+tracking loop depth indices, not just innermost/outermost references.
+
+### 36. Self type in generic impls needs full type information
+
+Storing `Self` as just a name string loses generic type parameters. In
+`impl<T> Pair<T>`, `Self` must resolve to `Pair<T>`, not bare `Pair`.
+The fix is storing `(name, args)` instead of just `name` — a lesson in
+not discarding type information at storage boundaries.
+
+### 37. Code review catches what tests miss at nesting depth
+
+The labeled break test with 2-level nesting passed both with and without
+the fix because normal scope cleanup handled both scopes. Only a
+pragmatic code review identified that 3+ nesting was needed to exercise
+the intermediate-scope drop logic. Tests should match the complexity of
+the bug they're verifying.

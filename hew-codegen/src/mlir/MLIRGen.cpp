@@ -631,7 +631,7 @@ void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
 }
 
 void MLIRGen::storeVariable(llvm::StringRef name, mlir::Value value) {
-  auto it = mutableVars.lookup(name);
+  auto it = getMutableVarSlot(name);
   if (!it) {
     ++errorCount_;
     emitError(builder.getUnknownLoc())
@@ -648,9 +648,19 @@ void MLIRGen::storeVariable(llvm::StringRef name, mlir::Value value) {
   builder.create<mlir::memref::StoreOp>(builder.getUnknownLoc(), value, it);
 }
 
+mlir::Value MLIRGen::getMutableVarSlot(llvm::StringRef name) {
+  auto slot = mutableVars.lookup(name);
+  if (!slot)
+    return nullptr;
+  auto remap = heapCellRebindings.find(slot);
+  if (remap != heapCellRebindings.end())
+    return remap->second;
+  return slot;
+}
+
 mlir::Value MLIRGen::lookupVariable(llvm::StringRef name) {
   // First check mutable variables (load from memref)
-  auto mutVal = mutableVars.lookup(name);
+  auto mutVal = getMutableVarSlot(name);
   if (mutVal) {
     // Heap-cell indirection: the memref holds a pointer to a heap cell.
     auto cellIt = heapCellValueTypes.find(mutVal);

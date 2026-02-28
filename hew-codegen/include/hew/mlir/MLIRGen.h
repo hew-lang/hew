@@ -17,6 +17,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
@@ -237,6 +238,9 @@ private:
   /// Store to a mutable variable.
   void storeVariable(llvm::StringRef name, mlir::Value value);
 
+  /// Lookup the memref slot for a mutable variable, applying heap-cell remaps.
+  mlir::Value getMutableVarSlot(llvm::StringRef name);
+
   /// Get a unique name for a global string literal.
   std::string getOrCreateGlobalString(llvm::StringRef value);
 
@@ -307,6 +311,9 @@ private:
   // Mutable variables: name -> memref alloca value
   using MutableTableScopeT = llvm::ScopedHashTableScope<llvm::StringRef, mlir::Value>;
   llvm::ScopedHashTable<llvm::StringRef, mlir::Value> mutableVars;
+  /// When a mutable variable is promoted to a heap cell, map the original
+  /// slot (from the parent scope) to the heap-cell pointer slot.
+  llvm::DenseMap<mlir::Value, mlir::Value> heapCellRebindings;
 
   // Heap-cell-backed mutable variables: maps the memref alloca value to the
   // underlying value type.  Used for mutable variable capture in closures —
@@ -477,6 +484,15 @@ private:
   // Can be either ClosureType or FunctionType.
   std::optional<mlir::Type> pendingLambdaExpectedType;
 
+  struct CapturedVarInfo {
+    std::string name;
+    mlir::Value value;
+    bool isMutable = false;
+    mlir::Type valueType;
+  };
+  void gatherCapturedVars(const std::set<std::string> &freeVars,
+                          std::vector<CapturedVarInfo> &capturedVars, mlir::Location location);
+
   /// Collect identifiers used in a block that are free (not locally defined).
   void collectFreeVarsInBlock(const ast::Block &block, const std::set<std::string> &bound,
                               std::set<std::string> &freeVars);
@@ -534,6 +550,8 @@ private:
   // ── Loop control (for break/continue) ──────────────────────────
   // Stack of memref<i1> values: when set to false, the loop terminates.
   llvm::SmallVector<mlir::Value, 4> loopActiveStack;
+  // dropScopes.size() at the time each loop was entered (for labeled break/continue).
+  llvm::SmallVector<size_t, 4> loopDropScopeBase;
   // Stack of memref<i1> values: when set to true, skip rest of loop body.
   llvm::SmallVector<mlir::Value, 4> loopContinueStack;
   // Stack of allocas for break-with-value results.

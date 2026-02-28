@@ -127,29 +127,6 @@ fn unescape_string(s: &str) -> String {
     out
 }
 
-/// Unescape a char literal body (the content between single quotes).
-fn unescape_char(s: &str) -> Option<char> {
-    let mut chars = s.chars();
-    let c = chars.next()?;
-    let result = if c == '\\' {
-        match chars.next()? {
-            'n' => '\n',
-            't' => '\t',
-            'r' => '\r',
-            '0' => '\0',
-            '\\' => '\\',
-            '\'' => '\'',
-            _ => return None,
-        }
-    } else {
-        c
-    };
-    if chars.next().is_some() {
-        return None;
-    }
-    Some(result)
-}
-
 /// Split an interpolated string (f-string or template literal) into literal
 /// segments and parsed expression segments.
 ///
@@ -364,6 +341,7 @@ impl<'src> Parser<'src> {
         for (t, s) in raw_tokens {
             let span = s.start..s.end;
             if matches!(t, Token::Error) {
+                eprintln!("LEX ERROR at {}..{}", span.start, span.end);
                 errors.push(ParseError {
                     message: "unexpected character".to_string(),
                     span,
@@ -542,6 +520,39 @@ impl<'src> Parser<'src> {
             hint: Some(hint.into()),
             severity: Severity::Error,
         });
+    }
+
+    fn parse_char_escape(&mut self, s: &str) -> Option<char> {
+        let mut chars = s.chars();
+        let Some(c) = chars.next() else {
+            self.error("invalid char literal".to_string());
+            return None;
+        };
+        let result = if c == '\\' {
+            let Some(escaped) = chars.next() else {
+                self.error("invalid escape sequence".to_string());
+                return None;
+            };
+            match escaped {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '0' => '\0',
+                '\\' => '\\',
+                '\'' => '\'',
+                _ => {
+                    self.error("invalid escape sequence".to_string());
+                    return None;
+                }
+            }
+        } else {
+            c
+        };
+        if chars.next().is_some() {
+            self.error("invalid char literal".to_string());
+            return None;
+        }
+        Some(result)
     }
 
     fn warning_at(&mut self, message: String, span: Span) {
@@ -1158,7 +1169,14 @@ impl<'src> Parser<'src> {
                 self.advance();
                 TypeDeclKind::Enum
             }
-            _ => return None,
+            _ => {
+                let found = match self.peek() {
+                    Some(tok) => format!("{tok}"),
+                    None => "end of file".to_string(),
+                };
+                self.error(format!("expected 'type' or 'enum', found {found}"));
+                return None;
+            }
         };
 
         let name = self.expect_ident()?;
@@ -3259,11 +3277,10 @@ impl<'src> Parser<'src> {
                     .strip_prefix('\'')
                     .and_then(|s| s.strip_suffix('\''))
                     .unwrap_or(s);
-                if let Some(c) = unescape_char(inner) {
+                if let Some(c) = self.parse_char_escape(inner) {
                     self.advance();
                     Expr::Literal(Literal::Char(c))
                 } else {
-                    self.error(format!("invalid char literal '{s}'"));
                     return None;
                 }
             }
@@ -3920,6 +3937,13 @@ impl<'src> Parser<'src> {
             // Positional argument
             if seen_named {
                 self.error("positional arguments must come before named arguments".to_string());
+                if self.parse_expr().is_none() {
+                    break;
+                }
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+                continue;
             }
             match self.parse_expr() {
                 Some(expr) => args.push(CallArg::Positional(expr)),
@@ -4131,11 +4155,10 @@ impl<'src> Parser<'src> {
                     .strip_prefix('\'')
                     .and_then(|s| s.strip_suffix('\''))
                     .unwrap_or(s);
-                if let Some(c) = unescape_char(inner) {
+                if let Some(c) = self.parse_char_escape(inner) {
                     self.advance();
                     Pattern::Literal(Literal::Char(c))
                 } else {
-                    self.error(format!("invalid char literal '{s}'"));
                     return None;
                 }
             }

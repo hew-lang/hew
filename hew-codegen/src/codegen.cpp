@@ -2714,7 +2714,8 @@ struct ScopeDestroyOpLowering : public mlir::OpConversionPattern<hew::ScopeDestr
   }
 };
 
-/// Lower hew.scope.launch -> hew_task_new + hew_task_scope_spawn + hew_task_spawn_thread
+/// Lower hew.scope.launch -> hew_task_new + hew_task_scope_spawn + hew_task_set_env +
+/// hew_task_spawn_thread
 struct ScopeLaunchOpLowering : public mlir::OpConversionPattern<hew::ScopeLaunchOp> {
   using OpConversionPattern<hew::ScopeLaunchOp>::OpConversionPattern;
 
@@ -2736,6 +2737,13 @@ struct ScopeLaunchOpLowering : public mlir::OpConversionPattern<hew::ScopeLaunch
     rewriter.create<mlir::func::CallOp>(
         loc, "hew_task_scope_spawn", mlir::TypeRange{},
         mlir::ValueRange{adaptor.getTaskScope(), taskPtr.getResult(0)});
+
+    // hew_task_set_env(task, env_ptr) -> void
+    auto setEnvFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
+    getOrInsertFuncDecl(module, rewriter, "hew_task_set_env", setEnvFuncType);
+    rewriter.create<mlir::func::CallOp>(
+        loc, "hew_task_set_env", mlir::TypeRange{},
+        mlir::ValueRange{taskPtr.getResult(0), adaptor.getEnvPtr()});
 
     // hew_task_spawn_thread(task, fn_ptr) -> void
     getOrInsertFuncDecl(module, rewriter, "hew_task_spawn_thread", spawnFuncType);
@@ -2782,6 +2790,24 @@ struct ScopeCancelOpLowering : public mlir::OpConversionPattern<hew::ScopeCancel
     rewriter.create<mlir::func::CallOp>(loc, "hew_task_scope_cancel", mlir::TypeRange{},
                                         mlir::ValueRange{adaptor.getTaskScope()});
     rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+struct TaskGetEnvOpLowering : public mlir::OpConversionPattern<hew::TaskGetEnvOp> {
+  using OpConversionPattern<hew::TaskGetEnvOp>::OpConversionPattern;
+
+  mlir::LogicalResult matchAndRewrite(hew::TaskGetEnvOp op, OpAdaptor adaptor,
+                                      mlir::ConversionPatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto loc = op.getLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+
+    auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
+    getOrInsertFuncDecl(module, rewriter, "hew_task_get_env", funcType);
+    auto call = rewriter.create<mlir::func::CallOp>(
+        loc, "hew_task_get_env", mlir::TypeRange{ptrType}, mlir::ValueRange{adaptor.getTask()});
+    rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
 };
@@ -3757,6 +3783,7 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
   patterns.add<ScopeAwaitOpLowering>(typeConverter, &context);
   patterns.add<ScopeCancelOpLowering>(typeConverter, &context);
 
+  patterns.add<TaskGetEnvOpLowering>(typeConverter, &context);
   patterns.add<TaskSetResultOpLowering>(typeConverter, &context);
   patterns.add<TaskCompleteOpLowering>(typeConverter, &context);
   // Select ops

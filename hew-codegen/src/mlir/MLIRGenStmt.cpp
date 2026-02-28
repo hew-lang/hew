@@ -855,7 +855,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       emitError(location) << "value struct field assignment requires a variable target";
       return;
     }
-    auto varSlot = mutableVars.lookup(intern(objIdent->name));
+    auto varSlot = getMutableVarSlot(intern(objIdent->name));
     if (!varSlot) {
       emitError(location) << "cannot assign field on immutable variable '" << objIdent->name << "'";
       return;
@@ -992,7 +992,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         emitError(location) << "array indexed assignment requires a variable target";
         return;
       }
-      auto varSlot = mutableVars.lookup(intern(ie->name));
+      auto varSlot = getMutableVarSlot(intern(ie->name));
       if (!varSlot) {
         emitError(location) << "cannot assign index on immutable variable '" << ie->name << "'";
         return;
@@ -1366,6 +1366,7 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
 
   std::string labelName;
@@ -1470,6 +1471,7 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   auto breakValueAlloca = loopBreakValueStack.back();
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
   if (!labelName.empty()) {
@@ -1529,6 +1531,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -1607,6 +1610,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
     builder.create<mlir::scf::YieldOp>(location);
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
 
@@ -1798,6 +1802,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -1884,6 +1889,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   }
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
 
@@ -1976,6 +1982,7 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -2045,6 +2052,7 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   auto breakValueAlloca = loopBreakValueStack.back();
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
 
@@ -2094,6 +2102,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -2162,6 +2171,7 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
     builder.create<mlir::scf::YieldOp>(location);
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
 
@@ -2274,6 +2284,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
     loopActiveStack.push_back(activeFlag);
+    loopDropScopeBase.push_back(dropScopes.size());
     loopContinueStack.push_back(continueFlag);
     loopBreakValueStack.push_back(nullptr);
 
@@ -2331,6 +2342,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     builder.setInsertionPointAfter(whileOp);
 
     loopActiveStack.pop_back();
+    loopDropScopeBase.pop_back();
     loopContinueStack.pop_back();
     loopBreakValueStack.pop_back();
     if (stmt.label) {
@@ -2445,6 +2457,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -2551,6 +2564,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   }
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
 
   auto breakValueAlloca = loopBreakValueStack.back();
@@ -2642,6 +2656,7 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
@@ -2732,6 +2747,7 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   }
 
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
 
   auto breakValueAlloca = loopBreakValueStack.back();
@@ -2834,6 +2850,7 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
 
   // Push onto loop control stacks
   loopActiveStack.push_back(activeFlag);
+  loopDropScopeBase.push_back(dropScopes.size());
   loopContinueStack.push_back(continueFlag);
 
   // Register labeled loop flags
@@ -2883,6 +2900,7 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
 
   // Pop loop control stacks
   loopActiveStack.pop_back();
+  loopDropScopeBase.pop_back();
   loopContinueStack.pop_back();
   loopBreakValueStack.pop_back();
   if (!labelName.empty()) {
@@ -2946,10 +2964,26 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
     }
   }
 
-  // Drop variables in current scope before exiting loop
+  // Drop variables in current scope (and intermediate scopes for labeled breaks)
   if (!dropScopes.empty()) {
     emitDropsForScope(dropScopes.back());
     dropScopes.back().clear(); // Prevent double-drop on block exit
+
+    // For labeled breaks targeting outer loops, also drop intermediate scopes
+    if (stmt.label && targetActive != loopActiveStack.back()) {
+      size_t targetIdx = 0;
+      for (size_t i = 0; i < loopActiveStack.size(); ++i) {
+        if (loopActiveStack[i] == targetActive) {
+          targetIdx = i;
+          break;
+        }
+      }
+      size_t stopAt = loopDropScopeBase[targetIdx];
+      for (int i = (int)dropScopes.size() - 2; i > (int)stopAt; --i) {
+        emitDropsForScope(dropScopes[i]);
+        dropScopes[i].clear();
+      }
+    }
   }
 
   // Set the active flag to false (exit loop at condition check)
@@ -2963,9 +2997,13 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
     builder.create<mlir::memref::StoreOp>(location, trueVal, targetContinue);
   }
 
-  // For labeled breaks, also break out of inner loops
+  // For labeled breaks, deactivate ALL intermediate loops (not just innermost)
   if (stmt.label && targetActive != loopActiveStack.back()) {
-    builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack.back());
+    for (size_t i = loopActiveStack.size(); i > 0; --i) {
+      if (loopActiveStack[i - 1] == targetActive)
+        break;
+      builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack[i - 1]);
+    }
     if (!loopContinueStack.empty()) {
       auto trueVal = createIntConstant(builder, location, i1Type, 1);
       builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack.back());
@@ -2993,18 +3031,45 @@ void MLIRGen::generateContinueStmt(const ast::StmtContinue &stmt) {
       emitError(location) << "unknown loop label '" << labelStr << "'";
       return;
     }
-    // For labeled continue, also break inner loop's active flag
+    // For labeled continue, deactivate ALL intermediate loops (not just innermost)
     if (targetContinue != loopContinueStack.back()) {
       auto i1Type = builder.getI1Type();
       auto falseVal = createIntConstant(builder, location, i1Type, 0);
-      builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack.back());
+      // Find target loop index in the continue stack
+      size_t targetIdx = loopContinueStack.size() - 1;
+      for (size_t i = 0; i < loopContinueStack.size(); ++i) {
+        if (loopContinueStack[i] == targetContinue) {
+          targetIdx = i;
+          break;
+        }
+      }
+      // Deactivate all loops inner to the target
+      for (size_t i = targetIdx + 1; i < loopActiveStack.size(); ++i) {
+        builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack[i]);
+      }
     }
   }
 
-  // Drop variables in current scope before continuing loop
+  // Drop variables in current scope (and intermediate scopes for labeled continues)
   if (!dropScopes.empty()) {
     emitDropsForScope(dropScopes.back());
     dropScopes.back().clear(); // Prevent double-drop on block exit
+
+    // For labeled continues targeting outer loops, also drop intermediate scopes
+    if (stmt.label && targetContinue != loopContinueStack.back()) {
+      size_t targetIdx = 0;
+      for (size_t i = 0; i < loopContinueStack.size(); ++i) {
+        if (loopContinueStack[i] == targetContinue) {
+          targetIdx = i;
+          break;
+        }
+      }
+      size_t stopAt = loopDropScopeBase[targetIdx];
+      for (int i = (int)dropScopes.size() - 2; i > (int)stopAt; --i) {
+        emitDropsForScope(dropScopes[i]);
+        dropScopes[i].clear();
+      }
+    }
   }
 
   // Set the continue flag to true

@@ -340,3 +340,35 @@ correctness fixes:
   Added structs and parse cases.
 - **Zero warnings**: Cleaned all Rust compiler warnings (unused fields,
   imports, stale suggestion text).
+
+### Quality Sprint 3: Deep Correctness
+
+Third round used 5 analysis agents (Claude Opus 4.6, GPT-5.1/5.2 Codex,
+Claude Sonnet 4/4.5) across codegen, type checker, parser, runtime, and
+serialization. Found 8 correctness bugs, fixed all:
+
+- **Return use-after-free**: `generateReturnStmt` dropped locals BEFORE
+  evaluating the return expression. `return vec.get(0)` would free `vec`
+  first. Fixed by evaluating expression first, then dropping.
+- **Self type losing generics**: `Self` in `impl<T> Pair<T>` resolved to bare
+  `Pair` with no args. Changed `current_self_type` from `Option<String>` to
+  `Option<(String, Vec<Ty>)>` to carry generic params.
+- **Trait-object dispatch ignoring bound args**: `dyn Iterator<int>.next()`
+  returned `Option<T>` instead of `Option<int>`. Now substitutes bound args
+  into method signatures.
+- **Labeled break/continue with 3+ nesting**: Only deactivated innermost loop,
+  leaving intermediate loops running. Now deactivates ALL loops between target
+  and current position.
+- **Labeled break/continue resource leaks**: Only dropped innermost scope
+  resources. Added `loopDropScopeBase` tracking to drop all intermediate scopes.
+- **Scope binding undeclared**: `scope |s| { s.spawn {...} }` never declared
+  `s` in symbol table. Fixed scope_spawn test (was pre-existing failure).
+- **Scope spawn capture**: Spawned tasks couldn't access outer mutable
+  variables. Added heap-cell capture mechanism for scope-spawned tasks.
+- **TypeExpr::Infer deserialization**: C++ codegen crashed on Infer variant.
+  Added missing msgpack reader case.
+- **Parser error recovery**: Three gaps fixed (char escape silent None, struct/
+  enum keyword error, positional-after-named args producing malformed AST).
+
+**Test results**: 317/318 codegen e2e (up from 314/316), 252 type checker,
+111 parser tests pass. Only pre-existing bench stdlib parse error remains.

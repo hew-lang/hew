@@ -579,6 +579,7 @@ add_e2e_file_test(defer                 e2e_defer defer)
 
 # ── Loop tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(for_range_break       e2e_loops for_range_break)
+add_e2e_file_test(labeled_break_drops   e2e_loops labeled_break_drops)
 
 # ── Named arguments tests ─────────────────────────────────────────────────
 add_e2e_file_test(named_args            e2e_named_args main)

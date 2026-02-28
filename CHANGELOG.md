@@ -32,12 +32,22 @@
 - Type checker: bare `return;` in non-unit functions now produces error
 - Type checker: `dyn (A + B)` now unifies with `dyn (B + A)` (order-independent)
 - Type checker: match statements now check exhaustiveness (missing variants warn)
+- Type checker: `Self` in generic impls now resolves to full type (e.g., `Pair<T>` not bare `Pair`)
+- Type checker: `dyn Trait<Args>` method dispatch now substitutes bound type args into signatures
 - Parser: missing parameter type annotation now reports error instead of silent drop
 - Parser: `pub(invalid)` now defaults to private instead of silently promoting to pub
 - Parser: string interpolation sub-parser errors now propagated to parent
 - Parser: empty struct literal `Foo {}` now parses correctly for zero-field structs
+- Parser: invalid escape sequences now report error instead of silent failure
+- Parser: positional args after named args now skipped instead of producing malformed AST
+- Codegen: return statements now evaluate expression before dropping locals (fixes use-after-free)
+- Codegen: labeled break/continue now deactivates ALL intermediate loops (fixes infinite loop with 3+ nesting)
+- Codegen: labeled break/continue now drops resources in ALL intermediate scopes (fixes leaks)
+- Codegen: scope binding (`scope |s| { }`) now declares variable for body access (fixes scope_spawn)
+- Codegen: scope spawn now captures mutable variables via heap cells (cross-task mutation works)
 - Codegen: compound assignment switches now have default case (prevents UB)
 - Codegen: IfLet, ArrayRepeat, generic lambda type_params now deserialize without crash
+- Codegen: TypeExpr::Infer now deserializes in C++ (was crashing with unknown variant)
 - Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
 - Zero compiler warnings across entire Rust workspace
 

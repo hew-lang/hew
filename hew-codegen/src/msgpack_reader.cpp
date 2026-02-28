@@ -424,6 +424,11 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     }
     return ast::TypeExpr{std::move(tto)};
   }
+  if (name == "Infer") {
+    // Serde: {"Infer": null} or just "Infer" for unit variant
+    ast::TypeInfer ti;
+    return ast::TypeExpr{std::move(ti)};
+  }
   fail("unknown TypeExpr variant: " + name);
 }
 

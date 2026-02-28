@@ -573,9 +573,18 @@ mod platform {
     }
 
     extern "C" {
-        // MSVC setjmp: int _setjmp(jmp_buf env, void* frame_addr)
-        // The setjmp macro passes NULL for frame_addr on x64.
-        fn _setjmp(env: *mut SigJmpBuf, frame: *mut c_void) -> i32;
+        // _setjmp must be called directly in the recovery frame — never via
+        // a Rust wrapper — because it saves the caller's registers (RSP, RIP).
+        // A wrapper would save the wrapper's frame, which becomes invalid after
+        // the wrapper returns.
+        //
+        // We declare it as `sigsetjmp` with #[link_name] so the scheduler can
+        // call `crate::signal::sigsetjmp(ptr, 1)` uniformly across platforms.
+        // The second parameter is actually `void* frame_addr` in _setjmp, but
+        // on x64 both int and pointer use the RDX register. _setjmp handles
+        // an invalid frame address by falling back to its own heuristics.
+        #[link_name = "_setjmp"]
+        pub(crate) fn sigsetjmp(env: *mut SigJmpBuf, savemask: libc::c_int) -> libc::c_int;
         fn longjmp(env: *mut SigJmpBuf, val: i32) -> !;
     }
 
@@ -736,15 +745,6 @@ mod platform {
         }
         let ctx = unsafe { &mut *ctx };
         ctx.jmp_buf_valid.store(true, Ordering::Release);
-    }
-
-    /// Windows `_setjmp` wrapper, matching the Unix `sigsetjmp` signature.
-    ///
-    /// # Safety
-    ///
-    /// `env` must point to a valid `SigJmpBuf`.
-    pub(crate) unsafe fn sigsetjmp(env: *mut SigJmpBuf, _savemask: libc::c_int) -> libc::c_int {
-        unsafe { _setjmp(env, ptr::null_mut()) }
     }
 
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {

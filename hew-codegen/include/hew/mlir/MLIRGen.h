@@ -171,6 +171,7 @@ private:
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
   mlir::Value generateTupleExpr(const ast::ExprTuple &expr);
   mlir::Value generateArrayExpr(const ast::ExprArray &expr);
+  mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
   mlir::Value generateScopeExpr(const ast::ExprScope &expr);
   mlir::Value generateScopeLaunchExpr(const ast::ExprScopeLaunch &expr);
@@ -197,6 +198,10 @@ private:
                                      size_t idx, mlir::Type resultType, mlir::Location location);
   mlir::Value generateOrPatternCondition(mlir::Value scrutinee, const ast::Pattern &pattern,
                                          mlir::Location location);
+
+  // ── If-let ───────────────────────────────────────────────────────
+  void generateIfLetStmt(const ast::StmtIfLet &stmt);
+  mlir::Value generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Span &exprSpan);
 
   // ── Loop/Break/Continue ─────────────────────────────────────────
   void generateLoopStmt(const ast::StmtLoop &stmt);

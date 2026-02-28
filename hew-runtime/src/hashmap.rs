@@ -234,6 +234,9 @@ pub unsafe extern "C" fn hew_hashmap_insert_impl(
                     } else {
                         libc::strdup(val_str)
                     };
+                    if !val_str.is_null() && entry.value_str.is_null() {
+                        libc::abort();
+                    }
                     return;
                 }
                 idx = (idx + 1) & mask;
@@ -242,12 +245,18 @@ pub unsafe extern "C" fn hew_hashmap_insert_impl(
             // Empty or tombstone slot — insert here.
             entry.state = OCCUPIED;
             entry.key = libc::strdup(key);
+            if entry.key.is_null() {
+                libc::abort();
+            }
             entry.value_i32 = val_i32;
             entry.value_str = if val_str.is_null() {
                 ptr::null_mut()
             } else {
                 libc::strdup(val_str)
             };
+            if !val_str.is_null() && entry.value_str.is_null() {
+                libc::abort();
+            }
             entry.value_i64 = 0;
             entry.value_f64 = 0.0;
             (*m).len += 1;
@@ -284,6 +293,9 @@ pub unsafe extern "C" fn hew_hashmap_insert_i64(m: *mut HewHashMap, key: *const 
             }
             entry.state = OCCUPIED;
             entry.key = libc::strdup(key);
+            if entry.key.is_null() {
+                libc::abort();
+            }
             entry.value_i64 = val;
             entry.value_i32 = 0;
             entry.value_str = ptr::null_mut();
@@ -322,6 +334,9 @@ pub unsafe extern "C" fn hew_hashmap_insert_f64(m: *mut HewHashMap, key: *const 
             }
             entry.state = OCCUPIED;
             entry.key = libc::strdup(key);
+            if entry.key.is_null() {
+                libc::abort();
+            }
             entry.value_f64 = val;
             entry.value_i32 = 0;
             entry.value_str = ptr::null_mut();
@@ -375,7 +390,11 @@ pub unsafe extern "C" fn hew_hashmap_get_str_impl(
         if raw.is_null() {
             ptr::null()
         } else {
-            libc::strdup(raw)
+            let result = libc::strdup(raw);
+            if result.is_null() {
+                libc::abort();
+            }
+            result
         }
     }
 }

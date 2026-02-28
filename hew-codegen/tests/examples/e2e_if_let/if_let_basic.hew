@@ -1,0 +1,34 @@
+// Test if-let pattern matching with Option types
+// Tests both Some and None cases, with and without else branches
+
+fn main() -> int {
+    // Test Some case
+    let x: Option<int> = Some(42);
+    if let Some(val) = x {
+        println(val);
+    }
+    
+    // Test None case without else
+    let y: Option<int> = None;
+    if let Some(val) = y {
+        println(val);
+    }
+    
+    // Test None case with else
+    let z: Option<int> = None;
+    if let Some(val) = z {
+        println(val);
+    } else {
+        println("none");
+    }
+    
+    // Test Some case with else
+    let w: Option<int> = Some(99);
+    if let Some(val) = w {
+        println(val);
+    } else {
+        println("should not print");
+    }
+    
+    return 0;
+}

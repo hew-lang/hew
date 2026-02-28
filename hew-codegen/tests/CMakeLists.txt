@@ -272,6 +272,9 @@ add_e2e_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
 # Hex/octal/binary literals (1 test)
 add_e2e_file_test(hex_literals         e2e_hex_literals hex_literals)
 
+# Arrays (1 test)
+add_e2e_file_test(array_repeat        e2e_array array_repeat)
+
 # Algorithms (12 tests)
 add_e2e_file_test(binary_search       e2e_algorithms binary_search)
 add_e2e_file_test(fibonacci           e2e_algorithms fibonacci)
@@ -360,6 +363,9 @@ add_e2e_file_test(vec_get_borrowed    e2e_memory vec_get_borrowed_string)
 
 # String Drop (RAII cleanup for heap-allocated strings)
 add_e2e_file_test(string_drop         e2e_string_drop string_drop)
+
+# String Ordering (lexicographic comparison)
+add_e2e_file_test(string_ordering     e2e_string_ordering string_ordering)
 
 # Move Closures
 add_e2e_file_test(move_closure        e2e_move_closure move_closure)
@@ -465,6 +471,7 @@ add_e2e_file_test(closure_env_rc        e2e_closure_env_rc closure_env_rc)
 # ── Mutable variable capture in closures ──────────────────────────────────────
 add_e2e_file_test(closure_mutable_capture  e2e_closures closure_mutable_capture)
 add_e2e_file_test(closure_read_mutable     e2e_closures closure_read_mutable)
+add_e2e_file_test(closure_match_capture    e2e_closures closure_match_capture)
 
 # ── dyn Trait tests ──────────────────────────────────────────────────────────
 add_e2e_file_test(dyn_dispatch          e2e_dyn_trait dyn_dispatch)
@@ -659,6 +666,9 @@ add_e2e_file_test(for_labels           e2e_for_labels for_labels)
 add_e2e_file_test(tail_call            e2e_tail_call tail_call)
 add_e2e_file_test(vec_bool             e2e_vec vec_bool)
 add_e2e_file_test(tuple_pattern        e2e_match tuple_pattern)
+add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_last_arm)
+add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
+add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
 
 # ── Coverage tests (ops with zero prior E2E coverage) ────────────────────────
 add_e2e_file_test(coverage_assert_ops         e2e_coverage assert_ops)
@@ -756,6 +766,7 @@ add_wasm_test(break_with_value test_break_with_value.hew "7\n")
 add_wasm_file_test(type_aliases         e2e_type_aliases type_aliases)
 add_wasm_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
 add_wasm_file_test(hex_literals         e2e_hex_literals hex_literals)
+add_wasm_file_test(array_repeat         e2e_array array_repeat)
 add_wasm_file_test(dynamic_index        e2e_array dynamic_index)
 add_wasm_file_test(duration             e2e_duration duration)
 
@@ -814,6 +825,7 @@ add_wasm_file_test(closure_firstclass   e2e_closure_firstclass closure_firstclas
 add_wasm_file_test(closure_env_rc       e2e_closure_env_rc closure_env_rc)
 add_wasm_file_test(closure_mutable      e2e_closures closure_mutable_capture)
 add_wasm_file_test(closure_read_mutable e2e_closures closure_read_mutable)
+add_wasm_file_test(closure_match_capture e2e_closures closure_match_capture)
 add_wasm_file_test(move_closure         e2e_move_closure move_closure)
 
 # Struct/tuple features

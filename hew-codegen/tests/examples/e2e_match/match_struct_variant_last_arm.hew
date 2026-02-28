@@ -1,0 +1,19 @@
+// Test modified to have struct pattern as last arm
+enum Shape {
+    Circle { radius: int };
+    Point;
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Point => 0,
+        Circle { radius } => radius * radius * 3,  // Struct pattern as last arm
+    }
+}
+
+fn main() {
+    let c = Circle { radius: 5 };
+    let p = Point;
+    println(area(c));
+    println(area(p));
+}

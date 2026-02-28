@@ -6,6 +6,7 @@ add_library(HewMLIRDialect STATIC
   mlir/MLIRGenStmt.cpp
   mlir/MLIRGenExpr.cpp
   mlir/MLIRGenMatch.cpp
+  mlir/MLIRGenIfLet.cpp
   mlir/MLIRGenActor.cpp
   mlir/MLIRGenWire.cpp
   mlir/MLIRGenSupervisor.cpp

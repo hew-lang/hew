@@ -427,6 +427,35 @@ pub unsafe extern "C" fn hew_string_length(s: *const c_char) -> i32 {
     unsafe { cstr_len(s) as i32 }
 }
 
+/// Lexicographic comparison of two C strings.
+/// Returns −1 if `a < b`, 0 if `a == b`, 1 if `a > b`.
+/// Null is treated as less than any non-null string; two nulls are equal.
+///
+/// # Safety
+///
+/// Both `a` and `b` must be valid NUL-terminated C strings (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_compare(a: *const c_char, b: *const c_char) -> i32 {
+    if a.is_null() && b.is_null() {
+        return 0;
+    }
+    if a.is_null() {
+        return -1;
+    }
+    if b.is_null() {
+        return 1;
+    }
+    // SAFETY: Both pointers are valid NUL-terminated C strings per caller contract.
+    let cmp = unsafe { libc::strcmp(a, b) };
+    if cmp < 0 {
+        -1
+    } else if cmp > 0 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Compare two C strings for equality. Returns 1 if equal, 0 otherwise.
 ///
 /// # Safety
@@ -1019,6 +1048,37 @@ mod tests {
         let c = CString::new("world").unwrap();
         assert_eq!(unsafe { hew_string_equals(a.as_ptr(), b.as_ptr()) }, 1);
         assert_eq!(unsafe { hew_string_equals(a.as_ptr(), c.as_ptr()) }, 0);
+    }
+
+    #[test]
+    fn test_string_compare() {
+        let apple = CString::new("apple").unwrap();
+        let banana = CString::new("banana").unwrap();
+        let cherry = CString::new("cherry").unwrap();
+        assert_eq!(
+            unsafe { hew_string_compare(apple.as_ptr(), banana.as_ptr()) },
+            -1
+        );
+        assert_eq!(
+            unsafe { hew_string_compare(cherry.as_ptr(), banana.as_ptr()) },
+            1
+        );
+        assert_eq!(
+            unsafe { hew_string_compare(banana.as_ptr(), banana.as_ptr()) },
+            0
+        );
+        assert_eq!(
+            unsafe { hew_string_compare(std::ptr::null(), banana.as_ptr()) },
+            -1
+        );
+        assert_eq!(
+            unsafe { hew_string_compare(banana.as_ptr(), std::ptr::null()) },
+            1
+        );
+        assert_eq!(
+            unsafe { hew_string_compare(std::ptr::null(), std::ptr::null()) },
+            0
+        );
     }
 
     #[test]

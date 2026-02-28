@@ -1,0 +1,12 @@
+before if-let
+matched, returning
+42
+before if-let
+after if-let (should not print if matched)
+-1
+before if-let with else
+matched some
+99
+before if-let with else
+matched none, returning
+0

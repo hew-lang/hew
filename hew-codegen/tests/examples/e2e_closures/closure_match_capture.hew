@@ -1,0 +1,38 @@
+// Regression test: ensure closures don't capture pattern-bound variables.
+
+enum Case {
+    Ok(int);
+    Err(int);
+}
+
+fn make_processor(values: Vec<Case>) -> fn() {
+    let bonus = 7;
+
+    return () => {
+        var total = 0;
+
+        for entry in values {
+            total = total + match entry {
+                Ok(val) => val + bonus,
+                Err(val) => bonus - val,
+            };
+        }
+
+        let maybe_extra = Ok(3);
+        if let Ok(extra) = maybe_extra {
+            total = total + extra + bonus;
+        }
+
+        println(total);
+    };
+}
+
+fn main() {
+    let values: Vec<Case> = Vec::new();
+    values.push(Ok(4));
+    values.push(Err(2));
+    values.push(Ok(1));
+
+    let process = make_processor(values);
+    process();
+}

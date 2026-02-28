@@ -1,0 +1,12 @@
+fn main() -> int {
+    let v = [0; 5];
+    println(v.len());
+    println(v[0]);
+    println(v[4]);
+
+    let w = [42; 3];
+    println(w.len());
+    println(w[0]);
+    println(w[2]);
+    return 0;
+}

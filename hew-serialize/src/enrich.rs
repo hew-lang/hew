@@ -210,12 +210,12 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             TypeExpr::TraitObject(bounds?)
         }
 
-        Ty::Unit
-        | Ty::Var(_)
-        | Ty::Error
-        | Ty::Generator { .. }
-        | Ty::AsyncGenerator { .. }
-        | Ty::Range(_) => return None,
+        // Skip these types gracefully — C++ codegen handles them via
+        // built-in type logic, not through the expr_types map
+        Ty::Unit | Ty::Generator { .. } | Ty::AsyncGenerator { .. } | Ty::Range(_) => return None,
+
+        // Skip these types gracefully - they shouldn't be serialized
+        Ty::Var(_) | Ty::Error => return None,
     };
 
     Some((te, span))
@@ -1293,7 +1293,7 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::ImportDecl;
+    use hew_parser::ast::{ImportDecl, Visibility};
 
     // -----------------------------------------------------------------------
     // normalize_type_expr tests
@@ -1726,7 +1726,11 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_unit_returns_none() {
-        assert!(ty_to_type_expr(&Ty::Unit).is_none());
+        let result = ty_to_type_expr(&Ty::Unit);
+        assert!(
+            result.is_none(),
+            "Unit should return None (C++ handles via built-in logic)"
+        );
     }
 
     #[test]
@@ -1854,6 +1858,47 @@ mod tests {
         } else {
             panic!("expected Pointer");
         }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_generator() {
+        let ty = Ty::Generator {
+            yields: Box::new(Ty::I32),
+            returns: Box::new(Ty::String),
+        };
+        let result = ty_to_type_expr(&ty);
+        assert!(
+            result.is_none(),
+            "Generator should return None (C++ handles via built-in logic)"
+        );
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_async_generator() {
+        let ty = Ty::AsyncGenerator {
+            yields: Box::new(Ty::I32),
+        };
+        let result = ty_to_type_expr(&ty);
+        assert!(
+            result.is_none(),
+            "AsyncGenerator should return None (C++ handles via built-in logic)"
+        );
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_range() {
+        let ty = Ty::Range(Box::new(Ty::I32));
+        let result = ty_to_type_expr(&ty);
+        assert!(
+            result.is_none(),
+            "Range should return None (C++ handles via built-in logic)"
+        );
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_var_returns_none() {
+        use hew_types::ty::TypeVar;
+        assert!(ty_to_type_expr(&Ty::Var(TypeVar(123))).is_none());
     }
 
     // -----------------------------------------------------------------------

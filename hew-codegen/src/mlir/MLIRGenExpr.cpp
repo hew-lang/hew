@@ -29,6 +29,7 @@
 
 #include "llvm/ADT/ScopedHashTable.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -177,14 +178,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateInterpolatedString(*interp);
   if (auto *regex = std::get_if<ast::ExprRegexLiteral>(&expr.kind))
     return generateRegexLiteral(*regex);
-  if (std::get_if<ast::ExprIfLet>(&expr.kind)) {
-    emitError(currentLoc) << "if-let expressions not yet supported in codegen";
-    return nullptr;
-  }
-  if (std::get_if<ast::ExprArrayRepeat>(&expr.kind)) {
-    emitError(currentLoc) << "array repeat expressions not yet supported in codegen";
-    return nullptr;
-  }
+  if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind))
+    return generateIfLetExpr(*ifLet, expr.span);
+  if (auto *arrRepeat = std::get_if<ast::ExprArrayRepeat>(&expr.kind))
+    return generateArrayRepeatExpr(*arrRepeat, expr.span);
   if (auto *to = std::get_if<ast::ExprTimeout>(&expr.kind)) {
     // Evaluate duration for validation but discard; timeout not yet enforced
     generateExpression(to->duration->value);
@@ -915,6 +912,28 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLT, lhs, rhs)
           .getResult();
+    if (isPtr) {
+      // Actor pointers cannot be ordered — only equality comparison is valid
+      bool isActorPtr = false;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (isActorPtr) {
+        emitError(location, "ordering comparison on actor references is not supported");
+        return nullptr;
+      }
+      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                           builder.getStringAttr("compare"), lhs,
+                                                           mlir::ValueRange{rhs});
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      return builder
+          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt,
+                                       cmpResult.getResult(), zero)
+          .getResult();
+    }
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ult
@@ -926,6 +945,27 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLE, lhs, rhs)
           .getResult();
+    if (isPtr) {
+      bool isActorPtr = false;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (isActorPtr) {
+        emitError(location, "ordering comparison on actor references is not supported");
+        return nullptr;
+      }
+      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                           builder.getStringAttr("compare"), lhs,
+                                                           mlir::ValueRange{rhs});
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      return builder
+          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sle,
+                                       cmpResult.getResult(), zero)
+          .getResult();
+    }
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ule
@@ -937,6 +977,27 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGT, lhs, rhs)
           .getResult();
+    if (isPtr) {
+      bool isActorPtr = false;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (isActorPtr) {
+        emitError(location, "ordering comparison on actor references is not supported");
+        return nullptr;
+      }
+      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                           builder.getStringAttr("compare"), lhs,
+                                                           mlir::ValueRange{rhs});
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      return builder
+          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sgt,
+                                       cmpResult.getResult(), zero)
+          .getResult();
+    }
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::ugt
@@ -948,6 +1009,27 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return builder
           .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGE, lhs, rhs)
           .getResult();
+    if (isPtr) {
+      bool isActorPtr = false;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.left->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&expr.right->value.kind))
+        if (actorVarTypes.count(ie->name))
+          isActorPtr = true;
+      if (isActorPtr) {
+        emitError(location, "ordering comparison on actor references is not supported");
+        return nullptr;
+      }
+      auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
+                                                           builder.getStringAttr("compare"), lhs,
+                                                           mlir::ValueRange{rhs});
+      auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
+      return builder
+          .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sge,
+                                       cmpResult.getResult(), zero)
+          .getResult();
+    }
     return builder
         .create<mlir::arith::CmpIOp>(location,
                                      isUnsigned ? mlir::arith::CmpIPredicate::uge
@@ -1065,7 +1147,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
 
   case ast::BinaryOp::RangeInclusive: {
     // Treat as range expression: start..=end -> (start, end+1)
-    if (rhs.getType().isInteger(64) || rhs.getType().isIndex()) {
+    if (rhs.getType().isIntOrIndex()) {
       auto one = createIntConstant(builder, location, rhs.getType(), 1);
       rhs = builder.create<mlir::arith::AddIOp>(location, rhs, one);
     } else {
@@ -3146,9 +3228,91 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   return builder.create<hew::ArrayCreateOp>(location, arrayType, values);
 }
 
+mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
+                                             const ast::Span &exprSpan) {
+  auto location = currentLoc;
+
+  if (!repeat.value || !repeat.count) {
+    emitError(location) << "array repeat expression requires value and count";
+    return nullptr;
+  }
+
+  auto countVal = generateExpression(repeat.count->value);
+  if (!countVal)
+    return nullptr;
+
+  auto i64Type = builder.getI64Type();
+  bool countUnsigned = false;
+  if (auto *countType = resolvedTypeOf(repeat.count->span))
+    countUnsigned = isUnsignedTypeExpr(*countType);
+  countVal = coerceType(countVal, i64Type, location, countUnsigned);
+
+  auto valueVal = generateExpression(repeat.value->value);
+  if (!valueVal)
+    return nullptr;
+
+  mlir::Type elementType = valueVal.getType();
+  hew::VecType vecType = nullptr;
+  if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    auto resolvedMlirType = convertType(*resolvedType);
+    if (auto resolvedVec = mlir::dyn_cast<hew::VecType>(resolvedMlirType)) {
+      vecType = resolvedVec;
+      elementType = resolvedVec.getElementType();
+      valueVal = coerceType(valueVal, elementType, location);
+    } else {
+      emitError(location) << "array repeat expression must produce a Vec";
+      return nullptr;
+    }
+  }
+  if (!vecType)
+    vecType = hew::VecType::get(&context, elementType);
+
+  auto vecValue = builder.create<hew::VecNewOp>(location, vecType).getResult();
+
+  auto zero = createIntConstant(builder, location, i64Type, 0);
+  auto one = createIntConstant(builder, location, i64Type, 1);
+  auto loop = builder.create<mlir::scf::ForOp>(location, zero, countVal, one);
+  auto *body = loop.getBody();
+  builder.setInsertionPoint(body->getTerminator());
+  builder.create<hew::VecPushOp>(location, vecValue, valueVal);
+  builder.setInsertionPointAfter(loop);
+
+  return vecValue;
+}
+
 // ============================================================================
 // Free variable collection (for lambda closure capture)
 // ============================================================================
+
+static void collectPatternBindings(const ast::Pattern &pat, llvm::StringSet<> &bound) {
+  if (auto *ident = std::get_if<ast::PatIdentifier>(&pat.kind)) {
+    if (!ident->name.empty())
+      bound.insert(ident->name);
+  } else if (auto *ctor = std::get_if<ast::PatConstructor>(&pat.kind)) {
+    for (const auto &nested : ctor->patterns)
+      collectPatternBindings(nested->value, bound);
+  } else if (auto *ps = std::get_if<ast::PatStruct>(&pat.kind)) {
+    for (const auto &field : ps->fields) {
+      if (field.pattern)
+        collectPatternBindings(field.pattern->value, bound);
+    }
+  } else if (auto *tuple = std::get_if<ast::PatTuple>(&pat.kind)) {
+    for (const auto &elem : tuple->elements)
+      collectPatternBindings(elem->value, bound);
+  } else if (auto *patOr = std::get_if<ast::PatOr>(&pat.kind)) {
+    if (patOr->left)
+      collectPatternBindings(patOr->left->value, bound);
+    else if (patOr->right)
+      collectPatternBindings(patOr->right->value, bound);
+  }
+}
+
+static void addPatternBindingsToSet(const ast::Pattern &pat, std::set<std::string> &bound) {
+  llvm::StringSet<> patternBindings;
+  collectPatternBindings(pat, patternBindings);
+  for (const auto &entry : patternBindings)
+    bound.insert(entry.getKey().str());
+}
 
 void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::string> &bound,
                                     std::set<std::string> &freeVars) {
@@ -3195,10 +3359,12 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
   } else if (auto *me = std::get_if<ast::ExprMatch>(&expr.kind)) {
     collectFreeVarsInExpr(me->scrutinee->value, bound, freeVars);
     for (const auto &arm : me->arms) {
+      auto armBound = bound;
+      addPatternBindingsToSet(arm.pattern.value, armBound);
       if (arm.guard)
-        collectFreeVarsInExpr(arm.guard->value, bound, freeVars);
+        collectFreeVarsInExpr(arm.guard->value, armBound, freeVars);
       if (arm.body)
-        collectFreeVarsInExpr(arm.body->value, bound, freeVars);
+        collectFreeVarsInExpr(arm.body->value, armBound, freeVars);
     }
   } else if (auto *awaitE = std::get_if<ast::ExprAwait>(&expr.kind)) {
     collectFreeVarsInExpr(awaitE->inner->value, bound, freeVars);
@@ -3212,6 +3378,19 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
           collectFreeVarsInExpr(ep->expr->value, bound, freeVars);
       }
     }
+  } else if (auto *ile = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+    if (ile->expr)
+      collectFreeVarsInExpr(ile->expr->value, bound, freeVars);
+    auto thenBound = bound;
+    addPatternBindingsToSet(ile->pattern.value, thenBound);
+    collectFreeVarsInBlock(ile->body, thenBound, freeVars);
+    if (ile->else_body)
+      collectFreeVarsInBlock(*ile->else_body, bound, freeVars);
+  } else if (auto *arep = std::get_if<ast::ExprArrayRepeat>(&expr.kind)) {
+    if (arep->value)
+      collectFreeVarsInExpr(arep->value->value, bound, freeVars);
+    if (arep->count)
+      collectFreeVarsInExpr(arep->count->value, bound, freeVars);
   }
   // Literal, Lambda (nested), Spawn, Scope, etc. — skip
 }
@@ -3221,9 +3400,8 @@ void MLIRGen::collectFreeVarsInStmt(const ast::Stmt &stmt, std::set<std::string>
   if (auto *ls = std::get_if<ast::StmtLet>(&stmt.kind)) {
     if (ls->value.has_value())
       collectFreeVarsInExpr(ls->value->value, bound, freeVars);
-    // After evaluating the RHS, bind the name
-    if (auto *ip = std::get_if<ast::PatIdentifier>(&ls->pattern.value.kind))
-      bound.insert(ip->name);
+    // After evaluating the RHS, bind the pattern names
+    addPatternBindingsToSet(ls->pattern.value, bound);
   } else if (auto *vs = std::get_if<ast::StmtVar>(&stmt.kind)) {
     if (vs->value.has_value())
       collectFreeVarsInExpr(vs->value->value, bound, freeVars);
@@ -3245,12 +3423,22 @@ void MLIRGen::collectFreeVarsInStmt(const ast::Stmt &stmt, std::set<std::string>
       if (is->else_block->if_stmt)
         collectFreeVarsInStmt(is->else_block->if_stmt->value, bound, freeVars);
     }
+  } else if (auto *ils = std::get_if<ast::StmtIfLet>(&stmt.kind)) {
+    if (ils->expr)
+      collectFreeVarsInExpr(ils->expr->value, bound, freeVars);
+    auto thenBound = bound;
+    addPatternBindingsToSet(ils->pattern.value, thenBound);
+    collectFreeVarsInBlock(ils->body, thenBound, freeVars);
+    if (ils->else_body)
+      collectFreeVarsInBlock(*ils->else_body, bound, freeVars);
   } else if (auto *ws = std::get_if<ast::StmtWhile>(&stmt.kind)) {
     collectFreeVarsInExpr(ws->condition.value, bound, freeVars);
     collectFreeVarsInBlock(ws->body, bound, freeVars);
   } else if (auto *fs = std::get_if<ast::StmtFor>(&stmt.kind)) {
     collectFreeVarsInExpr(fs->iterable.value, bound, freeVars);
-    collectFreeVarsInBlock(fs->body, bound, freeVars);
+    auto loopBound = bound;
+    addPatternBindingsToSet(fs->pattern.value, loopBound);
+    collectFreeVarsInBlock(fs->body, loopBound, freeVars);
   } else if (auto *ls2 = std::get_if<ast::StmtLoop>(&stmt.kind)) {
     collectFreeVarsInBlock(ls2->body, bound, freeVars);
   }

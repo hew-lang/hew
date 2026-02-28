@@ -1,0 +1,53 @@
+// Test that returning from inside an if-let body actually returns
+// This tests the fix for stmtMightContainReturn missing StmtIfLet
+
+fn test_if_let_return(opt: Option<int>) -> int {
+    println("before if-let");
+    
+    if let Some(val) = opt {
+        println("matched, returning");
+        return val;
+    }
+    
+    // This should NOT execute if we matched and returned
+    println("after if-let (should not print if matched)");
+    return -1;
+}
+
+fn test_if_let_return_in_else(opt: Option<int>) -> int {
+    println("before if-let with else");
+    
+    if let Some(val) = opt {
+        println("matched some");
+        return val;
+    } else {
+        println("matched none, returning");
+        return 0;
+    }
+    
+    // This should NEVER execute
+    println("unreachable");
+    return -1;
+}
+
+fn main() -> int {
+    // Test 1: return from then-body with Some
+    let result1 = test_if_let_return(Some(42));
+    println(result1);
+    
+    // Test 2: fall-through with None
+    let none_val: Option<int> = None;
+    let result2 = test_if_let_return(none_val);
+    println(result2);
+    
+    // Test 3: return from then-body with Some
+    let result3 = test_if_let_return_in_else(Some(99));
+    println(result3);
+    
+    // Test 4: return from else-body with None
+    let none_val2: Option<int> = None;
+    let result4 = test_if_let_return_in_else(none_val2);
+    println(result4);
+    
+    return 0;
+}

@@ -36,12 +36,22 @@
 - Type checker: `dyn Trait<Args>` method dispatch now substitutes bound type args into signatures
 - Type checker: lambda arity mismatch now detected (1-param lambda can't pass as `fn(int,int)->int`)
 - Type checker: OR-patterns (`Some(x) | None`) now counted in exhaustiveness checks
+- Type checker: guarded wildcard/identifier patterns no longer count as exhaustive (`_ if false => ...` warns)
 - Parser: missing parameter type annotation now reports error instead of silent drop
 - Parser: `pub(invalid)` now defaults to private instead of silently promoting to pub
 - Parser: string interpolation sub-parser errors now propagated to parent
 - Parser: empty struct literal `Foo {}` now parses correctly for zero-field structs
 - Parser: invalid escape sequences now report error instead of silent failure
 - Parser: positional args after named args now skipped instead of producing malformed AST
+- Codegen: string ordering operators (`<`, `<=`, `>`, `>=`) now use lexicographic comparison instead of pointer comparison
+- Codegen: `if let` statements now fully implemented (pattern matching with variable binding)
+- Codegen: array repeat expressions `[val; count]` now generate Vec with runtime loop
+- Codegen: struct variant patterns as last match arm now check tag (fixes UB with wrong variant)
+- Codegen: `if let` bodies with `return`/`break`/`continue` now correctly guard subsequent code
+- Codegen: lambda capture analysis now respects pattern-bound variables in match/for/if-let
+- Codegen: `ExprIfLet` and `ExprArrayRepeat` inside lambdas now correctly tracked for capture analysis
+- Codegen: `..=` inclusive range now accepts all integer widths (was only i64/index)
+- Codegen: ordering operators on actor pointers now emit error instead of calling string compare (prevents UB)
 - Codegen: indexed compound assignment (`v[i] += 1`) now applies the operator (was silently dropping it)
 - Codegen: HashSet insert/contains/remove no longer double-evaluate argument expressions
 - Codegen: Vec<bool> now uses consistent runtime suffixes (fixes data corruption)
@@ -55,8 +65,10 @@
 - Codegen: IfLet, ArrayRepeat, generic lambda type_params now deserialize without crash
 - Codegen: TypeExpr::Infer now deserializes in C++ (was crashing with unknown variant)
 - Runtime: HashMap/Vec string getters return owned copies (prevents use-after-free)
+- Runtime: HashMap strdup calls now abort on NULL (prevents silent corruption on OOM)
+- Runtime: `hew_string_compare` added for correct lexicographic string ordering
 - Zero compiler warnings across entire Rust workspace
-- All 321 codegen e2e tests pass (bench_basic stdlib fixed)
+- All 327 codegen e2e tests pass (up from 321)
 
 ### Changed
 

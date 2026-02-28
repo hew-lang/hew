@@ -3095,19 +3095,19 @@ impl Checker {
                         format!("array repeat count must be an integer, found `{resolved_count}`"),
                     );
                 }
-                let size = match &count.0 {
-                    Expr::Literal(Literal::Integer { value, .. }) if *value >= 0 => *value as u64,
-                    Expr::Literal(Literal::Integer { .. }) => {
+                if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
+                    if *value < 0 {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &count.1,
                             "array repeat count cannot be negative".to_string(),
                         );
-                        0
                     }
-                    _ => 0,
-                };
-                Ty::Array(Box::new(elem_ty), size)
+                }
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![elem_ty],
+                }
             }
 
             // Struct init
@@ -6307,6 +6307,9 @@ impl Checker {
 
         let mut has_wildcard = false;
         for arm in arms {
+            if arm.guard.is_some() {
+                continue;
+            }
             visit_or_patterns(&arm.pattern.0, &mut |pattern| {
                 if matches!(pattern, Pattern::Wildcard) {
                     has_wildcard = true;
@@ -6324,6 +6327,9 @@ impl Checker {
                         let mut has_binding_identifier = false;
                         let mut covered = Vec::new();
                         for arm in arms {
+                            if arm.guard.is_some() {
+                                continue;
+                            }
                             visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                                 Pattern::Constructor { name, .. }
                                 | Pattern::Struct { name, .. } => covered.push(name.clone()),
@@ -6367,6 +6373,9 @@ impl Checker {
                 let mut has_true = false;
                 let mut has_false = false;
                 for arm in arms {
+                    if arm.guard.is_some() {
+                        continue;
+                    }
                     visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                         Pattern::Identifier(_) => {
                             has_binding_identifier = true;
@@ -6399,6 +6408,9 @@ impl Checker {
                 let mut has_some = false;
                 let mut has_none = false;
                 for arm in arms {
+                    if arm.guard.is_some() {
+                        continue;
+                    }
                     visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                         Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
                             if name == "Some" =>
@@ -6442,6 +6454,9 @@ impl Checker {
                 let mut has_ok = false;
                 let mut has_err = false;
                 for arm in arms {
+                    if arm.guard.is_some() {
+                        continue;
+                    }
                     visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                         Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
                             if name == "Ok" =>
@@ -7374,6 +7389,29 @@ mod tests {
         let (errors, warnings) = parse_and_check(concat!(
             "enum Light { Red; Green; }\n",
             "fn main() { let v: Light = Red; match v { Red => 1, } let _done = 0; }\n",
+        ));
+        assert!(
+            errors.is_empty(),
+            "expected only a warning but got errors: {errors:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "expected non-exhaustive match warning, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn typecheck_guarded_wildcard_not_exhaustive() {
+        let (errors, warnings) = parse_and_check(concat!(
+            "fn main() {\n",
+            "    let x = true;\n",
+            "    match x {\n",
+            "        _ if false => 0,\n",
+            "    }\n",
+            "    let _done = 0;\n",
+            "}\n",
         ));
         assert!(
             errors.is_empty(),

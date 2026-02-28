@@ -1,0 +1,7 @@
+fn main() -> int {
+    if "apple" < "banana" { println("apple < banana"); }
+    if "cherry" > "banana" { println("cherry > banana"); }
+    if "abc" <= "abc" { println("abc <= abc"); }
+    if "xyz" >= "abc" { println("xyz >= abc"); }
+    return 0;
+}

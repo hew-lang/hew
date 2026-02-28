@@ -471,7 +471,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   // Wildcard or last arm without guard: generate body directly
   if ((isWildcard && !arm.guard) ||
       (isLast && !isLiteral && !isEnumVariantPattern && !isConstructorPattern && !isOrPattern &&
-       !isTuplePattern && !arm.guard)) {
+       !isTuplePattern && !isStructVariantPattern && !arm.guard)) {
     return generateArmBody(arm);
   }
 

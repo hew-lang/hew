@@ -295,3 +295,44 @@ generateExpression — use AST type info or pass the generated value through.
 Going from 314/316 to 317/318 to 321/321 across sprints shows that
 persistent, methodical quality work pays compound returns. Each sprint fixes
 the bugs that the previous sprint's fixes revealed.
+
+### 42. "Last arm" match optimizations must exclude ALL structured patterns
+
+The match codegen had a "last arm shortcut" that skipped tag checks for
+the final arm if it wasn't a literal, constructor, or enum variant. But it
+forgot struct variant patterns — any optimization that bypasses tag checks
+must be excluded for ALL pattern types that depend on the tag being correct.
+Check the exclusion list whenever adding new pattern types.
+
+### 43. New statement types need return/break/continue guard registration
+
+When adding a new statement type (e.g., StmtIfLet), it must be registered
+in `stmtMightContainReturn` and `stmtMightContainBreakOrContinue` in
+MLIRGenHelpers.h. Without this, the return-flag guard mechanism won't fire
+after the new statement type, allowing post-return code to execute.
+
+### 44. Lambda capture analysis must mirror AST traversal completeness
+
+Every new expression type (ExprIfLet, ExprArrayRepeat) must be handled in
+both `collectFreeVarsInExpr` and `collectFreeVarsInStmt`. Pattern-bound
+variables must be added to the `bound` set before traversing sub-expressions.
+Missing any expression type causes false captures (outer variables captured
+when they shouldn't be) or missed captures (variables not captured when
+they should be).
+
+### 45. Multi-model analysis catches different bug categories
+
+Different AI models find different classes of bugs. Claude Opus 4.6 found
+structural codegen bugs (match bypass, lambda capture). GPT-5.2 Codex
+found type system logical errors (exhaustiveness, trait resolution).
+Claude Sonnet 4.5 found memory safety issues. Pragmatic code reviewers
+catch integration bugs the implementers miss. Using diverse models in
+parallel maximizes bug coverage.
+
+### 46. Type enrichment should return None for types the backend doesn't need
+
+Mapping internal types (Unit, Generator, AsyncGenerator, Range) to
+TypeExpr::Named causes "unresolved type" errors in C++ codegen. The correct
+approach is to return None — the backend handles these via built-in type
+logic, not through the expr_types map. Only map types that the C++ side
+actually looks up.

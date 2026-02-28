@@ -403,3 +403,55 @@ tests passing** (100%) for the first time.
   i64/i32 division, making `e2e_bench_bench_basic` pass.
 
 **Test results**: 321/321 codegen e2e (100%), 259 type checker, 111 parser.
+
+### Quality Sprint 5: String Ordering, If-Let Codegen, Array Repeat
+
+Fifth round focused on implementing three codegen features that were parsed
+and type-checked but emitted stubs or errors during code generation.
+
+- **String ordering**: `<`, `<=`, `>`, `>=` on strings compared raw pointers
+  instead of lexicographic content. Added `hew_string_compare` runtime
+  function using `strcmp` with null safety, and updated all four ordering
+  operators to call it. Added actor-pointer guards to prevent UB when
+  accidentally ordering actor references.
+- **If-let codegen**: `if let Some(x) = opt { ... }` was a dead stub in
+  codegen. Created `MLIRGenIfLet.cpp` with full implementation: pattern test
+  via `EnumGetTagOp`, binding via `EnumExtractPayloadOp`, scf::IfOp for
+  branching. Works for both statement and expression forms.
+- **Array repeat codegen**: `[value; count]` was a dead stub. Implemented as
+  VecNewOp + loop of VecPushOp, matching the type checker's decision to type
+  `[expr; n]` as `Vec<T>`.
+- **Enrichment revert**: Mapping Unit/Generator/AsyncGenerator/Range to
+  TypeExpr::Named caused "unresolved type" errors in C++ codegen. Reverted
+  to returning None — these types are handled by built-in codegen logic.
+
+### Quality Sprint 6: Match Safety, Capture Analysis, Exhaustiveness
+
+Sixth round addressed critical correctness bugs found by multi-model analysis
+(Claude Opus 4.6, GPT-5.2 Codex, Claude Sonnet 4.5, Gemini 3 Pro, GPT-5.1
+Codex).
+
+- **Struct variant match bypass**: Struct variant patterns as the last match
+  arm skipped the tag check, executing unconditionally. This caused UB when
+  a different variant was active. Added `!isStructVariantPattern` to the
+  last-arm optimization condition.
+- **If-let return guards**: `stmtMightContainReturn` and
+  `stmtMightContainBreakOrContinue` were missing `StmtIfLet`. Code after an
+  `if let` with a `return` would execute even after the return fired.
+- **Lambda capture pattern binding**: `collectFreeVarsInExpr` didn't bind
+  pattern variables before traversing match arm bodies. Pattern vars like
+  `x` in `Ok(x)` were treated as free variables, causing spurious captures.
+  Added `collectPatternBindings` helper and applied it to match, let, for,
+  and if-let contexts. Also added `ExprIfLet` and `ExprArrayRepeat` handling
+  in expression-level capture analysis.
+- **Range inclusive types**: `..=` only accepted i64/index, rejecting i8,
+  i16, i32, etc. Changed to `isIntOrIndex()`.
+- **Strdup null checks**: HashMap's `strdup` calls had no null checks.
+  Added `libc::abort()` on failure for all 8 strdup sites.
+- **Exhaustiveness with guards**: Guarded wildcards (`_ if false => ...`)
+  were treated as exhaustive. Now guarded arms are excluded from coverage.
+- **Pragmatic review catch**: Reviewer found `ExprIfLet` and
+  `ExprArrayRepeat` missing from `collectFreeVarsInExpr` (expression-level
+  capture analysis) — fixed before commit.
+
+**Test results**: 327/327 codegen e2e (100%), 1539 Rust tests, zero warnings.

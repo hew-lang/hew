@@ -1,0 +1,4 @@
+apple < banana
+cherry > banana
+abc <= abc
+xyz >= abc

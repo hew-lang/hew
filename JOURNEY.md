@@ -494,3 +494,29 @@ and constructor pattern guard binding:
   body handling.
 
 **Test results**: 328/328 codegen e2e (100%), 1540+ Rust tests, zero warnings.
+
+### Quality Sprint 9: Loop Safety, Expression Coverage, Overflow Protection
+
+Ninth round dispatched five analysis agents across different frontier models,
+followed by seven implementation agents and a pragmatic code reviewer:
+
+- **`loop {}` returnFlag**: `loop` body re-entered even after `return` set the
+  returnFlag. Fixed by wrapping loop condition with `!returnFlag` check.
+- **`var` pendingDeclaredType leak**: When `generateExpression` failed in a `var`
+  declaration, the early return skipped `pendingDeclaredType.reset()`, leaking
+  the type into subsequent expressions. Fixed by resetting before the early return.
+- **Stream/generator/for-await continue**: Three loop types used `generateBlock`
+  instead of `generateLoopBodyWithContinueGuards`, making `continue` statements
+  silently skip to the next iteration incorrectly.
+- **Integer overflow**: Added `checked_mul` in hashmap resize, `saturating_mul`
+  in string repeat, and overflow checks in string replace_all to prevent UB.
+- **Parser EOF safety**: `expect()` and `parse_identifier()` called `.unwrap()`
+  on EOF tokens, causing panics. Replaced with proper error handling.
+- **`rewrite_builtin_calls` completeness**: Only 9 of ~30 expression variants
+  were traversed. Added 18 missing variants (InterpolatedString, PostfixTry,
+  Await, Yield, Send, Range, Unsafe, Join, Timeout, ScopeLaunch, ScopeSpawn,
+  Scope, SpawnLambdaActor, Match, Lambda, Spawn, StructInit, Select).
+- **Log emit leak**: Temporary string created for `hew_log_emit` was not freed
+  after the call, leaking memory on each log statement.
+
+**Test results**: 329/329 codegen e2e (100%), 1540+ Rust tests, zero warnings.

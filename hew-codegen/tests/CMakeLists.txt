@@ -590,6 +590,7 @@ add_e2e_file_test(defer                 e2e_defer defer)
 # ── Loop tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(for_range_break       e2e_loops for_range_break)
 add_e2e_file_test(labeled_break_drops   e2e_loops labeled_break_drops)
+add_e2e_file_test(loop_return           e2e_loops loop_return)
 
 # ── Named arguments tests ─────────────────────────────────────────────────
 add_e2e_file_test(named_args            e2e_named_args main)
@@ -842,6 +843,7 @@ add_wasm_file_test(try_operator         e2e_try_operator try_operator)
 
 # Loops and defer
 add_wasm_file_test(for_range_break      e2e_loops for_range_break)
+add_wasm_file_test(loop_return          e2e_loops loop_return)
 add_wasm_file_test(defer                e2e_defer defer)
 
 # Canonicalization

@@ -589,6 +589,75 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(e);
             }
         }
+        Expr::Match { scrutinee, arms } => {
+            rewrite_builtin_calls_in_expr(scrutinee);
+            for arm in arms {
+                if let Some(ref mut guard) = arm.guard {
+                    rewrite_builtin_calls_in_expr(guard);
+                }
+                rewrite_builtin_calls_in_expr(&mut arm.body);
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            rewrite_builtin_calls_in_expr(body);
+        }
+        Expr::Spawn { target, args } => {
+            rewrite_builtin_calls_in_expr(target);
+            for (_, arg_expr) in args {
+                rewrite_builtin_calls_in_expr(arg_expr);
+            }
+        }
+        Expr::StructInit { fields, .. } => {
+            for (_, field_expr) in fields {
+                rewrite_builtin_calls_in_expr(field_expr);
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                rewrite_builtin_calls_in_expr(&mut arm.source);
+                rewrite_builtin_calls_in_expr(&mut arm.body);
+            }
+            if let Some(timeout_clause) = timeout {
+                rewrite_builtin_calls_in_expr(&mut timeout_clause.duration);
+                rewrite_builtin_calls_in_expr(&mut timeout_clause.body);
+            }
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let hew_parser::ast::StringPart::Expr(e) = part {
+                    rewrite_builtin_calls_in_expr(e);
+                }
+            }
+        }
+        Expr::PostfixTry(inner) => rewrite_builtin_calls_in_expr(inner),
+        Expr::Await(inner) => rewrite_builtin_calls_in_expr(inner),
+        Expr::Yield(Some(inner)) => rewrite_builtin_calls_in_expr(inner),
+        Expr::Send { target, message } => {
+            rewrite_builtin_calls_in_expr(target);
+            rewrite_builtin_calls_in_expr(message);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                rewrite_builtin_calls_in_expr(s);
+            }
+            if let Some(e) = end {
+                rewrite_builtin_calls_in_expr(e);
+            }
+        }
+        Expr::Unsafe(block) => rewrite_builtin_calls_in_block(block),
+        Expr::Join(exprs) => {
+            for e in exprs {
+                rewrite_builtin_calls_in_expr(e);
+            }
+        }
+        Expr::Timeout { expr, duration, .. } => {
+            rewrite_builtin_calls_in_expr(expr);
+            rewrite_builtin_calls_in_expr(duration);
+        }
+        Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) | Expr::Scope { body: block, .. } => {
+            rewrite_builtin_calls_in_block(block);
+        }
+        Expr::SpawnLambdaActor { body, .. } => rewrite_builtin_calls_in_expr(body),
         _ => {}
     }
 }

@@ -342,7 +342,22 @@ pub unsafe extern "C" fn hew_string_replace(
         p = unsafe { q.add(olen) };
     }
 
-    let result_len = slen + count * nlen - count * olen;
+    // Use checked arithmetic to prevent overflow
+    let count_times_nlen = match count.checked_mul(nlen) {
+        Some(v) => v,
+        None => unsafe { libc::abort() },
+    };
+    let count_times_olen = match count.checked_mul(olen) {
+        Some(v) => v,
+        None => unsafe { libc::abort() },
+    };
+    let result_len = match slen.checked_add(count_times_nlen) {
+        Some(v) => match v.checked_sub(count_times_olen) {
+            Some(result) => result,
+            None => unsafe { libc::abort() },
+        },
+        None => unsafe { libc::abort() },
+    };
     // SAFETY: Allocating result_len + 1 bytes via malloc.
     let result = unsafe { libc::malloc(result_len + 1) }.cast::<u8>();
     if result.is_null() {
@@ -656,7 +671,10 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let len = unsafe { cstr_len(s) };
     let n = count as usize;
-    let total = len * n;
+    let total = match len.checked_mul(n) {
+        Some(v) => v,
+        None => unsafe { libc::abort() },
+    };
     // SAFETY: Allocating total+1 bytes.
     let result = unsafe { libc::malloc(total + 1) }.cast::<u8>();
     cabi_guard!(result.is_null(), result.cast::<c_char>());

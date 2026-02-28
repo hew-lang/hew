@@ -76,8 +76,15 @@
 - Codegen: for-loop over stored ranges uses ExtSIOp instead of IndexCastOp (fixes MLIR verification)
 - Codegen: for-loop over stored ranges now uses continue guards and MutableTableScopeT
 - Codegen: constructor pattern guards now bind PatTuple sub-patterns (e.g., `Some((a,b)) if a > 0`)
+- Codegen: `loop {}` now checks returnFlag before re-entering body (fixes infinite loop on return)
+- Codegen: `var` declaration with failed expression no longer leaks pendingDeclaredType into subsequent expressions
+- Codegen: stream/generator/for-await loops now respect `continue` via continue guards
+- Codegen: log emit now drops temporary string after hew_log_emit call (fixes leak)
+- Runtime: integer overflow checks in string replace_all, string repeat, and hashmap resize (prevents UB)
+- Parser: `expect()` and `parse_identifier()` no longer panic on unexpected EOF (returns error)
+- Serialization: `rewrite_builtin_calls` now traverses all expression variants (InterpolatedString, PostfixTry, Await, Yield, Send, Range, Unsafe, Join, Timeout, ScopeLaunch, ScopeSpawn, Scope, SpawnLambdaActor, Match, Lambda, Spawn, StructInit, Select)
 - Zero compiler warnings across entire Rust workspace
-- All 328 codegen e2e tests pass (up from 321)
+- All 329 codegen e2e tests pass (up from 321)
 
 ### Changed
 

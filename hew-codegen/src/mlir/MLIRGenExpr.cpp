@@ -2222,6 +2222,9 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
                                  mlir::SymbolRefAttr::get(&context, "hew_log_emit"),
                                  mlir::ValueRange{levelConst, msgPtr});
 
+    // Free the final concatenated message string.
+    emitStringDrop(msgStr);
+
     // Free all heap-allocated intermediate strings.
     for (auto temp : ownedTemps)
       emitStringDrop(temp);

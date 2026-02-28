@@ -1,0 +1,13 @@
+// Test that return inside loop {} actually exits the function
+fn test_loop_return() -> i32 {
+  loop {
+    return 42;
+  }
+  // This should never be reached
+  99
+}
+
+fn main() {
+  let result = test_loop_return();
+  println(result);
+}

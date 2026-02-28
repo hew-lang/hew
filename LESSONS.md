@@ -350,3 +350,28 @@ resolve type variables before pattern matching AND (2) the codegen only
 handled PatIdentifier sub-patterns. Either fix alone would still leave
 the feature broken. When debugging, always check both the type checking
 and codegen sides of a feature.
+
+### 49. Early returns must clean up all pending state
+
+In MLIRGenStmt, `pendingDeclaredType` acts as a side-channel between
+type annotation parsing and expression generation. If a `var` declaration
+fails partway through, the early return must still reset this state —
+otherwise the leaked type contaminates the next expression's type
+resolution. Any codegen state stored in instance variables must be
+cleaned up on all exit paths.
+
+### 50. Exhaustive expression traversal prevents silent semantic gaps
+
+`rewrite_builtin_calls_in_expr` only handled 9 of ~30 expression variants,
+meaning built-in call rewriting (e.g., `len(x)` → `x.len()`) silently
+failed inside interpolated strings, ranges, sends, timeouts, etc. When
+adding a recursive expression visitor, enumerate ALL variants explicitly —
+a `_ => {}` wildcard silently swallows new additions.
+
+### 51. All loop codegen must use the same four-part pattern
+
+Every loop in Hew codegen must: (1) AND its condition with `!returnFlag`,
+(2) use `generateLoopBodyWithContinueGuards`, (3) use `MutableTableScopeT`,
+(4) check for break/continue/return flow. The `loop {}` infinite loop
+missed item 1, and stream/generator/for-await loops missed item 2.
+Violating any item creates subtle flow control bugs.

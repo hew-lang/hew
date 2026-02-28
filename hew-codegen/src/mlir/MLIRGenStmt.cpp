@@ -670,9 +670,12 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.value) {
     initValue = generateExpression(stmt.value->value);
+    pendingDeclaredType.reset();
     if (!initValue)
       return;
     varType = initValue.getType();
+  } else {
+    pendingDeclaredType.reset();
   }
 
   if (stmt.ty) {
@@ -1730,13 +1733,19 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
       auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
                                                    /*withElseRegion=*/false);
       builder.setInsertionPointToStart(&guard.getThenRegion().front());
-      generateBlock(stmt.body);
+      pushDropScope();
+      generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                         location);
+      popDropScope();
       auto *guardBlock = builder.getInsertionBlock();
       if (guardBlock->empty() || !guardBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())
         builder.create<mlir::scf::YieldOp>(location);
       builder.setInsertionPointAfter(guard);
     } else {
-      generateBlock(stmt.body);
+      pushDropScope();
+      generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                         location);
+      popDropScope();
     }
     popDropScope();
   }
@@ -1994,7 +2003,10 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     declareVariable(loopVarName, value);
 
     // Generate loop body
-    generateBlock(stmt.body);
+    pushDropScope();
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                       location);
+    popDropScope();
   }
 
   // Guard the __next call: only call if loop is still active (no break/return)
@@ -2293,13 +2305,19 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
     auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
                                                  /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&guard.getThenRegion().front());
-    generateBlock(stmt.body);
+    pushDropScope();
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                       location);
+    popDropScope();
     auto *guardBlock = builder.getInsertionBlock();
     if (guardBlock->empty() || !guardBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())
       builder.create<mlir::scf::YieldOp>(location);
     builder.setInsertionPointAfter(guard);
   } else {
-    generateBlock(stmt.body);
+    pushDropScope();
+    generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), continueFlag,
+                                       location);
+    popDropScope();
   }
 
   auto *bodyBlock = builder.getInsertionBlock();
@@ -3011,7 +3029,14 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
   // Before region: check active flag
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
-  auto cond = builder.create<mlir::memref::LoadOp>(location, activeFlag, mlir::ValueRange{});
+  auto cond =
+      builder.create<mlir::memref::LoadOp>(location, activeFlag, mlir::ValueRange{}).getResult();
+  if (returnFlag) {
+    auto flagVal =
+        builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{}).getResult();
+    auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueVal);
+    cond = builder.create<mlir::arith::AndIOp>(location, cond, notReturned);
+  }
   builder.create<mlir::scf::ConditionOp>(location, cond, mlir::ValueRange{});
 
   // After region: loop body

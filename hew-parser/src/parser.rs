@@ -383,7 +383,13 @@ impl<'src> Parser<'src> {
     fn expect(&mut self, expected: &Token<'_>) -> Option<Span> {
         if let Some(tok) = self.peek() {
             if std::mem::discriminant(tok) == std::mem::discriminant(expected) {
-                let (_, span) = self.advance().unwrap();
+                let (_, span) = match self.advance() {
+                    Some(t) => t,
+                    None => {
+                        self.error(format!("unexpected end of input, expected {expected:?}"));
+                        return None;
+                    }
+                };
                 return Some(span);
             }
         }
@@ -612,10 +618,15 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Some(name)
             }
-            Some(tok) if Self::contextual_keyword_name(tok).is_some() => {
-                let name = Self::contextual_keyword_name(self.peek().unwrap()).unwrap();
-                self.advance();
-                Some(name.to_string())
+            Some(tok) => {
+                if let Some(name) = Self::contextual_keyword_name(tok) {
+                    self.advance();
+                    Some(name.to_string())
+                } else {
+                    let found = format!("{tok}");
+                    self.error(format!("expected identifier, found {found}"));
+                    None
+                }
             }
             _ => {
                 let found = match self.peek() {
@@ -2322,6 +2333,7 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::RightParen)?;
 
                     if types.len() == 1 {
+                        // Safe: len == 1 guarantees next() yields one element.
                         return Some(types.into_iter().next().unwrap());
                     }
                     TypeExpr::Tuple(types)
@@ -3487,6 +3499,7 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::RightParen)?;
 
                     if exprs.len() == 1 {
+                        // Safe: len == 1 guarantees next() yields one element.
                         return Some(exprs.into_iter().next().unwrap());
                     }
                     Expr::Tuple(exprs)
@@ -4078,6 +4091,7 @@ impl<'src> Parser<'src> {
                     self.expect(&Token::RightParen)?;
 
                     if patterns.len() == 1 {
+                        // Safe: len == 1 guarantees next() yields one element.
                         return Some(patterns.into_iter().next().unwrap());
                     }
                     Pattern::Tuple(patterns)

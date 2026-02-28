@@ -177,6 +177,14 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateInterpolatedString(*interp);
   if (auto *regex = std::get_if<ast::ExprRegexLiteral>(&expr.kind))
     return generateRegexLiteral(*regex);
+  if (std::get_if<ast::ExprIfLet>(&expr.kind)) {
+    emitError(currentLoc) << "if-let expressions not yet supported in codegen";
+    return nullptr;
+  }
+  if (std::get_if<ast::ExprArrayRepeat>(&expr.kind)) {
+    emitError(currentLoc) << "array repeat expressions not yet supported in codegen";
+    return nullptr;
+  }
   if (auto *to = std::get_if<ast::ExprTimeout>(&expr.kind)) {
     // Evaluate duration for validation but discard; timeout not yet enforced
     generateExpression(to->duration->value);

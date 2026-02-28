@@ -393,6 +393,10 @@ void MLIRGen::generateStatement(const ast::Stmt &stmt) {
     }
     return;
   }
+  if (std::get_if<ast::StmtIfLet>(&stmt.kind)) {
+    emitError(currentLoc) << "if-let statements not yet supported in codegen";
+    return;
+  }
 }
 
 void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {

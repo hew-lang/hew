@@ -64,6 +64,7 @@ struct Stmt;
 struct Block;
 struct TypeExpr;
 struct Pattern;
+struct TypeParam;
 
 // ── Attributes ────────────────────────────────────────────────────────────
 
@@ -322,12 +323,19 @@ struct ExprIf {
   std::unique_ptr<Spanned<Expr>> then_block;
   std::optional<std::unique_ptr<Spanned<Expr>>> else_block;
 };
+struct ExprIfLet {
+  Spanned<Pattern> pattern;
+  std::unique_ptr<Spanned<Expr>> expr;
+  Block body;
+  std::optional<Block> else_body;
+};
 struct ExprMatch {
   std::unique_ptr<Spanned<Expr>> scrutinee;
   std::vector<MatchArm> arms;
 };
 struct ExprLambda {
   bool is_move;
+  std::optional<std::vector<TypeParam>> type_params;
   std::vector<LambdaParam> params;
   std::optional<Spanned<TypeExpr>> return_type;
   std::unique_ptr<Spanned<Expr>> body;
@@ -430,14 +438,18 @@ struct ExprScopeCancel {};
 struct ExprRegexLiteral {
   std::string pattern;
 };
+struct ExprArrayRepeat {
+  std::unique_ptr<Spanned<Expr>> value;
+  std::unique_ptr<Spanned<Expr>> count;
+};
 
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
-               ExprIf, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
+               ExprIf, ExprIfLet, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
                ExprFieldAccess, ExprIndex, ExprPostfixTry, ExprRange, ExprAwait, ExprScopeLaunch,
-               ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral>
+               ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };
@@ -463,6 +475,12 @@ struct StmtIf {
   Spanned<Expr> condition;
   Block then_block;
   std::optional<ElseBlock> else_block;
+};
+struct StmtIfLet {
+  Spanned<Pattern> pattern;
+  std::unique_ptr<Spanned<Expr>> expr;
+  Block body;
+  std::optional<Block> else_body;
 };
 struct StmtMatch {
   Spanned<Expr> scrutinee;
@@ -502,8 +520,8 @@ struct StmtExpression {
 };
 
 struct Stmt {
-  std::variant<StmtLet, StmtVar, StmtAssign, StmtIf, StmtMatch, StmtLoop, StmtFor, StmtWhile,
-               StmtBreak, StmtContinue, StmtReturn, StmtDefer, StmtExpression>
+  std::variant<StmtLet, StmtVar, StmtAssign, StmtIf, StmtIfLet, StmtMatch, StmtLoop, StmtFor,
+               StmtWhile, StmtBreak, StmtContinue, StmtReturn, StmtDefer, StmtExpression>
       kind;
   Span span; // Copied from Spanned<Stmt> wrapper for codegen convenience
 };

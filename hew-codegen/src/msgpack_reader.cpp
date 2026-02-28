@@ -148,6 +148,7 @@ static ast::Block parseBlock(const msgpack::object &obj);
 static ast::TypeExpr parseTypeExpr(const msgpack::object &obj);
 static ast::Pattern parsePattern(const msgpack::object &obj);
 static ast::FnDecl parseFnDecl(const msgpack::object &obj);
+static ast::TypeParam parseTypeParam(const msgpack::object &obj);
 
 // ── Span / Spanned ──────────────────────────────────────────────────────────
 
@@ -628,6 +629,14 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
     return ast::Expr{std::move(e), {}};
   }
+  if (name == "ArrayRepeat") {
+    ast::ExprArrayRepeat e;
+    e.value = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "value"), parseExpr));
+    e.count = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "count"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
   if (name == "Block")
     return ast::Expr{ast::ExprBlock{parseBlock(*payload)}, {}};
   if (name == "If") {
@@ -643,6 +652,17 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
     }
     return ast::Expr{std::move(e), {}};
   }
+  if (name == "IfLet") {
+    ast::ExprIfLet e;
+    e.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.body = parseBlock(mapReq(*payload, "body"));
+    const auto *eb = mapGet(*payload, "else_body");
+    if (eb && !isNil(*eb))
+      e.else_body = parseBlock(*eb);
+    return ast::Expr{std::move(e), {}};
+  }
   if (name == "Match") {
     ast::ExprMatch e;
     e.scrutinee = std::make_unique<ast::Spanned<ast::Expr>>(
@@ -653,6 +673,9 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   if (name == "Lambda") {
     ast::ExprLambda e;
     e.is_move = getBool(mapReq(*payload, "is_move"));
+    const auto *tp = mapGet(*payload, "type_params");
+    if (tp && !isNil(*tp))
+      e.type_params = parseVec<ast::TypeParam>(*tp, parseTypeParam);
     e.params = parseVec<ast::LambdaParam>(mapReq(*payload, "params"), parseLambdaParam);
     const auto *rt = mapGet(*payload, "return_type");
     if (rt && !isNil(*rt))
@@ -890,6 +913,17 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     const auto *eb = mapGet(*payload, "else_block");
     if (eb && !isNil(*eb))
       s.else_block = parseElseBlock(*eb);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "IfLet") {
+    ast::StmtIfLet s;
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    s.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    s.body = parseBlock(mapReq(*payload, "body"));
+    const auto *eb = mapGet(*payload, "else_body");
+    if (eb && !isNil(*eb))
+      s.else_body = parseBlock(*eb);
     return ast::Stmt{std::move(s), {}};
   }
   if (name == "Match") {

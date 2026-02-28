@@ -109,11 +109,9 @@ jobs:
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
 
-      - name: Install LLVM/MLIR (Windows)
+      - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
-        run: |
-          choco install ninja cmake -y
-          choco install llvm --version=${{ env.LLVM_VERSION }}.1.0 -y
+        run: choco install ninja cmake -y
         shell: pwsh
 
       # ── Rust toolchain ──────────────────────────────────────────────────
@@ -182,7 +180,10 @@ jobs:
             -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
 
       - name: Configure hew-codegen (Windows)
-        if: startsWith(matrix.target, 'windows')
+        if: startsWith(matrix.target, 'windows') && false
+        # LLVM+MLIR cmake development files are not available via Chocolatey.
+        # Windows codegen requires building LLVM from source or a pre-built image.
+        # Skipped for now — Windows releases ship Rust binaries only.
         run: |
           cd hew-codegen
           cmake -B build -G Ninja `
@@ -244,9 +245,15 @@ jobs:
 
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
-          Copy-Item "hew-codegen/build/src/hew-codegen.exe"                           "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
+
+          # hew-codegen may not be available on Windows (MLIR not packaged)
+          if (Test-Path "hew-codegen/build/src/hew-codegen.exe") {
+            Copy-Item "hew-codegen/build/src/hew-codegen.exe" "${ArchiveName}/bin/"
+          } else {
+            Write-Output "::warning::hew-codegen not built — Windows archive ships without codegen"
+          }
 
           # Standard library sources
           Copy-Item "std/*.hew" "${ArchiveName}/std/" -ErrorAction SilentlyContinue
@@ -400,11 +407,17 @@ jobs:
       - name: Build Linux packages
         run: |
           VERSION="${RELEASE_TAG#v}"
+          # Arch Linux Docker image only supports x86_64
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            FORMATS="debian,rpm"
+          else
+            FORMATS="debian,rpm,arch"
+          fi
           installers/build-packages.sh \
             --version "${VERSION}" \
             --arch "${{ matrix.arch }}" \
             --skip-build \
-            --only debian,rpm,arch
+            --only "${FORMATS}"
 
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
@@ -488,14 +501,8 @@ jobs:
       - name: Assemble Alpine tarball and build .apk
         run: |
           VERSION="${RELEASE_TAG#v}"
-          installers/build-packages.sh \
-            --version "${VERSION}" \
-            --arch "${{ matrix.arch }}" \
-            --skip-build \
-            --only alpine
 
-          # The --skip-build mode for Alpine needs the musl tarball to exist.
-          # Assemble it manually since we built the binaries above.
+          # Assemble the musl tarball from binaries built above.
           PLATFORM="linux-musl-${{ matrix.arch }}"
           ARCHIVE_NAME="hew-v${VERSION}-${PLATFORM}"
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
@@ -519,9 +526,10 @@ jobs:
             strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
           done
 
+          mkdir -p dist
           tar czf "dist/${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 
-          # Now build .apk from the musl tarball
+          # Build .apk from the musl tarball
           installers/build-packages.sh \
             --version "${VERSION}" \
             --arch "${{ matrix.arch }}" \
@@ -657,6 +665,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret not set — skipping homebrew update"
+            exit 0
+          fi
           VERSION="${RELEASE_TAG#v}"
           gh workflow run update-formula.yml \
             -R hew-lang/homebrew-hew \
@@ -676,7 +688,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN secret not set — skipping playground trigger"
+            exit 0
+          fi
           VERSION="${RELEASE_TAG#v}"
+          # Check if the playground repo exists before dispatching
+          if ! gh repo view hew-lang/playground --json name >/dev/null 2>&1; then
+            echo "::warning::hew-lang/playground repo not found — skipping playground trigger"
+            exit 0
+          fi
           gh workflow run build.yml \
             -R hew-lang/playground \
             -f version="${VERSION}"
@@ -798,4 +819,5 @@ jobs:
             ls -lh "${vsix_files[@]}"
             exit 0
           fi
-          vsce publish --packagePath "${vsix_files[@]}"
+          # --skip-duplicate avoids failure when a version is already published
+          vsce publish --skip-duplicate --packagePath "${vsix_files[@]}"

@@ -457,7 +457,7 @@ mod tests {
     use super::*;
 
     /// Serialize tracing tests since they share global state
-    /// (TRACE_EVENTS, TRACING_ENABLED, CURRENT_CONTEXT).
+    /// (`TRACE_EVENTS`, `TRACING_ENABLED`, `CURRENT_CONTEXT`).
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn setup() -> std::sync::MutexGuard<'static, ()> {

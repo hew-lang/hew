@@ -1116,29 +1116,21 @@ mod tests {
         assert!(!list.is_null());
 
         // SAFETY: list and key pointers are valid.
-        assert_eq!(
-            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
-            0
-        );
+        let check = unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) };
+        assert_eq!(check, 0);
         // SAFETY: list and key pointers are valid.
         assert_eq!(unsafe { hew_allowlist_add(list, allowed_key.as_ptr()) }, 0);
         // SAFETY: list and key pointers are valid.
-        assert_eq!(
-            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
-            1
-        );
+        let check = unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) };
+        assert_eq!(check, 1);
         // SAFETY: list and key pointers are valid.
         assert_eq!(unsafe { hew_allowlist_check(list, denied_key.as_ptr()) }, 0);
         // SAFETY: list and key pointers are valid.
-        assert_eq!(
-            unsafe { hew_allowlist_remove(list, allowed_key.as_ptr()) },
-            0
-        );
+        let check = unsafe { hew_allowlist_remove(list, allowed_key.as_ptr()) };
+        assert_eq!(check, 0);
         // SAFETY: list and key pointers are valid.
-        assert_eq!(
-            unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) },
-            0
-        );
+        let check = unsafe { hew_allowlist_check(list, allowed_key.as_ptr()) };
+        assert_eq!(check, 0);
 
         // SAFETY: list was created by hew_allowlist_new.
         unsafe { hew_allowlist_free(list) };

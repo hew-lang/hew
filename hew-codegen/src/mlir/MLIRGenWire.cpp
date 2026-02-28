@@ -108,8 +108,15 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       vi.index = varIdx++;
 
       // Convert variant payload types to MLIR types
-      for (const auto &ty : variant.fields) {
-        vi.payloadTypes.push_back(convertType(ty.value));
+      if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&variant.kind)) {
+        for (const auto &ty : tuple->fields) {
+          vi.payloadTypes.push_back(convertType(ty.value));
+        }
+      } else if (auto *strct = std::get_if<ast::VariantDecl::VariantStruct>(&variant.kind)) {
+        for (const auto &field : strct->fields) {
+          vi.payloadTypes.push_back(convertType(field.ty.value));
+          vi.fieldNames.push_back(field.name);
+        }
       }
       if (!vi.payloadTypes.empty()) {
         hasPayloads = true;

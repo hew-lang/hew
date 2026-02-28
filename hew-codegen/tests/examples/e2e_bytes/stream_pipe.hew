@@ -2,7 +2,7 @@ import std::fs;
 import std::stream;
 
 fn main() {
-    hew_file_write("/tmp/hew_pipe_test.txt", "alpha\nbeta\ngamma");
+    unsafe { hew_file_write("/tmp/hew_pipe_test.txt", "alpha\nbeta\ngamma"); }
 
     let source = match stream.from_file("/tmp/hew_pipe_test.txt") {
         Ok(s) => s,
@@ -14,6 +14,6 @@ fn main() {
     };
     stream.pipe(source, dest);
 
-    let result = hew_file_read("/tmp/hew_pipe_out.txt");
+    let result = unsafe { hew_file_read("/tmp/hew_pipe_out.txt") };
     println(result);
 }

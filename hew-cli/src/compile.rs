@@ -167,6 +167,13 @@ pub fn compile(
         None
     } else {
         let mut checker = hew_types::Checker::new();
+        if options
+            .target
+            .as_deref()
+            .is_some_and(|t| t.starts_with("wasm32"))
+        {
+            checker.enable_wasm_target();
+        }
         let tco = checker.check_program(&program);
         let has_errors = !tco.errors.is_empty();
 

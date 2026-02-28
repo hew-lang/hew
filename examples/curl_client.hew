@@ -112,7 +112,7 @@ Accept: */*
 Connection: close
 
 ";
-    let req_bytes = hew_string_to_bytes(req_str);
+    let req_bytes = unsafe { hew_string_to_bytes(req_str) };
     conn.write(req_bytes);
     println("  Request sent");
     println("");
@@ -127,12 +127,12 @@ Connection: close
     var reading = true;
     while reading {
         let chunk_bytes = conn.read();
-        let chunk_len = hew_vec_len(chunk_bytes);
+        let chunk_len = unsafe { hew_vec_len(chunk_bytes) };
         if chunk_len == 0 {
             reading = false;
         } else {
             total_bytes = total_bytes + chunk_len;
-            let chunk = hew_bytes_to_string(chunk_bytes);
+            let chunk = unsafe { hew_bytes_to_string(chunk_bytes) };
             full_response = full_response + chunk;
             reporter.send(total_bytes);
         }

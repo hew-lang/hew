@@ -3419,51 +3419,74 @@ static mlir::LogicalResult validateWasmUnsupportedOps(mlir::ModuleOp module) {
 
   struct UnsupportedOp {
     llvm::StringRef opName;
-    llvm::StringRef reason;
+    llvm::StringRef group;
+    llvm::StringRef detail;
   };
 
   static const UnsupportedOp unsupported[] = {
       // Supervision
-      {"hew.supervisor.new", "supervision trees require OS threads (native target only)"},
-      {"hew.supervisor.start", "supervision trees require OS threads (native target only)"},
-      {"hew.supervisor.stop", "supervision trees require OS threads (native target only)"},
-      {"hew.supervisor.add_child", "supervision trees require OS threads (native target only)"},
-      {"hew.supervisor.add_child_supervisor",
-       "supervision trees require OS threads (native target only)"},
-      {"hew.supervisor.child_spec_create",
-       "supervision trees require OS threads (native target only)"},
+      {"hew.supervisor.new", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
+      {"hew.supervisor.start", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
+      {"hew.supervisor.stop", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
+      {"hew.supervisor.add_child", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
+      {"hew.supervisor.add_child_supervisor", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
+      {"hew.supervisor.child_spec_create", "supervision tree",
+       "supervision trees require OS threads for restart strategies"},
       // Link / Monitor
-      {"hew.actor.link", "link/monitor requires OS threads (native target only)"},
-      {"hew.actor.unlink", "link/monitor requires OS threads (native target only)"},
-      {"hew.actor.monitor", "link/monitor requires OS threads (native target only)"},
-      {"hew.actor.demonitor", "link/monitor requires OS threads (native target only)"},
+      {"hew.actor.link", "link/monitor",
+       "link/monitor fault propagation requires OS threads to watch peers"},
+      {"hew.actor.unlink", "link/monitor",
+       "link/monitor fault propagation requires OS threads to watch peers"},
+      {"hew.actor.monitor", "link/monitor",
+       "link/monitor fault propagation requires OS threads to watch peers"},
+      {"hew.actor.demonitor", "link/monitor",
+       "link/monitor fault propagation requires OS threads to watch peers"},
       // Scoped concurrency
-      {"hew.scope.create", "structured concurrency requires OS threads (native target only)"},
-      {"hew.scope.join", "structured concurrency requires OS threads (native target only)"},
-      {"hew.scope.destroy", "structured concurrency requires OS threads (native target only)"},
-      {"hew.scope.launch", "structured concurrency requires OS threads (native target only)"},
-      {"hew.scope.await", "structured concurrency requires OS threads (native target only)"},
-      {"hew.scope.cancel", "structured concurrency requires OS threads (native target only)"},
+      {"hew.scope.create", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
+      {"hew.scope.join", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
+      {"hew.scope.destroy", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
+      {"hew.scope.launch", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
+      {"hew.scope.await", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
+      {"hew.scope.cancel", "structured concurrency",
+       "structured concurrency scopes require OS threads for scheduling"},
 
       // Tasks
-      {"hew.task.set_result", "structured concurrency requires OS threads (native target only)"},
-      {"hew.task.complete", "structured concurrency requires OS threads (native target only)"},
+      {"hew.task.set_result", "task",
+       "task completion APIs require OS threads to drive child scopes"},
+      {"hew.task.complete", "task",
+       "task completion APIs require OS threads to drive child scopes"},
       // Select
-      {"hew.select.create", "select requires OS threads (native target only)"},
-      {"hew.select.add", "select requires OS threads (native target only)"},
-      {"hew.select.first", "select requires OS threads (native target only)"},
-      {"hew.select.destroy", "select requires OS threads (native target only)"},
-      {"hew.select.wait", "select requires OS threads (native target only)"},
+      {"hew.select.create", "select",
+       "select waits on multiple mailboxes using OS threads for blocking"},
+      {"hew.select.add", "select",
+       "select waits on multiple mailboxes using OS threads for blocking"},
+      {"hew.select.first", "select",
+       "select waits on multiple mailboxes using OS threads for blocking"},
+      {"hew.select.destroy", "select",
+       "select waits on multiple mailboxes using OS threads for blocking"},
+      {"hew.select.wait", "select",
+       "select waits on multiple mailboxes using OS threads for blocking"},
   };
 
   module.walk([&](mlir::Operation *op) {
     auto name = op->getName().getStringRef();
     for (const auto &entry : unsupported) {
       if (name == entry.opName) {
-        op->emitError() << "operation '" << name << "' is not supported on WASM targets\n"
-                        << "  note: " << entry.reason << "\n"
-                        << "  note: actors, send, and ask/await work on WASM "
-                           "without this feature";
+        op->emitError()
+            << "operation '" << name << "' is part of the " << entry.group
+            << " APIs and is not supported on WASM32 — " << entry.detail << "\n"
+            << "  help: Consider using basic actors (spawn/send/ask) which work on WASM "
+               "without this feature";
         failed = true;
         return;
       }

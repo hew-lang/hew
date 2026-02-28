@@ -31,6 +31,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <string>
@@ -243,6 +244,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   bool isOrPattern = (orPatPtr != nullptr);
   auto *structPatPtr = std::get_if<ast::PatStruct>(&pattern.kind);
   bool isStructPattern = (structPatPtr != nullptr);
+  bool isStructVariantPattern = isStructPattern && variantLookup.count(structPatPtr->name) > 0;
 
   // Helper to extract the tag from a scrutinee (handles both i32 and struct)
   auto extractTag = [&](mlir::Value scrut) -> mlir::Value {
@@ -271,6 +273,57 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
     return enumPayloadFieldIndex(enumName, static_cast<int32_t>(variantIndex),
                                  static_cast<int64_t>(payloadOrdinal));
+  };
+
+  auto bindStructPatternFields = [&](const ast::PatStruct &sp) {
+    std::string spName = sp.name;
+    auto varIt = variantLookup.find(spName);
+    if (varIt != variantLookup.end()) {
+      const auto &enumName = varIt->second.first;
+      auto enumIt = enumTypes.find(enumName);
+      if (enumIt != enumTypes.end()) {
+        const EnumVariantInfo *vi = nullptr;
+        for (const auto &v : enumIt->second.variants) {
+          if (v.index == varIt->second.second) {
+            vi = &v;
+            break;
+          }
+        }
+        if (vi) {
+          for (const auto &pf : sp.fields) {
+            auto fieldIt = std::find(vi->fieldNames.begin(), vi->fieldNames.end(), pf.name);
+            if (fieldIt == vi->fieldNames.end())
+              continue;
+            size_t ordinal = static_cast<size_t>(fieldIt - vi->fieldNames.begin());
+            if (isEnumLikeType(scrutinee.getType())) {
+              int64_t fieldIdx = payloadFieldIndexForVariant(spName, ordinal);
+              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+              auto payloadVal =
+                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+              declareVariable(pf.name, payloadVal);
+            }
+          }
+        }
+      }
+      return;
+    }
+    auto structIt = structTypes.find(spName);
+    if (structIt != structTypes.end()) {
+      const auto &info = structIt->second;
+      for (const auto &pf : sp.fields) {
+        std::string pfName = pf.name;
+        for (const auto &fi : info.fields) {
+          if (fi.name == pfName) {
+            auto fieldVal = builder.create<hew::FieldGetOp>(
+                location,
+                mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
+                scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
+            declareVariable(pfName, fieldVal);
+            break;
+          }
+        }
+      }
+    }
   };
 
   // Helper to generate arm body value
@@ -309,24 +362,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
       // If this is a struct pattern, bind fields as variables
       if (auto *sp = std::get_if<ast::PatStruct>(&aPat.kind)) {
-        std::string spName = sp->name;
-        auto structIt = structTypes.find(spName);
-        if (structIt != structTypes.end()) {
-          const auto &info = structIt->second;
-          for (const auto &pf : sp->fields) {
-            std::string pfName = pf.name;
-            for (const auto &fi : info.fields) {
-              if (fi.name == pfName) {
-                auto fieldVal = builder.create<hew::FieldGetOp>(
-                    location,
-                    mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
-                    scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
-                declareVariable(pfName, fieldVal);
-                break;
-              }
-            }
-          }
-        }
+        bindStructPatternFields(*sp);
       }
     }
 
@@ -551,6 +587,46 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     }
   }
 
+  if (isStructVariantPattern) {
+    std::string spName = structPatPtr->name;
+    auto varIt = variantLookup.find(spName);
+    auto variantIndex = static_cast<int64_t>(varIt->second.second);
+
+    auto tag = extractTag(scrutinee);
+    auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
+    mlir::Value tagCond =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
+            .getResult();
+
+    if (arm.guard) {
+      auto guardIfOp = builder.create<mlir::scf::IfOp>(location, builder.getI1Type(), tagCond,
+                                                       /*withElseRegion=*/true);
+
+      builder.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
+      {
+        SymbolTableScopeT guardScope(symbolTable);
+        MutableTableScopeT guardMutScope(mutableVars);
+        bindStructPatternFields(*structPatPtr);
+        auto guardCond = generateExpression(arm.guard->value);
+        if (!guardCond) {
+          emitError(location) << "failed to generate match guard expression";
+          return nullptr;
+        }
+        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{guardCond});
+      }
+
+      builder.setInsertionPointToStart(&guardIfOp.getElseRegion().front());
+      auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
+      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{falseVal});
+
+      builder.setInsertionPointAfter(guardIfOp);
+      mlir::Value cond = guardIfOp.getResult(0);
+      return generateTagMatch(cond);
+    }
+
+    return generateTagMatch(tagCond);
+  }
+
   // Struct pattern: irrefutable unless guarded
   if (isStructPattern && !arm.guard) {
     return generateArmBody(arm);
@@ -558,25 +634,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   if (isStructPattern && arm.guard) {
     SymbolTableScopeT guardScope(symbolTable);
     MutableTableScopeT guardMutScope(mutableVars);
-    auto *sp = structPatPtr;
-    std::string spName = sp->name;
-    auto structIt = structTypes.find(spName);
-    if (structIt != structTypes.end()) {
-      const auto &info = structIt->second;
-      for (const auto &pf : sp->fields) {
-        std::string pfName = pf.name;
-        for (const auto &fi : info.fields) {
-          if (fi.name == pfName) {
-            auto fieldVal = builder.create<hew::FieldGetOp>(
-                location,
-                mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
-                scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
-            declareVariable(pfName, fieldVal);
-            break;
-          }
-        }
-      }
-    }
+    bindStructPatternFields(*structPatPtr);
     auto guardCond = generateExpression(arm.guard->value);
     if (!guardCond)
       return nullptr;

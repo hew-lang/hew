@@ -74,6 +74,22 @@ static bool getBool(const msgpack::object &obj) {
   fail("expected bool, got type " + std::to_string(obj.type));
 }
 
+/// Parse a Visibility enum from a msgpack object (string variant name).
+static ast::Visibility parseVisibility(const msgpack::object &obj) {
+  if (obj.type == msgpack::type::BOOLEAN) {
+    // Backward compatibility: old format used a bool.
+    return obj.via.boolean ? ast::Visibility::Pub : ast::Visibility::Private;
+  }
+  auto s = getString(obj);
+  if (s == "Pub")
+    return ast::Visibility::Pub;
+  if (s == "PubPackage")
+    return ast::Visibility::PubPackage;
+  if (s == "PubSuper")
+    return ast::Visibility::PubSuper;
+  return ast::Visibility::Private;
+}
+
 /// Check if msgpack object is nil.
 static bool isNil(const msgpack::object &obj) {
   return obj.type == msgpack::type::NIL;
@@ -395,9 +411,16 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj) {
     return ast::TypeExpr{std::move(tp)};
   }
   if (name == "TraitObject") {
-    // Serde: {"TraitObject": trait_bound_map}  (newtype wrapping TraitBound)
+    // Serde: {"TraitObject": [trait_bound_map, ...]}  (Vec<TraitBound>)
     ast::TypeTraitObject tto;
-    tto.bound = std::make_unique<ast::TraitBound>(parseTraitBound(*payload));
+    if (payload->type == msgpack::type::ARRAY) {
+      for (uint32_t i = 0; i < payload->via.array.size; ++i) {
+        tto.bounds.push_back(parseTraitBound(payload->via.array.ptr[i]));
+      }
+    } else {
+      // Backward compat: single map
+      tto.bounds.push_back(parseTraitBound(*payload));
+    }
     return ast::TypeExpr{std::move(tto)};
   }
   fail("unknown TypeExpr variant: " + name);
@@ -814,6 +837,8 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   }
   if (name == "ScopeLaunch")
     return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
+  if (name == "ScopeSpawn")
+    return ast::Expr{ast::ExprScopeSpawn{parseBlock(*payload)}, {}};
   if (name == "ScopeCancel")
     return ast::Expr{ast::ExprScopeCancel{}, {}};
 
@@ -883,6 +908,9 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
   }
   if (name == "For") {
     ast::StmtFor s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
     s.is_await = getBool(mapReq(*payload, "is_await"));
     s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
     s.iterable = parseSpanned<ast::Expr>(mapReq(*payload, "iterable"), parseExpr);
@@ -983,7 +1011,7 @@ static ast::FnDecl parseFnDecl(const msgpack::object &obj) {
   fn.attributes = parseVec<ast::Attribute>(mapReq(obj, "attributes"), parseAttribute);
   fn.is_async = getBool(mapReq(obj, "is_async"));
   fn.is_generator = getBool(mapReq(obj, "is_generator"));
-  fn.is_pub = getBool(mapReq(obj, "is_pub"));
+  fn.visibility = parseVisibility(mapReq(obj, "visibility"));
   fn.is_pure = getBool(mapReq(obj, "is_pure"));
   fn.name = getString(mapReq(obj, "name"));
   const auto *tp = mapGet(obj, "type_params");
@@ -1039,9 +1067,9 @@ static ast::ConstDecl parseConstDecl(const msgpack::object &obj) {
   cd.name = getString(mapReq(obj, "name"));
   cd.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
   cd.value = parseSpanned<ast::Expr>(mapReq(obj, "value"), parseExpr);
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    cd.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    cd.visibility = parseVisibility(*vis);
   return cd;
 }
 
@@ -1050,10 +1078,37 @@ static ast::ConstDecl parseConstDecl(const msgpack::object &obj) {
 static ast::VariantDecl parseVariantDecl(const msgpack::object &obj) {
   ast::VariantDecl vd;
   vd.name = getString(mapReq(obj, "name"));
-  vd.fields =
-      parseVec<ast::Spanned<ast::TypeExpr>>(mapReq(obj, "fields"), [](const msgpack::object &o) {
-        return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
-      });
+  auto [kindName, kindPayload] = getEnumVariant(mapReq(obj, "kind"));
+  if (kindName == "Unit") {
+    vd.kind = ast::VariantDecl::VariantUnit{};
+    return vd;
+  }
+  if (!kindPayload)
+    fail("missing payload for VariantKind " + kindName);
+  if (kindName == "Tuple") {
+    ast::VariantDecl::VariantTuple tuple;
+    tuple.fields =
+        parseVec<ast::Spanned<ast::TypeExpr>>(*kindPayload, [](const msgpack::object &o) {
+          return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+        });
+    vd.kind = std::move(tuple);
+    return vd;
+  }
+  if (kindName == "Struct") {
+    ast::VariantDecl::VariantStruct vs;
+    vs.fields =
+        parseVec<ast::VariantDecl::VariantStructField>(*kindPayload, [](const msgpack::object &o) {
+          if (o.type != msgpack::type::ARRAY || o.via.array.size != 2)
+            fail("expected variant struct field tuple");
+          ast::VariantDecl::VariantStructField field;
+          field.name = getString(o.via.array.ptr[0]);
+          field.ty = parseSpanned<ast::TypeExpr>(o.via.array.ptr[1], parseTypeExpr);
+          return field;
+        });
+    vd.kind = std::move(vs);
+    return vd;
+  }
+  fail("unknown VariantKind: " + kindName);
   return vd;
 }
 
@@ -1061,9 +1116,9 @@ static ast::VariantDecl parseVariantDecl(const msgpack::object &obj) {
 
 static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   ast::TypeDecl td;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    td.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    td.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
   td.kind = (kindStr == "Enum") ? ast::TypeDeclKind::Enum : ast::TypeDeclKind::Struct;
   td.name = getString(mapReq(obj, "name"));
@@ -1103,9 +1158,9 @@ static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
 
 static ast::TypeAliasDecl parseTypeAliasDecl(const msgpack::object &obj) {
   ast::TypeAliasDecl ta;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    ta.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    ta.visibility = parseVisibility(*vis);
   ta.name = getString(mapReq(obj, "name"));
   ta.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
   return ta;
@@ -1137,9 +1192,9 @@ static ast::TraitMethod parseTraitMethod(const msgpack::object &obj) {
 
 static ast::TraitDecl parseTraitDecl(const msgpack::object &obj) {
   ast::TraitDecl td;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    td.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    td.visibility = parseVisibility(*vis);
   td.name = getString(mapReq(obj, "name"));
   const auto *tp = mapGet(obj, "type_params");
   if (tp && !isNil(*tp))
@@ -1156,6 +1211,9 @@ static ast::TraitDecl parseTraitDecl(const msgpack::object &obj) {
       ast::TraitItemAssociatedType at;
       at.name = getString(mapReq(*payload, "name"));
       at.bounds = parseVec<ast::TraitBound>(mapReq(*payload, "bounds"), parseTraitBound);
+      const auto *def = mapGet(*payload, "default");
+      if (def && !isNil(*def))
+        at.default_value = parseSpanned<ast::TypeExpr>(*def, parseTypeExpr);
       return ast::TraitItem{std::move(at)};
     }
     fail("unknown TraitItem variant: " + name);
@@ -1167,6 +1225,13 @@ static ast::TraitDecl parseTraitDecl(const msgpack::object &obj) {
 }
 
 // ── ImplDecl ────────────────────────────────────────────────────────────────
+
+static ast::ImplTypeAlias parseImplTypeAlias(const msgpack::object &obj) {
+  ast::ImplTypeAlias ta;
+  ta.name = getString(mapReq(obj, "name"));
+  ta.ty = parseSpanned<ast::TypeExpr>(mapReq(obj, "ty"), parseTypeExpr);
+  return ta;
+}
 
 static ast::ImplDecl parseImplDecl(const msgpack::object &obj) {
   ast::ImplDecl id;
@@ -1180,6 +1245,9 @@ static ast::ImplDecl parseImplDecl(const msgpack::object &obj) {
   const auto *wc = mapGet(obj, "where_clause");
   if (wc && !isNil(*wc))
     id.where_clause = parseWhereClause(*wc);
+  const auto *tas = mapGet(obj, "type_aliases");
+  if (tas && !isNil(*tas))
+    id.type_aliases = parseVec<ast::ImplTypeAlias>(*tas, parseImplTypeAlias);
   id.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);
   return id;
 }
@@ -1221,9 +1289,9 @@ static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {
 
 static ast::WireDecl parseWireDecl(const msgpack::object &obj) {
   ast::WireDecl wd;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    wd.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    wd.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
   wd.kind = (kindStr == "Enum") ? ast::WireDeclKind::Enum : ast::WireDeclKind::Struct;
   wd.name = getString(mapReq(obj, "name"));
@@ -1326,9 +1394,9 @@ static ast::OverflowPolicy parseOverflowPolicy(const msgpack::object &obj) {
 
 static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   ast::ActorDecl ad;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    ad.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    ad.visibility = parseVisibility(*vis);
   ad.name = getString(mapReq(obj, "name"));
   const auto *st = mapGet(obj, "super_traits");
   if (st && !isNil(*st))
@@ -1378,9 +1446,9 @@ static ast::ChildSpec parseChildSpec(const msgpack::object &obj) {
 
 static ast::SupervisorDecl parseSupervisorDecl(const msgpack::object &obj) {
   ast::SupervisorDecl sd;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    sd.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    sd.visibility = parseVisibility(*vis);
   sd.name = getString(mapReq(obj, "name"));
   const auto *strat = mapGet(obj, "strategy");
   if (strat && !isNil(*strat)) {

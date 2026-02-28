@@ -6,7 +6,7 @@
 
 use hew_parser::ast::{
     ActorDecl, Block, FnDecl, ImportDecl, ImportName, ImportSpec, Item, Param, Program,
-    ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr,
+    ReceiveFnDecl, Spanned, TypeDecl, TypeDeclKind, TypeExpr, Visibility,
 };
 use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
 use hew_types::check::TypeDefKind;
@@ -20,7 +20,7 @@ fn make_pub_fn(name: &str) -> FnDecl {
         attributes: vec![],
         is_async: false,
         is_generator: false,
-        is_pub: true,
+        visibility: Visibility::Pub,
         is_pure: false,
         name: name.to_string(),
         type_params: None,
@@ -242,7 +242,7 @@ fn test_private_items_not_visible() {
         attributes: vec![],
         is_async: false,
         is_generator: false,
-        is_pub: false, // private
+        visibility: Visibility::Private, // private
         is_pure: false,
         name: "private_fn".to_string(),
         type_params: None,
@@ -294,7 +294,7 @@ fn test_private_items_not_visible() {
 #[test]
 fn test_pub_type_accessible_qualified() {
     let pub_type = TypeDecl {
-        is_pub: true,
+        visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Config".to_string(),
         type_params: None,
@@ -412,7 +412,7 @@ fn test_two_modules_same_fn_no_collision() {
 /// Create a minimal actor declaration with optional receive functions.
 fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
     ActorDecl {
-        is_pub: true,
+        visibility: Visibility::Pub,
         name: name.to_string(),
         super_traits: None,
         init: None,

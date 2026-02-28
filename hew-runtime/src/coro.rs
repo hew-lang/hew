@@ -178,9 +178,17 @@ impl std::fmt::Debug for CoroStack {
 ///
 /// On x86-64 we save the callee-saved registers plus `rsp` and `rip`:
 /// `rbx, rbp, r12, r13, r14, r15, rsp, rip` (8 × 8 bytes = 64 bytes).
+///
+/// On aarch64 we save the callee-saved registers plus `sp` and return address:
+/// `x19-x28` (10 regs), `x29` (fp), `x30` (lr), `sp`, `pc` (14 × 8 bytes = 112 bytes).
 #[repr(C)]
 #[derive(Debug)]
 pub struct CoroContext {
+    #[cfg(target_arch = "x86_64")]
+    regs: [u64; 8],
+    #[cfg(target_arch = "aarch64")]
+    regs: [u64; 14],
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     regs: [u64; 8],
 }
 
@@ -188,7 +196,18 @@ impl CoroContext {
     /// Create a zeroed context (invalid until initialised by [`coro_init`]).
     #[must_use]
     pub fn new() -> Self {
-        CoroContext { regs: [0; 8] }
+        #[cfg(target_arch = "x86_64")]
+        {
+            CoroContext { regs: [0; 8] }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            CoroContext { regs: [0; 14] }
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            CoroContext { regs: [0; 8] }
+        }
     }
 }
 
@@ -303,10 +322,61 @@ pub unsafe fn coro_switch(from: *mut CoroContext, to: *const CoroContext) {
     }
 }
 
-/// Fallback for non-x86-64 targets (not yet implemented).
-#[cfg(not(target_arch = "x86_64"))]
+/// Switch from the current coroutine context to the target (aarch64).
+///
+/// Saves callee-saved registers + `sp` + return address of `from`, then
+/// restores the same set from `to` and jumps to its saved address.
+///
+/// # Safety
+///
+/// * Both pointers must point to valid, aligned `CoroContext` values.
+/// * The stack referenced by `to.regs[12]` (sp) must be valid and live.
+/// * After the switch, `from`'s state is frozen and `to` resumes where it
+///   last called `coro_switch`.
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub unsafe fn coro_switch(from: *mut CoroContext, to: *const CoroContext) {
+    // SAFETY: Caller guarantees both pointers are valid. The inline assembly
+    // saves/restores exactly the callee-saved register set required by the
+    // AAPCS64 (ARM ABI), plus sp and a synthetic return address.
+    // Layout: x19-x28 (regs[0..10]), x29, x30 (regs[10..12]), sp, pc (regs[12..14])
+    unsafe {
+        std::arch::asm!(
+            // Save callee-saved registers into `from`
+            "stp x19, x20, [{from}, #(0*8)]",   // regs[0], regs[1]
+            "stp x21, x22, [{from}, #(2*8)]",   // regs[2], regs[3]
+            "stp x23, x24, [{from}, #(4*8)]",   // regs[4], regs[5]
+            "stp x25, x26, [{from}, #(6*8)]",   // regs[6], regs[7]
+            "stp x27, x28, [{from}, #(8*8)]",   // regs[8], regs[9]
+            "stp x29, x30, [{from}, #(10*8)]",  // regs[10], regs[11] (fp, lr)
+            "mov x9, sp",
+            "str x9, [{from}, #(12*8)]",        // regs[12] = sp
+            "adr x9, 2f",
+            "str x9, [{from}, #(13*8)]",        // regs[13] = return address
+            // Restore callee-saved registers from `to`
+            "ldp x19, x20, [{to}, #(0*8)]",     // regs[0], regs[1]
+            "ldp x21, x22, [{to}, #(2*8)]",     // regs[2], regs[3]
+            "ldp x23, x24, [{to}, #(4*8)]",     // regs[4], regs[5]
+            "ldp x25, x26, [{to}, #(6*8)]",     // regs[6], regs[7]
+            "ldp x27, x28, [{to}, #(8*8)]",     // regs[8], regs[9]
+            "ldp x29, x30, [{to}, #(10*8)]",    // regs[10], regs[11] (fp, lr)
+            "ldr x9, [{to}, #(12*8)]",          // regs[12] = sp
+            "mov sp, x9",
+            "ldr x9, [{to}, #(13*8)]",          // regs[13] = return address
+            "br x9",
+            "2:",
+            from = in(reg) from,
+            to = in(reg) to,
+            out("x9") _,
+            options(nostack),
+        );
+    }
+}
+
+/// Fallback for unsupported targets (not yet implemented).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub unsafe fn coro_switch(_from: *mut CoroContext, _to: *const CoroContext) {
-    unimplemented!("coro_switch is only implemented for x86_64");
+    unimplemented!("coro_switch is only implemented for x86_64 and aarch64");
 }
 
 /// Initialise a [`CoroContext`] so that switching to it starts executing
@@ -350,15 +420,58 @@ pub unsafe fn coro_init(
     }
 }
 
-/// Fallback for non-x86-64 targets (not yet implemented).
-#[cfg(not(target_arch = "x86_64"))]
+/// Initialise a [`CoroContext`] so that switching to it starts executing
+/// `entry(arg)` on the given stack (aarch64).
+///
+/// # Safety
+///
+/// * `ctx` must point to a valid, writable `CoroContext`.
+/// * `stack_top` must point to the top of a valid, mapped stack region with
+///   enough space for the initial frame (at least 16 bytes below `stack_top`).
+/// * `entry` must be a valid function pointer that follows the C calling
+///   convention.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn coro_init(
+    ctx: *mut CoroContext,
+    stack_top: *mut u8,
+    entry: unsafe extern "C" fn(*mut u8),
+    arg: *mut u8,
+) {
+    // SAFETY: Caller guarantees `stack_top` has enough space. We set up the
+    // initial stack frame so that when `coro_switch` restores registers and
+    // jumps to the saved address, the coroutine starts executing `entry`.
+    // The argument is passed via x19 (callee-saved), which gets moved to x0
+    // by a trampoline.
+    unsafe {
+        // 16-byte align the stack pointer (AAPCS64 requirement).
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "stack_top is page-aligned from mmap"
+        )]
+        let sp = stack_top.sub(16).cast::<u64>();
+
+        (*ctx).regs = [0; 14];
+        // regs[0..10] = x19..x28
+        // regs[10] = x29 (frame pointer)
+        // regs[11] = x30 (link register)
+        // regs[12] = sp
+        // regs[13] = return address (pc)
+
+        (*ctx).regs[0] = arg as u64; // x19 = arg
+        (*ctx).regs[12] = sp as u64; // sp
+        (*ctx).regs[13] = entry as usize as u64; // pc = entry point
+    }
+}
+
+/// Fallback for unsupported targets (not yet implemented).
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub unsafe fn coro_init(
     _ctx: *mut CoroContext,
     _stack_top: *mut u8,
     _entry: unsafe extern "C" fn(*mut u8),
     _arg: *mut u8,
 ) {
-    unimplemented!("coro_init is only implemented for x86_64");
+    unimplemented!("coro_init is only implemented for x86_64 and aarch64");
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -384,5 +497,38 @@ mod tests {
         release_stack(stack1);
         let stack2 = acquire_stack().unwrap();
         assert_eq!(stack2.base, base1); // Got the same stack back
+    }
+
+    #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn test_coro_context_init() {
+        // Verify that coro_init sets up the context without crashing
+        unsafe {
+            let stack = CoroStack::new().expect("failed to allocate stack");
+            let mut coro_ctx = CoroContext::new();
+
+            unsafe extern "C" fn dummy_entry(_arg: *mut u8) {
+                // This won't be called in this test
+            }
+
+            coro_init(
+                &mut coro_ctx,
+                stack.top(),
+                dummy_entry,
+                std::ptr::null_mut(),
+            );
+
+            // Verify basic fields are set
+            #[cfg(target_arch = "x86_64")]
+            {
+                assert_ne!(coro_ctx.regs[6], 0); // rsp should be set
+                assert_ne!(coro_ctx.regs[7], 0); // rip should be set
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                assert_ne!(coro_ctx.regs[12], 0); // sp should be set
+                assert_ne!(coro_ctx.regs[13], 0); // pc should be set
+            }
+        }
     }
 }

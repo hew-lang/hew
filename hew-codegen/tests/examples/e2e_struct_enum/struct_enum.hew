@@ -1,0 +1,23 @@
+enum Shape {
+    Circle { radius: int };
+    Rectangle { width: int, height: int };
+    Point;
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Circle { radius } => radius * radius * 3,
+        Rectangle { width, height } => width * height,
+        Point => 0,
+        _ => 0,
+    }
+}
+
+fn main() {
+    let c = Circle { radius: 5 };
+    let r = Rectangle { width: 4, height: 3 };
+    let p = Point;
+    println(area(c));
+    println(area(r));
+    println(area(p));
+}

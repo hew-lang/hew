@@ -173,6 +173,8 @@ private:
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
   mlir::Value generateScopeExpr(const ast::ExprScope &expr);
   mlir::Value generateScopeLaunchExpr(const ast::ExprScopeLaunch &expr);
+  mlir::Value generateScopeSpawnExpr(const ast::ExprScopeSpawn &expr);
+  mlir::Value generateScopeLaunchImpl(const ast::Block &block);
   mlir::Value generateScopeCancelExpr();
 
   mlir::Value generateSelectExpr(const ast::ExprSelect &expr);
@@ -348,6 +350,7 @@ private:
     std::string name;
     unsigned index;
     std::vector<mlir::Type> payloadTypes; // empty for unit variants
+    std::vector<std::string> fieldNames;  // for struct-like variants
     // Absolute struct field positions (excluding tag at index 0) used for each
     // payload element when constructing/extracting this variant.
     std::vector<int64_t> payloadPositions;

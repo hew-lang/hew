@@ -12,9 +12,9 @@ extern "C" {
 }
 
 fn main() {
-    let yaml1 = Metric_to_yaml("cpu_usage", 75, 1);
+    let yaml1 = unsafe { Metric_to_yaml("cpu_usage", 75, 1) };
     print(yaml1);
-    let m = Metric_from_yaml(yaml1);
-    let yaml2 = Metric_to_yaml(m.name, m.value, m.active);
+    let m = unsafe { Metric_from_yaml(yaml1) };
+    let yaml2 = unsafe { Metric_to_yaml(m.name, m.value, m.active) };
     print(yaml2);
 }

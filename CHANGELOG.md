@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- WASM platform capability documentation
+- `s.spawn {}` parallel task syntax for structured concurrency
+- Custom type indexing via `get()` method (`obj[key]` desugars to `obj.get(key)`)
+- HashSet data structure with insert, contains, remove, len operations
+- Granular visibility modifiers: `pub(package)` and `pub(super)`
+- Bare `self` parameter in methods (no type annotation required)
+- Label support on `for` loops (@label: for ...)
+- Char literal support (`'a'`, `'\n'`, escape sequences)
+- Associated type declarations inside `impl` blocks, including trait defaults and `Self::Alias` resolution
+- `Self::Type` syntax in type position for associated type references
+- Negative literal patterns in match expressions (-1, -3.14)
+- `if let` conditional pattern syntax
+- Array repeat syntax `[value; count]` for initializing arrays
+- Struct-like enum variants with named fields (Variant { field: Type })
+- Trait bound enforcement at call sites for generic functions
+- Unsafe block enforcement: extern FFI calls require `unsafe { }` wrapper
+- Multi-trait dyn objects: `dyn (Trait1 + Trait2)`
+- Range expressions as first-class values (variable-bound ranges in for loops)
+- Timeout expression codegen support (`expr | after duration`)
+- Generic lambda syntax support (<T>(x: T) => expr)
+- Coroutine support for aarch64 (ARM64) architecture
+
+### Changed
+
+- Improved WASM target error messages for unsupported concurrency operations
+
 ## v0.1.5 — 2026-02-28
 
 ### Added

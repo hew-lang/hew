@@ -1753,6 +1753,139 @@
         }
       ]
     },
+    "hashset": {
+      "functions": [
+        {
+          "name": "hew_hashset_new",
+          "params": [],
+          "returns": "ptr"
+        },
+        {
+          "name": "hew_hashset_insert_int",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "i64"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_insert_string",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_contains_int",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "i64"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_contains_string",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_remove_int",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "i64"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_remove_string",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            },
+            {
+              "name": "value",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_len",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i64"
+        },
+        {
+          "name": "hew_hashset_is_empty",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            }
+          ],
+          "returns": "i1"
+        },
+        {
+          "name": "hew_hashset_clear",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            }
+          ],
+          "returns": "void"
+        },
+        {
+          "name": "hew_hashset_free",
+          "params": [
+            {
+              "name": "set",
+              "type": "ptr"
+            }
+          ],
+          "returns": "void"
+        }
+      ]
+    },
     "io_time": {
       "functions": [
         {

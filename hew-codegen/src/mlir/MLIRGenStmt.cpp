@@ -479,8 +479,10 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
-    // Track scope.launch task result types for await
-    if (stmt.value && std::holds_alternative<ast::ExprScopeLaunch>(stmt.value->value.kind) &&
+    // Track scope.launch / scope.spawn task result types for await
+    if (stmt.value &&
+        (std::holds_alternative<ast::ExprScopeLaunch>(stmt.value->value.kind) ||
+         std::holds_alternative<ast::ExprScopeSpawn>(stmt.value->value.kind)) &&
         lastScopeLaunchResultType.has_value()) {
       taskResultTypes[varName] = *lastScopeLaunchResultType;
       lastScopeLaunchResultType.reset();
@@ -539,10 +541,17 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         auto *defOp = (value && value.getDefiningOp()) ? value.getDefiningOp() : nullptr;
         bool isVecCtor = defOp && mlir::isa<hew::VecNewOp>(defOp);
         bool isHashMapCtor = defOp && mlir::isa<hew::HashMapNewOp>(defOp);
+        bool isHashSetCtor =
+            defOp && defOp->getName().getStringRef() == "hew.runtime_call" &&
+            defOp->hasAttr("callee") &&
+            mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
+                "hew_hashset_new";
         if ((typeName == "Vec" || typeName == "bytes") && isVecCtor)
           registerDroppable(varName, "hew_vec_free");
         else if (typeName == "HashMap" && isHashMapCtor)
           registerDroppable(varName, "hew_hashmap_free_impl");
+        else if (typeName == "HashSet" && isHashSetCtor)
+          registerDroppable(varName, "hew_hashset_free");
         else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                  !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
           // Don't register string drop for borrowed references from .get()
@@ -621,8 +630,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // Track dyn Trait variable types
     if (stmt.ty) {
       if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&stmt.ty->value.kind)) {
-        if (traitObj->bound)
-          dynTraitVarTypes[varName] = traitObj->bound->name;
+        if (!traitObj->bounds.empty())
+          dynTraitVarTypes[varName] = traitObj->bounds[0].name;
       }
     }
 
@@ -708,10 +717,17 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
       auto *defOp = (initValue && initValue.getDefiningOp()) ? initValue.getDefiningOp() : nullptr;
       bool isVecCtor = defOp && mlir::isa<hew::VecNewOp>(defOp);
       bool isHashMapCtor = defOp && mlir::isa<hew::HashMapNewOp>(defOp);
+      bool isHashSetCtor =
+          defOp && defOp->getName().getStringRef() == "hew.runtime_call" &&
+          defOp->hasAttr("callee") &&
+          mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
+              "hew_hashset_new";
       if ((typeName == "Vec" || typeName == "bytes") && isVecCtor)
         registerDroppable(varNameStr, "hew_vec_free");
       else if (typeName == "HashMap" && isHashMapCtor)
         registerDroppable(varNameStr, "hew_hashmap_free_impl");
+      else if (typeName == "HashSet" && isHashSetCtor)
+        registerDroppable(varNameStr, "hew_hashset_free");
       else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                !handleVarTypes.count(varNameStr) && !streamHandleVarTypes.count(varNameStr))
         registerDroppable(varNameStr, "hew_string_drop");
@@ -1954,6 +1970,13 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
+  std::string labelName;
+  if (stmt.label) {
+    labelName = *stmt.label;
+    labeledActiveFlags[labelName] = activeFlag;
+    labeledContinueFlags[labelName] = continueFlag;
+  }
+
   // Build scf.while
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
@@ -2065,6 +2088,13 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
 
+  std::string labelName;
+  if (stmt.label) {
+    labelName = *stmt.label;
+    labeledActiveFlags[labelName] = activeFlag;
+    labeledContinueFlags[labelName] = continueFlag;
+  }
+
   auto whileOp =
       builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
 
@@ -2145,6 +2175,11 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
       genFuncName = git->second;
   }
 
+  // Create a helper method for range loop generation
+  // void generateForRangeImpl(const ast::StmtFor &stmt, mlir::Value lb, mlir::Value ub, bool
+  // inclusive); But since I can't easily modify header without knowing exact location... I'll
+  // inline the logic but try to be concise.
+
   if (!genFuncName.empty()) {
     generateForGeneratorStmt(stmt, genFuncName);
     return;
@@ -2181,6 +2216,120 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
         }
       }
     }
+  }
+
+  if (collType.rfind("Range", 0) == 0 ||
+      (mlir::isa<hew::HewTupleType>(collection.getType()) &&
+       mlir::cast<hew::HewTupleType>(collection.getType()).getElementTypes().size() == 2 &&
+       mlir::cast<hew::HewTupleType>(collection.getType()).getElementTypes()[0] ==
+           mlir::cast<hew::HewTupleType>(collection.getType()).getElementTypes()[1])) {
+
+    auto location = currentLoc;
+    auto tupleType = mlir::cast<hew::HewTupleType>(collection.getType());
+    auto elemType = tupleType.getElementTypes()[0];
+
+    // Extract start/end from the range tuple
+    auto startVal = builder.create<hew::TupleExtractOp>(location, elemType, collection, 0);
+    auto endVal = builder.create<hew::TupleExtractOp>(location, elemType, collection, 1);
+
+    std::string loopVarName;
+    if (auto *patIdent = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
+      loopVarName = patIdent->name;
+    } else {
+      loopVarName = "_for_var";
+    }
+
+    // Cast to i64 for the loop machinery (mirrors generateForRange)
+    auto i64Type = builder.getI64Type();
+    auto i1Type = builder.getI1Type();
+    mlir::Value lbI64 = startVal;
+    mlir::Value ubI64 = endVal;
+    if (elemType != i64Type) {
+      lbI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, startVal);
+      ubI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, endVal);
+    }
+
+    // Index alloca
+    auto memrefI64 = mlir::MemRefType::get({}, i64Type);
+    mlir::Value indexAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefI64);
+    builder.create<mlir::memref::StoreOp>(location, lbI64, indexAlloca);
+
+    // Active/continue flags
+    auto memrefI1 = mlir::MemRefType::get({}, i1Type);
+    auto activeFlag = builder.create<mlir::memref::AllocaOp>(location, memrefI1);
+    auto trueVal = createIntConstant(builder, location, i1Type, 1);
+    builder.create<mlir::memref::StoreOp>(location, trueVal, activeFlag);
+
+    auto continueFlag = builder.create<mlir::memref::AllocaOp>(location, memrefI1);
+    auto falseVal = createIntConstant(builder, location, i1Type, 0);
+    builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
+
+    loopActiveStack.push_back(activeFlag);
+    loopContinueStack.push_back(continueFlag);
+    loopBreakValueStack.push_back(nullptr);
+
+    if (stmt.label) {
+      labeledActiveFlags[*stmt.label] = activeFlag;
+      labeledContinueFlags[*stmt.label] = continueFlag;
+    }
+
+    // scf.while
+    auto whileOp =
+        builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+
+    // Before region: condition
+    auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
+    builder.setInsertionPointToStart(beforeBlock);
+
+    auto isActive = builder.create<mlir::memref::LoadOp>(location, activeFlag, mlir::ValueRange{});
+    auto curIdx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+    auto cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt,
+                                                    curIdx, ubI64);
+    auto combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+
+    if (returnFlag) {
+      auto flagVal = builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+      auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueVal);
+      combinedCond = builder.create<mlir::arith::AndIOp>(location, combinedCond, notReturned);
+    }
+
+    builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+
+    // After region: body + increment
+    auto *afterBlock = builder.createBlock(&whileOp.getAfter());
+    builder.setInsertionPointToStart(afterBlock);
+
+    // Reset continue flag
+    builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
+
+    {
+      SymbolTableScopeT loopScope(symbolTable);
+      auto loopVal =
+          builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+      declareVariable(loopVarName, loopVal);
+      generateBlock(stmt.body);
+    }
+
+    // Increment index
+    auto curForInc =
+        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+    auto one = createIntConstant(builder, location, i64Type, 1);
+    auto nextIndex = builder.create<mlir::arith::AddIOp>(location, curForInc, one);
+    builder.create<mlir::memref::StoreOp>(location, nextIndex, indexAlloca);
+
+    builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{});
+
+    builder.setInsertionPointAfter(whileOp);
+
+    loopActiveStack.pop_back();
+    loopContinueStack.pop_back();
+    loopBreakValueStack.pop_back();
+    if (stmt.label) {
+      labeledActiveFlags.erase(*stmt.label);
+      labeledContinueFlags.erase(*stmt.label);
+    }
+
+    return;
   }
 
   // Check if this is a HashMap iteration
@@ -2289,6 +2438,13 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
+
+  std::string labelName;
+  if (stmt.label) {
+    labelName = *stmt.label;
+    labeledActiveFlags[labelName] = activeFlag;
+    labeledContinueFlags[labelName] = continueFlag;
+  }
 
   // scf.while loop
   auto whileOp =
@@ -2479,6 +2635,13 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   loopActiveStack.push_back(activeFlag);
   loopContinueStack.push_back(continueFlag);
   loopBreakValueStack.push_back(nullptr);
+
+  std::string labelName;
+  if (stmt.label) {
+    labelName = *stmt.label;
+    labeledActiveFlags[labelName] = activeFlag;
+    labeledContinueFlags[labelName] = continueFlag;
+  }
 
   // scf.while loop
   auto whileOp =

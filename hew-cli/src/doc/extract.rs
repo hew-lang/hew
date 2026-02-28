@@ -111,12 +111,22 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
         TypeExpr::Result { ok, err } => {
             format!("Result<{}, {}>", format_type(&ok.0), format_type(&err.0))
         }
-        TypeExpr::TraitObject(bound) => {
-            let args = bound.type_args.as_ref().map_or(String::new(), |args| {
-                let strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
-                format!("<{}>", strs.join(", "))
-            });
-            format!("dyn {}{args}", bound.name)
+        TypeExpr::TraitObject(bounds) => {
+            let parts: Vec<String> = bounds
+                .iter()
+                .map(|b| {
+                    let args = b.type_args.as_ref().map_or(String::new(), |args| {
+                        let strs: Vec<String> = args.iter().map(|(t, _)| format_type(t)).collect();
+                        format!("<{}>", strs.join(", "))
+                    });
+                    format!("{}{args}", b.name)
+                })
+                .collect();
+            if parts.len() == 1 {
+                format!("dyn {}", parts[0])
+            } else {
+                format!("dyn ({})", parts.join(" + "))
+            }
         }
         TypeExpr::Infer => "_".to_string(),
     }
@@ -125,8 +135,11 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
 /// Build a function signature string from a function declaration.
 fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     let mut sig = String::new();
-    if f.is_pub {
-        sig.push_str("pub ");
+    match f.visibility {
+        hew_parser::ast::Visibility::Private => {}
+        hew_parser::ast::Visibility::Pub => sig.push_str("pub "),
+        hew_parser::ast::Visibility::PubPackage => sig.push_str("pub(package) "),
+        hew_parser::ast::Visibility::PubSuper => sig.push_str("pub(super) "),
     }
     if f.is_async {
         sig.push_str("async ");

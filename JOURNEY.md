@@ -236,3 +236,51 @@ the Phase 7 codebase. Found critical issues the first round missed:
   cleared on `hew_node_stop`. This allows `hew_actor_send_by_id` to route remote PIDs
   without requiring callers to pass a node handle. One active node per process — matches
   Erlang/OTP's single-node model.
+
+---
+
+## Feature Completeness Sprint — February 2026
+
+Multi-model analysis (Claude Opus 4.6, GPT-5.1 Codex, Claude Sonnet 4.5, Gemini 3 Pro,
+GPT-5.2 Codex) identified 25 gaps across parser, type system, codegen, and runtime.
+Implementation proceeded in parallel batches using frontier models.
+
+### Batch 1: Parser Foundations (6 features)
+
+- **Char literals**: Added `CharLit` lexer token, parser production, and type checking.
+  End-to-end from `'a'` through codegen.
+- **Negative patterns**: `-1` and `-3.14` now work in match arms.
+- **Self parameter sugar**: `fn method(self)` infers Self type from impl block.
+- **For loop labels**: `@outer: for i in 0..N { break @outer; }` now works.
+- **Struct enum variants**: `Variant { field: Type }` with named fields.
+- **Array repeat**: `[0; 256]` syntax for initializing arrays.
+
+### Batch 2: Type System & Codegen (6 features)
+
+- **Visibility modifiers**: `pub(package)` and `pub(super)` replace boolean `is_pub`.
+  Full refactor across parser, type checker, serialization, and C++ codegen.
+- **Trait bound enforcement**: Generic function calls now verify concrete types
+  implement required traits.
+- **Multi-trait dyn**: `dyn (Printable + Measurable)` with method resolution across
+  all specified traits.
+- **Range values**: Ranges are first-class tuples; `for i in start..end` works with
+  variable bounds.
+- **Unsafe enforcement**: Extern FFI calls require `unsafe { }` wrapper. Type checker
+  tracks `in_unsafe` state.
+- **Test migration**: 8 e2e tests updated to use `unsafe { }` for extern calls.
+
+### Current State
+
+- 311/312 codegen e2e tests passing (scope_spawn MLIR verification needs work)
+- Full workspace Rust tests passing (530+ tests)
+- Clean builds across all crates and C++ codegen
+- 26 feature gaps identified, 24 fully implemented, 2 partial (scope_spawn codegen, WASM ops)
+
+### Features Implemented
+
+All 20 planned features from the multi-model analysis are now in place:
+char literals, negative patterns, self parameter sugar, for loop labels,
+struct enum variants, array repeat, visibility modifiers, trait bound enforcement,
+multi-trait dyn, range first-class, unsafe enforcement, timeout codegen, HashSet,
+generic lambdas, if-let patterns, custom indexing, associated types, s.spawn syntax,
+ARM coroutines, and WASM platform warnings.

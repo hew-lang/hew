@@ -373,6 +373,8 @@ pub enum TypeErrorKind {
     PurityViolation,
     /// Impl block violates the orphan rule: neither the type nor the trait is local
     OrphanImpl,
+    /// Feature is not available on the selected compilation target
+    PlatformLimitation,
 }
 
 #[cfg(test)]

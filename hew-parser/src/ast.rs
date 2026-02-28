@@ -111,11 +111,21 @@ pub enum Expr {
     Identifier(String),
     Tuple(Vec<Spanned<Expr>>),
     Array(Vec<Spanned<Expr>>),
+    ArrayRepeat {
+        value: Box<Spanned<Expr>>,
+        count: Box<Spanned<Expr>>,
+    },
     Block(Block),
     If {
         condition: Box<Spanned<Expr>>,
         then_block: Box<Spanned<Expr>>,
         else_block: Option<Box<Spanned<Expr>>>,
+    },
+    IfLet {
+        pattern: Box<Spanned<Pattern>>,
+        expr: Box<Spanned<Expr>>,
+        body: Block,
+        else_body: Option<Block>,
     },
     Match {
         scrutinee: Box<Spanned<Expr>>,
@@ -123,6 +133,7 @@ pub enum Expr {
     },
     Lambda {
         is_move: bool,
+        type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
@@ -189,6 +200,7 @@ pub enum Expr {
     },
     Await(Box<Spanned<Expr>>),
     ScopeLaunch(Block),
+    ScopeSpawn(Block),
     ScopeCancel,
 
     /// Regex literal, e.g. `re"pattern"`.
@@ -219,6 +231,12 @@ pub enum Stmt {
         then_block: Block,
         else_block: Option<ElseBlock>,
     },
+    IfLet {
+        pattern: Box<Spanned<Pattern>>,
+        expr: Box<Spanned<Expr>>,
+        body: Block,
+        else_body: Option<Block>,
+    },
     Match {
         scrutinee: Spanned<Expr>,
         arms: Vec<MatchArm>,
@@ -228,6 +246,7 @@ pub enum Stmt {
         body: Block,
     },
     For {
+        label: Option<String>,
         is_await: bool,
         pattern: Spanned<Pattern>,
         iterable: Spanned<Expr>,
@@ -277,7 +296,7 @@ pub enum TypeExpr {
         is_mutable: bool,
         pointee: Box<Spanned<TypeExpr>>,
     },
-    TraitObject(TraitBound),
+    TraitObject(Vec<TraitBound>),
     Infer,
 }
 
@@ -502,6 +521,35 @@ pub struct WherePredicate {
     pub bounds: Vec<TraitBound>,
 }
 
+// ── Visibility ───────────────────────────────────────────────────────
+
+/// Item visibility level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Visibility {
+    /// Not visible outside the defining module.
+    Private,
+    /// Fully public.
+    Pub,
+    /// Visible within the same package.
+    PubPackage,
+    /// Visible to the parent module.
+    PubSuper,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Self::Private
+    }
+}
+
+impl Visibility {
+    /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).
+    #[must_use]
+    pub fn is_pub(self) -> bool {
+        self != Self::Private
+    }
+}
+
 // ── Item-level types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -509,7 +557,8 @@ pub struct FnDecl {
     pub attributes: Vec<Attribute>,
     pub is_async: bool,
     pub is_generator: bool,
-    pub is_pub: bool,
+    #[serde(default)]
+    pub visibility: Visibility,
     pub is_pure: bool,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
@@ -545,7 +594,8 @@ pub enum ImportSpec {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstDecl {
-    pub is_pub: bool,
+    #[serde(default)]
+    pub visibility: Visibility,
     pub name: String,
     pub ty: Spanned<TypeExpr>,
     pub value: Spanned<Expr>,
@@ -554,7 +604,7 @@ pub struct ConstDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub kind: TypeDeclKind,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
@@ -566,7 +616,7 @@ pub struct TypeDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeAliasDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub name: String,
     pub ty: Spanned<TypeExpr>,
 }
@@ -587,13 +637,20 @@ pub enum TypeBodyItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantDecl {
     pub name: String,
-    pub fields: Vec<Spanned<TypeExpr>>,
+    pub kind: VariantKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum VariantKind {
+    Unit,
+    Tuple(Vec<Spanned<TypeExpr>>),
+    Struct(Vec<(String, Spanned<TypeExpr>)>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub name: String,
     pub type_params: Option<Vec<TypeParam>>,
     pub super_traits: Option<Vec<TraitBound>>,
@@ -607,6 +664,7 @@ pub enum TraitItem {
     AssociatedType {
         name: String,
         bounds: Vec<TraitBound>,
+        default: Option<Spanned<TypeExpr>>,
     },
 }
 
@@ -627,13 +685,21 @@ pub struct ImplDecl {
     pub trait_bound: Option<TraitBound>,
     pub target_type: Spanned<TypeExpr>,
     pub where_clause: Option<WhereClause>,
+    #[serde(default)]
+    pub type_aliases: Vec<ImplTypeAlias>,
     pub methods: Vec<FnDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImplTypeAlias {
+    pub name: String,
+    pub ty: Spanned<TypeExpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub kind: WireDeclKind,
     pub name: String,
     pub fields: Vec<WireFieldDecl>,
@@ -723,7 +789,7 @@ pub struct ExternFnDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActorDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub name: String,
     pub super_traits: Option<Vec<TraitBound>>,
     pub init: Option<ActorInit>,
@@ -786,7 +852,7 @@ pub struct ReceiveFnDecl {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupervisorDecl {
     #[serde(default)]
-    pub is_pub: bool,
+    pub visibility: Visibility,
     pub name: String,
     pub strategy: Option<SupervisorStrategy>,
     pub max_restarts: Option<i64>,

@@ -1,0 +1,13 @@
+// Test: Timeout expression (| after) evaluates inner expression
+actor Worker {
+    let value: int;
+    receive fn get() -> int {
+        self.value
+    }
+}
+
+fn main() {
+    let w = spawn Worker(value: 42);
+    let result = await w.get() | after 5000;
+    println(result);
+}

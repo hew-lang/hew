@@ -1,0 +1,19 @@
+// Test: char literals and escape sequences
+fn main() {
+    let c = 'a';
+    let nl = '\n';
+    let tab = '\t';
+    let null = '\0';
+    let bs = '\\';
+    let sq = '\'';
+
+    if c == 'a' {
+        println("char eq works");
+    }
+    if nl == '\n' {
+        println("newline escape works");
+    }
+    if bs == '\\' {
+        println("backslash escape works");
+    }
+}

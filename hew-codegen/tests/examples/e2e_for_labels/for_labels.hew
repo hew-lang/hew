@@ -1,0 +1,12 @@
+fn main() {
+    var found = 0;
+    @outer: for i in 0..5 {
+        for j in 0..5 {
+            if i * 5 + j == 13 {
+                found = i * 5 + j;
+                break @outer;
+            }
+        }
+    }
+    println(found);
+}

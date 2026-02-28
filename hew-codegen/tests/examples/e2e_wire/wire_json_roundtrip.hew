@@ -13,9 +13,9 @@ wire type Order {
 }
 
 fn main() {
-    let json1 = Order_to_json(99, 3, "urgent");
+    let json1 = unsafe { Order_to_json(99, 3, "urgent") };
     println(json1);
-    let o = Order_from_json(json1);
-    let json2 = Order_to_json(o.order_id, o.quantity, o.note);
+    let o = unsafe { Order_from_json(json1) };
+    let json2 = unsafe { Order_to_json(o.order_id, o.quantity, o.note) };
     println(json2);
 }

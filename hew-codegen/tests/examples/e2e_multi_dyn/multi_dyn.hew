@@ -1,0 +1,34 @@
+trait Printable {
+    fn to_text(self) -> string;
+}
+
+trait Measurable {
+    fn size(self) -> int;
+}
+
+struct Box {
+    label: string,
+    width: int,
+}
+
+impl Printable for Box {
+    fn to_text(self) -> string {
+        self.label
+    }
+}
+
+impl Measurable for Box {
+    fn size(self) -> int {
+        self.width
+    }
+}
+
+fn describe(item: dyn (Printable + Measurable)) {
+    println(item.to_text());
+    println(item.size());
+}
+
+fn main() {
+    let b = Box { label: "cargo", width: 10 };
+    describe(b);
+}

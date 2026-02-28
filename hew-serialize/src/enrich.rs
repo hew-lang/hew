@@ -7,7 +7,7 @@
 
 use hew_parser::ast::{
     ActorDecl, Block, CallArg, ElseBlock, Expr, ExternBlock, ExternFnDecl, FnDecl, Item, Param,
-    Program, Span, Spanned, Stmt, TraitBound, TypeExpr,
+    Program, Span, Spanned, Stmt, TraitBound, TypeExpr, Visibility,
 };
 use hew_types::check::{SpanKey, TypeCheckOutput};
 use hew_types::Ty;
@@ -191,15 +191,24 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             }
         }
 
-        Ty::TraitObject { trait_name, args } => TypeExpr::TraitObject(TraitBound {
-            name: trait_name.clone(),
-            type_args: if args.is_empty() {
-                None
-            } else {
-                let mapped: Option<Vec<_>> = args.iter().map(|a| ty_to_type_expr(a)).collect();
-                mapped
-            },
-        }),
+        Ty::TraitObject { traits } => {
+            let bounds: Option<Vec<_>> = traits
+                .iter()
+                .map(|b| {
+                    Some(TraitBound {
+                        name: b.trait_name.clone(),
+                        type_args: if b.args.is_empty() {
+                            None
+                        } else {
+                            let mapped: Option<Vec<_>> =
+                                b.args.iter().map(|a| ty_to_type_expr(a)).collect();
+                            mapped
+                        },
+                    })
+                })
+                .collect();
+            TypeExpr::TraitObject(bounds?)
+        }
 
         Ty::Unit
         | Ty::Var(_)
@@ -273,12 +282,13 @@ fn normalize_type_expr(te: &mut TypeExpr) {
         TypeExpr::Pointer { pointee, .. } => {
             normalize_type_expr(&mut pointee.0);
         }
-        TypeExpr::TraitObject(TraitBound {
-            type_args: Some(ref mut args),
-            ..
-        }) => {
-            for arg in args.iter_mut() {
-                normalize_type_expr(&mut arg.0);
+        TypeExpr::TraitObject(ref mut bounds) => {
+            for bound in bounds.iter_mut() {
+                if let Some(ref mut args) = bound.type_args {
+                    for arg in args.iter_mut() {
+                        normalize_type_expr(&mut arg.0);
+                    }
+                }
             }
         }
         _ => {}
@@ -478,6 +488,18 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
                 }
             }
         }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_builtin_calls_in_expr(expr);
+            rewrite_builtin_calls_in_block(body);
+            if let Some(block) = else_body {
+                rewrite_builtin_calls_in_block(block);
+            }
+        }
         Stmt::Assign { target, value, .. } => {
             rewrite_builtin_calls_in_expr(target);
             rewrite_builtin_calls_in_expr(value);
@@ -540,12 +562,28 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(e);
             }
         }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            rewrite_builtin_calls_in_expr(expr);
+            rewrite_builtin_calls_in_block(body);
+            if let Some(block) = else_body {
+                rewrite_builtin_calls_in_block(block);
+            }
+        }
         Expr::Block(block) => rewrite_builtin_calls_in_block(block),
         Expr::Index { object, index } => {
             rewrite_builtin_calls_in_expr(object);
             rewrite_builtin_calls_in_expr(index);
         }
         Expr::FieldAccess { object, .. } => rewrite_builtin_calls_in_expr(object),
+        Expr::ArrayRepeat { value, count } => {
+            rewrite_builtin_calls_in_expr(value);
+            rewrite_builtin_calls_in_expr(count);
+        }
         Expr::Array(elems) | Expr::Tuple(elems) => {
             for e in elems {
                 rewrite_builtin_calls_in_expr(e);
@@ -664,6 +702,18 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
                 }
             }
         }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            normalize_expr_types(expr);
+            normalize_block_types(body);
+            if let Some(block) = else_body {
+                normalize_block_types(block);
+            }
+        }
         Stmt::For { body, iterable, .. } => {
             normalize_expr_types(iterable);
             normalize_block_types(body);
@@ -708,7 +758,8 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
         Expr::Block(block)
         | Expr::Scope { body: block, .. }
         | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block) => {
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
             normalize_block_types(block);
         }
         Expr::If {
@@ -723,6 +774,18 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
                 normalize_expr_types(e);
             }
         }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            normalize_expr_types(expr);
+            normalize_block_types(body);
+            if let Some(block) = else_body {
+                normalize_block_types(block);
+            }
+        }
         Expr::Match { scrutinee, arms } => {
             normalize_expr_types(scrutinee);
             for arm in arms {
@@ -731,6 +794,10 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
                 }
                 normalize_expr_types(&mut arm.body);
             }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            normalize_expr_types(value);
+            normalize_expr_types(count);
         }
         Expr::Array(elements) | Expr::Tuple(elements) => {
             for e in elements.iter_mut() {
@@ -923,6 +990,18 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) {
                 enrich_else_block(else_b, tco);
             }
         }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            enrich_expr(expr, tco);
+            enrich_block(body, tco);
+            if let Some(block) = else_body {
+                enrich_block(block, tco);
+            }
+        }
         Stmt::Match { scrutinee, arms } => {
             enrich_expr(scrutinee, tco);
             for arm in arms {
@@ -986,6 +1065,18 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
             enrich_expr(then_block, tco);
             if let Some(ref mut e) = else_block {
                 enrich_expr(e, tco);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            enrich_expr(expr, tco);
+            enrich_block(body, tco);
+            if let Some(block) = else_body {
+                enrich_block(block, tco);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -1161,7 +1252,10 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 enrich_expr(e, tco);
             }
         }
-        Expr::Scope { body: block, .. } | Expr::Unsafe(block) | Expr::ScopeLaunch(block) => {
+        Expr::Scope { body: block, .. }
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
             enrich_block(block, tco);
         }
         Expr::Timeout {
@@ -1541,7 +1635,7 @@ mod tests {
                     attributes: vec![],
                     is_async: false,
                     is_generator: false,
-                    is_pub: false,
+                    visibility: Visibility::Private,
                     is_pure: false,
                     name: "main".into(),
                     type_params: None,
@@ -1774,7 +1868,7 @@ mod tests {
                     attributes: vec![],
                     is_async: false,
                     is_generator: false,
-                    is_pub: false,
+                    visibility: Visibility::Private,
                     is_pure: false,
                     name: "foo".into(),
                     type_params: None,

@@ -2,6 +2,6 @@ import std::fs;
 
 fn main() {
     // Test file existence check (we know /dev/null exists)
-    let exists = hew_file_exists("/dev/null");
+    let exists = unsafe { hew_file_exists("/dev/null") };
     println(exists);
 }

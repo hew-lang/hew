@@ -3,8 +3,8 @@ extern "C" {
 }
 
 fn main() {
-    let x = abs(0 - 42);
+    let x = unsafe { abs(0 - 42) };
     println(x);
-    let y = abs(7);
+    let y = unsafe { abs(7) };
     println(y);
 }

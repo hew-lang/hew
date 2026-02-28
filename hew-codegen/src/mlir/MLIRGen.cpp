@@ -199,6 +199,16 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       return builder.getF64Type();
     if (name == "bool")
       return builder.getI1Type();
+    if (name == "Range") {
+      if (!named->type_args || named->type_args->empty()) {
+        emitError(builder.getUnknownLoc()) << "Range type requires a type argument";
+        return mlir::NoneType::get(&context);
+      }
+      auto elemType = convertType((*named->type_args)[0].value);
+      if (!elemType)
+        return mlir::NoneType::get(&context);
+      return hew::HewTupleType::get(&context, {elemType, elemType});
+    }
     if (name == "char")
       return builder.getI32Type();
     if (name == "String" || name == "string" || name == "str")
@@ -228,6 +238,17 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       mlir::Type keyType = convertType((*named->type_args)[0].value);
       mlir::Type valType = convertType((*named->type_args)[1].value);
       return hew::HashMapType::get(&context, keyType, valType);
+    }
+    // HashSet<T>: opaque pointer (backed by HashMap<T, ()> in runtime)
+    if (name == "HashSet") {
+      if (!(named->type_args && !named->type_args->empty())) {
+        ++errorCount_;
+        emitError(currentLoc)
+            << "cannot determine element type for HashSet; add explicit type annotation";
+        return nullptr;
+      }
+      // HashSet is an opaque handle type
+      return hew::HandleType::get(&context, builder.getStringAttr("HashSet"));
     }
     if (name == "ActorRef" || name == "Actor")
       return hew::ActorRefType::get(&context);
@@ -381,7 +402,7 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 
   // Trait object types: dyn Trait → fat pointer {data_ptr, type_tag}
   if (auto *to = std::get_if<ast::TypeTraitObject>(&type.kind)) {
-    std::string traitName = to->bound ? to->bound->name : "Unknown";
+    std::string traitName = !to->bounds.empty() ? to->bounds[0].name : "Unknown";
     return hew::HewTraitObjectType::get(&context, traitName);
   }
 
@@ -1026,6 +1047,25 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       return nullptr;
     }
     return builder.create<hew::HashMapNewOp>(location, hmType).getResult();
+  }
+
+  // HashSet::new() -> !hew.handle<"HashSet">
+  if (name == "HashSet::new") {
+    mlir::Type setType;
+    if (pendingDeclaredType && mlir::isa<hew::HandleType>(*pendingDeclaredType)) {
+      setType = *pendingDeclaredType;
+      pendingDeclaredType.reset();
+    } else {
+      emitError(location)
+          << "cannot determine element type for HashSet; add explicit type annotation";
+      return nullptr;
+    }
+    // Call the runtime function hew_hashset_new
+    return builder
+        .create<hew::RuntimeCallOp>(location, mlir::TypeRange{setType},
+                                    mlir::SymbolRefAttr::get(&context, "hew_hashset_new"),
+                                    mlir::ValueRange{})
+        .getResult();
   }
 
   // stop(actor) -> void: stop an actor
@@ -1979,9 +2019,16 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         EnumVariantInfo vi;
         vi.name = variantItem->variant.name;
         vi.index = idx++;
-        // Collect payload types for tuple variants
-        for (const auto &ty : variantItem->variant.fields) {
-          vi.payloadTypes.push_back(convertType(ty.value));
+        if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&variantItem->variant.kind)) {
+          for (const auto &ty : tuple->fields) {
+            vi.payloadTypes.push_back(convertType(ty.value));
+          }
+        } else if (auto *strct =
+                       std::get_if<ast::VariantDecl::VariantStruct>(&variantItem->variant.kind)) {
+          for (const auto &field : strct->fields) {
+            vi.payloadTypes.push_back(convertType(field.ty.value));
+            vi.fieldNames.push_back(field.name);
+          }
         }
         info.variants.push_back(std::move(vi));
       }
@@ -2533,7 +2580,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // everything else is private.
   if (funcName == "main") {
     // main is always public — no visibility change needed (default is public)
-  } else if (fn.is_pub) {
+  } else if (ast::is_pub(fn.visibility)) {
     funcOp.setVisibility(mlir::SymbolTable::Visibility::Public);
   } else {
     funcOp.setVisibility(mlir::SymbolTable::Visibility::Private);
@@ -2579,8 +2626,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 
     // Track dyn Trait parameter types for dynamic dispatch
     if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&paramTy.kind)) {
-      if (traitObj->bound) {
-        dynTraitVarTypes[paramName] = traitObj->bound->name;
+      if (!traitObj->bounds.empty()) {
+        dynTraitVarTypes[paramName] = traitObj->bounds[0].name;
       }
     }
     ++paramIdx;

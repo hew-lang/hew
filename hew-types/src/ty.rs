@@ -34,6 +34,15 @@ impl fmt::Display for TypeVar {
     }
 }
 
+/// A single trait bound in a trait object.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TraitObjectBound {
+    /// Trait name
+    pub trait_name: String,
+    /// Type arguments
+    pub args: Vec<Ty>,
+}
+
 /// The internal representation of a type in Hew.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Ty {
@@ -149,12 +158,10 @@ pub enum Ty {
         pointee: Box<Ty>,
     },
 
-    /// Trait object: `dyn Trait`
+    /// Trait object: `dyn Trait` or `dyn (Trait1 + Trait2)`
     TraitObject {
-        /// Trait name
-        trait_name: String,
-        /// Type arguments
-        args: Vec<Ty>,
+        /// Trait bounds
+        traits: Vec<TraitObjectBound>,
     },
 
     /// Range type: `Range<T>`
@@ -315,7 +322,9 @@ impl Ty {
             Ty::Result { ok, err } => ok.contains_var(v) || err.contains_var(v),
             Ty::Generator { yields, returns } => yields.contains_var(v) || returns.contains_var(v),
             Ty::Pointer { pointee, .. } => pointee.contains_var(v),
-            Ty::TraitObject { args, .. } => args.iter().any(|a| a.contains_var(v)),
+            Ty::TraitObject { traits } => traits
+                .iter()
+                .any(|bound| bound.args.iter().any(|a| a.contains_var(v))),
             _ => false,
         }
     }
@@ -384,11 +393,17 @@ impl Ty {
                 is_mutable: *is_mutable,
                 pointee: Box::new(pointee.substitute(var, replacement)),
             },
-            Ty::TraitObject { trait_name, args } => Ty::TraitObject {
-                trait_name: trait_name.clone(),
-                args: args
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
                     .iter()
-                    .map(|a| a.substitute(var, replacement))
+                    .map(|bound| crate::ty::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|a| a.substitute(var, replacement))
+                            .collect(),
+                    })
                     .collect(),
             },
             Ty::Range(inner) => Ty::Range(Box::new(inner.substitute(var, replacement))),
@@ -446,9 +461,14 @@ impl Ty {
                 is_mutable: *is_mutable,
                 pointee: Box::new(pointee.apply_subst(subst)),
             },
-            Ty::TraitObject { trait_name, args } => Ty::TraitObject {
-                trait_name: trait_name.clone(),
-                args: args.iter().map(|a| a.apply_subst(subst)).collect(),
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
+                    .iter()
+                    .map(|bound| crate::ty::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound.args.iter().map(|a| a.apply_subst(subst)).collect(),
+                    })
+                    .collect(),
             },
             Ty::Range(inner) => Ty::Range(Box::new(inner.apply_subst(subst))),
             _ => self.clone(),
@@ -534,17 +554,40 @@ impl fmt::Display for Ty {
                     write!(f, "*const {pointee}")
                 }
             }
-            Ty::TraitObject { trait_name, args } => {
-                write!(f, "dyn {trait_name}")?;
-                if !args.is_empty() {
-                    write!(f, "<")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
+            Ty::TraitObject { traits } => {
+                write!(f, "dyn ")?;
+                if traits.len() == 1 {
+                    let bound = &traits[0];
+                    write!(f, "{}", bound.trait_name)?;
+                    if !bound.args.is_empty() {
+                        write!(f, "<")?;
+                        for (i, arg) in bound.args.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{arg}")?;
                         }
-                        write!(f, "{arg}")?;
+                        write!(f, ">")?;
                     }
-                    write!(f, ">")?;
+                } else {
+                    write!(f, "(")?;
+                    for (i, bound) in traits.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, " + ")?;
+                        }
+                        write!(f, "{}", bound.trait_name)?;
+                        if !bound.args.is_empty() {
+                            write!(f, "<")?;
+                            for (j, arg) in bound.args.iter().enumerate() {
+                                if j > 0 {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{arg}")?;
+                            }
+                            write!(f, ">")?;
+                        }
+                    }
+                    write!(f, ")")?;
                 }
                 Ok(())
             }

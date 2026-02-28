@@ -1,0 +1,22 @@
+trait Describable {
+    fn describe(self) -> string;
+}
+
+type Dog {
+    name: string;
+}
+
+impl Describable for Dog {
+    fn describe(self) -> string {
+        self.name
+    }
+}
+
+fn show<T: Describable>(item: T) {
+    println(item.describe());
+}
+
+fn main() {
+    let d = Dog { name: "Rex" };
+    show(d);
+}

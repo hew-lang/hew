@@ -12,6 +12,6 @@ extern "C" {
 }
 
 fn main() {
-    let json = Audit_to_json("item-123", 42, 7);
+    let json = unsafe { Audit_to_json("item-123", 42, 7) };
     println(json);
 }

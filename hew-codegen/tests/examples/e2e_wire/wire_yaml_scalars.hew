@@ -13,6 +13,6 @@ extern "C" {
 }
 
 fn main() {
-    let yaml = YScalars_to_yaml(1, -7, 1000000, 1.5, "hello");
+    let yaml = unsafe { YScalars_to_yaml(1, -7, 1000000, 1.5, "hello") };
     print(yaml);
 }

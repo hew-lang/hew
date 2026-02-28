@@ -1,0 +1,21 @@
+type Point {
+    x: int;
+    y: int;
+}
+
+impl Point {
+    // Mix of bare `self` and explicit `self: Point`
+    fn sum(self) -> int {
+        self.x + self.y
+    }
+    
+    fn double(self: Point) -> int {
+        self.sum() * 2
+    }
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    println(p.sum());
+    println(p.double());
+}

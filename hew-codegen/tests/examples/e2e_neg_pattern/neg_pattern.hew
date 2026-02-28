@@ -1,0 +1,15 @@
+fn describe(n: int) -> string {
+    match n {
+        -1 => "negative one",
+        0 => "zero",
+        1 => "one",
+        _ => "other",
+    }
+}
+
+fn main() {
+    println(describe(-1));
+    println(describe(0));
+    println(describe(1));
+    println(describe(42));
+}

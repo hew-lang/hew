@@ -134,6 +134,7 @@ pub mod arc;
 pub mod assert;
 pub mod cabi;
 pub mod hashmap;
+pub mod hashset;
 pub mod option;
 pub mod print;
 pub mod rc;

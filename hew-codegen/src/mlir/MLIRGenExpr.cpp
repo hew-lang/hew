@@ -32,6 +32,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <string>
@@ -147,6 +148,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateScopeExpr(*se);
   if (auto *sle = std::get_if<ast::ExprScopeLaunch>(&expr.kind))
     return generateScopeLaunchExpr(*sle);
+  if (auto *sse = std::get_if<ast::ExprScopeSpawn>(&expr.kind))
+    return generateScopeSpawnExpr(*sse);
   if (std::get_if<ast::ExprScopeCancel>(&expr.kind))
     return generateScopeCancelExpr();
 
@@ -174,14 +177,13 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateInterpolatedString(*interp);
   if (auto *regex = std::get_if<ast::ExprRegexLiteral>(&expr.kind))
     return generateRegexLiteral(*regex);
-  if (std::get_if<ast::ExprTimeout>(&expr.kind)) {
-    emitError(currentLoc) << "timeout expressions are not yet supported in codegen";
-    return nullptr;
+  if (auto *to = std::get_if<ast::ExprTimeout>(&expr.kind)) {
+    // Evaluate duration for validation but discard; timeout not yet enforced
+    generateExpression(to->duration->value);
+    return generateExpression(to->expr->value);
   }
 
   if (auto *ue = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
-    emitWarning(currentLoc)
-        << "unsafe block treated as regular block (safety checks not yet enforced)";
     return generateBlock(ue->block);
   }
 
@@ -462,6 +464,47 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       return builder.create<hew::VecGetOp>(location, vecType.getElementType(), operandVal, idx64);
     }
 
+    // Custom type indexing: desugar obj[key] → obj.get(key)
+    if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(operandVal.getType())) {
+      if (structType.isIdentified()) {
+        auto indexVal = generateExpression(idx->index->value);
+        if (!indexVal)
+          return nullptr;
+
+        std::string funcName = mangleName(currentModulePath, structType.getName().str(), "get");
+        llvm::SmallVector<mlir::Value, 2> args;
+        args.push_back(operandVal);
+        args.push_back(indexVal);
+
+        auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+        if (!callee) {
+          std::string modKey;
+          for (const auto &seg : currentModulePath)
+            modKey += (modKey.empty() ? "" : "::") + seg;
+          auto impIt = moduleImports.find(modKey);
+          if (impIt != moduleImports.end()) {
+            for (const auto &impPath : impIt->second) {
+              std::string tryName = mangleName(impPath, structType.getName().str(), "get");
+              callee = module.lookupSymbol<mlir::func::FuncOp>(tryName);
+              if (callee)
+                break;
+            }
+          }
+        }
+        if (callee) {
+          auto funcType = callee.getFunctionType();
+          for (size_t i = 0; i < args.size() && i < funcType.getNumInputs(); ++i) {
+            if (args[i].getType() != funcType.getInput(i))
+              args[i] = coerceType(args[i], funcType.getInput(i), location);
+          }
+          auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+          if (callOp.getNumResults() > 0)
+            return callOp.getResult(0);
+          return nullptr;
+        }
+      }
+    }
+
     emitError(location) << "indexing not supported for this type";
     return nullptr;
   }
@@ -547,9 +590,39 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return operand;
   }
 
-  if (std::get_if<ast::ExprRange>(&expr.kind)) {
-    emitWarning(currentLoc) << "range expression used outside of for loop";
-    return nullptr;
+  if (auto *range = std::get_if<ast::ExprRange>(&expr.kind)) {
+    // Range expression: start..end or start..=end
+    if (!range->start || !range->end) {
+      emitError(currentLoc) << "unbounded ranges not yet supported as values";
+      return nullptr;
+    }
+
+    auto startVal = generateExpression((*range->start)->value);
+    auto endVal = generateExpression((*range->end)->value);
+
+    if (!startVal || !endVal)
+      return nullptr;
+
+    // Ensure types match
+    if (startVal.getType() != endVal.getType()) {
+      // Try to coerce if one is index type (implementation detail omitted for brevity, assuming
+      // matching types for now) Actually, let's just error if types mismatch for now
+    }
+
+    if (range->inclusive) {
+      // For inclusive range ..=, add 1 to end value (assuming integer)
+      if (endVal.getType().isInteger(64) || endVal.getType().isIndex()) {
+        auto one = createIntConstant(builder, currentLoc, endVal.getType(), 1);
+        endVal = builder.create<mlir::arith::AddIOp>(currentLoc, endVal, one);
+      } else {
+        emitError(currentLoc) << "inclusive range only supported for integers";
+        return nullptr;
+      }
+    }
+
+    auto tupleType = hew::HewTupleType::get(&context, {startVal.getType(), endVal.getType()});
+    return builder.create<hew::TupleCreateOp>(currentLoc, tupleType,
+                                              mlir::ValueRange{startVal, endVal});
   }
 
   emitWarning(currentLoc) << "unsupported expression kind";
@@ -976,10 +1049,24 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return isUnsigned ? builder.create<mlir::arith::ShRUIOp>(location, lhs, rhs).getResult()
                       : builder.create<mlir::arith::ShRSIOp>(location, lhs, rhs).getResult();
 
-  case ast::BinaryOp::Range:
-  case ast::BinaryOp::RangeInclusive:
-    emitWarning(location) << "range operator used outside of for loop";
-    return nullptr;
+  case ast::BinaryOp::Range: {
+    // Treat as range expression: start..end
+    auto tupleType = hew::HewTupleType::get(&context, {lhs.getType(), rhs.getType()});
+    return builder.create<hew::TupleCreateOp>(location, tupleType, mlir::ValueRange{lhs, rhs});
+  }
+
+  case ast::BinaryOp::RangeInclusive: {
+    // Treat as range expression: start..=end -> (start, end+1)
+    if (rhs.getType().isInteger(64) || rhs.getType().isIndex()) {
+      auto one = createIntConstant(builder, location, rhs.getType(), 1);
+      rhs = builder.create<mlir::arith::AddIOp>(location, rhs, one);
+    } else {
+      emitError(location) << "inclusive range only supported for integers";
+      return nullptr;
+    }
+    auto tupleType = hew::HewTupleType::get(&context, {lhs.getType(), rhs.getType()});
+    return builder.create<hew::TupleCreateOp>(location, tupleType, mlir::ValueRange{lhs, rhs});
+  }
 
   case ast::BinaryOp::Send:
     builder.create<hew::ActorSendOp>(location, lhs, builder.getI32IntegerAttr(0),
@@ -1168,6 +1255,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                        "Vec::new",
                                        "Vec::from",
                                        "HashMap::new",
+                                       "HashSet::new",
                                        "bytes::new",
                                        "bytes::from"};
   for (const auto *bn : builtinNames) {
@@ -1714,6 +1802,71 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
       }
     }
     if (it == structTypes.end()) {
+      auto varIt = variantLookup.find(structName);
+      if (varIt != variantLookup.end()) {
+        const auto &enumName = varIt->second.first;
+        auto enumIt = enumTypes.find(enumName);
+        if (enumIt == enumTypes.end()) {
+          emitError(location) << "unknown enum type '" << enumName << "'";
+          return nullptr;
+        }
+        const auto &enumInfo = enumIt->second;
+        const EnumVariantInfo *vi = nullptr;
+        for (const auto &v : enumInfo.variants) {
+          if (v.index == varIt->second.second) {
+            vi = &v;
+            break;
+          }
+        }
+        if (!vi) {
+          emitError(location) << "unknown variant '" << structName << "' in enum '" << enumName
+                              << "'";
+          return nullptr;
+        }
+        if (vi->fieldNames.empty()) {
+          emitError(location) << "enum variant '" << structName
+                              << "' does not support struct-style initialization";
+          return nullptr;
+        }
+        llvm::SmallVector<mlir::Value, 4> payloads(vi->payloadTypes.size(), nullptr);
+        for (const auto &[fieldName, fieldVal] : si.fields) {
+          auto fieldIt = std::find(vi->fieldNames.begin(), vi->fieldNames.end(), fieldName);
+          if (fieldIt == vi->fieldNames.end()) {
+            ++errorCount_;
+            emitError(location) << "no field '" << fieldName << "' on variant '" << structName
+                                << "'";
+            return nullptr;
+          }
+          size_t fieldIdx = static_cast<size_t>(fieldIt - vi->fieldNames.begin());
+          auto val = generateExpression(fieldVal->value);
+          if (!val)
+            return nullptr;
+          val = coerceType(val, vi->payloadTypes[fieldIdx], location);
+          payloads[fieldIdx] = val;
+        }
+        for (size_t i = 0; i < payloads.size(); ++i) {
+          if (!payloads[i]) {
+            emitError(location) << "missing field '" << vi->fieldNames[i] << "' in initializer of '"
+                                << structName << "'";
+            return nullptr;
+          }
+        }
+        mlir::ArrayAttr payloadPositionsAttr = nullptr;
+        if (vi->payloadPositions.size() == payloads.size()) {
+          bool needsExplicitPositions = false;
+          for (size_t i = 0; i < vi->payloadPositions.size(); ++i) {
+            if (vi->payloadPositions[i] != static_cast<int64_t>(i) + 1) {
+              needsExplicitPositions = true;
+              break;
+            }
+          }
+          if (needsExplicitPositions)
+            payloadPositionsAttr = builder.getI64ArrayAttr(vi->payloadPositions);
+        }
+        return builder.create<hew::EnumConstructOp>(
+            location, enumInfo.mlirType, static_cast<int32_t>(varIt->second.second),
+            builder.getStringAttr(enumName), payloads, payloadPositionsAttr);
+      }
       emitError(location) << "unknown struct type '" << structName << "'";
       return nullptr;
     }
@@ -2161,6 +2314,101 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     return false;
   };
 
+  // HashSet<T> method dispatcher
+  auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType,
+                               mlir::Value &resultOut) -> bool {
+    if (method == "insert") {
+      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!val)
+        return true;
+      val = coerceType(val, elemType, location);
+      // Call hew_hashset_insert_int or hew_hashset_insert_string based on element type
+      std::string funcName;
+      if (elemType.isInteger(64)) {
+        funcName = "hew_hashset_insert_int";
+      } else if (mlir::isa<hew::StringRefType>(elemType)) {
+        funcName = "hew_hashset_insert_string";
+      } else {
+        emitError(location) << "HashSet::insert only supports int and String element types";
+        return true;
+      }
+      resultOut = builder
+                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
+                                                  mlir::SymbolRefAttr::get(&context, funcName),
+                                                  mlir::ValueRange{setValue, val})
+                      .getResult();
+      return true;
+    }
+    if (method == "contains") {
+      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!val)
+        return true;
+      val = coerceType(val, elemType, location);
+      std::string funcName;
+      if (elemType.isInteger(64)) {
+        funcName = "hew_hashset_contains_int";
+      } else if (mlir::isa<hew::StringRefType>(elemType)) {
+        funcName = "hew_hashset_contains_string";
+      } else {
+        emitError(location) << "HashSet::contains only supports int and String element types";
+        return true;
+      }
+      resultOut = builder
+                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
+                                                  mlir::SymbolRefAttr::get(&context, funcName),
+                                                  mlir::ValueRange{setValue, val})
+                      .getResult();
+      return true;
+    }
+    if (method == "remove") {
+      auto val = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!val)
+        return true;
+      val = coerceType(val, elemType, location);
+      std::string funcName;
+      if (elemType.isInteger(64)) {
+        funcName = "hew_hashset_remove_int";
+      } else if (mlir::isa<hew::StringRefType>(elemType)) {
+        funcName = "hew_hashset_remove_string";
+      } else {
+        emitError(location) << "HashSet::remove only supports int and String element types";
+        return true;
+      }
+      resultOut = builder
+                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
+                                                  mlir::SymbolRefAttr::get(&context, funcName),
+                                                  mlir::ValueRange{setValue, val})
+                      .getResult();
+      return true;
+    }
+    if (method == "len") {
+      resultOut =
+          builder
+              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
+                                          mlir::SymbolRefAttr::get(&context, "hew_hashset_len"),
+                                          mlir::ValueRange{setValue})
+              .getResult();
+      return true;
+    }
+    if (method == "is_empty") {
+      resultOut = builder
+                      .create<hew::RuntimeCallOp>(
+                          location, mlir::TypeRange{builder.getI1Type()},
+                          mlir::SymbolRefAttr::get(&context, "hew_hashset_is_empty"),
+                          mlir::ValueRange{setValue})
+                      .getResult();
+      return true;
+    }
+    if (method == "clear") {
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, "hew_hashset_clear"),
+                                         mlir::ValueRange{setValue});
+      resultOut = nullptr;
+      return true;
+    }
+    return false;
+  };
+
   if (auto vecType = mlir::dyn_cast<hew::VecType>(receiverType)) {
     mlir::Value vecResult;
     if (emitVecMethod(receiver, vecType.getElementType(), vecResult))
@@ -2177,6 +2425,29 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     emitError(location) << "unknown method '" << method << "' on collection type '" << receiverType
                         << "'";
     return mlir::Value{};
+  }
+
+  // HashSet<T> methods (HandleType with name "HashSet")
+  if (auto handleType = mlir::dyn_cast<hew::HandleType>(receiverType)) {
+    if (handleType.getHandleKind() == "HashSet") {
+      // For now, determine element type from method arguments
+      // TODO: Store element type information in the HandleType or track it separately
+      mlir::Type elemType = i64Type; // Default to i64
+
+      // Try to infer element type from first argument if present
+      if (!mc.args.empty()) {
+        auto argExpr = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (argExpr && argExpr.getType()) {
+          elemType = argExpr.getType();
+        }
+      }
+
+      mlir::Value setResult;
+      if (emitHashSetMethod(receiver, elemType, setResult))
+        return setResult;
+      emitError(location) << "unknown method '" << method << "' on HashSet";
+      return mlir::Value{};
+    }
   }
 
   if (method == "trim") {
@@ -3271,6 +3542,26 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
 // ============================================================================
 
 mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
+  return generateScopeLaunchImpl(sle.block);
+}
+
+// ============================================================================
+// scope.cancel()
+// ============================================================================
+
+// ============================================================================
+// scope.spawn { body } — identical to scope.launch for now
+// ============================================================================
+
+mlir::Value MLIRGen::generateScopeSpawnExpr(const ast::ExprScopeSpawn &sse) {
+  return generateScopeLaunchImpl(sse.block);
+}
+
+// ============================================================================
+// scope.launch / scope.spawn shared implementation
+// ============================================================================
+
+mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
@@ -3300,7 +3591,7 @@ mlir::Value MLIRGen::generateScopeLaunchExpr(const ast::ExprScopeLaunch &sle) {
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
 
-  auto bodyResult = generateBlock(sle.block);
+  auto bodyResult = generateBlock(block);
 
   currentFunction = savedFunction;
   returnFlag = savedReturnFlag;

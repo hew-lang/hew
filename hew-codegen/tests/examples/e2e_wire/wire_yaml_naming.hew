@@ -19,6 +19,6 @@ extern "C" {
 }
 
 fn main() {
-    print(CamelYaml_to_yaml(1, 2));
-    print(OverrideYaml_to_yaml("item-123", 42, 7));
+    print(unsafe { CamelYaml_to_yaml(1, 2) });
+    print(unsafe { OverrideYaml_to_yaml("item-123", 42, 7) });
 }

@@ -9,7 +9,7 @@ use crate::ast::{
     PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Stmt, StringPart,
     SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
     TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, WhereClause, WireDecl, WireDeclKind, WireFieldDecl,
+    VariantDecl, VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl,
 };
 
 /// Format an AST [`Program`] as canonical Hew source text (comments are not preserved).
@@ -76,6 +76,15 @@ impl<'a> Formatter<'a> {
     fn write_indent(&mut self) {
         for _ in 0..self.indent {
             self.output.push_str("    ");
+        }
+    }
+
+    fn write_visibility(&mut self, vis: Visibility) {
+        match vis {
+            Visibility::Private => {}
+            Visibility::Pub => self.write("pub "),
+            Visibility::PubPackage => self.write("pub(package) "),
+            Visibility::PubSuper => self.write("pub(super) "),
         }
     }
 
@@ -225,9 +234,7 @@ impl<'a> Formatter<'a> {
 
     fn format_const(&mut self, decl: &ConstDecl) {
         self.write_indent();
-        if decl.is_pub {
-            self.write("pub ");
-        }
+        self.write_visibility(decl.visibility);
         self.write("const ");
         self.write(&decl.name);
         self.write(": ");
@@ -282,15 +289,32 @@ impl<'a> Formatter<'a> {
     fn format_variant(&mut self, v: &VariantDecl, trailing_semicolon: bool) {
         self.write_indent();
         self.write(&v.name);
-        if !v.fields.is_empty() {
-            self.write("(");
-            for (i, ty) in v.fields.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
+        match &v.kind {
+            VariantKind::Unit => {}
+            VariantKind::Tuple(fields) => {
+                if !fields.is_empty() {
+                    self.write("(");
+                    for (i, ty) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.format_type_expr(&ty.0);
+                    }
+                    self.write(")");
                 }
-                self.format_type_expr(&ty.0);
             }
-            self.write(")");
+            VariantKind::Struct(fields) => {
+                self.write(" { ");
+                for (i, (name, ty)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                }
+                self.write(" }");
+            }
         }
         if trailing_semicolon {
             self.write(";");
@@ -312,13 +336,21 @@ impl<'a> Formatter<'a> {
         for item in &decl.items {
             match item {
                 TraitItem::Method(m) => self.format_trait_method(m),
-                TraitItem::AssociatedType { name, bounds } => {
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                } => {
                     self.write_indent();
                     self.write("type ");
                     self.write(name);
                     if !bounds.is_empty() {
                         self.write(": ");
                         self.format_trait_bound_list(bounds);
+                    }
+                    if let Some(def) = default {
+                        self.write(" = ");
+                        self.format_type_expr(&def.0);
                     }
                     self.write(";\n");
                 }
@@ -361,6 +393,26 @@ impl<'a> Formatter<'a> {
         self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
         self.indent += 1;
+        if !decl.type_aliases.is_empty() {
+            for (i, alias) in decl.type_aliases.iter().enumerate() {
+                if self.has_comments() {
+                    let pos = self
+                        .find_keyword_after(&format!("type {}", alias.name), self.prev_source_pos);
+                    self.flush_comments_before(pos);
+                } else if i > 0 {
+                    self.newline();
+                }
+                self.write_indent();
+                self.write("type ");
+                self.write(&alias.name);
+                self.write(" = ");
+                self.format_type_expr(&alias.ty.0);
+                self.write(";\n");
+            }
+            if !self.has_comments() && !decl.methods.is_empty() {
+                self.newline();
+            }
+        }
         for (i, method) in decl.methods.iter().enumerate() {
             if self.has_comments() {
                 let pos =
@@ -715,9 +767,7 @@ impl<'a> Formatter<'a> {
             self.write("]\n");
         }
         self.write_indent();
-        if decl.is_pub {
-            self.write("pub ");
-        }
+        self.write_visibility(decl.visibility);
         if decl.is_async {
             self.write("async ");
         }
@@ -818,9 +868,20 @@ impl<'a> Formatter<'a> {
                 }
                 self.format_type_expr(&pointee.0);
             }
-            TypeExpr::TraitObject(bound) => {
+            TypeExpr::TraitObject(bounds) => {
                 self.write("dyn ");
-                self.format_trait_bound(bound);
+                if bounds.len() == 1 {
+                    self.format_trait_bound(&bounds[0]);
+                } else {
+                    self.write("(");
+                    for (i, bound) in bounds.iter().enumerate() {
+                        if i > 0 {
+                            self.write(" + ");
+                        }
+                        self.format_trait_bound(bound);
+                    }
+                    self.write(")");
+                }
             }
             TypeExpr::Infer => {
                 self.write("_");
@@ -981,6 +1042,25 @@ impl<'a> Formatter<'a> {
                 }
                 self.newline();
             }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                self.write_indent();
+                self.write("if let ");
+                self.format_pattern(&pattern.0);
+                self.write(" = ");
+                self.format_expr(&expr.0);
+                self.write(" ");
+                self.format_block(body, self.source.len());
+                if let Some(else_block) = else_body {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
+                }
+                self.newline();
+            }
             Stmt::Match { scrutinee, arms } => {
                 self.write_indent();
                 self.write("match ");
@@ -1006,12 +1086,18 @@ impl<'a> Formatter<'a> {
                 self.newline();
             }
             Stmt::For {
+                label,
                 is_await,
                 pattern,
                 iterable,
                 body,
             } => {
                 self.write_indent();
+                if let Some(label) = label {
+                    self.write("@");
+                    self.write(label);
+                    self.write(": ");
+                }
                 self.write("for ");
                 if *is_await {
                     self.write("await ");
@@ -1201,6 +1287,13 @@ impl<'a> Formatter<'a> {
                 }
                 self.write("]");
             }
+            Expr::ArrayRepeat { value, count } => {
+                self.write("[");
+                self.format_expr(&value.0);
+                self.write("; ");
+                self.format_expr(&count.0);
+                self.write("]");
+            }
             Expr::Block(block) => {
                 self.format_block(block, self.source.len());
             }
@@ -1216,6 +1309,23 @@ impl<'a> Formatter<'a> {
                 if let Some(eb) = else_block {
                     self.write(" else ");
                     self.format_expr(&eb.0);
+                }
+            }
+            Expr::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                self.write("if let ");
+                self.format_pattern(&pattern.0);
+                self.write(" = ");
+                self.format_expr(&expr.0);
+                self.write(" ");
+                self.format_block(body, self.source.len());
+                if let Some(else_block) = else_body {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -1235,6 +1345,7 @@ impl<'a> Formatter<'a> {
                 params,
                 return_type,
                 body,
+                ..
             } => {
                 if *is_move {
                     self.write("move ");
@@ -1439,6 +1550,10 @@ impl<'a> Formatter<'a> {
             }
             Expr::ScopeLaunch(block) => {
                 self.write("s.launch ");
+                self.format_block(block, self.source.len());
+            }
+            Expr::ScopeSpawn(block) => {
+                self.write("s.spawn ");
                 self.format_block(block, self.source.len());
             }
             Expr::ScopeCancel => self.write("s.cancel()"),

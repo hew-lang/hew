@@ -154,3 +154,49 @@ runtime to route messages to remote nodes without requiring callers to pass a no
 handle. This mirrors Erlang's model where `!` (send) works transparently regardless
 of whether the target PID is local or remote. The tradeoff is one-node-per-process,
 which is acceptable for the actor model.
+
+### 23. Multi-model parallel analysis catches more gaps than single-model review
+
+Running 5 different frontier models (Claude Opus, GPT-5.1/5.2 Codex, Claude Sonnet,
+Gemini Pro) each analyzing a different layer (parser, types, codegen, runtime, examples)
+found 25 gaps in ~5 minutes. Each model caught things others missed — Claude Opus was
+best at parser/AST analysis, GPT-5.1 Codex excelled at type system subtleties, Claude
+Sonnet 4.5 was thorough on codegen lowering gaps.
+
+### 24. Visibility refactors must touch serialization boundaries
+
+Changing `is_pub: bool` → `Visibility` enum required updating not just Rust code but
+the serde serialization format AND the C++ msgpack reader in the codegen. The Rust
+`#[derive(Serialize)]` changes key names automatically, but the C++ reader has
+hardcoded key lookups. Multi-language serialization boundaries are high-risk refactor
+points.
+
+### 25. Unsafe enforcement in a language with runtime FFI requires audit of all tests
+
+Adding `unsafe { }` enforcement for extern calls broke 12 e2e tests that directly
+called runtime extern functions. In a language with a C-ABI runtime, many "stdlib"
+functions are thin wrappers around extern calls. The correct fix is to wrap the extern
+calls in `unsafe` in both the stdlib wrappers AND any tests that bypass the wrappers.
+
+### 26. TraitObject vec migration must update codegen's dyn dispatch resolution
+
+Changing `Ty::TraitObject { trait_name, args }` → `Ty::TraitObject { traits: Vec<TraitObjectBound> }`
+impacts every consumer: type checker, unification, serialization, AND the C++ codegen's
+dynamic dispatch resolution. The C++ side uses the trait name to look up vtable entries,
+so using `bounds[0].name` preserves backward compatibility for single-trait objects.
+
+### 27. Agent-generated code must be fixed for Rust borrow checker patterns
+
+When multiple AI agents write Rust code in parallel, they often produce code that
+conflicts with the borrow checker — holding `&self` borrows while calling `&mut self`
+methods, or holding references into containers while modifying those containers.
+The fix patterns are consistent: clone data before dropping the borrow, extract
+values into locals, or restructure closures into if/else chains. This is a systematic
+issue when agents don't have full context of surrounding code.
+
+### 28. Associated type resolution requires `Self::Type` syntax in the parser
+
+`Self::Item` as a type expression requires special handling in `parse_type()` —
+after parsing `Self` as a named type, the parser must check for `::` and combine
+into `Self::TypeName`. Without this, trait methods returning `Self::Item` fail
+to parse with "expected `;`, found `::`" errors.

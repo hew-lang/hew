@@ -1,0 +1,12 @@
+fn main() {
+    let s: HashSet<String> = HashSet::new();
+    s.insert("hello");
+    s.insert("world");
+    s.insert("hello");  // duplicate
+    println(s.len());             // 2
+    println(s.contains("hello")); // true
+    println(s.contains("test"));  // false
+    s.remove("hello");
+    println(s.contains("hello")); // false
+    println(s.len());             // 1
+}

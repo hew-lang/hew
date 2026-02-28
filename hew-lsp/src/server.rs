@@ -838,7 +838,8 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::UnreachableCode
         | TypeErrorKind::Shadowing
         | TypeErrorKind::DeadCode
-        | TypeErrorKind::OrphanImpl => DiagnosticSeverity::WARNING,
+        | TypeErrorKind::OrphanImpl
+        | TypeErrorKind::PlatformLimitation => DiagnosticSeverity::WARNING,
         _ => DiagnosticSeverity::ERROR,
     }
 }
@@ -873,6 +874,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
         TypeErrorKind::DeadCode => "DeadCode",
         TypeErrorKind::PurityViolation => "PurityViolation",
         TypeErrorKind::OrphanImpl => "OrphanImpl",
+        TypeErrorKind::PlatformLimitation => "PlatformLimitation",
     };
     serde_json::json!({
         "kind": kind_str,
@@ -1202,6 +1204,15 @@ fn collect_stmt_folding(
                 }
             }
         }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => {
+            add_region(source, lo, span, r);
+            collect_block_folding(source, lo, body, r);
+            if let Some(block) = else_body {
+                collect_block_folding(source, lo, block, r);
+            }
+        }
         Stmt::Match { arms, .. } => {
             add_region(source, lo, span, r);
             for arm in arms {
@@ -1247,6 +1258,15 @@ fn collect_expr_folding(
                 collect_expr_folding(source, lo, &eb.0, &eb.1, r);
             }
         }
+        Expr::IfLet {
+            body, else_body, ..
+        } => {
+            add_region(source, lo, span, r);
+            collect_block_folding(source, lo, body, r);
+            if let Some(block) = else_body {
+                collect_block_folding(source, lo, block, r);
+            }
+        }
         Expr::Match { arms, .. } => {
             add_region(source, lo, span, r);
             for arm in arms {
@@ -1257,7 +1277,10 @@ fn collect_expr_folding(
             add_region(source, lo, span, r);
             collect_expr_folding(source, lo, &body.0, &body.1, r);
         }
-        Expr::Scope { body, .. } | Expr::Unsafe(body) | Expr::ScopeLaunch(body) => {
+        Expr::Scope { body, .. }
+        | Expr::Unsafe(body)
+        | Expr::ScopeLaunch(body)
+        | Expr::ScopeSpawn(body) => {
             add_region(source, lo, span, r);
             collect_block_folding(source, lo, body, r);
         }
@@ -1553,6 +1576,20 @@ fn collect_locals_from_stmt(
                 }
             }
         }
+        Stmt::IfLet {
+            pattern,
+            body,
+            else_body,
+            ..
+        } => {
+            if in_stmt_scope {
+                collect_pattern_names(&pattern.0, locals);
+                collect_locals_from_block(body, offset, locals);
+                if let Some(block) = else_body {
+                    collect_locals_from_block(block, offset, locals);
+                }
+            }
+        }
         Stmt::Match { arms, .. } => {
             if in_stmt_scope {
                 for arm in arms {
@@ -1572,7 +1609,10 @@ fn collect_locals_from_stmt(
 
 fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<CompletionItem>) {
     match expr {
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::ScopeLaunch(block) => {
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
             collect_locals_from_block(block, offset, locals);
         }
         Expr::Scope { binding, body } => {
@@ -1593,6 +1633,14 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 if span_contains_offset(&else_expr.1, offset) {
                     collect_locals_from_expr(&else_expr.0, offset, locals);
                 }
+            }
+        }
+        Expr::IfLet {
+            body, else_body, ..
+        } => {
+            collect_locals_from_block(body, offset, locals);
+            if let Some(block) = else_body {
+                collect_locals_from_block(block, offset, locals);
             }
         }
         Expr::Match { arms, .. } => {
@@ -2497,6 +2545,19 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
                 }
             }
         }
+        Stmt::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
+            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
+            collect_refs_in_block(body, name, spans);
+            if let Some(block) = else_body {
+                collect_refs_in_block(block, name, spans);
+            }
+        }
         Stmt::Match { scrutinee, arms } => {
             collect_refs_in_expr(&scrutinee.0, &scrutinee.1, name, spans);
             for arm in arms {
@@ -2590,7 +2651,10 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
                 collect_refs_in_expr(&val.0, &val.1, name, spans);
             }
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::ScopeLaunch(block) => {
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
             collect_refs_in_block(block, name, spans);
         }
         Expr::Scope { body, .. } => {
@@ -2607,6 +2671,19 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
                 collect_refs_in_expr(&eb.0, &eb.1, name, spans);
             }
         }
+        Expr::IfLet {
+            pattern,
+            expr,
+            body,
+            else_body,
+        } => {
+            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
+            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
+            collect_refs_in_block(body, name, spans);
+            if let Some(block) = else_body {
+                collect_refs_in_block(block, name, spans);
+            }
+        }
         Expr::Match { scrutinee, arms } => {
             collect_refs_in_expr(&scrutinee.0, &scrutinee.1, name, spans);
             for arm in arms {
@@ -2619,6 +2696,10 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             collect_refs_in_expr(&body.0, &body.1, name, spans);
+        }
+        Expr::ArrayRepeat { value, count } => {
+            collect_refs_in_expr(&value.0, &value.1, name, spans);
+            collect_refs_in_expr(&count.0, &count.1, name, spans);
         }
         Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
             for elem in elems {
@@ -2828,11 +2909,19 @@ fn format_type_def_hover(type_def: &hew_types::check::TypeDef) -> String {
             let _ = writeln!(parts, "    {field_name}: {field_ty},");
         }
         for (variant_name, payload) in &type_def.variants {
-            if payload.is_empty() {
-                let _ = writeln!(parts, "    {variant_name},");
-            } else {
-                let types: Vec<String> = payload.iter().map(ToString::to_string).collect();
-                let _ = writeln!(parts, "    {variant_name}({}),", types.join(", "));
+            match payload {
+                hew_types::VariantDef::Unit => {
+                    let _ = writeln!(parts, "    {variant_name},");
+                }
+                hew_types::VariantDef::Tuple(types) => {
+                    let types: Vec<String> = types.iter().map(ToString::to_string).collect();
+                    let _ = writeln!(parts, "    {variant_name}({}),", types.join(", "));
+                }
+                hew_types::VariantDef::Struct(fields) => {
+                    let fields: Vec<String> =
+                        fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+                    let _ = writeln!(parts, "    {variant_name} {{ {} }},", fields.join(", "));
+                }
             }
         }
         for (method_name, sig) in &type_def.methods {
@@ -3138,6 +3227,18 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
                 }
             }
         }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_calls_in_expr(expr.as_ref(), calls);
+            collect_calls_in_block(body, calls);
+            if let Some(block) = else_body {
+                collect_calls_in_block(block, calls);
+            }
+        }
         Stmt::Match { scrutinee, arms } => {
             collect_calls_in_expr(scrutinee, calls);
             for arm in arms {
@@ -3185,6 +3286,18 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(receiver.as_ref(), calls);
             for arg in args {
                 collect_calls_in_expr(arg.expr(), calls);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_calls_in_expr(expr.as_ref(), calls);
+            collect_calls_in_block(body, calls);
+            if let Some(block) = else_body {
+                collect_calls_in_block(block, calls);
             }
         }
         Expr::Send { target, message } => {
@@ -3248,6 +3361,10 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             collect_calls_in_expr(body.as_ref(), calls);
         }
+        Expr::ArrayRepeat { value, count } => {
+            collect_calls_in_expr(value.as_ref(), calls);
+            collect_calls_in_expr(count.as_ref(), calls);
+        }
         Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
             for e in exprs {
                 collect_calls_in_expr(e, calls);
@@ -3268,7 +3385,9 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 }
             }
         }
-        Expr::Scope { body, .. } | Expr::ScopeLaunch(body) => collect_calls_in_block(body, calls),
+        Expr::Scope { body, .. } | Expr::ScopeLaunch(body) | Expr::ScopeSpawn(body) => {
+            collect_calls_in_block(body, calls)
+        }
         Expr::Select { arms, timeout, .. } => {
             for arm in arms {
                 collect_calls_in_expr(&arm.body, calls);
@@ -3771,6 +3890,14 @@ fn collect_inlay_hints_from_stmt(
                 }
             }
         }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+            if let Some(block) = else_body {
+                collect_inlay_hints_from_block(source, block, tc, hints);
+            }
+        }
         Stmt::Match { arms, .. } => {
             for arm in arms {
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
@@ -3820,7 +3947,10 @@ fn collect_inlay_hints_from_expr(
             }
             collect_inlay_hints_from_expr(source, &body.0, tc, hints);
         }
-        Expr::Block(block) | Expr::Unsafe(block) | Expr::ScopeLaunch(block) => {
+        Expr::Block(block)
+        | Expr::Unsafe(block)
+        | Expr::ScopeLaunch(block)
+        | Expr::ScopeSpawn(block) => {
             collect_inlay_hints_from_block(source, block, tc, hints);
         }
         Expr::Scope { body, .. } => {
@@ -3834,6 +3964,14 @@ fn collect_inlay_hints_from_expr(
             collect_inlay_hints_from_expr(source, &then_block.0, tc, hints);
             if let Some(else_expr) = else_block {
                 collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
+            }
+        }
+        Expr::IfLet {
+            body, else_body, ..
+        } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+            if let Some(block) = else_body {
+                collect_inlay_hints_from_block(source, block, tc, hints);
             }
         }
         Expr::Match { arms, .. } => {

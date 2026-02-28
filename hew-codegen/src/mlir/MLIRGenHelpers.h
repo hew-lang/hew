@@ -140,9 +140,9 @@ inline std::string typeExprToActorName(const ast::TypeExpr &te) {
 /// Returns the trait name or "" if not a trait object.
 inline std::string typeExprTraitName(const ast::TypeExpr &te) {
   auto *traitObj = std::get_if<ast::TypeTraitObject>(&te.kind);
-  if (!traitObj || !traitObj->bound)
+  if (!traitObj || traitObj->bounds.empty())
     return "";
-  return traitObj->bound->name;
+  return traitObj->bounds[0].name;
 }
 
 /// Returns true if the MLIR type represents a pointer-like value — either

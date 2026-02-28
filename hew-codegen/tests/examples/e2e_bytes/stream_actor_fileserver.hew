@@ -16,7 +16,7 @@ actor FileServer {
 }
 
 fn main() {
-    hew_file_write("/tmp/hew_serve_test.txt", "alpha\nbeta\ngamma\n");
+    unsafe { hew_file_write("/tmp/hew_serve_test.txt", "alpha\nbeta\ngamma\n"); }
 
     let (sink, input) = stream.channel(8);
 

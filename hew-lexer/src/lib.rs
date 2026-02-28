@@ -402,6 +402,10 @@ pub enum Token<'src> {
     #[regex(r#""([^"\\]|\\.)*""#)]
     StringLit(&'src str),
 
+    /// Character literal `'a'`, `'\n'`, etc.
+    #[regex(r"'([^'\\]|\\.)'")]
+    CharLit(&'src str),
+
     /// Identifier. Keywords have higher priority via `#[token]`.
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Identifier(&'src str),
@@ -558,6 +562,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Integer(val) => write!(f, "integer `{val}`"),
             Token::Float(val) => write!(f, "float `{val}`"),
             Token::StringLit(_) => f.write_str("string literal"),
+            Token::CharLit(_) => f.write_str("char literal"),
             Token::InterpolatedString(_) => f.write_str("interpolated string"),
             Token::RawString(_) => f.write_str("raw string"),
             Token::RegexLiteral(_) => f.write_str("regex literal"),
@@ -991,6 +996,21 @@ mod tests {
                 Token::StringLit("\"hello\""),
                 Token::StringLit("\"with\\nnewline\""),
                 Token::StringLit("\"esc\\\\aped\""),
+            ]
+        );
+    }
+
+    #[test]
+    fn char_literals() {
+        assert_eq!(
+            tokens(r"'a' '\n' '\t' '\0' '\\' '\''"),
+            vec![
+                Token::CharLit("'a'"),
+                Token::CharLit(r"'\n'"),
+                Token::CharLit(r"'\t'"),
+                Token::CharLit(r"'\0'"),
+                Token::CharLit(r"'\\'"),
+                Token::CharLit(r"'\''"),
             ]
         );
     }

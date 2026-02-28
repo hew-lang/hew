@@ -1,0 +1,11 @@
+fn main() {
+    let zeros = [0; 5];
+    println(zeros.len());
+
+    let ones = [1; 3];
+    var sum = 0;
+    for i in 0..ones.len() {
+        sum = sum + ones[i];
+    }
+    println(sum);
+}

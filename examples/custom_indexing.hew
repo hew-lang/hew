@@ -1,0 +1,19 @@
+// Custom type indexing: obj[key] desugars to obj.get(key)
+type Grid {
+    data: Vec<i32>;
+    width: i32;
+}
+
+impl Grid {
+    fn get(self: Grid, index: i32) -> i32 {
+        self.data.get(index)
+    }
+}
+
+fn main() {
+    let g = Grid { data: [10, 20, 30, 40], width: 2 };
+    let val = g[0];
+    let val2 = g[2];
+    println(val);
+    println(val2);
+}

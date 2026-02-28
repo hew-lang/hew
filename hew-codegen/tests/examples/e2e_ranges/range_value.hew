@@ -1,0 +1,15 @@
+fn main() {
+    let r = 0..5;
+    var s = 0;
+    for i in r {
+        s = s + i;
+    }
+    println(s);
+
+    let r2 = 0..=5;
+    var s2 = 0;
+    for i in r2 {
+        s2 = s2 + i;
+    }
+    println(s2);
+}

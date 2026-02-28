@@ -14,8 +14,9 @@ use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
     ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
     ImportDecl, ImportSpec, Item, LambdaParam, Literal, MatchArm, Pattern, Program, ReceiveFnDecl,
-    Span, Spanned, Stmt, StringPart, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
-    WireDecl, WireDeclKind,
+    Span, Spanned, Stmt, StringPart, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl,
+    WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -50,15 +51,86 @@ impl From<&Span> for SpanKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum WasmUnsupportedFeature {
+    SupervisionTrees,
+    LinkMonitor,
+    StructuredConcurrency,
+    Tasks,
+    Select,
+}
+
+impl WasmUnsupportedFeature {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SupervisionTrees => "Supervision tree operations",
+            Self::LinkMonitor => "Link/monitor operations",
+            Self::StructuredConcurrency => "Structured concurrency scopes",
+            Self::Tasks => "Task handles spawned from scopes",
+            Self::Select => "Select expressions",
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Self::SupervisionTrees => {
+                "they require OS threads for restart strategies and child supervision"
+            }
+            Self::LinkMonitor => {
+                "they rely on OS threads to watch linked actors and propagate exits"
+            }
+            Self::StructuredConcurrency => "they schedule child work on dedicated OS threads",
+            Self::Tasks => "they need OS threads to drive scope completions",
+            Self::Select => "they wait on multiple mailboxes using OS thread blocking",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub kind: TypeDefKind,
     pub name: String,
     pub type_params: Vec<String>,
     pub fields: HashMap<String, Ty>,
-    pub variants: HashMap<String, Vec<Ty>>,
+    pub variants: HashMap<String, VariantDef>,
     pub methods: HashMap<String, FnSig>,
     pub doc_comment: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TraitInfo {
+    methods: Vec<TraitMethod>,
+    associated_types: Vec<TraitAssociatedTypeInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct TraitAssociatedTypeInfo {
+    name: String,
+    bounds: Vec<TraitBound>,
+    default: Option<Spanned<TypeExpr>>,
+}
+
+#[derive(Debug)]
+struct ImplAliasScope {
+    span: Span,
+    entries: HashMap<String, ImplAliasEntry>,
+    missing_reported: HashSet<String>,
+    report_missing: bool,
+}
+
+#[derive(Debug)]
+struct ImplAliasEntry {
+    expr: Spanned<TypeExpr>,
+    resolved: Option<Ty>,
+    resolving: bool,
+    from_trait_default: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum VariantDef {
+    Unit,
+    Tuple(Vec<Ty>),
+    Struct(Vec<(String, Ty)>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +143,7 @@ pub enum TypeDefKind {
 #[derive(Debug, Clone)]
 pub struct FnSig {
     pub type_params: Vec<String>,
+    pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
     pub return_type: Ty,
@@ -100,7 +173,7 @@ pub struct Checker {
     modules: HashSet<String>,
     known_types: HashSet<String>,
     type_aliases: HashMap<String, Ty>,
-    trait_defs: HashMap<String, Vec<hew_parser::ast::TraitMethod>>,
+    trait_defs: HashMap<String, TraitInfo>,
     /// Maps trait name → list of super-trait names (e.g., "Pet" → ["Animal"])
     trait_super: HashMap<String, Vec<String>>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
@@ -132,12 +205,23 @@ pub struct Checker {
     in_for_binding: bool,
     /// Whether we are currently inside a `pure` function body.
     in_pure_function: bool,
+    /// Whether we are currently inside an unsafe block.
+    in_unsafe: bool,
     /// The module currently being processed (enables per-module scoping in future).
     current_module: Option<String>,
     /// Tracks which types are defined locally (in the current compilation unit).
     local_type_defs: HashSet<String>,
     /// Tracks which traits are defined locally (in the current compilation unit).
     local_trait_defs: HashSet<String>,
+    /// The type name of the current impl block target (for resolving `Self`).
+    current_self_type: Option<String>,
+    impl_alias_scopes: Vec<ImplAliasScope>,
+    /// Names of functions that require an unsafe block to call.
+    unsafe_functions: HashSet<String>,
+    /// Whether warnings for WASM-only builds should be emitted.
+    wasm_target: bool,
+    /// Tracks (span, feature) pairs we've already warned about for WASM limits.
+    wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,10 +342,21 @@ impl Checker {
             current_function: None,
             in_for_binding: false,
             in_pure_function: false,
+            in_unsafe: false,
             current_module: None,
             local_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
+            current_self_type: None,
+            impl_alias_scopes: Vec::new(),
+            unsafe_functions: HashSet::new(),
+            wasm_target: false,
+            wasm_warning_spans: HashSet::new(),
         }
+    }
+
+    /// Enable WASM32-specific validation and warnings.
+    pub fn enable_wasm_target(&mut self) {
+        self.wasm_target = true;
     }
 
     /// Look up a type definition, handling module-qualified names like `json.Value`.
@@ -469,6 +564,14 @@ impl Checker {
             },
         );
         self.register_builtin_fn(
+            "HashSet::new",
+            vec![],
+            Ty::Named {
+                name: "HashSet".to_string(),
+                args: vec![Ty::Var(TypeVar::fresh())],
+            },
+        );
+        self.register_builtin_fn(
             "bytes::new",
             vec![],
             Ty::Named {
@@ -535,6 +638,7 @@ impl Checker {
             name.to_string(),
             FnSig {
                 type_params: vec![],
+                type_param_bounds: HashMap::new(),
                 param_names: vec![],
                 params,
                 return_type,
@@ -548,7 +652,7 @@ impl Checker {
 
     /// Pass 1: Collect type definitions
     fn collect_types(&mut self, program: &Program) {
-        for (item, _span) in &program.items {
+        for (item, span) in &program.items {
             match item {
                 Item::TypeDecl(td) => {
                     self.register_type_decl(td);
@@ -561,18 +665,8 @@ impl Checker {
                     self.type_aliases.insert(ta.name.clone(), resolved);
                 }
                 Item::Trait(td) => {
-                    let methods: Vec<_> = td
-                        .items
-                        .iter()
-                        .filter_map(|item| {
-                            if let hew_parser::ast::TraitItem::Method(m) = item {
-                                Some(m.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    self.trait_defs.insert(td.name.clone(), methods);
+                    let info = Self::trait_info_from_decl(td);
+                    self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
                     // Record super-trait relationships
                     if let Some(supers) = &td.super_traits {
@@ -582,6 +676,7 @@ impl Checker {
                     }
                 }
                 Item::Supervisor(sd) => {
+                    self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
                     let children: Vec<String> =
                         sd.children.iter().map(|c| c.actor_type.clone()).collect();
                     self.supervisor_children.insert(sd.name.clone(), children);
@@ -607,36 +702,64 @@ impl Checker {
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
-                    let variant_tys = variant
-                        .fields
-                        .iter()
-                        .map(|(te, _)| self.resolve_type_expr(te))
-                        .collect();
-                    variants.insert(variant.name.clone(), variant_tys);
-
-                    // Register variant constructor as function
-                    let constructor_params = variant
-                        .fields
-                        .iter()
-                        .map(|(te, _)| self.resolve_type_expr(te))
-                        .collect();
                     let return_type = Ty::Named {
                         name: td.name.clone(),
                         args: vec![],
                     };
-                    self.fn_sigs.insert(
-                        variant.name.clone(),
-                        FnSig {
-                            type_params: vec![],
-                            param_names: vec![],
-                            params: constructor_params,
-                            return_type,
-                            is_async: false,
-                            is_pure: false,
-                            accepts_kwargs: false,
-                            doc_comment: None,
-                        },
-                    );
+                    match &variant.kind {
+                        VariantKind::Unit => {
+                            variants.insert(variant.name.clone(), VariantDef::Unit);
+                            self.fn_sigs.insert(
+                                variant.name.clone(),
+                                FnSig {
+                                    type_params: vec![],
+                                    type_param_bounds: HashMap::new(),
+                                    param_names: vec![],
+                                    params: vec![],
+                                    return_type,
+                                    is_async: false,
+                                    is_pure: false,
+                                    accepts_kwargs: false,
+                                    doc_comment: None,
+                                },
+                            );
+                        }
+                        VariantKind::Tuple(fields) => {
+                            let variant_tys: Vec<Ty> = fields
+                                .iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect();
+                            variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+
+                            // Register variant constructor as function
+                            let constructor_params: Vec<Ty> = fields
+                                .iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect();
+                            self.fn_sigs.insert(
+                                variant.name.clone(),
+                                FnSig {
+                                    type_params: vec![],
+                                    type_param_bounds: HashMap::new(),
+                                    param_names: vec![],
+                                    params: constructor_params,
+                                    return_type,
+                                    is_async: false,
+                                    is_pure: false,
+                                    accepts_kwargs: false,
+                                    doc_comment: None,
+                                },
+                            );
+                        }
+                        VariantKind::Struct(fields) => {
+                            let variant_fields: Vec<(String, Ty)> = fields
+                                .iter()
+                                .map(|(name, (te, _))| (name.clone(), self.resolve_type_expr(te)))
+                                .collect();
+                            variants
+                                .insert(variant.name.clone(), VariantDef::Struct(variant_fields));
+                        }
+                    }
                 }
                 TypeBodyItem::Method(_) => {
                     // Methods are handled in pass 2
@@ -710,12 +833,25 @@ impl Checker {
 
         let mut variants = HashMap::new();
         for variant in &wd.variants {
-            let variant_tys = variant
-                .fields
-                .iter()
-                .map(|(te, _)| self.resolve_type_expr(te))
-                .collect();
-            variants.insert(variant.name.clone(), variant_tys);
+            match &variant.kind {
+                VariantKind::Unit => {
+                    variants.insert(variant.name.clone(), VariantDef::Unit);
+                }
+                VariantKind::Tuple(fields) => {
+                    let variant_tys = fields
+                        .iter()
+                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .collect();
+                    variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+                }
+                VariantKind::Struct(fields) => {
+                    let variant_fields: Vec<(String, Ty)> = fields
+                        .iter()
+                        .map(|(name, (te, _))| (name.clone(), self.resolve_type_expr(te)))
+                        .collect();
+                    variants.insert(variant.name.clone(), VariantDef::Struct(variant_fields));
+                }
+            }
         }
 
         let type_def = TypeDef {
@@ -735,6 +871,176 @@ impl Checker {
         self.registry.register_type(wd.name.clone(), field_types);
 
         self.type_defs.insert(wd.name.clone(), type_def);
+    }
+
+    fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
+        let mut methods = Vec::new();
+        let mut associated_types = Vec::new();
+        for item in &tr.items {
+            match item {
+                TraitItem::Method(m) => methods.push(m.clone()),
+                TraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                } => associated_types.push(TraitAssociatedTypeInfo {
+                    name: name.clone(),
+                    bounds: bounds.clone(),
+                    default: default.clone(),
+                }),
+            }
+        }
+        TraitInfo {
+            methods,
+            associated_types,
+        }
+    }
+
+    fn build_impl_alias_entries(&mut self, id: &ImplDecl) -> HashMap<String, ImplAliasEntry> {
+        let mut entries = HashMap::new();
+        let mut seen_spans: HashMap<String, Span> = HashMap::new();
+        for alias in &id.type_aliases {
+            if let Some(prev_span) = seen_spans.insert(alias.name.clone(), alias.ty.1.clone()) {
+                self.errors.push(TypeError::duplicate_definition(
+                    alias.ty.1.clone(),
+                    &alias.name,
+                    prev_span,
+                ));
+                continue;
+            }
+            entries.insert(
+                alias.name.clone(),
+                ImplAliasEntry {
+                    expr: alias.ty.clone(),
+                    resolved: None,
+                    resolving: false,
+                    from_trait_default: false,
+                },
+            );
+        }
+        if let Some(tb) = &id.trait_bound {
+            if let Some(trait_info) = self.trait_defs.get(&tb.name) {
+                for assoc in &trait_info.associated_types {
+                    if entries.contains_key(&assoc.name) {
+                        continue;
+                    }
+                    if let Some(default) = &assoc.default {
+                        entries.insert(
+                            assoc.name.clone(),
+                            ImplAliasEntry {
+                                expr: default.clone(),
+                                resolved: None,
+                                resolving: false,
+                                from_trait_default: true,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        entries
+    }
+
+    fn enter_impl_scope(
+        &mut self,
+        id: &ImplDecl,
+        span: &Span,
+        type_name: Option<&str>,
+        enforce: bool,
+    ) -> bool {
+        let Some(target_name) = type_name else {
+            return false;
+        };
+        let entries = self.build_impl_alias_entries(id);
+        if enforce {
+            if let Some(tb) = &id.trait_bound {
+                if let Some(info) = self.trait_defs.get(&tb.name) {
+                    let missing: Vec<String> = info
+                        .associated_types
+                        .iter()
+                        .filter(|assoc| !entries.contains_key(&assoc.name))
+                        .map(|assoc| assoc.name.clone())
+                        .collect();
+                    let target_name = target_name.to_string();
+                    let tb_name = tb.name.clone();
+                    for name in missing {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "impl `{}` for `{}` must define associated type `{}`",
+                                tb_name, target_name, name
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        self.impl_alias_scopes.push(ImplAliasScope {
+            span: span.clone(),
+            entries,
+            missing_reported: HashSet::new(),
+            report_missing: enforce,
+        });
+        true
+    }
+
+    fn exit_impl_scope(&mut self) {
+        self.impl_alias_scopes.pop();
+    }
+
+    fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {
+        let Some(scope_index) = self.impl_alias_scopes.len().checked_sub(1) else {
+            return None;
+        };
+        let expr = {
+            let scope = &mut self.impl_alias_scopes[scope_index];
+            match scope.entries.get_mut(alias) {
+                Some(entry) => {
+                    if let Some(resolved) = &entry.resolved {
+                        return Some(resolved.clone());
+                    }
+                    if entry.resolving {
+                        let should_report = scope.report_missing
+                            && scope.missing_reported.insert(alias.to_string());
+                        let err_span = entry.expr.1.clone();
+                        if should_report {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &err_span,
+                                format!(
+                                    "associated type `Self::{alias}` recursively references itself"
+                                ),
+                            );
+                        }
+                        return Some(Ty::Error);
+                    }
+                    entry.resolving = true;
+                    entry.expr.clone()
+                }
+                None => {
+                    let should_report =
+                        scope.report_missing && scope.missing_reported.insert(alias.to_string());
+                    let err_span = scope.span.clone();
+                    if should_report {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            &err_span,
+                            format!("type alias `Self::{alias}` is not defined in this impl"),
+                        );
+                    }
+                    return Some(Ty::Error);
+                }
+            }
+        };
+        let ty = self.resolve_type_expr(&expr.0);
+        if let Some(scope) = self.impl_alias_scopes.get_mut(scope_index) {
+            if let Some(entry) = scope.entries.get_mut(alias) {
+                entry.resolving = false;
+                entry.resolved = Some(ty.clone());
+            }
+        }
+        Some(ty)
     }
 
     /// Pass 2: Collect function signatures
@@ -797,6 +1103,12 @@ impl Checker {
                     name: type_name, ..
                 } = &id.target_type.0
                 {
+                    // Set current_self_type for resolving `Self` in method parameters
+                    let prev_self_type = self.current_self_type.take();
+                    self.current_self_type = Some(type_name.clone());
+                    let scope_pushed =
+                        self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
+
                     for method in &id.methods {
                         let method_key = format!("{type_name}::{}", method.name);
                         self.register_fn_sig_with_name(&method_key, method);
@@ -824,6 +1136,7 @@ impl Checker {
                                 method_name,
                                 FnSig {
                                     type_params: vec![],
+                                    type_param_bounds: HashMap::new(),
                                     param_names,
                                     params,
                                     return_type,
@@ -846,6 +1159,7 @@ impl Checker {
                             id.methods.iter().map(|m| m.name.as_str()).collect();
                         if let Some(trait_methods) = self.trait_defs.get(&tb.name) {
                             let defaults: Vec<_> = trait_methods
+                                .methods
                                 .iter()
                                 .filter(|m| {
                                     m.body.is_some() && !overridden.contains(m.name.as_str())
@@ -872,6 +1186,7 @@ impl Checker {
                                     .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
                                 let sig = FnSig {
                                     type_params: vec![],
+                                    type_param_bounds: HashMap::new(),
                                     param_names: param_names.clone(),
                                     params: params.clone(),
                                     return_type: return_type.clone(),
@@ -886,6 +1201,7 @@ impl Checker {
                                         m.name.clone(),
                                         FnSig {
                                             type_params: vec![],
+                                            type_param_bounds: HashMap::new(),
                                             param_names,
                                             params,
                                             return_type,
@@ -898,6 +1214,12 @@ impl Checker {
                                 }
                             }
                         }
+                    }
+
+                    // Restore previous self type
+                    self.current_self_type = prev_self_type;
+                    if scope_pushed {
+                        self.exit_impl_scope();
                     }
                 }
             }
@@ -931,6 +1253,7 @@ impl Checker {
                                 method_name,
                                 FnSig {
                                     type_params: vec![],
+                                    type_param_bounds: HashMap::new(),
                                     param_names,
                                     params,
                                     return_type,
@@ -956,6 +1279,50 @@ impl Checker {
 
     fn register_fn_sig(&mut self, fd: &FnDecl) {
         self.register_fn_sig_with_name(&fd.name, fd);
+    }
+
+    fn collect_type_param_bounds(
+        &self,
+        type_params: Option<&Vec<TypeParam>>,
+        where_clause: Option<&WhereClause>,
+    ) -> HashMap<String, Vec<String>> {
+        let mut bounds = HashMap::new();
+        let mut declared = HashSet::new();
+        if let Some(params) = type_params {
+            for param in params {
+                declared.insert(param.name.clone());
+                if param.bounds.is_empty() {
+                    continue;
+                }
+                let entry = bounds.entry(param.name.clone()).or_default();
+                for bound in &param.bounds {
+                    Self::push_unique_bound(entry, &bound.name);
+                }
+            }
+        }
+        if let Some(wc) = where_clause {
+            for predicate in &wc.predicates {
+                if let TypeExpr::Named { name, type_args } = &predicate.ty.0 {
+                    if !declared.contains(name) {
+                        continue;
+                    }
+                    if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                        continue;
+                    }
+                    let entry = bounds.entry(name.clone()).or_default();
+                    for bound in &predicate.bounds {
+                        Self::push_unique_bound(entry, &bound.name);
+                    }
+                }
+            }
+        }
+        bounds
+    }
+
+    fn push_unique_bound(entry: &mut Vec<String>, bound: &str) {
+        if !entry.iter().any(|b| b == bound) {
+            entry.push(bound.to_string());
+        }
     }
 
     fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
@@ -996,6 +1363,8 @@ impl Checker {
             type_params: fd.type_params.as_ref().map_or(vec![], |params| {
                 params.iter().map(|p| p.name.clone()).collect()
             }),
+            type_param_bounds: self
+                .collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref()),
             param_names,
             params,
             return_type,
@@ -1039,10 +1408,13 @@ impl Checker {
             self.generic_ctx.pop();
         }
 
+        let type_param_bounds =
+            self.collect_type_param_bounds(rf.type_params.as_ref(), rf.where_clause.as_ref());
         let sig = FnSig {
             type_params: rf.type_params.as_ref().map_or(vec![], |params| {
                 params.iter().map(|p| p.name.clone()).collect()
             }),
+            type_param_bounds,
             param_names,
             params,
             return_type,
@@ -1070,6 +1442,7 @@ impl Checker {
                 .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
             let sig = FnSig {
                 type_params: vec![],
+                type_param_bounds: HashMap::new(),
                 param_names,
                 params,
                 return_type,
@@ -1079,6 +1452,7 @@ impl Checker {
                 doc_comment: None,
             };
             self.fn_sigs.insert(f.name.clone(), sig);
+            self.unsafe_functions.insert(f.name.clone());
         }
     }
 
@@ -1108,6 +1482,7 @@ impl Checker {
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
                     type_params: vec![],
+                    type_param_bounds: HashMap::new(),
                     param_names: vec![],
                     params,
                     return_type: ret,
@@ -1116,6 +1491,7 @@ impl Checker {
                     accepts_kwargs,
                     doc_comment: None,
                 };
+                self.unsafe_functions.insert(name.clone());
                 self.fn_sigs.insert(name, sig);
             }
         }
@@ -1127,6 +1503,7 @@ impl Checker {
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
                     type_params: vec![],
+                    type_param_bounds: HashMap::new(),
                     param_names: vec![],
                     params,
                     return_type: ret,
@@ -1151,14 +1528,16 @@ impl Checker {
                     // the method name) over the extern C function's signature.
                     // E.g. `log.setup()` should have 0 params (the wrapper's sig),
                     // not 1 param (the extern `hew_log_set_level(level)` sig).
-                    let sig = self
-                        .fn_sigs
-                        .get(method)
-                        .or_else(|| self.fn_sigs.get(c_symbol))
-                        .cloned();
+                    let wrapper_sig = self.fn_sigs.get(method).cloned();
+                    let sig = wrapper_sig
+                        .clone()
+                        .or_else(|| self.fn_sigs.get(c_symbol).cloned());
                     if let Some(sig) = sig {
                         let key = format!("{short}.{method}");
-                        self.fn_sigs.insert(key, sig);
+                        self.fn_sigs.insert(key.clone(), sig);
+                        if wrapper_sig.is_none() {
+                            self.unsafe_functions.insert(key);
+                        }
                     }
                 }
             }
@@ -1220,38 +1599,27 @@ impl Checker {
     /// stdlib modules that have Hew source files. This makes trait methods
     /// (e.g. bench.Suite.add) visible to the type checker.
     fn register_stdlib_hew_items(&mut self, module_short: &str, items: &[Spanned<Item>]) {
-        use hew_parser::ast::TraitItem;
         // Pass 1: Register types, traits, and functions first
         for (item, _span) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !td.is_pub {
+                    if !td.visibility.is_pub() {
                         continue;
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
                 }
                 Item::Trait(tr) => {
-                    if !tr.is_pub {
+                    if !tr.visibility.is_pub() {
                         continue;
                     }
-                    let methods: Vec<_> = tr
-                        .items
-                        .iter()
-                        .filter_map(|item| {
-                            if let TraitItem::Method(m) = item {
-                                Some(m.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    self.trait_defs.insert(tr.name.clone(), methods.clone());
+                    let info = Self::trait_info_from_decl(tr);
+                    self.trait_defs.insert(tr.name.clone(), info.clone());
                     let qualified = format!("{module_short}.{}", tr.name);
-                    self.trait_defs.insert(qualified, methods);
+                    self.trait_defs.insert(qualified, info);
                 }
                 Item::Function(fd) => {
-                    if !fd.is_pub {
+                    if !fd.visibility.is_pub() {
                         continue;
                     }
                     let qualified = format!("{module_short}.{}", fd.name);
@@ -1276,12 +1644,18 @@ impl Checker {
             }
         }
         // Pass 2: Register impl methods (after types exist)
-        for (item, _span) in items {
+        for (item, span) in items {
             if let Item::Impl(id) = item {
                 if let TypeExpr::Named {
                     name: type_name, ..
                 } = &id.target_type.0
                 {
+                    // Set current_self_type for resolving `Self` in method parameters
+                    let prev_self_type = self.current_self_type.take();
+                    self.current_self_type = Some(type_name.clone());
+                    let scope_pushed =
+                        self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
+
                     for method in &id.methods {
                         let method_key = format!("{type_name}::{}", method.name);
                         self.register_fn_sig_with_name(&method_key, method);
@@ -1303,6 +1677,7 @@ impl Checker {
                             .collect();
                         let sig = FnSig {
                             type_params: vec![],
+                            type_param_bounds: HashMap::new(),
                             param_names,
                             params,
                             return_type,
@@ -1320,6 +1695,12 @@ impl Checker {
                             td.methods.insert(method.name.clone(), sig);
                         }
                     }
+
+                    // Restore previous self type
+                    self.current_self_type = prev_self_type;
+                    if scope_pushed {
+                        self.exit_impl_scope();
+                    }
                 }
             }
         }
@@ -1327,7 +1708,7 @@ impl Checker {
         for (item, _span) in items {
             match item {
                 Item::TypeDecl(td) => {
-                    if !td.is_pub {
+                    if !td.visibility.is_pub() {
                         continue;
                     }
                     let qualified = format!("{module_short}.{}", td.name);
@@ -1351,42 +1732,32 @@ impl Checker {
         for (item, _span) in items {
             match item {
                 Item::Function(fd) => {
-                    if !fd.is_pub {
+                    if !fd.visibility.is_pub() {
                         continue;
                     }
                     let sig = self.build_fn_sig_from_decl(fd);
                     self.fn_sigs.insert(fd.name.clone(), sig);
                 }
                 Item::Const(cd) => {
-                    if !cd.is_pub {
+                    if !cd.visibility.is_pub() {
                         continue;
                     }
                     let ty = self.resolve_type_expr(&cd.ty.0);
                     self.env.define(cd.name.clone(), ty, false);
                 }
                 Item::TypeDecl(td) => {
-                    if !td.is_pub {
+                    if !td.visibility.is_pub() {
                         continue;
                     }
                     self.register_type_decl(td);
                     self.known_types.insert(td.name.clone());
                 }
                 Item::Trait(tr) => {
-                    if !tr.is_pub {
+                    if !tr.visibility.is_pub() {
                         continue;
                     }
-                    let methods: Vec<_> = tr
-                        .items
-                        .iter()
-                        .filter_map(|item| {
-                            if let hew_parser::ast::TraitItem::Method(m) = item {
-                                Some(m.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    self.trait_defs.insert(tr.name.clone(), methods);
+                    let info = Self::trait_info_from_decl(tr);
+                    self.trait_defs.insert(tr.name.clone(), info);
                 }
                 Item::Actor(ad) => {
                     self.register_actor_decl(ad);
@@ -1411,11 +1782,11 @@ impl Checker {
         items: &[Spanned<Item>],
         spec: &Option<ImportSpec>,
     ) {
-        for (item, _span) in items {
+        for (item, span) in items {
             match item {
                 Item::Function(fd) => {
                     // Skip non-pub functions (enforce visibility)
-                    if !fd.is_pub {
+                    if !fd.visibility.is_pub() {
                         continue;
                     }
 
@@ -1433,7 +1804,7 @@ impl Checker {
                     }
                 }
                 Item::TypeDecl(td) => {
-                    if !td.is_pub {
+                    if !td.visibility.is_pub() {
                         continue;
                     }
                     self.register_type_decl(td);
@@ -1445,25 +1816,14 @@ impl Checker {
                 }
                 Item::TypeAlias(_) => {}
                 Item::Trait(tr) => {
-                    if !tr.is_pub {
+                    if !tr.visibility.is_pub() {
                         continue;
                     }
-                    // Extract method signatures from the trait
-                    let methods: Vec<_> = tr
-                        .items
-                        .iter()
-                        .filter_map(|item| {
-                            if let hew_parser::ast::TraitItem::Method(m) = item {
-                                Some(m.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+                    let info = Self::trait_info_from_decl(tr);
 
                     // Register under qualified name (e.g. "mymod.Drawable")
                     let qualified = format!("{module_short}.{}", tr.name);
-                    self.trait_defs.insert(qualified.clone(), methods.clone());
+                    self.trait_defs.insert(qualified.clone(), info.clone());
 
                     // Record super-trait relationships for both qualified and unqualified
                     if let Some(supers) = &tr.super_traits {
@@ -1481,13 +1841,13 @@ impl Checker {
                     if Self::should_import_name(&tr.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &tr.name)
                             .unwrap_or_else(|| tr.name.clone());
-                        self.trait_defs.insert(binding_name.clone(), methods);
+                        self.trait_defs.insert(binding_name.clone(), info.clone());
                         self.unqualified_to_module
                             .insert(binding_name, module_short.to_string());
                     }
                 }
                 Item::Const(cd) => {
-                    if !cd.is_pub {
+                    if !cd.visibility.is_pub() {
                         continue;
                     }
                     let ty = self.resolve_type_expr(&cd.ty.0);
@@ -1505,8 +1865,14 @@ impl Checker {
                         name: type_name, ..
                     } = &id.target_type.0
                     {
+                        // Set current_self_type for resolving `Self` in method parameters
+                        let prev_self_type = self.current_self_type.take();
+                        self.current_self_type = Some(type_name.clone());
+                        let scope_pushed =
+                            self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
+
                         for method in &id.methods {
-                            if !method.is_pub {
+                            if !method.visibility.is_pub() {
                                 continue;
                             }
                             let method_key = format!("{type_name}::{}", method.name);
@@ -1534,6 +1900,7 @@ impl Checker {
                                     method_name,
                                     FnSig {
                                         type_params: vec![],
+                                        type_param_bounds: HashMap::new(),
                                         param_names,
                                         params,
                                         return_type,
@@ -1544,6 +1911,12 @@ impl Checker {
                                     },
                                 );
                             }
+                        }
+
+                        // Restore previous self type
+                        self.current_self_type = prev_self_type;
+                        if scope_pushed {
+                            self.exit_impl_scope();
                         }
                     }
                 }
@@ -1587,6 +1960,11 @@ impl Checker {
             .return_type
             .as_ref()
             .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let type_params = fd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let type_param_bounds =
+            self.collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref());
         let return_type = if fd.is_generator && fd.is_async {
             Ty::AsyncGenerator {
                 yields: Box::new(declared_return),
@@ -1600,7 +1978,8 @@ impl Checker {
             declared_return
         };
         FnSig {
-            type_params: vec![],
+            type_params,
+            type_param_bounds,
             param_names,
             params,
             return_type,
@@ -1755,14 +2134,13 @@ impl Checker {
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
         // This ensures body-checking unification updates the shared type variable.
-        let declared_ret = self.fn_sigs.get(fn_name).map_or_else(
-            || {
-                fd.return_type
-                    .as_ref()
-                    .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te))
-            },
-            |sig| sig.return_type.clone(),
-        );
+        let declared_ret = if let Some(sig) = self.fn_sigs.get(fn_name) {
+            sig.return_type.clone()
+        } else {
+            fd.return_type
+                .as_ref()
+                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te))
+        };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
         let expected_ret = if fd.is_generator {
@@ -1918,6 +2296,11 @@ impl Checker {
                 }
             }
 
+            // Set current_self_type for resolving `Self` in parameters
+            let prev_self_type = self.current_self_type.take();
+            self.current_self_type = Some(type_name.clone());
+            let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
+
             for method in &id.methods {
                 if target_is_struct {
                     if let Some(self_param) = method
@@ -1949,6 +2332,12 @@ impl Checker {
                 let qualified = format!("{type_name}::{}", method.name);
                 self.check_function_as(method, &qualified);
                 self.env.pop_scope();
+            }
+
+            // Restore previous self type
+            self.current_self_type = prev_self_type;
+            if scope_pushed {
+                self.exit_impl_scope();
             }
         }
     }
@@ -1983,6 +2372,7 @@ impl Checker {
             if is_last {
                 let ty = match stmt {
                     Stmt::If { .. }
+                    | Stmt::IfLet { .. }
                     | Stmt::Match { .. }
                     | Stmt::Return(_)
                     | Stmt::Break { .. }
@@ -2023,7 +2413,10 @@ impl Checker {
             }
             // For If/Match, use check_stmt_as_expr to get the result type
             // so we can detect when all branches terminate.
-            if matches!(stmt, Stmt::If { .. } | Stmt::Match { .. }) {
+            if matches!(
+                stmt,
+                Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
+            ) {
                 let ty = self.check_stmt_as_expr(stmt, span);
                 if matches!(ty, Ty::Never) {
                     terminated = true;
@@ -2094,6 +2487,29 @@ impl Checker {
                         }
                     } else {
                         Ty::Unit
+                    }
+                } else {
+                    Ty::Unit
+                }
+            }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                let then_ty = self.check_block(body);
+                self.env.pop_scope();
+                if let Some(block) = else_body {
+                    let else_ty = self.check_block(block);
+                    if then_ty == Ty::Unit || else_ty == Ty::Unit {
+                        Ty::Unit
+                    } else {
+                        self.expect_type(&then_ty, &else_ty, span);
+                        then_ty
                     }
                 } else {
                     Ty::Unit
@@ -2244,6 +2660,21 @@ impl Checker {
                     }
                 }
             }
+            Stmt::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                self.check_block(body);
+                self.env.pop_scope();
+                if let Some(block) = else_body {
+                    self.check_block(block);
+                }
+            }
             Stmt::Return(value) => {
                 if let Some(expected) = &self.current_return_type.clone() {
                     if let Some((val, vs)) = value {
@@ -2356,7 +2787,29 @@ impl Checker {
         })
     }
 
+    fn maybe_warn_wasm_expr(&mut self, expr: &Expr, span: &Span) {
+        if !self.wasm_target {
+            return;
+        }
+        match expr {
+            Expr::Scope { .. } => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::StructuredConcurrency);
+            }
+            Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::Tasks);
+            }
+            Expr::Select { .. } => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
+            }
+            Expr::Join(_) => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::StructuredConcurrency);
+            }
+            _ => {}
+        }
+    }
+
     fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
+        self.maybe_warn_wasm_expr(expr, span);
         let ty = match expr {
             // Literals
             Expr::Literal(Literal::Float(_)) => Ty::F64,
@@ -2423,8 +2876,8 @@ impl Checker {
                     // Check if it's a unit enum variant (e.g., Red, Green, Blue)
                     let mut found = None;
                     for (type_name, td) in &self.type_defs {
-                        if let Some(args) = td.variants.get(name) {
-                            if args.is_empty() {
+                        if let Some(variant) = td.variants.get(name) {
+                            if matches!(variant, VariantDef::Unit) {
                                 found = Some(Ty::Named {
                                     name: type_name.clone(),
                                     args: vec![],
@@ -2530,6 +2983,29 @@ impl Checker {
                     Ty::Unit
                 }
             }
+            Expr::IfLet {
+                pattern,
+                expr,
+                body,
+                else_body,
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                let then_ty = self.check_block(body);
+                self.env.pop_scope();
+                if let Some(block) = else_body {
+                    let else_ty = self.check_block(block);
+                    if then_ty == Ty::Unit || else_ty == Ty::Unit {
+                        Ty::Unit
+                    } else {
+                        self.expect_type(&then_ty, &else_ty, span);
+                        then_ty
+                    }
+                } else {
+                    Ty::Unit
+                }
+            }
 
             // Match
             Expr::Match { scrutinee, arms } => {
@@ -2556,6 +3032,31 @@ impl Checker {
                     Ty::Array(Box::new(first_ty), elems.len() as u64)
                 }
             }
+            Expr::ArrayRepeat { value, count } => {
+                let elem_ty = self.synthesize(&value.0, &value.1);
+                let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
+                let resolved_count = self.subst.resolve(&count_ty);
+                if !resolved_count.is_integer() && !matches!(resolved_count, Ty::Var(_)) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &count.1,
+                        format!("array repeat count must be an integer, found `{resolved_count}`"),
+                    );
+                }
+                let size = match &count.0 {
+                    Expr::Literal(Literal::Integer { value, .. }) if *value >= 0 => *value as u64,
+                    Expr::Literal(Literal::Integer { .. }) => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &count.1,
+                            "array repeat count cannot be negative".to_string(),
+                        );
+                        0
+                    }
+                    _ => 0,
+                };
+                Ty::Array(Box::new(elem_ty), size)
+            }
 
             // Struct init
             Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
@@ -2575,10 +3076,17 @@ impl Checker {
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
                 is_move: _,
+                type_params,
                 params,
                 return_type,
                 body,
-            } => self.check_lambda(params, return_type.as_ref(), body, None),
+            } => self.check_lambda(
+                type_params.as_deref(),
+                params,
+                return_type.as_ref(),
+                body,
+                None,
+            ),
 
             // Await
             Expr::Await(inner) => {
@@ -2669,6 +3177,42 @@ impl Checker {
                     Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
                         args[0].clone()
                     }
+                    // Custom type indexing: desugar obj[key] → obj.get(key)
+                    Ty::Named { name, args } => {
+                        if let Some(td) = self.lookup_type_def(name) {
+                            if let Some(sig) = td.methods.get("get") {
+                                if let Some(param_ty) = sig.params.first() {
+                                    self.check_against(&index.0, &index.1, param_ty);
+                                }
+                                let mut ret = sig.return_type.clone();
+                                for (param, arg) in td.type_params.iter().zip(args.iter()) {
+                                    ret = self.substitute_named_param(&ret, param, arg);
+                                }
+                                ret
+                            } else {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "cannot index into `{obj_ty}`: type has no `get` method"
+                                    ),
+                                );
+                                Ty::Error
+                            }
+                        } else if let Some(sig) = self.lookup_fn_sig(&format!("{name}::get")) {
+                            if let Some(param_ty) = sig.params.get(1) {
+                                self.check_against(&index.0, &index.1, param_ty);
+                            }
+                            sig.return_type.clone()
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!("cannot index into `{obj_ty}`"),
+                            );
+                            Ty::Error
+                        }
+                    }
                     _ => {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -2705,7 +3249,7 @@ impl Checker {
                 // Purity check: these constructs are inherently impure
                 if self.in_pure_function {
                     match expr {
-                        Expr::Scope { .. } | Expr::ScopeLaunch(_) => {
+                        Expr::Scope { .. } | Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
                             self.report_error(
                                 TypeErrorKind::PurityViolation,
                                 span,
@@ -2750,10 +3294,15 @@ impl Checker {
                             args: vec![param_ty],
                         }
                     }
-                    Expr::Scope { body: block, .. } | Expr::Unsafe(block) => {
-                        self.check_block(block)
+                    Expr::Scope { body: block, .. } => self.check_block(block),
+                    Expr::Unsafe(block) => {
+                        let prev = self.in_unsafe;
+                        self.in_unsafe = true;
+                        let ty = self.check_block(block);
+                        self.in_unsafe = prev;
+                        ty
                     }
-                    Expr::ScopeLaunch(block) => {
+                    Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
                         let body_ty = self.check_block(block);
                         Ty::Named {
                             name: "Task".to_string(),
@@ -2824,6 +3373,7 @@ impl Checker {
             // Lambda with expected function type — propagate param types!
             (
                 Expr::Lambda {
+                    type_params,
                     params,
                     return_type,
                     body,
@@ -2834,6 +3384,7 @@ impl Checker {
                     ret,
                 },
             ) => self.check_lambda(
+                type_params.as_deref(),
                 params,
                 return_type.as_ref(),
                 body,
@@ -3027,6 +3578,31 @@ impl Checker {
         }
     }
 
+    fn require_unsafe(&mut self, name: &str, span: &Span) {
+        if !self.in_unsafe && self.unsafe_functions.contains(name) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("calling extern function `{name}` requires `unsafe {{ ... }}`"),
+            );
+        }
+    }
+
+    fn warn_if_wasm_incompatible_call(&mut self, func_name: &str, span: &Span) {
+        if !self.wasm_target {
+            return;
+        }
+        match func_name {
+            "link" | "unlink" | "monitor" | "demonitor" => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::LinkMonitor);
+            }
+            "supervisor_child" | "supervisor_stop" => {
+                self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
+            }
+            _ => {}
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "call checking covers many builtin and method signatures"
@@ -3056,33 +3632,40 @@ impl Checker {
             }
         };
 
+        self.require_unsafe(&func_name, span);
+        self.warn_if_wasm_incompatible_call(&func_name, span);
+
         // Check if name is a user-defined enum variant constructor first
         for (type_name, td) in &self.type_defs.clone() {
-            if (td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
-                && td.variants.contains_key(&func_name)
-            {
-                let expected_params = &td.variants[&func_name];
-                if args.len() != expected_params.len() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "this function takes {} argument(s) but {} were supplied",
-                            expected_params.len(),
-                            args.len()
-                        ),
-                    );
-                }
-                for (i, arg) in args.iter().enumerate() {
-                    if let Some(param_ty) = expected_params.get(i) {
-                        let (expr, span) = arg.expr();
-                        self.check_against(expr, span, param_ty);
+            if td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct {
+                if let Some(variant) = td.variants.get(&func_name) {
+                    let expected_params = match variant {
+                        VariantDef::Unit => Vec::new(),
+                        VariantDef::Tuple(params) => params.clone(),
+                        VariantDef::Struct(_) => continue,
+                    };
+                    if args.len() != expected_params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "this function takes {} argument(s) but {} were supplied",
+                                expected_params.len(),
+                                args.len()
+                            ),
+                        );
                     }
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(param_ty) = expected_params.get(i) {
+                            let (expr, span) = arg.expr();
+                            self.check_against(expr, span, param_ty);
+                        }
+                    }
+                    return Ty::Named {
+                        name: type_name.clone(),
+                        args: vec![],
+                    };
                 }
-                return Ty::Named {
-                    name: type_name.clone(),
-                    args: vec![],
-                };
             }
         }
 
@@ -3254,7 +3837,7 @@ impl Checker {
             if let Some(module) = self.unqualified_to_module.get(&func_name) {
                 self.used_modules.borrow_mut().insert(module.clone());
             }
-            let (freshened_params, freshened_ret) =
+            let (freshened_params, freshened_ret, resolved_type_args) =
                 self.instantiate_fn_sig_for_call(&sig, type_args, span);
 
             // Separate positional and named args
@@ -3316,6 +3899,7 @@ impl Checker {
                     }
                 }
             }
+            self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
             return freshened_ret;
         }
 
@@ -3384,6 +3968,7 @@ impl Checker {
             if self.modules.contains(name) {
                 self.used_modules.borrow_mut().insert(name.clone());
                 let key = format!("{name}.{method}");
+                self.require_unsafe(&key, span);
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
                     self.called_functions.insert(key.clone());
                     if let Some(caller) = &self.current_function {
@@ -3659,6 +4244,66 @@ impl Checker {
                             TypeErrorKind::UndefinedMethod,
                             span,
                             format!("no method `{method}` on HashMap"),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+            // HashSet methods
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "HashSet" => {
+                let elem_ty = type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+                match method {
+                    "insert" => {
+                        if args.len() != 1 {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`HashSet::insert` takes 1 argument but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &elem_ty);
+                        }
+                        Ty::Bool
+                    }
+                    "contains" | "remove" => {
+                        if args.len() != 1 {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`HashSet::{method}` takes 1 argument but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &elem_ty);
+                        }
+                        Ty::Bool
+                    }
+                    "len" => Ty::I32,
+                    "is_empty" => Ty::Bool,
+                    "clear" => Ty::Unit,
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no method `{method}` on HashSet"),
                         );
                         Ty::Error
                     }
@@ -4135,9 +4780,18 @@ impl Checker {
                 );
                 Ty::Error
             }
-            // Trait object method dispatch: look up methods from trait definition
-            (Ty::TraitObject { trait_name, .. }, _) => {
-                if let Some(sig) = self.lookup_trait_method(trait_name, method) {
+            // Trait object method dispatch: look up methods from all trait bounds
+            (Ty::TraitObject { traits }, _) => {
+                // Try to find the method in any of the traits
+                let mut found_sig = None;
+                for bound in traits {
+                    if let Some(sig) = self.lookup_trait_method(&bound.trait_name, method) {
+                        found_sig = Some(sig);
+                        break;
+                    }
+                }
+
+                if let Some(sig) = found_sig {
                     if args.len() != sig.params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -4322,6 +4976,7 @@ impl Checker {
 
     fn check_lambda(
         &mut self,
+        type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
@@ -4335,6 +4990,16 @@ impl Checker {
         // found below this depth during body checking is a capture.
         let capture_depth = self.env.depth();
         self.lambda_capture_depth = Some(capture_depth);
+
+        let mut generic_bindings = std::collections::HashMap::new();
+        if let Some(tps) = type_params {
+            for tp in tps {
+                generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+            }
+        }
+        if !generic_bindings.is_empty() {
+            self.generic_ctx.push(generic_bindings);
+        }
 
         self.env.push_scope();
         let prev_in_generator = self.in_generator;
@@ -4369,6 +5034,12 @@ impl Checker {
 
         self.in_generator = prev_in_generator;
         self.env.pop_scope();
+
+        if let Some(tps) = type_params {
+            if !tps.is_empty() {
+                self.generic_ctx.pop();
+            }
+        }
 
         // Collect captures and resolve their types
         let captures: Vec<Ty> = std::mem::take(&mut self.lambda_captures)
@@ -4464,6 +5135,46 @@ impl Checker {
                 name: name.to_string(),
                 args: type_args,
             }
+        } else if let Some((enum_name, variant_fields)) =
+            self.type_defs
+                .iter()
+                .find_map(|(type_name, td)| match td.variants.get(name) {
+                    Some(VariantDef::Struct(fields)) => Some((type_name.clone(), fields.clone())),
+                    _ => None,
+                })
+        {
+            for (field_name, (expr, es)) in fields {
+                if let Some((_, declared_ty)) =
+                    variant_fields.iter().find(|(name, _)| name == field_name)
+                {
+                    self.check_against(expr, es, declared_ty);
+                } else {
+                    let similar = crate::error::find_similar(
+                        field_name,
+                        variant_fields.iter().map(|(n, _)| n.as_str()),
+                    );
+                    self.report_error_with_suggestions(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!("no field `{field_name}` on variant `{name}`"),
+                        similar,
+                    );
+                }
+            }
+            let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+            for (declared, _) in &variant_fields {
+                if !provided.contains(declared.as_str()) {
+                    self.report_error(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!("missing field `{declared}` in initializer of `{name}`"),
+                    );
+                }
+            }
+            Ty::Named {
+                name: enum_name,
+                args: vec![],
+            }
         } else {
             let similar = crate::error::find_similar(
                 name,
@@ -4547,25 +5258,48 @@ impl Checker {
                     }
                 }
             }
-            Pattern::Struct { name: _, fields } => {
+            Pattern::Struct { name, fields } => {
                 // Bind field patterns to field types
                 if let Ty::Named {
                     name: type_name, ..
                 } = ty
                 {
                     if let Some(td) = self.lookup_type_def(type_name) {
-                        for pf in fields {
-                            if let Some(field_ty) = td.fields.get(&pf.name) {
-                                if let Some((pat, ps)) = &pf.pattern {
-                                    self.bind_pattern(pat, field_ty, is_mutable, ps);
-                                } else {
-                                    self.check_shadowing(&pf.name, span);
-                                    self.env.define_with_span(
-                                        pf.name.clone(),
-                                        field_ty.clone(),
-                                        is_mutable,
-                                        span.clone(),
-                                    );
+                        if let Some(VariantDef::Struct(variant_fields)) =
+                            td.variants.get(name).cloned()
+                        {
+                            for pf in fields {
+                                if let Some((_, field_ty)) = variant_fields
+                                    .iter()
+                                    .find(|(field_name, _)| field_name == &pf.name)
+                                {
+                                    if let Some((pat, ps)) = &pf.pattern {
+                                        self.bind_pattern(pat, field_ty, is_mutable, ps);
+                                    } else {
+                                        self.check_shadowing(&pf.name, span);
+                                        self.env.define_with_span(
+                                            pf.name.clone(),
+                                            field_ty.clone(),
+                                            is_mutable,
+                                            span.clone(),
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            for pf in fields {
+                                if let Some(field_ty) = td.fields.get(&pf.name) {
+                                    if let Some((pat, ps)) = &pf.pattern {
+                                        self.bind_pattern(pat, field_ty, is_mutable, ps);
+                                    } else {
+                                        self.check_shadowing(&pf.name, span);
+                                        self.env.define_with_span(
+                                            pf.name.clone(),
+                                            field_ty.clone(),
+                                            is_mutable,
+                                            span.clone(),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -4612,9 +5346,19 @@ impl Checker {
         {
             if let Some(td) = self.lookup_type_def(type_name) {
                 if let Some(v) = td.variants.get(short_name) {
-                    return Some(v.clone());
+                    return match v {
+                        VariantDef::Unit => Some(vec![]),
+                        VariantDef::Tuple(fields) => Some(fields.clone()),
+                        VariantDef::Struct(_) => None,
+                    };
                 }
-                return td.variants.get(variant_name).cloned();
+                if let Some(v) = td.variants.get(variant_name) {
+                    return match v {
+                        VariantDef::Unit => Some(vec![]),
+                        VariantDef::Tuple(fields) => Some(fields.clone()),
+                        VariantDef::Struct(_) => None,
+                    };
+                }
             }
         }
         // If scrutinee type is unknown/var, still allow binding
@@ -4624,7 +5368,12 @@ impl Checker {
         // Search all enum types for the variant (unqualified case)
         for td in self.type_defs.values() {
             if let Some(v) = td.variants.get(short_name) {
-                return Some(v.clone());
+                if let VariantDef::Tuple(fields) = v {
+                    return Some(fields.clone());
+                }
+                if let VariantDef::Unit = v {
+                    return Some(vec![]);
+                }
             }
         }
         None
@@ -4695,9 +5444,10 @@ impl Checker {
         sig: &FnSig,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
-    ) -> (Vec<Ty>, Ty) {
+    ) -> (Vec<Ty>, Ty, Vec<Ty>) {
         let mut params = sig.params.clone();
         let mut ret = sig.return_type.clone();
+        let mut resolved_type_args = Vec::new();
 
         if let Some(type_args) = type_args {
             if sig.type_params.is_empty() {
@@ -4723,7 +5473,7 @@ impl Checker {
         }
 
         if !sig.type_params.is_empty() {
-            let mut resolved_type_args = type_args.map_or(vec![], |args| {
+            resolved_type_args = type_args.map_or(vec![], |args| {
                 args.iter()
                     .take(sig.type_params.len())
                     .map(|(te, _)| self.resolve_type_expr(te))
@@ -4750,7 +5500,45 @@ impl Checker {
             .map(|param| self.freshen_inner(param, &mut mapping))
             .collect();
         let freshened_ret = self.freshen_inner(&ret, &mut mapping);
-        (freshened_params, freshened_ret)
+        (freshened_params, freshened_ret, resolved_type_args)
+    }
+
+    fn enforce_type_param_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
+        if sig.type_params.is_empty() {
+            return;
+        }
+        for (idx, param_name) in sig.type_params.iter().enumerate() {
+            let Some(bounds) = sig.type_param_bounds.get(param_name) else {
+                continue;
+            };
+            let Some(type_arg) = type_args.get(idx) else {
+                continue;
+            };
+            let resolved_arg = self.subst.resolve(type_arg);
+            for bound in bounds {
+                if self.type_satisfies_trait_bound(&resolved_arg, bound) {
+                    continue;
+                }
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    format!(
+                        "type `{}` does not implement trait `{}` required by `{}`",
+                        resolved_arg, bound, param_name
+                    ),
+                );
+            }
+        }
+    }
+
+    fn type_satisfies_trait_bound(&self, ty: &Ty, trait_name: &str) -> bool {
+        match ty {
+            Ty::Named { name, .. } => self.type_implements_trait(name, trait_name),
+            Ty::TraitObject { traits } => traits.iter().any(|t| {
+                t.trait_name == trait_name || self.trait_extends(&t.trait_name, trait_name)
+            }),
+            _ => false,
+        }
     }
 
     /// Check if a concrete type implements a trait (directly or via super-trait chain).
@@ -4823,43 +5611,45 @@ impl Checker {
 
     /// Look up a method on a trait, walking super-traits if needed.
     /// Returns a `FnSig` with self filtered out.
-    fn lookup_trait_method(&self, trait_name: &str, method: &str) -> Option<FnSig> {
-        // Check the trait's own methods
-        if let Some(methods) = self.trait_defs.get(trait_name) {
-            for m in methods {
-                if m.name == method {
-                    let params: Vec<Ty> = m
-                        .params
-                        .iter()
-                        .filter(|p| p.name != "self")
-                        .map(|p| self.resolve_type_expr(&p.ty.0))
-                        .collect();
-                    let return_type = m
-                        .return_type
-                        .as_ref()
-                        .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-                    let param_names: Vec<String> = m
-                        .params
-                        .iter()
-                        .filter(|p| p.name != "self")
-                        .map(|p| p.name.clone())
-                        .collect();
-                    return Some(FnSig {
-                        type_params: vec![],
-                        param_names,
-                        params,
-                        return_type,
-                        is_async: false,
-                        is_pure: m.is_pure,
-                        accepts_kwargs: false,
-                        doc_comment: None,
-                    });
-                }
-            }
+    fn lookup_trait_method(&mut self, trait_name: &str, method: &str) -> Option<FnSig> {
+        // Check the trait's own methods — clone data to release borrow before resolve_type_expr
+        let found_method = self
+            .trait_defs
+            .get(trait_name)
+            .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
+        if let Some(m) = found_method {
+            let params: Vec<Ty> = m
+                .params
+                .iter()
+                .filter(|p| p.name != "self")
+                .map(|p| self.resolve_type_expr(&p.ty.0))
+                .collect();
+            let return_type = m
+                .return_type
+                .as_ref()
+                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+            let param_names: Vec<String> = m
+                .params
+                .iter()
+                .filter(|p| p.name != "self")
+                .map(|p| p.name.clone())
+                .collect();
+            return Some(FnSig {
+                type_params: vec![],
+                type_param_bounds: HashMap::new(),
+                param_names,
+                params,
+                return_type,
+                is_async: false,
+                is_pure: m.is_pure,
+                accepts_kwargs: false,
+                doc_comment: None,
+            });
         }
-        // Walk super-traits
-        if let Some(supers) = self.trait_super.get(trait_name) {
-            for super_trait in supers {
+        // Walk super-traits — clone to release borrow
+        let supers = self.trait_super.get(trait_name).cloned();
+        if let Some(supers) = supers {
+            for super_trait in &supers {
                 if let Some(sig) = self.lookup_trait_method(super_trait, method) {
                     return Some(sig);
                 }
@@ -4959,11 +5749,17 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.substitute_named_param(pointee, param_name, replacement)),
             },
-            Ty::TraitObject { trait_name, args } => Ty::TraitObject {
-                trait_name: trait_name.clone(),
-                args: args
+            Ty::TraitObject { traits } => Ty::TraitObject {
+                traits: traits
                     .iter()
-                    .map(|a| self.substitute_named_param(a, param_name, replacement))
+                    .map(|bound| crate::ty::TraitObjectBound {
+                        trait_name: bound.trait_name.clone(),
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|a| self.substitute_named_param(a, param_name, replacement))
+                            .collect(),
+                    })
                     .collect(),
             },
             Ty::Generator { yields, returns } => Ty::Generator {
@@ -4977,9 +5773,41 @@ impl Checker {
         }
     }
 
-    fn resolve_type_expr(&self, te: &TypeExpr) -> Ty {
+    fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
         match te {
             TypeExpr::Named { name, type_args } => {
+                // Handle `Self` type
+                if name == "Self" {
+                    if let Some(self_type_name) = &self.current_self_type {
+                        return Ty::Named {
+                            name: self_type_name.clone(),
+                            args: vec![],
+                        };
+                    }
+                }
+                if let Some(alias_name) = name.strip_prefix("Self::") {
+                    if let Some(alias_ty) = self.resolve_impl_associated_type(alias_name) {
+                        if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                            let should_report = self
+                                .impl_alias_scopes
+                                .last()
+                                .is_some_and(|s| s.report_missing);
+                            let err_span = self.impl_alias_scopes.last().map(|s| s.span.clone());
+                            if should_report {
+                                if let Some(sp) = err_span {
+                                    self.report_error(
+                                        TypeErrorKind::ArityMismatch,
+                                        &sp,
+                                        format!(
+                                            "associated type `Self::{alias_name}` does not take type arguments"
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        return alias_ty;
+                    }
+                }
                 // Check for primitive types first
                 match name.as_str() {
                     "i8" => Ty::I8,
@@ -5093,14 +5921,20 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(self.resolve_type_expr(&pointee.0)),
             },
-            TypeExpr::TraitObject(bound) => {
-                let args = bound.type_args.as_ref().map_or(vec![], |ta| {
-                    ta.iter().map(|t| self.resolve_type_expr(&t.0)).collect()
-                });
-                Ty::TraitObject {
-                    trait_name: bound.name.clone(),
-                    args,
-                }
+            TypeExpr::TraitObject(bounds) => {
+                let traits = bounds
+                    .iter()
+                    .map(|bound| {
+                        let args = bound.type_args.as_ref().map_or(vec![], |ta| {
+                            ta.iter().map(|t| self.resolve_type_expr(&t.0)).collect()
+                        });
+                        crate::ty::TraitObjectBound {
+                            trait_name: bound.name.clone(),
+                            args,
+                        }
+                    })
+                    .collect();
+                Ty::TraitObject { traits }
             }
             TypeExpr::Infer => Ty::Var(TypeVar::fresh()),
         }
@@ -5133,13 +5967,17 @@ impl Checker {
                     return;
                 }
             }
-            // Allow concrete type → dyn Trait coercion when the type implements the trait
-            if let Ty::TraitObject { trait_name, .. } = &expected_resolved {
+            // Allow concrete type → dyn Trait coercion when the type implements all traits
+            if let Ty::TraitObject { traits } = &expected_resolved {
                 if let Ty::Named {
                     name: type_name, ..
                 } = &actual_resolved
                 {
-                    if self.type_implements_trait(type_name, trait_name) {
+                    // Check that the type implements all required traits
+                    if traits
+                        .iter()
+                        .all(|bound| self.type_implements_trait(type_name, &bound.trait_name))
+                    {
                         return;
                     }
                 }
@@ -5196,7 +6034,11 @@ impl Checker {
                 }
             }
             // Assignments, spawns, and control flow are side effects
-            Expr::Spawn { .. } | Expr::Block(_) | Expr::If { .. } | Expr::Scope { .. } => true,
+            Expr::Spawn { .. }
+            | Expr::Block(_)
+            | Expr::If { .. }
+            | Expr::IfLet { .. }
+            | Expr::Scope { .. } => true,
             // Method calls that return Unit are side-effectful (push, send, stop, etc.)
             // Value-returning method calls (len, get, etc.) should still warn
             _ => false,
@@ -5205,6 +6047,30 @@ impl Checker {
 
     fn record_type(&mut self, span: &Span, ty: &Ty) {
         self.expr_types.insert(SpanKey::from(span), ty.clone());
+    }
+
+    fn warn_wasm_limitation(&mut self, span: &Span, feature: WasmUnsupportedFeature) {
+        if !self.wasm_target {
+            return;
+        }
+        let key = (SpanKey::from(span), feature);
+        if !self.wasm_warning_spans.insert(key) {
+            return;
+        }
+        self.warnings.push(TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::PlatformLimitation,
+            span: span.clone(),
+            message: format!(
+                "{} are not supported on WASM32 — {}",
+                feature.label(),
+                feature.reason()
+            ),
+            notes: vec![],
+            suggestions: vec![
+                "Consider using basic actors (spawn/send/ask) which work on WASM.".to_string(),
+            ],
+        });
     }
 
     fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
@@ -5369,7 +6235,7 @@ impl Default for Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::{ImportName, Param};
+    use hew_parser::ast::{ImportName, Param, Visibility};
 
     fn check_source(_source: &str) -> TypeCheckOutput {
         // hew-types has zero external deps, so we cannot parse source here.
@@ -5451,7 +6317,7 @@ mod tests {
             attributes: vec![],
             is_async: false,
             is_generator: false,
-            is_pub: false,
+            visibility: Visibility::Private,
             is_pure: false,
             name: "not_a_gen".to_string(),
             type_params: None,
@@ -5512,7 +6378,7 @@ mod tests {
         };
 
         let actor = ActorDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             name: "NumberStream".to_string(),
             super_traits: None,
             init: None,
@@ -5678,7 +6544,7 @@ mod tests {
             attributes: vec![],
             is_async: false,
             is_generator: false,
-            is_pub: false,
+            visibility: Visibility::Private,
             is_pure: false,
             name: "foo".to_string(),
             type_params: None,
@@ -6135,7 +7001,7 @@ mod tests {
             span: 0..0,
         };
         let actor = ActorDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             name: "Greeter".to_string(),
             super_traits: None,
             init: None,
@@ -6993,7 +7859,7 @@ fn main() {
             attributes: vec![],
             is_async: false,
             is_generator: false,
-            is_pub: true,
+            visibility: Visibility::Pub,
             is_pure: false,
             name: name.to_string(),
             type_params: None,
@@ -7014,7 +7880,7 @@ fn main() {
             attributes: vec![],
             is_async: false,
             is_generator: false,
-            is_pub: false,
+            visibility: Visibility::Private,
             is_pure: false,
             name: name.to_string(),
             type_params: None,
@@ -7257,7 +8123,7 @@ fn main() {
         use hew_parser::ast::ConstDecl;
 
         let pub_const = ConstDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             name: "MAX_SIZE".to_string(),
             ty: (
                 TypeExpr::Named {
@@ -7269,7 +8135,7 @@ fn main() {
             value: make_int_literal(100, 0..3),
         };
         let priv_const = ConstDecl {
-            is_pub: false,
+            visibility: Visibility::Private,
             name: "INTERNAL".to_string(),
             ty: (
                 TypeExpr::Named {
@@ -7321,7 +8187,7 @@ fn main() {
         use hew_parser::ast::ConstDecl;
 
         let pub_const = ConstDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             name: "LIMIT".to_string(),
             ty: (
                 TypeExpr::Named {
@@ -7361,7 +8227,7 @@ fn main() {
     #[test]
     fn user_module_registers_types() {
         let struct_decl = TypeDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
             name: "Config".to_string(),
             type_params: None,
@@ -7661,7 +8527,7 @@ fn main() {
         use hew_parser::ast::{TraitDecl, TraitItem, TraitMethod};
 
         let trait_decl = TraitDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             name: "Display".to_string(),
             type_params: None,
             super_traits: None,
@@ -7700,7 +8566,7 @@ fn main() {
         use hew_parser::ast::{TraitDecl, TraitItem, TraitMethod};
 
         let private_trait = TraitDecl {
-            is_pub: false,
+            visibility: Visibility::Private,
             name: "Internal".to_string(),
             type_params: None,
             super_traits: None,
@@ -7745,6 +8611,7 @@ fn main() {
                 0..0,
             ),
             where_clause: None,
+            type_aliases: vec![],
             methods: vec![],
         };
         let output = check_items(vec![(Item::Impl(impl_decl), 0..0)]);
@@ -7765,7 +8632,7 @@ fn main() {
         use hew_parser::ast::TraitBound;
         // Locally defined type: impl SomeExternalTrait for LocalType → no orphan warning
         let type_decl = TypeDecl {
-            is_pub: true,
+            visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
             name: "LocalType".to_string(),
             type_params: None,
@@ -7787,6 +8654,7 @@ fn main() {
                 0..0,
             ),
             where_clause: None,
+            type_aliases: vec![],
             methods: vec![],
         };
         let output = check_items(vec![
@@ -7815,7 +8683,7 @@ fn main() {
             attributes: vec![],
             is_async: false,
             is_generator: false,
-            is_pub: false,
+            visibility: Visibility::Private,
             is_pure: false,
             name: "private_func".to_string(),
             type_params: None,
@@ -7830,7 +8698,7 @@ fn main() {
         });
 
         let private_const = Item::Const(ConstDecl {
-            is_pub: false,
+            visibility: Visibility::Private,
             name: "PRIVATE_CONST".to_string(),
             ty: (
                 TypeExpr::Named {
@@ -7849,7 +8717,7 @@ fn main() {
         });
 
         let private_type = Item::TypeDecl(TypeDecl {
-            is_pub: false,
+            visibility: Visibility::Private,
             kind: TypeDeclKind::Struct,
             name: "PrivateType".to_string(),
             type_params: None,
@@ -7891,6 +8759,45 @@ fn main() {
         assert!(
             !checker.known_types.contains("PrivateType"),
             "private type must not be registered from file import"
+        );
+    }
+
+    #[test]
+    fn check_generic_lambda() {
+        let source = r#"
+            fn apply<T>(f: fn(T) -> T, x: T) -> T {
+                f(x)
+            }
+
+            fn main() {
+                // Identity generic lambda
+                let id = <T>(x: T) => x;
+                // Instantiation happens when calling `apply`
+                // apply takes fn(T) -> T. `id` matches that.
+                // However, `id` is a generic closure.
+                // We need to make sure generic instantiation works.
+                // Currently, `check_lambda` creates fresh type variables for T.
+                // So id has type ?0 -> ?0.
+                // When passed to apply(id, 5), T inferred as int.
+                // apply expects fn(int) -> int.
+                // id matches fn(?0) -> ?0 where ?0=int.
+                let res = apply(id, 5);
+            }
+        "#;
+
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "type check errors: {:?}",
+            output.errors
         );
     }
 }

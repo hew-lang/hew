@@ -327,9 +327,9 @@ impl TraitRegistry {
             // Generator/AsyncGenerator/Var: NOT Send by default
             Ty::Generator { .. } | Ty::AsyncGenerator { .. } | Ty::Var(_) => false,
 
-            // Trait objects: check if the trait itself has the bound
-            Ty::TraitObject { trait_name, .. } => {
-                if let Some(trait_def) = self.trait_decls.get(trait_name) {
+            // Trait objects: check if any of the traits has the bound
+            Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                if let Some(trait_def) = self.trait_decls.get(&bound.trait_name) {
                     trait_def
                         .super_traits
                         .iter()
@@ -337,7 +337,7 @@ impl TraitRegistry {
                 } else {
                     false
                 }
-            }
+            }),
         }
     }
 

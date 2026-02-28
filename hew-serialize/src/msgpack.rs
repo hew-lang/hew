@@ -145,7 +145,9 @@ pub fn deserialize_from_msgpack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::{Block, Expr, FnDecl, IntRadix, Item, Literal, Program, Stmt};
+    use hew_parser::ast::{
+        Block, Expr, FnDecl, IntRadix, Item, Literal, Program, Stmt, Visibility,
+    };
 
     /// Round-trip: serialize → deserialize should produce an identical AST.
     #[test]
@@ -156,7 +158,7 @@ mod tests {
                     attributes: vec![],
                     is_async: false,
                     is_generator: false,
-                    is_pub: false,
+                    visibility: Visibility::Private,
                     is_pure: false,
                     name: "main".into(),
                     type_params: None,

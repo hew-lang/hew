@@ -29,6 +29,21 @@
 namespace hew {
 namespace ast {
 
+// ── Visibility ────────────────────────────────────────────────────────────
+
+/// Item visibility level (mirrors Rust Visibility enum).
+enum class Visibility : int {
+  Private = 0,
+  Pub = 1,
+  PubPackage = 2,
+  PubSuper = 3,
+};
+
+/// Returns true if the visibility is any form of public.
+inline bool is_pub(Visibility v) {
+  return v != Visibility::Private;
+}
+
 // ── Span ──────────────────────────────────────────────────────────────────
 
 /// Source span with byte offsets (mirrors Rust's Range<usize>).
@@ -164,7 +179,7 @@ struct TypePointer {
 struct TraitBound;
 
 struct TypeTraitObject {
-  std::unique_ptr<TraitBound> bound;
+  std::vector<TraitBound> bounds;
 };
 
 struct TypeInfer {};
@@ -407,6 +422,9 @@ struct ExprAwait {
 struct ExprScopeLaunch {
   Block block;
 };
+struct ExprScopeSpawn {
+  Block block;
+};
 struct ExprScopeCancel {};
 
 struct ExprRegexLiteral {
@@ -419,7 +437,7 @@ struct Expr {
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
                ExprFieldAccess, ExprIndex, ExprPostfixTry, ExprRange, ExprAwait, ExprScopeLaunch,
-               ExprScopeCancel, ExprRegexLiteral>
+               ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };
@@ -455,6 +473,7 @@ struct StmtLoop {
   Block body;
 };
 struct StmtFor {
+  std::optional<std::string> label;
   bool is_await;
   Spanned<Pattern> pattern;
   Spanned<Expr> iterable;
@@ -535,7 +554,7 @@ struct ConstDecl {
   std::string name;
   Spanned<TypeExpr> ty;
   Spanned<Expr> value;
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
 };
 
 // ── Type declarations ─────────────────────────────────────────────────────
@@ -544,7 +563,18 @@ enum class TypeDeclKind { Struct, Enum };
 
 struct VariantDecl {
   std::string name;
-  std::vector<Spanned<TypeExpr>> fields;
+  struct VariantUnit {};
+  struct VariantTuple {
+    std::vector<Spanned<TypeExpr>> fields;
+  };
+  struct VariantStructField {
+    std::string name;
+    Spanned<TypeExpr> ty;
+  };
+  struct VariantStruct {
+    std::vector<VariantStructField> fields;
+  };
+  std::variant<VariantUnit, VariantTuple, VariantStruct> kind;
 };
 
 struct TypeBodyField {
@@ -572,7 +602,7 @@ struct TypeBodyItem {
 };
 
 struct TypeDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   TypeDeclKind kind;
   std::string name;
   std::optional<std::vector<TypeParam>> type_params;
@@ -584,7 +614,7 @@ struct TypeDecl {
 };
 
 struct TypeAliasDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   std::string name;
   Spanned<TypeExpr> ty;
 };
@@ -607,12 +637,13 @@ struct TraitItemMethod {
 struct TraitItemAssociatedType {
   std::string name;
   std::vector<TraitBound> bounds;
+  std::optional<Spanned<TypeExpr>> default_value;
 };
 
 using TraitItem = std::variant<TraitItemMethod, TraitItemAssociatedType>;
 
 struct TraitDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   std::string name;
   std::optional<std::vector<TypeParam>> type_params;
   std::optional<std::vector<TraitBound>> super_traits;
@@ -622,11 +653,17 @@ struct TraitDecl {
 
 // ── Impl ──────────────────────────────────────────────────────────────────
 
+struct ImplTypeAlias {
+  std::string name;
+  Spanned<TypeExpr> ty;
+};
+
 struct ImplDecl {
   std::optional<std::vector<TypeParam>> type_params;
   std::optional<TraitBound> trait_bound;
   Spanned<TypeExpr> target_type;
   std::optional<WhereClause> where_clause;
+  std::vector<ImplTypeAlias> type_aliases;
   std::vector<FnDecl> methods;
 };
 
@@ -655,7 +692,7 @@ struct WireFieldDecl {
 };
 
 struct WireDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   WireDeclKind kind;
   std::string name;
   std::vector<WireFieldDecl> fields;
@@ -719,7 +756,7 @@ using OverflowPolicy =
     std::variant<OverflowDropNew, OverflowDropOld, OverflowBlock, OverflowFail, OverflowCoalesce>;
 
 struct ActorDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   std::string name;
   std::optional<std::vector<TraitBound>> super_traits;
   std::optional<ActorInit> init;
@@ -745,7 +782,7 @@ struct ChildSpec {
 };
 
 struct SupervisorDecl {
-  bool is_pub = false;
+  Visibility visibility = Visibility::Private;
   std::string name;
   std::optional<SupervisorStrategy> strategy;
   std::optional<int64_t> max_restarts;
@@ -759,7 +796,7 @@ struct FnDecl {
   std::vector<Attribute> attributes;
   bool is_async;
   bool is_generator;
-  bool is_pub;
+  Visibility visibility = Visibility::Private;
   bool is_pure;
   std::string name;
   std::optional<std::vector<TypeParam>> type_params;

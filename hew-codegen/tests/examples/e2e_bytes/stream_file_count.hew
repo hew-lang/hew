@@ -2,7 +2,7 @@ import std::fs;
 import std::stream;
 
 fn main() {
-    hew_file_write("/tmp/hew_stream_test.txt", "apple\nbanana\ncherry\n");
+    unsafe { hew_file_write("/tmp/hew_stream_test.txt", "apple\nbanana\ncherry\n"); }
 
     let raw = match stream.from_file("/tmp/hew_stream_test.txt") {
         Ok(s) => s,

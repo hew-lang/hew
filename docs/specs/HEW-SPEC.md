@@ -3938,6 +3938,25 @@ let msg2 = MyMessage::decode_json(json_str)?;
 
 The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to hew-codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Actor and concurrency operations produce clear compile-time errors on WASM targets.
 
+### 8.0 WASM32 target capabilities
+
+**Works on wasm32-wasi:**
+
+- Basic actors (`spawn`, `send`, `receive`, `ask/await`) and message passing
+- Generators/async streams plus pattern matching and algebraic data types
+- Arithmetic, collections, and general-purpose stdlib modules
+- HTTP/TCP clients and servers routed through WASI sockets
+
+**Unavailable on wasm32-wasi (native-only features):**
+
+- Supervision trees (`supervisor` declarations and `supervisor_*` helpers)
+- Actor `link` / `monitor` fault-propagation APIs
+- Structured concurrency scopes (`scope {}`, `scope.launch`, `scope.await`, `scope.cancel`)
+- Scope-spawned `Task` handles that rely on scoped schedulers
+- `select {}` expressions that wait on multiple mailboxes concurrently
+
+These operations require preemptive OS threads, which the current WASM runtime does not expose. When you compile with `--target=wasm32-wasi`, the type checker emits warnings for these constructs and codegen fails with grouped diagnostics if they reach lowering. Prefer the basic actor primitives above or run the program on a native target when advanced supervision is required.
+
 ### 8.1 Pipeline Overview
 
 ```

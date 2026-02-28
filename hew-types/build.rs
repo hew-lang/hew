@@ -325,7 +325,7 @@ fn merge_module_data(program: &hew_parser::ast::Program, short_name: &str, data:
     // Collect clean name → C symbol mappings and wrapper fn signatures from `pub fn` declarations
     for (item, _span) in &program.items {
         if let Item::Function(fn_decl) = item {
-            if fn_decl.is_pub {
+            if fn_decl.visibility.is_pub() {
                 // Always capture the wrapper function's own signature for type checking.
                 // This may differ from the underlying extern C function (e.g., `pub fn setup()` wraps
                 // `hew_log_set_level(level: i32)` — the wrapper takes 0 args, the extern takes 1).
@@ -495,10 +495,11 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             let pointee_code = type_expr_to_code(&pointee.0, module_short);
             format!("Ty::Pointer {{ is_mutable: {is_mutable}, pointee: Box::new({pointee_code}) }}")
         }
-        TypeExpr::TraitObject(bound) => {
+        TypeExpr::TraitObject(bounds) => {
+            let name = bounds.first().map_or("", |b| b.name.as_str());
             format!(
                 "Ty::TraitObject {{ trait_name: \"{}\".to_string(), args: vec![] }}",
-                bound.name
+                name
             )
         }
         TypeExpr::Infer => "Ty::Error".to_string(),

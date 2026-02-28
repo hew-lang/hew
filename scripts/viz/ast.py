@@ -403,6 +403,9 @@ class ASTWalker:
         elif "ScopeLaunch" in ec:
             self._walk_body(ec["ScopeLaunch"], ctx)
 
+        elif "ScopeSpawn" in ec:
+            self._walk_body(ec["ScopeSpawn"], ctx)
+
         elif "Unsafe" in ec:
             self._walk_body(ec["Unsafe"], ctx)
 

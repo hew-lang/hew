@@ -155,6 +155,7 @@ jobs:
             -DLLVM_ENABLE_BINDINGS=OFF `
             -DLLVM_ENABLE_ZLIB=OFF `
             -DLLVM_ENABLE_ZSTD=OFF `
+            -DLLVM_ENABLE_DIA_SDK=OFF `
             -DLLVM_ENABLE_ASSERTIONS=OFF `
             -DLLVM_BUILD_LLVM_DYLIB=OFF `
             -DLLVM_LINK_LLVM_DYLIB=OFF `

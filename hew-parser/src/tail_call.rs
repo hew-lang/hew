@@ -71,6 +71,9 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
                         || eb.block.as_ref().is_some_and(block_contains_defer)
                 })
         }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => block_contains_defer(body) || else_body.as_ref().is_some_and(block_contains_defer),
         Stmt::Loop { body, .. } | Stmt::For { body, .. } | Stmt::While { body, .. } => {
             block_contains_defer(body)
         }
@@ -94,6 +97,14 @@ fn mark_stmt(stmt: &mut Stmt) {
                 if let Some(block) = &mut eb.block {
                     mark_block(block);
                 }
+            }
+        }
+        Stmt::IfLet {
+            body, else_body, ..
+        } => {
+            mark_block(body);
+            if let Some(block) = else_body {
+                mark_block(block);
             }
         }
         Stmt::Loop { body, .. } | Stmt::For { body, .. } | Stmt::While { body, .. } => {

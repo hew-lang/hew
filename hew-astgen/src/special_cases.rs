@@ -94,9 +94,9 @@ pub fn program_parser() -> &'static str {
 pub fn type_decl_parser() -> &'static str {
     r#"static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   ast::TypeDecl td;
-  const auto *isPub = mapGet(obj, "is_pub");
-  if (isPub && !isNil(*isPub))
-    td.is_pub = getBool(*isPub);
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    td.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
   td.kind = (kindStr == "Enum") ? ast::TypeDeclKind::Enum : ast::TypeDeclKind::Struct;
   td.name = getString(mapReq(obj, "name"));

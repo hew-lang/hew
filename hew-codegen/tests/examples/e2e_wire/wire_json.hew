@@ -11,6 +11,6 @@ extern "C" {
 }
 
 fn main() {
-    let json = Event_to_json(42, 30);
+    let json = unsafe { Event_to_json(42, 30) };
     println(json);
 }

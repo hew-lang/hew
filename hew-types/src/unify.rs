@@ -268,25 +268,32 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             unify(subst, ay, by)
         }
 
-        // TraitObject with same trait
-        (
-            Ty::TraitObject {
-                trait_name: an,
-                args: aa,
-            },
-            Ty::TraitObject {
-                trait_name: bn,
-                args: ba,
-            },
-        ) if an == bn => {
-            if aa.len() != ba.len() {
-                return Err(UnifyError::ArityMismatch {
-                    expected: aa.len(),
-                    actual: ba.len(),
+        // TraitObject with same traits
+        (Ty::TraitObject { traits: a_traits }, Ty::TraitObject { traits: b_traits }) => {
+            if a_traits.len() != b_traits.len() {
+                return Err(UnifyError::Mismatch {
+                    expected: a.clone(),
+                    actual: b.clone(),
                 });
             }
-            for (a, b) in aa.iter().zip(ba.iter()) {
-                unify(subst, a, b)?;
+
+            // Check that all traits match in order
+            for (a_bound, b_bound) in a_traits.iter().zip(b_traits.iter()) {
+                if a_bound.trait_name != b_bound.trait_name {
+                    return Err(UnifyError::Mismatch {
+                        expected: a.clone(),
+                        actual: b.clone(),
+                    });
+                }
+                if a_bound.args.len() != b_bound.args.len() {
+                    return Err(UnifyError::ArityMismatch {
+                        expected: a_bound.args.len(),
+                        actual: b_bound.args.len(),
+                    });
+                }
+                for (a_arg, b_arg) in a_bound.args.iter().zip(b_bound.args.iter()) {
+                    unify(subst, a_arg, b_arg)?;
+                }
             }
             Ok(())
         }

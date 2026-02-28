@@ -118,7 +118,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
     // Collect clean name → C symbol mappings from `pub fn` declarations
     for (item, _span) in &program.items {
         if let Item::Function(fn_decl) = item {
-            if fn_decl.is_pub {
+            if fn_decl.visibility.is_pub() {
                 if let Some(c_symbol) = extract_call_target(&fn_decl.body) {
                     info.clean_names.push((fn_decl.name.clone(), c_symbol));
                 }
@@ -232,9 +232,14 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
             is_mutable: *is_mutable,
             pointee: Box::new(type_expr_to_ty(&pointee.0, module_short)),
         },
-        TypeExpr::TraitObject(bound) => Ty::TraitObject {
-            trait_name: bound.name.clone(),
-            args: vec![],
+        TypeExpr::TraitObject(bounds) => Ty::TraitObject {
+            traits: bounds
+                .iter()
+                .map(|bound| crate::ty::TraitObjectBound {
+                    trait_name: bound.name.clone(),
+                    args: vec![],
+                })
+                .collect(),
         },
         TypeExpr::Infer => Ty::Error,
     }

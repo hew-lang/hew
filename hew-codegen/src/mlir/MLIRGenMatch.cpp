@@ -722,7 +722,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     return generateTagMatch(guardCond);
   }
 
-  // For other pattern types, skip to next arm
-  emitWarning(location) << "unhandled pattern kind in match arm; skipping";
-  return generateMatchArmsChain(scrutinee, arms, idx + 1, resultType, location);
+  // For other pattern types, emit error
+  emitError(location) << "unhandled pattern kind in match arm";
+  return nullptr;
 }

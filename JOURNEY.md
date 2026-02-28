@@ -637,3 +637,30 @@ float, string through Vec ops) and `type_dispatch_narrow` (Vec<i32> remove,
 HashMap<string, i32> insert/get).
 
 **Test results**: 332/332 codegen e2e (100%, +2 new), 324+ Rust runtime tests.
+
+### Quality Sprint 15: Control Flow Correctness, Match Guards
+
+Fifteenth round dispatched three deep-analysis agents (Opus 4.6 on codegen
+MLIR, GPT 5.1 Codex on type checker, Sonnet 4.5 on runtime) for systematic
+analysis beyond the type dispatch matrix:
+
+- **Return in loop body**: When `return` executed inside a while/for/loop
+  body, the returnFlag was set but the continueFlag was not. Remaining
+  statements in the same loop iteration would still execute (wrong side
+  effects). Fixed by also setting the innermost continueFlag when setting
+  returnFlag inside a loop.
+- **Labeled break intermediate continue**: `break 'outer` through 3+
+  nesting levels set the innermost and target continue flags but skipped
+  intermediate loops. Middle loop body statements after inner loop exit
+  would incorrectly execute. Fixed by setting continue flags for ALL
+  intermediate loops.
+- **Or-pattern failure**: If `generateOrPatternCondition` returned nullptr,
+  the match arm was silently skipped with a warning. Changed to emit error
+  instead (fail-fast, no silent miscompilation).
+- **Vec append overflow**: `(*dst).len + src_len` could overflow before
+  `ensure_cap`. Added `checked_add` with abort on overflow.
+
+Analysis false positives: HashMap resize tombstone issue (line 153 already
+checks `old.state == OCCUPIED` before `fnv1a`).
+
+**Test results**: 333/333 codegen e2e (100%, +1 new), zero warnings.

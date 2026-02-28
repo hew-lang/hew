@@ -461,3 +461,22 @@ The codebase convention is that i1 and i8 use ExtUIOp (unsigned), while i16
 uses ExtSIOp (signed). When adding new type promotion paths, match the
 existing convention — otherwise values > 127 will roundtrip incorrectly
 (e.g., push 200, try to remove -56).
+
+### 63. Return inside loop must set both returnFlag AND continueFlag
+
+Setting only returnFlag causes the loop to exit on the next iteration check,
+but remaining statements in the CURRENT iteration still execute (guarded only
+by continueFlag). Always set both flags when returning from inside a loop body.
+
+### 64. Labeled break must propagate continue flags through ALL nesting levels
+
+`break 'outer` through 3+ loops must set continue flags for every intermediate
+loop, not just the innermost. Otherwise, middle loop bodies continue executing
+after the inner loop exits. The active-flag deactivation loop should also set
+the corresponding continue flag at each level.
+
+### 65. Warnings for unhandled codegen cases should be errors
+
+Silent warnings that skip match arms or fall through to default behavior
+cause miscompilation that's invisible at compile time and produces wrong
+results at runtime. Use emitError + return failure, not emitWarning + skip.

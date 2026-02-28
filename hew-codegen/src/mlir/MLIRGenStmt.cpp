@@ -2774,26 +2774,32 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
     // At function top level: emit defers then drops before return
     emitDeferredCalls();
     if (stmt.value) {
-      // Collect variable references from return expression to exclude from drops
-      std::set<std::string> returnVarNames;
-      if (auto *id = std::get_if<ast::ExprIdentifier>(&stmt.value->value.kind)) {
-        returnVarNames.insert(id->name);
-      } else if (auto *si = std::get_if<ast::ExprStructInit>(&stmt.value->value.kind)) {
-        for (const auto &[fieldName, fieldVal] : si->fields) {
-          if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-            returnVarNames.insert(id->name);
-        }
-      }
-      if (!returnVarNames.empty())
-        emitDropsExcept(returnVarNames);
-      else
-        emitAllDrops();
+      // Evaluate the return expression BEFORE emitting drops so that locals
+      // referenced by the expression (e.g. method calls, binary ops) are still
+      // alive.  The result is captured in a temporary, then drops run, then we
+      // emit the ReturnOp with the already-computed value.
       auto val = generateExpression(stmt.value->value);
       if (val) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1)
           val = coerceType(val, currentFunction.getResultTypes()[0], location);
+        // Collect simple identifier references to exclude from drops (returning
+        // a variable directly means its storage must not be freed yet).
+        std::set<std::string> returnVarNames;
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&stmt.value->value.kind)) {
+          returnVarNames.insert(id->name);
+        } else if (auto *si = std::get_if<ast::ExprStructInit>(&stmt.value->value.kind)) {
+          for (const auto &[fieldName, fieldVal] : si->fields) {
+            if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
+              returnVarNames.insert(id->name);
+          }
+        }
+        if (!returnVarNames.empty())
+          emitDropsExcept(returnVarNames);
+        else
+          emitAllDrops();
         builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{val});
       } else {
+        emitAllDrops();
         builder.create<mlir::func::ReturnOp>(location);
       }
     } else {

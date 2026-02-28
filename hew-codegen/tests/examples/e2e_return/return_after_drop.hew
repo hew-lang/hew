@@ -1,0 +1,25 @@
+fn get_first(v: Vec<int>) -> int {
+    return v.get(0);
+}
+
+fn sum_first_two(v: Vec<int>) -> int {
+    return v.get(0) + v.get(1);
+}
+
+fn main() -> int {
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+
+    println(get_first(v));
+    println(sum_first_two(v));
+
+    // Direct return of method call on local
+    let v2: Vec<int> = Vec::new();
+    v2.push(42);
+    let result = get_first(v2);
+    println(result);
+
+    return 0;
+}

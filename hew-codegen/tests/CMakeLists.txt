@@ -534,6 +534,9 @@ add_e2e_file_test(module_trait_inherit  e2e_modules module_trait_inherit)
 add_e2e_file_test(drop_trait            e2e_drop_trait drop_trait)
 add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
 
+# ── Return statement tests ───────────────────────────────────────────────────
+add_e2e_file_test(return_after_drop     e2e_return return_after_drop)
+
 # ── Stress tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(stress_mass_spawn     e2e_stress stress_mass_spawn)
 add_e2e_file_test(stress_ring           e2e_stress stress_ring)

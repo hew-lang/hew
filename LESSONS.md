@@ -480,3 +480,24 @@ the corresponding continue flag at each level.
 Silent warnings that skip match arms or fall through to default behavior
 cause miscompilation that's invisible at compile time and produces wrong
 results at runtime. Use emitError + return failure, not emitWarning + skip.
+
+### 66. Never/Error types must be excluded from match result type inference
+
+When determining the overall type of a match expression, skip arms that
+evaluate to Ty::Never (return, panic, break) or Ty::Error. Otherwise the
+match is typed as Never, causing downstream inference to fail or accept
+wrong types. Use the first non-diverging arm as the expected type.
+
+### 67. Qualified type names need module-aware comparison
+
+Two fully-qualified names from different modules (auth.User vs billing.User)
+must NOT unify. Only bare-name vs qualified-name matching is allowed. This
+prevents cross-module type confusion while still supporting imported types.
+
+### 68. AST traversal functions must visit ALL child expressions
+
+When adding enrichment/normalization traversals, every child expression of
+every variant must be visited. Select arms have both source and body; both
+must be traversed in enrich_expr, normalize_expr_types, and
+rewrite_builtin_calls. Missing a child means that child's expressions
+won't get their types normalized or their builtin calls rewritten.

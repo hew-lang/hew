@@ -664,3 +664,28 @@ Analysis false positives: HashMap resize tombstone issue (line 153 already
 checks `old.state == OCCUPIED` before `fnv1a`).
 
 **Test results**: 333/333 codegen e2e (100%, +1 new), zero warnings.
+
+### Quality Sprint 16: Type Checker, Serialization, Module Safety
+
+Sixteenth round dispatched three analysis agents targeting the Rust type
+checker (GPT 5.1 Codex), serialization boundary (Sonnet 4.5), and
+remaining codegen lowering (GPT 5.2 Codex):
+
+- **Match Never type**: `check_match_expr` cached the first arm's type
+  even when it was `Ty::Never` (diverging arm). `match x { true => return,
+false => 42 }` was typed as Never instead of I64. Fixed by skipping
+  Never/Error arms when setting the expected type.
+- **Tuple pattern arity**: `bind_pattern` for `Pattern::Tuple` used `zip`
+  without checking element count, silently dropping excess bindings. Added
+  arity validation with `ArityMismatch` error.
+- **Module-qualified type names**: `names_match_qualified` stripped all
+  module prefixes, so `auth.User` unified with `billing.User`. Fixed to
+  only allow bare-vs-qualified matching (one name unqualified, other
+  qualified), rejecting two different qualified names.
+- **Select arm source**: `enrich_expr` and `normalize_expr_types` traversed
+  `arm.body` but not `arm.source` in Select expressions. Module-qualified
+  calls in select sources weren't rewritten. Fixed both functions.
+- **Or-pattern fallback**: Match codegen emitted warning and silently
+  skipped unhandled patterns. Changed to `emitError` for fail-fast.
+
+**Test results**: 333/333 codegen e2e (100%), 1088+ Rust workspace tests, zero failures.

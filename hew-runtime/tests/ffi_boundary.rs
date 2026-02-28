@@ -724,6 +724,9 @@ fn mailbox_free_null_is_noop() {
 /// with sleep, eliminating timing-dependent flakiness under load.
 static DISPATCH_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
+/// Serialization lock for tests that share DISPATCH_SIGNAL.
+static DISPATCH_LOCK: Mutex<()> = Mutex::new(());
+
 fn reset_dispatch_signal() {
     *DISPATCH_SIGNAL.0.lock().unwrap() = 0;
 }
@@ -759,6 +762,7 @@ unsafe extern "C" fn test_dispatch(
 
 #[test]
 fn actor_spawn_and_free_no_scheduler() {
+    let _guard = DISPATCH_LOCK.lock().unwrap();
     unsafe {
         // Spawn an actor without starting the scheduler — tests the
         // allocation path in isolation.
@@ -817,6 +821,7 @@ fn ensure_scheduler() {
 
 #[test]
 fn actor_send_dispatches_via_scheduler() {
+    let _guard = DISPATCH_LOCK.lock().unwrap();
     ensure_scheduler();
     reset_dispatch_signal();
 
@@ -2613,7 +2618,9 @@ mod file_io_tests {
     };
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(name)
+        let pid = std::process::id();
+        let tid = format!("{:?}", std::thread::current().id());
+        std::env::temp_dir().join(format!("{name}_{pid}_{tid}"))
     }
 
     fn cstr(s: &str) -> CString {

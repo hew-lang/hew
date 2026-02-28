@@ -79,11 +79,6 @@ function(add_e2e_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/e2e_${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test.cmake
   )
-  # Each E2E test invokes the full compiler pipeline (parse → MLIR → LLVM → link).
-  # Serialise via RESOURCE_LOCK to prevent resource contention under parallel ctest.
-  set_tests_properties(e2e_${TEST_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
-  )
 endfunction()
 
 add_e2e_test(struct test_struct.hew "30\n")
@@ -146,9 +141,6 @@ function(add_e2e_file_test TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
   )
-  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
-  )
 endfunction()
 
 # Sorted variant for tests with non-deterministic output ordering
@@ -164,9 +156,6 @@ function(add_e2e_file_test_sorted TEST_NAME CATEGORY HEW_NAME)
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_sorted.cmake
   )
-  set_tests_properties(${CATEGORY}_${HEW_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
-  )
 endfunction()
 
 # Helper: verify a .hew file FAILS to compile with an expected error message
@@ -180,9 +169,6 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -DEXPECTED_ERROR=${EXPECTED_ERROR}
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/reject_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_reject_test.cmake
-  )
-  set_tests_properties(reject_${CATEGORY}_${HEW_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
   )
 endfunction()
 
@@ -216,7 +202,6 @@ function(add_wasm_file_test TEST_NAME CATEGORY HEW_NAME)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_wasm.cmake
   )
   set_tests_properties(wasm_${CATEGORY}_${HEW_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
     LABELS "wasm"
   )
 endfunction()
@@ -237,7 +222,6 @@ function(add_wasm_test TEST_NAME HEW_FILE EXPECTED_OUTPUT)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_wasm_inline.cmake
   )
   set_tests_properties(wasm_e2e_${TEST_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
     LABELS "wasm"
   )
 endfunction()
@@ -258,7 +242,6 @@ function(add_wasm_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wasm_reject_test.cmake
   )
   set_tests_properties(wasm_reject_${TEST_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
     LABELS "wasm"
   )
 endfunction()
@@ -626,9 +609,6 @@ function(add_example_test TEST_NAME HEW_FILE_ABS EXPECTED_FILE_ABS)
       -DEXPECTED_FILE=${EXPECTED_FILE_ABS}
       -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/${TEST_NAME}${HEW_EXE_SUFFIX}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_test_file.cmake
-  )
-  set_tests_properties(${TEST_NAME} PROPERTIES
-    RESOURCE_LOCK hew_compile
   )
 endfunction()
 

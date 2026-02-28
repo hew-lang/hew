@@ -378,11 +378,12 @@ mod tests {
 
         // Try to compile a trivial program to verify hew-codegen is available.
         let dir = std::env::temp_dir();
-        let src = dir.join("hew_codegen_check.hew");
+        let pid = std::process::id();
+        let src = dir.join(format!("hew_codegen_check_{pid}.hew"));
         let bin = dir.join(if cfg!(target_os = "windows") {
-            "hew_codegen_check.exe"
+            format!("hew_codegen_check_{pid}.exe")
         } else {
-            "hew_codegen_check"
+            format!("hew_codegen_check_{pid}")
         });
         if std::fs::write(&src, "fn main() {}\n").is_err() {
             return false;

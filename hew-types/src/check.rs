@@ -2521,9 +2521,19 @@ impl Checker {
             }
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
-                if let Some(expected) = &self.current_return_type.clone() {
-                    if let Some((val, vs)) = value {
-                        self.check_against(val, vs, expected);
+                if let Some(expected) = self.current_return_type.clone() {
+                    match value {
+                        Some((val, vs)) => {
+                            self.check_against(val, vs, &expected);
+                        }
+                        None if expected != Ty::Unit => {
+                            self.errors.push(TypeError::return_type_mismatch(
+                                span.clone(),
+                                &expected,
+                                &Ty::Unit,
+                            ));
+                        }
+                        _ => {}
                     }
                 }
                 Ty::Never
@@ -2676,9 +2686,19 @@ impl Checker {
                 }
             }
             Stmt::Return(value) => {
-                if let Some(expected) = &self.current_return_type.clone() {
-                    if let Some((val, vs)) = value {
-                        self.check_against(val, vs, expected);
+                if let Some(expected) = self.current_return_type.clone() {
+                    match value {
+                        Some((val, vs)) => {
+                            self.check_against(val, vs, &expected);
+                        }
+                        None if expected != Ty::Unit => {
+                            self.errors.push(TypeError::return_type_mismatch(
+                                span.clone(),
+                                &expected,
+                                &Ty::Unit,
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -5256,6 +5276,18 @@ impl Checker {
                     for (p, pty) in patterns.iter().zip(payload_tys.iter()) {
                         self.bind_pattern(&p.0, pty, is_mutable, &p.1);
                     }
+                } else if let Ty::Named {
+                    name: type_name, ..
+                } = ty
+                {
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: type_name.clone(),
+                            actual: name.clone(),
+                        },
+                        span,
+                        format!("variant `{name}` is not a member of enum `{type_name}`"),
+                    );
                 }
             }
             Pattern::Struct { name, fields } => {
@@ -5359,13 +5391,20 @@ impl Checker {
                         VariantDef::Struct(_) => None,
                     };
                 }
+                // Scrutinee type is a known enum — variant not found in it.
+                // Do NOT fall through to global search; that would let
+                // variants from unrelated enums silently type-check.
+                if !td.variants.is_empty() {
+                    return None;
+                }
             }
         }
         // If scrutinee type is unknown/var, still allow binding
         if let Ty::Var(_) | Ty::Error = enum_ty {
             return Some(vec![Ty::Var(TypeVar::fresh())]);
         }
-        // Search all enum types for the variant (unqualified case)
+        // Search all enum types for the variant only when scrutinee type is
+        // not a known enum (e.g. int, string, or other non-enum named types).
         for td in self.type_defs.values() {
             if let Some(v) = td.variants.get(short_name) {
                 if let VariantDef::Tuple(fields) = v {
@@ -7121,6 +7160,25 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
             "expected non-exhaustive match error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn typecheck_match_wrong_enum_variant_errors() {
+        // Matching a Color scrutinee with a Shape variant should be an error.
+        let (errors, _) = parse_and_check(concat!(
+            "enum Color { Red; Green; Blue; }\n",
+            "enum Shape { Circle(i32); Rectangle(i32); }\n",
+            "fn describe(c: Color) -> i32 {\n",
+            "    match c {\n",
+            "        Circle(r) => r,\n",
+            "        _ => 0,\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(
+            !errors.is_empty(),
+            "expected type error for wrong-enum variant in match, got no errors"
         );
     }
 

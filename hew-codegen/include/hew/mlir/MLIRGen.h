@@ -233,6 +233,10 @@ private:
   mlir::Value emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType, mlir::ValueRange args,
                               mlir::Location location);
 
+  /// Allocate the returnFlag and (if the return type is memref-compatible)
+  /// the returnSlot for early-return support inside SCF regions.
+  void initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes, mlir::Location location);
+
   /// Apply a compound assignment arithmetic operation to (lhs, rhs).
   /// Returns the result value, or nullptr on unsupported operator.
   mlir::Value emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value lhs, mlir::Value rhs,
@@ -319,6 +323,8 @@ private:
   mlir::OpBuilder builder;
   mlir::ModuleOp module;
   std::string targetTriple;
+  bool isWasm32_ = false;
+  mlir::IntegerType cachedSizeType_;
 
   /// Current module path for name mangling (set when processing module graph).
   std::vector<std::string> currentModulePath;
@@ -570,6 +576,9 @@ private:
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
   void unregisterDroppable(const std::string &varName);
+  /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
+  /// bitcast, drop).  No-op if the variable is not found.
+  void emitDropEntry(const DropEntry &entry);
   /// Emit a drop for a single variable if it has a registered drop function.
   void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);

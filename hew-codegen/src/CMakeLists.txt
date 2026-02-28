@@ -121,6 +121,13 @@ if(HEW_STATIC_LINK)
   # Every MLIR target lists "LLVM" (shared) in INTERFACE_LINK_LIBRARIES.
   # We redirect it to a static LLVMSupport (a harmless duplicate since we
   # already link all needed static LLVM components) and clear its interface deps.
+  #
+  # IMPORTANT: We must override IMPORTED_LOCATION_<CONFIG> (e.g. _RELEASE)
+  # in addition to IMPORTED_LOCATION, because CMake prefers config-specific
+  # properties.  Without this, a reconfigure from shared→static silently
+  # keeps linking libLLVM.dylib, producing a binary that mixes static and
+  # shared LLVM symbols and segfaults at runtime (PassManager vtable
+  # corruption from duplicate global state).
   if(TARGET LLVM)
     get_target_property(_llvm_type LLVM TYPE)
     if(_llvm_type STREQUAL "SHARED_LIBRARY" OR _llvm_type STREQUAL "UNKNOWN_LIBRARY")
@@ -128,6 +135,16 @@ if(HEW_STATIC_LINK)
         set(_llvm_support_lib "${LLVM_LIBRARY_DIR}/LLVMSupport.lib")
       else()
         set(_llvm_support_lib "${LLVM_LIBRARY_DIR}/libLLVMSupport.a")
+      endif()
+      # Override config-specific imported locations (e.g. IMPORTED_LOCATION_RELEASE)
+      # that would otherwise take precedence over the generic IMPORTED_LOCATION.
+      get_target_property(_llvm_configs LLVM IMPORTED_CONFIGURATIONS)
+      if(_llvm_configs)
+        foreach(_cfg IN LISTS _llvm_configs)
+          set_target_properties(LLVM PROPERTIES
+            "IMPORTED_LOCATION_${_cfg}" "${_llvm_support_lib}"
+            "IMPORTED_SONAME_${_cfg}" "")
+        endforeach()
       endif()
       set_target_properties(LLVM PROPERTIES
         IMPORTED_LOCATION "${_llvm_support_lib}"

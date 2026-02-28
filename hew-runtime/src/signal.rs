@@ -512,13 +512,304 @@ mod platform {
     }
 }
 
-// ── Non-Unix stubs (Windows, WASM) ──────────────────────────────────────
+// ── Windows implementation (Vectored Exception Handling) ────────────────
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod platform {
+    use std::ffi::c_void;
+    use std::ptr;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::OnceLock;
+
+    use crate::actor::HewActor;
+
+    // ── Windows exception codes ─────────────────────────────────────────
+    const EXCEPTION_ACCESS_VIOLATION: u32 = 0xC0000005;
+    const EXCEPTION_IN_PAGE_ERROR: u32 = 0xC0000006;
+    const EXCEPTION_INT_DIVIDE_BY_ZERO: u32 = 0xC0000094;
+    const EXCEPTION_ILLEGAL_INSTRUCTION: u32 = 0xC000001D;
+    const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
+
+    // Map Windows exception codes to Unix signal numbers for reporting.
+    fn exception_to_signal(code: u32) -> i32 {
+        match code {
+            EXCEPTION_ACCESS_VIOLATION | EXCEPTION_IN_PAGE_ERROR => 11, // SIGSEGV
+            EXCEPTION_INT_DIVIDE_BY_ZERO => 8,                          // SIGFPE
+            EXCEPTION_ILLEGAL_INSTRUCTION => 4,                         // SIGILL
+            _ => -1,
+        }
+    }
+
+    // ── FFI types ───────────────────────────────────────────────────────
+
+    #[repr(C)]
+    struct ExceptionRecord {
+        exception_code: u32,
+        exception_flags: u32,
+        exception_record: *mut ExceptionRecord,
+        exception_address: *mut c_void,
+        number_parameters: u32,
+        exception_information: [usize; 15], // EXCEPTION_MAXIMUM_PARAMETERS
+    }
+
+    #[repr(C)]
+    struct ExceptionPointers {
+        exception_record: *mut ExceptionRecord,
+        context_record: *mut c_void,
+    }
+
+    /// `jmp_buf` for Windows x86_64.
+    /// MSVC `_JBLEN` = 16 entries × 8 bytes = 128 bytes on x64.
+    /// Over-allocate to 256 bytes for safety.
+    #[repr(C, align(16))]
+    pub(crate) struct SigJmpBuf {
+        _buf: [u8; 256],
+    }
+
+    impl SigJmpBuf {
+        const fn zeroed() -> Self {
+            Self { _buf: [0u8; 256] }
+        }
+    }
+
+    extern "C" {
+        // MSVC setjmp: int _setjmp(jmp_buf env, void* frame_addr)
+        // The setjmp macro passes NULL for frame_addr on x64.
+        fn _setjmp(env: *mut SigJmpBuf, frame: *mut c_void) -> i32;
+        fn longjmp(env: *mut SigJmpBuf, val: i32) -> !;
+    }
+
+    extern "system" {
+        fn TlsAlloc() -> u32;
+        fn TlsGetValue(index: u32) -> *mut c_void;
+        fn TlsSetValue(index: u32, value: *mut c_void) -> i32;
+        fn AddVectoredExceptionHandler(
+            first: u32,
+            handler: unsafe extern "system" fn(*mut ExceptionPointers) -> i32,
+        ) -> *mut c_void;
+    }
+
+    const TLS_OUT_OF_INDEXES: u32 = 0xFFFFFFFF;
+
+    // ── Per-worker recovery context ─────────────────────────────────────
+
+    #[repr(C)]
+    struct WorkerRecoveryCtx {
+        jmp_buf: SigJmpBuf,
+        jmp_buf_valid: AtomicBool,
+        current_actor: *mut HewActor,
+        current_msg: *mut c_void,
+        crash_signal: AtomicI32,
+        fault_addr: usize,
+        in_recovery: AtomicBool,
+        worker_id: u32,
+        msg_type: AtomicI32,
+    }
+
+    impl WorkerRecoveryCtx {
+        fn new_boxed(worker_id: u32) -> Box<Self> {
+            Box::new(Self {
+                jmp_buf: SigJmpBuf::zeroed(),
+                jmp_buf_valid: AtomicBool::new(false),
+                current_actor: ptr::null_mut(),
+                current_msg: ptr::null_mut(),
+                crash_signal: AtomicI32::new(0),
+                fault_addr: 0,
+                in_recovery: AtomicBool::new(false),
+                worker_id,
+                msg_type: AtomicI32::new(0),
+            })
+        }
+    }
+
+    static TLS_KEY: OnceLock<u32> = OnceLock::new();
+
+    #[inline]
+    unsafe fn get_recovery_ctx() -> *mut WorkerRecoveryCtx {
+        let Some(&key) = TLS_KEY.get() else {
+            return ptr::null_mut();
+        };
+        unsafe { TlsGetValue(key) }.cast::<WorkerRecoveryCtx>()
+    }
+
+    // ── Vectored Exception Handler ──────────────────────────────────────
+
+    unsafe extern "system" fn veh_handler(info: *mut ExceptionPointers) -> i32 {
+        if info.is_null() {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        let record = unsafe { &*(*info).exception_record };
+        let code = record.exception_code;
+
+        // Only handle crash-like exceptions.
+        if code != EXCEPTION_ACCESS_VIOLATION
+            && code != EXCEPTION_IN_PAGE_ERROR
+            && code != EXCEPTION_INT_DIVIDE_BY_ZERO
+            && code != EXCEPTION_ILLEGAL_INSTRUCTION
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        let ctx = unsafe { &mut *ctx };
+
+        // Re-entrancy guard.
+        if ctx.in_recovery.swap(true, Ordering::Acquire) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
+            ctx.in_recovery.store(false, Ordering::Release);
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        // Record crash metadata.
+        ctx.crash_signal
+            .store(exception_to_signal(code), Ordering::Release);
+        ctx.fault_addr = record.exception_address as usize;
+        ctx.jmp_buf_valid.store(false, Ordering::Release);
+
+        // Jump back to recovery point.
+        unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
+    }
+
+    // ── Public API ──────────────────────────────────────────────────────
+
+    pub(crate) fn init_crash_handling() {
+        TLS_KEY.get_or_init(|| {
+            let key = unsafe { TlsAlloc() };
+            assert!(key != TLS_OUT_OF_INDEXES, "TlsAlloc failed");
+            key
+        });
+
+        // Register VEH handler (first=1 → called before SEH frames).
+        unsafe {
+            let h = AddVectoredExceptionHandler(1, veh_handler);
+            assert!(!h.is_null(), "AddVectoredExceptionHandler failed");
+        }
+    }
+
+    pub(crate) fn init_worker_recovery(worker_id: u32) {
+        let ctx = WorkerRecoveryCtx::new_boxed(worker_id);
+        let ctx_ptr = Box::into_raw(ctx);
+        let key = *TLS_KEY
+            .get()
+            .expect("init_crash_handling must be called before init_worker_recovery");
+        let ret = unsafe { TlsSetValue(key, ctx_ptr.cast()) };
+        assert!(ret != 0, "TlsSetValue failed");
+    }
+
+    pub(crate) unsafe fn prepare_dispatch_recovery(
+        actor: *mut HewActor,
+        msg: *mut c_void,
+    ) -> *mut SigJmpBuf {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return ptr::null_mut();
+        }
+
+        let ctx = unsafe { &mut *ctx };
+        ctx.current_actor = actor;
+        ctx.current_msg = msg;
+        ctx.crash_signal.store(0, Ordering::Relaxed);
+        ctx.fault_addr = 0;
+        ctx.in_recovery.store(false, Ordering::Release);
+
+        let msg_type = if msg.is_null() {
+            0
+        } else {
+            unsafe { (*(msg.cast::<crate::mailbox::HewMsgNode>())).msg_type }
+        };
+        ctx.msg_type.store(msg_type, Ordering::Relaxed);
+
+        &raw mut ctx.jmp_buf
+    }
+
+    pub(crate) fn mark_recovery_active() {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        let ctx = unsafe { &mut *ctx };
+        ctx.jmp_buf_valid.store(true, Ordering::Release);
+    }
+
+    /// Windows `_setjmp` wrapper, matching the Unix `sigsetjmp` signature.
+    ///
+    /// # Safety
+    ///
+    /// `env` must point to a valid `SigJmpBuf`.
+    pub(crate) unsafe fn sigsetjmp(env: *mut SigJmpBuf, _savemask: libc::c_int) -> libc::c_int {
+        unsafe { _setjmp(env, ptr::null_mut()) }
+    }
+
+    pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return (0, 0);
+        }
+
+        let ctx = unsafe { &mut *ctx };
+
+        let signal = ctx.crash_signal.load(Ordering::Acquire);
+        let fault_addr = ctx.fault_addr;
+        let actor = ctx.current_actor;
+        let msg_type = ctx.msg_type.load(Ordering::Acquire);
+        let worker_id = ctx.worker_id;
+
+        if !actor.is_null() {
+            unsafe { crate::actor::hew_actor_trap(actor, signal) };
+        }
+
+        let report = unsafe {
+            crate::crash::build_crash_report(actor, signal, 0, fault_addr, msg_type, worker_id)
+        };
+        crate::crash::push_crash_report(report);
+
+        let signal_name = match signal {
+            11 => "ACCESS_VIOLATION",
+            8 => "INT_DIVIDE_BY_ZERO",
+            4 => "ILLEGAL_INSTRUCTION",
+            _ => "UNKNOWN",
+        };
+        if !actor.is_null() {
+            let (id, pid) = unsafe { ((*actor).id, (*actor).pid) };
+            eprintln!(
+                "hew: actor {id} (pid={pid}) crashed with {signal_name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+            );
+        }
+
+        ctx.current_actor = ptr::null_mut();
+        ctx.current_msg = ptr::null_mut();
+        ctx.in_recovery.store(false, Ordering::Release);
+
+        (signal, fault_addr)
+    }
+
+    pub(crate) fn clear_dispatch_recovery() {
+        let ctx = unsafe { get_recovery_ctx() };
+        if ctx.is_null() {
+            return;
+        }
+        let ctx = unsafe { &mut *ctx };
+        ctx.jmp_buf_valid.store(false, Ordering::Release);
+        ctx.current_actor = ptr::null_mut();
+        ctx.current_msg = ptr::null_mut();
+        ctx.msg_type.store(0, Ordering::Relaxed);
+    }
+}
+
+// ── WASM stubs ──────────────────────────────────────────────────────────
+
+#[cfg(not(any(unix, windows)))]
 mod platform {
     use std::ffi::c_void;
 
-    /// Stub jmp_buf for non-Linux platforms.
+    /// Stub jmp_buf for WASM.
     #[repr(C, align(16))]
     pub(crate) struct SigJmpBuf {
         _buf: [u8; 256],
@@ -529,7 +820,7 @@ mod platform {
 
     /// # Safety
     ///
-    /// No-op on non-Linux platforms. Always returns null.
+    /// No-op on WASM. Always returns null.
     pub(crate) unsafe fn prepare_dispatch_recovery(
         _actor: *mut crate::actor::HewActor,
         _msg: *mut c_void,
@@ -543,14 +834,14 @@ mod platform {
     ///
     /// # Safety
     ///
-    /// No-op on non-Linux platforms.
+    /// No-op on WASM.
     pub(crate) unsafe fn sigsetjmp(_env: *mut SigJmpBuf, _savemask: libc::c_int) -> libc::c_int {
         0
     }
 
     /// # Safety
     ///
-    /// No-op on non-Linux platforms.
+    /// No-op on WASM.
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
         (0, 0)
     }

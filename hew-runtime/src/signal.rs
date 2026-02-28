@@ -17,12 +17,12 @@
 //!
 //! # Platform Support
 //!
-//! Only active on Linux. Other platforms get no-op stubs (actors crash
-//! the process as before).
+//! Active on Unix-like platforms (Linux, macOS). Other platforms
+//! (Windows, WASM) get no-op stubs.
 
-// ── Linux implementation ────────────────────────────────────────────────
+// ── Unix implementation (Linux + macOS) ─────────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod platform {
     use std::ffi::c_void;
     use std::ptr;
@@ -98,7 +98,8 @@ mod platform {
 
         // sigsetjmp/siglongjmp — the correct pair for signal handlers.
         // On glibc, sigsetjmp is a macro that expands to __sigsetjmp.
-        #[link_name = "__sigsetjmp"]
+        // On macOS, sigsetjmp is the actual symbol name.
+        #[cfg_attr(target_os = "linux", link_name = "__sigsetjmp")]
         pub(crate) fn sigsetjmp(env: *mut SigJmpBuf, savemask: libc::c_int) -> libc::c_int;
         fn siglongjmp(env: *mut SigJmpBuf, val: libc::c_int) -> !;
     }

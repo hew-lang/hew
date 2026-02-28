@@ -5101,7 +5101,9 @@ impl Checker {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
 
-            if result_ty.is_none() {
+            // Skip Never/Error when setting the expected type — diverging arms
+            // (return, panic, break) shouldn't constrain the match result type.
+            if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
                 result_ty = Some(arm_ty);
             }
 
@@ -5499,6 +5501,17 @@ impl Checker {
             }
             Pattern::Tuple(pats) => {
                 if let Ty::Tuple(tys) = ty {
+                    if pats.len() != tys.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "tuple pattern has {} elements but type has {}",
+                                pats.len(),
+                                tys.len()
+                            ),
+                        );
+                    }
                     for (p, t) in pats.iter().zip(tys.iter()) {
                         self.bind_pattern(&p.0, t, is_mutable, &p.1);
                     }

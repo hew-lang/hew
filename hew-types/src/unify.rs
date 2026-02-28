@@ -84,8 +84,18 @@ pub fn bind(subst: &mut Substitution, var: TypeVar, ty: &Ty) -> Result<(), Unify
 }
 
 /// Check if two type names refer to the same type, accounting for module prefixes.
-/// e.g., "json.Value" and "Value" are the same type.
+/// e.g., "json.Value" and "Value" are the same type (bare name matches qualified).
+/// But "auth.User" and "billing.User" are NOT the same type (both qualified, different).
 fn names_match_qualified(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let a_qualified = a.contains('.');
+    let b_qualified = b.contains('.');
+    // If both are qualified and already differ, they're different types
+    if a_qualified && b_qualified {
+        return false;
+    }
     let a_bare = a.find('.').map_or(a, |dot| &a[dot + 1..]);
     let b_bare = b.find('.').map_or(b, |dot| &b[dot + 1..]);
     a_bare == b_bare

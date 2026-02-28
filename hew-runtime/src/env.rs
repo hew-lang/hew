@@ -263,7 +263,8 @@ mod tests {
 
     #[test]
     fn test_env_set_get_has_roundtrip() {
-        let key = CString::new("HEW_TEST_ENV_VAR_42").unwrap();
+        let unique_key = format!("HEW_TEST_ENV_VAR_{}", std::process::id());
+        let key = CString::new(unique_key).unwrap();
         let val = CString::new("hello_hew").unwrap();
 
         // SAFETY: both pointers are valid NUL-terminated C strings.

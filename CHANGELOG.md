@@ -124,8 +124,20 @@
 - Runtime: Vec append validates elem_size/elem_kind match before memcpy
 - Runtime: added hew_vec_set_ptr and hew_vec_pop_ptr for pointer-type vectors
 - All 335 codegen e2e tests pass (up from 321)
+- Type checker: implicit integer narrowing (e.g., i64→i32) now rejected; only widening allowed
+- Type checker: Vec/HashMap/HashSet/String method indices and lengths use int (i64) instead of i32
+- Type checker: array/index expressions check index against int (i64) instead of i32
+- Codegen: StmtReturn now included in stmtMightContainBreakOrContinue guard (fixes incorrect SCF yield)
+- Codegen: LitChar uses char32_t for full Unicode codepoint preservation
+- Codegen: msgpack char deserializer decodes multi-byte UTF-8 sequences
+- Codegen: var reassignment now drops old owned value (prevents memory leak for String/Vec/HashMap)
+- Codegen: function argument coercion now passes isUnsigned flag (u32→u64 uses extui not extsi)
+- All 338 codegen e2e tests pass (100%, up from 263/335 = 79%)
 
 ### Changed
+
+- **BREAKING**: Collection indices and lengths are now `int` (i64) instead of `i32`
+- Test files updated: 80+ test files changed from i32 to int for function signatures and variables
 
 - Function call results can be silently discarded — no more `let _ =` required
 - Parser: deduplicated function modifier handling (extracted `parse_fn_with_modifiers`)

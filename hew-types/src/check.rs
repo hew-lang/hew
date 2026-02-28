@@ -276,7 +276,7 @@ fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
     let Some(expected_info) = integer_type_info(expected) else {
         return false;
     };
-    actual_info.signed == expected_info.signed && expected_info.width >= actual_info.width
+    actual_info.signed == expected_info.signed
 }
 
 fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {

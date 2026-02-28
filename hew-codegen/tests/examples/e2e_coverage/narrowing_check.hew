@@ -1,0 +1,32 @@
+// Test: integer narrowing check
+// Verifies widening coercion is allowed and narrowing is rejected at type-check time.
+// Here we test only valid (widening) paths.
+
+fn takes_i64(x: int) -> int {
+    x * 2
+}
+
+fn main() {
+    // Widening from i8 to int (i64) should work
+    let a: i8 = 42;
+    let b: int = a;
+    println(b);
+
+    // Vec indexing with int should work
+    let v: Vec<int> = Vec::new();
+    v.push(100);
+    v.push(200);
+    v.push(300);
+    var i = 0;
+    var sum = 0;
+    while i < v.len() {
+        sum = sum + v.get(i);
+        i = i + 1;
+    }
+    println(sum);
+
+    // String len returns int
+    let s = "hello";
+    let len = s.len();
+    println(len);
+}

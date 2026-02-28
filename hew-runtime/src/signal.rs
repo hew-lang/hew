@@ -589,8 +589,8 @@ mod platform {
     }
 
     /// `jmp_buf` for Windows x86_64.
-    /// MSVC `_JBLEN` = 16 entries × 8 bytes = 128 bytes on x64.
-    /// Over-allocate to 256 bytes for safety.
+    /// Layout: 10 × u64 (callee-saved regs + RSP + return addr) = 80 bytes.
+    /// Over-allocate to 256 bytes for alignment headroom and future XMM slots.
     #[repr(C, align(16))]
     pub(crate) struct SigJmpBuf {
         _buf: [u8; 256],
@@ -602,20 +602,82 @@ mod platform {
         }
     }
 
-    extern "C" {
-        // _setjmp must be called directly in the recovery frame — never via
-        // a Rust wrapper — because it saves the caller's registers (RSP, RIP).
-        // A wrapper would save the wrapper's frame, which becomes invalid after
-        // the wrapper returns.
-        //
-        // We declare it as `sigsetjmp` with #[link_name] so the scheduler can
-        // call `crate::signal::sigsetjmp(ptr, 1)` uniformly across platforms.
-        // The second parameter is actually `void* frame_addr` in _setjmp, but
-        // on x64 both int and pointer use the RDX register. _setjmp handles
-        // an invalid frame address by falling back to its own heuristics.
-        #[link_name = "_setjmp"]
-        pub(crate) fn sigsetjmp(env: *mut SigJmpBuf, savemask: libc::c_int) -> libc::c_int;
-        fn longjmp(env: *mut SigJmpBuf, val: i32) -> !;
+    // Custom setjmp/longjmp that bypass Windows RtlUnwindEx.
+    //
+    // The standard MSVC `longjmp` calls `RtlUnwindEx` to walk and unwind
+    // SEH frames between the current RSP and the target RSP. If any
+    // frame lacks proper `.pdata` unwind info (e.g., JIT'd Hew dispatch
+    // code), or if the SEH chain is in an unexpected state, this raises
+    // STATUS_BAD_STACK (0xc0000028).
+    //
+    // Our custom implementation does a raw register save/restore, which
+    // is safe for crash recovery where we don't need SEH frame cleanup.
+    //
+    // Windows x64 callee-saved: RBX, RBP, RDI, RSI, R12-R15.
+    // We also save RSP and the return address.
+
+    /// Save callee-saved registers + RSP + return address into `env`.
+    /// Returns 0 on initial call, non-zero when reached via `longjmp`.
+    ///
+    /// # Safety
+    ///
+    /// `env` must point to a valid, aligned `SigJmpBuf`.
+    #[naked]
+    pub(crate) unsafe extern "C" fn sigsetjmp(
+        _env: *mut SigJmpBuf,
+        _savemask: libc::c_int,
+    ) -> libc::c_int {
+        // Windows x64 calling convention: RCX = env, RDX = savemask
+        std::arch::naked_asm!(
+            "mov [rcx + 0*8], rbx",
+            "mov [rcx + 1*8], rbp",
+            "mov [rcx + 2*8], rdi",
+            "mov [rcx + 3*8], rsi",
+            "mov [rcx + 4*8], r12",
+            "mov [rcx + 5*8], r13",
+            "mov [rcx + 6*8], r14",
+            "mov [rcx + 7*8], r15",
+            // Save RSP as it will be after our return (pop return addr).
+            "lea rax, [rsp + 8]",
+            "mov [rcx + 8*8], rax",
+            // Save return address (top of stack on entry).
+            "mov rax, [rsp]",
+            "mov [rcx + 9*8], rax",
+            // Return 0 (initial call).
+            "xor eax, eax",
+            "ret",
+        );
+    }
+
+    /// Restore registers saved by `sigsetjmp` and jump back to the
+    /// save point, making `sigsetjmp` return `val` (or 1 if val is 0).
+    ///
+    /// # Safety
+    ///
+    /// `env` must have been initialized by a prior `sigsetjmp` call whose
+    /// frame is still live on the stack.
+    #[naked]
+    unsafe extern "C" fn longjmp(_env: *mut SigJmpBuf, _val: i32) -> ! {
+        // Windows x64 calling convention: RCX = env, EDX = val
+        std::arch::naked_asm!(
+            "mov rbx, [rcx + 0*8]",
+            "mov rbp, [rcx + 1*8]",
+            "mov rdi, [rcx + 2*8]",
+            "mov rsi, [rcx + 3*8]",
+            "mov r12, [rcx + 4*8]",
+            "mov r13, [rcx + 5*8]",
+            "mov r14, [rcx + 6*8]",
+            "mov r15, [rcx + 7*8]",
+            "mov rsp, [rcx + 8*8]",
+            // Return val (or 1 if val == 0).
+            "mov eax, edx",
+            "test eax, eax",
+            "jnz 2f",
+            "mov eax, 1",
+            "2:",
+            // Jump to saved return address (resumes after sigsetjmp call).
+            "jmp [rcx + 9*8]",
+        );
     }
 
     extern "system" {

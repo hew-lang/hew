@@ -266,6 +266,10 @@ endfunction()
 # Type aliases (1 test)
 add_e2e_file_test(type_aliases         e2e_type_aliases type_aliases)
 
+# Type coverage (1 test)
+add_e2e_file_test(type_coverage        e2e_types type_coverage)
+add_e2e_file_test(type_dispatch_narrow e2e_types type_dispatch_narrow)
+
 # Bitwise operators (1 test)
 add_e2e_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
 

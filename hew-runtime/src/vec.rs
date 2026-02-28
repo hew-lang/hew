@@ -889,6 +889,29 @@ pub unsafe extern "C" fn hew_vec_remove_i64(v: *mut HewVec, val: i64) {
     }
 }
 
+/// Remove the first occurrence of `val` from the f64 vec.
+/// Shifts subsequent elements left. No-op if not found.
+///
+/// # Safety
+///
+/// `v` must be a valid f64 `HewVec` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_remove_f64(v: *mut HewVec, val: f64) {
+    cabi_guard!(v.is_null());
+    // SAFETY: caller guarantees `v` is a valid f64 HewVec.
+    unsafe {
+        let len = (*v).len;
+        let data = (*v).data.cast::<f64>();
+        for i in 0..len {
+            if data.add(i).read() == val {
+                core::ptr::copy(data.add(i + 1), data.add(i), len - i - 1);
+                (*v).len -= 1;
+                return;
+            }
+        }
+    }
+}
+
 /// Remove the first occurrence of `val` (pointer) from the vec.
 /// Shifts subsequent elements left. No-op if not found.
 ///

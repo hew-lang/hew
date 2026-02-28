@@ -1,0 +1,5 @@
+PASS: vec_i32_remove
+PASS: vec_int_remove
+hashmap i32 got: 42
+PASS: hashmap_i32_values
+ALL NARROW TYPE TESTS PASSED

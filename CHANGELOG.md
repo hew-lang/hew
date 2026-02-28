@@ -84,7 +84,7 @@
 - Parser: `expect()` and `parse_identifier()` no longer panic on unexpected EOF (returns error)
 - Serialization: `rewrite_builtin_calls` now traverses all expression variants (InterpolatedString, PostfixTry, Await, Yield, Send, Range, Unsafe, Join, Timeout, ScopeLaunch, ScopeSpawn, Scope, SpawnLambdaActor, Match, Lambda, Spawn, StructInit, Select)
 - Zero compiler warnings across entire Rust workspace
-- All 329 codegen e2e tests pass (up from 321)
+- All 332 codegen e2e tests pass (up from 321)
 - Codegen: log emit double-free fixed — non-string args no longer freed twice in ownedTemps cleanup
 - Codegen: labeled loop flags (activeFlags/continueFlags) now cleaned up in all 5 for-loop variants
 - Codegen: `for await` stream loops now support labeled break/continue
@@ -107,6 +107,11 @@
 - Runtime: string concat overflow check (checked_add before malloc)
 - Runtime: string split NULL check after malloc_cstring
 - Runtime: TCP framing overflow check before u32 cast
+- Codegen: VecRemoveOp now promotes i1/i8/i16 to i32 and f32 to f64 (fixes type mismatch in runtime calls)
+- Codegen: HashMapInsertOp now promotes f32 to f64 and i1/i8/i16 to i32 (fixes silent miscompile for narrow types)
+- Codegen: HashMapGetOp now declares correct return type and narrows result (i32→i1/i8/i16, f64→f32)
+- Codegen: PrintOp now emits error for unhandled types instead of silent i32 fallback
+- Runtime: added hew_vec_remove_f64 for Vec<f64>/Vec<f32> remove-by-value
 
 ### Changed
 

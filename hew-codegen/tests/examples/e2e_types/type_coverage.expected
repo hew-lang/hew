@@ -1,0 +1,7 @@
+=== Type Coverage Test ===
+int: 42
+i32: 42
+bool: true
+float: 3.14
+string: hello
+ALL TYPE TESTS PASSED

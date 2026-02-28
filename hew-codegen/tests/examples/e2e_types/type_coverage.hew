@@ -1,0 +1,96 @@
+// Systematic type coverage test
+// Tests every concrete type through print, to_string (via interpolation),
+// Vec push/get/set/pop, and assert_eq operations.
+
+fn test_int() -> int {
+    // int (i64) - the default integer type
+    let x: int = 42;
+    println(f"int: {x}");
+    
+    let v: Vec<int> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.set(1, 25);
+    let got = v.get(1);
+    assert_eq(got, 25);
+    let popped = v.pop();
+    assert_eq(popped, 30);
+    assert_eq(v.len(), 2);
+    0
+}
+
+fn test_i32() -> int {
+    let x: i32 = 42;
+    println(f"i32: {x}");
+    
+    let v: Vec<i32> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.set(0, 15);
+    let got = v.get(0);
+    let expected: i32 = 15;
+    assert_eq(got, expected);
+    let popped = v.pop();
+    let expected_pop: i32 = 20;
+    assert_eq(popped, expected_pop);
+    0
+}
+
+fn test_bool() -> int {
+    let x: bool = true;
+    println(f"bool: {x}");
+    
+    let v: Vec<bool> = Vec::new();
+    v.push(true);
+    v.push(false);
+    v.push(true);
+    v.set(1, true);
+    let got = v.get(0);
+    assert_eq(got, true);
+    assert_eq(v.get(1), true);
+    let popped = v.pop();
+    assert_eq(popped, true);
+    assert_eq(v.len(), 2);
+    0
+}
+
+fn test_float() -> int {
+    let x: float = 3.14;
+    println(f"float: {x}");
+    
+    let v: Vec<float> = Vec::new();
+    v.push(1.5);
+    v.push(2.5);
+    v.set(0, 1.0);
+    let got = v.get(0);
+    assert_eq(got, 1.0);
+    let popped = v.pop();
+    assert_eq(popped, 2.5);
+    0
+}
+
+fn test_string() -> int {
+    let x: string = "hello";
+    println(f"string: {x}");
+    
+    let v: Vec<string> = Vec::new();
+    v.push("alpha");
+    v.push("beta");
+    v.set(0, "gamma");
+    let got = v.get(0);
+    assert_eq(got, "gamma");
+    assert_eq(v.len(), 2);
+    0
+}
+
+fn main() -> int {
+    println("=== Type Coverage Test ===");
+    test_int();
+    test_i32();
+    test_bool();
+    test_float();
+    test_string();
+    println("ALL TYPE TESTS PASSED");
+    0
+}

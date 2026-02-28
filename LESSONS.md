@@ -440,3 +440,24 @@ all 330 tests passed — because no test exercised Vec<f32>. Static analysis
 by a reviewer found the inconsistency between two suffix functions that
 unit tests couldn't cover. Always run a pragmatic reviewer after implementation
 agents, especially for type-dispatch changes.
+
+### 60. Build a coverage matrix, not an ad-hoc bug hunt
+
+Sprints 5-13 found 60+ type-dispatch bugs reactively. Sprint 14 built a full
+(operation × type) matrix by tracing every if/else chain in all 14 lowering
+patterns, instantly revealing 4 critical bugs that 332 passing tests missed.
+The matrix approach is exhaustive; the sprint approach has a long tail.
+
+### 61. Operations without tests accumulate silent bugs
+
+VecRemoveOp had zero type promotion logic across all sprints because no test
+exercised `remove` with narrow types. Meanwhile, VecPush/Get/Set/Pop all got
+fixed iteratively. Any operation not covered by a typed test will accumulate
+the same class of bugs that other operations already had fixed.
+
+### 62. i8 should use ExtUIOp (zero-extend) not ExtSIOp (sign-extend)
+
+The codebase convention is that i1 and i8 use ExtUIOp (unsigned), while i16
+uses ExtSIOp (signed). When adding new type promotion paths, match the
+existing convention — otherwise values > 127 will roundtrip incorrectly
+(e.g., push 200, try to remove -56).

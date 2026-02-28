@@ -609,3 +609,31 @@ analysis holes, and runtime safety issues:
   malloc_cstring in string split, and u32 overflow guard in TCP framing.
 
 **Test results**: 330/330 codegen e2e (100%), 1534+ Rust tests, zero warnings.
+
+### Quality Sprint 14: Systematic Type Coverage Matrix
+
+Fourteenth round took a systematic approach instead of ad-hoc analysis.
+Built a full (operation × type) coverage matrix by tracing every if/else
+chain in all 14 type-dispatching LLVM lowering patterns:
+
+- **VecRemoveOpLowering**: Had zero promotion logic — passed narrow values
+  (i1/i8/i16) directly to `hew_vec_remove_i32` without widening, and f32
+  to nonexistent `hew_vec_remove_f64`. Added ExtUIOp/ExtSIOp for narrow
+  ints, ExtFOp for f32, and `hew_vec_remove_f64` runtime function.
+- **HashMapInsertOpLowering**: The `else` branch assumed i32 but received
+  i1/i8/i16 without promotion and f32 without f64 conversion. Added f32→f64
+  branch (routes to `hew_hashmap_insert_f64`) and narrow int promotion to i32.
+- **HashMapGetOpLowering**: Declared the runtime function with the MLIR
+  result type (e.g., i1) instead of the actual runtime return type (i32).
+  Fixed to call `hew_hashmap_get_i32`/`hew_hashmap_get_f64` with correct
+  return type, then TruncIOp/TruncFOp to narrow.
+- **PrintOpLowering**: Replaced silent i32 fallback with explicit error.
+- **Reviewer catch**: i8 was using ExtSIOp (sign-extend) instead of ExtUIOp
+  (zero-extend), inconsistent with the rest of the codebase. Fixed in both
+  VecRemove and HashMapInsert.
+
+Added systematic type coverage e2e tests: `type_coverage` (int, i32, bool,
+float, string through Vec ops) and `type_dispatch_narrow` (Vec<i32> remove,
+HashMap<string, i32> insert/get).
+
+**Test results**: 332/332 codegen e2e (100%, +2 new), 324+ Rust runtime tests.

@@ -187,9 +187,7 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
       funcType =
           rewriter.getFunctionType({mlir::LLVM::LLVMPointerType::get(rewriter.getContext())}, {});
     } else {
-      // Fallback: try i32
-      funcName = newline ? "hew_println_i32" : "hew_print_i32";
-      funcType = rewriter.getFunctionType({rewriter.getI32Type()}, {});
+      return op->emitError("unsupported type for print");
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
@@ -2161,16 +2159,35 @@ struct VecRemoveOpLowering : public mlir::OpConversionPattern<hew::VecRemoveOp> 
     auto loc = op.getLoc();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto valType = adaptor.getValue().getType();
+    mlir::Value val = adaptor.getValue();
 
     std::string suffix = vecElemSuffixWithPtr(op.getValue().getType());
     if (suffix.empty())
       suffix = vecElemSuffixWithPtr(valType);
 
+    // Promote narrow types to match runtime function signatures
+    mlir::Type callType = valType;
+    if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(valType)) {
+      unsigned w = intTy.getWidth();
+      if (w < 32) {
+        callType = rewriter.getI32Type();
+        if (w == 1 || w == 8)
+          val = rewriter.create<mlir::arith::ExtUIOp>(loc, callType, val);
+        else
+          val = rewriter.create<mlir::arith::ExtSIOp>(loc, callType, val);
+      }
+    } else if (auto fTy = mlir::dyn_cast<mlir::FloatType>(valType)) {
+      if (fTy.getWidth() == 32) {
+        callType = rewriter.getF64Type();
+        val = rewriter.create<mlir::arith::ExtFOp>(loc, callType, val);
+      }
+    }
+
     std::string funcName = "hew_vec_remove" + suffix;
-    auto funcType = rewriter.getFunctionType({ptrType, valType}, {});
+    auto funcType = rewriter.getFunctionType({ptrType, callType}, {});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
     rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getVec(), adaptor.getValue()});
+                                        mlir::ValueRange{adaptor.getVec(), val});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2273,6 +2290,14 @@ struct HashMapInsertOpLowering : public mlir::OpConversionPattern<hew::HashMapIn
       rewriter.create<mlir::func::CallOp>(
           loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), adaptor.getValue()});
+    } else if (auto fTy = mlir::dyn_cast<mlir::FloatType>(valType); fTy && fTy.getWidth() == 32) {
+      // f32 → promote to f64, then insert_f64
+      auto funcType = rewriter.getFunctionType({ptrType, ptrType, f64Type}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_f64", funcType);
+      auto promoted = rewriter.create<mlir::arith::ExtFOp>(loc, f64Type, adaptor.getValue());
+      rewriter.create<mlir::func::CallOp>(
+          loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
+          mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), promoted});
     } else if (valType == ptrType) {
       // String value: hew_hashmap_insert_impl(map, key, 0, val_str)
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, i32Type, ptrType}, {});
@@ -2283,13 +2308,22 @@ struct HashMapInsertOpLowering : public mlir::OpConversionPattern<hew::HashMapIn
           loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), zero, adaptor.getValue()});
     } else {
-      // i32 (default): hew_hashmap_insert_impl(map, key, val_i32, null)
+      // Integer types (i32, i1, i8, i16): promote to i32 then use insert_impl
+      mlir::Value val = adaptor.getValue();
+      if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(valType)) {
+        if (intTy.getWidth() < 32) {
+          if (intTy.getWidth() == 1 || intTy.getWidth() == 8)
+            val = rewriter.create<mlir::arith::ExtUIOp>(loc, i32Type, val);
+          else
+            val = rewriter.create<mlir::arith::ExtSIOp>(loc, i32Type, val);
+        }
+      }
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, i32Type, ptrType}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_impl", funcType);
       auto nullStr = rewriter.create<mlir::LLVM::ZeroOp>(loc, ptrType);
       rewriter.create<mlir::func::CallOp>(
           loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
-          mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), adaptor.getValue(), nullStr});
+          mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), val, nullStr});
     }
 
     rewriter.eraseOp(op);
@@ -2311,22 +2345,46 @@ struct HashMapGetOpLowering : public mlir::OpConversionPattern<hew::HashMapGetOp
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
 
     std::string funcName;
+    mlir::Type callReturnType = resultType;
+
     if (resultType == i64Type) {
       funcName = "hew_hashmap_get_i64";
     } else if (resultType == f64Type) {
       funcName = "hew_hashmap_get_f64";
     } else if (resultType == ptrType) {
       funcName = "hew_hashmap_get_str_impl";
+    } else if (auto fTy = mlir::dyn_cast<mlir::FloatType>(resultType);
+               fTy && fTy.getWidth() == 32) {
+      // f32: call get_f64, then TruncFOp
+      funcName = "hew_hashmap_get_f64";
+      callReturnType = f64Type;
+    } else if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(resultType);
+               intTy && intTy.getWidth() < 32) {
+      // i1/i8/i16: call get_i32, then TruncIOp
+      funcName = "hew_hashmap_get_i32";
+      callReturnType = rewriter.getI32Type();
     } else {
       funcName = "hew_hashmap_get_i32";
+      callReturnType = rewriter.getI32Type();
     }
 
-    auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {resultType});
+    auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {callReturnType});
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
     auto call =
-        rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{resultType},
+        rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{callReturnType},
                                             mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
-    rewriter.replaceOp(op, call.getResults());
+
+    if (callReturnType != resultType) {
+      mlir::Value result = call.getResult(0);
+      if (mlir::isa<mlir::FloatType>(resultType)) {
+        result = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, result);
+      } else {
+        result = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, result);
+      }
+      rewriter.replaceOp(op, result);
+    } else {
+      rewriter.replaceOp(op, call.getResults());
+    }
     return mlir::success();
   }
 };

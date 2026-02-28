@@ -183,7 +183,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
                                             const std::vector<ast::MatchArm> &arms, size_t idx,
                                             mlir::Type resultType, mlir::Location location) {
   if (idx >= arms.size()) {
-    // No more arms; return default value
+    // No arm matched — non-exhaustive match at runtime. Trap.
+    builder.create<hew::PanicOp>(location);
     if (resultType)
       return createDefaultValue(builder, location, resultType);
     return nullptr;

@@ -6531,7 +6531,35 @@ impl Checker {
                     });
                 }
             }
-            _ => {}
+            _ => {
+                // For non-enum types (int, float, string, etc.), check for catch-all patterns.
+                // An unguarded Pattern::Identifier is a binding that matches everything.
+                let mut has_catch_all = false;
+                for arm in arms {
+                    if arm.guard.is_some() {
+                        continue;
+                    }
+                    visit_or_patterns(&arm.pattern.0, &mut |pattern| {
+                        if matches!(pattern, Pattern::Identifier(_)) {
+                            has_catch_all = true;
+                        }
+                    });
+                    if has_catch_all {
+                        break;
+                    }
+                }
+                if !has_catch_all {
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::NonExhaustiveMatch,
+                        span: span.clone(),
+                        message: "non-exhaustive match: consider adding a wildcard `_` arm"
+                            .to_string(),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
+                }
+            }
         }
     }
 }

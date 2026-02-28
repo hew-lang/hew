@@ -1,5 +1,5 @@
 fn main() {
-    var result = 0;
+    var result: int = 0;
     scope |s| {
         s.spawn {
             result = 42;

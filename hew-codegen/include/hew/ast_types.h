@@ -89,7 +89,7 @@ struct LitBool {
   bool value;
 };
 struct LitChar {
-  char value;
+  char32_t value;
 }; // serde serializes char as string
 struct LitDuration {
   int64_t value; // nanoseconds

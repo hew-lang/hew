@@ -2,12 +2,12 @@
 //! @description Match expressions with enums
 
 enum Shape {
-    Circle(i32);
-    Rectangle(i32, i32);
-    Triangle(i32, i32);
+    Circle(int);
+    Rectangle(int, int);
+    Triangle(int, int);
 }
 
-fn area(shape: Shape) -> i32 {
+fn area(shape: Shape) -> int {
     match shape {
         Circle(r) => r * r * 3,
         Rectangle(w, h) => w * h,

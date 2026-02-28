@@ -20,22 +20,22 @@ fn main() -> int {
 
     // Test 2: droppable in loop body with break
     println("test2");
-    var i = 0;
+    var i: int = 0;
     while i < 3 {
         let r = Resource { id: 20 + i };
         if i == 1 {
             break;
         }
-        i = i + 1;
+        i = (i + 1) as int;
     }
     println("after break");
 
     // Test 3: droppable in loop body with continue
     println("test3");
-    var j = 0;
+    var j: int = 0;
     while j < 3 {
         let r = Resource { id: 30 + j };
-        j = j + 1;
+        j = (j + 1) as int;
         if j == 2 {
             continue;
         }

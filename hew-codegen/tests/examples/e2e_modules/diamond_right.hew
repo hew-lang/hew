@@ -1,2 +1,2 @@
 import "diamond_base.hew";
-pub fn right_value() -> i32 { base_value() + 2 }
+pub fn right_value() -> int { base_value() + 2 }

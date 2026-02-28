@@ -11,10 +11,10 @@ fn main() {
     println("=== Message Throughput ===");
     let counter = spawn Counter(count: 0);
     // Send 1000 messages
-    var i = 0;
+    var i: int = 0;
     while i < 1000 {
         counter.tick(i);
-        i = i + 1;
+        i = (i + 1) as int;
     }
     sleep_ms(500);
     println("Sent 1000 messages");

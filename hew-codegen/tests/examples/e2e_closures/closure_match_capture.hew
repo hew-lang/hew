@@ -9,10 +9,10 @@ fn make_processor(values: Vec<Case>) -> fn() {
     let bonus = 7;
 
     return () => {
-        var total = 0;
+        var total: int = 0;
 
         for entry in values {
-            total = total + match entry {
+            (total = total + match) as int entry {
                 Ok(val) => val + bonus,
                 Err(val) => bonus - val,
             };
@@ -20,7 +20,7 @@ fn make_processor(values: Vec<Case>) -> fn() {
 
         let maybe_extra = Ok(3);
         if let Ok(extra) = maybe_extra {
-            total = total + extra + bonus;
+            (total = total + extra) as int + bonus;
         }
 
         println(total);

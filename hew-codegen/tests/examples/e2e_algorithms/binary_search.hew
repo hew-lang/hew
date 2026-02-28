@@ -1,7 +1,7 @@
 // Test: Binary Search (LeetCode #704)
 // Exercises: While loops, Vec indexing, comparison operators
 fn binary_search(arr: Vec<int>, target: int) -> int {
-    var low = 0;
+    var low: int = 0;
     var high = arr.len();
     while low < high {
         let mid = low + (high - low) / 2;

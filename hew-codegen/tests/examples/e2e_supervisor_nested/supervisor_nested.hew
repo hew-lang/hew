@@ -2,8 +2,8 @@
 // Parent supervisor contains a child supervisor which manages workers.
 // Workers crash, child supervisor restarts them.
 actor Worker {
-    let id: i32;
-    let value: i32;
+    let id: int;
+    let value: int;
     receive fn tick() {
         self.value = self.value + 1;
         print("worker ");

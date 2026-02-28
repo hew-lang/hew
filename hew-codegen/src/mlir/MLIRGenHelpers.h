@@ -263,6 +263,7 @@ inline bool stmtMightContainReturn(const ast::Stmt &s) {
 inline bool stmtMightContainBreakOrContinue(const ast::Stmt &s) {
   return std::holds_alternative<ast::StmtBreak>(s.kind) ||
          std::holds_alternative<ast::StmtContinue>(s.kind) ||
+         std::holds_alternative<ast::StmtReturn>(s.kind) ||
          std::holds_alternative<ast::StmtIf>(s.kind) ||
          std::holds_alternative<ast::StmtIfLet>(s.kind) ||
          std::holds_alternative<ast::StmtMatch>(s.kind) ||

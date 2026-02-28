@@ -18,14 +18,14 @@ fn test_bare_loop_break() -> int {
 }
 
 fn test_loop_continue() -> int {
-    var i = 0;
-    var sum = 0;
+    var i: int = 0;
+    var sum: int = 0;
     while i < 10 {
-        i = i + 1;
+        i = (i + 1) as int;
         if i % 2 == 0 {
             continue;
         }
-        sum = sum + i;
+        sum = (sum + i) as int;
     }
     // odds: 1 + 3 + 5 + 7 + 9 = 25
     if sum == 25 {
@@ -38,9 +38,9 @@ fn test_loop_continue() -> int {
 }
 
 fn test_for_range() -> int {
-    var sum = 0;
+    var sum: int = 0;
     for i in 0 .. 5 {
-        sum = sum + i;
+        sum = (sum + i) as int;
     }
     // 0 + 1 + 2 + 3 + 4 = 10
     if sum == 10 {
@@ -53,9 +53,9 @@ fn test_for_range() -> int {
 }
 
 fn test_for_range_start() -> int {
-    var sum = 0;
+    var sum: int = 0;
     for i in 3 .. 7 {
-        sum = sum + i;
+        sum = (sum + i) as int;
     }
     // 3 + 4 + 5 + 6 = 18
     if sum == 18 {
@@ -68,15 +68,15 @@ fn test_for_range_start() -> int {
 }
 
 fn test_nested_loops() -> int {
-    var count = 0;
-    var i = 0;
+    var count: int = 0;
+    var i: int = 0;
     while i < 3 {
-        var j = 0;
+        var j: int = 0;
         while j < 3 {
-            count = count + 1;
-            j = j + 1;
+            count = (count + 1) as int;
+            j = (j + 1) as int;
         }
-        i = i + 1;
+        i = (i + 1) as int;
     }
     if count == 9 {
         println("PASS: nested_loops");
@@ -95,7 +95,7 @@ fn test_loop_with_early_break() -> int {
             found = i;
             break;
         }
-        i = i + 1;
+        i = (i + 1) as int;
     }
     // first multiple of 7 after 50 is 56
     if found == 56 {

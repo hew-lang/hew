@@ -5,9 +5,9 @@ fn main() {
     m.insert("gamma", 30);
 
     // Iterate over key-value pairs; HashMapKeysOp is emitted for for-in over a HashMap.
-    var total = 0;
+    var total: int = 0;
     for (k, v) in m {
-        total = total + v;
+        total = (total + v) as int;
     }
 
     // Deterministic assertions that don't depend on HashMap iteration order.

@@ -2,12 +2,12 @@
 // Verifies returnFlag also sets continueFlag so side effects don't leak.
 
 fn return_in_while() -> int {
-    var x = 0;
+    var x: int = 0;
     while x < 10 {
         if x == 3 {
             return x;
         }
-        x = x + 1;
+        x = (x + 1) as int;
     }
     return 0;
 }
@@ -22,12 +22,12 @@ fn return_in_for() -> int {
 }
 
 fn return_in_loop() -> int {
-    var count = 0;
+    var count: int = 0;
     loop {
         if count == 7 {
             return count;
         }
-        count = count + 1;
+        count = (count + 1) as int;
     }
     0
 }

@@ -3,9 +3,9 @@ fn main() {
     println(zeros.len());
 
     let ones = [1; 3];
-    var sum = 0;
+    var sum: int = 0;
     for i in 0..ones.len() {
-        sum = sum + ones[i];
+        (sum = sum + ones[i]) as int;
     }
     println(sum);
 }

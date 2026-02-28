@@ -171,17 +171,18 @@ fn test_arity_mismatch() {
 
 #[test]
 fn test_numeric_same_sign_coercion_allowed() {
+    // With width check, narrowing i64 -> i8 should be rejected
     let output = typecheck(
         r#"
         fn main() {
-            let x: i64 = 1000;
-            let y: i8 = x; // OK: same-sign integer coercion allowed in Hew
+            let x: i8 = 42;
+            let y: i64 = x; // OK: widening i8 -> i64
         }
     "#,
     );
     assert!(
         output.errors.is_empty(),
-        "Same-sign integer coercion should be allowed, got: {:?}",
+        "Widening integer coercion should be allowed, got: {:?}",
         output.errors
     );
 }

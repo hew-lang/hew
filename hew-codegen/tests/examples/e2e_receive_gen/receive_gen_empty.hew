@@ -7,9 +7,9 @@ actor Empty {
 
 fn main() {
     let e = spawn Empty(x: 0);
-    var count = 0;
+    var count: int = 0;
     for await val in e.items() {
-        count = count + 1;
+        count = (count + 1) as int;
     }
     println(count);
 }

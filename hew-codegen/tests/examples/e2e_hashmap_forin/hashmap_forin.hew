@@ -4,11 +4,11 @@ fn main() {
     m.insert("alpha", 1);
     m.insert("beta", 2);
     m.insert("gamma", 3);
-    var total = 0;
+    var total: int = 0;
     for (k, v) in m {
         print(k);
         println(f"={v}");
-        total = total + v;
+        total = (total + v) as int;
     }
     println(total);
 }

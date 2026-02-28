@@ -276,7 +276,7 @@ fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
     let Some(expected_info) = integer_type_info(expected) else {
         return false;
     };
-    actual_info.signed == expected_info.signed
+    actual_info.signed == expected_info.signed && expected_info.width >= actual_info.width
 }
 
 fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
@@ -588,7 +588,7 @@ impl Checker {
         self.register_builtin_fn("println_char", vec![Ty::Char], Ty::Unit);
 
         // String utilities
-        self.register_builtin_fn("string_char_at", vec![Ty::String, Ty::I32], Ty::Char);
+        self.register_builtin_fn("string_char_at", vec![Ty::String, Ty::I64], Ty::Char);
         self.register_builtin_fn("string_equals", vec![Ty::String, Ty::String], Ty::Bool);
         self.register_builtin_fn("string_from_int", vec![Ty::I64], Ty::String);
         self.register_builtin_fn("string_contains", vec![Ty::String, Ty::String], Ty::Bool);
@@ -3224,7 +3224,7 @@ impl Checker {
             // Index
             Expr::Index { object, index } => {
                 let obj_ty = self.synthesize(&object.0, &object.1);
-                self.check_against(&index.0, &index.1, &Ty::I32);
+                self.check_against(&index.0, &index.1, &Ty::I64);
                 match &obj_ty {
                     Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
                     Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
@@ -4191,7 +4191,7 @@ impl Checker {
                         Ty::Unit
                     }
                     "pop" => elem_ty,
-                    "len" => Ty::I32,
+                    "len" => Ty::I64,
                     "get" | "remove" => {
                         if args.len() != 1 {
                             self.report_error(
@@ -4205,7 +4205,7 @@ impl Checker {
                         }
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I32);
+                            self.check_against(expr, sp, &Ty::I64);
                         }
                         elem_ty
                     }
@@ -4233,7 +4233,7 @@ impl Checker {
                     "set" => {
                         if let Some(idx) = args.first() {
                             let (expr, sp) = idx.expr();
-                            self.check_against(expr, sp, &Ty::I32);
+                            self.check_against(expr, sp, &Ty::I64);
                         }
                         if let Some(val) = args.get(1) {
                             let (expr, sp) = val.expr();
@@ -4347,7 +4347,7 @@ impl Checker {
                             args: vec![val_ty],
                         }
                     }
-                    "len" => Ty::I32,
+                    "len" => Ty::I64,
                     "is_empty" => Ty::Bool,
                     _ => {
                         self.report_error(
@@ -4406,7 +4406,7 @@ impl Checker {
                         }
                         Ty::Bool
                     }
-                    "len" => Ty::I32,
+                    "len" => Ty::I64,
                     "is_empty" => Ty::Bool,
                     "clear" => Ty::Unit,
                     _ => {
@@ -4434,14 +4434,14 @@ impl Checker {
                 "get" => {
                     if let Some(idx) = args.first() {
                         let (expr, sp) = idx.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
                     Ty::I32
                 }
                 "set" => {
                     if let Some(idx) = args.first() {
                         let (expr, sp) = idx.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
                     if let Some(val) = args.get(1) {
                         let (expr, sp) = val.expr();
@@ -4547,7 +4547,7 @@ impl Checker {
             }
             // String methods
             (Ty::String, _) => match method {
-                "len" => Ty::I32,
+                "len" => Ty::I64,
                 "contains" | "starts_with" | "ends_with" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
@@ -4582,32 +4582,32 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.check_against(expr, sp, &Ty::String);
                     }
-                    Ty::I32
+                    Ty::I64
                 }
                 "slice" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
                     if let Some(arg) = args.get(1) {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
                     Ty::String
                 }
                 "repeat" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
                     Ty::String
                 }
                 "char_at" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I32);
+                        self.check_against(expr, sp, &Ty::I64);
                     }
-                    Ty::I32
+                    Ty::I64
                 }
                 "chars" => Ty::Named {
                     name: "Vec".to_string(),

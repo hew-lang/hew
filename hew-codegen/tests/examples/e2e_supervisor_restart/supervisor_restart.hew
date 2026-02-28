@@ -1,7 +1,7 @@
 // E2E test: supervisor restarts a crashed child actor.
 // After crash, the child gets fresh state (reset to init values).
 actor Counter {
-    let value: i32;
+    let value: int;
     receive fn tick() {
         self.value = self.value + 1;
         print("tick ");

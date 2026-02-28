@@ -1,5 +1,5 @@
 // Test that return inside loop {} actually exits the function
-fn test_loop_return() -> i32 {
+fn test_loop_return() -> int {
   loop {
     return 42;
   }

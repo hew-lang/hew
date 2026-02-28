@@ -1,5 +1,7 @@
 //! LSP server implementation for the Hew language.
 
+use std::collections::{HashMap, HashSet};
+
 use dashmap::DashMap;
 use hew_lexer::Token;
 use hew_parser::ast::{
@@ -404,11 +406,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let links = build_document_links(uri, &doc.source, &doc.parse_result);
-        if links.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(links))
-        }
+        Ok(non_empty(links))
     }
 
     async fn prepare_type_hierarchy(
@@ -440,11 +438,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let supers = collect_supertypes(&item.uri, &item.name, &doc.source, &doc.parse_result);
-        if supers.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(supers))
-        }
+        Ok(non_empty(supers))
     }
 
     async fn subtypes(
@@ -457,11 +451,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let subs = collect_subtypes(&item.uri, &item.name, &doc.source, &doc.parse_result);
-        if subs.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(subs))
-        }
+        Ok(non_empty(subs))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -511,11 +501,7 @@ impl LanguageServer for HewLanguageServer {
             }
         }
 
-        if locations.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(locations))
-        }
+        Ok(non_empty(locations))
     }
 
     async fn prepare_rename(
@@ -591,7 +577,7 @@ impl LanguageServer for HewLanguageServer {
         });
         edits.dedup_by(|a, b| a.range == b.range);
 
-        let mut changes = std::collections::HashMap::new();
+        let mut changes = HashMap::new();
         changes.insert(uri.clone(), edits);
         Ok(Some(WorkspaceEdit {
             changes: Some(changes),
@@ -629,11 +615,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let calls = find_incoming_calls(&item.uri, &doc.source, &doc.parse_result, &item.name);
-        if calls.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(calls))
-        }
+        Ok(non_empty(calls))
     }
 
     async fn outgoing_calls(
@@ -646,11 +628,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let calls = find_outgoing_calls(&item.uri, &doc.source, &doc.parse_result, &item.name);
-        if calls.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(calls))
-        }
+        Ok(non_empty(calls))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -660,11 +638,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let lenses = build_code_lenses(&doc.source, &doc.parse_result);
-        if lenses.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(lenses))
-        }
+        Ok(non_empty(lenses))
     }
 
     async fn symbol(
@@ -683,11 +657,7 @@ impl LanguageServer for HewLanguageServer {
                 query,
             ));
         }
-        if symbols.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(symbols))
-        }
+        Ok(non_empty(symbols))
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -699,11 +669,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
         let hints = build_inlay_hints(&doc.source, &doc.parse_result, tc);
-        if hints.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(hints))
-        }
+        Ok(non_empty(hints))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -726,11 +692,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let actions = build_code_actions(uri, &doc.source, &params.context.diagnostics);
-        if actions.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(actions))
-        }
+        Ok(non_empty(actions))
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
@@ -740,11 +702,7 @@ impl LanguageServer for HewLanguageServer {
         };
 
         let ranges = build_folding_ranges(&doc.source, &doc.parse_result);
-        if ranges.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(ranges))
-        }
+        Ok(non_empty(ranges))
     }
 }
 
@@ -985,7 +943,7 @@ fn make_replace_action(
     edit_range: Range,
     new_text: String,
 ) -> CodeAction {
-    let mut changes = std::collections::HashMap::new();
+    let mut changes = HashMap::new();
     changes.insert(
         uri.clone(),
         vec![TextEdit {
@@ -1347,7 +1305,7 @@ fn build_completions_at(doc: &DocumentState, offset: usize) -> Vec<CompletionIte
     items.extend(collect_locals_at(&doc.parse_result, offset));
 
     // Deduplicate by label, preferring items with detail (richer completions).
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
 
     items
@@ -1389,7 +1347,7 @@ fn try_dot_completions(doc: &DocumentState, offset: usize) -> Option<Vec<Complet
             items.push(fn_sig_completion(method, sig));
         }
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     items.retain(|item| seen.insert(item.label.clone()));
     Some(items)
 }
@@ -1885,9 +1843,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                 for method in &a.methods {
                     children.push(make_symbol(&method.name, SymbolKind::METHOD, range));
                 }
-                if !children.is_empty() {
-                    sym.children = Some(children);
-                }
+                sym.children = non_empty(children);
                 sym
             }
             Item::Supervisor(s) => make_symbol(&s.name, SymbolKind::CLASS, range),
@@ -1903,9 +1859,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                         }
                     })
                     .collect();
-                if !children.is_empty() {
-                    sym.children = Some(children);
-                }
+                sym.children = non_empty(children);
                 sym
             }
             Item::Impl(i) => {
@@ -1919,9 +1873,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                     .iter()
                     .map(|m| make_symbol(&m.name, SymbolKind::METHOD, range))
                     .collect();
-                if !children.is_empty() {
-                    sym.children = Some(children);
-                }
+                sym.children = non_empty(children);
                 sym
             }
             Item::Const(c) => make_symbol(&c.name, SymbolKind::CONSTANT, range),
@@ -1944,9 +1896,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                         TypeBodyItem::Field { .. } => None,
                     })
                     .collect();
-                if !children.is_empty() {
-                    sym.children = Some(children);
-                }
+                sym.children = non_empty(children);
                 sym
             }
             Item::Wire(w) => make_symbol(&w.name, SymbolKind::STRUCT, range),
@@ -1959,9 +1909,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                     .iter()
                     .map(|f| make_symbol(&f.name, SymbolKind::FUNCTION, range))
                     .collect();
-                if !children.is_empty() {
-                    sym.children = Some(children);
-                }
+                sym.children = non_empty(children);
                 sym
             }
             Item::Import(i) => {
@@ -2118,6 +2066,15 @@ fn build_semantic_tokens(source: &str, _parse_result: &ParseResult) -> Vec<Seman
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/// Return `None` for an empty vec, `Some(v)` otherwise.
+fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
 
 /// Compute byte offsets of each line start.
 fn compute_line_offsets(source: &str) -> Vec<usize> {
@@ -3528,8 +3485,7 @@ fn find_outgoing_calls(
     }
 
     // Group call sites by callee name
-    let mut grouped: std::collections::HashMap<String, Vec<Range>> =
-        std::collections::HashMap::new();
+    let mut grouped: HashMap<String, Vec<Range>> = HashMap::new();
     for cs in &call_sites {
         grouped
             .entry(cs.name.clone())

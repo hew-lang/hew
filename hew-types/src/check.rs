@@ -2378,25 +2378,7 @@ impl Checker {
                     | Stmt::Break { .. }
                     | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span),
                     Stmt::Expression((expr, es)) => {
-                        // Synthesize to get the expression's type (for Never detection)
                         let expr_ty = self.synthesize(expr, es);
-                        // Emit unused-return-value warning (same as check_stmt)
-                        if expr_ty != Ty::Unit
-                            && expr_ty != Ty::Error
-                            && expr_ty != Ty::Never
-                            && !Self::is_side_effect_expr(expr)
-                        {
-                            self.warnings.push(TypeError {
-                                severity: crate::error::Severity::Warning,
-                                kind: TypeErrorKind::StyleSuggestion,
-                                span: es.clone(),
-                                message: format!("unused `{expr_ty}` that must be used"),
-                                notes: vec![],
-                                suggestions: vec![
-                                    "assign to a variable: `let _ = ...;`".to_string()
-                                ],
-                            });
-                        }
                         if matches!(expr_ty, Ty::Never) {
                             Ty::Never
                         } else {
@@ -2642,18 +2624,7 @@ impl Checker {
                 self.check_against(&value.0, &value.1, &target_ty);
             }
             Stmt::Expression((expr, es)) => {
-                let ty = self.synthesize(expr, es);
-                // Warn when a non-unit return value is discarded
-                if ty != Ty::Unit && ty != Ty::Error && !Self::is_side_effect_expr(expr) {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::StyleSuggestion,
-                        span: es.clone(),
-                        message: format!("unused `{ty}` that must be used"),
-                        notes: vec![],
-                        suggestions: vec!["assign to a variable: `let _ = ...;`".to_string()],
-                    });
-                }
+                self.synthesize(expr, es);
             }
             Stmt::If {
                 condition,
@@ -6050,39 +6021,6 @@ impl Checker {
     }
 
     /// Check if an expression is typically used for side effects (not for its return value).
-    fn is_side_effect_expr(expr: &Expr) -> bool {
-        match expr {
-            // Function calls to known side-effect functions
-            Expr::Call { function, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
-                    matches!(
-                        name.as_str(),
-                        "println"
-                            | "print"
-                            | "assert"
-                            | "panic"
-                            | "sleep"
-                            | "spawn"
-                            | "link"
-                            | "unlink"
-                            | "monitor"
-                            | "demonitor"
-                    )
-                } else {
-                    false
-                }
-            }
-            // Assignments, spawns, and control flow are side effects
-            Expr::Spawn { .. }
-            | Expr::Block(_)
-            | Expr::If { .. }
-            | Expr::IfLet { .. }
-            | Expr::Scope { .. } => true,
-            // Method calls that return Unit are side-effectful (push, send, stop, etc.)
-            // Value-returning method calls (len, get, etc.) should still warn
-            _ => false,
-        }
-    }
 
     fn record_type(&mut self, span: &Span, ty: &Ty) {
         self.expr_types.insert(SpanKey::from(span), ty.clone());
@@ -7383,14 +7321,16 @@ mod tests {
     // ---- unused return value ----
 
     #[test]
-    fn warn_unused_return_value() {
+    fn no_warn_discarded_return_value() {
+        // Calling a function that returns a value without binding the result
+        // should NOT warn — users can discard results freely
         let (_, warnings) = parse_and_check(concat!(
             "fn compute() -> i32 { 42 }\n",
             "fn main() { compute(); }\n",
         ));
         assert!(
-            warnings.iter().any(|w| w.message.contains("unused")),
-            "discarded non-unit return value should warn, got: {warnings:?}"
+            !warnings.iter().any(|w| w.message.contains("unused")),
+            "discarded return value should not warn, got: {warnings:?}"
         );
     }
 

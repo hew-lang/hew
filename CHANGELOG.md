@@ -39,6 +39,7 @@
 
 ### Changed
 
+- Function call results can be silently discarded — no more `let _ =` required
 - Improved WASM target error messages for unsupported concurrency operations
 
 ## v0.1.5 — 2026-02-28

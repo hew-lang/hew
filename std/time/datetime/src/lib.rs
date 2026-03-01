@@ -86,17 +86,17 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
 // Component extraction
 // ---------------------------------------------------------------------------
 
-/// Extract the year from epoch milliseconds. Returns 0 if out of range.
+/// Extract the year from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.year())
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.year())
 }
 
-/// Extract the month (1–12) from epoch milliseconds. Returns 0 if out of range.
+/// Extract the month (1–12) from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
@@ -107,10 +107,10 @@ pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.month() as i32)
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.month() as i32)
 }
 
-/// Extract the day (1–31) from epoch milliseconds. Returns 0 if out of range.
+/// Extract the day (1–31) from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
@@ -121,7 +121,7 @@ pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.day() as i32)
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.day() as i32)
 }
 
 /// Extract the hour (0–23) from epoch milliseconds. Returns -1 if out of range.

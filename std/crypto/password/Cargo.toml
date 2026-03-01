@@ -15,6 +15,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 argon2 = { version = "0.5", features = ["std"] }
 hew-cabi = { path = "../../../hew-cabi" }
+hew-runtime = { path = "../../../hew-runtime" }
 libc = "0.2"
 
 [lints]

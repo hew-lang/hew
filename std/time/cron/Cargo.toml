@@ -14,15 +14,13 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
+hew-runtime = { path = "../../../hew-runtime" }
 cron = "0.15"
 chrono = { version = "0.4", default-features = false, features = [
   "clock",
   "std",
 ] }
 libc = "0.2"
-
-[dev-dependencies]
-hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

@@ -1552,6 +1552,7 @@ version = "0.1.5"
 dependencies = [
  "argon2",
  "hew-cabi",
+ "hew-runtime",
  "libc",
 ]
 

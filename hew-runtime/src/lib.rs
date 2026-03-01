@@ -180,8 +180,6 @@ pub mod wasm_stubs {
 // cooperative single-threaded alternatives (mailbox_wasm, scheduler_wasm, bridge).
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod datetime;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod file_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod io_time;

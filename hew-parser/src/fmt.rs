@@ -855,7 +855,9 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.write("(");
                     for (i, bound) in bounds.iter().enumerate() {
-                        if i > 0 { self.write(" + "); }
+                        if i > 0 {
+                            self.write(" + ");
+                        }
                         self.format_trait_bound(bound);
                     }
                     self.write(")");
@@ -1579,10 +1581,18 @@ impl<'a> Formatter<'a> {
         use std::fmt::Write;
         match lit {
             Literal::Integer { value, radix } => match radix {
-                IntRadix::Hex => { let _ = write!(self.output, "0x{value:X}"); }
-                IntRadix::Octal => { let _ = write!(self.output, "0o{value:o}"); }
-                IntRadix::Binary => { let _ = write!(self.output, "0b{value:b}"); }
-                IntRadix::Decimal => { let _ = write!(self.output, "{value}"); }
+                IntRadix::Hex => {
+                    let _ = write!(self.output, "0x{value:X}");
+                }
+                IntRadix::Octal => {
+                    let _ = write!(self.output, "0o{value:o}");
+                }
+                IntRadix::Binary => {
+                    let _ = write!(self.output, "0b{value:b}");
+                }
+                IntRadix::Decimal => {
+                    let _ = write!(self.output, "{value}");
+                }
             },
             Literal::Float(f) => {
                 let s = f.to_string();

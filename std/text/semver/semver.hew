@@ -63,7 +63,7 @@ impl VersionMethods for Version {
     fn patch(self: Version) -> i64 { hew_semver_patch(self) }
     fn pre(self: Version) -> String { hew_semver_pre(self) }
     fn compare(self: Version, other: Version) -> i32 { hew_semver_compare(self, other) }
-    fn matches(self: Version, req: String) -> bool { hew_semver_matches(self, req) }
+    fn matches(self: Version, req: String) -> bool { hew_semver_matches(self, req) == 1 }
     fn to_string(self: Version) -> String { hew_semver_to_string(self) }
     fn free(self: Version) { hew_semver_free(self); }
 }
@@ -92,7 +92,7 @@ extern "C" {
     fn hew_semver_patch(v: Version) -> i64;
     fn hew_semver_pre(v: Version) -> String;
     fn hew_semver_compare(a: Version, b: Version) -> i32;
-    fn hew_semver_matches(v: Version, req: String) -> bool;
+    fn hew_semver_matches(v: Version, req: String) -> i32;
     fn hew_semver_to_string(v: Version) -> String;
     fn hew_semver_free(v: Version);
 }

@@ -53,7 +53,7 @@ pub fn is_private(addr: String) -> bool {
 /// ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1") // false
 /// ```
 pub fn cidr_contains(cidr: String, ip: String) -> bool {
-    hew_cidr_contains(cidr, ip)
+    hew_cidr_contains(cidr, ip) == 1
 }
 
 /// Return the network address of a CIDR block.
@@ -97,7 +97,7 @@ extern "C" {
     fn hew_ip_is_v6(addr: String) -> bool;
     fn hew_ip_is_loopback(addr: String) -> bool;
     fn hew_ip_is_private(addr: String) -> bool;
-    fn hew_cidr_contains(cidr: String, ip: String) -> bool;
+    fn hew_cidr_contains(cidr: String, ip: String) -> i32;
     fn hew_cidr_network(cidr: String) -> String;
     fn hew_cidr_broadcast(cidr: String) -> String;
     fn hew_cidr_hosts(cidr: String) -> i64;

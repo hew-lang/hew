@@ -132,35 +132,31 @@ pub unsafe extern "C" fn hew_semver_compare(a: *const HewSemver, b: *const HewSe
     }
 }
 
-/// Check whether a version string matches a requirement string.
+/// Check whether a parsed version matches a requirement string.
 ///
-/// For example, `version_str = "1.5.0"` and `req_str = ">=1.0.0, <2.0.0"`.
+/// For example, `v` parsed from `"1.5.0"` and `req_str = ">=1.0.0, <2.0.0"`.
 ///
-/// Returns `1` if the version matches, `0` if it does not, `-1` on parse error.
+/// Returns `1` if the version matches, `0` if it does not, `-1` on error.
 ///
 /// # Safety
 ///
-/// Both `version_str` and `req_str` must be valid NUL-terminated C strings, or null.
+/// - `v` must be a valid pointer to a [`HewSemver`], or null.
+/// - `req_str` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_semver_matches(
-    version_str: *const c_char,
-    req_str: *const c_char,
-) -> i32 {
-    // SAFETY: version_str is a valid NUL-terminated C string per caller contract.
-    let Some(ver_s) = (unsafe { cstr_to_str(version_str) }) else {
+pub unsafe extern "C" fn hew_semver_matches(v: *const HewSemver, req_str: *const c_char) -> i32 {
+    if v.is_null() {
         return -1;
-    };
+    }
+    // SAFETY: v is a valid HewSemver pointer per caller contract.
+    let ver = unsafe { &*v };
     // SAFETY: req_str is a valid NUL-terminated C string per caller contract.
     let Some(req_s) = (unsafe { cstr_to_str(req_str) }) else {
-        return -1;
-    };
-    let Ok(version) = semver::Version::parse(ver_s) else {
         return -1;
     };
     let Ok(req) = semver::VersionReq::parse(req_s) else {
         return -1;
     };
-    i32::from(req.matches(&version))
+    i32::from(req.matches(&ver.inner))
 }
 
 /// Serialize a [`HewSemver`] to its string representation.
@@ -279,26 +275,30 @@ mod tests {
 
     #[test]
     fn matches_requirement() {
-        let ver = CString::new("1.5.0").unwrap();
+        let v = parse("1.5.0");
+        assert!(!v.is_null());
         let req_match = CString::new(">=1.0.0, <2.0.0").unwrap();
         let req_no_match = CString::new(">=2.0.0").unwrap();
 
-        // SAFETY: all pointers are valid NUL-terminated C strings.
+        // SAFETY: v is a valid HewSemver, requirement strings are valid C strings.
         unsafe {
-            assert_eq!(hew_semver_matches(ver.as_ptr(), req_match.as_ptr()), 1);
-            assert_eq!(hew_semver_matches(ver.as_ptr(), req_no_match.as_ptr()), 0);
+            assert_eq!(hew_semver_matches(v, req_match.as_ptr()), 1);
+            assert_eq!(hew_semver_matches(v, req_no_match.as_ptr()), 0);
+            hew_semver_free(v);
         }
     }
 
     #[test]
     fn matches_parse_error() {
-        let bad_ver = CString::new("not-a-version").unwrap();
-        let req = CString::new(">=1.0.0").unwrap();
+        let v = parse("1.0.0");
+        assert!(!v.is_null());
+        let bad_req = CString::new("not-a-requirement!!!").unwrap();
 
-        // SAFETY: all pointers are valid NUL-terminated C strings.
+        // SAFETY: v is valid, bad_req is a valid C string (but invalid requirement).
         unsafe {
-            assert_eq!(hew_semver_matches(bad_ver.as_ptr(), req.as_ptr()), -1);
-            assert_eq!(hew_semver_matches(std::ptr::null(), req.as_ptr()), -1);
+            assert_eq!(hew_semver_matches(v, bad_req.as_ptr()), -1);
+            assert_eq!(hew_semver_matches(std::ptr::null(), bad_req.as_ptr()), -1);
+            hew_semver_free(v);
         }
     }
 

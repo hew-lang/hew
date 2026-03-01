@@ -16,6 +16,17 @@
 //! }
 //! ```
 
+// ── Algorithm mapping (pure Hew) ─────────────────────────────────────
+
+fn algo_to_i32(algorithm: String) -> i32 {
+    match algorithm {
+        "HS256" => 0,
+        "HS384" => 1,
+        "HS512" => 2,
+        _ => -1,
+    }
+}
+
 /// Encode a JSON payload into a signed JWT string.
 ///
 /// # Examples
@@ -24,7 +35,7 @@
 /// let token = jwt.encode("{\"sub\":\"user1\"}", "my_secret", "HS256");
 /// ```
 pub fn encode(payload: String, secret: String, algorithm: String) -> String {
-    hew_jwt_encode(payload, secret, algorithm)
+    hew_jwt_encode(payload, secret, algo_to_i32(algorithm))
 }
 
 /// Decode and verify a JWT, returning its payload as a JSON string.
@@ -37,7 +48,7 @@ pub fn encode(payload: String, secret: String, algorithm: String) -> String {
 /// let payload = jwt.decode(token, "my_secret", "HS256");
 /// ```
 pub fn decode(token: String, secret: String, algorithm: String) -> String {
-    hew_jwt_decode(token, secret, algorithm)
+    hew_jwt_decode(token, secret, algo_to_i32(algorithm))
 }
 
 /// Decode a JWT without verifying its signature.
@@ -66,14 +77,14 @@ pub fn decode_insecure(token: String) -> String {
 /// }
 /// ```
 pub fn validate(token: String, secret: String, algorithm: String) -> bool {
-    hew_jwt_validate(token, secret, algorithm)
+    hew_jwt_validate(token, secret, algo_to_i32(algorithm)) == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
-    fn hew_jwt_encode(payload: String, secret: String, algorithm: String) -> String;
-    fn hew_jwt_decode(token: String, secret: String, algorithm: String) -> String;
+    fn hew_jwt_encode(payload: String, secret: String, algorithm: i32) -> String;
+    fn hew_jwt_decode(token: String, secret: String, algorithm: i32) -> String;
     fn hew_jwt_decode_insecure(token: String) -> String;
-    fn hew_jwt_validate(token: String, secret: String, algorithm: String) -> bool;
+    fn hew_jwt_validate(token: String, secret: String, algorithm: i32) -> i32;
 }

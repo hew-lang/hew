@@ -80,7 +80,7 @@ pub fn second(epoch_ms: i64) -> i32 {
     hew_datetime_second(epoch_ms)
 }
 
-/// Return the day of the week (0 = Sunday, 6 = Saturday).
+/// Return the day of the week (0 = Monday, 6 = Sunday).
 pub fn weekday(epoch_ms: i64) -> i32 {
     hew_datetime_weekday(epoch_ms)
 }

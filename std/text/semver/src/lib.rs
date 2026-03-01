@@ -143,10 +143,7 @@ pub unsafe extern "C" fn hew_semver_compare(a: *const HewSemver, b: *const HewSe
 /// - `v` must be a valid pointer to a [`HewSemver`], or null.
 /// - `req_str` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_semver_matches(
-    v: *const HewSemver,
-    req_str: *const c_char,
-) -> i32 {
+pub unsafe extern "C" fn hew_semver_matches(v: *const HewSemver, req_str: *const c_char) -> i32 {
     if v.is_null() {
         return -1;
     }

@@ -1,7 +1,7 @@
 //! Cron expression parsing and scheduling.
 //!
-//! Parse cron expressions and compute the next or previous firing times
-//! relative to a given epoch timestamp.
+//! Parse cron expressions and compute the next firing time relative to
+//! a given epoch timestamp.
 //!
 //! # Examples
 //!
@@ -28,9 +28,6 @@ trait ExprMethods {
     // Compute the next firing time (epoch seconds) after the given timestamp.
     fn next(self: Expr, after_epoch_secs: i64) -> i64;
 
-    // Compute the previous firing time (epoch seconds) before the given timestamp.
-    fn prev(self: Expr, before_epoch_secs: i64) -> i64;
-
     // Return the cron expression as a string.
     fn to_string(self: Expr) -> String;
 
@@ -40,7 +37,6 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     fn next(self: Expr, after_epoch_secs: i64) -> i64 { hew_cron_next(self, after_epoch_secs) }
-    fn prev(self: Expr, before_epoch_secs: i64) -> i64 { hew_cron_prev(self, before_epoch_secs) }
     fn to_string(self: Expr) -> String { hew_cron_to_string(self) }
     fn free(self: Expr) { hew_cron_free(self); }
 }
@@ -66,7 +62,6 @@ pub fn parse(expr: String) -> Expr {
 extern "C" {
     fn hew_cron_parse(expr: String) -> Expr;
     fn hew_cron_next(expr: Expr, after_epoch_secs: i64) -> i64;
-    fn hew_cron_prev(expr: Expr, before_epoch_secs: i64) -> i64;
     fn hew_cron_to_string(expr: Expr) -> String;
     fn hew_cron_free(expr: Expr);
 }

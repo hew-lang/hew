@@ -226,6 +226,29 @@ impl Substitution {
 }
 
 impl Ty {
+    /// Normalize a `Ty::Named` with a known builtin name into the canonical
+    /// builtin variant (e.g., `Named { "Option", [T] }` → `Option(T)`).
+    ///
+    /// This ensures that types constructed via enum variant constructors match
+    /// the representation produced by `resolve_type_expr` for type annotations.
+    #[must_use]
+    pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
+        match (name.as_str(), args.len()) {
+            ("Option", 1) => Ty::Option(Box::new(args.into_iter().next().unwrap())),
+            ("Result", 2) => {
+                let mut it = args.into_iter();
+                Ty::Result {
+                    ok: Box::new(it.next().unwrap()),
+                    err: Box::new(it.next().unwrap()),
+                }
+            }
+            ("ActorRef", 1) => Ty::ActorRef(Box::new(args.into_iter().next().unwrap())),
+            ("Stream", 1) => Ty::Stream(Box::new(args.into_iter().next().unwrap())),
+            ("Sink", 1) => Ty::Sink(Box::new(args.into_iter().next().unwrap())),
+            _ => Ty::Named { name, args },
+        }
+    }
+
     /// Check if this is a numeric type (integer or float).
     #[must_use]
     pub fn is_numeric(&self) -> bool {

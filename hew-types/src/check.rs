@@ -3718,10 +3718,7 @@ impl Checker {
                 .iter()
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
-            return Ty::Named {
-                name: type_name,
-                args: resolved_args,
-            };
+            return Ty::normalize_named(type_name, resolved_args);
         }
 
         // Handle polymorphic constructors with fresh linked type vars
@@ -7455,7 +7452,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known gap: generic enum constructors lose type args during type checking"]
     fn typecheck_generic_enum_constructor_infers_type_args() {
         let (errors, _) = parse_and_check(concat!(
             "enum Option<T> { Some(T); None; }\n",

@@ -116,40 +116,6 @@ pub enum Ty {
         captures: Vec<Ty>,
     },
 
-    /// Actor reference: `ActorRef<A>`
-    ActorRef(Box<Ty>),
-
-    /// Stream: `Stream<T>` — readable sequential source, move-only
-    Stream(Box<Ty>),
-
-    /// Sink: `Sink<T>` — writable sequential destination, move-only
-    Sink(Box<Ty>),
-
-    /// Option type: `Option<T>`
-    Option(Box<Ty>),
-
-    /// Result type: `Result<T, E>`
-    Result {
-        /// Success type
-        ok: Box<Ty>,
-        /// Error type
-        err: Box<Ty>,
-    },
-
-    /// Generator type: `Generator<Y, R>`
-    Generator {
-        /// Yield type
-        yields: Box<Ty>,
-        /// Return type
-        returns: Box<Ty>,
-    },
-
-    /// Async generator: `AsyncGenerator<Y>`
-    AsyncGenerator {
-        /// Yield type
-        yields: Box<Ty>,
-    },
-
     /// Pointer types (FFI)
     Pointer {
         /// Whether the pointer is mutable
@@ -163,9 +129,6 @@ pub enum Ty {
         /// Trait bounds
         traits: Vec<TraitObjectBound>,
     },
-
-    /// Range type: `Range<T>`
-    Range(Box<Ty>),
 
     /// Error recovery — a type that unifies with anything
     Error,
@@ -226,27 +189,177 @@ impl Substitution {
 }
 
 impl Ty {
-    /// Normalize a `Ty::Named` with a known builtin name into the canonical
-    /// builtin variant (e.g., `Named { "Option", [T] }` → `Option(T)`).
-    ///
-    /// This ensures that types constructed via enum variant constructors match
-    /// the representation produced by `resolve_type_expr` for type annotations.
+    // -- Constructor helpers: all produce Ty::Named --
+
+    /// Construct `Option<inner>`.
+    #[must_use]
+    pub fn option(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Option".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    /// Construct `Result<ok, err>`.
+    #[must_use]
+    pub fn result(ok: Ty, err: Ty) -> Ty {
+        Ty::Named {
+            name: "Result".to_string(),
+            args: vec![ok, err],
+        }
+    }
+
+    /// Construct `ActorRef<inner>`.
+    #[must_use]
+    pub fn actor_ref(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "ActorRef".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    /// Construct `Stream<inner>`.
+    #[must_use]
+    pub fn stream(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Stream".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    /// Construct `Sink<inner>`.
+    #[must_use]
+    pub fn sink(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Sink".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    /// Construct `Generator<yields, returns>`.
+    #[must_use]
+    pub fn generator(yields: Ty, returns: Ty) -> Ty {
+        Ty::Named {
+            name: "Generator".to_string(),
+            args: vec![yields, returns],
+        }
+    }
+
+    /// Construct `AsyncGenerator<yields>`.
+    #[must_use]
+    pub fn async_generator(yields: Ty) -> Ty {
+        Ty::Named {
+            name: "AsyncGenerator".to_string(),
+            args: vec![yields],
+        }
+    }
+
+    /// Construct `Range<inner>`.
+    #[must_use]
+    pub fn range(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Range".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    // -- Accessor helpers: match on Named patterns --
+
+    /// If this is `Option<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_option(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Option" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Result<T, E>`, return `Some((&T, &E))`.
+    #[must_use]
+    pub fn as_result(&self) -> Option<(&Ty, &Ty)> {
+        match self {
+            Ty::Named { name, args } if name == "Result" && args.len() == 2 => {
+                Some((&args[0], &args[1]))
+            }
+            _ => None,
+        }
+    }
+
+    /// If this is `ActorRef<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_actor_ref(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Stream<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_stream(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Stream" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Sink<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_sink(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Sink" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Generator<Y, R>`, return `Some((&Y, &R))`.
+    #[must_use]
+    pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {
+        match self {
+            Ty::Named { name, args } if name == "Generator" && args.len() == 2 => {
+                Some((&args[0], &args[1]))
+            }
+            _ => None,
+        }
+    }
+
+    /// If this is `AsyncGenerator<Y>`, return `Some(&Y)`.
+    #[must_use]
+    pub fn as_async_generator(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "AsyncGenerator" && args.len() == 1 => {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    /// If this is `Range<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_range(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Range" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a Stream type.
+    #[must_use]
+    pub fn is_stream(&self) -> bool {
+        self.as_stream().is_some()
+    }
+
+    /// Check if this is a Sink type.
+    #[must_use]
+    pub fn is_sink(&self) -> bool {
+        self.as_sink().is_some()
+    }
+
+    /// Identity: just constructs `Ty::Named`. Kept for compatibility with
+    /// callers that normalized named types to dedicated variants.
     #[must_use]
     pub fn normalize_named(name: String, args: Vec<Ty>) -> Ty {
-        match (name.as_str(), args.len()) {
-            ("Option", 1) => Ty::Option(Box::new(args.into_iter().next().unwrap())),
-            ("Result", 2) => {
-                let mut it = args.into_iter();
-                Ty::Result {
-                    ok: Box::new(it.next().unwrap()),
-                    err: Box::new(it.next().unwrap()),
-                }
-            }
-            ("ActorRef", 1) => Ty::ActorRef(Box::new(args.into_iter().next().unwrap())),
-            ("Stream", 1) => Ty::Stream(Box::new(args.into_iter().next().unwrap())),
-            ("Sink", 1) => Ty::Sink(Box::new(args.into_iter().next().unwrap())),
-            _ => Ty::Named { name, args },
-        }
+        Ty::Named { name, args }
     }
 
     /// Check if this is a numeric type (integer or float).
@@ -346,22 +459,6 @@ impl Ty {
                 ret: Box::new(f(ret)),
                 captures: captures.iter().map(f).collect(),
             },
-            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(f(inner))),
-            Ty::Stream(inner) => Ty::Stream(Box::new(f(inner))),
-            Ty::Sink(inner) => Ty::Sink(Box::new(f(inner))),
-            Ty::Option(inner) => Ty::Option(Box::new(f(inner))),
-            Ty::Range(inner) => Ty::Range(Box::new(f(inner))),
-            Ty::Result { ok, err } => Ty::Result {
-                ok: Box::new(f(ok)),
-                err: Box::new(f(err)),
-            },
-            Ty::Generator { yields, returns } => Ty::Generator {
-                yields: Box::new(f(yields)),
-                returns: Box::new(f(returns)),
-            },
-            Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
-                yields: Box::new(f(yields)),
-            },
             Ty::Pointer {
                 is_mutable,
                 pointee,
@@ -394,14 +491,6 @@ impl Ty {
                 ret,
                 captures,
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
-            Ty::ActorRef(inner)
-            | Ty::Option(inner)
-            | Ty::Range(inner)
-            | Ty::Stream(inner)
-            | Ty::Sink(inner) => f(inner),
-            Ty::Result { ok, err } => f(ok) || f(err),
-            Ty::Generator { yields, returns } => f(yields) || f(returns),
-            Ty::AsyncGenerator { yields } => f(yields),
             Ty::Pointer { pointee, .. } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
             _ => false,
@@ -464,13 +553,6 @@ impl fmt::Display for Ty {
                 }
                 write!(f, ") -> {ret}")
             }
-            Ty::ActorRef(inner) => write!(f, "ActorRef<{inner}>"),
-            Ty::Stream(inner) => write!(f, "Stream<{inner}>"),
-            Ty::Sink(inner) => write!(f, "Sink<{inner}>"),
-            Ty::Option(inner) => write!(f, "Option<{inner}>"),
-            Ty::Result { ok, err } => write!(f, "Result<{ok}, {err}>"),
-            Ty::Generator { yields, returns } => write!(f, "Generator<{yields}, {returns}>"),
-            Ty::AsyncGenerator { yields } => write!(f, "AsyncGenerator<{yields}>"),
             Ty::Pointer {
                 is_mutable,
                 pointee,
@@ -518,7 +600,6 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
-            Ty::Range(inner) => write!(f, "Range<{inner}>"),
             Ty::Error => write!(f, "<error>"),
         }
     }
@@ -620,19 +701,13 @@ mod tests {
 
     #[test]
     fn test_display_option() {
-        assert_eq!(format!("{}", Ty::Option(Box::new(Ty::I32))), "Option<i32>");
+        assert_eq!(format!("{}", Ty::option(Ty::I32)), "Option<i32>");
     }
 
     #[test]
     fn test_display_result() {
         assert_eq!(
-            format!(
-                "{}",
-                Ty::Result {
-                    ok: Box::new(Ty::I32),
-                    err: Box::new(Ty::String),
-                }
-            ),
+            format!("{}", Ty::result(Ty::I32, Ty::String)),
             "Result<i32, String>"
         );
     }
@@ -704,7 +779,7 @@ mod tests {
     fn test_contains_var_in_option() {
         TypeVar::reset();
         let v = TypeVar::fresh();
-        let ty = Ty::Option(Box::new(Ty::Var(v)));
+        let ty = Ty::option(Ty::Var(v));
         assert!(ty.contains_var(v));
     }
 

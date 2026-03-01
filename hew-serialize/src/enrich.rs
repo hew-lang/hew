@@ -98,22 +98,38 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             type_args: None,
         },
 
-        Ty::Named { name, args } => {
-            let type_args = if args.is_empty() {
-                None
-            } else {
-                let converted: Vec<_> = args.iter().filter_map(ty_to_type_expr).collect();
-                if converted.len() == args.len() {
-                    Some(converted)
-                } else {
-                    return None;
-                }
-            };
-            TypeExpr::Named {
-                name: name.clone(),
-                type_args,
+        Ty::Named { name, args } => match (name.as_str(), args.len()) {
+            ("Option", 1) => {
+                let inner_expr = ty_to_type_expr(&args[0])?;
+                TypeExpr::Option(Box::new(inner_expr))
             }
-        }
+            ("Result", 2) => {
+                let ok_expr = ty_to_type_expr(&args[0])?;
+                let err_expr = ty_to_type_expr(&args[1])?;
+                TypeExpr::Result {
+                    ok: Box::new(ok_expr),
+                    err: Box::new(err_expr),
+                }
+            }
+            // Generator, AsyncGenerator, Range are handled by C++ via built-in logic
+            ("Generator", _) | ("AsyncGenerator", _) | ("Range", _) => return None,
+            _ => {
+                let type_args = if args.is_empty() {
+                    None
+                } else {
+                    let converted: Vec<_> = args.iter().filter_map(ty_to_type_expr).collect();
+                    if converted.len() == args.len() {
+                        Some(converted)
+                    } else {
+                        return None;
+                    }
+                };
+                TypeExpr::Named {
+                    name: name.clone(),
+                    type_args,
+                }
+            }
+        },
 
         Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
             let param_exprs: Vec<_> = params.iter().filter_map(ty_to_type_expr).collect();
@@ -146,40 +162,6 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             TypeExpr::Slice(Box::new(elem))
         }
 
-        Ty::Option(inner) => {
-            let inner_expr = ty_to_type_expr(inner)?;
-            TypeExpr::Option(Box::new(inner_expr))
-        }
-        Ty::Result { ok, err } => {
-            let ok_expr = ty_to_type_expr(ok)?;
-            let err_expr = ty_to_type_expr(err)?;
-            TypeExpr::Result {
-                ok: Box::new(ok_expr),
-                err: Box::new(err_expr),
-            }
-        }
-        Ty::ActorRef(inner) => {
-            let inner_expr = ty_to_type_expr(inner)?;
-            TypeExpr::Named {
-                name: "ActorRef".into(),
-                type_args: Some(vec![inner_expr]),
-            }
-        }
-        Ty::Stream(inner) => {
-            let inner_expr = ty_to_type_expr(inner)?;
-            TypeExpr::Named {
-                name: "Stream".into(),
-                type_args: Some(vec![inner_expr]),
-            }
-        }
-        Ty::Sink(inner) => {
-            let inner_expr = ty_to_type_expr(inner)?;
-            TypeExpr::Named {
-                name: "Sink".into(),
-                type_args: Some(vec![inner_expr]),
-            }
-        }
-
         Ty::Pointer {
             is_mutable,
             pointee,
@@ -210,9 +192,8 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             TypeExpr::TraitObject(bounds?)
         }
 
-        // Skip these types gracefully — C++ codegen handles them via
-        // built-in type logic, not through the expr_types map
-        Ty::Unit | Ty::Generator { .. } | Ty::AsyncGenerator { .. } | Ty::Range(_) => return None,
+        // Skip Unit gracefully — C++ codegen handles it via built-in logic
+        Ty::Unit => return None,
 
         // Skip these types gracefully - they shouldn't be serialized
         Ty::Var(_) | Ty::Error => return None,
@@ -1269,8 +1250,6 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 end: receiver.1.end,
             };
             let c_fn = match tco.expr_types.get(&key) {
-                // `Stream` and `Sink` may appear as unparameterised Named types
-                // (e.g. `let raw: Stream = ...`) as well as the dedicated Ty variants.
                 Some(Ty::Named { name, .. }) if name == "Stream" => {
                     hew_types::stdlib::resolve_stream_method("Stream", method)
                 }
@@ -1280,8 +1259,6 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                 Some(Ty::Named { name, .. }) => {
                     hew_types::stdlib::resolve_handle_method(name, method)
                 }
-                Some(Ty::Stream(_)) => hew_types::stdlib::resolve_stream_method("Stream", method),
-                Some(Ty::Sink(_)) => hew_types::stdlib::resolve_stream_method("Sink", method),
                 _ => None,
             };
             if let Some(c_fn) = c_fn {
@@ -1860,7 +1837,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_option() {
-        let ty = Ty::Option(Box::new(Ty::I32));
+        let ty = Ty::option(Ty::I32);
         let result = ty_to_type_expr(&ty);
         assert!(result.is_some());
         assert!(matches!(result.unwrap().0, TypeExpr::Option(_)));
@@ -1868,10 +1845,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_result() {
-        let ty = Ty::Result {
-            ok: Box::new(Ty::I32),
-            err: Box::new(Ty::String),
-        };
+        let ty = Ty::result(Ty::I32, Ty::String);
         let result = ty_to_type_expr(&ty);
         assert!(result.is_some());
         assert!(matches!(result.unwrap().0, TypeExpr::Result { .. }));
@@ -1918,7 +1892,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_actor_ref() {
-        let ty = Ty::ActorRef(Box::new(Ty::I32));
+        let ty = Ty::actor_ref(Ty::I32);
         let result = ty_to_type_expr(&ty);
         assert!(result.is_some());
         if let TypeExpr::Named { name, type_args } = &result.unwrap().0 {
@@ -1931,7 +1905,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_stream() {
-        let ty = Ty::Stream(Box::new(Ty::I64));
+        let ty = Ty::stream(Ty::I64);
         let result = ty_to_type_expr(&ty);
         assert!(result.is_some());
         if let TypeExpr::Named { name, .. } = &result.unwrap().0 {
@@ -1982,10 +1956,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_generator() {
-        let ty = Ty::Generator {
-            yields: Box::new(Ty::I32),
-            returns: Box::new(Ty::String),
-        };
+        let ty = Ty::generator(Ty::I32, Ty::String);
         let result = ty_to_type_expr(&ty);
         assert!(
             result.is_none(),
@@ -1995,9 +1966,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_async_generator() {
-        let ty = Ty::AsyncGenerator {
-            yields: Box::new(Ty::I32),
-        };
+        let ty = Ty::async_generator(Ty::I32);
         let result = ty_to_type_expr(&ty);
         assert!(
             result.is_none(),
@@ -2007,7 +1976,7 @@ mod tests {
 
     #[test]
     fn test_ty_to_type_expr_range() {
-        let ty = Ty::Range(Box::new(Ty::I32));
+        let ty = Ty::range(Ty::I32);
         let result = ty_to_type_expr(&ty);
         assert!(
             result.is_none(),

@@ -490,19 +490,19 @@ impl Checker {
         let link_t = TypeVar::fresh();
         self.register_builtin_fn(
             "link",
-            vec![Ty::ActorRef(Box::new(Ty::Var(link_t)))],
+            vec![Ty::actor_ref(Ty::Var(link_t))],
             Ty::Unit,
         );
         let unlink_t = TypeVar::fresh();
         self.register_builtin_fn(
             "unlink",
-            vec![Ty::ActorRef(Box::new(Ty::Var(unlink_t)))],
+            vec![Ty::actor_ref(Ty::Var(unlink_t))],
             Ty::Unit,
         );
         let monitor_t = TypeVar::fresh();
         self.register_builtin_fn(
             "monitor",
-            vec![Ty::ActorRef(Box::new(Ty::Var(monitor_t)))],
+            vec![Ty::actor_ref(Ty::Var(monitor_t))],
             Ty::I64,
         );
         self.register_builtin_fn("demonitor", vec![Ty::I64], Ty::Unit);
@@ -512,13 +512,13 @@ impl Checker {
         let sup_child_ret = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_child",
-            vec![Ty::ActorRef(Box::new(Ty::Var(sup_child_t))), Ty::I64],
-            Ty::ActorRef(Box::new(Ty::Var(sup_child_ret))),
+            vec![Ty::actor_ref(Ty::Var(sup_child_t)), Ty::I64],
+            Ty::actor_ref(Ty::Var(sup_child_ret)),
         );
         let sup_stop_t = TypeVar::fresh();
         self.register_builtin_fn(
             "supervisor_stop",
-            vec![Ty::ActorRef(Box::new(Ty::Var(sup_stop_t)))],
+            vec![Ty::actor_ref(Ty::Var(sup_stop_t))],
             Ty::Unit,
         );
 
@@ -1327,14 +1327,9 @@ impl Checker {
             .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
         // Wrap return type for generator functions
         let return_type = if fd.is_generator && fd.is_async {
-            Ty::AsyncGenerator {
-                yields: Box::new(declared_return),
-            }
+            Ty::async_generator(declared_return)
         } else if fd.is_generator {
-            Ty::Generator {
-                yields: Box::new(declared_return),
-                returns: Box::new(Ty::Unit),
-            }
+            Ty::generator(declared_return, Ty::Unit)
         } else {
             declared_return
         };
@@ -1419,7 +1414,7 @@ impl Checker {
             .as_ref()
             .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
         let return_type = if rf.is_generator {
-            Ty::Stream(Box::new(declared_return_type))
+            Ty::stream(declared_return_type)
         } else {
             declared_return_type
         };
@@ -1956,14 +1951,9 @@ impl Checker {
         let type_param_bounds =
             self.collect_type_param_bounds(fd.type_params.as_ref(), fd.where_clause.as_ref());
         let return_type = if fd.is_generator && fd.is_async {
-            Ty::AsyncGenerator {
-                yields: Box::new(declared_return),
-            }
+            Ty::async_generator(declared_return)
         } else if fd.is_generator {
-            Ty::Generator {
-                yields: Box::new(declared_return),
-                returns: Box::new(Ty::Unit),
-            }
+            Ty::generator(declared_return, Ty::Unit)
         } else {
             declared_return
         };
@@ -2676,18 +2666,22 @@ impl Checker {
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
                 // Infer element type from iterable
                 let elem_ty = match &iter_ty {
-                    Ty::Range(inner)
-                    | Ty::Array(inner, _)
-                    | Ty::Slice(inner)
-                    | Ty::Stream(inner) => (**inner).clone(),
+                    Ty::Array(inner, _)
+                    | Ty::Slice(inner) => (**inner).clone(),
+                    Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    Ty::Named { name, args } if name == "Stream" && args.len() == 1 => {
+                        args[0].clone()
+                    }
                     Ty::Named { name, args } if name == "Vec" => {
                         args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()))
                     }
                     Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
-                    Ty::Generator { yields, .. } | Ty::AsyncGenerator { yields } => {
-                        (**yields).clone()
+                    Ty::Named { name, args } if (name == "Generator" && args.len() >= 1) || (name == "AsyncGenerator" && args.len() == 1) => {
+                        args[0].clone()
                     }
                     _ => Ty::Var(TypeVar::fresh()),
                 };
@@ -2812,7 +2806,7 @@ impl Checker {
             Expr::Identifier(name) => {
                 // Handle None specially — fresh type var each usage
                 if name == "None" {
-                    return Ty::Option(Box::new(Ty::Var(TypeVar::fresh())));
+                    return Ty::option(Ty::Var(TypeVar::fresh()));
                 }
                 if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
                     let is_moved = binding.is_moved;
@@ -3076,17 +3070,17 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
-                match &ty {
-                    Ty::Option(inner) => (**inner).clone(),
-                    Ty::Result { ok, .. } => (**ok).clone(),
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("`?` requires Result or Option, found `{ty}`"),
-                        );
-                        Ty::Error
-                    }
+                if let Some(inner) = ty.as_option() {
+                    inner.clone()
+                } else if let Some((ok, _)) = ty.as_result() {
+                    ok.clone()
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("`?` requires Result or Option, found `{ty}`"),
+                    );
+                    Ty::Error
                 }
             }
 
@@ -3124,11 +3118,13 @@ impl Checker {
                 if let Some(val_expr) = value {
                     // Check yielded value against the declared yield type
                     if let Some(return_ty) = &self.current_return_type {
-                        let yield_ty = match self.subst.resolve(return_ty) {
-                            Ty::Generator { yields, .. } | Ty::AsyncGenerator { yields } => {
-                                (*yields).clone()
-                            }
-                            other => other,
+                        let resolved = self.subst.resolve(return_ty);
+                        let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
+                            yields.clone()
+                        } else if let Some(yields) = resolved.as_async_generator() {
+                            yields.clone()
+                        } else {
+                            resolved
                         };
                         self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
                     } else {
@@ -3214,7 +3210,7 @@ impl Checker {
                 } else {
                     Ty::I32
                 };
-                Ty::Range(Box::new(ty))
+                Ty::range(ty)
             }
 
             _ => {
@@ -3328,7 +3324,7 @@ impl Checker {
                     } => {
                         let inner_ty = self.synthesize(&inner.0, &inner.1);
                         self.check_against(&duration.0, &duration.1, &Ty::I64);
-                        Ty::Option(Box::new(inner_ty))
+                        Ty::option(inner_ty)
                     }
 
                     _ => Ty::Unit,
@@ -3536,7 +3532,7 @@ impl Checker {
             BinaryOp::Range | BinaryOp::RangeInclusive => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
                     if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
-                        Ty::Range(Box::new(common_ty))
+                        Ty::range(common_ty)
                     } else {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -3549,7 +3545,7 @@ impl Checker {
                     }
                 } else {
                     self.expect_type(&left_ty, &right_ty, &right.1);
-                    Ty::Range(Box::new(left_ty))
+                    Ty::range(left_ty)
                 }
             }
             BinaryOp::Send => {
@@ -3736,7 +3732,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &t);
                 }
-                return Ty::Option(Box::new(t));
+                return Ty::option(t);
             }
             "None" => {
                 if !args.is_empty() {
@@ -3746,7 +3742,7 @@ impl Checker {
                         format!("`None` takes 0 arguments but {} were supplied", args.len()),
                     );
                 }
-                return Ty::Option(Box::new(Ty::Var(TypeVar::fresh())));
+                return Ty::option(Ty::Var(TypeVar::fresh()));
             }
             "Ok" => {
                 if args.len() != 1 {
@@ -3761,10 +3757,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &t);
                 }
-                return Ty::Result {
-                    ok: Box::new(t),
-                    err: Box::new(Ty::Var(TypeVar::fresh())),
-                };
+                return Ty::result(t, Ty::Var(TypeVar::fresh()));
             }
             "Err" => {
                 if args.len() != 1 {
@@ -3779,10 +3772,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.check_against(expr, sp, &e);
                 }
-                return Ty::Result {
-                    ok: Box::new(Ty::Var(TypeVar::fresh())),
-                    err: Box::new(e),
-                };
+                return Ty::result(Ty::Var(TypeVar::fresh()), e);
             }
             "bytes::from" => {
                 if args.len() != 1 {
@@ -3836,8 +3826,8 @@ impl Checker {
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                if let Ty::ActorRef(inner) = &sup_ty_resolved {
-                    if let Ty::Named { name: sup_name, .. } = inner.as_ref() {
+                if let Some(inner) = sup_ty_resolved.as_actor_ref() {
+                    if let Ty::Named { name: sup_name, .. } = inner {
                         if let Some(children) = self.supervisor_children.get(sup_name) {
                             if let Expr::Literal(hew_parser::ast::Literal::Integer {
                                 value: idx,
@@ -3852,18 +3842,18 @@ impl Checker {
                                 let i = *idx as usize;
                                 if i < children.len() {
                                     let child_type = &children[i];
-                                    return Ty::ActorRef(Box::new(Ty::Named {
+                                    return Ty::actor_ref(Ty::Named {
                                         name: child_type.clone(),
                                         args: vec![],
-                                    }));
+                                    });
                                 }
                             }
                             // Non-constant index: fresh type var
-                            return Ty::ActorRef(Box::new(Ty::Var(TypeVar::fresh())));
+                            return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
                         }
                     }
                 }
-                return Ty::ActorRef(Box::new(Ty::Var(TypeVar::fresh())));
+                return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
             }
             _ => {}
         }
@@ -4266,7 +4256,7 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &key_ty);
                         }
-                        Ty::Option(Box::new(val_ty))
+                        Ty::option(val_ty)
                     }
                     "contains_key" => {
                         if args.len() != 1 {
@@ -4437,7 +4427,8 @@ impl Checker {
                 }
             },
             // ActorRef methods
-            (Ty::ActorRef(inner), _) => {
+            (resolved, _) if resolved.as_actor_ref().is_some() => {
+                let inner = resolved.as_actor_ref().unwrap();
                 if method == "send" {
                     // Synthesize args and mark non-Copy values as moved
                     for arg in args {
@@ -4454,7 +4445,7 @@ impl Checker {
                     // Try to dispatch to the actor's receive methods
                     if let Ty::Named {
                         name: actor_name, ..
-                    } = inner.as_ref()
+                    } = inner
                     {
                         let method_key = format!("{actor_name}::{method}");
                         if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
@@ -4770,6 +4761,69 @@ impl Checker {
                     }
                 }
             },
+            // Generator methods: .next() returns the yielded type
+            (Ty::Named { name, args: type_args }, "next") if name == "Generator" || name == "AsyncGenerator" => {
+                if name == "Generator" {
+                    type_args.first().cloned().unwrap_or(Ty::Error)
+                } else {
+                    type_args.first().cloned().unwrap_or(Ty::Error)
+                }
+            }
+            // Stream<T> methods
+            (Ty::Named { name, args: type_args }, _) if name == "Stream" => {
+                let inner = type_args.first().cloned().unwrap_or(Ty::Error);
+                match method {
+                    "next" => Ty::option(inner),
+                    "close" => Ty::Unit,
+                    "lines" => Ty::stream(Ty::String),
+                    "collect" => Ty::String,
+                    "chunks" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I32);
+                        }
+                        Ty::stream(inner)
+                    }
+                    "decode" => {
+                        // Returns Stream<T> where T is inferred; codec type arg not yet resolved
+                        Ty::stream(Ty::Var(TypeVar::fresh()))
+                    }
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no method `{method}` on `{resolved}`"),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+            // Sink<T> methods
+            (Ty::Named { name, args: type_args }, _) if name == "Sink" => {
+                let inner = type_args.first().cloned().unwrap_or(Ty::Error);
+                match method {
+                    "write" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &inner);
+                        }
+                        Ty::Unit
+                    }
+                    "close" | "flush" => Ty::Unit,
+                    "encode" => {
+                        // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
+                        Ty::sink(Ty::Var(TypeVar::fresh()))
+                    }
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no method `{method}` on `{resolved}`"),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
             // User-defined struct/actor methods from type_defs
             (
                 Ty::Named {
@@ -4919,41 +4973,6 @@ impl Checker {
                     Ty::Error
                 }
             }
-            // Generator methods: .next() returns the yielded type
-            (Ty::Generator { yields, .. }, "next") | (Ty::AsyncGenerator { yields }, "next") => {
-                (**yields).clone()
-            }
-
-            // Stream<T> methods
-            (Ty::Stream(inner), "next") => Ty::Option(inner.clone()),
-            (Ty::Stream(_) | Ty::Sink(_), "close") | (Ty::Sink(_), "flush") => Ty::Unit,
-            (Ty::Stream(_), "lines") => Ty::Stream(Box::new(Ty::String)),
-            (Ty::Stream(_), "collect") => Ty::String,
-            (Ty::Stream(inner), "chunks") => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, &Ty::I32);
-                }
-                Ty::Stream(inner.clone())
-            }
-            (Ty::Stream(_), "decode") => {
-                // Returns Stream<T> where T is inferred; codec type arg not yet resolved
-                Ty::Stream(Box::new(Ty::Var(TypeVar::fresh())))
-            }
-
-            // Sink<T> methods
-            (Ty::Sink(inner), "write") => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    self.check_against(expr, sp, inner);
-                }
-                Ty::Unit
-            }
-            (Ty::Sink(_), "encode") => {
-                // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
-                Ty::Sink(Box::new(Ty::Var(TypeVar::fresh())))
-            }
-
             // For error types, don't report additional errors
             (Ty::Error, _) => {
                 for arg in args {
@@ -5349,9 +5368,9 @@ impl Checker {
                     }
                 }
             }
-            Ty::ActorRef(Box::new(Ty::Named { name, args: vec![] }))
+            Ty::actor_ref(Ty::Named { name, args: vec![] })
         } else {
-            Ty::ActorRef(Box::new(Ty::Error))
+            Ty::actor_ref(Ty::Error)
         }
     }
 
@@ -5483,18 +5502,18 @@ impl Checker {
 
     fn lookup_variant_types(&self, variant_name: &str, enum_ty: &Ty) -> Option<Vec<Ty>> {
         // Handle Option<T> variants
-        if let Ty::Option(inner) = enum_ty {
+        if let Some(inner) = enum_ty.as_option() {
             return match variant_name {
-                "Some" => Some(vec![(**inner).clone()]),
+                "Some" => Some(vec![inner.clone()]),
                 "None" => Some(vec![]),
                 _ => None,
             };
         }
         // Handle Result<T, E> variants
-        if let Ty::Result { ok, err } = enum_ty {
+        if let Some((ok, err)) = enum_ty.as_result() {
             return match variant_name {
-                "Ok" => Some(vec![(**ok).clone()]),
-                "Err" => Some(vec![(**err).clone()]),
+                "Ok" => Some(vec![ok.clone()]),
+                "Err" => Some(vec![err.clone()]),
                 _ => None,
             };
         }
@@ -5571,11 +5590,6 @@ impl Checker {
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.freshen_inner(t, mapping)).collect()),
             Ty::Array(inner, n) => Ty::Array(Box::new(self.freshen_inner(inner, mapping)), *n),
             Ty::Slice(inner) => Ty::Slice(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Option(inner) => Ty::Option(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Result { ok, err } => Ty::Result {
-                ok: Box::new(self.freshen_inner(ok, mapping)),
-                err: Box::new(self.freshen_inner(err, mapping)),
-            },
             Ty::Function { params, ret } => Ty::Function {
                 params: params
                     .iter()
@@ -5598,10 +5612,6 @@ impl Checker {
                     .map(|c| self.freshen_inner(c, mapping))
                     .collect(),
             },
-            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Stream(inner) => Ty::Stream(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Sink(inner) => Ty::Sink(Box::new(self.freshen_inner(inner, mapping))),
-            Ty::Range(inner) => Ty::Range(Box::new(self.freshen_inner(inner, mapping))),
             _ => ty.clone(),
         }
     }
@@ -5858,15 +5868,6 @@ impl Checker {
                 param_name,
                 replacement,
             ))),
-            Ty::Option(inner) => Ty::Option(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
-            Ty::Result { ok, err } => Ty::Result {
-                ok: Box::new(self.substitute_named_param(ok, param_name, replacement)),
-                err: Box::new(self.substitute_named_param(err, param_name, replacement)),
-            },
             Ty::Function { params, ret } => Ty::Function {
                 params: params
                     .iter()
@@ -5889,26 +5890,6 @@ impl Checker {
                     .map(|c| self.substitute_named_param(c, param_name, replacement))
                     .collect(),
             },
-            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
-            Ty::Range(inner) => Ty::Range(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
-            Ty::Stream(inner) => Ty::Stream(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
-            Ty::Sink(inner) => Ty::Sink(Box::new(self.substitute_named_param(
-                inner,
-                param_name,
-                replacement,
-            ))),
             Ty::Pointer {
                 is_mutable,
                 pointee,
@@ -5928,13 +5909,6 @@ impl Checker {
                             .collect(),
                     })
                     .collect(),
-            },
-            Ty::Generator { yields, returns } => Ty::Generator {
-                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
-                returns: Box::new(self.substitute_named_param(returns, param_name, replacement)),
-            },
-            Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
-                yields: Box::new(self.substitute_named_param(yields, param_name, replacement)),
             },
             _ => ty.clone(),
         }
@@ -6009,20 +5983,10 @@ impl Checker {
                         }
                         // Handle special named types
                         match name.as_str() {
-                            "Option" if args.len() == 1 => Ty::Option(Box::new(args[0].clone())),
-                            "Result" if args.len() == 2 => Ty::Result {
-                                ok: Box::new(args[0].clone()),
-                                err: Box::new(args[1].clone()),
-                            },
-                            "ActorRef" if args.len() == 1 => {
-                                Ty::ActorRef(Box::new(args[0].clone()))
-                            }
                             // Deprecated alias: ActorStream<Y> is now Stream<Y>
                             "ActorStream" if args.len() == 1 => {
-                                Ty::Stream(Box::new(args[0].clone()))
+                                Ty::stream(args[0].clone())
                             }
-                            "Stream" if args.len() == 1 => Ty::Stream(Box::new(args[0].clone())),
-                            "Sink" if args.len() == 1 => Ty::Sink(Box::new(args[0].clone())),
                             _ => {
                                 // Qualify unqualified handle types only when imported and unambiguous.
                                 let handle_matches: Vec<&String> = self
@@ -6055,11 +6019,11 @@ impl Checker {
                     }
                 }
             }
-            TypeExpr::Result { ok, err } => Ty::Result {
-                ok: Box::new(self.resolve_type_expr(&ok.0)),
-                err: Box::new(self.resolve_type_expr(&err.0)),
-            },
-            TypeExpr::Option(inner) => Ty::Option(Box::new(self.resolve_type_expr(&inner.0))),
+            TypeExpr::Result { ok, err } => Ty::result(
+                self.resolve_type_expr(&ok.0),
+                self.resolve_type_expr(&err.0),
+            ),
+            TypeExpr::Option(inner) => Ty::option(self.resolve_type_expr(&inner.0)),
             TypeExpr::Tuple(elems) if elems.is_empty() => Ty::Unit,
             TypeExpr::Tuple(elems) => Ty::Tuple(
                 elems
@@ -6332,6 +6296,16 @@ impl Checker {
         }
 
         match scrutinee_ty {
+            Ty::Named { name, .. } if name == "Option" => {
+                if !Self::has_both_constructor_variants(arms, "Some", "None") {
+                    self.warn_non_exhaustive(span, "Option requires Some and None arms");
+                }
+            }
+            Ty::Named { name, .. } if name == "Result" => {
+                if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
+                    self.warn_non_exhaustive(span, "Result requires Ok and Err arms");
+                }
+            }
             Ty::Named { name, .. } => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if !td.variants.is_empty() {
@@ -6395,16 +6369,6 @@ impl Checker {
                 }
                 if !has_binding_identifier && (!has_true || !has_false) {
                     self.warn_non_exhaustive(span, "missing bool variant");
-                }
-            }
-            Ty::Option(_) => {
-                if !Self::has_both_constructor_variants(arms, "Some", "None") {
-                    self.warn_non_exhaustive(span, "Option requires Some and None arms");
-                }
-            }
-            Ty::Result { .. } => {
-                if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
-                    self.warn_non_exhaustive(span, "Result requires Ok and Err arms");
                 }
             }
             _ => {
@@ -6663,7 +6627,7 @@ mod tests {
         assert!(output.errors.is_empty());
         assert_eq!(
             output.fn_sigs["NumberStream::numbers"].return_type,
-            Ty::Stream(Box::new(Ty::I64))
+            Ty::stream(Ty::I64)
         );
     }
 
@@ -6845,7 +6809,7 @@ mod tests {
         // should already reflect the resolved return type.
         assert_eq!(
             output.fn_sigs["foo"].return_type,
-            Ty::Stream(Box::new(Ty::I32))
+            Ty::stream(Ty::I32)
         );
     }
 

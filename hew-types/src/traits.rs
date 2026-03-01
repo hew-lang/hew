@@ -208,7 +208,7 @@ impl TraitRegistry {
             ),
 
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
-            Ty::ActorRef(_) => matches!(
+            Ty::Named { name, .. } if name == "ActorRef" => matches!(
                 marker,
                 MarkerTrait::Send
                     | MarkerTrait::Sync
@@ -219,9 +219,9 @@ impl TraitRegistry {
             ),
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
-            Ty::Stream(inner) | Ty::Sink(inner) => match marker {
+            Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(inner, MarkerTrait::Send)
+                    self.implements_marker(&args[0], MarkerTrait::Send)
                 }
                 _ => false,
             },
@@ -229,8 +229,8 @@ impl TraitRegistry {
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),
 
-            // Array/Option/Range: marker holds if element has it
-            Ty::Array(inner, _) | Ty::Option(inner) | Ty::Range(inner) => {
+            // Array: marker holds if element has it
+            Ty::Array(inner, _) => {
                 self.implements_marker(inner, marker)
             }
 
@@ -241,11 +241,6 @@ impl TraitRegistry {
                 } else {
                     self.implements_marker(elem, marker)
                 }
-            }
-
-            // Result: marker holds if both ok and err have it
-            Ty::Result { ok, err } => {
-                self.implements_marker(ok, marker) && self.implements_marker(err, marker)
             }
 
             // Named types: check all fields
@@ -325,8 +320,8 @@ impl TraitRegistry {
                 _ => false,
             },
 
-            // Generator/AsyncGenerator/Var: NOT Send by default
-            Ty::Generator { .. } | Ty::AsyncGenerator { .. } | Ty::Var(_) => false,
+            // Var: NOT Send by default
+            Ty::Var(_) => false,
 
             // Trait objects: check if any of the traits has the bound
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
@@ -382,10 +377,10 @@ mod tests {
     #[test]
     fn test_actor_ref_is_send_and_frozen() {
         let registry = TraitRegistry::new();
-        let actor_ref = Ty::ActorRef(Box::new(Ty::Named {
+        let actor_ref = Ty::actor_ref(Ty::Named {
             name: "MyActor".to_string(),
             args: vec![],
-        }));
+        });
         assert!(registry.is_send(&actor_ref));
         assert!(registry.is_frozen(&actor_ref));
     }
@@ -430,9 +425,11 @@ mod tests {
 
     #[test]
     fn test_option_derives_from_inner() {
-        let registry = TraitRegistry::new();
-        assert!(registry.is_send(&Ty::Option(Box::new(Ty::I32))));
-        assert!(registry.implements_marker(&Ty::Option(Box::new(Ty::I32)), MarkerTrait::Copy));
+        let mut registry = TraitRegistry::new();
+        registry.register_type("Option".to_string(), vec![Ty::I32]);
+        let option_i32 = Ty::option(Ty::I32);
+        assert!(registry.is_send(&option_i32));
+        assert!(registry.implements_marker(&option_i32, MarkerTrait::Copy));
     }
 
     #[test]
@@ -478,10 +475,10 @@ mod tests {
     #[test]
     fn test_actor_ref_is_sync() {
         let registry = TraitRegistry::new();
-        let actor_ref = Ty::ActorRef(Box::new(Ty::Named {
+        let actor_ref = Ty::actor_ref(Ty::Named {
             name: "MyActor".to_string(),
             args: vec![],
-        }));
+        });
         assert!(registry.is_sync(&actor_ref));
     }
 

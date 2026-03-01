@@ -4270,14 +4270,14 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 3. Multiplicative: `*`, `/`, `%`
 4. Additive: `+`, `-` (`+` also concatenates strings)
 5. Shift: `<<`, `>>`
-6. Range: `..`, `..=`
-7. Relational: `<`, `<=`, `>`, `>=`
-8. Equality/Match: `==`, `!=`, `=~`, `!~` (value equality for strings; regex match)
-9. Logical AND: `&&`
-10. Bitwise AND: `&`
-11. Bitwise XOR: `^`
-12. Bitwise OR: `|`
-13. Logical OR: `||`
+6. Bitwise AND: `&`
+7. Bitwise XOR: `^`
+8. Bitwise OR: `|`
+9. Relational: `<`, `<=`, `>`, `>=`
+10. Equality/Match: `==`, `!=`, `=~`, `!~` (value equality for strings; regex match)
+11. Logical AND: `&&`
+12. Logical OR: `||`
+13. Range: `..`, `..=`
 14. Timeout: `| after`
 15. Send: `<-`
 16. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`

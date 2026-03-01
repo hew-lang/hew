@@ -3078,10 +3078,10 @@ impl<'src> Parser<'src> {
                 let saved = self.save_pos();
                 self.advance(); // consume |
                 if self.peek() == Some(&Token::After) {
-                    // Binding power 5 (same as bitwise OR left bp)
-                    if 5 >= min_bp {
+                    // Binding power 13 (same as bitwise OR left bp)
+                    if 13 >= min_bp {
                         self.advance(); // consume after
-                        let duration = self.parse_expr_bp(6)?;
+                        let duration = self.parse_expr_bp(14)?;
                         let end = duration.1.end;
                         lhs = (
                             Expr::Timeout {
@@ -4165,25 +4165,27 @@ impl<'src> Parser<'src> {
 /// Get binding power for infix operators (left, right).
 /// Higher numbers = tighter binding.
 fn infix_bp(op: &Token) -> Option<(u8, u8)> {
+    // Precedence follows Rust's ordering: bitwise ops bind tighter than
+    // comparisons, which bind tighter than logical ops.
     match op {
         // Send: lowest
         Token::LeftArrow => Some((1, 2)), // <- (right-assoc)
-        // Logical OR
-        Token::PipePipe => Some((3, 4)),
-        // Bitwise OR
-        Token::Pipe => Some((5, 6)),
-        // Bitwise XOR
-        Token::Caret => Some((7, 8)),
-        // Bitwise AND
-        Token::Ampersand => Some((9, 10)),
-        // Logical AND
-        Token::AmpAmp => Some((11, 12)),
-        // Equality / regex match
-        Token::EqualEqual | Token::NotEqual | Token::MatchOp | Token::NotMatchOp => Some((13, 14)),
-        // Relational
-        Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((15, 16)),
         // Range
-        Token::DotDot | Token::DotDotEqual => Some((17, 18)),
+        Token::DotDot | Token::DotDotEqual => Some((3, 4)),
+        // Logical OR
+        Token::PipePipe => Some((5, 6)),
+        // Logical AND
+        Token::AmpAmp => Some((7, 8)),
+        // Equality / regex match
+        Token::EqualEqual | Token::NotEqual | Token::MatchOp | Token::NotMatchOp => Some((9, 10)),
+        // Relational
+        Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual => Some((11, 12)),
+        // Bitwise OR
+        Token::Pipe => Some((13, 14)),
+        // Bitwise XOR
+        Token::Caret => Some((15, 16)),
+        // Bitwise AND
+        Token::Ampersand => Some((17, 18)),
         // Shift
         Token::LessLess | Token::GreaterGreater => Some((19, 20)),
         // Additive

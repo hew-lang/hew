@@ -548,23 +548,15 @@ sendExpr
 
 // Timeout combinator:  expr | after duration
 timeoutExpr
-    : orExpr ( '|' 'after' expr )?
+    : rangeExpr ( '|' 'after' expr )?
+    ;
+
+rangeExpr
+    : orExpr ( ( '..' | '..=' ) orExpr )?
     ;
 
 orExpr
-    : bitOrExpr ( '||' bitOrExpr )*
-    ;
-
-bitOrExpr
-    : bitXorExpr ( '|' bitXorExpr )*
-    ;
-
-bitXorExpr
-    : bitAndExpr ( '^' bitAndExpr )*
-    ;
-
-bitAndExpr
-    : andExpr ( '&' andExpr )*
+    : andExpr ( '||' andExpr )*
     ;
 
 andExpr
@@ -576,11 +568,19 @@ eqExpr
     ;
 
 relExpr
-    : rangeExpr ( ( '<' | '<=' | '>' | '>=' ) rangeExpr )*
+    : bitOrExpr ( ( '<' | '<=' | '>' | '>=' ) bitOrExpr )*
     ;
 
-rangeExpr
-    : shiftExpr ( ( '..' | '..=' ) shiftExpr )?
+bitOrExpr
+    : bitXorExpr ( '|' bitXorExpr )*
+    ;
+
+bitXorExpr
+    : bitAndExpr ( '^' bitAndExpr )*
+    ;
+
+bitAndExpr
+    : shiftExpr ( '&' shiftExpr )*
     ;
 
 shiftExpr

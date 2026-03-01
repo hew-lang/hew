@@ -65,6 +65,13 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::ASYNC,       // bit 2
 ];
 
+fn modifier_bit(m: &SemanticTokenModifier) -> u32 {
+    TOKEN_MODIFIERS
+        .iter()
+        .position(|x| x == m)
+        .map_or(0, |i| 1 << i)
+}
+
 // ── Document state ───────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -2042,17 +2049,17 @@ fn build_semantic_tokens(source: &str, lo: &[usize], _parse_result: &ParseResult
         // Mark identifiers after declaration keywords as DECLARATION.
         if matches!(token, Token::Identifier(_)) {
             if i > 0 && is_decl_keyword(&lexer_tokens[i - 1].0) {
-                modifiers |= 1 << 0; // DECLARATION
+                modifiers |= modifier_bit(&SemanticTokenModifier::DECLARATION);
             }
             // Identifiers after `const` are also READONLY.
             if i > 0 && matches!(lexer_tokens[i - 1].0, Token::Const) {
-                modifiers |= 1 << 1; // READONLY
+                modifiers |= modifier_bit(&SemanticTokenModifier::READONLY);
             }
         }
 
         // Mark `async` keyword with ASYNC modifier.
         if matches!(token, Token::Async) {
-            modifiers |= 1 << 2; // ASYNC
+            modifiers |= modifier_bit(&SemanticTokenModifier::ASYNC);
         }
 
         result.push(SemanticToken {
@@ -4316,9 +4323,10 @@ mod tests {
             tokens[1].token_type,
             token_type_index(&SemanticTokenType::VARIABLE)
         );
+        let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         assert_eq!(
-            tokens[1].token_modifiers_bitset & 1,
-            1,
+            tokens[1].token_modifiers_bitset & decl,
+            decl,
             "x should be DECLARATION"
         );
     }
@@ -4329,6 +4337,9 @@ mod tests {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let tokens = build_semantic_tokens(source, &lo, &parse_result);
+        let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
+        let readonly = modifier_bit(&SemanticTokenModifier::READONLY);
+        let async_mod = modifier_bit(&SemanticTokenModifier::ASYNC);
         // Find the `const` keyword and the identifier after it.
         let const_tok = &tokens[0]; // `const`
         assert_eq!(
@@ -4341,16 +4352,20 @@ mod tests {
             token_type_index(&SemanticTokenType::VARIABLE)
         );
         assert_eq!(
-            y_tok.token_modifiers_bitset & 1,
-            1,
+            y_tok.token_modifiers_bitset & decl,
+            decl,
             "Y should be DECLARATION"
         );
-        assert_eq!(y_tok.token_modifiers_bitset & 2, 2, "Y should be READONLY");
+        assert_eq!(
+            y_tok.token_modifiers_bitset & readonly,
+            readonly,
+            "Y should be READONLY"
+        );
 
         // Find `async` keyword — should have ASYNC modifier.
         let async_tok = tokens.iter().find(|t| {
             t.token_type == token_type_index(&SemanticTokenType::KEYWORD)
-                && t.token_modifiers_bitset & 4 == 4
+                && t.token_modifiers_bitset & async_mod == async_mod
         });
         assert!(
             async_tok.is_some(),
@@ -4391,13 +4406,14 @@ mod tests {
         let token_data = semantic_token_data(source, &tokens);
         let function_token_type = token_type_index(&SemanticTokenType::FUNCTION);
         let type_token_type = token_type_index(&SemanticTokenType::TYPE);
+        let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
 
         assert!(
             token_data
                 .iter()
                 .any(|(text, token_type, modifiers)| text == "calc"
                     && *token_type == function_token_type
-                    && (modifiers & 1) == 1),
+                    && (modifiers & decl) == decl),
             "expected function declaration token for calc"
         );
         assert!(

@@ -4,6 +4,11 @@
 //! cryptographically secure random bytes, and constant-time comparison
 //! for compiled Hew programs.
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use ring::digest;
 use ring::hmac;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -152,8 +157,6 @@ pub unsafe extern "C" fn hew_constant_time_eq(a: *const u8, b: *const u8, len: u
     i32::from(diff == 0)
 }
 
-#[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,11 @@
 //! calculations for compiled Hew programs. All returned strings are allocated
 //! with `libc::malloc` and NUL-terminated.
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::net::IpAddr;
 use std::os::raw::c_char;

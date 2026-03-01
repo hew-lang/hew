@@ -3,6 +3,11 @@
 //! Provides SMTP client functionality for compiled Hew programs.
 //! Opaque connection handles are freed via [`hew_smtp_close`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::cstr_to_str;
 use std::os::raw::c_char;
 

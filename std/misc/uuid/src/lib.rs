@@ -4,6 +4,11 @@
 //! compiled Hew programs. All returned strings are allocated with `libc::malloc`
 //! so callers can free them with [`hew_uuid_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 #[cfg(feature = "export-meta")]
 pub mod export_meta;
 

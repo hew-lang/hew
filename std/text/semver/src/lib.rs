@@ -5,6 +5,11 @@
 //! `libc::malloc` and NUL-terminated. All returned [`HewSemver`] pointers are
 //! heap-allocated via `Box` and must be freed with [`hew_semver_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::c_char;
 

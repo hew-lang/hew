@@ -219,6 +219,12 @@ private:
   /// Bind tuple pattern elements to variables recursively.
   void bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
                               mlir::Location location);
+  /// Bind constructor sub-pattern variables by extracting enum payloads.
+  void bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
+                                  mlir::Location location);
+  /// Emit a tag-equality comparison: extract tag, compare with variantIndex.
+  mlir::Value emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
+                                    mlir::Location location);
 
   // ── If-let ───────────────────────────────────────────────────────
   void generateIfLetStmt(const ast::StmtIfLet &stmt);

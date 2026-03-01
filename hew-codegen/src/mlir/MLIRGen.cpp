@@ -34,15 +34,14 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "MLIRGenHelpers.h"
+
 #include <cassert>
-#include <cstdlib>
 #include <iostream>
 #include <string>
 
 using namespace hew;
 using namespace mlir;
-
-#include "MLIRGenHelpers.h"
 
 // ============================================================================
 // Constructor

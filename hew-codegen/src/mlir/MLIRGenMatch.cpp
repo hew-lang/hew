@@ -78,6 +78,38 @@ void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleV
   }
 }
 
+void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
+                                          mlir::Location location) {
+  if (!isEnumLikeType(scrutinee.getType()))
+    return;
+  const auto &ctorName = ctor.name;
+  for (size_t i = 0; i < ctor.patterns.size(); ++i) {
+    const auto &subPat = ctor.patterns[i]->value;
+    if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
+      int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
+      auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+      auto payloadVal =
+          builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+      declareVariable(subIdent->name, payloadVal);
+    } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
+      int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
+      auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
+      auto payloadVal =
+          builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+      bindTuplePatternFields(*subTuple, payloadVal, location);
+    }
+    // Wildcard sub-patterns: skip binding
+  }
+}
+
+mlir::Value MLIRGen::emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
+                                            mlir::Location location) {
+  auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
+  auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
+  return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
+      .getResult();
+}
+
 // ============================================================================
 // Match statement generation
 // ============================================================================
@@ -166,12 +198,7 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
   if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
     auto varIt = variantLookup.find(identPat->name);
     if (varIt != variantLookup.end()) {
-      // Enum unit variant: compare tag
-      auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
-      auto tagVal = createIntConstant(builder, location, builder.getI32Type(),
-                                      static_cast<int64_t>(varIt->second.second));
-      return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag,
-                                                 tagVal);
+      return emitTagEqualCondition(scrutinee, static_cast<int64_t>(varIt->second.second), location);
     }
     // Variable binding: always matches (like wildcard)
     return createIntConstant(builder, location, builder.getI1Type(), 1);
@@ -228,11 +255,6 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   auto *structPatPtr = std::get_if<ast::PatStruct>(&pattern.kind);
   bool isStructPattern = (structPatPtr != nullptr);
   bool isStructVariantPattern = isStructPattern && variantLookup.count(structPatPtr->name) > 0;
-
-  // Helper to extract the tag from a scrutinee (handles both i32 and struct)
-  auto extractTag = [&](mlir::Value scrut) -> mlir::Value {
-    return builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrut);
-  };
 
   auto bindStructPatternFields = [&](const ast::PatStruct &sp) {
     const auto &spName = sp.name;
@@ -301,29 +323,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
       // If this is a constructor pattern, bind sub-pattern variables to payloads
       if (auto *ctor = std::get_if<ast::PatConstructor>(&aPat.kind)) {
-        const auto &ctorName = ctor->name;
-
-        for (size_t i = 0; i < ctor->patterns.size(); ++i) {
-          const auto &subPat = ctor->patterns[i]->value;
-          if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
-            if (isEnumLikeType(scrutinee.getType())) {
-              int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-              auto payloadVal =
-                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-              declareVariable(subIdent->name, payloadVal);
-            }
-          } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
-            if (isEnumLikeType(scrutinee.getType())) {
-              int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-              auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-              auto payloadVal =
-                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-              bindTuplePatternFields(*subTuple, payloadVal, location);
-            }
-          }
-          // Wildcard sub-patterns: skip binding
-        }
+        bindConstructorPatternVars(*ctor, scrutinee, location);
       }
 
       // If this is a struct pattern, bind fields as variables
@@ -458,13 +458,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   if (isEnumVariantPattern) {
     auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind);
     auto varIt = variantLookup.find(identPat->name);
-    auto variantIndex = static_cast<int64_t>(varIt->second.second);
-
-    auto tag = extractTag(scrutinee);
-    auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
     mlir::Value cond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
-            .getResult();
+        emitTagEqualCondition(scrutinee, static_cast<int64_t>(varIt->second.second), location);
 
     // Guard: AND with pattern condition
     if (arm.guard) {
@@ -482,13 +477,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     const auto &ctorName = ctor->name;
     auto ctorVarIt = variantLookup.find(ctorName);
     if (ctorVarIt != variantLookup.end()) {
-      auto variantIndex = static_cast<int64_t>(ctorVarIt->second.second);
-
-      auto tag = extractTag(scrutinee);
-      auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
       mlir::Value tagCond =
-          builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
-              .getResult();
+          emitTagEqualCondition(scrutinee, static_cast<int64_t>(ctorVarIt->second.second), location);
 
       // Guard: We must short-circuit to avoid extracting payload when tag doesn't match.
       // Use scf.if to only evaluate guard (and extract payload) when tag matches.
@@ -501,26 +491,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
         {
           SymbolTableScopeT guardScope(symbolTable);
           MutableTableScopeT guardMutScope(mutableVars);
-          for (size_t i = 0; i < ctor->patterns.size(); ++i) {
-            const auto &sp = ctor->patterns[i]->value;
-            if (auto *spIdent = std::get_if<ast::PatIdentifier>(&sp.kind)) {
-              if (isEnumLikeType(scrutinee.getType())) {
-                int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-                auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-                auto pv = builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee,
-                                                                    fieldIdx);
-                declareVariable(spIdent->name, pv);
-              }
-            } else if (auto *spTuple = std::get_if<ast::PatTuple>(&sp.kind)) {
-              if (isEnumLikeType(scrutinee.getType())) {
-                int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-                auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-                auto pv = builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee,
-                                                                    fieldIdx);
-                bindTuplePatternFields(*spTuple, pv, location);
-              }
-            }
-          }
+          bindConstructorPatternVars(*ctor, scrutinee, location);
           auto guardCond = generateExpression(arm.guard->value);
           if (!guardCond) {
             emitError(location) << "failed to generate match guard expression";
@@ -563,13 +534,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   if (isStructVariantPattern) {
     const auto &spName = structPatPtr->name;
     auto varIt = variantLookup.find(spName);
-    auto variantIndex = static_cast<int64_t>(varIt->second.second);
-
-    auto tag = extractTag(scrutinee);
-    auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
     mlir::Value tagCond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
-            .getResult();
+        emitTagEqualCondition(scrutinee, static_cast<int64_t>(varIt->second.second), location);
 
     if (arm.guard) {
       auto guardIfOp = builder.create<mlir::scf::IfOp>(location, builder.getI1Type(), tagCond,

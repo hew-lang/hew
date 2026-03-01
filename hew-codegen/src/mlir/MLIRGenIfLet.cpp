@@ -60,13 +60,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   }
 
   auto variantIndex = static_cast<int64_t>(ctorVarIt->second.second);
-
-  // Extract tag and compare
-  auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
-  auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
-  mlir::Value cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
-          .getResult();
+  mlir::Value cond = emitTagEqualCondition(scrutinee, variantIndex, location);
 
   // Create scf.if for the branch
   bool hasElse = stmt.else_body.has_value();
@@ -78,27 +72,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
     SymbolTableScopeT scope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
 
-    // Bind pattern variables
-    for (size_t i = 0; i < ctorPat->patterns.size(); ++i) {
-      const auto &subPat = ctorPat->patterns[i]->value;
-      if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
-        if (isEnumLikeType(scrutinee.getType())) {
-          int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-          auto payloadVal =
-              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-          declareVariable(subIdent->name, payloadVal);
-        }
-      } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
-        if (isEnumLikeType(scrutinee.getType())) {
-          int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-          auto payloadVal =
-              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-          bindTuplePatternFields(*subTuple, payloadVal, location);
-        }
-      }
-    }
+    bindConstructorPatternVars(*ctorPat, scrutinee, location);
 
     // Generate the then body
     generateBlock(stmt.body);
@@ -160,13 +134,7 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   }
 
   auto variantIndex = static_cast<int64_t>(ctorVarIt->second.second);
-
-  // Extract tag and compare
-  auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
-  auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
-  mlir::Value cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
-          .getResult();
+  mlir::Value cond = emitTagEqualCondition(scrutinee, variantIndex, location);
 
   // Create scf.if with result
   auto ifOp = builder.create<mlir::scf::IfOp>(location, resultType, cond, /*withElseRegion=*/true);
@@ -178,27 +146,7 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
     SymbolTableScopeT scope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
 
-    // Bind pattern variables
-    for (size_t i = 0; i < ctorPat->patterns.size(); ++i) {
-      const auto &subPat = ctorPat->patterns[i]->value;
-      if (auto *subIdent = std::get_if<ast::PatIdentifier>(&subPat.kind)) {
-        if (isEnumLikeType(scrutinee.getType())) {
-          int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-          auto payloadVal =
-              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-          declareVariable(subIdent->name, payloadVal);
-        }
-      } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
-        if (isEnumLikeType(scrutinee.getType())) {
-          int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
-          auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-          auto payloadVal =
-              builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
-          bindTuplePatternFields(*subTuple, payloadVal, location);
-        }
-      }
-    }
+    bindConstructorPatternVars(*ctorPat, scrutinee, location);
 
     // Generate the then body
     thenVal = generateBlock(expr.body);

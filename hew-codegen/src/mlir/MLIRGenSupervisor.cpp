@@ -31,7 +31,7 @@ using namespace mlir;
 
 void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
   auto location = currentLoc;
-  std::string supervisorName = decl.name;
+  const auto &supervisorName = decl.name;
 
   // Register this supervisor with its child types
   std::vector<std::string> childTypes;

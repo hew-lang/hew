@@ -5,9 +5,8 @@
 //! NUL-terminated. All returned [`HewUrl`] pointers are heap-allocated via
 //! `Box` and must be freed with [`hew_url_free`].
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 /// Opaque wrapper around a [`url::Url`].
 ///
@@ -31,11 +30,8 @@ pub struct HewUrl {
 /// `s` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_url_parse(s: *const c_char) -> *mut HewUrl {
-    if s.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = unsafe { CStr::from_ptr(s) }.to_str() else {
+    // SAFETY: If non-null, s is a valid NUL-terminated C string per caller contract.
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
         return std::ptr::null_mut();
     };
     match url::Url::parse(rust_str) {
@@ -192,13 +188,13 @@ pub unsafe extern "C" fn hew_url_to_string(url: *const HewUrl) -> *mut c_char {
 /// `relative` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_url_join(base: *const HewUrl, relative: *const c_char) -> *mut HewUrl {
-    if base.is_null() || relative.is_null() {
+    if base.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: base is a valid HewUrl pointer per caller contract.
     let b = unsafe { &*base };
-    // SAFETY: relative is a valid NUL-terminated C string per caller contract.
-    let Ok(rel_str) = unsafe { CStr::from_ptr(relative) }.to_str() else {
+    // SAFETY: If non-null, relative is a valid NUL-terminated C string per caller contract.
+    let Some(rel_str) = (unsafe { cstr_to_str(relative) }) else {
         return std::ptr::null_mut();
     };
     match b.inner.join(rel_str) {
@@ -243,7 +239,7 @@ mod tests {
     unsafe fn read_and_free_cstr(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
         unsafe { libc::free(ptr.cast()) };
         s

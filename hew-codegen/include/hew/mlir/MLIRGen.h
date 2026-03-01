@@ -89,12 +89,20 @@ private:
   void registerActorDecl(const ast::ActorDecl &decl);
   void generateActorDecl(const ast::ActorDecl &decl);
   void generateWireDecl(const ast::WireDecl &decl);
-  void generateWireToJson(const ast::WireDecl &decl);
-  void generateWireFromJson(const ast::WireDecl &decl);
-  void generateWireToYaml(const ast::WireDecl &decl);
-  void generateWireFromYaml(const ast::WireDecl &decl);
   /// Return an !llvm.ptr to a NUL-terminated global string constant.
   mlir::Value wireStringPtr(mlir::Location location, llvm::StringRef value);
+  /// Generate Foo_to_{json,yaml} — parameterized by format and field name resolver.
+  void generateWireToSerial(
+      const ast::WireDecl &decl, llvm::StringRef format,
+      const std::optional<ast::NamingCase> &namingCase,
+      llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+          fieldOverride);
+  /// Generate Foo_from_{json,yaml} — parameterized by format and field name resolver.
+  void generateWireFromSerial(
+      const ast::WireDecl &decl, llvm::StringRef format,
+      const std::optional<ast::NamingCase> &namingCase,
+      llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+          fieldOverride);
   void generateSupervisorDecl(const ast::SupervisorDecl &decl);
 
   // ── Actor type registry (declared early for method signatures) ────

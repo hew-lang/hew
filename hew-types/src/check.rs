@@ -488,23 +488,11 @@ impl Checker {
 
         // Actor link/monitor (Erlang-style fault propagation)
         let link_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "link",
-            vec![Ty::actor_ref(Ty::Var(link_t))],
-            Ty::Unit,
-        );
+        self.register_builtin_fn("link", vec![Ty::actor_ref(Ty::Var(link_t))], Ty::Unit);
         let unlink_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "unlink",
-            vec![Ty::actor_ref(Ty::Var(unlink_t))],
-            Ty::Unit,
-        );
+        self.register_builtin_fn("unlink", vec![Ty::actor_ref(Ty::Var(unlink_t))], Ty::Unit);
         let monitor_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "monitor",
-            vec![Ty::actor_ref(Ty::Var(monitor_t))],
-            Ty::I64,
-        );
+        self.register_builtin_fn("monitor", vec![Ty::actor_ref(Ty::Var(monitor_t))], Ty::I64);
         self.register_builtin_fn("demonitor", vec![Ty::I64], Ty::Unit);
 
         // Supervisor child access
@@ -2662,8 +2650,7 @@ impl Checker {
                 let iter_ty = self.synthesize(&iterable.0, &iterable.1);
                 // Infer element type from iterable
                 let elem_ty = match &iter_ty {
-                    Ty::Array(inner, _)
-                    | Ty::Slice(inner) => (**inner).clone(),
+                    Ty::Array(inner, _) | Ty::Slice(inner) => (**inner).clone(),
                     Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
                         args[0].clone()
                     }
@@ -2676,7 +2663,10 @@ impl Checker {
                     Ty::Named { name, args } if name == "HashMap" && args.len() >= 2 => {
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
-                    Ty::Named { name, args } if (name == "Generator" && args.len() >= 1) || (name == "AsyncGenerator" && args.len() == 1) => {
+                    Ty::Named { name, args }
+                        if (name == "Generator" && args.len() >= 1)
+                            || (name == "AsyncGenerator" && args.len() == 1) =>
+                    {
                         args[0].clone()
                     }
                     _ => Ty::Var(TypeVar::fresh()),
@@ -4758,7 +4748,13 @@ impl Checker {
                 }
             },
             // Generator methods: .next() returns the yielded type
-            (Ty::Named { name, args: type_args }, "next") if name == "Generator" || name == "AsyncGenerator" => {
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                "next",
+            ) if name == "Generator" || name == "AsyncGenerator" => {
                 if name == "Generator" {
                     type_args.first().cloned().unwrap_or(Ty::Error)
                 } else {
@@ -4766,7 +4762,13 @@ impl Checker {
                 }
             }
             // Stream<T> methods
-            (Ty::Named { name, args: type_args }, _) if name == "Stream" => {
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Stream" => {
                 let inner = type_args.first().cloned().unwrap_or(Ty::Error);
                 match method {
                     "next" => Ty::option(inner),
@@ -4795,7 +4797,13 @@ impl Checker {
                 }
             }
             // Sink<T> methods
-            (Ty::Named { name, args: type_args }, _) if name == "Sink" => {
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Sink" => {
                 let inner = type_args.first().cloned().unwrap_or(Ty::Error);
                 match method {
                     "write" => {
@@ -5980,9 +5988,7 @@ impl Checker {
                         // Handle special named types
                         match name.as_str() {
                             // Deprecated alias: ActorStream<Y> is now Stream<Y>
-                            "ActorStream" if args.len() == 1 => {
-                                Ty::stream(args[0].clone())
-                            }
+                            "ActorStream" if args.len() == 1 => Ty::stream(args[0].clone()),
                             _ => {
                                 // Qualify unqualified handle types only when imported and unambiguous.
                                 let handle_matches: Vec<&String> = self
@@ -6803,10 +6809,7 @@ mod tests {
         // The body is empty (returns unit) so there will be a return-type mismatch error,
         // but fn_sigs is populated in pass 1 (before body checking), so the signature
         // should already reflect the resolved return type.
-        assert_eq!(
-            output.fn_sigs["foo"].return_type,
-            Ty::stream(Ty::I32)
-        );
+        assert_eq!(output.fn_sigs["foo"].return_type, Ty::stream(Ty::I32));
     }
 
     #[test]

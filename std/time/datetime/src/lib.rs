@@ -4,8 +4,8 @@
 //! milliseconds as the canonical time representation. All returned strings
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::{c_char, CStr};
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
 
@@ -42,14 +42,11 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
 /// `fmt` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) -> *mut c_char {
-    if fmt.is_null() {
-        return std::ptr::null_mut();
-    }
-    let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
+    // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
+    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: caller guarantees `fmt` is a valid NUL-terminated C string.
-    let Ok(fmt_str) = (unsafe { CStr::from_ptr(fmt) }).to_str() else {
+    let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
         return std::ptr::null_mut();
     };
     let formatted = dt.format(fmt_str).to_string();
@@ -64,15 +61,11 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 /// Both `s` and `fmt` must be valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char) -> i64 {
-    if s.is_null() || fmt.is_null() {
-        return -1;
-    }
     // SAFETY: caller guarantees both pointers are valid NUL-terminated C strings.
-    let Ok(s_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+    let Some(s_str) = (unsafe { cstr_to_str(s) }) else {
         return -1;
     };
-    // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
-    let Ok(fmt_str) = (unsafe { CStr::from_ptr(fmt) }).to_str() else {
+    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
         return -1;
     };
     let Ok(naive) = NaiveDateTime::parse_from_str(s_str, fmt_str) else {
@@ -210,7 +203,7 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     /// Helper to read a malloc'd C string and free it.
     ///

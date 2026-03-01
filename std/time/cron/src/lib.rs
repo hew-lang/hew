@@ -1,12 +1,11 @@
 //! Hew runtime: cron expression parsing and scheduling.
 //!
-//! Provides cron expression parsing and next/previous occurrence calculation
-//! for compiled Hew programs. The opaque [`HewCronExpr`] handle wraps a
+//! Provides cron expression parsing and next-occurrence calculation for
+//! compiled Hew programs. The opaque [`HewCronExpr`] handle wraps a
 //! [`cron::Schedule`] and must be freed with [`hew_cron_free`].
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 use std::str::FromStr;
 
 use chrono::Utc;
@@ -34,11 +33,8 @@ pub struct HewCronExpr {
 /// `expr` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_cron_parse(expr: *const c_char) -> *mut HewCronExpr {
-    if expr.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: expr is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = unsafe { CStr::from_ptr(expr) }.to_str() else {
+    // SAFETY: caller guarantees expr is a valid NUL-terminated C string.
+    let Some(s) = (unsafe { cstr_to_str(expr) }) else {
         return std::ptr::null_mut();
     };
     match Schedule::from_str(s) {
@@ -156,7 +152,7 @@ pub unsafe extern "C" fn hew_cron_free(expr: *mut HewCronExpr) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     #[test]
     fn parse_valid_expression() {

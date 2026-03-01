@@ -26,7 +26,7 @@ export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
 
 [dependencies]
 # Core dependencies — always linked (collections, print, string, etc.)
-hew-cabi = { path = "../hew-cabi" }
+hew-cabi = { path = "../hew-cabi", features = ["vec"] }
 libc = "0.2"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 

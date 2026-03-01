@@ -71,6 +71,6 @@ pub fn validate_header(buffer: bytes) -> bool {
     // Check version
     if buffer.get(4) != 1 { return false; }
     // Check flags (only bit 0 allowed)
-    if buffer.get(5) & 254 != 0 { return false; }
+    if (buffer.get(5) & 254) != 0 { return false; }
     true
 }

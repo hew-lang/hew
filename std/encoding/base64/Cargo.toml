@@ -13,7 +13,7 @@ categories = ["compilers"]
 crate-type = ["staticlib", "lib"]
 
 [dependencies]
-hew-cabi = { path = "../../../hew-cabi" }
+hew-cabi = { path = "../../../hew-cabi", features = ["vec"] }
 base64 = "0.22"
 libc = "0.2"
 

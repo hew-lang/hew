@@ -13,4 +13,6 @@
 
 pub mod cabi;
 pub mod sink;
+
+#[cfg(feature = "vec")]
 pub mod vec;

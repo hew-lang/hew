@@ -10,6 +10,10 @@ categories = ["compilers", "api-bindings"]
 readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
 
+[features]
+default = []
+vec = []
+
 [dependencies]
 libc = "0.2"
 

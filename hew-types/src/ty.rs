@@ -271,26 +271,12 @@ impl Ty {
     /// Check if this type is implicitly copied (value semantics).
     #[must_use]
     pub fn is_copy(&self) -> bool {
-        match self {
-            Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-            | Ty::Unit
-            | Ty::Never
-            | Ty::Pointer { .. } => true,
-            Ty::Tuple(elems) => elems.iter().all(Ty::is_copy),
-            Ty::Array(elem, _) => elem.is_copy(),
-            _ => false,
+        if self.is_primitive() {
+            return true;
         }
+        matches!(self, Ty::Never | Ty::Pointer { .. })
+            || matches!(self, Ty::Tuple(elems) if elems.iter().all(Ty::is_copy))
+            || matches!(self, Ty::Array(elem, _) if elem.is_copy())
     }
 
     /// Check if this type contains a specific type variable (occurs check).
@@ -473,12 +459,6 @@ impl Ty {
             Ty::Range(inner) => Ty::Range(Box::new(inner.apply_subst(subst))),
             _ => self.clone(),
         }
-    }
-
-    /// Get a user-friendly name for this type (for error messages).
-    #[must_use]
-    pub fn display_name(&self) -> String {
-        format!("{self}")
     }
 }
 

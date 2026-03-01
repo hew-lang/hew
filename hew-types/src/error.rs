@@ -105,8 +105,8 @@ impl TypeError {
     pub fn mismatch(span: Span, expected: &Ty, actual: &Ty) -> Self {
         Self::new(
             TypeErrorKind::Mismatch {
-                expected: expected.display_name(),
-                actual: actual.display_name(),
+                expected: expected.to_string(),
+                actual: actual.to_string(),
             },
             span,
             format!("expected `{expected}`, found `{actual}`"),

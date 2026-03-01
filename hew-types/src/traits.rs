@@ -153,9 +153,10 @@ impl TraitRegistry {
 
     /// Look up methods from a trait impl.
     #[must_use]
-    pub fn lookup_impl(&self, type_name: &str, trait_name: &str) -> Option<&Vec<MethodSig>> {
+    pub fn lookup_impl(&self, type_name: &str, trait_name: &str) -> Option<&[MethodSig]> {
         self.trait_impls
             .get(&(type_name.to_string(), trait_name.to_string()))
+            .map(Vec::as_slice)
     }
 
     /// Check if a type implements a marker trait (automatic derivation).

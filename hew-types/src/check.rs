@@ -107,7 +107,6 @@ struct TraitInfo {
 #[derive(Debug, Clone)]
 struct TraitAssociatedTypeInfo {
     name: String,
-    _bounds: Vec<TraitBound>,
     default: Option<Spanned<TypeExpr>>,
 }
 
@@ -124,7 +123,6 @@ struct ImplAliasEntry {
     expr: Spanned<TypeExpr>,
     resolved: Option<Ty>,
     resolving: bool,
-    _from_trait_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -890,15 +888,12 @@ impl Checker {
         for item in &tr.items {
             match item {
                 TraitItem::Method(m) => methods.push(m.clone()),
-                TraitItem::AssociatedType {
-                    name,
-                    bounds,
-                    default,
-                } => associated_types.push(TraitAssociatedTypeInfo {
-                    name: name.clone(),
-                    _bounds: bounds.clone(),
-                    default: default.clone(),
-                }),
+                TraitItem::AssociatedType { name, default, .. } => {
+                    associated_types.push(TraitAssociatedTypeInfo {
+                        name: name.clone(),
+                        default: default.clone(),
+                    })
+                }
             }
         }
         let type_params = tr
@@ -931,7 +926,6 @@ impl Checker {
                     expr: alias.ty.clone(),
                     resolved: None,
                     resolving: false,
-                    _from_trait_default: false,
                 },
             );
         }
@@ -948,7 +942,6 @@ impl Checker {
                                 expr: default.clone(),
                                 resolved: None,
                                 resolving: false,
-                                _from_trait_default: true,
                             },
                         );
                     }
@@ -2827,10 +2820,6 @@ impl Checker {
     }
 
     /// Synthesize: infer the type of an expression (bottom-up).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "type checking function with many expression variants"
-    )]
     fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
         // Grow the stack on demand so deeply-nested expressions (e.g. 1000+
         // chained binary operators) don't overflow.
@@ -6389,17 +6378,10 @@ impl Checker {
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
-                            self.warnings.push(TypeError {
-                                severity: crate::error::Severity::Warning,
-                                kind: TypeErrorKind::NonExhaustiveMatch,
-                                span: span.clone(),
-                                message: format!(
-                                    "non-exhaustive match: missing {}",
-                                    names.join(", ")
-                                ),
-                                notes: vec![],
-                                suggestions: vec![],
-                            });
+                            self.warn_non_exhaustive(
+                                span,
+                                &format!("missing {}", names.join(", ")),
+                            );
                         }
                     }
                 }
@@ -6425,115 +6407,22 @@ impl Checker {
                         _ => {}
                     });
                 }
-                if has_binding_identifier {
-                    return;
-                }
-                if !has_true || !has_false {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::NonExhaustiveMatch,
-                        span: span.clone(),
-                        message: "non-exhaustive match: missing bool variant".to_string(),
-                        notes: vec![],
-                        suggestions: vec![],
-                    });
+                if !has_binding_identifier && (!has_true || !has_false) {
+                    self.warn_non_exhaustive(span, "missing bool variant");
                 }
             }
             Ty::Option(_) => {
-                let mut has_binding_identifier = false;
-                let mut has_some = false;
-                let mut has_none = false;
-                for arm in arms {
-                    if arm.guard.is_some() {
-                        continue;
-                    }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                            if name == "Some" =>
-                        {
-                            has_some = true;
-                        }
-                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                            if name == "None" =>
-                        {
-                            has_none = true;
-                        }
-                        Pattern::Identifier(name) if name == "Some" => {
-                            has_some = true;
-                        }
-                        Pattern::Identifier(name) if name == "None" => {
-                            has_none = true;
-                        }
-                        Pattern::Identifier(_) => {
-                            has_binding_identifier = true;
-                        }
-                        _ => {}
-                    });
-                }
-                if has_binding_identifier {
-                    return;
-                }
-                if !has_some || !has_none {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::NonExhaustiveMatch,
-                        span: span.clone(),
-                        message: "non-exhaustive match: Option requires Some and None arms"
-                            .to_string(),
-                        notes: vec![],
-                        suggestions: vec![],
-                    });
+                if !Self::has_both_constructor_variants(arms, "Some", "None") {
+                    self.warn_non_exhaustive(span, "Option requires Some and None arms");
                 }
             }
             Ty::Result { .. } => {
-                let mut has_binding_identifier = false;
-                let mut has_ok = false;
-                let mut has_err = false;
-                for arm in arms {
-                    if arm.guard.is_some() {
-                        continue;
-                    }
-                    visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
-                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                            if name == "Ok" =>
-                        {
-                            has_ok = true;
-                        }
-                        Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
-                            if name == "Err" =>
-                        {
-                            has_err = true;
-                        }
-                        Pattern::Identifier(name) if name == "Ok" => {
-                            has_ok = true;
-                        }
-                        Pattern::Identifier(name) if name == "Err" => {
-                            has_err = true;
-                        }
-                        Pattern::Identifier(_) => {
-                            has_binding_identifier = true;
-                        }
-                        _ => {}
-                    });
-                }
-                if has_binding_identifier {
-                    return;
-                }
-                if !has_ok || !has_err {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::NonExhaustiveMatch,
-                        span: span.clone(),
-                        message: "non-exhaustive match: Result requires Ok and Err arms"
-                            .to_string(),
-                        notes: vec![],
-                        suggestions: vec![],
-                    });
+                if !Self::has_both_constructor_variants(arms, "Ok", "Err") {
+                    self.warn_non_exhaustive(span, "Result requires Ok and Err arms");
                 }
             }
             _ => {
                 // For non-enum types (int, float, string, etc.), check for catch-all patterns.
-                // An unguarded Pattern::Identifier is a binding that matches everything.
                 let mut has_catch_all = false;
                 for arm in arms {
                     if arm.guard.is_some() {
@@ -6549,18 +6438,67 @@ impl Checker {
                     }
                 }
                 if !has_catch_all {
-                    self.warnings.push(TypeError {
-                        severity: crate::error::Severity::Warning,
-                        kind: TypeErrorKind::NonExhaustiveMatch,
-                        span: span.clone(),
-                        message: "non-exhaustive match: consider adding a wildcard `_` arm"
-                            .to_string(),
-                        notes: vec![],
-                        suggestions: vec![],
-                    });
+                    self.warn_non_exhaustive(span, "consider adding a wildcard `_` arm");
                 }
             }
         }
+    }
+
+    fn warn_non_exhaustive(&mut self, span: &Span, detail: &str) {
+        self.warnings.push(TypeError {
+            severity: crate::error::Severity::Warning,
+            kind: TypeErrorKind::NonExhaustiveMatch,
+            span: span.clone(),
+            message: format!("non-exhaustive match: {detail}"),
+            notes: vec![],
+            suggestions: vec![],
+        });
+    }
+
+    /// Check if match arms cover both constructor variants (e.g., Some/None, Ok/Err).
+    /// Returns true if exhaustive (either a binding wildcard or both variants present).
+    fn has_both_constructor_variants(arms: &[MatchArm], variant_a: &str, variant_b: &str) -> bool {
+        fn visit_or<'a>(pattern: &'a Pattern, f: &mut impl FnMut(&'a Pattern)) {
+            match pattern {
+                Pattern::Or(left, right) => {
+                    visit_or(&left.0, f);
+                    visit_or(&right.0, f);
+                }
+                _ => f(pattern),
+            }
+        }
+
+        let mut has_binding_identifier = false;
+        let mut has_a = false;
+        let mut has_b = false;
+        for arm in arms {
+            if arm.guard.is_some() {
+                continue;
+            }
+            visit_or(&arm.pattern.0, &mut |pattern| match pattern {
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                    if name == variant_a =>
+                {
+                    has_a = true;
+                }
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. }
+                    if name == variant_b =>
+                {
+                    has_b = true;
+                }
+                Pattern::Identifier(name) if name == variant_a => {
+                    has_a = true;
+                }
+                Pattern::Identifier(name) if name == variant_b => {
+                    has_b = true;
+                }
+                Pattern::Identifier(_) => {
+                    has_binding_identifier = true;
+                }
+                _ => {}
+            });
+        }
+        has_binding_identifier || (has_a && has_b)
     }
 }
 

@@ -97,39 +97,27 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         handle_methods: Vec::new(),
     };
 
-    // Collect extern "C" function signatures
     for (item, _span) in &program.items {
-        if let Item::ExternBlock(block) = item {
-            for func in &block.functions {
-                let (params, ret) = extern_fn_sig(func, module_short);
-                info.functions.push((func.name.clone(), params, ret));
+        match item {
+            Item::ExternBlock(block) => {
+                for func in &block.functions {
+                    let (params, ret) = extern_fn_sig(func, module_short);
+                    info.functions.push((func.name.clone(), params, ret));
+                }
             }
-        }
-    }
-
-    // Collect handle types from `type` declarations
-    for (item, _span) in &program.items {
-        if let Item::TypeDecl(td) = item {
-            let qualified = format!("{module_short}.{}", td.name);
-            info.handle_types.push(qualified);
-        }
-    }
-
-    // Collect clean name → C symbol mappings from `pub fn` declarations
-    for (item, _span) in &program.items {
-        if let Item::Function(fn_decl) = item {
-            if fn_decl.visibility.is_pub() {
+            Item::TypeDecl(td) => {
+                let qualified = format!("{module_short}.{}", td.name);
+                info.handle_types.push(qualified);
+            }
+            Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
                 if let Some(c_symbol) = extract_call_target(&fn_decl.body) {
                     info.clean_names.push((fn_decl.name.clone(), c_symbol));
                 }
             }
-        }
-    }
-
-    // Collect handle method → C symbol mappings from `impl` blocks
-    for (item, _span) in &program.items {
-        if let Item::Impl(impl_decl) = item {
-            extract_handle_methods(impl_decl, module_short, &mut info);
+            Item::Impl(impl_decl) => {
+                extract_handle_methods(impl_decl, module_short, &mut info);
+            }
+            _ => {}
         }
     }
 

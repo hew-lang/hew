@@ -1551,8 +1551,8 @@ name = "hew-std-crypto-password"
 version = "0.1.5"
 dependencies = [
  "argon2",
+ "hew-cabi",
  "libc",
- "password-hash",
 ]
 
 [[package]]

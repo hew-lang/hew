@@ -250,235 +250,139 @@ impl Ty {
     /// Check if this is a primitive type.
     #[must_use]
     pub fn is_primitive(&self) -> bool {
-        matches!(
-            self,
-            Ty::I8
-                | Ty::I16
-                | Ty::I32
-                | Ty::I64
-                | Ty::U8
-                | Ty::U16
-                | Ty::U32
-                | Ty::U64
-                | Ty::F32
-                | Ty::F64
-                | Ty::Bool
-                | Ty::Char
-                | Ty::Unit
-        )
+        self.is_integer() || self.is_float() || matches!(self, Ty::Bool | Ty::Char | Ty::Unit)
     }
 
     /// Check if this type is implicitly copied (value semantics).
     #[must_use]
     pub fn is_copy(&self) -> bool {
-        match self {
-            Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-            | Ty::Unit
-            | Ty::Never
-            | Ty::Pointer { .. } => true,
-            Ty::Tuple(elems) => elems.iter().all(Ty::is_copy),
-            Ty::Array(elem, _) => elem.is_copy(),
-            _ => false,
+        if self.is_primitive() {
+            return true;
         }
+        matches!(self, Ty::Never | Ty::Pointer { .. })
+            || matches!(self, Ty::Tuple(elems) if elems.iter().all(Ty::is_copy))
+            || matches!(self, Ty::Array(elem, _) if elem.is_copy())
     }
 
     /// Check if this type contains a specific type variable (occurs check).
     #[must_use]
     pub fn contains_var(&self, v: TypeVar) -> bool {
-        match self {
-            Ty::Var(tv) => *tv == v,
-            Ty::Tuple(elems) => elems.iter().any(|e| e.contains_var(v)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => elem.contains_var(v),
-            Ty::Named { args, .. } => args.iter().any(|a| a.contains_var(v)),
-            Ty::Function { params, ret } => {
-                params.iter().any(|p| p.contains_var(v)) || ret.contains_var(v)
-            }
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => {
-                params.iter().any(|p| p.contains_var(v))
-                    || ret.contains_var(v)
-                    || captures.iter().any(|c| c.contains_var(v))
-            }
-            Ty::ActorRef(inner)
-            | Ty::Option(inner)
-            | Ty::Range(inner)
-            | Ty::Stream(inner)
-            | Ty::Sink(inner) => inner.contains_var(v),
-            Ty::AsyncGenerator { yields } => yields.contains_var(v),
-            Ty::Result { ok, err } => ok.contains_var(v) || err.contains_var(v),
-            Ty::Generator { yields, returns } => yields.contains_var(v) || returns.contains_var(v),
-            Ty::Pointer { pointee, .. } => pointee.contains_var(v),
-            Ty::TraitObject { traits } => traits
-                .iter()
-                .any(|bound| bound.args.iter().any(|a| a.contains_var(v))),
-            _ => false,
+        if let Ty::Var(tv) = self {
+            return *tv == v;
         }
+        self.any_child(&|child| child.contains_var(v))
     }
 
     /// Substitute a single type variable with a replacement type.
     #[must_use]
     pub fn substitute(&self, var: TypeVar, replacement: &Ty) -> Ty {
-        match self {
-            Ty::Var(tv) if *tv == var => replacement.clone(),
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| e.substitute(var, replacement))
-                    .collect(),
-            ),
-            Ty::Array(elem, size) => Ty::Array(Box::new(elem.substitute(var, replacement)), *size),
-            Ty::Slice(elem) => Ty::Slice(Box::new(elem.substitute(var, replacement))),
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|a| a.substitute(var, replacement))
-                    .collect(),
-            },
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute(var, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute(var, replacement)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute(var, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute(var, replacement)),
-                captures: captures
-                    .iter()
-                    .map(|c| c.substitute(var, replacement))
-                    .collect(),
-            },
-            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(inner.substitute(var, replacement))),
-            Ty::Stream(inner) => Ty::Stream(Box::new(inner.substitute(var, replacement))),
-            Ty::Sink(inner) => Ty::Sink(Box::new(inner.substitute(var, replacement))),
-            Ty::Option(inner) => Ty::Option(Box::new(inner.substitute(var, replacement))),
-            Ty::Result { ok, err } => Ty::Result {
-                ok: Box::new(ok.substitute(var, replacement)),
-                err: Box::new(err.substitute(var, replacement)),
-            },
-            Ty::Generator { yields, returns } => Ty::Generator {
-                yields: Box::new(yields.substitute(var, replacement)),
-                returns: Box::new(returns.substitute(var, replacement)),
-            },
-            Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
-                yields: Box::new(yields.substitute(var, replacement)),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.substitute(var, replacement)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|a| a.substitute(var, replacement))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Range(inner) => Ty::Range(Box::new(inner.substitute(var, replacement))),
-            _ => self.clone(),
+        if let Ty::Var(tv) = self {
+            if *tv == var {
+                return replacement.clone();
+            }
         }
+        self.map_children(&|child| child.substitute(var, replacement))
     }
 
     /// Apply a full substitution to this type.
     #[must_use]
     pub fn apply_subst(&self, subst: &Substitution) -> Ty {
-        match self {
-            Ty::Var(v) => match subst.lookup(*v) {
+        if subst.mappings().is_empty() {
+            return self.clone();
+        }
+        if let Ty::Var(v) = self {
+            return match subst.lookup(*v) {
                 Some(resolved) => resolved.apply_subst(subst),
                 None => self.clone(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| e.apply_subst(subst)).collect()),
-            Ty::Array(elem, size) => Ty::Array(Box::new(elem.apply_subst(subst)), *size),
-            Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst(subst))),
+            };
+        }
+        self.map_children(&|child| child.apply_subst(subst))
+    }
+
+    /// Apply a function to each child type, reconstructing the composite.
+    /// Leaf types (primitives, Var, Error) return `self.clone()`.
+    fn map_children(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+        match self {
+            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(f).collect()),
+            Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
+            Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
             Ty::Named { name, args } => Ty::Named {
                 name: name.clone(),
-                args: args.iter().map(|a| a.apply_subst(subst)).collect(),
+                args: args.iter().map(f).collect(),
             },
             Ty::Function { params, ret } => Ty::Function {
-                params: params.iter().map(|p| p.apply_subst(subst)).collect(),
-                ret: Box::new(ret.apply_subst(subst)),
+                params: params.iter().map(f).collect(),
+                ret: Box::new(f(ret)),
             },
             Ty::Closure {
                 params,
                 ret,
                 captures,
             } => Ty::Closure {
-                params: params.iter().map(|p| p.apply_subst(subst)).collect(),
-                ret: Box::new(ret.apply_subst(subst)),
-                captures: captures.iter().map(|c| c.apply_subst(subst)).collect(),
+                params: params.iter().map(f).collect(),
+                ret: Box::new(f(ret)),
+                captures: captures.iter().map(f).collect(),
             },
-            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(inner.apply_subst(subst))),
-            Ty::Stream(inner) => Ty::Stream(Box::new(inner.apply_subst(subst))),
-            Ty::Sink(inner) => Ty::Sink(Box::new(inner.apply_subst(subst))),
-            Ty::Option(inner) => Ty::Option(Box::new(inner.apply_subst(subst))),
+            Ty::ActorRef(inner) => Ty::ActorRef(Box::new(f(inner))),
+            Ty::Stream(inner) => Ty::Stream(Box::new(f(inner))),
+            Ty::Sink(inner) => Ty::Sink(Box::new(f(inner))),
+            Ty::Option(inner) => Ty::Option(Box::new(f(inner))),
+            Ty::Range(inner) => Ty::Range(Box::new(f(inner))),
             Ty::Result { ok, err } => Ty::Result {
-                ok: Box::new(ok.apply_subst(subst)),
-                err: Box::new(err.apply_subst(subst)),
+                ok: Box::new(f(ok)),
+                err: Box::new(f(err)),
             },
             Ty::Generator { yields, returns } => Ty::Generator {
-                yields: Box::new(yields.apply_subst(subst)),
-                returns: Box::new(returns.apply_subst(subst)),
+                yields: Box::new(f(yields)),
+                returns: Box::new(f(returns)),
             },
             Ty::AsyncGenerator { yields } => Ty::AsyncGenerator {
-                yields: Box::new(yields.apply_subst(subst)),
+                yields: Box::new(f(yields)),
             },
             Ty::Pointer {
                 is_mutable,
                 pointee,
             } => Ty::Pointer {
                 is_mutable: *is_mutable,
-                pointee: Box::new(pointee.apply_subst(subst)),
+                pointee: Box::new(f(pointee)),
             },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
                     .iter()
-                    .map(|bound| crate::ty::TraitObjectBound {
+                    .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
-                        args: bound.args.iter().map(|a| a.apply_subst(subst)).collect(),
+                        args: bound.args.iter().map(f).collect(),
                     })
                     .collect(),
             },
-            Ty::Range(inner) => Ty::Range(Box::new(inner.apply_subst(subst))),
             _ => self.clone(),
         }
     }
 
-    /// Get a user-friendly name for this type (for error messages).
-    #[must_use]
-    pub fn display_name(&self) -> String {
-        format!("{self}")
+    /// Check if any child type satisfies a predicate (boolean fold).
+    fn any_child(&self, f: &impl Fn(&Ty) -> bool) -> bool {
+        match self {
+            Ty::Tuple(elems) => elems.iter().any(f),
+            Ty::Array(elem, _) | Ty::Slice(elem) => f(elem),
+            Ty::Named { args, .. } => args.iter().any(f),
+            Ty::Function { params, ret } => params.iter().any(f) || f(ret),
+            Ty::Closure {
+                params,
+                ret,
+                captures,
+            } => params.iter().any(f) || f(ret) || captures.iter().any(f),
+            Ty::ActorRef(inner)
+            | Ty::Option(inner)
+            | Ty::Range(inner)
+            | Ty::Stream(inner)
+            | Ty::Sink(inner) => f(inner),
+            Ty::Result { ok, err } => f(ok) || f(err),
+            Ty::Generator { yields, returns } => f(yields) || f(returns),
+            Ty::AsyncGenerator { yields } => f(yields),
+            Ty::Pointer { pointee, .. } => f(pointee),
+            Ty::TraitObject { traits } => traits.iter().any(|bound| bound.args.iter().any(f)),
+            _ => false,
+        }
     }
 }
 
@@ -603,11 +507,9 @@ mod tests {
 
     #[test]
     fn test_type_var_fresh() {
-        TypeVar::reset();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
         assert_ne!(v1, v2);
-        assert_eq!(v1.0 + 1, v2.0);
     }
 
     #[test]

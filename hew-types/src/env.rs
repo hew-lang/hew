@@ -18,8 +18,6 @@ pub struct Binding {
     pub is_moved: bool,
     /// Where the move happened, for error reporting
     pub moved_at: Option<Span>,
-    /// Whether the variable has been read since definition
-    pub is_used: bool,
     /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
     /// Whether the variable has been reassigned after initial definition
@@ -89,8 +87,7 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
-                    is_used: true, // synthetic bindings are always "used"
-                    read_count: 1,
+                    read_count: 1, // synthetic bindings are always "used"
                     is_written: false,
                     def_span: None,
                 },
@@ -108,7 +105,6 @@ impl TypeEnv {
                     is_mutable,
                     is_moved: false,
                     moved_at: None,
-                    is_used: false,
                     read_count: 0,
                     is_written: false,
                     def_span: Some(span),
@@ -150,7 +146,7 @@ impl TypeEnv {
             if name.starts_with('_') {
                 continue; // convention: _ prefix means intentionally unused
             }
-            if !binding.is_used && binding.read_count == 0 {
+            if binding.read_count == 0 {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
                     span: span.clone(),
@@ -172,7 +168,6 @@ impl TypeEnv {
     pub fn lookup(&mut self, name: &str) -> Option<&Binding> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
-                binding.is_used = true;
                 binding.read_count += 1;
                 return Some(binding);
             }
@@ -196,7 +191,6 @@ impl TypeEnv {
     pub fn lookup_with_depth(&mut self, name: &str) -> Option<(usize, &Binding)> {
         for (i, scope) in self.scopes.iter_mut().enumerate().rev() {
             if let Some(binding) = scope.get_mut(name) {
-                binding.is_used = true;
                 binding.read_count += 1;
                 return Some((i, binding));
             }
@@ -249,9 +243,6 @@ impl TypeEnv {
                 // (read_count > 1), the count stays positive and the variable
                 // remains "used". For write-only variables, count drops to 0.
                 binding.read_count = binding.read_count.saturating_sub(1);
-                if binding.read_count == 0 {
-                    binding.is_used = false;
-                }
                 return;
             }
         }
@@ -349,13 +340,13 @@ mod tests {
         env.define_with_span("x".to_string(), Ty::I32, false, 0..5);
         // Not yet used
         let b = env.lookup_ref("x").unwrap();
-        assert!(!b.is_used);
+        assert_eq!(b.read_count, 0);
         assert!(!b.is_written);
         assert_eq!(b.def_span, Some(0..5));
 
         // lookup() marks as used
         let b = env.lookup("x").unwrap();
-        assert!(b.is_used);
+        assert!(b.read_count > 0);
     }
 
     #[test]
@@ -363,7 +354,7 @@ mod tests {
         let mut env = TypeEnv::new();
         env.define("self_".to_string(), Ty::I32, false);
         let b = env.lookup_ref("self_").unwrap();
-        assert!(b.is_used, "synthetic bindings should start as used");
+        assert!(b.read_count > 0, "synthetic bindings should start as used");
         assert!(b.def_span.is_none());
     }
 
@@ -381,11 +372,11 @@ mod tests {
         let mut env = TypeEnv::new();
         env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
         // Simulate what synthesize does during assignment target resolution
-        let _ = env.lookup("x"); // marks is_used = true
-        assert!(env.lookup_ref("x").unwrap().is_used);
+        let _ = env.lookup("x"); // read_count = 1
+        assert!(env.lookup_ref("x").unwrap().read_count > 0);
         // unmark_used should reverse it for first assignment
         env.unmark_used("x");
-        assert!(!env.lookup_ref("x").unwrap().is_used);
+        assert_eq!(env.lookup_ref("x").unwrap().read_count, 0);
     }
 
     #[test]
@@ -398,7 +389,7 @@ mod tests {
         let _ = env.lookup("x"); // read_count = 2
         env.unmark_used("x"); // read_count = 1
         assert!(
-            env.lookup_ref("x").unwrap().is_used,
+            env.lookup_ref("x").unwrap().read_count > 0,
             "unmark_used should not undo usage when there was a genuine read"
         );
     }
@@ -408,8 +399,9 @@ mod tests {
         let mut env = TypeEnv::new();
         env.define_with_span("x".to_string(), Ty::I32, false, 0..5);
         let _ = env.lookup_ref("x");
-        assert!(
-            !env.lookup_ref("x").unwrap().is_used,
+        assert_eq!(
+            env.lookup_ref("x").unwrap().read_count,
+            0,
             "lookup_ref should not mark as used"
         );
     }
@@ -464,7 +456,7 @@ mod tests {
     fn test_pop_scope_no_warn_synthetic() {
         let mut env = TypeEnv::new();
         env.push_scope();
-        // synthetic define — no span, is_used = true
+        // synthetic define — no span, read_count = 1
         env.define("self_".to_string(), Ty::I32, false);
         let warnings = env.pop_scope_with_warnings();
         assert!(

@@ -4,8 +4,7 @@
 //! Hew programs. All returned buffers are allocated with `libc::malloc` so
 //! callers can free them with [`hew_base64_free`].
 
-use std::ffi::{c_void, CStr};
-use std::os::raw::c_char;
+use std::ffi::{c_char, c_void};
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
 use base64::Engine as _;
@@ -64,19 +63,7 @@ unsafe fn encode_with_engine(
         unsafe { std::slice::from_raw_parts(data, len) }
     };
     let encoded = engine.encode(slice);
-    let encoded_len = encoded.len();
-
-    // SAFETY: We request encoded_len+1 bytes from malloc.
-    let ptr = unsafe { libc::malloc(encoded_len + 1) }.cast::<u8>();
-    if ptr.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: ptr is freshly allocated with encoded_len+1 bytes; encoded bytes
-    // are valid and non-overlapping with the malloc'd region.
-    unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), ptr, encoded_len) };
-    // SAFETY: ptr + encoded_len is within the allocated region.
-    unsafe { *ptr.add(encoded_len) = 0 };
-    ptr.cast::<c_char>()
+    hew_cabi::cabi::str_to_malloc(&encoded)
 }
 
 /// Decode a Base64 string to binary data.
@@ -91,11 +78,11 @@ unsafe fn encode_with_engine(
 /// to a writable `usize` (or be null, in which case the call returns null).
 #[no_mangle]
 pub unsafe extern "C" fn hew_base64_decode(s: *const c_char, out_len: *mut usize) -> *mut u8 {
-    if s.is_null() || out_len.is_null() {
+    if out_len.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = unsafe { CStr::from_ptr(s) }.to_str() else {
+    // SAFETY: If non-null, s is a valid NUL-terminated C string per caller contract.
+    let Some(rust_str) = (unsafe { hew_cabi::cabi::cstr_to_str(s) }) else {
         return std::ptr::null_mut();
     };
     let Ok(decoded) = STANDARD.decode(rust_str) else {
@@ -132,8 +119,8 @@ pub unsafe extern "C" fn hew_base64_free(ptr: *mut c_void) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: ptr was allocated with libc::malloc in encode_with_engine or
-    // hew_base64_decode.
+    // SAFETY: ptr was allocated with libc::malloc (via str_to_malloc in
+    // encode_with_engine, or directly in hew_base64_decode).
     unsafe { libc::free(ptr) };
 }
 
@@ -142,7 +129,7 @@ extern crate hew_runtime; // Link hew_vec_* symbol implementations
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     #[test]
     fn test_encode_decode_roundtrip() {
@@ -279,6 +266,6 @@ pub unsafe extern "C" fn hew_base64_decode_hew(s: *const c_char) -> *mut hew_cab
     // SAFETY: slice is valid.
     let result = unsafe { hew_cabi::vec::u8_to_hwvec(slice) };
     // SAFETY: ptr was allocated by hew_base64_decode.
-    unsafe { hew_base64_free(ptr.cast::<std::ffi::c_void>()) };
+    unsafe { hew_base64_free(ptr.cast::<c_void>()) };
     result
 }

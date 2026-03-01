@@ -1990,10 +1990,6 @@ fn classify_token(token: &Token<'_>) -> Option<SemanticTokenType> {
 
 /// Keywords that introduce a named declaration — the identifier immediately
 /// following one of these tokens is a declaration site.
-fn is_decl_keyword(token: &Token<'_>) -> bool {
-    token.is_decl_keyword()
-}
-
 fn is_function_decl_context(prev: Option<&Token<'_>>) -> bool {
     matches!(prev, Some(Token::Fn | Token::Receive))
 }
@@ -2048,7 +2044,7 @@ fn build_semantic_tokens(source: &str, lo: &[usize], _parse_result: &ParseResult
 
         // Mark identifiers after declaration keywords as DECLARATION.
         if matches!(token, Token::Identifier(_)) {
-            if i > 0 && is_decl_keyword(&lexer_tokens[i - 1].0) {
+            if i > 0 && lexer_tokens[i - 1].0.is_decl_keyword() {
                 modifiers |= modifier_bit(&SemanticTokenModifier::DECLARATION);
             }
             // Identifiers after `const` are also READONLY.
@@ -3012,10 +3008,10 @@ fn collect_supertypes(
 ) -> Vec<TypeHierarchyItem> {
     let mut supers = Vec::new();
 
-    // For actors, collect their declared super_traits.
     for (item, _) in &parse_result.program.items {
-        if let Item::Actor(a) = item {
-            if a.name == name {
+        match item {
+            // For actors, collect their declared super_traits and return immediately.
+            Item::Actor(a) if a.name == name => {
                 if let Some(bounds) = &a.super_traits {
                     for bound in bounds {
                         if let Some(hi) =
@@ -3027,25 +3023,23 @@ fn collect_supertypes(
                 }
                 return supers;
             }
-        }
-    }
-
-    // For types, find impl blocks: `impl TraitName for TypeName`
-    for (item, _) in &parse_result.program.items {
-        if let Item::Impl(impl_decl) = item {
-            let target = match &impl_decl.target_type.0 {
-                hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
-                _ => continue,
-            };
-            if target == name {
-                if let Some(bound) = &impl_decl.trait_bound {
-                    if let Some(hi) =
-                        find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
-                    {
-                        supers.push(hi);
+            // For types, find impl blocks: `impl TraitName for TypeName`
+            Item::Impl(impl_decl) => {
+                let target = match &impl_decl.target_type.0 {
+                    hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
+                    _ => continue,
+                };
+                if target == name {
+                    if let Some(bound) = &impl_decl.trait_bound {
+                        if let Some(hi) =
+                            find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
+                        {
+                            supers.push(hi);
+                        }
                     }
                 }
             }
+            _ => {}
         }
     }
     supers

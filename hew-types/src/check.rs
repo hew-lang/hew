@@ -14,9 +14,8 @@ use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
     ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
     ImportDecl, ImportSpec, Item, LambdaParam, Literal, MatchArm, Pattern, Program, ReceiveFnDecl,
-    Span, Spanned, Stmt, StringPart, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl,
-    WireDeclKind,
+    Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -274,7 +273,8 @@ fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
     let Some(expected_info) = integer_type_info(expected) else {
         return false;
     };
-    actual_info.signed == expected_info.signed
+    // Only allow widening: same sign and actual width fits in expected width
+    actual_info.signed == expected_info.signed && actual_info.width <= expected_info.width
 }
 
 fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
@@ -1798,6 +1798,59 @@ impl Checker {
                         self.register_fn_sig_with_name(&method_name, method);
                     }
                 }
+                Item::Impl(id) => {
+                    if let TypeExpr::Named {
+                        name: type_name, ..
+                    } = &id.target_type.0
+                    {
+                        for method in &id.methods {
+                            if !method.visibility.is_pub() {
+                                continue;
+                            }
+                            let method_key = format!("{type_name}::{}", method.name);
+                            self.register_fn_sig_with_name(&method_key, method);
+                            let params: Vec<Ty> = method
+                                .params
+                                .iter()
+                                .filter(|p| p.name != "self")
+                                .map(|p| self.resolve_type_expr(&p.ty.0))
+                                .collect();
+                            let return_type = method
+                                .return_type
+                                .as_ref()
+                                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+                            let param_names: Vec<String> = method
+                                .params
+                                .iter()
+                                .filter(|p| p.name != "self")
+                                .map(|p| p.name.clone())
+                                .collect();
+                            let is_async = method.is_async;
+                            let method_name = method.name.clone();
+                            if let Some(td) = self.lookup_type_def_mut(type_name) {
+                                td.methods.insert(
+                                    method_name,
+                                    FnSig {
+                                        type_params: vec![],
+                                        type_param_bounds: HashMap::new(),
+                                        param_names,
+                                        params,
+                                        return_type,
+                                        is_async,
+                                        is_pure: method.is_pure,
+                                        accepts_kwargs: false,
+                                        doc_comment: None,
+                                    },
+                                );
+                            }
+                        }
+                        // Track trait implementations
+                        if let Some(tb) = &id.trait_bound {
+                            self.trait_impls_set
+                                .insert((type_name.clone(), tb.name.clone()));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2505,22 +2558,10 @@ impl Checker {
                 if let Some(eb) = else_block {
                     if let Some(ref if_stmt) = eb.if_stmt {
                         let else_ty = self.check_stmt_as_expr(&if_stmt.0, &if_stmt.1);
-                        // If both branches produce values, unify and return;
-                        // if either is (), the if-statement evaluates to ()
-                        if then_ty == Ty::Unit || else_ty == Ty::Unit {
-                            Ty::Unit
-                        } else {
-                            self.expect_type(&then_ty, &else_ty, &if_stmt.1);
-                            then_ty
-                        }
+                        self.unify_branches(&then_ty, &else_ty, &if_stmt.1)
                     } else if let Some(block) = &eb.block {
                         let else_ty = self.check_block(block);
-                        if then_ty == Ty::Unit || else_ty == Ty::Unit {
-                            Ty::Unit
-                        } else {
-                            self.expect_type(&then_ty, &else_ty, span);
-                            then_ty
-                        }
+                        self.unify_branches(&then_ty, &else_ty, span)
                     } else {
                         Ty::Unit
                     }
@@ -2541,12 +2582,7 @@ impl Checker {
                 self.env.pop_scope();
                 if let Some(block) = else_body {
                     let else_ty = self.check_block(block);
-                    if then_ty == Ty::Unit || else_ty == Ty::Unit {
-                        Ty::Unit
-                    } else {
-                        self.expect_type(&then_ty, &else_ty, span);
-                        then_ty
-                    }
+                    self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     Ty::Unit
                 }
@@ -3018,8 +3054,8 @@ impl Checker {
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
                 if let Some(eb) = else_block {
-                    let _else_ty = self.check_against(&eb.0, &eb.1, &then_ty);
-                    then_ty
+                    let else_ty = self.synthesize(&eb.0, &eb.1);
+                    self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     Ty::Unit
                 }
@@ -3037,12 +3073,7 @@ impl Checker {
                 self.env.pop_scope();
                 if let Some(block) = else_body {
                     let else_ty = self.check_block(block);
-                    if then_ty == Ty::Unit || else_ty == Ty::Unit {
-                        Ty::Unit
-                    } else {
-                        self.expect_type(&then_ty, &else_ty, span);
-                        then_ty
-                    }
+                    self.unify_branches(&then_ty, &else_ty, span)
                 } else {
                     Ty::Unit
                 }
@@ -3440,8 +3471,32 @@ impl Checker {
                 expected.clone()
             }
 
+            // Negated integer literal can coerce to any signed integer type
+            (
+                Expr::Unary {
+                    op: UnaryOp::Negate,
+                    operand,
+                },
+                ty,
+            ) if matches!(operand.0, Expr::Literal(Literal::Integer { .. })) && ty.is_integer() => {
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
             // Integer literal can coerce to float types
             (Expr::Literal(Literal::Integer { .. }), ty) if ty.is_float() => {
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // Negated integer literal can coerce to float types
+            (
+                Expr::Unary {
+                    op: UnaryOp::Negate,
+                    operand,
+                },
+                ty,
+            ) if matches!(operand.0, Expr::Literal(Literal::Integer { .. })) && ty.is_float() => {
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -3678,94 +3733,95 @@ impl Checker {
         self.require_unsafe(&func_name, span);
         self.warn_if_wasm_incompatible_call(&func_name, span);
 
-        // Check if name is a user-defined enum variant constructor first
-        for (type_name, td) in &self.type_defs.clone() {
-            if td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct {
-                if let Some(variant) = td.variants.get(&func_name) {
-                    let expected_params = match variant {
+        // Check if name is a user-defined enum variant constructor first.
+        // Separate lookup (immutable borrow) from processing (mutable borrow)
+        // to avoid cloning the entire type_defs map.
+        let constructor_match = self
+            .type_defs
+            .iter()
+            .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
+            .find_map(|(type_name, td)| {
+                td.variants.get(&func_name).and_then(|variant| {
+                    let params = match variant {
                         VariantDef::Unit => Vec::new(),
-                        VariantDef::Tuple(params) => params.clone(),
-                        VariantDef::Struct(_) => continue,
+                        VariantDef::Tuple(p) => p.clone(),
+                        VariantDef::Struct(_) => return None,
                     };
-                    let type_param_count = td.type_params.len();
-                    if type_param_count == 0 {
-                        if let Some(type_args_provided) = type_args {
-                            if !type_args_provided.is_empty() {
-                                self.report_error(
-                                    TypeErrorKind::ArityMismatch,
-                                    span,
-                                    format!(
-                                        "this constructor takes 0 type argument(s) but {} were supplied",
-                                        type_args_provided.len()
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    let mut inferred_args = Vec::new();
-                    if type_param_count > 0 {
-                        if let Some(type_args_provided) = type_args {
-                            if type_args_provided.len() != type_param_count {
-                                self.report_error(
-                                    TypeErrorKind::ArityMismatch,
-                                    span,
-                                    format!(
-                                        "this constructor takes {} type argument(s) but {} were supplied",
-                                        type_param_count,
-                                        type_args_provided.len()
-                                    ),
-                                );
-                            }
-                            inferred_args = type_args_provided
-                                .iter()
-                                .take(type_param_count)
-                                .map(|(te, _)| self.resolve_type_expr(te))
-                                .collect();
-                        }
-                        while inferred_args.len() < type_param_count {
-                            inferred_args.push(Ty::Var(TypeVar::fresh()));
-                        }
-                    }
-                    if args.len() != expected_params.len() {
+                    Some((type_name.clone(), params, td.type_params.clone()))
+                })
+            });
+        if let Some((type_name, expected_params, type_params)) = constructor_match {
+            let type_param_count = type_params.len();
+            if type_param_count == 0 {
+                if let Some(type_args_provided) = type_args {
+                    if !type_args_provided.is_empty() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
                             span,
                             format!(
-                                "this function takes {} argument(s) but {} were supplied",
-                                expected_params.len(),
-                                args.len()
+                                "this constructor takes 0 type argument(s) but {} were supplied",
+                                type_args_provided.len()
                             ),
                         );
                     }
-                    for (i, arg) in args.iter().enumerate() {
-                        if let Some(param_ty) = expected_params.get(i) {
-                            let (expr, span) = arg.expr();
-                            // Instantiate type parameters with inferred args
-                            let mut expected_ty = param_ty.clone();
-                            if !td.type_params.is_empty() {
-                                for (param, replacement) in
-                                    td.type_params.iter().zip(inferred_args.iter())
-                                {
-                                    expected_ty = self.substitute_named_param(
-                                        &expected_ty,
-                                        param,
-                                        replacement,
-                                    );
-                                }
-                            }
-                            self.check_against(expr, span, &expected_ty);
-                        }
-                    }
-                    let resolved_args: Vec<Ty> = inferred_args
-                        .iter()
-                        .map(|ty| self.subst.resolve(ty))
-                        .collect();
-                    return Ty::Named {
-                        name: type_name.clone(),
-                        args: resolved_args,
-                    };
                 }
             }
+            let mut inferred_args = Vec::new();
+            if type_param_count > 0 {
+                if let Some(type_args_provided) = type_args {
+                    if type_args_provided.len() != type_param_count {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "this constructor takes {} type argument(s) but {} were supplied",
+                                type_param_count,
+                                type_args_provided.len()
+                            ),
+                        );
+                    }
+                    inferred_args = type_args_provided
+                        .iter()
+                        .take(type_param_count)
+                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .collect();
+                }
+                while inferred_args.len() < type_param_count {
+                    inferred_args.push(Ty::Var(TypeVar::fresh()));
+                }
+            }
+            if args.len() != expected_params.len() {
+                self.report_error(
+                    TypeErrorKind::ArityMismatch,
+                    span,
+                    format!(
+                        "this function takes {} argument(s) but {} were supplied",
+                        expected_params.len(),
+                        args.len()
+                    ),
+                );
+            }
+            for (i, arg) in args.iter().enumerate() {
+                if let Some(param_ty) = expected_params.get(i) {
+                    let (expr, span) = arg.expr();
+                    let mut expected_ty = param_ty.clone();
+                    if !type_params.is_empty() {
+                        for (param, replacement) in type_params.iter().zip(inferred_args.iter()) {
+                            expected_ty =
+                                self.substitute_named_param(&expected_ty, param, replacement);
+                        }
+                    }
+                    self.check_against(expr, span, &expected_ty);
+                }
+            }
+            let resolved_args: Vec<Ty> = inferred_args
+                .iter()
+                .map(|ty| self.subst.resolve(ty))
+                .collect();
+            return Ty::Named {
+                name: type_name,
+                args: resolved_args,
+            };
         }
 
         // Handle polymorphic constructors with fresh linked type vars
@@ -4047,7 +4103,22 @@ impl Checker {
                 }
                 *ret
             }
-            _ => Ty::Error,
+            _ => {
+                // Don't cascade errors from already-failed expressions.
+                // Also allow Ty::Unit — keyword expressions like `cooperate` return
+                // Unit and can be called with `()` as a no-op.
+                if !matches!(resolved, Ty::Error | Ty::Var(_) | Ty::Unit) {
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: "function".to_string(),
+                            actual: format!("{resolved}"),
+                        },
+                        span,
+                        format!("cannot call value of type `{resolved}`"),
+                    );
+                }
+                Ty::Error
+            }
         }
     }
 
@@ -5102,7 +5173,8 @@ impl Checker {
         // Exhaustiveness check for enums/Option/Result
         self.check_exhaustiveness(scrutinee_ty, arms, span);
 
-        result_ty.unwrap_or(Ty::Unit)
+        // If all arms diverge (Never/Error), the match itself diverges
+        result_ty.unwrap_or(Ty::Never)
     }
 
     fn check_lambda(
@@ -6138,6 +6210,25 @@ impl Checker {
             }
             TypeExpr::Infer => Ty::Var(TypeVar::fresh()),
         }
+    }
+
+    /// Unify two branch types (if/else, if-let/else).
+    ///
+    /// - If one branch diverges (`Never`), returns the other branch's type.
+    /// - If either branch is `Unit`, the expression evaluates to `Unit`.
+    /// - Otherwise, unifies the two types and returns the then-branch type.
+    fn unify_branches(&mut self, then_ty: &Ty, else_ty: &Ty, span: &Span) -> Ty {
+        if matches!(then_ty, Ty::Never) {
+            return else_ty.clone();
+        }
+        if matches!(else_ty, Ty::Never) {
+            return then_ty.clone();
+        }
+        if *then_ty == Ty::Unit || *else_ty == Ty::Unit {
+            return Ty::Unit;
+        }
+        self.expect_type(then_ty, else_ty, span);
+        then_ty.clone()
     }
 
     fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {

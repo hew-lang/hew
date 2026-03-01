@@ -188,11 +188,11 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 },
             }
         }
-        TypeExpr::Option(inner) => Ty::Option(Box::new(type_expr_to_ty(&inner.0, module_short))),
-        TypeExpr::Result { ok, err } => Ty::Result {
-            ok: Box::new(type_expr_to_ty(&ok.0, module_short)),
-            err: Box::new(type_expr_to_ty(&err.0, module_short)),
-        },
+        TypeExpr::Option(inner) => Ty::option(type_expr_to_ty(&inner.0, module_short)),
+        TypeExpr::Result { ok, err } => Ty::result(
+            type_expr_to_ty(&ok.0, module_short),
+            type_expr_to_ty(&err.0, module_short),
+        ),
         TypeExpr::Tuple(elems) => Ty::Tuple(
             elems
                 .iter()

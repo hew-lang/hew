@@ -414,25 +414,23 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
                 let args_code = type_args_to_code(type_args, module_short);
                 format!("Ty::Named {{ name: \"{n}\".to_string(), args: {args_code} }}")
             }
-            // Option<T> → Ty::Option to match the type checker's internal repr
+            // Option<T> → Ty::option() helper
             "Option" => {
                 if let Some(args) = type_args {
                     if let Some(first) = args.first() {
                         let inner = type_expr_to_code(&first.0, module_short);
-                        return format!("Ty::Option(Box::new({inner}))");
+                        return format!("Ty::option({inner})");
                     }
                 }
                 "Ty::Named { name: \"Option\".to_string(), args: vec![] }".to_string()
             }
-            // Result<O,E> → Ty::Result to match the type checker's internal repr
+            // Result<O,E> → Ty::result() helper
             "Result" => {
                 if let Some(args) = type_args {
                     if args.len() >= 2 {
                         let ok = type_expr_to_code(&args[0].0, module_short);
                         let err = type_expr_to_code(&args[1].0, module_short);
-                        return format!(
-                            "Ty::Result {{ ok: Box::new({ok}), err: Box::new({err}) }}"
-                        );
+                        return format!("Ty::result({ok}, {err})");
                     }
                 }
                 "Ty::Named { name: \"Result\".to_string(), args: vec![] }".to_string()
@@ -452,12 +450,12 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
         },
         TypeExpr::Option(inner) => {
             let inner_code = type_expr_to_code(&inner.0, module_short);
-            format!("Ty::Option(Box::new({inner_code}))")
+            format!("Ty::option({inner_code})")
         }
         TypeExpr::Result { ok, err } => {
             let ok_code = type_expr_to_code(&ok.0, module_short);
             let err_code = type_expr_to_code(&err.0, module_short);
-            format!("Ty::Result {{ ok: Box::new({ok_code}), err: Box::new({err_code}) }}")
+            format!("Ty::result({ok_code}, {err_code})")
         }
         TypeExpr::Tuple(elems) => {
             let elem_codes: Vec<String> = elems

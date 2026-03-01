@@ -233,19 +233,6 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             Ok(())
         }
 
-        // Option / ActorRef / Range / Stream / Sink
-        (Ty::Option(a), Ty::Option(b))
-        | (Ty::ActorRef(a), Ty::ActorRef(b))
-        | (Ty::Range(a), Ty::Range(b))
-        | (Ty::Stream(a), Ty::Stream(b))
-        | (Ty::Sink(a), Ty::Sink(b)) => unify(subst, a, b),
-
-        // Result
-        (Ty::Result { ok: ao, err: ae }, Ty::Result { ok: bo, err: be }) => {
-            unify(subst, ao, bo)?;
-            unify(subst, ae, be)
-        }
-
         // Pointer (must match mutability)
         (
             Ty::Pointer {
@@ -257,26 +244,6 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
                 pointee: bp,
             },
         ) if am == bm => unify(subst, ap, bp),
-
-        // Generator
-        (
-            Ty::Generator {
-                yields: ay,
-                returns: ar,
-            },
-            Ty::Generator {
-                yields: by,
-                returns: br,
-            },
-        ) => {
-            unify(subst, ay, by)?;
-            unify(subst, ar, br)
-        }
-
-        // AsyncGenerator
-        (Ty::AsyncGenerator { yields: ay }, Ty::AsyncGenerator { yields: by }) => {
-            unify(subst, ay, by)
-        }
 
         // TraitObject with same traits
         (Ty::TraitObject { traits: a_traits }, Ty::TraitObject { traits: b_traits }) => {
@@ -545,44 +512,32 @@ mod tests {
     #[test]
     fn test_unify_option_types() {
         let mut subst = Substitution::new();
-        let a = Ty::Option(Box::new(Ty::I32));
-        let b = Ty::Option(Box::new(Ty::I32));
+        let a = Ty::option(Ty::I32);
+        let b = Ty::option(Ty::I32);
         assert!(unify(&mut subst, &a, &b).is_ok());
     }
 
     #[test]
     fn test_unify_option_mismatch() {
         let mut subst = Substitution::new();
-        let a = Ty::Option(Box::new(Ty::I32));
-        let b = Ty::Option(Box::new(Ty::String));
+        let a = Ty::option(Ty::I32);
+        let b = Ty::option(Ty::String);
         assert!(unify(&mut subst, &a, &b).is_err());
     }
 
     #[test]
     fn test_unify_result_types() {
         let mut subst = Substitution::new();
-        let a = Ty::Result {
-            ok: Box::new(Ty::I32),
-            err: Box::new(Ty::String),
-        };
-        let b = Ty::Result {
-            ok: Box::new(Ty::I32),
-            err: Box::new(Ty::String),
-        };
+        let a = Ty::result(Ty::I32, Ty::String);
+        let b = Ty::result(Ty::I32, Ty::String);
         assert!(unify(&mut subst, &a, &b).is_ok());
     }
 
     #[test]
     fn test_unify_result_mismatch() {
         let mut subst = Substitution::new();
-        let a = Ty::Result {
-            ok: Box::new(Ty::I32),
-            err: Box::new(Ty::String),
-        };
-        let b = Ty::Result {
-            ok: Box::new(Ty::Bool),
-            err: Box::new(Ty::String),
-        };
+        let a = Ty::result(Ty::I32, Ty::String);
+        let b = Ty::result(Ty::Bool, Ty::String);
         assert!(unify(&mut subst, &a, &b).is_err());
     }
 

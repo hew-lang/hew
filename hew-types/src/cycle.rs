@@ -64,7 +64,7 @@ pub fn detect_actor_ref_cycles(
 }
 
 /// Recursively collect actor names referenced via `ActorRef<X>` in a type,
-/// looking through containers (`Option`, `Vec`, `Array`, `Slice`, `Tuple`,
+/// looking through containers (`Vec`, `Array`, `Slice`, `Tuple`, `Option`,
 /// `Result`, `HashMap`) and transitively through struct fields.
 fn collect_actor_refs<'a>(
     ty: &'a Ty,
@@ -73,14 +73,7 @@ fn collect_actor_refs<'a>(
     visited_structs: &mut HashSet<&'a str>,
 ) {
     match ty {
-        Ty::ActorRef(inner) => {
-            if let Ty::Named { name, .. } = inner.as_ref() {
-                if type_defs.contains_key(name) {
-                    out.insert(name.as_str());
-                }
-            }
-        }
-        Ty::Option(inner) | Ty::Slice(inner) | Ty::Array(inner, _) => {
+        Ty::Slice(inner) | Ty::Array(inner, _) => {
             collect_actor_refs(inner, type_defs, out, visited_structs);
         }
         Ty::Tuple(elems) => {
@@ -88,25 +81,35 @@ fn collect_actor_refs<'a>(
                 collect_actor_refs(elem, type_defs, out, visited_structs);
             }
         }
-        Ty::Result { ok, err } => {
-            collect_actor_refs(ok, type_defs, out, visited_structs);
-            collect_actor_refs(err, type_defs, out, visited_structs);
-        }
         Ty::Named { name, args } => {
-            // Transitively follow struct fields
-            if let Some(td) = type_defs.get(name) {
-                if td.kind == crate::check::TypeDefKind::Struct
-                    && !visited_structs.contains(name.as_str())
-                {
-                    visited_structs.insert(name.as_str());
-                    for field_ty in td.fields.values() {
-                        collect_actor_refs(field_ty, type_defs, out, visited_structs);
+            if name == "ActorRef" {
+                // ActorRef<X> — record X if it's a known actor
+                if let Some(inner) = args.first() {
+                    if let Ty::Named {
+                        name: actor_name, ..
+                    } = inner
+                    {
+                        if type_defs.contains_key(actor_name) {
+                            out.insert(actor_name.as_str());
+                        }
                     }
                 }
-            }
-            // Also check type arguments (e.g. Vec<ActorRef<B>>)
-            for arg in args {
-                collect_actor_refs(arg, type_defs, out, visited_structs);
+            } else {
+                // Transitively follow struct fields
+                if let Some(td) = type_defs.get(name) {
+                    if td.kind == crate::check::TypeDefKind::Struct
+                        && !visited_structs.contains(name.as_str())
+                    {
+                        visited_structs.insert(name.as_str());
+                        for field_ty in td.fields.values() {
+                            collect_actor_refs(field_ty, type_defs, out, visited_structs);
+                        }
+                    }
+                }
+                // Also check type arguments (e.g. Vec<ActorRef<B>>)
+                for arg in args {
+                    collect_actor_refs(arg, type_defs, out, visited_structs);
+                }
             }
         }
         _ => {}
@@ -227,10 +230,10 @@ mod tests {
     }
 
     fn actor_ref(name: &str) -> Ty {
-        Ty::ActorRef(Box::new(Ty::Named {
+        Ty::actor_ref(Ty::Named {
             name: name.to_string(),
             args: vec![],
-        }))
+        })
     }
 
     #[test]
@@ -320,7 +323,7 @@ mod tests {
         let type_defs: HashMap<String, TypeDef> = [
             make_actor(
                 "A",
-                HashMap::from([("b".to_string(), Ty::Option(Box::new(actor_ref("B"))))]),
+                HashMap::from([("b".to_string(), Ty::option(actor_ref("B")))]),
             ),
             make_actor("B", HashMap::from([("a".to_string(), actor_ref("A"))])),
         ]

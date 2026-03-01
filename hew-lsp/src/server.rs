@@ -1456,8 +1456,8 @@ fn find_receiver_type(tc: &TypeCheckOutput, end_offset: usize) -> Option<&Ty> {
 /// Extract the type name from a `Ty`, following `ActorRef` wrappers.
 fn type_name_of(ty: &Ty) -> Option<String> {
     match ty {
+        Ty::Named { name, args } if name == "ActorRef" && args.len() == 1 => type_name_of(&args[0]),
         Ty::Named { name, .. } => Some(name.clone()),
-        Ty::ActorRef(inner) => type_name_of(inner),
         _ => None,
     }
 }

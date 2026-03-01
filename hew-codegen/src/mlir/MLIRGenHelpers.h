@@ -293,6 +293,31 @@ inline bool hasRealTerminator(mlir::Block *block) {
   return true;
 }
 
+/// Extract the payload type at a given struct field index from any enum-like
+/// type: LLVMStructType, OptionEnumType, or ResultEnumType.
+inline mlir::Type getEnumFieldType(mlir::Type type, int64_t idx) {
+  if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type))
+    return st.getBody()[idx];
+  if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(type)) {
+    if (idx == 1)
+      return ot.getInnerType();
+    return mlir::IntegerType::get(type.getContext(), 32);
+  }
+  if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(type)) {
+    if (idx == 1)
+      return rt.getOkType();
+    if (idx == 2)
+      return rt.getErrType();
+    return mlir::IntegerType::get(type.getContext(), 32);
+  }
+  return nullptr;
+}
+
+/// Check if a type is an enum-like type (has a tag + payload struct layout).
+inline bool isEnumLikeType(mlir::Type type) {
+  return mlir::isa<mlir::LLVM::LLVMStructType, hew::OptionEnumType, hew::ResultEnumType>(type);
+}
+
 } // namespace hew
 
 #endif // HEW_MLIR_MLIRGEN_HELPERS_H

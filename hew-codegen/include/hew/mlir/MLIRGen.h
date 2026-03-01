@@ -205,6 +205,13 @@ private:
   mlir::Value generateOrPatternCondition(mlir::Value scrutinee, const ast::Pattern &pattern,
                                          mlir::Location location);
 
+  // ── Pattern helpers (shared by match and if-let) ──────────────────
+  /// Resolve the struct field index for an enum variant payload.
+  int64_t resolvePayloadFieldIndex(llvm::StringRef variantName, size_t payloadOrdinal) const;
+  /// Bind tuple pattern elements to variables recursively.
+  void bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
+                              mlir::Location location);
+
   // ── If-let ───────────────────────────────────────────────────────
   void generateIfLetStmt(const ast::StmtIfLet &stmt);
   mlir::Value generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Span &exprSpan);

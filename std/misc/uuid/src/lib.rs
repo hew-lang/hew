@@ -7,10 +7,9 @@
 #[cfg(feature = "export-meta")]
 pub mod export_meta;
 
-use hew_cabi::cabi::malloc_cstring;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use std::ffi::c_char;
 
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use uuid::Uuid;
 
 /// Generate a UUID v4 (random) string.
@@ -18,11 +17,6 @@ use uuid::Uuid;
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
 /// hyphenated UUID (36 chars + NUL). The caller must free it with
 /// [`hew_uuid_free`]. Returns null on allocation failure.
-///
-/// # Safety
-///
-/// No special requirements. The returned pointer must be freed with
-/// [`hew_uuid_free`].
 #[cfg_attr(
     feature = "export-meta",
     hew_export_macro::hew_export(
@@ -31,11 +25,8 @@ use uuid::Uuid;
     )
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_uuid_v4() -> *mut c_char {
-    let id = Uuid::new_v4();
-    let s = id.to_string();
-    // SAFETY: s.as_ptr() is valid for s.len() bytes.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
+pub extern "C" fn hew_uuid_v4() -> *mut c_char {
+    str_to_malloc(&Uuid::new_v4().to_string())
 }
 
 /// Generate a UUID v7 (time-ordered, random) string.
@@ -43,11 +34,6 @@ pub unsafe extern "C" fn hew_uuid_v4() -> *mut c_char {
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
 /// hyphenated UUID (36 chars + NUL). The caller must free it with
 /// [`hew_uuid_free`]. Returns null on allocation failure.
-///
-/// # Safety
-///
-/// No special requirements. The returned pointer must be freed with
-/// [`hew_uuid_free`].
 #[cfg_attr(
     feature = "export-meta",
     hew_export_macro::hew_export(
@@ -56,11 +42,8 @@ pub unsafe extern "C" fn hew_uuid_v4() -> *mut c_char {
     )
 )]
 #[no_mangle]
-pub unsafe extern "C" fn hew_uuid_v7() -> *mut c_char {
-    let id = Uuid::now_v7();
-    let s = id.to_string();
-    // SAFETY: s.as_ptr() is valid for s.len() bytes.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
+pub extern "C" fn hew_uuid_v7() -> *mut c_char {
+    str_to_malloc(&Uuid::now_v7().to_string())
 }
 
 /// Validate a UUID string.
@@ -81,11 +64,8 @@ pub unsafe extern "C" fn hew_uuid_v7() -> *mut c_char {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_uuid_parse(s: *const c_char) -> i32 {
-    if s.is_null() {
-        return 0;
-    }
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = unsafe { CStr::from_ptr(s) }.to_str() else {
+    // SAFETY: Caller guarantees s is a valid NUL-terminated C string (or null).
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
         return 0;
     };
     i32::from(Uuid::parse_str(rust_str).is_ok())
@@ -109,12 +89,11 @@ pub unsafe extern "C" fn hew_uuid_free(s: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     #[test]
     fn test_uuid_v4_format() {
-        // SAFETY: hew_uuid_v4 has no preconditions.
-        let ptr = unsafe { hew_uuid_v4() };
+        let ptr = hew_uuid_v4();
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated string from hew_uuid_v4.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
@@ -126,8 +105,7 @@ mod tests {
 
     #[test]
     fn test_uuid_v7_format() {
-        // SAFETY: hew_uuid_v7 has no preconditions.
-        let ptr = unsafe { hew_uuid_v7() };
+        let ptr = hew_uuid_v7();
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated string from hew_uuid_v7.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();

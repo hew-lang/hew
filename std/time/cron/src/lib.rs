@@ -114,20 +114,6 @@ pub unsafe extern "C" fn hew_cron_next_n(
     }
 }
 
-/// Return the previous occurrence before the given epoch timestamp (seconds).
-///
-/// **Note:** The `cron` crate does not expose a public reverse-iteration API,
-/// so this function always returns `-1`.
-///
-/// # Safety
-///
-/// `expr` must be a valid pointer returned by [`hew_cron_parse`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_cron_prev(_expr: *const HewCronExpr, _before_epoch_secs: i64) -> i64 {
-    // The cron crate's prev_from method is not public.
-    -1
-}
-
 /// Return the string representation of a cron expression.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
@@ -242,21 +228,6 @@ mod tests {
     }
 
     #[test]
-    fn prev_always_returns_negative_one() {
-        let expr_str = CString::new("0 * * * * * *").unwrap();
-        // SAFETY: expr_str is a valid NUL-terminated C string.
-        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
-        assert!(!expr.is_null());
-
-        // SAFETY: expr is valid.
-        let prev = unsafe { hew_cron_prev(expr, 1_704_067_200) };
-        assert_eq!(prev, -1);
-
-        // SAFETY: expr was returned by hew_cron_parse.
-        unsafe { hew_cron_free(expr) };
-    }
-
-    #[test]
     fn to_string_roundtrip() {
         let original = "0 30 9 * * Mon-Fri *";
         let expr_str = CString::new(original).unwrap();
@@ -286,7 +257,6 @@ mod tests {
                 hew_cron_next_n(std::ptr::null(), 0, 5, std::ptr::null_mut()),
                 0
             );
-            assert_eq!(hew_cron_prev(std::ptr::null(), 0), -1);
             assert!(hew_cron_to_string(std::ptr::null()).is_null());
             hew_cron_free(std::ptr::null_mut());
         }

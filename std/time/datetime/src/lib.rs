@@ -185,24 +185,6 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
     })
 }
 
-/// Format epoch milliseconds as an ISO 8601 string (e.g. `2024-01-15T09:30:00Z`).
-///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null if `epoch_ms` is out of range.
-///
-/// # Safety
-///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_to_iso8601(epoch_ms: i64) -> *mut c_char {
-    let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
-        return std::ptr::null_mut();
-    };
-    let s = dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    // SAFETY: s.as_ptr() is valid for s.len() bytes.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
-}
-
 /// Return the current monotonic clock time in nanoseconds.
 ///
 /// Uses `CLOCK_MONOTONIC` for high-resolution timing suitable for
@@ -278,17 +260,6 @@ mod tests {
             assert_eq!(hew_datetime_second(epoch_ms), 45);
             assert_eq!(hew_datetime_weekday(epoch_ms), 4); // Friday = 4
         }
-    }
-
-    #[test]
-    fn test_iso8601() {
-        let epoch_ms: i64 = 1_705_311_000_000; // 2024-01-15 09:30:00 UTC
-
-        // SAFETY: hew_datetime_to_iso8601 has no preconditions.
-        let iso = unsafe { hew_datetime_to_iso8601(epoch_ms) };
-        // SAFETY: iso was returned by hew_datetime_to_iso8601.
-        let text = unsafe { read_and_free(iso) };
-        assert_eq!(text, "2024-01-15T09:30:00Z");
     }
 
     #[test]

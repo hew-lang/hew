@@ -109,7 +109,7 @@ pub fn diff_secs(a: i64, b: i64) -> i64 {
 /// // e.g. "2025-07-10T14:30:00Z"
 /// ```
 pub fn to_iso8601(epoch_ms: i64) -> String {
-    hew_datetime_to_iso8601(epoch_ms)
+    format(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
 }
 
 /// Return the current monotonic clock time in nanoseconds.
@@ -134,5 +134,4 @@ extern "C" {
     fn hew_datetime_minute(epoch_ms: i64) -> i32;
     fn hew_datetime_second(epoch_ms: i64) -> i32;
     fn hew_datetime_weekday(epoch_ms: i64) -> i32;
-    fn hew_datetime_to_iso8601(epoch_ms: i64) -> String;
 }

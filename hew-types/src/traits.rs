@@ -219,20 +219,20 @@ impl TraitRegistry {
             ),
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
-            Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(&args[0], MarkerTrait::Send)
+            Ty::Named { name, args } if (name == "Stream" || name == "Sink") && args.len() == 1 => {
+                match marker {
+                    MarkerTrait::Send | MarkerTrait::Sync => {
+                        self.implements_marker(&args[0], MarkerTrait::Send)
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
 
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems.iter().all(|e| self.implements_marker(e, marker)),
 
             // Array: marker holds if element has it
-            Ty::Array(inner, _) => {
-                self.implements_marker(inner, marker)
-            }
+            Ty::Array(inner, _) => self.implements_marker(inner, marker),
 
             // Slice: like array but NOT Copy (unsized)
             Ty::Slice(elem) => {

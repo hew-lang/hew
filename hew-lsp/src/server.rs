@@ -1828,10 +1828,6 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionItemKind)> {
 
 // ── Document symbols ─────────────────────────────────────────────────
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "match arms over all Item variants with children is clearest as one function"
-)]
 fn build_document_symbols(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
@@ -3686,6 +3682,10 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over all Expr variants for identifier counting"
+)]
 fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
     match expr {
         Expr::Identifier(ident) => {

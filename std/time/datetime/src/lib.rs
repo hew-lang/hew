@@ -7,7 +7,7 @@
 use hew_cabi::cabi::malloc_cstring;
 use std::ffi::{c_char, CStr};
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
 
 /// Convert epoch milliseconds to a `DateTime<Utc>`, returning `None` if out of range.
 fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
@@ -26,16 +26,6 @@ fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
     Utc::now().timestamp_millis()
-}
-
-/// Return the current time as Unix epoch seconds.
-///
-/// # Safety
-///
-/// No preconditions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
-    Utc::now().timestamp()
 }
 
 // ---------------------------------------------------------------------------
@@ -195,44 +185,6 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Arithmetic
-// ---------------------------------------------------------------------------
-
-/// Add `days` to epoch milliseconds. Returns the new epoch ms.
-///
-/// # Safety
-///
-/// No preconditions — pure computation.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_add_days(epoch_ms: i64, days: i32) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(epoch_ms, |dt| {
-        (dt + Duration::days(i64::from(days))).timestamp_millis()
-    })
-}
-
-/// Add `hours` to epoch milliseconds. Returns the new epoch ms.
-///
-/// # Safety
-///
-/// No preconditions — pure computation.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_add_hours(epoch_ms: i64, hours: i32) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(epoch_ms, |dt| {
-        (dt + Duration::hours(i64::from(hours))).timestamp_millis()
-    })
-}
-
-/// Return the difference `a - b` in seconds.
-///
-/// # Safety
-///
-/// No preconditions — pure arithmetic.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_diff_secs(a: i64, b: i64) -> i64 {
-    (a - b) / 1000
-}
-
 /// Format epoch milliseconds as an ISO 8601 string (e.g. `2024-01-15T09:30:00Z`).
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
@@ -329,29 +281,11 @@ mod tests {
     }
 
     #[test]
-    fn test_add_days_and_hours() {
+    fn test_iso8601() {
         let epoch_ms: i64 = 1_705_311_000_000; // 2024-01-15 09:30:00 UTC
 
-        // SAFETY: arithmetic functions have no preconditions.
-        unsafe {
-            let plus_one_day = hew_datetime_add_days(epoch_ms, 1);
-            assert_eq!(plus_one_day, epoch_ms + 86_400_000);
-
-            let minus_two_hours = hew_datetime_add_hours(epoch_ms, -2);
-            assert_eq!(minus_two_hours, epoch_ms - 7_200_000);
-        }
-    }
-
-    #[test]
-    fn test_diff_secs_and_iso8601() {
-        let a: i64 = 1_705_311_000_000; // 2024-01-15 09:30:00 UTC
-        let b: i64 = 1_705_307_400_000; // 2024-01-15 08:30:00 UTC
-
-        // SAFETY: diff_secs has no preconditions.
-        assert_eq!(unsafe { hew_datetime_diff_secs(a, b) }, 3600);
-
         // SAFETY: hew_datetime_to_iso8601 has no preconditions.
-        let iso = unsafe { hew_datetime_to_iso8601(a) };
+        let iso = unsafe { hew_datetime_to_iso8601(epoch_ms) };
         // SAFETY: iso was returned by hew_datetime_to_iso8601.
         let text = unsafe { read_and_free(iso) };
         assert_eq!(text, "2024-01-15T09:30:00Z");
@@ -362,12 +296,8 @@ mod tests {
         // SAFETY: now functions have no preconditions.
         unsafe {
             let ms = hew_datetime_now_ms();
-            let secs = hew_datetime_now_secs();
-            // Should be after 2024-01-01 and before 2100-01-01.
+            // Should be after 2024-01-01.
             assert!(ms > 1_704_067_200_000);
-            assert!(secs > 1_704_067_200);
-            // ms and secs should be consistent (within 1 second).
-            assert!((ms / 1000 - secs).abs() <= 1);
         }
     }
 

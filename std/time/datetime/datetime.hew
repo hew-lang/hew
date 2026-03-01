@@ -25,7 +25,7 @@ pub fn now_ms() -> i64 {
 
 /// Return the current time as seconds since the Unix epoch.
 pub fn now_secs() -> i64 {
-    hew_datetime_now_secs()
+    now_ms() / 1000
 }
 
 /// Format an epoch-millisecond timestamp using a strftime-style format string.
@@ -87,17 +87,17 @@ pub fn weekday(epoch_ms: i64) -> i32 {
 
 /// Add a number of days to an epoch-millisecond timestamp.
 pub fn add_days(epoch_ms: i64, days: i32) -> i64 {
-    hew_datetime_add_days(epoch_ms, days)
+    epoch_ms + days * 86_400_000
 }
 
 /// Add a number of hours to an epoch-millisecond timestamp.
 pub fn add_hours(epoch_ms: i64, hours: i32) -> i64 {
-    hew_datetime_add_hours(epoch_ms, hours)
+    epoch_ms + hours * 3_600_000
 }
 
 /// Return the difference in seconds between two epoch-millisecond timestamps.
 pub fn diff_secs(a: i64, b: i64) -> i64 {
-    hew_datetime_diff_secs(a, b)
+    (a - b) / 1000
 }
 
 /// Format an epoch-millisecond timestamp as an ISO 8601 string.
@@ -124,7 +124,6 @@ pub fn now_nanos() -> i64 {
 
 extern "C" {
     fn hew_datetime_now_ms() -> i64;
-    fn hew_datetime_now_secs() -> i64;
     fn hew_datetime_now_nanos() -> i64;
     fn hew_datetime_format(epoch_ms: i64, fmt: String) -> String;
     fn hew_datetime_parse(s: String, fmt: String) -> i64;
@@ -135,8 +134,5 @@ extern "C" {
     fn hew_datetime_minute(epoch_ms: i64) -> i32;
     fn hew_datetime_second(epoch_ms: i64) -> i32;
     fn hew_datetime_weekday(epoch_ms: i64) -> i32;
-    fn hew_datetime_add_days(epoch_ms: i64, days: i32) -> i64;
-    fn hew_datetime_add_hours(epoch_ms: i64, hours: i32) -> i64;
-    fn hew_datetime_diff_secs(a: i64, b: i64) -> i64;
     fn hew_datetime_to_iso8601(epoch_ms: i64) -> String;
 }

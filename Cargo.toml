@@ -15,6 +15,7 @@ members = [
   "std/crypto/password",
   "std/net/http",
   "std/net/ipnet",
+  "std/net/mime",
   "std/net/smtp",
   "std/net/url",
   "std/net/websocket",

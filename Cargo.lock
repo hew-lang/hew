@@ -1716,6 +1716,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-std-net-mime"
+version = "0.1.5"
+
+[[package]]
 name = "hew-std-net-smtp"
 version = "0.1.5"
 dependencies = [

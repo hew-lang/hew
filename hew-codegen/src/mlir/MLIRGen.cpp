@@ -34,15 +34,14 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "MLIRGenHelpers.h"
+
 #include <cassert>
-#include <cstdlib>
 #include <iostream>
 #include <string>
 
 using namespace hew;
 using namespace mlir;
-
-#include "MLIRGenHelpers.h"
 
 // ============================================================================
 // Constructor
@@ -52,6 +51,26 @@ MLIRGen::MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple)
     : context(context), builder(&context), targetTriple(targetTriple),
       currentLoc(builder.getUnknownLoc()) {
   fileIdentifier = builder.getStringAttr("<unknown>");
+  isWasm32_ = targetTriple.find("wasm32") != std::string::npos;
+  cachedSizeType_ = mlir::IntegerType::get(&context, isWasm32_ ? 32 : 64);
+}
+
+void MLIRGen::initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes,
+                                    mlir::Location location) {
+  auto i1Type = builder.getI1Type();
+  auto flagMemrefType = mlir::MemRefType::get({}, i1Type);
+  returnFlag = builder.create<mlir::memref::AllocaOp>(location, flagMemrefType);
+  auto falseVal = createIntConstant(builder, location, i1Type, 0);
+  builder.create<mlir::memref::StoreOp>(location, falseVal, returnFlag);
+
+  if (!resultTypes.empty() && !mlir::isa<mlir::LLVM::LLVMStructType>(resultTypes[0]) &&
+      !mlir::isa<mlir::LLVM::LLVMArrayType>(resultTypes[0]) &&
+      !mlir::isa<hew::HewTupleType>(resultTypes[0]) &&
+      !mlir::isa<hew::HewArrayType>(resultTypes[0]) &&
+      !mlir::isa<hew::HewTraitObjectType>(resultTypes[0])) {
+    auto slotMemrefType = mlir::MemRefType::get({}, resultTypes[0]);
+    returnSlot = builder.create<mlir::memref::AllocaOp>(location, slotMemrefType);
+  }
 }
 
 // ============================================================================
@@ -74,10 +93,7 @@ std::string MLIRGen::mangleName(const std::vector<std::string> &modulePath,
 }
 
 mlir::IntegerType MLIRGen::sizeType() const {
-  if (targetTriple.find("wasm32") != std::string::npos) {
-    return mlir::IntegerType::get(&context, 32);
-  }
-  return mlir::IntegerType::get(&context, 64);
+  return cachedSizeType_;
 }
 
 // ============================================================================
@@ -111,65 +127,16 @@ std::string MLIRGen::resolveTypeAlias(const std::string &name) const {
 
 mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
   if (auto *named = std::get_if<ast::TypeNamed>(&type.kind)) {
-    const auto &name = named->name;
-    // Check for active type parameter substitutions (generics monomorphization)
+    // Resolve type parameter substitutions (generics monomorphization) by
+    // replacing the name and falling through to the main resolution logic.
+    // This ensures substituted names get the full resolution path (primitives,
+    // Vec, HashMap, generic structs, etc.) instead of an incomplete copy.
+    std::string name = named->name;
+    bool fromSubstitution = false;
     auto subst = typeParamSubstitutions.find(name);
     if (subst != typeParamSubstitutions.end()) {
-      // Resolve the substituted name directly using the same logic below.
-      const auto &resolvedName = subst->second;
-      // Check for further alias
-      auto alias = typeAliases.find(resolvedName);
-      if (alias != typeAliases.end()) {
-        return convertType(*alias->second);
-      }
-      // Resolve primitives/builtins for the substituted name
-      if (resolvedName == "i8")
-        return builder.getIntegerType(8);
-      if (resolvedName == "i16")
-        return builder.getIntegerType(16);
-      if (resolvedName == "i32")
-        return builder.getI32Type();
-      if (resolvedName == "i64" || resolvedName == "int" || resolvedName == "Int")
-        return builder.getI64Type();
-      // Unsigned integers use signless MLIR types (arith ops require signless)
-      if (resolvedName == "u8" || resolvedName == "byte")
-        return builder.getIntegerType(8);
-      if (resolvedName == "u16")
-        return builder.getIntegerType(16);
-      if (resolvedName == "u32")
-        return builder.getIntegerType(32);
-      if (resolvedName == "u64")
-        return builder.getIntegerType(64);
-      if (resolvedName == "f32")
-        return builder.getF32Type();
-      if (resolvedName == "f64" || resolvedName == "float")
-        return builder.getF64Type();
-      if (resolvedName == "bool")
-        return builder.getI1Type();
-      if (resolvedName == "char")
-        return builder.getI32Type();
-      if (resolvedName == "String" || resolvedName == "string" || resolvedName == "str")
-        return hew::StringRefType::get(&context);
-      // bytes = mutable byte buffer; stored as Vec<i32> to reuse existing runtime
-      if (resolvedName == "bytes")
-        return hew::VecType::get(&context, builder.getI32Type());
-      if (resolvedName == "ActorRef" || resolvedName == "Actor")
-        return hew::ActorRefType::get(&context);
-      if (resolvedName == "Task" || resolvedName == "scope.Task")
-        return hew::HandleType::get(&context, builder.getStringAttr("Task"));
-      if (actorRegistry.count(resolvedName))
-        return hew::TypedActorRefType::get(&context, builder.getStringAttr(resolvedName));
-      auto it = structTypes.find(resolvedName);
-      if (it != structTypes.end())
-        return it->second.mlirType;
-      auto enumIt = enumTypes.find(resolvedName);
-      if (enumIt != enumTypes.end())
-        return enumIt->second.mlirType;
-      ++errorCount_;
-      emitError(builder.getUnknownLoc())
-          << "unresolved type substitution '" << resolvedName << "' for type parameter '" << name
-          << "' — no builtin, struct, enum, or actor with this name is defined";
-      return mlir::NoneType::get(&context);
+      fromSubstitution = true;
+      name = subst->second;
     }
     // Check for type aliases
     auto alias = typeAliases.find(name);
@@ -352,8 +319,15 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     }
     // Unresolved type: emit an error and force codegen failure.
     ++errorCount_;
-    emitError(builder.getUnknownLoc())
-        << "unresolved type '" << name << "' — no struct, enum, or actor with this name is defined";
+    if (fromSubstitution) {
+      emitError(builder.getUnknownLoc())
+          << "unresolved type substitution '" << name << "' for type parameter '" << named->name
+          << "' — no builtin, struct, enum, or actor with this name is defined";
+    } else {
+      emitError(builder.getUnknownLoc())
+          << "unresolved type '" << name
+          << "' — no struct, enum, or actor with this name is defined";
+    }
     return mlir::NoneType::get(&context);
   }
   // Tuple types
@@ -1505,7 +1479,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   module = mlir::ModuleOp::create(builder.getUnknownLoc());
 
   // Set pointer width attribute so lowering patterns use the correct size type.
-  int ptrWidth = (targetTriple.find("wasm32") != std::string::npos) ? 32 : 64;
+  int ptrWidth = isWasm32_ ? 32 : 64;
   module->setAttr("hew.ptr_width",
                   mlir::IntegerAttr::get(mlir::IntegerType::get(&context, 32), ptrWidth));
 
@@ -1607,25 +1581,31 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
     // Compute transitive import closure: for each module, include all
     // imports of imported modules (handles diamond dependencies).
+    // Use a set per module for O(1) duplicate checking.
+    std::unordered_map<std::string, std::unordered_set<std::string>> importSets;
+    auto joinPath = [](const std::vector<std::string> &path) {
+      std::string key;
+      for (const auto &seg : path)
+        key += (key.empty() ? "" : "::") + seg;
+      return key;
+    };
+    for (auto &[modKey, impList] : moduleImports) {
+      auto &s = importSets[modKey];
+      for (const auto &impPath : impList)
+        s.insert(joinPath(impPath));
+    }
     bool changed = true;
     while (changed) {
       changed = false;
       for (auto &[modKey, impList] : moduleImports) {
+        auto &seen = importSets[modKey];
         std::vector<std::vector<std::string>> toAdd;
         for (const auto &impPath : impList) {
-          std::string impKey;
-          for (const auto &seg : impPath)
-            impKey += (impKey.empty() ? "" : "::") + seg;
-          auto transIt = moduleImports.find(impKey);
+          auto transIt = moduleImports.find(joinPath(impPath));
           if (transIt != moduleImports.end()) {
             for (const auto &transPath : transIt->second) {
-              bool found = false;
-              for (const auto &existing : impList)
-                if (existing == transPath) {
-                  found = true;
-                  break;
-                }
-              if (!found)
+              auto transKey = joinPath(transPath);
+              if (seen.insert(transKey).second)
                 toAdd.push_back(transPath);
             }
           }
@@ -2483,24 +2463,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // Early return support — always create returnFlag so that `return` inside
   // nested SCF regions (match arms, if branches) stores to the flag instead
   // of emitting an illegal func.return inside an scf.if.
-  bool canUseReturnSlot = !resultTypes.empty() &&
-                          !mlir::isa<mlir::LLVM::LLVMStructType>(resultTypes[0]) &&
-                          !mlir::isa<mlir::LLVM::LLVMArrayType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewTupleType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewArrayType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewTraitObjectType>(resultTypes[0]);
-  {
-    auto i1Type = builder.getI1Type();
-    auto flagMemrefType = mlir::MemRefType::get({}, i1Type);
-    returnFlag = builder.create<mlir::memref::AllocaOp>(location, flagMemrefType);
-    auto falseVal = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::memref::StoreOp>(location, falseVal, returnFlag);
-
-    if (canUseReturnSlot) {
-      auto slotMemrefType = mlir::MemRefType::get({}, resultTypes[0]);
-      returnSlot = builder.create<mlir::memref::AllocaOp>(location, slotMemrefType);
-    }
-  }
+  initReturnFlagAndSlot(resultTypes, location);
 
   mlir::Value bodyValue = generateBlock(*method.body);
 
@@ -2655,25 +2618,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // Early return support: always create returnFlag so that `return` inside
   // nested SCF regions (match arms, if branches) stores to the flag instead
   // of emitting an illegal func.return inside an scf.if.
-  // The returnSlot is only for non-void functions with memref-compatible return types.
-  bool canUseReturnSlot = !resultTypes.empty() &&
-                          !mlir::isa<mlir::LLVM::LLVMStructType>(resultTypes[0]) &&
-                          !mlir::isa<mlir::LLVM::LLVMArrayType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewTupleType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewArrayType>(resultTypes[0]) &&
-                          !mlir::isa<hew::HewTraitObjectType>(resultTypes[0]);
-  {
-    auto i1Type = builder.getI1Type();
-    auto flagMemrefType = mlir::MemRefType::get({}, i1Type);
-    returnFlag = builder.create<mlir::memref::AllocaOp>(location, flagMemrefType);
-    auto falseVal = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::memref::StoreOp>(location, falseVal, returnFlag);
-
-    if (canUseReturnSlot) {
-      auto slotMemrefType = mlir::MemRefType::get({}, resultTypes[0]);
-      returnSlot = builder.create<mlir::memref::AllocaOp>(location, slotMemrefType);
-    }
-  }
+  initReturnFlagAndSlot(resultTypes, location);
 
   // Determine trailing expression variable names BEFORE generating the body.
   // For struct init expressions, collect all field variable references to
@@ -3187,31 +3132,11 @@ void MLIRGen::popDropScope() {
       // and emit func.return, producing a terminator — hasRealTerminator()
       // will be true and this block is skipped entirely.
       if (!hasRealTerminator(block)) {
-        auto emitFuncLevelDrops = [&]() {
-          if (!funcLevelDropExcludeVars.empty()) {
-            auto &scope = dropScopes.back();
-            auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-            for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-              if (funcLevelDropExcludeVars.count(it->varName))
-                continue;
-              auto val = lookupVariable(it->varName);
-              if (!val)
-                continue;
-              mlir::Value dropVal = val;
-              if (mlir::isa<hew::ClosureType>(val.getType()))
-                dropVal =
-                    builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-              if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !it->isUserDrop)
-                dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-              builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, it->dropFuncName,
-                                          it->isUserDrop);
-            }
-          } else {
-            emitDropsForScope(dropScopes.back());
-          }
-        };
         emitDeferredCalls();
-        emitFuncLevelDrops();
+        auto &scope = dropScopes.back();
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it)
+          if (!funcLevelDropExcludeVars.count(it->varName))
+            emitDropEntry(*it);
       }
       dropScopes.pop_back();
       return;
@@ -3264,22 +3189,25 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
   }
 }
 
+void MLIRGen::emitDropEntry(const DropEntry &entry) {
+  auto val = lookupVariable(entry.varName);
+  if (!val)
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
+  mlir::Value dropVal = val;
+  if (mlir::isa<hew::ClosureType>(val.getType()))
+    dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
+  if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !entry.isUserDrop)
+    dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
+  builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, entry.dropFuncName,
+                              entry.isUserDrop);
+}
+
 void MLIRGen::emitDropForVariable(const std::string &varName) {
-  // Find the drop entry for this variable
   for (auto &scope : dropScopes) {
     for (auto &entry : scope) {
       if (entry.varName == varName) {
-        auto val = lookupVariable(varName);
-        if (!val)
-          return;
-        auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-        mlir::Value dropVal = val;
-        if (mlir::isa<hew::ClosureType>(val.getType()))
-          dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-        if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !entry.isUserDrop)
-          dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-        builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, entry.dropFuncName,
-                                    entry.isUserDrop);
+        emitDropEntry(entry);
         return;
       }
     }
@@ -3287,22 +3215,8 @@ void MLIRGen::emitDropForVariable(const std::string &varName) {
 }
 
 void MLIRGen::emitDropsForScope(const std::vector<DropEntry> &scope) {
-  if (scope.empty())
-    return;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-    auto val = lookupVariable(it->varName);
-    if (!val)
-      continue;
-    // For closures, extract env_ptr — hew_rc_drop expects !llvm.ptr
-    mlir::Value dropVal = val;
-    if (mlir::isa<hew::ClosureType>(val.getType()))
-      dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-    // Cast Hew dialect types (hashmap, vec, etc.) to !llvm.ptr for free fns
-    if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !it->isUserDrop)
-      dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-    builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, it->dropFuncName, it->isUserDrop);
-  }
+  for (auto it = scope.rbegin(); it != scope.rend(); ++it)
+    emitDropEntry(*it);
 }
 
 void MLIRGen::emitDropsForCurrentScope() {
@@ -3315,43 +3229,17 @@ void MLIRGen::emitDropsForCurrentScope() {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-    auto val = lookupVariable(it->varName);
-    if (!val)
-      continue;
-    // For closures, extract env_ptr — hew_rc_drop expects !llvm.ptr
-    mlir::Value dropVal = val;
-    if (mlir::isa<hew::ClosureType>(val.getType()))
-      dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-    // Cast Hew dialect types (hashmap, vec, etc.) to !llvm.ptr for free fns
-    if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !it->isUserDrop)
-      dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-    builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, it->dropFuncName, it->isUserDrop);
-  }
+  for (auto it = scope.rbegin(); it != scope.rend(); ++it)
+    emitDropEntry(*it);
 }
 
 void MLIRGen::emitAllDrops() {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
-    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it) {
-      auto val = lookupVariable(it->varName);
-      if (!val)
-        continue;
-      // For closures, extract env_ptr — hew_rc_drop expects !llvm.ptr
-      mlir::Value dropVal = val;
-      if (mlir::isa<hew::ClosureType>(val.getType()))
-        dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-      // Cast Hew dialect types (hashmap, vec, etc.) to !llvm.ptr for free fns
-      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !it->isUserDrop)
-        dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-      builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, it->dropFuncName,
-                                  it->isUserDrop);
-    }
-  }
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt)
+    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it)
+      emitDropEntry(*it);
 }
 
 void MLIRGen::emitStringDrop(mlir::Value v) {
@@ -3398,25 +3286,10 @@ void MLIRGen::emitDropsExcept(const std::set<std::string> &excludeVars) {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
-  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
-    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it) {
-      if (excludeVars.count(it->varName))
-        continue;
-      auto val = lookupVariable(it->varName);
-      if (!val)
-        continue;
-      // For closures, extract env_ptr — hew_rc_drop expects !llvm.ptr
-      mlir::Value dropVal = val;
-      if (mlir::isa<hew::ClosureType>(val.getType()))
-        dropVal = builder.create<hew::ClosureGetEnvOp>(builder.getUnknownLoc(), ptrType, val);
-      // Cast Hew dialect types (hashmap, vec, etc.) to !llvm.ptr for free fns
-      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !it->isUserDrop)
-        dropVal = builder.create<hew::BitcastOp>(builder.getUnknownLoc(), ptrType, dropVal);
-      builder.create<hew::DropOp>(builder.getUnknownLoc(), dropVal, it->dropFuncName,
-                                  it->isUserDrop);
-    }
-  }
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt)
+    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it)
+      if (!excludeVars.count(it->varName))
+        emitDropEntry(*it);
 }
 
 // ── Defer execution ──────────────────────────────────────────

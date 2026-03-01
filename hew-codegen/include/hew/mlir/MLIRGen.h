@@ -89,12 +89,20 @@ private:
   void registerActorDecl(const ast::ActorDecl &decl);
   void generateActorDecl(const ast::ActorDecl &decl);
   void generateWireDecl(const ast::WireDecl &decl);
-  void generateWireToJson(const ast::WireDecl &decl);
-  void generateWireFromJson(const ast::WireDecl &decl);
-  void generateWireToYaml(const ast::WireDecl &decl);
-  void generateWireFromYaml(const ast::WireDecl &decl);
   /// Return an !llvm.ptr to a NUL-terminated global string constant.
   mlir::Value wireStringPtr(mlir::Location location, llvm::StringRef value);
+  /// Generate Foo_to_{json,yaml} — parameterized by format and field name resolver.
+  void generateWireToSerial(
+      const ast::WireDecl &decl, llvm::StringRef format,
+      const std::optional<ast::NamingCase> &namingCase,
+      llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+          fieldOverride);
+  /// Generate Foo_from_{json,yaml} — parameterized by format and field name resolver.
+  void generateWireFromSerial(
+      const ast::WireDecl &decl, llvm::StringRef format,
+      const std::optional<ast::NamingCase> &namingCase,
+      llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+          fieldOverride);
   void generateSupervisorDecl(const ast::SupervisorDecl &decl);
 
   // ── Actor type registry (declared early for method signatures) ────
@@ -103,7 +111,6 @@ private:
     std::vector<std::string> paramNames;  // message parameter names
     std::vector<mlir::Type> paramTypes;   // message parameter types
     std::optional<mlir::Type> returnType; // return type (for await/ask)
-    bool isGenerator = false;             // true for receive gen fn
   };
   struct ActorInfo {
     std::string name;
@@ -129,6 +136,13 @@ private:
                                      const std::string &methodName,
                                      const std::vector<ast::CallArg> &args,
                                      mlir::Location location);
+  /// Generate args for an actor send/ask call, handling self-reference substitution.
+  std::optional<llvm::SmallVector<mlir::Value, 4>>
+  generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location);
+  /// Emit the gen-next null-check, wrap, cleanup, and return sequence.
+  void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr,
+                         mlir::LLVM::LLVMStructType stateType, unsigned genFrameIdx,
+                         mlir::Type yieldType, mlir::Type wrapperType, mlir::Location location);
 
   // ── Statements ───────────────────────────────────────────────────
   void generateStatement(const ast::Stmt &stmt);
@@ -199,6 +213,19 @@ private:
   mlir::Value generateOrPatternCondition(mlir::Value scrutinee, const ast::Pattern &pattern,
                                          mlir::Location location);
 
+  // ── Pattern helpers (shared by match and if-let) ──────────────────
+  /// Resolve the struct field index for an enum variant payload.
+  int64_t resolvePayloadFieldIndex(llvm::StringRef variantName, size_t payloadOrdinal) const;
+  /// Bind tuple pattern elements to variables recursively.
+  void bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
+                              mlir::Location location);
+  /// Bind constructor sub-pattern variables by extracting enum payloads.
+  void bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
+                                  mlir::Location location);
+  /// Emit a tag-equality comparison: extract tag, compare with variantIndex.
+  mlir::Value emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
+                                    mlir::Location location);
+
   // ── If-let ───────────────────────────────────────────────────────
   void generateIfLetStmt(const ast::StmtIfLet &stmt);
   mlir::Value generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Span &exprSpan);
@@ -213,7 +240,9 @@ private:
 
   // ── Select/Join helpers ───────────────────────────────────────────
   /// Resolve actor type name from an expression (e.g., variable holding actor).
-  std::string resolveActorTypeName(const ast::Expr &expr);
+  /// Checks resolvedTypeOf (from type checker), identifier-based actorVarTypes,
+  /// and field-access-based actorFieldTypes.
+  std::string resolveActorTypeName(const ast::Expr &expr, const ast::Span *span = nullptr);
 
   /// Pack argument values into a stack-allocated buffer for sending.
   /// Returns (data_ptr, data_size) as (!llvm.ptr, i64).
@@ -221,6 +250,46 @@ private:
                                                       mlir::Location location);
 
   // ── Helpers ──────────────────────────────────────────────────────
+  /// Join currentModulePath into a "::" delimited key string.
+  std::string currentModuleKey() const;
+
+  /// Look up a function through imported module paths.
+  mlir::func::FuncOp lookupImportedFunc(llvm::StringRef typeName, llvm::StringRef funcName);
+
+  /// Emit a RuntimeCallOp, returning the result (or nullptr for void calls).
+  mlir::Value emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType, mlir::ValueRange args,
+                              mlir::Location location);
+
+  /// Allocate the returnFlag and (if the return type is memref-compatible)
+  /// the returnSlot for early-return support inside SCF regions.
+  void initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes, mlir::Location location);
+
+  /// Apply a compound assignment arithmetic operation to (lhs, rhs).
+  /// Returns the result value, or nullptr on unsupported operator.
+  mlir::Value emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value lhs, mlir::Value rhs,
+                                  bool isFloat, bool isUnsigned, mlir::Location location);
+
+  /// If returnFlag is set, AND the given condition with "not returned".
+  /// Returns the (possibly tightened) condition.
+  mlir::Value andNotReturned(mlir::Value cond, mlir::Location location);
+
+  /// Ensure the current insertion block has a terminator; inserts scf.yield
+  /// if missing.
+  void ensureYieldTerminator(mlir::Location location);
+
+  /// Allocate loop-control flags (active, continue), push onto stacks, and
+  /// register optional label.  Returns {activeFlag, continueFlag}.
+  struct LoopControl {
+    mlir::Value activeFlag;
+    mlir::Value continueFlag;
+    std::string labelName;
+  };
+  LoopControl pushLoopControl(const std::optional<std::string> &label, mlir::Location location);
+
+  /// Pop loop-control stacks, erase label entries, and load break-value
+  /// (if any) into lastBreakValue.
+  void popLoopControl(const LoopControl &lc, mlir::Operation *whileOp);
+
   mlir::Location loc(const ast::Span &span);
 
   /// Get or create an extern function declaration.
@@ -281,6 +350,8 @@ private:
   mlir::OpBuilder builder;
   mlir::ModuleOp module;
   std::string targetTriple;
+  bool isWasm32_ = false;
+  mlir::IntegerType cachedSizeType_;
 
   /// Current module path for name mangling (set when processing module graph).
   std::vector<std::string> currentModulePath;
@@ -476,8 +547,6 @@ private:
 
   void generateForStreamStmt(const ast::StmtFor &stmt);
 
-  // Track which receive fns are generators: "ActorName.methodName" → true
-  std::unordered_map<std::string, bool> receiveGenFns;
   // Hidden __gen_frame field index in actor state struct:
   // "ActorName.methodName" → struct field index (for storing HewGenCtx*)
   std::unordered_map<std::string, unsigned> genFrameFieldIdx;
@@ -532,6 +601,9 @@ private:
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
   void unregisterDroppable(const std::string &varName);
+  /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
+  /// bitcast, drop).  No-op if the variable is not found.
+  void emitDropEntry(const DropEntry &entry);
   /// Emit a drop for a single variable if it has a registered drop function.
   void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);

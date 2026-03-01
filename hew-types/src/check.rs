@@ -9078,10 +9078,10 @@ fn main() {
         };
 
         let mut checker = Checker::new();
-        checker.check_program(&program);
+        let output = checker.check_program(&program);
 
         assert!(
-            !checker.fn_sigs.contains_key("private_func"),
+            !output.fn_sigs.contains_key("private_func"),
             "private function must not be registered from file import"
         );
         assert!(
@@ -9169,7 +9169,7 @@ fn main() {
 
         // Verify that Self resolves to Pair<T>, not bare Pair
         // The new method should return Pair<T>
-        let new_sig = checker
+        let new_sig = output
             .fn_sigs
             .get("Pair::new")
             .expect("Pair::new should exist");

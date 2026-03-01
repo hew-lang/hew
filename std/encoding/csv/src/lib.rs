@@ -5,9 +5,8 @@
 //! All returned [`HewCsvTable`] pointers are heap-allocated via `Box` and must
 //! be freed with [`hew_csv_free`].
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 /// Parsed CSV table.
 ///
@@ -33,7 +32,7 @@ pub unsafe extern "C" fn hew_csv_parse(data: *const c_char) -> *mut HewCsvTable 
         return std::ptr::null_mut();
     }
     // SAFETY: data is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = unsafe { CStr::from_ptr(data) }.to_str() else {
+    let Some(s) = (unsafe { cstr_to_str(data) }) else {
         return std::ptr::null_mut();
     };
     parse_csv_str(s, true)
@@ -54,7 +53,7 @@ pub unsafe extern "C" fn hew_csv_parse_no_headers(data: *const c_char) -> *mut H
         return std::ptr::null_mut();
     }
     // SAFETY: data is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = unsafe { CStr::from_ptr(data) }.to_str() else {
+    let Some(s) = (unsafe { cstr_to_str(data) }) else {
         return std::ptr::null_mut();
     };
     parse_csv_str(s, false)
@@ -74,7 +73,7 @@ pub unsafe extern "C" fn hew_csv_parse_file(path: *const c_char) -> *mut HewCsvT
         return std::ptr::null_mut();
     }
     // SAFETY: path is a valid NUL-terminated C string per caller contract.
-    let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
+    let Some(path_str) = (unsafe { cstr_to_str(path) }) else {
         return std::ptr::null_mut();
     };
     let Ok(content) = std::fs::read_to_string(path_str) else {
@@ -200,7 +199,7 @@ pub unsafe extern "C" fn hew_csv_get_by_name(
         return std::ptr::null_mut();
     }
     // SAFETY: col_name is a valid NUL-terminated C string per caller contract.
-    let Ok(name) = unsafe { CStr::from_ptr(col_name) }.to_str() else {
+    let Some(name) = (unsafe { cstr_to_str(col_name) }) else {
         return std::ptr::null_mut();
     };
     // SAFETY: table is a valid HewCsvTable pointer per caller contract.
@@ -273,7 +272,7 @@ fn parse_csv_str(data: &str, has_headers: bool) -> *mut HewCsvTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     /// Helper: convert a `*mut c_char` from malloc into a Rust String, then free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {

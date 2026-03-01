@@ -193,8 +193,6 @@ pub struct Checker {
     /// Maps unqualified function names to module short names (for glob/named imports).
     /// Used to mark the module as used when the function is called.
     unqualified_to_module: HashMap<String, String>,
-    /// Names of user-defined functions that have been called.
-    called_functions: HashSet<String>,
     /// Call graph: maps caller function name → set of callee function names.
     call_graph: HashMap<String, HashSet<String>>,
     /// Name of the function currently being checked (for call graph tracking).
@@ -336,7 +334,6 @@ impl Checker {
             used_modules: RefCell::new(HashSet::new()),
             user_modules: HashSet::new(),
             unqualified_to_module: HashMap::new(),
-            called_functions: HashSet::new(),
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,
@@ -1129,43 +1126,7 @@ impl Checker {
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     for method in &id.methods {
-                        let method_key = format!("{type_name}::{}", method.name);
-                        self.register_fn_sig_with_name(&method_key, method);
-                        // Compute params and return type before borrowing type_defs
-                        let params: Vec<Ty> = method
-                            .params
-                            .iter()
-                            .filter(|p| p.name != "self")
-                            .map(|p| self.resolve_type_expr(&p.ty.0))
-                            .collect();
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-                        let param_names: Vec<String> = method
-                            .params
-                            .iter()
-                            .filter(|p| p.name != "self")
-                            .map(|p| p.name.clone())
-                            .collect();
-                        let is_async = method.is_async;
-                        let method_name = method.name.clone();
-                        if let Some(td) = self.lookup_type_def_mut(type_name) {
-                            td.methods.insert(
-                                method_name,
-                                FnSig {
-                                    type_params: vec![],
-                                    type_param_bounds: HashMap::new(),
-                                    param_names,
-                                    params,
-                                    return_type,
-                                    is_async,
-                                    is_pure: false,
-                                    accepts_kwargs: false,
-                                    doc_comment: None,
-                                },
-                            );
-                        }
+                        self.register_impl_method(type_name, method);
                     }
 
                     // Register default trait methods not overridden in this impl
@@ -1394,6 +1355,46 @@ impl Checker {
         };
 
         self.fn_sigs.insert(name.to_string(), sig);
+    }
+
+    /// Register an impl method on a type's method table and fn_sigs.
+    ///
+    /// Returns the built `FnSig` for callers that need to insert it
+    /// on additional type names (e.g., qualified aliases).
+    fn register_impl_method(&mut self, type_name: &str, method: &FnDecl) -> FnSig {
+        let method_key = format!("{type_name}::{}", method.name);
+        self.register_fn_sig_with_name(&method_key, method);
+        let params: Vec<Ty> = method
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| self.resolve_type_expr(&p.ty.0))
+            .collect();
+        let return_type = method
+            .return_type
+            .as_ref()
+            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
+        let param_names: Vec<String> = method
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| p.name.clone())
+            .collect();
+        let sig = FnSig {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names,
+            params,
+            return_type,
+            is_async: method.is_async,
+            is_pure: method.is_pure,
+            accepts_kwargs: false,
+            doc_comment: None,
+        };
+        if let Some(td) = self.lookup_type_def_mut(type_name) {
+            td.methods.insert(method.name.clone(), sig.clone());
+        }
+        sig
     }
 
     fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
@@ -1685,38 +1686,7 @@ impl Checker {
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     for method in &id.methods {
-                        let method_key = format!("{type_name}::{}", method.name);
-                        self.register_fn_sig_with_name(&method_key, method);
-                        let params: Vec<Ty> = method
-                            .params
-                            .iter()
-                            .filter(|p| p.name != "self")
-                            .map(|p| self.resolve_type_expr(&p.ty.0))
-                            .collect();
-                        let return_type = method
-                            .return_type
-                            .as_ref()
-                            .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-                        let param_names: Vec<String> = method
-                            .params
-                            .iter()
-                            .filter(|p| p.name != "self")
-                            .map(|p| p.name.clone())
-                            .collect();
-                        let sig = FnSig {
-                            type_params: vec![],
-                            type_param_bounds: HashMap::new(),
-                            param_names,
-                            params,
-                            return_type,
-                            is_async: method.is_async,
-                            is_pure: false,
-                            accepts_kwargs: false,
-                            doc_comment: None,
-                        };
-                        if let Some(td) = self.lookup_type_def_mut(type_name) {
-                            td.methods.insert(method.name.clone(), sig.clone());
-                        }
+                        let sig = self.register_impl_method(type_name, method);
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
@@ -1807,42 +1777,7 @@ impl Checker {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            let method_key = format!("{type_name}::{}", method.name);
-                            self.register_fn_sig_with_name(&method_key, method);
-                            let params: Vec<Ty> = method
-                                .params
-                                .iter()
-                                .filter(|p| p.name != "self")
-                                .map(|p| self.resolve_type_expr(&p.ty.0))
-                                .collect();
-                            let return_type = method
-                                .return_type
-                                .as_ref()
-                                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-                            let param_names: Vec<String> = method
-                                .params
-                                .iter()
-                                .filter(|p| p.name != "self")
-                                .map(|p| p.name.clone())
-                                .collect();
-                            let is_async = method.is_async;
-                            let method_name = method.name.clone();
-                            if let Some(td) = self.lookup_type_def_mut(type_name) {
-                                td.methods.insert(
-                                    method_name,
-                                    FnSig {
-                                        type_params: vec![],
-                                        type_param_bounds: HashMap::new(),
-                                        param_names,
-                                        params,
-                                        return_type,
-                                        is_async,
-                                        is_pure: method.is_pure,
-                                        accepts_kwargs: false,
-                                        doc_comment: None,
-                                    },
-                                );
-                            }
+                            self.register_impl_method(type_name, method);
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
@@ -1965,42 +1900,7 @@ impl Checker {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            let method_key = format!("{type_name}::{}", method.name);
-                            self.register_fn_sig_with_name(&method_key, method);
-                            let params: Vec<Ty> = method
-                                .params
-                                .iter()
-                                .filter(|p| p.name != "self")
-                                .map(|p| self.resolve_type_expr(&p.ty.0))
-                                .collect();
-                            let return_type = method
-                                .return_type
-                                .as_ref()
-                                .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-                            let param_names: Vec<String> = method
-                                .params
-                                .iter()
-                                .filter(|p| p.name != "self")
-                                .map(|p| p.name.clone())
-                                .collect();
-                            let is_async = method.is_async;
-                            let method_name = method.name.clone();
-                            if let Some(td) = self.lookup_type_def_mut(type_name) {
-                                td.methods.insert(
-                                    method_name,
-                                    FnSig {
-                                        type_params: vec![],
-                                        type_param_bounds: HashMap::new(),
-                                        param_names,
-                                        params,
-                                        return_type,
-                                        is_async,
-                                        is_pure: method.is_pure,
-                                        accepts_kwargs: false,
-                                        doc_comment: None,
-                                    },
-                                );
-                            }
+                            self.register_impl_method(type_name, method);
                         }
 
                         // Restore previous self type
@@ -2166,14 +2066,15 @@ impl Checker {
             });
         }
 
+        // Move data out of Checker — it is not used after check_program.
         let mut output = TypeCheckOutput {
             expr_types,
-            errors: self.errors.clone(),
-            warnings: self.warnings.clone(),
-            type_defs: self.type_defs.clone(),
-            fn_sigs: self.fn_sigs.clone(),
+            errors: std::mem::take(&mut self.errors),
+            warnings: std::mem::take(&mut self.warnings),
+            type_defs: std::mem::take(&mut self.type_defs),
+            fn_sigs: std::mem::take(&mut self.fn_sigs),
             cycle_capable_actors: HashSet::new(),
-            user_modules: self.user_modules.clone(),
+            user_modules: std::mem::take(&mut self.user_modules),
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -2932,7 +2833,6 @@ impl Checker {
                     ty
                 } else if self.fn_sigs.contains_key(name) {
                     // It's a function name used as a value (e.g., variant constructor with no args)
-                    self.called_functions.insert(name.clone());
                     if let Some(caller) = &self.current_function {
                         self.call_graph
                             .entry(caller.clone())
@@ -3981,7 +3881,6 @@ impl Checker {
                     format!("cannot call impure function `{func_name}` from a pure function"),
                 );
             }
-            self.called_functions.insert(func_name.clone());
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())
@@ -4140,7 +4039,6 @@ impl Checker {
                 let key = format!("{name}.{method}");
                 self.require_unsafe(&key, span);
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {
-                    self.called_functions.insert(key.clone());
                     if let Some(caller) = &self.current_function {
                         self.call_graph
                             .entry(caller.clone())

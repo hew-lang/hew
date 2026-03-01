@@ -1556,12 +1556,13 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_literal(&mut self, lit: &Literal) {
+        use std::fmt::Write;
         match lit {
             Literal::Integer { value, radix } => match radix {
-                IntRadix::Hex => self.write(&format!("0x{value:X}")),
-                IntRadix::Octal => self.write(&format!("0o{value:o}")),
-                IntRadix::Binary => self.write(&format!("0b{value:b}")),
-                IntRadix::Decimal => self.write(&value.to_string()),
+                IntRadix::Hex => { let _ = write!(self.output, "0x{value:X}"); }
+                IntRadix::Octal => { let _ = write!(self.output, "0o{value:o}"); }
+                IntRadix::Binary => { let _ = write!(self.output, "0b{value:b}"); }
+                IntRadix::Decimal => { let _ = write!(self.output, "{value}"); }
             },
             Literal::Float(f) => {
                 let s = f.to_string();
@@ -1579,22 +1580,26 @@ impl<'a> Formatter<'a> {
             Literal::Bool(b) => self.write(if *b { "true" } else { "false" }),
             Literal::Char(c) => {
                 self.write("'");
-                self.write(&escape_char(*c));
+                if let Some(esc) = escape_char(*c) {
+                    self.write(esc);
+                } else {
+                    self.output.push(*c);
+                }
                 self.write("'");
             }
             Literal::Duration(ns) => {
                 if *ns >= 3_600_000_000_000 && *ns % 3_600_000_000_000 == 0 {
-                    self.write(&format!("{}h", *ns / 3_600_000_000_000));
+                    let _ = write!(self.output, "{}h", *ns / 3_600_000_000_000);
                 } else if *ns >= 60_000_000_000 && *ns % 60_000_000_000 == 0 {
-                    self.write(&format!("{}m", *ns / 60_000_000_000));
+                    let _ = write!(self.output, "{}m", *ns / 60_000_000_000);
                 } else if *ns >= 1_000_000_000 && *ns % 1_000_000_000 == 0 {
-                    self.write(&format!("{}s", *ns / 1_000_000_000));
+                    let _ = write!(self.output, "{}s", *ns / 1_000_000_000);
                 } else if *ns >= 1_000_000 && *ns % 1_000_000 == 0 {
-                    self.write(&format!("{}ms", *ns / 1_000_000));
+                    let _ = write!(self.output, "{}ms", *ns / 1_000_000);
                 } else if *ns >= 1_000 && *ns % 1_000 == 0 {
-                    self.write(&format!("{}us", *ns / 1_000));
+                    let _ = write!(self.output, "{}us", *ns / 1_000);
                 } else {
-                    self.write(&format!("{ns}ns"));
+                    let _ = write!(self.output, "{ns}ns");
                 }
             }
         }
@@ -1727,15 +1732,16 @@ fn escape_string(s: &str) -> String {
     out
 }
 
-fn escape_char(c: char) -> String {
+/// Return the escape sequence for a char, or `None` if no escaping is needed.
+fn escape_char(c: char) -> Option<&'static str> {
     match c {
-        '\\' => "\\\\".to_string(),
-        '\'' => "\\'".to_string(),
-        '\n' => "\\n".to_string(),
-        '\t' => "\\t".to_string(),
-        '\r' => "\\r".to_string(),
-        '\0' => "\\0".to_string(),
-        other => other.to_string(),
+        '\\' => Some("\\\\"),
+        '\'' => Some("\\'"),
+        '\n' => Some("\\n"),
+        '\t' => Some("\\t"),
+        '\r' => Some("\\r"),
+        '\0' => Some("\\0"),
+        _ => None,
     }
 }
 

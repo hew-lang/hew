@@ -14,11 +14,11 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
+hew-runtime = { path = "../../../hew-runtime" }
 csv = "1"
 libc = "0.2"
 
 [dev-dependencies]
-hew-runtime = { path = "../../../hew-runtime" }
 tempfile = "3"
 
 [lints]

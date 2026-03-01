@@ -4,6 +4,11 @@
 //! Hew programs. All returned buffers are allocated with `libc::malloc` so
 //! callers can free them with [`hew_base64_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use std::ffi::{c_char, c_void};
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
@@ -124,8 +129,6 @@ pub unsafe extern "C" fn hew_base64_free(ptr: *mut c_void) {
     unsafe { libc::free(ptr) };
 }
 
-#[cfg(test)]
-extern crate hew_runtime; // Link hew_vec_* symbol implementations
 #[cfg(test)]
 mod tests {
     use super::*;

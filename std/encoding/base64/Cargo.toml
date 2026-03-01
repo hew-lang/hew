@@ -14,11 +14,9 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
+hew-runtime = { path = "../../../hew-runtime" }
 base64 = "0.22"
 libc = "0.2"
-
-[dev-dependencies]
-hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

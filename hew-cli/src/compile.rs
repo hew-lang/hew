@@ -133,19 +133,21 @@ pub fn compile(
     .map_err(|errs| errs.join("\n"))?;
     program.module_graph = Some(module_graph);
 
-    // Collect module-path imports for per-package staticlib linking
+    // Collect module-path imports for per-package staticlib linking.
+    // Walk the entire module graph (not just root imports) so that
+    // transitive dependencies like std::bench → std::time::datetime
+    // are also linked.
     let mut imported_modules: Vec<String> = program
-        .items
-        .iter()
-        .filter_map(|(item, _)| {
-            if let Item::Import(decl) = item {
-                if !decl.path.is_empty() {
-                    return Some(decl.path.join("::"));
-                }
-            }
-            None
+        .module_graph
+        .as_ref()
+        .map(|mg| {
+            mg.modules
+                .keys()
+                .filter(|id| !id.path.is_empty())
+                .map(|id| id.path.join("::"))
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     // Wire types always generate JSON encode/decode calls, so link the
     // JSON and YAML staticlibs even without an explicit import.
     if program

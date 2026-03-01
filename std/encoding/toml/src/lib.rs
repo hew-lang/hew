@@ -5,6 +5,11 @@
 //! free them with `libc::free`. Opaque [`HewTomlValue`] handles must be
 //! freed with [`hew_toml_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::str_to_malloc;
 use std::ffi::CStr;
 use std::os::raw::c_char;

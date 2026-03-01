@@ -5,6 +5,11 @@
 //! NUL-terminated. All returned [`HewJsonValue`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_json_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::str_to_malloc;
 use std::ffi::CStr;
 use std::os::raw::c_char;

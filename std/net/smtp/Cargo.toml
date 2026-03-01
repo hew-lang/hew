@@ -14,15 +14,13 @@ crate-type = ["staticlib", "lib"]
 
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
+hew-runtime = { path = "../../../hew-runtime" }
 lettre = { version = "0.11", default-features = false, features = [
   "builder",
   "smtp-transport",
   "rustls-tls",
 ] }
 libc = "0.2"
-
-[dev-dependencies]
-hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

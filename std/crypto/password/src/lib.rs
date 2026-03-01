@@ -3,6 +3,11 @@
 //! Provides C ABI functions for hashing passwords, verifying passwords
 //! against PHC-format hashes, and hashing with a custom cost parameter.
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code.
+#[cfg(test)]
+extern crate hew_runtime;
+
 use std::ffi::c_char;
 
 use argon2::password_hash::SaltString;

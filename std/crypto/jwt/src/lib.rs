@@ -4,6 +4,12 @@
 //! programs. All returned strings are allocated with `libc::malloc` and
 //! NUL-terminated. Free them with [`hew_jwt_free`].
 
+// Force-link hew-runtime so the linker can resolve hew_vec_* symbols
+// referenced by hew-cabi's object code (which shares a single compilation
+// unit in debug builds).
+#[cfg(test)]
+extern crate hew_runtime;
+
 use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::os::raw::c_char;
 

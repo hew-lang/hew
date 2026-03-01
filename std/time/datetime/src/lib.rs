@@ -4,7 +4,7 @@
 //! milliseconds as the canonical time representation. All returned strings
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
 
-use hew_cabi::cabi::malloc_cstring;
+use hew_cabi::cabi::str_to_malloc;
 use std::ffi::{c_char, CStr};
 
 use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
@@ -53,8 +53,7 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
         return std::ptr::null_mut();
     };
     let formatted = dt.format(fmt_str).to_string();
-    // SAFETY: formatted.as_ptr() is valid for formatted.len() bytes.
-    unsafe { malloc_cstring(formatted.as_ptr(), formatted.len()) }
+    str_to_malloc(&formatted)
 }
 
 /// Parse a datetime string with the given `strftime` format, returning epoch

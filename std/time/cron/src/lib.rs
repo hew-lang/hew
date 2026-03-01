@@ -4,7 +4,7 @@
 //! for compiled Hew programs. The opaque [`HewCronExpr`] handle wraps a
 //! [`cron::Schedule`] and must be freed with [`hew_cron_free`].
 
-use hew_cabi::cabi::malloc_cstring;
+use hew_cabi::cabi::str_to_malloc;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::str::FromStr;
@@ -131,9 +131,7 @@ pub unsafe extern "C" fn hew_cron_to_string(expr: *const HewCronExpr) -> *mut c_
     // SAFETY: expr is a valid HewCronExpr pointer per caller contract.
     let cron_expr = unsafe { &*expr };
     let s = cron_expr.inner.to_string();
-    let bytes = s.as_bytes();
-    // SAFETY: bytes is valid for its length.
-    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
+    str_to_malloc(&s)
 }
 
 /// Free a [`HewCronExpr`] previously returned by [`hew_cron_parse`].

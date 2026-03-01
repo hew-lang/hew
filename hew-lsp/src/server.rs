@@ -70,6 +70,8 @@ const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
 #[derive(Debug)]
 struct DocumentState {
     source: String,
+    /// Byte offsets of each line start, computed once per edit.
+    line_offsets: Vec<usize>,
     parse_result: ParseResult,
     type_output: Option<TypeCheckOutput>,
 }
@@ -109,12 +111,16 @@ impl HewLanguageServer {
             Some(checker.check_program(&parse_result.program))
         };
 
-        let diagnostics = build_diagnostics(uri, source, &parse_result, type_output.as_ref());
+        let line_offsets = compute_line_offsets(source);
+
+        let diagnostics =
+            build_diagnostics(uri, source, &line_offsets, &parse_result, type_output.as_ref());
 
         self.documents.insert(
             uri.clone(),
             DocumentState {
                 source: source.to_string(),
+                line_offsets,
                 parse_result,
                 type_output,
             },
@@ -236,7 +242,7 @@ impl LanguageServer for HewLanguageServer {
         let position = params.text_document_position.position;
         let items = match self.documents.get(uri) {
             Some(doc) => {
-                let offset = position_to_offset(&doc.source, position);
+                let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
                 build_completions_at(&doc, offset)
             }
             None => vec![],
@@ -252,7 +258,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
 
         // Find the word under the cursor for function/type lookup.
         let word = word_at_offset(&doc.source, offset);
@@ -306,7 +312,7 @@ impl LanguageServer for HewLanguageServer {
         }
 
         Ok(best.map(|(span_key, ty)| {
-            let range = offset_range_to_lsp(&doc.source, span_key.start, span_key.end);
+            let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span_key.start, span_key.end);
             let snippet = &doc.source[span_key.start..span_key.end];
             let value = if let Ty::Function { params, ret } = ty {
                 let param_list: Vec<String> = params.iter().map(ToString::to_string).collect();
@@ -338,12 +344,12 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         let Some(word) = word_at_offset(&doc.source, offset) else {
             return Ok(None);
         };
 
-        if let Some(range) = find_definition_in_ast(&doc.source, &doc.parse_result, &word) {
+        if let Some(range) = find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word) {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range,
@@ -356,7 +362,7 @@ impl LanguageServer for HewLanguageServer {
             if let Some(method) = word.rsplit(separator).next() {
                 if method != word {
                     if let Some(range) =
-                        find_definition_in_ast(&doc.source, &doc.parse_result, method)
+                        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, method)
                     {
                         return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                             uri: uri.clone(),
@@ -379,7 +385,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let symbols = build_document_symbols(&doc.source, &doc.parse_result);
+        let symbols = build_document_symbols(&doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
@@ -392,7 +398,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let tokens = build_semantic_tokens(&doc.source, &doc.parse_result);
+        let tokens = build_semantic_tokens(&doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
@@ -405,7 +411,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let links = build_document_links(uri, &doc.source, &doc.parse_result);
+        let links = build_document_links(uri, &doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(non_empty(links))
     }
 
@@ -419,12 +425,12 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         let Some(word) = word_at_offset(&doc.source, offset) else {
             return Ok(None);
         };
 
-        let item = find_type_hierarchy_item(uri, &doc.source, &doc.parse_result, &word);
+        let item = find_type_hierarchy_item(uri, &doc.source, &doc.line_offsets, &doc.parse_result, &word);
         Ok(item.map(|i| vec![i]))
     }
 
@@ -437,7 +443,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let supers = collect_supertypes(&item.uri, &item.name, &doc.source, &doc.parse_result);
+        let supers = collect_supertypes(&item.uri, &item.name, &doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(non_empty(supers))
     }
 
@@ -450,7 +456,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let subs = collect_subtypes(&item.uri, &item.name, &doc.source, &doc.parse_result);
+        let subs = collect_subtypes(&item.uri, &item.name, &doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(non_empty(subs))
     }
 
@@ -462,7 +468,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         let include_declaration = params.context.include_declaration;
 
         let Some((_name, spans)) = find_all_references(&doc.source, &doc.parse_result, offset)
@@ -474,7 +480,7 @@ impl LanguageServer for HewLanguageServer {
             .iter()
             .map(|span| Location {
                 uri: uri.clone(),
-                range: span_to_range(&doc.source, span),
+                range: span_to_range(&doc.source, &doc.line_offsets, span),
             })
             .collect();
 
@@ -486,7 +492,7 @@ impl LanguageServer for HewLanguageServer {
                     .and_then(|w| w.rsplit("::").next())
                     .unwrap_or(&word);
                 if let Some(def_range) =
-                    find_definition_in_ast(&doc.source, &doc.parse_result, plain_word)
+                    find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, plain_word)
                 {
                     if !locations.iter().any(|l| l.range == def_range) {
                         locations.insert(
@@ -515,7 +521,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         let Some(word) = word_at_offset(&doc.source, offset) else {
             return Ok(None);
         };
@@ -528,7 +534,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         }
 
-        let range = word_range_at_offset(&doc.source, offset);
+        let range = word_range_at_offset(&doc.source, &doc.line_offsets, offset);
         Ok(range.map(PrepareRenameResponse::Range))
     }
 
@@ -541,7 +547,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         let Some((name, spans)) = find_all_references(&doc.source, &doc.parse_result, offset)
         else {
             return Ok(None);
@@ -550,12 +556,12 @@ impl LanguageServer for HewLanguageServer {
         let mut edits: Vec<TextEdit> = spans
             .iter()
             .map(|span| TextEdit {
-                range: span_to_range(&doc.source, span),
+                range: span_to_range(&doc.source, &doc.line_offsets, span),
                 new_text: new_name.clone(),
             })
             .collect();
 
-        if let Some(def_range) = find_definition_in_ast(&doc.source, &doc.parse_result, &name) {
+        if let Some(def_range) = find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &name) {
             if !edits.iter().any(|e| e.range == def_range) {
                 edits.push(TextEdit {
                     range: def_range,
@@ -595,13 +601,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, pos);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, pos);
         let word = word_at_offset(&doc.source, offset);
         let Some(word) = word else {
             return Ok(None);
         };
 
-        let item = find_callable_at(&uri, &doc.source, &doc.parse_result, &word);
+        let item = find_callable_at(&uri, &doc.source, &doc.line_offsets, &doc.parse_result, &word);
         Ok(item.map(|it| vec![it]))
     }
 
@@ -614,7 +620,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let calls = find_incoming_calls(&item.uri, &doc.source, &doc.parse_result, &item.name);
+        let calls = find_incoming_calls(&item.uri, &doc.source, &doc.line_offsets, &doc.parse_result, &item.name);
         Ok(non_empty(calls))
     }
 
@@ -627,7 +633,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let calls = find_outgoing_calls(&item.uri, &doc.source, &doc.parse_result, &item.name);
+        let calls = find_outgoing_calls(&item.uri, &doc.source, &doc.line_offsets, &doc.parse_result, &item.name);
         Ok(non_empty(calls))
     }
 
@@ -637,7 +643,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let lenses = build_code_lenses(&doc.source, &doc.parse_result);
+        let lenses = build_code_lenses(&doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(non_empty(lenses))
     }
 
@@ -653,6 +659,7 @@ impl LanguageServer for HewLanguageServer {
             symbols.extend(collect_workspace_symbols(
                 &uri,
                 &doc.source,
+                &doc.line_offsets,
                 &doc.parse_result,
                 query,
             ));
@@ -668,7 +675,7 @@ impl LanguageServer for HewLanguageServer {
         let Some(tc) = &doc.type_output else {
             return Ok(None);
         };
-        let hints = build_inlay_hints(&doc.source, &doc.parse_result, tc);
+        let hints = build_inlay_hints(&doc.source, &doc.line_offsets, &doc.parse_result, tc);
         Ok(non_empty(hints))
     }
 
@@ -681,7 +688,7 @@ impl LanguageServer for HewLanguageServer {
         let Some(tc) = &doc.type_output else {
             return Ok(None);
         };
-        let offset = position_to_offset(&doc.source, position);
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
         Ok(build_signature_help(&doc.source, tc, offset))
     }
 
@@ -691,7 +698,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let actions = build_code_actions(uri, &doc.source, &params.context.diagnostics);
+        let actions = build_code_actions(uri, &doc.source, &doc.line_offsets, &params.context.diagnostics);
         Ok(non_empty(actions))
     }
 
@@ -701,7 +708,7 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let ranges = build_folding_ranges(&doc.source, &doc.parse_result);
+        let ranges = build_folding_ranges(&doc.source, &doc.line_offsets, &doc.parse_result);
         Ok(non_empty(ranges))
     }
 }
@@ -711,6 +718,7 @@ impl LanguageServer for HewLanguageServer {
 fn build_diagnostics(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     type_output: Option<&TypeCheckOutput>,
 ) -> Vec<Diagnostic> {
@@ -727,7 +735,7 @@ fn build_diagnostics(
             hew_parser::Severity::Warning => DiagnosticSeverity::WARNING,
         };
         diagnostics.push(Diagnostic {
-            range: span_to_range(source, &err.span),
+            range: span_to_range(source, lo, &err.span),
             severity: Some(severity),
             source: Some("hew-parser".to_string()),
             message,
@@ -758,7 +766,7 @@ fn build_diagnostics(
                         .map(|(note_span, note_msg)| DiagnosticRelatedInformation {
                             location: Location {
                                 uri: uri.clone(),
-                                range: span_to_range(source, note_span),
+                                range: span_to_range(source, lo, note_span),
                             },
                             message: note_msg.clone(),
                         })
@@ -767,7 +775,7 @@ fn build_diagnostics(
             };
 
             diagnostics.push(Diagnostic {
-                range: span_to_range(source, &diag.span),
+                range: span_to_range(source, lo, &diag.span),
                 severity: Some(error_kind_severity(&diag.kind)),
                 source: Some("hew-types".to_string()),
                 message,
@@ -846,6 +854,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
 fn build_code_actions(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     diagnostics: &[Diagnostic],
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
@@ -875,7 +884,7 @@ fn build_code_actions(
             Some("MutabilityError") => {
                 // Extract the variable name from "cannot assign to immutable variable `name`"
                 let var_name = diag.message.split('`').nth(1);
-                if let Some(let_range) = find_let_keyword(source, diag.range, var_name) {
+                if let Some(let_range) = find_let_keyword(source, lo, diag.range, var_name) {
                     actions.push(CodeActionOrCommand::CodeAction(make_replace_action(
                         uri,
                         diag,
@@ -891,15 +900,14 @@ fn build_code_actions(
                     if !name.starts_with('_') {
                         let prefixed = format!("_{name}");
                         // Find the exact position of the variable name near the diagnostic start
-                        let start_offset = position_to_offset(source, diag.range.start);
-                        let end_offset = position_to_offset(source, diag.range.end);
+                        let start_offset = position_to_offset(source, lo, diag.range.start);
+                        let end_offset = position_to_offset(source, lo, diag.range.end);
                         let region = &source[start_offset..end_offset];
                         if let Some(rel) = region.find(name) {
                             let abs_start = start_offset + rel;
                             let abs_end = abs_start + name.len();
-                            let line_offsets = compute_line_offsets(source);
-                            let (sl, sc) = offset_to_line_col(source, &line_offsets, abs_start);
-                            let (el, ec) = offset_to_line_col(source, &line_offsets, abs_end);
+                            let (sl, sc) = offset_to_line_col(source, lo, abs_start);
+                            let (el, ec) = offset_to_line_col(source, lo, abs_end);
                             #[expect(
                                 clippy::cast_possible_truncation,
                                 reason = "line/col values fit u32"
@@ -971,9 +979,8 @@ fn make_replace_action(
     clippy::cast_possible_truncation,
     reason = "line/column values will not exceed u32"
 )]
-fn find_let_keyword(source: &str, diag_range: Range, var_name: Option<&str>) -> Option<Range> {
-    let line_offsets = compute_line_offsets(source);
-    let diag_start = position_to_offset(source, diag_range.start);
+fn find_let_keyword(source: &str, lo: &[usize], diag_range: Range, var_name: Option<&str>) -> Option<Range> {
+    let diag_start = position_to_offset(source, lo, diag_range.start);
     let search_start = diag_start.saturating_sub(200);
     let search_region = &source[search_start..diag_start];
     // Search backwards for all `let ` occurrences, closest first
@@ -987,8 +994,8 @@ fn find_let_keyword(source: &str, diag_range: Range, var_name: Option<&str>) -> 
                 continue;
             }
         }
-        let (sl, sc) = offset_to_line_col(source, &line_offsets, abs_pos);
-        let (el, ec) = offset_to_line_col(source, &line_offsets, abs_pos + 3);
+        let (sl, sc) = offset_to_line_col(source, lo, abs_pos);
+        let (el, ec) = offset_to_line_col(source, lo, abs_pos + 3);
         return Some(Range {
             start: Position::new(sl as u32, sc as u32),
             end: Position::new(el as u32, ec as u32),
@@ -1000,17 +1007,16 @@ fn find_let_keyword(source: &str, diag_range: Range, var_name: Option<&str>) -> 
 // ── Folding Ranges ───────────────────────────────────────────────────
 
 /// Build folding ranges from the AST.
-fn build_folding_ranges(source: &str, parse_result: &ParseResult) -> Vec<FoldingRange> {
-    let line_offsets = compute_line_offsets(source);
+fn build_folding_ranges(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
     collect_import_groups(
         source,
-        &line_offsets,
+        lo,
         &parse_result.program.items,
         &mut ranges,
     );
     for (item, span) in &parse_result.program.items {
-        collect_item_folding(source, &line_offsets, item, span, &mut ranges);
+        collect_item_folding(source, lo, item, span, &mut ranges);
     }
     ranges
 }
@@ -1819,11 +1825,11 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionItemKind)> {
     clippy::too_many_lines,
     reason = "match arms over all Item variants with children is clearest as one function"
 )]
-fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<DocumentSymbol> {
+fn build_document_symbols(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
     for (item, span) in &parse_result.program.items {
-        let range = span_to_range(source, span);
+        let range = span_to_range(source, lo, span);
         let sym = match item {
             Item::Function(f) => make_symbol(&f.name, SymbolKind::FUNCTION, range),
             Item::Actor(a) => {
@@ -1836,7 +1842,7 @@ fn build_document_symbols(source: &str, parse_result: &ParseResult) -> Vec<Docum
                     let recv_range = if recv.span.is_empty() {
                         range
                     } else {
-                        span_to_range(source, &recv.span)
+                        span_to_range(source, lo, &recv.span)
                     };
                     children.push(make_symbol(&recv.name, SymbolKind::METHOD, recv_range));
                 }
@@ -1993,9 +1999,8 @@ fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
     clippy::cast_possible_truncation,
     reason = "token delta values in source files will not exceed u32"
 )]
-fn build_semantic_tokens(source: &str, _parse_result: &ParseResult) -> Vec<SemanticToken> {
+fn build_semantic_tokens(source: &str, lo: &[usize], _parse_result: &ParseResult) -> Vec<SemanticToken> {
     let lexer_tokens = hew_lexer::lex(source);
-    let line_offsets = compute_line_offsets(source);
     let mut result = Vec::new();
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
@@ -2015,7 +2020,7 @@ fn build_semantic_tokens(source: &str, _parse_result: &ParseResult) -> Vec<Seman
             }
         }
 
-        let (line, col) = offset_to_line_col(source, &line_offsets, span.start);
+        let (line, col) = offset_to_line_col(source, lo, span.start);
         let line = line as u32;
         let col = col as u32;
         // Length in UTF-16 code units for the token text
@@ -2102,28 +2107,28 @@ fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -> (u
     (line, col_utf16)
 }
 
-/// Convert a parser `Span` (byte-offset `Range<usize>`) to an LSP `Range`.
+/// Convert a parser `Span` (byte-offset `Range<usize>`) to an LSP `Range`,
+/// using pre-computed line offsets.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "line/column values in source files will not exceed u32"
 )]
-fn span_to_range(source: &str, span: &Span) -> Range {
-    let line_offsets = compute_line_offsets(source);
-    let (start_line, start_col) = offset_to_line_col(source, &line_offsets, span.start);
-    let (end_line, end_col) = offset_to_line_col(source, &line_offsets, span.end);
+fn span_to_range(source: &str, lo: &[usize], span: &Span) -> Range {
+    let (start_line, start_col) = offset_to_line_col(source, lo, span.start);
+    let (end_line, end_col) = offset_to_line_col(source, lo, span.end);
     Range {
         start: Position::new(start_line as u32, start_col as u32),
         end: Position::new(end_line as u32, end_col as u32),
     }
 }
 
-/// Convert an LSP `Position` (UTF-16 character offset) to a byte offset in source.
-fn position_to_offset(source: &str, position: Position) -> usize {
-    let line_offsets = compute_line_offsets(source);
+/// Convert an LSP `Position` (UTF-16 character offset) to a byte offset in source,
+/// using pre-computed line offsets.
+fn position_to_offset(source: &str, lo: &[usize], position: Position) -> usize {
     let line = position.line as usize;
-    if line < line_offsets.len() {
-        let line_start = line_offsets[line];
-        let line_end = line_offsets.get(line + 1).copied().unwrap_or(source.len());
+    if line < lo.len() {
+        let line_start = lo[line];
+        let line_end = lo.get(line + 1).copied().unwrap_or(source.len());
         let line_text = &source[line_start..line_end];
         let mut utf16_count = 0u32;
         let target = position.character;
@@ -2146,15 +2151,14 @@ fn position_to_offset(source: &str, position: Position) -> usize {
     }
 }
 
-/// Convert byte offset range to LSP `Range`.
+/// Convert byte offset range to LSP `Range`, using pre-computed line offsets.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "line/column values in source files will not exceed u32"
 )]
-fn offset_range_to_lsp(source: &str, start: usize, end: usize) -> Range {
-    let line_offsets = compute_line_offsets(source);
-    let (sl, sc) = offset_to_line_col(source, &line_offsets, start);
-    let (el, ec) = offset_to_line_col(source, &line_offsets, end);
+fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> Range {
+    let (sl, sc) = offset_to_line_col(source, lo, start);
+    let (el, ec) = offset_to_line_col(source, lo, end);
     Range {
         start: Position::new(sl as u32, sc as u32),
         end: Position::new(el as u32, ec as u32),
@@ -2164,7 +2168,7 @@ fn offset_range_to_lsp(source: &str, start: usize, end: usize) -> Range {
 // ── Go-to-definition ─────────────────────────────────────────────────
 
 /// Search for a definition matching `word` in the AST, including nested items.
-fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) -> Option<Range> {
+fn find_definition_in_ast(source: &str, lo: &[usize], parse_result: &ParseResult, word: &str) -> Option<Range> {
     for (item, span) in &parse_result.program.items {
         // Top-level name matching.
         let name = match item {
@@ -2179,19 +2183,19 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
             _ => None,
         };
         if name.is_some_and(|n| n == word) {
-            return Some(span_to_range(source, span));
+            return Some(span_to_range(source, lo, span));
         }
 
         // Search inside actors for receive methods and methods.
         if let Item::Actor(a) = item {
             for recv in &a.receive_fns {
                 if recv.name == word {
-                    return Some(span_to_range(source, span));
+                    return Some(span_to_range(source, lo, span));
                 }
             }
             for method in &a.methods {
                 if method.name == word {
-                    return Some(span_to_range(source, span));
+                    return Some(span_to_range(source, lo, span));
                 }
             }
         }
@@ -2201,10 +2205,10 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
             for body_item in &td.body {
                 match body_item {
                     TypeBodyItem::Variant(v) if v.name == word => {
-                        return Some(span_to_range(source, span));
+                        return Some(span_to_range(source, lo, span));
                     }
                     TypeBodyItem::Method(m) if m.name == word => {
-                        return Some(span_to_range(source, span));
+                        return Some(span_to_range(source, lo, span));
                     }
                     _ => {}
                 }
@@ -2216,10 +2220,10 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
             for trait_item in &t.items {
                 match trait_item {
                     TraitItem::Method(m) if m.name == word => {
-                        return Some(span_to_range(source, span));
+                        return Some(span_to_range(source, lo, span));
                     }
                     TraitItem::AssociatedType { name, .. } if name == word => {
-                        return Some(span_to_range(source, span));
+                        return Some(span_to_range(source, lo, span));
                     }
                     _ => {}
                 }
@@ -2230,7 +2234,7 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
         if let Item::Impl(i) = item {
             for method in &i.methods {
                 if method.name == word {
-                    return Some(span_to_range(source, span));
+                    return Some(span_to_range(source, lo, span));
                 }
             }
         }
@@ -2239,7 +2243,7 @@ fn find_definition_in_ast(source: &str, parse_result: &ParseResult, word: &str) 
         if let Item::ExternBlock(extern_block) = item {
             for function in &extern_block.functions {
                 if function.name == word {
-                    return Some(span_to_range(source, span));
+                    return Some(span_to_range(source, lo, span));
                 }
             }
         }
@@ -2281,9 +2285,9 @@ fn simple_word_at_offset(source: &str, offset: usize) -> Option<(String, Span)> 
 }
 
 /// Return the LSP range of the simple identifier at `offset`.
-fn word_range_at_offset(source: &str, offset: usize) -> Option<Range> {
+fn word_range_at_offset(source: &str, lo: &[usize], offset: usize) -> Option<Range> {
     let (_word, span) = simple_word_at_offset(source, offset)?;
-    Some(span_to_range(source, &span))
+    Some(span_to_range(source, lo, &span))
 }
 
 /// Check if a name matches a top-level item definition (function, actor, type, etc.).
@@ -2909,7 +2913,7 @@ fn format_type_def_hover(type_def: &hew_types::check::TypeDef) -> String {
 
 // ── Document links ──────────────────────────────────────────────────
 
-fn build_document_links(uri: &Url, source: &str, parse_result: &ParseResult) -> Vec<DocumentLink> {
+fn build_document_links(uri: &Url, source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<DocumentLink> {
     let mut links = Vec::new();
 
     let workspace_root = uri.to_file_path().ok().and_then(|p| {
@@ -2949,7 +2953,7 @@ fn build_document_links(uri: &Url, source: &str, parse_result: &ParseResult) -> 
             if let Some(path) = resolved {
                 if let Ok(target_uri) = Url::from_file_path(&path) {
                     links.push(DocumentLink {
-                        range: span_to_range(source, span),
+                        range: span_to_range(source, lo, span),
                         target: Some(target_uri),
                         tooltip: Some(format!("Open {relative}")),
                         data: None,
@@ -2966,6 +2970,7 @@ fn build_document_links(uri: &Url, source: &str, parse_result: &ParseResult) -> 
 fn find_type_hierarchy_item(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     name: &str,
 ) -> Option<TypeHierarchyItem> {
@@ -2983,7 +2988,7 @@ fn find_type_hierarchy_item(
             _ => continue,
         };
         if item_name == name {
-            let range = span_to_range(source, span);
+            let range = span_to_range(source, lo, span);
             return Some(TypeHierarchyItem {
                 name: item_name.to_string(),
                 kind,
@@ -3003,6 +3008,7 @@ fn collect_supertypes(
     uri: &Url,
     name: &str,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
 ) -> Vec<TypeHierarchyItem> {
     let mut supers = Vec::new();
@@ -3014,7 +3020,7 @@ fn collect_supertypes(
                 if let Some(bounds) = &a.super_traits {
                     for bound in bounds {
                         if let Some(hi) =
-                            find_type_hierarchy_item(uri, source, parse_result, &bound.name)
+                            find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
                         {
                             supers.push(hi);
                         }
@@ -3035,7 +3041,7 @@ fn collect_supertypes(
             if target == name {
                 if let Some(bound) = &impl_decl.trait_bound {
                     if let Some(hi) =
-                        find_type_hierarchy_item(uri, source, parse_result, &bound.name)
+                        find_type_hierarchy_item(uri, source, lo, parse_result, &bound.name)
                     {
                         supers.push(hi);
                     }
@@ -3050,6 +3056,7 @@ fn collect_subtypes(
     uri: &Url,
     trait_name: &str,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
 ) -> Vec<TypeHierarchyItem> {
     let mut subs = Vec::new();
@@ -3063,7 +3070,7 @@ fn collect_subtypes(
                         hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
                         _ => continue,
                     };
-                    if let Some(hi) = find_type_hierarchy_item(uri, source, parse_result, target) {
+                    if let Some(hi) = find_type_hierarchy_item(uri, source, lo, parse_result, target) {
                         subs.push(hi);
                     }
                 }
@@ -3076,7 +3083,7 @@ fn collect_subtypes(
         if let Item::Actor(a) = item {
             if let Some(bounds) = &a.super_traits {
                 if bounds.iter().any(|b| b.name == trait_name) {
-                    if let Some(hi) = find_type_hierarchy_item(uri, source, parse_result, &a.name) {
+                    if let Some(hi) = find_type_hierarchy_item(uri, source, lo, parse_result, &a.name) {
                         subs.push(hi);
                     }
                 }
@@ -3091,13 +3098,14 @@ fn collect_subtypes(
 fn find_callable_at(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     name: &str,
 ) -> Option<CallHierarchyItem> {
     for (item, item_span) in &parse_result.program.items {
         match item {
             Item::Function(f) if f.name == name => {
-                let range = span_to_range(source, item_span);
+                let range = span_to_range(source, lo, item_span);
                 return Some(CallHierarchyItem {
                     name: f.name.clone(),
                     kind: SymbolKind::FUNCTION,
@@ -3117,7 +3125,7 @@ fn find_callable_at(
                         } else {
                             &recv.span
                         };
-                        let range = span_to_range(source, fn_span);
+                        let range = span_to_range(source, lo, fn_span);
                         return Some(CallHierarchyItem {
                             name: recv.name.clone(),
                             kind: SymbolKind::METHOD,
@@ -3393,6 +3401,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
 fn find_incoming_calls(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     target_name: &str,
 ) -> Vec<CallHierarchyIncomingCall> {
@@ -3404,7 +3413,7 @@ fn find_incoming_calls(
                 collect_calls_in_block(&f.body, &mut calls);
                 let matching: Vec<_> = calls.iter().filter(|c| c.name == target_name).collect();
                 if !matching.is_empty() {
-                    let range = span_to_range(source, item_span);
+                    let range = span_to_range(source, lo, item_span);
                     result.push(CallHierarchyIncomingCall {
                         from: CallHierarchyItem {
                             name: f.name.clone(),
@@ -3418,7 +3427,7 @@ fn find_incoming_calls(
                         },
                         from_ranges: matching
                             .iter()
-                            .map(|c| span_to_range(source, &c.span))
+                            .map(|c| span_to_range(source, lo, &c.span))
                             .collect(),
                     });
                 }
@@ -3434,7 +3443,7 @@ fn find_incoming_calls(
                         } else {
                             &recv.span
                         };
-                        let range = span_to_range(source, fn_span);
+                        let range = span_to_range(source, lo, fn_span);
                         result.push(CallHierarchyIncomingCall {
                             from: CallHierarchyItem {
                                 name: recv.name.clone(),
@@ -3448,7 +3457,7 @@ fn find_incoming_calls(
                             },
                             from_ranges: matching
                                 .iter()
-                                .map(|c| span_to_range(source, &c.span))
+                                .map(|c| span_to_range(source, lo, &c.span))
                                 .collect(),
                         });
                     }
@@ -3463,6 +3472,7 @@ fn find_incoming_calls(
 fn find_outgoing_calls(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     caller_name: &str,
 ) -> Vec<CallHierarchyOutgoingCall> {
@@ -3490,13 +3500,13 @@ fn find_outgoing_calls(
         grouped
             .entry(cs.name.clone())
             .or_default()
-            .push(span_to_range(source, &cs.span));
+            .push(span_to_range(source, lo, &cs.span));
     }
 
     grouped
         .into_iter()
         .filter_map(|(callee_name, ranges)| {
-            let target = find_callable_at(uri, source, parse_result, &callee_name)?;
+            let target = find_callable_at(uri, source, lo, parse_result, &callee_name)?;
             Some(CallHierarchyOutgoingCall {
                 to: target,
                 from_ranges: ranges,
@@ -3507,12 +3517,12 @@ fn find_outgoing_calls(
 
 // ── Code lens helpers ───────────────────────────────────────────────
 
-fn build_code_lenses(source: &str, parse_result: &ParseResult) -> Vec<CodeLens> {
+fn build_code_lenses(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<CodeLens> {
     let mut lenses = Vec::new();
     for (item, item_span) in &parse_result.program.items {
         match item {
             Item::Function(f) => {
-                let range = span_to_range(source, item_span);
+                let range = span_to_range(source, lo, item_span);
                 let ref_count = count_references(parse_result, &f.name);
                 lenses.push(CodeLens {
                     range,
@@ -3539,7 +3549,7 @@ fn build_code_lenses(source: &str, parse_result: &ParseResult) -> Vec<CodeLens> 
                 }
             }
             Item::Actor(a) => {
-                let range = span_to_range(source, item_span);
+                let range = span_to_range(source, lo, item_span);
                 let ref_count = count_references(parse_result, &a.name);
                 lenses.push(CodeLens {
                     range,
@@ -3557,7 +3567,7 @@ fn build_code_lenses(source: &str, parse_result: &ParseResult) -> Vec<CodeLens> 
                     let recv_range = if recv.span.is_empty() {
                         range
                     } else {
-                        span_to_range(source, &recv.span)
+                        span_to_range(source, lo, &recv.span)
                     };
                     let recv_ref_count = count_references(parse_result, &recv.name);
                     lenses.push(CodeLens {
@@ -3605,6 +3615,7 @@ fn count_references(parse_result: &ParseResult, name: &str) -> usize {
 fn collect_workspace_symbols(
     uri: &Url,
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     query: &str,
 ) -> Vec<SymbolInformation> {
@@ -3621,7 +3632,7 @@ fn collect_workspace_symbols(
                         deprecated: None,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(source, item_span),
+                            range: span_to_range(source, lo, item_span),
                         },
                         container_name: None,
                     });
@@ -3636,7 +3647,7 @@ fn collect_workspace_symbols(
                         deprecated: None,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(source, item_span),
+                            range: span_to_range(source, lo, item_span),
                         },
                         container_name: None,
                     });
@@ -3644,9 +3655,9 @@ fn collect_workspace_symbols(
                 for recv in &a.receive_fns {
                     if query.is_empty() || recv.name.to_lowercase().contains(&query_lower) {
                         let recv_range = if recv.span.is_empty() {
-                            span_to_range(source, item_span)
+                            span_to_range(source, lo, item_span)
                         } else {
-                            span_to_range(source, &recv.span)
+                            span_to_range(source, lo, &recv.span)
                         };
                         symbols.push(SymbolInformation {
                             name: recv.name.clone(),
@@ -3671,7 +3682,7 @@ fn collect_workspace_symbols(
                         deprecated: None,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(source, item_span),
+                            range: span_to_range(source, lo, item_span),
                         },
                         container_name: None,
                     });
@@ -3686,7 +3697,7 @@ fn collect_workspace_symbols(
                         deprecated: None,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(source, item_span),
+                            range: span_to_range(source, lo, item_span),
                         },
                         container_name: None,
                     });
@@ -3701,7 +3712,7 @@ fn collect_workspace_symbols(
                         deprecated: None,
                         location: Location {
                             uri: uri.clone(),
-                            range: span_to_range(source, item_span),
+                            range: span_to_range(source, lo, item_span),
                         },
                         container_name: None,
                     });
@@ -3718,42 +3729,44 @@ fn collect_workspace_symbols(
 /// Build inlay hints for unannotated bindings and closures.
 fn build_inlay_hints(
     source: &str,
+    lo: &[usize],
     parse_result: &ParseResult,
     tc: &TypeCheckOutput,
 ) -> Vec<InlayHint> {
     let mut hints = Vec::new();
     for (item, _span) in &parse_result.program.items {
-        collect_inlay_hints_from_item(source, item, tc, &mut hints);
+        collect_inlay_hints_from_item(source, lo, item, tc, &mut hints);
     }
     hints
 }
 
 fn collect_inlay_hints_from_item(
     source: &str,
+    lo: &[usize],
     item: &Item,
     tc: &TypeCheckOutput,
     hints: &mut Vec<InlayHint>,
 ) {
     match item {
-        Item::Function(f) => collect_inlay_hints_from_block(source, &f.body, tc, hints),
+        Item::Function(f) => collect_inlay_hints_from_block(source, lo, &f.body, tc, hints),
         Item::Actor(a) => {
             for recv in &a.receive_fns {
-                collect_inlay_hints_from_block(source, &recv.body, tc, hints);
+                collect_inlay_hints_from_block(source, lo, &recv.body, tc, hints);
             }
             for method in &a.methods {
-                collect_inlay_hints_from_block(source, &method.body, tc, hints);
+                collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
             }
         }
         Item::TypeDecl(td) => {
             for body_item in &td.body {
                 if let TypeBodyItem::Method(method) = body_item {
-                    collect_inlay_hints_from_block(source, &method.body, tc, hints);
+                    collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
                 }
             }
         }
         Item::Impl(i) => {
             for method in &i.methods {
-                collect_inlay_hints_from_block(source, &method.body, tc, hints);
+                collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
             }
         }
         _ => {}
@@ -3762,12 +3775,13 @@ fn collect_inlay_hints_from_item(
 
 fn collect_inlay_hints_from_block(
     source: &str,
+    lo: &[usize],
     block: &Block,
     tc: &TypeCheckOutput,
     hints: &mut Vec<InlayHint>,
 ) {
     for (stmt, _span) in &block.stmts {
-        collect_inlay_hints_from_stmt(source, stmt, tc, hints);
+        collect_inlay_hints_from_stmt(source, lo, stmt, tc, hints);
     }
 }
 
@@ -3777,6 +3791,7 @@ fn collect_inlay_hints_from_block(
 )]
 fn collect_inlay_hints_from_stmt(
     source: &str,
+    lo: &[usize],
     stmt: &Stmt,
     tc: &TypeCheckOutput,
     hints: &mut Vec<InlayHint>,
@@ -3791,8 +3806,7 @@ fn collect_inlay_hints_from_stmt(
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = pattern.1.end;
-                        let line_offsets = compute_line_offsets(source);
-                        let (line, col) = offset_to_line_col(source, &line_offsets, name_end);
+                        let (line, col) = offset_to_line_col(source, lo,name_end);
                         hints.push(InlayHint {
                             position: Position::new(line as u32, col as u32),
                             label: InlayHintLabel::String(format!(": {inferred_ty}")),
@@ -3807,7 +3821,7 @@ fn collect_inlay_hints_from_stmt(
                 }
             }
             if let Some(value_expr) = value {
-                collect_inlay_hints_from_expr(source, &value_expr.0, tc, hints);
+                collect_inlay_hints_from_expr(source, lo, &value_expr.0, tc, hints);
             }
         }
         Stmt::Var {
@@ -3821,8 +3835,7 @@ fn collect_inlay_hints_from_stmt(
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = find_var_name_end(source, &value_expr.1, name);
-                        let line_offsets = compute_line_offsets(source);
-                        let (line, col) = offset_to_line_col(source, &line_offsets, name_end);
+                        let (line, col) = offset_to_line_col(source, lo,name_end);
                         hints.push(InlayHint {
                             position: Position::new(line as u32, col as u32),
                             label: InlayHintLabel::String(format!(": {inferred_ty}")),
@@ -3837,42 +3850,42 @@ fn collect_inlay_hints_from_stmt(
                 }
             }
             if let Some(value_expr) = value {
-                collect_inlay_hints_from_expr(source, &value_expr.0, tc, hints);
+                collect_inlay_hints_from_expr(source, lo, &value_expr.0, tc, hints);
             }
         }
         Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
+            collect_inlay_hints_from_block(source, lo, body, tc, hints);
         }
         Stmt::If {
             then_block,
             else_block,
             ..
         } => {
-            collect_inlay_hints_from_block(source, then_block, tc, hints);
+            collect_inlay_hints_from_block(source, lo, then_block, tc, hints);
             if let Some(eb) = else_block {
                 if let Some(if_stmt) = &eb.if_stmt {
-                    collect_inlay_hints_from_stmt(source, &if_stmt.0, tc, hints);
+                    collect_inlay_hints_from_stmt(source, lo, &if_stmt.0, tc, hints);
                 }
                 if let Some(block) = &eb.block {
-                    collect_inlay_hints_from_block(source, block, tc, hints);
+                    collect_inlay_hints_from_block(source, lo, block, tc, hints);
                 }
             }
         }
         Stmt::IfLet {
             body, else_body, ..
         } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
+            collect_inlay_hints_from_block(source, lo, body, tc, hints);
             if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+                collect_inlay_hints_from_block(source, lo, block, tc, hints);
             }
         }
         Stmt::Match { arms, .. } => {
             for arm in arms {
-                collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
+                collect_inlay_hints_from_expr(source, lo, &arm.body.0, tc, hints);
             }
         }
         Stmt::Expression(expr) => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            collect_inlay_hints_from_expr(source, lo, &expr.0, tc, hints);
         }
         _ => {}
     }
@@ -3884,6 +3897,7 @@ fn collect_inlay_hints_from_stmt(
 )]
 fn collect_inlay_hints_from_expr(
     source: &str,
+    lo: &[usize],
     expr: &Expr,
     tc: &TypeCheckOutput,
     hints: &mut Vec<InlayHint>,
@@ -3899,8 +3913,7 @@ fn collect_inlay_hints_from_expr(
                 };
                 if let Some(body_ty) = tc.expr_types.get(&span_key) {
                     let hint_pos = body.1.start;
-                    let line_offsets = compute_line_offsets(source);
-                    let (line, col) = offset_to_line_col(source, &line_offsets, hint_pos);
+                    let (line, col) = offset_to_line_col(source, lo, hint_pos);
                     hints.push(InlayHint {
                         position: Position::new(line as u32, col as u32),
                         label: InlayHintLabel::String(format!("-> {body_ty} ")),
@@ -3913,42 +3926,42 @@ fn collect_inlay_hints_from_expr(
                     });
                 }
             }
-            collect_inlay_hints_from_expr(source, &body.0, tc, hints);
+            collect_inlay_hints_from_expr(source, lo, &body.0, tc, hints);
         }
         Expr::Block(block)
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {
-            collect_inlay_hints_from_block(source, block, tc, hints);
+            collect_inlay_hints_from_block(source, lo, block, tc, hints);
         }
         Expr::Scope { body, .. } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
+            collect_inlay_hints_from_block(source, lo, body, tc, hints);
         }
         Expr::If {
             then_block,
             else_block,
             ..
         } => {
-            collect_inlay_hints_from_expr(source, &then_block.0, tc, hints);
+            collect_inlay_hints_from_expr(source, lo, &then_block.0, tc, hints);
             if let Some(else_expr) = else_block {
-                collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
+                collect_inlay_hints_from_expr(source, lo, &else_expr.0, tc, hints);
             }
         }
         Expr::IfLet {
             body, else_body, ..
         } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
+            collect_inlay_hints_from_block(source, lo, body, tc, hints);
             if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+                collect_inlay_hints_from_block(source, lo, block, tc, hints);
             }
         }
         Expr::Match { arms, .. } => {
             for arm in arms {
-                collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
+                collect_inlay_hints_from_expr(source, lo, &arm.body.0, tc, hints);
             }
         }
         Expr::Cast { expr: inner, .. } => {
-            collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
+            collect_inlay_hints_from_expr(source, lo, &inner.0, tc, hints);
         }
         _ => {}
     }
@@ -4124,6 +4137,7 @@ mod tests {
     use super::*;
 
     fn semantic_token_data(source: &str, tokens: &[SemanticToken]) -> Vec<(String, u32, u32)> {
+        let lo = compute_line_offsets(source);
         let mut line = 0u32;
         let mut col = 0u32;
         let mut data = Vec::new();
@@ -4134,8 +4148,8 @@ mod tests {
             } else {
                 col = token.delta_start;
             }
-            let start = position_to_offset(source, Position::new(line, col));
-            let end = position_to_offset(source, Position::new(line, col + token.length));
+            let start = position_to_offset(source, &lo, Position::new(line, col));
+            let end = position_to_offset(source, &lo, Position::new(line, col + token.length));
             data.push((
                 source[start..end].to_string(),
                 token.token_type,
@@ -4169,9 +4183,10 @@ mod tests {
     #[test]
     fn position_to_offset_basic() {
         let source = "ab\ncd\ne";
-        assert_eq!(position_to_offset(source, Position::new(0, 0)), 0);
-        assert_eq!(position_to_offset(source, Position::new(1, 1)), 4);
-        assert_eq!(position_to_offset(source, Position::new(2, 0)), 6);
+        let lo = compute_line_offsets(source);
+        assert_eq!(position_to_offset(source, &lo, Position::new(0, 0)), 0);
+        assert_eq!(position_to_offset(source, &lo, Position::new(1, 1)), 4);
+        assert_eq!(position_to_offset(source, &lo, Position::new(2, 0)), 6);
     }
 
     #[test]
@@ -4193,12 +4208,13 @@ mod tests {
     fn position_to_offset_utf16() {
         // "aé\nb" — 'é' is 2 bytes in UTF-8
         let source = "aé\nb";
+        let lo = compute_line_offsets(source);
         // Position(0, 1) → byte 1 (start of 'é')
-        assert_eq!(position_to_offset(source, Position::new(0, 1)), 1);
+        assert_eq!(position_to_offset(source, &lo, Position::new(0, 1)), 1);
         // Position(0, 2) → byte 3 (after 'é', which is \n)
-        assert_eq!(position_to_offset(source, Position::new(0, 2)), 3);
+        assert_eq!(position_to_offset(source, &lo, Position::new(0, 2)), 3);
         // Position(1, 0) → byte 4
-        assert_eq!(position_to_offset(source, Position::new(1, 0)), 4);
+        assert_eq!(position_to_offset(source, &lo, Position::new(1, 0)), 4);
     }
 
     #[test]
@@ -4216,9 +4232,11 @@ mod tests {
 
     #[test]
     fn diagnostics_from_parse_error() {
-        let result = hew_parser::parse("fn {");
+        let source = "fn {";
+        let result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let diags = build_diagnostics(&uri, "fn {", &result, None);
+        let diags = build_diagnostics(&uri, source, &lo, &result, None);
         assert!(!diags.is_empty());
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
     }
@@ -4228,6 +4246,7 @@ mod tests {
         let parse_result = hew_parser::parse("");
         let doc = DocumentState {
             source: String::new(),
+            line_offsets: compute_line_offsets(""),
             parse_result,
             type_output: None,
         };
@@ -4273,7 +4292,8 @@ mod tests {
     fn document_symbols_for_function() {
         let source = "fn foo() -> i32 { 42 }";
         let parse_result = hew_parser::parse(source);
-        let symbols = build_document_symbols(source, &parse_result);
+        let lo = compute_line_offsets(source);
+        let symbols = build_document_symbols(source, &lo, &parse_result);
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "foo");
         assert_eq!(symbols[0].kind, SymbolKind::FUNCTION);
@@ -4283,7 +4303,8 @@ mod tests {
     fn semantic_tokens_for_let() {
         let source = "let x = 42;";
         let parse_result = hew_parser::parse(source);
-        let tokens = build_semantic_tokens(source, &parse_result);
+        let lo = compute_line_offsets(source);
+        let tokens = build_semantic_tokens(source, &lo, &parse_result);
         assert!(!tokens.is_empty());
         // First token should be `let` keyword
         assert_eq!(
@@ -4306,7 +4327,8 @@ mod tests {
     fn semantic_token_modifiers_async_and_const() {
         let source = "const Y = 1; async fn foo() {}";
         let parse_result = hew_parser::parse(source);
-        let tokens = build_semantic_tokens(source, &parse_result);
+        let lo = compute_line_offsets(source);
+        let tokens = build_semantic_tokens(source, &lo, &parse_result);
         // Find the `const` keyword and the identifier after it.
         let const_tok = &tokens[0]; // `const`
         assert_eq!(
@@ -4340,7 +4362,8 @@ mod tests {
     fn semantic_tokens_include_bitwise_and_shift_operators() {
         let source = "fn main() { let a = 1; let b = 2; let x = ~a << b >> 1 & a | b ^ a; x <<= 1; x >>= 1; x &= 1; x |= 1; x ^= 1; }";
         let parse_result = hew_parser::parse(source);
-        let tokens = build_semantic_tokens(source, &parse_result);
+        let lo = compute_line_offsets(source);
+        let tokens = build_semantic_tokens(source, &lo, &parse_result);
         let operator_token_type = token_type_index(&SemanticTokenType::OPERATOR);
         let token_data = semantic_token_data(source, &tokens);
         let operator_texts: Vec<String> = token_data
@@ -4363,7 +4386,8 @@ mod tests {
         let source =
             "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
         let parse_result = hew_parser::parse(source);
-        let tokens = build_semantic_tokens(source, &parse_result);
+        let lo = compute_line_offsets(source);
+        let tokens = build_semantic_tokens(source, &lo, &parse_result);
         let token_data = semantic_token_data(source, &tokens);
         let function_token_type = token_type_index(&SemanticTokenType::FUNCTION);
         let type_token_type = token_type_index(&SemanticTokenType::TYPE);
@@ -4414,6 +4438,7 @@ mod tests {
 
         let doc = DocumentState {
             source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
         };
@@ -4437,6 +4462,7 @@ mod tests {
         let parse_result = hew_parser::parse(source);
         let doc = DocumentState {
             source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
         };
@@ -4465,6 +4491,7 @@ mod tests {
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
             source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
         };
@@ -4498,6 +4525,7 @@ mod tests {
         );
         let doc = DocumentState {
             source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
         };
@@ -4555,6 +4583,7 @@ impl Worker {
         );
         let doc = DocumentState {
             source: source.to_string(),
+            line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
         };
@@ -4591,15 +4620,16 @@ impl Worker {
     fn goto_def_receive_method() {
         let source = "actor Counter {\n    count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
         let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
         let word = word_at_offset(source, call_offset).unwrap();
         // word_at_offset returns the dot-qualified form "c.increment"
         assert_eq!(word, "c.increment");
         // find_definition_in_ast doesn't find the full dot-qualified name...
-        assert!(find_definition_in_ast(source, &parse_result, &word).is_none());
+        assert!(find_definition_in_ast(source, &lo, &parse_result, &word).is_none());
         // ...but the method part alone finds the receive method definition.
         let method = word.rsplit('.').next().unwrap();
-        let found = find_definition_in_ast(source, &parse_result, method);
+        let found = find_definition_in_ast(source, &lo, &parse_result, method);
         assert!(found.is_some(), "should find receive method definition");
     }
 
@@ -4607,12 +4637,13 @@ impl Worker {
     fn goto_def_double_colon_method_fallback() {
         let source = "actor Counter {\n    receive fn increment(n: i32) {\n        n\n    }\n}\nfn main() { Counter::increment(1); }";
         let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
         let word = word_at_offset(source, call_offset).unwrap();
         assert_eq!(word, "Counter::increment");
-        assert!(find_definition_in_ast(source, &parse_result, &word).is_none());
+        assert!(find_definition_in_ast(source, &lo, &parse_result, &word).is_none());
         let method = word.rsplit("::").next().unwrap();
-        let found = find_definition_in_ast(source, &parse_result, method);
+        let found = find_definition_in_ast(source, &lo, &parse_result, method);
         assert!(
             found.is_some(),
             "should find receive method definition via :: fallback"
@@ -4623,13 +4654,14 @@ impl Worker {
     fn find_definition_includes_extern_functions_and_associated_types() {
         let source = "extern \"C\" { fn c_abs(x: i32) -> i32; }\ntrait Iter { type Item; fn next() -> i32; }";
         let parse_result = hew_parser::parse(source);
+        let lo = compute_line_offsets(source);
         assert!(
             parse_result.errors.is_empty(),
             "parse errors: {:?}",
             parse_result.errors
         );
-        assert!(find_definition_in_ast(source, &parse_result, "c_abs").is_some());
-        assert!(find_definition_in_ast(source, &parse_result, "Item").is_some());
+        assert!(find_definition_in_ast(source, &lo, &parse_result, "c_abs").is_some());
+        assert!(find_definition_in_ast(source, &lo, &parse_result, "Item").is_some());
     }
 
     #[test]

@@ -2823,19 +2823,24 @@ fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
 }
 
 /// Format a function signature for hover display.
-fn format_fn_signature(name: &str, sig: &FnSig) -> String {
+/// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
+fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
     let pure_prefix = if sig.is_pure { "pure " } else { "" };
     let async_prefix = if sig.is_async { "async " } else { "" };
-    let param_list: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
         format!(" -> {}", sig.return_type)
     };
-    let code = format!(
-        "```hew\n{pure_prefix}{async_prefix}fn {name}({}){ret}\n```",
-        param_list.join(", ")
-    );
+    format!(
+        "{pure_prefix}{async_prefix}fn {name}({}){ret}",
+        params.join(", ")
+    )
+}
+
+fn format_fn_signature(name: &str, sig: &FnSig) -> String {
+    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
+    let code = format!("```hew\n{}\n```", format_fn_sig_line(name, &params, sig));
     if let Some(doc) = &sig.doc_comment {
         format!("{doc}\n\n---\n\n{code}")
     } else {
@@ -2845,21 +2850,8 @@ fn format_fn_signature(name: &str, sig: &FnSig) -> String {
 
 /// Format a function signature as a single inline line (for embedding in type hover).
 fn format_fn_signature_inline(name: &str, sig: &FnSig) -> String {
-    let pure_prefix = if sig.is_pure { "pure " } else { "" };
-    let async_prefix = if sig.is_async { "async " } else { "" };
-    let param_list: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
-    if sig.return_type == Ty::Unit {
-        format!(
-            "{pure_prefix}{async_prefix}fn {name}({})",
-            param_list.join(", ")
-        )
-    } else {
-        format!(
-            "{pure_prefix}{async_prefix}fn {name}({}) -> {}",
-            param_list.join(", "),
-            sig.return_type
-        )
-    }
+    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
+    format_fn_sig_line(name, &params, sig)
 }
 
 /// Format a type definition for hover display.
@@ -4116,27 +4108,17 @@ fn find_fn_sig<'a>(name: &str, tc: &'a TypeCheckOutput) -> Option<&'a FnSig> {
 
 /// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
 fn format_sig_label(name: &str, sig: &FnSig) -> String {
-    let pure_prefix = if sig.is_pure { "pure " } else { "" };
-    let async_prefix = if sig.is_async { "async " } else { "" };
     let params: Vec<String> = sig
         .param_names
         .iter()
         .zip(&sig.params)
         .map(|(n, t)| format!("{n}: {t}"))
         .collect();
-    let ret = if sig.return_type == Ty::Unit {
-        String::new()
-    } else {
-        format!(" -> {}", sig.return_type)
-    };
     let display_name = name
         .rsplit(['.', ':'])
         .find(|s| !s.is_empty())
         .unwrap_or(name);
-    format!(
-        "{pure_prefix}{async_prefix}fn {display_name}({}){ret}",
-        params.join(", ")
-    )
+    format_fn_sig_line(display_name, &params, sig)
 }
 
 #[cfg(test)]

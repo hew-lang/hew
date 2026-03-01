@@ -177,15 +177,15 @@ ExprStmt       = Expr ";" ;
 Expr           = UnsafeExpr | SendExpr ;
 UnsafeExpr     = "unsafe" Block ;
 SendExpr       = TimeoutExpr ( "<-" Expr )? ;      (* Send: actor <- msg *)
-TimeoutExpr    = OrExpr ( "|" "after" Expr )? ;     (* Timeout: expr | after duration *)
-OrExpr         = BitOrExpr { "||" BitOrExpr } ;
-BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
-BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;
-BitAndExpr     = AndExpr { "&" AndExpr } ;
+TimeoutExpr    = RangeExpr ( "|" "after" Expr )? ;  (* Timeout: expr | after duration *)
+RangeExpr      = OrExpr ( (".." | "..=") OrExpr )? ;
+OrExpr         = AndExpr { "||" AndExpr } ;
 AndExpr        = EqExpr  { "&&" EqExpr } ;
 EqExpr         = RelExpr { ("==" | "!=" | "=~" | "!~") RelExpr } ;
-RelExpr        = RangeExpr { ("<" | "<=" | ">" | ">=") RangeExpr } ;
-RangeExpr      = ShiftExpr ( (".." | "..=") ShiftExpr )? ;
+RelExpr        = BitOrExpr { ("<" | "<=" | ">" | ">=") BitOrExpr } ;
+BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
+BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;
+BitAndExpr     = ShiftExpr { "&" ShiftExpr } ;
 ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
 AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
 MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;

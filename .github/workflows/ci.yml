@@ -220,6 +220,7 @@ jobs:
           --exclude hew-cabi
           --exclude hew-std-crypto-crypto
           --exclude hew-std-crypto-jwt
+          --exclude hew-std-crypto-password
           --exclude hew-std-encoding-base64
           --exclude hew-std-encoding-compress
           --exclude hew-std-encoding-csv

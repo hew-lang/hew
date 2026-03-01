@@ -104,12 +104,10 @@ mod tests {
             .iter()
             .any(|e| e.c_name == "hew_markdown_to_html_safe"));
 
-        // log: init, init_level, error, warn, info, debug, trace
-        assert!(exports.iter().any(|e| e.c_name == "hew_log_init"));
-        assert!(exports.iter().any(|e| e.c_name == "hew_log_init_level"));
-        assert!(exports.iter().any(|e| e.c_name == "hew_log_error"));
+        // log: all functions live in hew-runtime/log_core.rs, no local exports
+        assert!(!exports.iter().any(|e| e.c_name == "hew_log_init"));
 
-        assert_eq!(exports.len(), 12, "expected 3+2+7=12 total exports");
+        assert_eq!(exports.len(), 5, "expected 3+2+0=5 total exports");
     }
 
     #[test]

@@ -11,22 +11,15 @@
 #include "hew/mlir/MLIRGen.h"
 #include "MLIRGenHelpers.h"
 
-#include <climits>
-
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/raw_ostream.h"
 
-#include <cstdlib>
 #include <string>
 
 using namespace hew;
@@ -38,7 +31,7 @@ using namespace mlir;
 
 void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
   auto location = currentLoc;
-  std::string supervisorName = decl.name;
+  const auto &supervisorName = decl.name;
 
   // Register this supervisor with its child types
   std::vector<std::string> childTypes;
@@ -78,51 +71,36 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     }
   }
 
-  auto maxRestarts = decl.max_restarts.has_value()
-                         ? builder.create<mlir::arith::ConstantOp>(
-                               location, i64Type, builder.getI64IntegerAttr(*decl.max_restarts))
-                         : builder.create<mlir::arith::ConstantOp>(location, i64Type,
-                                                                   builder.getI64IntegerAttr(5));
+  int64_t maxRestartsVal = decl.max_restarts.has_value() ? *decl.max_restarts : 5;
+  auto maxRestartsI32 = createIntConstant(builder, location, i32Type, maxRestartsVal);
 
-  mlir::arith::ConstantOp window;
+  mlir::Value windowVal;
   if (decl.window.has_value()) {
-    char *end = nullptr;
-    long val = std::strtol(decl.window->c_str(), &end, 10);
-    if (end == decl.window->c_str() || *end != '\0') {
+    int32_t val;
+    if (llvm::StringRef(*decl.window).getAsInteger(10, val)) {
       emitError(location) << "invalid supervisor window value: " << *decl.window;
       return;
     }
-    if (val < 0 || val > INT32_MAX) {
+    if (val < 0) {
       emitError(location) << "supervisor window value out of range: " << *decl.window;
       return;
     }
-    window = builder.create<mlir::arith::ConstantOp>(
-        location, i32Type, builder.getI32IntegerAttr(static_cast<int32_t>(val)));
+    windowVal = createIntConstant(builder, location, i32Type, val);
   } else {
-    window =
-        builder.create<mlir::arith::ConstantOp>(location, i32Type, builder.getI32IntegerAttr(60));
+    windowVal = createIntConstant(builder, location, i32Type, 60);
   }
 
-  auto strategy = builder
-                      .create<mlir::arith::ConstantOp>(location, i32Type,
-                                                       builder.getI32IntegerAttr(strategyCode))
-                      .getResult();
-
-  // Cast max_restarts to i32 for the API call
-  auto maxRestartsI32 =
-      builder.create<mlir::arith::TruncIOp>(location, i32Type, maxRestarts.getResult());
+  auto strategy = createIntConstant(builder, location, i32Type, strategyCode);
 
   // Call hew_supervisor_new(strategy, max_restarts, window_secs)
   auto supervisorPtr =
-      builder
-          .create<hew::SupervisorNewOp>(location, ptrType, strategy, maxRestartsI32.getResult(),
-                                        window.getResult())
+      builder.create<hew::SupervisorNewOp>(location, ptrType, strategy, maxRestartsI32, windowVal)
           .getResult();
 
   // Iterate over children and add each to the supervisor
   for (const auto &child : decl.children) {
-    std::string childName = child.name;
-    std::string actorTypeName = child.actor_type;
+    const auto &childName = child.name;
+    const auto &actorTypeName = child.actor_type;
 
     // Check if this child is another supervisor (nested supervision tree)
     if (supervisorChildren.count(actorTypeName)) {
@@ -135,15 +113,9 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
                                           mlir::ValueRange{})
               .getResult();
 
-      // Get init function pointer for restart capability
+      // Ensure init function is declared for restart capability
       auto initFuncType = builder.getFunctionType({}, {ptrType});
-      if (!module.lookupSymbol<mlir::func::FuncOp>(childInitName)) {
-        auto savedIP = builder.saveInsertionPoint();
-        builder.setInsertionPointToEnd(module.getBody());
-        auto initDecl = builder.create<mlir::func::FuncOp>(location, childInitName, initFuncType);
-        initDecl.setVisibility(mlir::SymbolTable::Visibility::Private);
-        builder.restoreInsertionPoint(savedIP);
-      }
+      getOrCreateExternFunc(childInitName, initFuncType);
       auto initFuncPtr =
           builder
               .create<hew::FuncPtrOp>(location, ptrType,
@@ -170,46 +142,27 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     std::string dispatchName = actorTypeName + "_dispatch";
 
     // 1. Allocate state struct on stack and store init args
-    auto one = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 1);
+    auto one = createIntConstant(builder, location, i64Type, 1);
     auto stateAlloca = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, stateType, one);
 
     // Generate and store init arg values from child spec args
     auto stateStructType = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(stateType);
     if (!child.args.empty()) {
-      unsigned fieldIdx = 0;
-      for (const auto &argExpr : child.args) {
-        auto argVal = generateExpression(argExpr.value);
+      for (unsigned fieldIdx = 0; fieldIdx < child.args.size(); ++fieldIdx) {
+        auto argVal = generateExpression(child.args[fieldIdx].value);
         if (!argVal)
           continue;
         auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
             location, ptrType, stateType, stateAlloca,
             llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
         // Coerce arg value to match the state field type
-        if (stateStructType && fieldIdx < stateStructType.getBody().size()) {
-          auto fieldType = stateStructType.getBody()[fieldIdx];
-          auto valType = argVal.getType();
-          if (valType != fieldType) {
-            if (valType.isInteger() && fieldType.isInteger()) {
-              unsigned srcWidth = valType.getIntOrFloatBitWidth();
-              unsigned dstWidth = fieldType.getIntOrFloatBitWidth();
-              if (srcWidth > dstWidth) {
-                argVal = builder.create<mlir::arith::TruncIOp>(location, fieldType, argVal);
-              } else if (srcWidth < dstWidth) {
-                argVal = builder.create<mlir::arith::ExtSIOp>(location, fieldType, argVal);
-              }
-            } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(fieldType) &&
-                       !mlir::isa<mlir::LLVM::LLVMPointerType>(valType)) {
-              argVal = builder.create<hew::BitcastOp>(location, fieldType, argVal);
-            }
-          }
-        }
+        if (stateStructType && fieldIdx < stateStructType.getBody().size())
+          argVal = coerceType(argVal, stateStructType.getBody()[fieldIdx], location);
         builder.create<mlir::LLVM::StoreOp>(location, argVal, fieldPtr);
-        fieldIdx++;
       }
       // Zero-initialize remaining fields (hidden gen frame fields)
       if (stateStructType) {
-        unsigned totalFields = stateStructType.getBody().size();
-        for (unsigned i = fieldIdx; i < totalFields; i++) {
+        for (unsigned i = child.args.size(); i < stateStructType.getBody().size(); i++) {
           auto fieldType = stateStructType.getBody()[i];
           auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
               location, ptrType, stateType, stateAlloca,
@@ -231,23 +184,13 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       }
     }
 
-    // 3. Compute sizeof(state) using GEP trick: (uintptr_t)&((T*)null)[1]
-    auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-    auto sizeGep = builder.create<mlir::LLVM::GEPOp>(location, ptrType, stateType, nullPtr,
-                                                     llvm::ArrayRef<mlir::LLVM::GEPArg>{1});
-    auto stateSize = builder.create<mlir::LLVM::PtrToIntOp>(location, sizeType(), sizeGep);
+    // 3. Compute sizeof(state)
+    auto stateSize =
+        builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(stateType));
 
     // 4. Get dispatch function pointer
     auto dispatchFuncType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
-    // Declare the dispatch function if not already declared
-    if (!module.lookupSymbol<mlir::func::FuncOp>(dispatchName)) {
-      auto savedIP = builder.saveInsertionPoint();
-      builder.setInsertionPointToEnd(module.getBody());
-      auto dispatchDecl =
-          builder.create<mlir::func::FuncOp>(location, dispatchName, dispatchFuncType);
-      dispatchDecl.setVisibility(mlir::SymbolTable::Visibility::Private);
-      builder.restoreInsertionPoint(savedIP);
-    }
+    getOrCreateExternFunc(dispatchName, dispatchFuncType);
     auto dispatchPtr = builder
                            .create<hew::FuncPtrOp>(location, ptrType,
                                                    mlir::SymbolRefAttr::get(&context, dispatchName))
@@ -280,12 +223,12 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     }
 
     // 7. Build HewChildSpec struct via the high-level dialect op
-    auto restartVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, restartCode);
+    auto restartVal = createIntConstant(builder, location, i32Type, restartCode);
     int mbCap =
         actorInfo.mailboxCapacity.has_value() ? static_cast<int>(*actorInfo.mailboxCapacity) : -1;
-    auto mbCapVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, mbCap);
-    auto overflowVal = builder.create<mlir::arith::ConstantIntOp>(
-        location, i32Type, static_cast<int>(actorInfo.overflowPolicy));
+    auto mbCapVal = createIntConstant(builder, location, i32Type, mbCap);
+    auto overflowVal =
+        createIntConstant(builder, location, i32Type, static_cast<int>(actorInfo.overflowPolicy));
 
     auto specPtr =
         builder

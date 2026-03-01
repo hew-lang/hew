@@ -7,9 +7,8 @@
 #[cfg(feature = "export-meta")]
 pub mod export_meta;
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 use pulldown_cmark::{html, Options, Parser};
 
@@ -43,7 +42,7 @@ fn strip_html_tags(html_str: &str) -> String {
 /// Convert a Markdown string to HTML.
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// rendered HTML. The caller must free it with [`hew_markdown_free`].
+/// rendered HTML. The caller must free it with `libc::free`.
 /// Returns null on error.
 ///
 /// # Safety
@@ -58,11 +57,8 @@ fn strip_html_tags(html_str: &str) -> String {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char {
-    if md.is_null() {
-        return std::ptr::null_mut();
-    }
     // SAFETY: md is a valid NUL-terminated C string per caller contract.
-    let Ok(md_str) = unsafe { CStr::from_ptr(md) }.to_str() else {
+    let Some(md_str) = (unsafe { cstr_to_str(md) }) else {
         return std::ptr::null_mut();
     };
     let parser = Parser::new_ext(md_str, Options::all());
@@ -76,7 +72,7 @@ pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char 
 /// Like [`hew_markdown_to_html`] but additionally strips any raw HTML tags
 /// from the output, leaving only the Markdown-generated structure and text.
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with [`hew_markdown_free`]. Returns null on error.
+/// be freed with `libc::free`. Returns null on error.
 ///
 /// # Safety
 ///
@@ -90,11 +86,8 @@ pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char 
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const c_char) -> *mut c_char {
-    if md.is_null() {
-        return std::ptr::null_mut();
-    }
     // SAFETY: md is a valid NUL-terminated C string per caller contract.
-    let Ok(md_str) = unsafe { CStr::from_ptr(md) }.to_str() else {
+    let Some(md_str) = (unsafe { cstr_to_str(md) }) else {
         return std::ptr::null_mut();
     };
     let parser = Parser::new_ext(md_str, Options::all());
@@ -102,22 +95,6 @@ pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const c_char) -> *mut c_
     html::push_html(&mut html_output, parser);
     let safe = strip_html_tags(&html_output);
     str_to_malloc(&safe)
-}
-
-/// Free a C string previously returned by [`hew_markdown_to_html`] or
-/// [`hew_markdown_to_html_safe`].
-///
-/// # Safety
-///
-/// `s` must be a pointer previously returned by a `hew_markdown_*` function,
-/// and must not have been freed already.
-#[no_mangle]
-pub unsafe extern "C" fn hew_markdown_free(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { libc::free(s.cast()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -136,9 +113,9 @@ mod tests {
         let ptr = unsafe { hew_markdown_to_html(c.as_ptr()) };
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_markdown_free(ptr) };
+        unsafe { libc::free(ptr.cast()) };
         s
     }
 
@@ -185,9 +162,9 @@ mod tests {
         let ptr = unsafe { hew_markdown_to_html_safe(c.as_ptr()) };
         assert!(!ptr.is_null());
         // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
         // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_markdown_free(ptr) };
+        unsafe { libc::free(ptr.cast()) };
         assert!(!s.contains("<script>"), "raw HTML should be stripped: {s}");
         assert!(s.contains("Hello"), "text should be preserved: {s}");
     }
@@ -198,7 +175,6 @@ mod tests {
         unsafe {
             assert!(hew_markdown_to_html(std::ptr::null()).is_null());
             assert!(hew_markdown_to_html_safe(std::ptr::null()).is_null());
-            hew_markdown_free(std::ptr::null_mut());
         }
     }
 }

@@ -4,10 +4,10 @@
 //! milliseconds as the canonical time representation. All returned strings
 //! are allocated with `libc::malloc` so callers can free them with `libc::free`.
 
-use hew_cabi::cabi::malloc_cstring;
-use std::ffi::{c_char, CStr};
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc, Weekday};
+use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc, Weekday};
 
 /// Convert epoch milliseconds to a `DateTime<Utc>`, returning `None` if out of range.
 fn epoch_ms_to_utc(epoch_ms: i64) -> Option<DateTime<Utc>> {
@@ -28,16 +28,6 @@ pub unsafe extern "C" fn hew_datetime_now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-/// Return the current time as Unix epoch seconds.
-///
-/// # Safety
-///
-/// No preconditions.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
-    Utc::now().timestamp()
-}
-
 // ---------------------------------------------------------------------------
 // Formatting / Parsing
 // ---------------------------------------------------------------------------
@@ -52,19 +42,15 @@ pub unsafe extern "C" fn hew_datetime_now_secs() -> i64 {
 /// `fmt` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) -> *mut c_char {
-    if fmt.is_null() {
+    // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
+    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
         return std::ptr::null_mut();
-    }
+    };
     let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: caller guarantees `fmt` is a valid NUL-terminated C string.
-    let Ok(fmt_str) = (unsafe { CStr::from_ptr(fmt) }).to_str() else {
-        return std::ptr::null_mut();
-    };
     let formatted = dt.format(fmt_str).to_string();
-    // SAFETY: formatted.as_ptr() is valid for formatted.len() bytes.
-    unsafe { malloc_cstring(formatted.as_ptr(), formatted.len()) }
+    str_to_malloc(&formatted)
 }
 
 /// Parse a datetime string with the given `strftime` format, returning epoch
@@ -75,15 +61,11 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 /// Both `s` and `fmt` must be valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char) -> i64 {
-    if s.is_null() || fmt.is_null() {
-        return -1;
-    }
     // SAFETY: caller guarantees both pointers are valid NUL-terminated C strings.
-    let Ok(s_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+    let Some(s_str) = (unsafe { cstr_to_str(s) }) else {
         return -1;
     };
-    // SAFETY: caller guarantees fmt is a valid NUL-terminated C string.
-    let Ok(fmt_str) = (unsafe { CStr::from_ptr(fmt) }).to_str() else {
+    let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
         return -1;
     };
     let Ok(naive) = NaiveDateTime::parse_from_str(s_str, fmt_str) else {
@@ -96,17 +78,17 @@ pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char
 // Component extraction
 // ---------------------------------------------------------------------------
 
-/// Extract the year from epoch milliseconds. Returns 0 if out of range.
+/// Extract the year from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
 /// No preconditions — pure computation.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.year())
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.year())
 }
 
-/// Extract the month (1–12) from epoch milliseconds. Returns 0 if out of range.
+/// Extract the month (1–12) from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
@@ -117,10 +99,10 @@ pub unsafe extern "C" fn hew_datetime_year(epoch_ms: i64) -> i32 {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.month() as i32)
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.month() as i32)
 }
 
-/// Extract the day (1–31) from epoch milliseconds. Returns 0 if out of range.
+/// Extract the day (1–31) from epoch milliseconds. Returns -1 if out of range.
 ///
 /// # Safety
 ///
@@ -131,7 +113,7 @@ pub unsafe extern "C" fn hew_datetime_month(epoch_ms: i64) -> i32 {
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_day(epoch_ms: i64) -> i32 {
-    epoch_ms_to_utc(epoch_ms).map_or(0, |dt| dt.day() as i32)
+    epoch_ms_to_utc(epoch_ms).map_or(-1, |dt| dt.day() as i32)
 }
 
 /// Extract the hour (0–23) from epoch milliseconds. Returns -1 if out of range.
@@ -195,62 +177,6 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i32 {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Arithmetic
-// ---------------------------------------------------------------------------
-
-/// Add `days` to epoch milliseconds. Returns the new epoch ms.
-///
-/// # Safety
-///
-/// No preconditions — pure computation.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_add_days(epoch_ms: i64, days: i32) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(epoch_ms, |dt| {
-        (dt + Duration::days(i64::from(days))).timestamp_millis()
-    })
-}
-
-/// Add `hours` to epoch milliseconds. Returns the new epoch ms.
-///
-/// # Safety
-///
-/// No preconditions — pure computation.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_add_hours(epoch_ms: i64, hours: i32) -> i64 {
-    epoch_ms_to_utc(epoch_ms).map_or(epoch_ms, |dt| {
-        (dt + Duration::hours(i64::from(hours))).timestamp_millis()
-    })
-}
-
-/// Return the difference `a - b` in seconds.
-///
-/// # Safety
-///
-/// No preconditions — pure arithmetic.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_diff_secs(a: i64, b: i64) -> i64 {
-    (a - b) / 1000
-}
-
-/// Format epoch milliseconds as an ISO 8601 string (e.g. `2024-01-15T09:30:00Z`).
-///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with `libc::free`. Returns null if `epoch_ms` is out of range.
-///
-/// # Safety
-///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_datetime_to_iso8601(epoch_ms: i64) -> *mut c_char {
-    let Some(dt) = epoch_ms_to_utc(epoch_ms) else {
-        return std::ptr::null_mut();
-    };
-    let s = dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    // SAFETY: s.as_ptr() is valid for s.len() bytes.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
-}
-
 /// Return the current monotonic clock time in nanoseconds.
 ///
 /// Uses `CLOCK_MONOTONIC` for high-resolution timing suitable for
@@ -277,7 +203,7 @@ pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     /// Helper to read a malloc'd C string and free it.
     ///
@@ -329,45 +255,12 @@ mod tests {
     }
 
     #[test]
-    fn test_add_days_and_hours() {
-        let epoch_ms: i64 = 1_705_311_000_000; // 2024-01-15 09:30:00 UTC
-
-        // SAFETY: arithmetic functions have no preconditions.
-        unsafe {
-            let plus_one_day = hew_datetime_add_days(epoch_ms, 1);
-            assert_eq!(plus_one_day, epoch_ms + 86_400_000);
-
-            let minus_two_hours = hew_datetime_add_hours(epoch_ms, -2);
-            assert_eq!(minus_two_hours, epoch_ms - 7_200_000);
-        }
-    }
-
-    #[test]
-    fn test_diff_secs_and_iso8601() {
-        let a: i64 = 1_705_311_000_000; // 2024-01-15 09:30:00 UTC
-        let b: i64 = 1_705_307_400_000; // 2024-01-15 08:30:00 UTC
-
-        // SAFETY: diff_secs has no preconditions.
-        assert_eq!(unsafe { hew_datetime_diff_secs(a, b) }, 3600);
-
-        // SAFETY: hew_datetime_to_iso8601 has no preconditions.
-        let iso = unsafe { hew_datetime_to_iso8601(a) };
-        // SAFETY: iso was returned by hew_datetime_to_iso8601.
-        let text = unsafe { read_and_free(iso) };
-        assert_eq!(text, "2024-01-15T09:30:00Z");
-    }
-
-    #[test]
     fn test_now_returns_reasonable_values() {
         // SAFETY: now functions have no preconditions.
         unsafe {
             let ms = hew_datetime_now_ms();
-            let secs = hew_datetime_now_secs();
-            // Should be after 2024-01-01 and before 2100-01-01.
+            // Should be after 2024-01-01.
             assert!(ms > 1_704_067_200_000);
-            assert!(secs > 1_704_067_200);
-            // ms and secs should be consistent (within 1 second).
-            assert!((ms / 1000 - secs).abs() <= 1);
         }
     }
 

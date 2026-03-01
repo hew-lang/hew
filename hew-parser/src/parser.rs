@@ -13,41 +13,29 @@ use crate::ast::{
 use hew_lexer::Token;
 use std::cell::Cell;
 
-/// Parse an integer literal string, handling hex (`0x`), octal (`0o`), binary (`0b`)
-/// prefixes and underscore separators.
-fn parse_int_literal(s: &str) -> Result<i64, std::num::ParseIntError> {
+/// Parse an integer literal string, returning both value and radix.
+///
+/// Handles hex (`0x`), octal (`0o`), binary (`0b`) prefixes and underscore separators.
+/// Merges the old `parse_int_literal` + `detect_int_radix` to avoid scanning twice.
+fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::ParseIntError> {
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     if let Some(hex) = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16)
+        i64::from_str_radix(hex, 16).map(|v| (v, IntRadix::Hex))
     } else if let Some(oct) = cleaned
         .strip_prefix("0o")
         .or_else(|| cleaned.strip_prefix("0O"))
     {
-        i64::from_str_radix(oct, 8)
+        i64::from_str_radix(oct, 8).map(|v| (v, IntRadix::Octal))
     } else if let Some(bin) = cleaned
         .strip_prefix("0b")
         .or_else(|| cleaned.strip_prefix("0B"))
     {
-        i64::from_str_radix(bin, 2)
+        i64::from_str_radix(bin, 2).map(|v| (v, IntRadix::Binary))
     } else {
-        cleaned.parse::<i64>()
-    }
-}
-
-/// Detect the radix of an integer literal string from its prefix.
-fn detect_int_radix(s: &str) -> IntRadix {
-    let cleaned: String = s.chars().filter(|c| *c != '_').collect();
-    if cleaned.starts_with("0x") || cleaned.starts_with("0X") {
-        IntRadix::Hex
-    } else if cleaned.starts_with("0o") || cleaned.starts_with("0O") {
-        IntRadix::Octal
-    } else if cleaned.starts_with("0b") || cleaned.starts_with("0B") {
-        IntRadix::Binary
-    } else {
-        IntRadix::Decimal
+        cleaned.parse::<i64>().map(|v| (v, IntRadix::Decimal))
     }
 }
 
@@ -77,6 +65,16 @@ fn parse_duration_literal(s: &str) -> Option<i64> {
     } else {
         None
     }
+}
+
+/// Strip surrounding quotes from a `StringLit` or `RawString` token value.
+///
+/// Handles `r"..."` (raw) and `"..."` (regular) forms, returning the inner content.
+fn unquote_str(s: &str) -> &str {
+    s.strip_prefix("r\"")
+        .or_else(|| s.strip_prefix('"'))
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s)
 }
 
 /// Process escape sequences in a string literal, converting `\n`, `\t`, `\r`,
@@ -623,17 +621,12 @@ impl<'src> Parser<'src> {
                     self.advance();
                     Some(name.to_string())
                 } else {
-                    let found = format!("{tok}");
-                    self.error(format!("expected identifier, found {found}"));
+                    self.error(format!("expected identifier, found {tok}"));
                     None
                 }
             }
-            _ => {
-                let found = match self.peek() {
-                    Some(tok) => format!("{tok}"),
-                    None => "end of file".to_string(),
-                };
-                self.error(format!("expected identifier, found {found}"));
+            None => {
+                self.error("expected identifier, found end of file".to_string());
                 None
             }
         }
@@ -743,12 +736,7 @@ impl<'src> Parser<'src> {
                         // Safe to call: we know the token is identifier-like
                         args.push(self.expect_ident().unwrap_or_default());
                     } else if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
-                        let val = s
-                            .strip_prefix("r\"")
-                            .or_else(|| s.strip_prefix('"'))
-                            .and_then(|s| s.strip_suffix('"'))
-                            .unwrap_or(s)
-                            .to_string();
+                        let val = unquote_str(s).to_string();
                         self.advance();
                         args.push(val);
                     } else {
@@ -1061,28 +1049,14 @@ impl<'src> Parser<'src> {
     ) -> Option<FnDecl> {
         let name = self.expect_ident()?;
 
-        let type_params = if self.eat(&Token::Less) {
-            Some(self.parse_type_params()?)
-        } else {
-            None
-        };
+        let type_params = self.parse_opt_type_params()?;
 
         self.expect(&Token::LeftParen)?;
         let params = self.parse_params();
         self.expect(&Token::RightParen)?;
 
-        let return_type = if self.eat(&Token::Arrow) {
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-
-        let where_clause = if self.peek() == Some(&Token::Where) {
-            self.advance();
-            Some(self.parse_where_clause()?)
-        } else {
-            None
-        };
+        let return_type = self.parse_opt_return_type()?;
+        let where_clause = self.parse_opt_where_clause()?;
 
         let body = self.parse_block()?;
 
@@ -1147,18 +1121,8 @@ impl<'src> Parser<'src> {
 
         let name = self.expect_ident()?;
 
-        let type_params = if self.eat(&Token::Less) {
-            Some(self.parse_type_params()?)
-        } else {
-            None
-        };
-
-        let where_clause = if self.peek() == Some(&Token::Where) {
-            self.advance();
-            Some(self.parse_where_clause()?)
-        } else {
-            None
-        };
+        let type_params = self.parse_opt_type_params()?;
+        let where_clause = self.parse_opt_where_clause()?;
 
         self.expect(&Token::LeftBrace)?;
 
@@ -1254,11 +1218,7 @@ impl<'src> Parser<'src> {
     fn parse_trait_decl(&mut self, visibility: Visibility) -> Option<TraitDecl> {
         let name = self.expect_ident()?;
 
-        let type_params = if self.eat(&Token::Less) {
-            Some(self.parse_type_params()?)
-        } else {
-            None
-        };
+        let type_params = self.parse_opt_type_params()?;
 
         let super_traits = if self.eat(&Token::Colon) {
             let mut bounds = Vec::new();
@@ -1308,29 +1268,14 @@ impl<'src> Parser<'src> {
             Some(Token::Fn) => {
                 self.advance();
                 let name = self.expect_ident()?;
-
-                let type_params = if self.eat(&Token::Less) {
-                    Some(self.parse_type_params()?)
-                } else {
-                    None
-                };
+                let type_params = self.parse_opt_type_params()?;
 
                 self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
                 self.expect(&Token::RightParen)?;
 
-                let return_type = if self.eat(&Token::Arrow) {
-                    Some(self.parse_type()?)
-                } else {
-                    None
-                };
-
-                let where_clause = if self.peek() == Some(&Token::Where) {
-                    self.advance();
-                    Some(self.parse_where_clause()?)
-                } else {
-                    None
-                };
+                let return_type = self.parse_opt_return_type()?;
+                let where_clause = self.parse_opt_where_clause()?;
 
                 let body = if self.peek() == Some(&Token::LeftBrace) {
                     Some(self.parse_block()?)
@@ -1394,11 +1339,7 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_impl_decl(&mut self) -> Option<ImplDecl> {
-        let type_params = if self.eat(&Token::Less) {
-            Some(self.parse_type_params()?)
-        } else {
-            None
-        };
+        let type_params = self.parse_opt_type_params()?;
 
         // Try to parse trait bound first
         let saved_pos = self.save_pos();
@@ -1415,13 +1356,7 @@ impl<'src> Parser<'src> {
         };
 
         let target_type = self.parse_type()?;
-
-        let where_clause = if self.peek() == Some(&Token::Where) {
-            self.advance();
-            Some(self.parse_where_clause()?)
-        } else {
-            None
-        };
+        let where_clause = self.parse_opt_where_clause()?;
 
         self.expect(&Token::LeftBrace)?;
 
@@ -1540,27 +1475,13 @@ impl<'src> Parser<'src> {
                         false
                     };
                     let handler_name = self.expect_ident()?;
-                    let type_params = if self.eat(&Token::Less) {
-                        Some(self.parse_type_params()?)
-                    } else {
-                        None
-                    };
+                    let type_params = self.parse_opt_type_params()?;
                     self.expect(&Token::LeftParen)?;
                     let params = self.parse_params();
                     self.expect(&Token::RightParen)?;
 
-                    let return_type = if self.eat(&Token::Arrow) {
-                        Some(self.parse_type()?)
-                    } else {
-                        None
-                    };
-
-                    let where_clause = if self.peek() == Some(&Token::Where) {
-                        self.advance();
-                        Some(self.parse_where_clause()?)
-                    } else {
-                        None
-                    };
+                    let return_type = self.parse_opt_return_type()?;
+                    let where_clause = self.parse_opt_where_clause()?;
 
                     let body = self.parse_block()?;
                     let recv_end = self.peek_span().start;
@@ -1630,7 +1551,7 @@ impl<'src> Parser<'src> {
                 if let Some(Token::Integer(n)) = self.peek() {
                     if let Some(cap) = parse_int_literal(n)
                         .ok()
-                        .and_then(|v| u32::try_from(v).ok())
+                        .and_then(|(v, _)| u32::try_from(v).ok())
                     {
                         mailbox_capacity = Some(cap);
                     }
@@ -1789,7 +1710,7 @@ impl<'src> Parser<'src> {
                     self.advance();
                     self.expect(&Token::Colon)?;
                     if let Some(Token::Integer(num_str)) = self.peek() {
-                        max_restarts = parse_int_literal(num_str).ok();
+                        max_restarts = parse_int_literal(num_str).ok().map(|(v, _)| v);
                         self.advance();
                     }
                     if !self.eat(&Token::Semicolon) {
@@ -1917,12 +1838,7 @@ impl<'src> Parser<'src> {
 
     fn parse_extern_block(&mut self) -> Option<ExternBlock> {
         let abi = if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
-            let abi = s
-                .strip_prefix("r\"")
-                .or_else(|| s.strip_prefix('"'))
-                .and_then(|s| s.strip_suffix('"'))
-                .unwrap_or(s)
-                .to_string();
+            let abi = unquote_str(s).to_string();
             self.advance();
             abi
         } else {
@@ -1943,11 +1859,7 @@ impl<'src> Parser<'src> {
                 let is_variadic = self.eat(&Token::DotDot);
                 self.expect(&Token::RightParen)?;
 
-                let return_type = if self.eat(&Token::Arrow) {
-                    Some(self.parse_type()?)
-                } else {
-                    None
-                };
+                let return_type = self.parse_opt_return_type()?;
 
                 self.expect(&Token::Semicolon)?;
 
@@ -2031,7 +1943,7 @@ impl<'src> Parser<'src> {
                             self.advance();
                             if let Some(n) = parse_int_literal(&raw)
                                 .ok()
-                                .and_then(|v| u32::try_from(v).ok())
+                                .and_then(|(v, _)| u32::try_from(v).ok())
                             {
                                 n
                             } else {
@@ -2079,12 +1991,7 @@ impl<'src> Parser<'src> {
                                     if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                         self.peek()
                                     {
-                                        let unquoted = s
-                                            .strip_prefix("r\"")
-                                            .or_else(|| s.strip_prefix('"'))
-                                            .and_then(|s| s.strip_suffix('"'))
-                                            .unwrap_or(s);
-                                        json_name = Some(unquoted.to_string());
+                                        json_name = Some(unquote_str(s).to_string());
                                         self.advance();
                                     }
                                     let _ = self.expect(&Token::RightParen);
@@ -2096,12 +2003,7 @@ impl<'src> Parser<'src> {
                                     if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                         self.peek()
                                     {
-                                        let unquoted = s
-                                            .strip_prefix("r\"")
-                                            .or_else(|| s.strip_prefix('"'))
-                                            .and_then(|s| s.strip_suffix('"'))
-                                            .unwrap_or(s);
-                                        yaml_name = Some(unquoted.to_string());
+                                        yaml_name = Some(unquote_str(s).to_string());
                                         self.advance();
                                     }
                                     let _ = self.expect(&Token::RightParen);
@@ -2197,12 +2099,7 @@ impl<'src> Parser<'src> {
             let raw = *s;
             self.advance();
             self.expect(&Token::Semicolon)?;
-            let file_path = raw
-                .strip_prefix("r\"")
-                .or_else(|| raw.strip_prefix('"'))
-                .and_then(|s| s.strip_suffix('"'))
-                .unwrap_or(raw)
-                .to_owned();
+            let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
                 path: Vec::new(),
                 spec: None,
@@ -2348,7 +2245,7 @@ impl<'src> Parser<'src> {
                     if let Some(Token::Integer(num_str)) = self.peek() {
                         if let Some(size) = parse_int_literal(num_str)
                             .ok()
-                            .and_then(|v| u64::try_from(v).ok())
+                            .and_then(|(v, _)| u64::try_from(v).ok())
                         {
                             self.advance();
                             self.expect(&Token::RightBracket)?;
@@ -2502,6 +2399,34 @@ impl<'src> Parser<'src> {
             return None;
         }
         Some(params)
+    }
+
+    /// Parse optional `<T, U: Trait>` type parameters after a name.
+    fn parse_opt_type_params(&mut self) -> Option<Option<Vec<TypeParam>>> {
+        if self.eat(&Token::Less) {
+            Some(Some(self.parse_type_params()?))
+        } else {
+            Some(None)
+        }
+    }
+
+    /// Parse optional `-> Type` return type annotation.
+    fn parse_opt_return_type(&mut self) -> Option<Option<Spanned<TypeExpr>>> {
+        if self.eat(&Token::Arrow) {
+            Some(Some(self.parse_type()?))
+        } else {
+            Some(None)
+        }
+    }
+
+    /// Parse optional `where T: Trait` clause.
+    fn parse_opt_where_clause(&mut self) -> Option<Option<WhereClause>> {
+        if self.peek() == Some(&Token::Where) {
+            self.advance();
+            Some(Some(self.parse_where_clause()?))
+        } else {
+            Some(None)
+        }
     }
 
     fn parse_type_args(&mut self) -> Option<Vec<Spanned<TypeExpr>>> {
@@ -3221,8 +3146,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::Integer(s) => {
-                let radix = detect_int_radix(s);
-                if let Ok(val) = parse_int_literal(s) {
+                if let Ok((val, radix)) = parse_int_literal(s) {
                     self.advance();
                     Expr::Literal(Literal::Integer { value: val, radix })
                 } else {
@@ -3244,12 +3168,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::StringLit(s) => {
-                // Strip surrounding quotes and process escape sequences
-                let s = s
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s);
-                let s = unescape_string(s);
+                let s = unescape_string(unquote_str(s));
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -3266,11 +3185,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Token::RawString(s) => {
-                let s = s
-                    .strip_prefix("r\"")
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s)
-                    .to_string();
+                let s = unquote_str(s).to_string();
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -3429,11 +3344,7 @@ impl<'src> Parser<'src> {
                     let params = self.try_parse_lambda_params()?;
                     self.expect(&Token::RightParen)?;
 
-                    let return_type = if self.eat(&Token::Arrow) {
-                        Some(self.parse_type()?)
-                    } else {
-                        None
-                    };
+                    let return_type = self.parse_opt_return_type()?;
 
                     self.expect(&Token::FatArrow)?;
                     let body = Box::new(self.parse_expr()?);
@@ -3482,11 +3393,7 @@ impl<'src> Parser<'src> {
                     let params = self.try_parse_lambda_params()?;
                     self.expect(&Token::RightParen)?;
 
-                    let return_type = if self.eat(&Token::Arrow) {
-                        Some(self.parse_type()?)
-                    } else {
-                        None
-                    };
+                    let return_type = self.parse_opt_return_type()?;
 
                     self.expect(&Token::FatArrow)?;
                     let body = Box::new(self.parse_expr()?);
@@ -3617,11 +3524,7 @@ impl<'src> Parser<'src> {
                         let params = self.try_parse_lambda_params()?;
                         self.expect(&Token::RightParen)?;
 
-                        let return_type = if self.eat(&Token::Arrow) {
-                            Some(self.parse_type()?)
-                        } else {
-                            None
-                        };
+                        let return_type = self.parse_opt_return_type()?;
 
                         self.expect(&Token::FatArrow)?;
                         let body = Box::new(self.parse_expr()?);
@@ -3668,11 +3571,7 @@ impl<'src> Parser<'src> {
                     let params = self.try_parse_lambda_params()?;
                     self.expect(&Token::RightParen)?;
 
-                    let return_type = if self.eat(&Token::Arrow) {
-                        Some(self.parse_type()?)
-                    } else {
-                        None
-                    };
+                    let return_type = self.parse_opt_return_type()?;
 
                     self.expect(&Token::FatArrow)?;
                     let body = Box::new(self.parse_expr()?);
@@ -4013,8 +3912,7 @@ impl<'src> Parser<'src> {
                 };
                 match next {
                     Token::Integer(s) => {
-                        let radix = detect_int_radix(s);
-                        if let Ok(val) = parse_int_literal(s) {
+                        if let Ok((val, radix)) = parse_int_literal(s) {
                             Pattern::Literal(Literal::Integer { value: -val, radix })
                         } else {
                             self.error_with_hint(
@@ -4112,8 +4010,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::Integer(s)) => {
-                let radix = detect_int_radix(s);
-                if let Ok(val) = parse_int_literal(s) {
+                if let Ok((val, radix)) = parse_int_literal(s) {
                     self.advance();
                     Pattern::Literal(Literal::Integer { value: val, radix })
                 } else {
@@ -4125,11 +4022,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::StringLit(s)) => {
-                let s = s
-                    .strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s);
-                let s = unescape_string(s);
+                let s = unescape_string(unquote_str(s));
                 self.advance();
                 Pattern::Literal(Literal::String(s))
             }
@@ -4146,11 +4039,7 @@ impl<'src> Parser<'src> {
                 }
             }
             Some(Token::RawString(s)) => {
-                let s = s
-                    .strip_prefix("r\"")
-                    .and_then(|s| s.strip_suffix('"'))
-                    .unwrap_or(s)
-                    .to_string();
+                let s = unquote_str(s).to_string();
                 self.advance();
                 Pattern::Literal(Literal::String(s))
             }

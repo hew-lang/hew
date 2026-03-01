@@ -5,9 +5,8 @@
 //! `libc::malloc` and NUL-terminated. All returned [`HewSemver`] pointers are
 //! heap-allocated via `Box` and must be freed with [`hew_semver_free`].
 
-use hew_cabi::cabi::str_to_malloc;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 /// Opaque wrapper around a [`semver::Version`].
 ///
@@ -16,18 +15,6 @@ use std::os::raw::c_char;
 #[derive(Debug)]
 pub struct HewSemver {
     inner: semver::Version,
-}
-
-/// Opaque wrapper around a [`semver::VersionReq`].
-///
-/// Not yet exposed via C ABI; reserved for future requirement-object APIs.
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "public API type reserved for future C ABI functions"
-)]
-pub struct HewSemverReq {
-    inner: semver::VersionReq,
 }
 
 // ---------------------------------------------------------------------------
@@ -43,11 +30,8 @@ pub struct HewSemverReq {
 /// `s` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_semver_parse(s: *const c_char) -> *mut HewSemver {
-    if s.is_null() {
-        return std::ptr::null_mut();
-    }
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = unsafe { CStr::from_ptr(s) }.to_str() else {
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
         return std::ptr::null_mut();
     };
     match semver::Version::parse(rust_str) {
@@ -162,15 +146,12 @@ pub unsafe extern "C" fn hew_semver_matches(
     version_str: *const c_char,
     req_str: *const c_char,
 ) -> i32 {
-    if version_str.is_null() || req_str.is_null() {
-        return -1;
-    }
     // SAFETY: version_str is a valid NUL-terminated C string per caller contract.
-    let Ok(ver_s) = unsafe { CStr::from_ptr(version_str) }.to_str() else {
+    let Some(ver_s) = (unsafe { cstr_to_str(version_str) }) else {
         return -1;
     };
     // SAFETY: req_str is a valid NUL-terminated C string per caller contract.
-    let Ok(req_s) = unsafe { CStr::from_ptr(req_str) }.to_str() else {
+    let Some(req_s) = (unsafe { cstr_to_str(req_str) }) else {
         return -1;
     };
     let Ok(version) = semver::Version::parse(ver_s) else {
@@ -222,7 +203,7 @@ pub unsafe extern "C" fn hew_semver_free(v: *mut HewSemver) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     /// Helper: parse a semver string and return the owned pointer.
     fn parse(s: &str) -> *mut HewSemver {

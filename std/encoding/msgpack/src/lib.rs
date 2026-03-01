@@ -6,9 +6,8 @@
 //! `libc::malloc` and must be freed with [`hew_msgpack_free`]. All returned
 //! strings are allocated with `libc::malloc` and NUL-terminated.
 
-use hew_cabi::cabi::malloc_cstring;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 /// Allocate a buffer via `libc::malloc`, copying `len` bytes from `src`.
 /// Returns null on allocation failure.
@@ -54,7 +53,7 @@ pub unsafe extern "C" fn hew_msgpack_from_json(
         return std::ptr::null_mut();
     }
     // SAFETY: json_str is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = (unsafe { CStr::from_ptr(json_str) }).to_str() else {
+    let Some(s) = (unsafe { cstr_to_str(json_str) }) else {
         return std::ptr::null_mut();
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(s) else {
@@ -91,8 +90,7 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
     let Ok(json) = serde_json::to_string(&value) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: json.as_ptr() is valid for json.len() bytes.
-    unsafe { malloc_cstring(json.as_ptr(), json.len()) }
+    str_to_malloc(&json)
 }
 
 /// Encode a single integer as `MessagePack`.
@@ -135,7 +133,7 @@ pub unsafe extern "C" fn hew_msgpack_encode_string(
         return std::ptr::null_mut();
     }
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let Ok(rust_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
         return std::ptr::null_mut();
     };
     let Ok(bytes) = rmp_serde::to_vec(rust_str) else {
@@ -200,7 +198,7 @@ extern crate hew_runtime; // Link hew_vec_* symbol implementations
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     #[test]
     fn json_roundtrip_object() {

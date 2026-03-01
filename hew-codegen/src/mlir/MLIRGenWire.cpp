@@ -18,13 +18,8 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-
-#include "llvm/Support/raw_ostream.h"
 
 #include <cctype>
 
@@ -87,6 +82,95 @@ static bool isVarintType(const std::string &ty) {
   return ty == "bool" || ty == "u8" || ty == "u16" || ty == "u32" || ty == "u64" || ty == "i8" ||
          ty == "i16" || ty == "i32" || ty == "i64";
 }
+
+// ============================================================================
+// JSON / YAML helpers
+// ============================================================================
+
+/// Apply a naming convention to a field name string.
+static std::string applyNamingCase(const std::string &name, ast::NamingCase nc) {
+  switch (nc) {
+  case ast::NamingCase::CamelCase: {
+    std::string result;
+    bool capitalize = false;
+    for (char c : name) {
+      if (c == '_') {
+        capitalize = true;
+        continue;
+      }
+      result += capitalize ? (char)std::toupper((unsigned char)c) : c;
+      capitalize = false;
+    }
+    if (!result.empty())
+      result[0] = (char)std::tolower((unsigned char)result[0]);
+    return result;
+  }
+  case ast::NamingCase::PascalCase: {
+    std::string result;
+    bool capitalize = true;
+    for (char c : name) {
+      if (c == '_') {
+        capitalize = true;
+        continue;
+      }
+      result += capitalize ? (char)std::toupper((unsigned char)c) : c;
+      capitalize = false;
+    }
+    return result;
+  }
+  case ast::NamingCase::SnakeCase: {
+    std::string result = name;
+    for (auto &c : result)
+      c = (char)std::tolower((unsigned char)c);
+    return result;
+  }
+  case ast::NamingCase::ScreamingSnake: {
+    std::string result = name;
+    for (auto &c : result)
+      c = (char)std::toupper((unsigned char)c);
+    return result;
+  }
+  case ast::NamingCase::KebabCase: {
+    std::string result = name;
+    for (auto &c : result) {
+      if (c == '_')
+        c = '-';
+      else
+        c = (char)std::tolower((unsigned char)c);
+    }
+    return result;
+  }
+  }
+  return name;
+}
+
+/// Get the serialized key name for a wire field, honouring per-field overrides
+/// and falling back to the struct-level naming convention.
+static std::string wireSerialFieldName(const ast::WireFieldDecl &field,
+                                       const std::optional<std::string> &overrideName,
+                                       const std::optional<ast::NamingCase> &defCase) {
+  if (overrideName.has_value())
+    return *overrideName;
+  if (defCase.has_value())
+    return applyNamingCase(field.name, *defCase);
+  return field.name;
+}
+
+/// Load a global string as an !llvm.ptr suitable for C ABI calls.
+/// Returns an !llvm.ptr pointing to the NUL-terminated string data.
+mlir::Value MLIRGen::wireStringPtr(mlir::Location location, llvm::StringRef value) {
+  auto sym = getOrCreateGlobalString(value);
+  auto strRefType = hew::StringRefType::get(&context);
+  auto strRef =
+      builder.create<hew::ConstantOp>(location, strRefType, builder.getStringAttr(sym)).getResult();
+  return builder
+      .create<hew::BitcastOp>(location, mlir::LLVM::LLVMPointerType::get(&context), strRef)
+      .getResult();
+}
+
+// ============================================================================
+// Wire struct/enum declaration
+// ============================================================================
 
 void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   auto location = currentLoc;
@@ -181,12 +265,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       info.hasPayloads = false;
     }
 
-    std::string declName = decl.name;
-    // Register variant names for lookup
+    // Register variant names for lookup (needs owning copy for the map value)
+    std::string enumName = decl.name;
     for (const auto &variant : info.variants) {
-      variantLookup[variant.name] = {declName, variant.index};
+      variantLookup[variant.name] = {enumName, variant.index};
     }
-    enumTypes[declName] = std::move(info);
+    enumTypes[enumName] = std::move(info);
 
     return;
   }
@@ -196,7 +280,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
   // ── Register the wire struct as a regular struct type ─────────────
   // This allows the rest of the compiler to work with the struct.
-  std::string declName = decl.name;
+  const auto &declName = decl.name;
   StructTypeInfo info;
   info.name = declName;
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
@@ -217,11 +301,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   // Returns pointer to heap-owned hew_wire_buf (caller reads .data/.len and
   // releases with hew_wire_buf_destroy).
   {
-    llvm::SmallVector<mlir::Type, 8> paramTypes;
-    for (const auto &field : decl.fields)
-      paramTypes.push_back(wireTypeToMLIR(builder, field.ty));
-
-    auto encodeFnType = mlir::FunctionType::get(&context, paramTypes, {ptrType});
+    // Reuse fieldTypes computed during struct registration
+    auto encodeFnType = mlir::FunctionType::get(&context, fieldTypes, {ptrType});
     std::string encodeName = declName + "_encode";
 
     auto savedIP = builder.saveInsertionPoint();
@@ -326,17 +407,16 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     // Create the result struct initialized with defaults
     mlir::Value result = builder.create<mlir::LLVM::UndefOp>(location, structType);
 
-    // Decode each field sequentially (assumes fields encoded in tag order).
-    // For each field: skip the TLV tag varint, then decode the value.
-    // Allocate a scratch slot for varint/fixed out-params.
-    auto scratchI64 = builder.create<mlir::LLVM::AllocaOp>(
-        location, ptrType, i64Type, createIntConstant(builder, location, i64Type, 1));
-    auto scratchI32 = builder.create<mlir::LLVM::AllocaOp>(
-        location, ptrType, i32Type, createIntConstant(builder, location, i64Type, 1));
+    // Allocate scratch slots for decode out-params (hoisted before loop).
+    auto one = createIntConstant(builder, location, i64Type, 1);
+    auto scratchI64 = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i64Type, one);
+    auto scratchI32 = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
+    auto scratchPtr = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, ptrType, one);
+    auto scratchLen = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i64Type, one);
 
     unsigned decIdx = 0;
     for (const auto &field : decl.fields) {
-      auto fieldType = wireTypeToMLIR(builder, field.ty);
+      auto fieldType = fieldTypes[decIdx];
 
       // Skip the tag varint
       builder.create<hew::RuntimeCallOp>(
@@ -363,14 +443,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         auto rawI64 = builder.create<mlir::LLVM::LoadOp>(location, i64Type, scratchI64);
         decoded = builder.create<mlir::arith::BitcastOp>(location, builder.getF64Type(), rawI64);
       } else if (jkind == WireJsonKind::String) {
-        // Decode length-delimited bytes. We use scratch slots for out ptr and len.
-        // scratchI64 holds the pointer-out, scratchI32 (recast) holds the len-out.
-        // Actually, hew_wire_decode_bytes(buf, &out_ptr, &out_len) where both
-        // out_ptr is void** and out_len is size_t*. Use two i64 scratch slots.
-        auto scratchPtr = builder.create<mlir::LLVM::AllocaOp>(
-            location, ptrType, ptrType, createIntConstant(builder, location, i64Type, 1));
-        auto scratchLen = builder.create<mlir::LLVM::AllocaOp>(
-            location, ptrType, i64Type, createIntConstant(builder, location, i64Type, 1));
+        // Decode length-delimited bytes via hew_wire_decode_bytes(buf, &out_ptr, &out_len)
         builder.create<hew::RuntimeCallOp>(
             location, mlir::TypeRange{i32Type},
             mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
@@ -412,111 +485,33 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   }
 
   // ── Generate JSON/YAML conversion functions ───────────────────────
-  generateWireToJson(decl);
-  generateWireFromJson(decl);
-  generateWireToYaml(decl);
-  generateWireFromYaml(decl);
+  generateWireToSerial(decl, "json", decl.json_case,
+                       [](const ast::WireFieldDecl &f) -> const std::optional<std::string> & {
+                         return f.json_name;
+                       });
+  generateWireFromSerial(decl, "json", decl.json_case,
+                         [](const ast::WireFieldDecl &f) -> const std::optional<std::string> & {
+                           return f.json_name;
+                         });
+  generateWireToSerial(decl, "yaml", decl.yaml_case,
+                       [](const ast::WireFieldDecl &f) -> const std::optional<std::string> & {
+                         return f.yaml_name;
+                       });
+  generateWireFromSerial(decl, "yaml", decl.yaml_case,
+                         [](const ast::WireFieldDecl &f) -> const std::optional<std::string> & {
+                           return f.yaml_name;
+                         });
 }
 
 // ============================================================================
-// JSON / YAML helpers
+// Unified Foo_to_{json,yaml} generation
 // ============================================================================
 
-/// Apply a naming convention to a field name string.
-static std::string applyNamingCase(const std::string &name, ast::NamingCase nc) {
-  switch (nc) {
-  case ast::NamingCase::CamelCase: {
-    std::string result;
-    bool capitalize = false;
-    for (char c : name) {
-      if (c == '_') {
-        capitalize = true;
-        continue;
-      }
-      result += capitalize ? (char)std::toupper((unsigned char)c) : c;
-      capitalize = false;
-    }
-    if (!result.empty())
-      result[0] = (char)std::tolower((unsigned char)result[0]);
-    return result;
-  }
-  case ast::NamingCase::PascalCase: {
-    std::string result;
-    bool capitalize = true;
-    for (char c : name) {
-      if (c == '_') {
-        capitalize = true;
-        continue;
-      }
-      result += capitalize ? (char)std::toupper((unsigned char)c) : c;
-      capitalize = false;
-    }
-    return result;
-  }
-  case ast::NamingCase::SnakeCase: {
-    std::string result = name;
-    for (auto &c : result)
-      c = (char)std::tolower((unsigned char)c);
-    return result;
-  }
-  case ast::NamingCase::ScreamingSnake: {
-    std::string result = name;
-    for (auto &c : result)
-      c = (char)std::toupper((unsigned char)c);
-    return result;
-  }
-  case ast::NamingCase::KebabCase: {
-    std::string result = name;
-    for (auto &c : result) {
-      if (c == '_')
-        c = '-';
-      else
-        c = (char)std::tolower((unsigned char)c);
-    }
-    return result;
-  }
-  }
-  return name;
-}
-
-/// Get the JSON key name for a wire field, honouring per-field json_name
-/// overrides and falling back to the struct-level json_case convention.
-static std::string jsonFieldName(const ast::WireFieldDecl &field,
-                                 const std::optional<ast::NamingCase> &defCase) {
-  if (field.json_name.has_value())
-    return *field.json_name;
-  if (defCase.has_value())
-    return applyNamingCase(field.name, *defCase);
-  return field.name;
-}
-
-/// Get the YAML key name for a wire field.
-static std::string yamlFieldName(const ast::WireFieldDecl &field,
-                                 const std::optional<ast::NamingCase> &defCase) {
-  if (field.yaml_name.has_value())
-    return *field.yaml_name;
-  if (defCase.has_value())
-    return applyNamingCase(field.name, *defCase);
-  return field.name;
-}
-
-/// Load a global string as an !llvm.ptr suitable for C ABI calls.
-/// Returns an !llvm.ptr pointing to the NUL-terminated string data.
-mlir::Value MLIRGen::wireStringPtr(mlir::Location location, llvm::StringRef value) {
-  auto sym = getOrCreateGlobalString(value);
-  auto strRefType = hew::StringRefType::get(&context);
-  auto strRef =
-      builder.create<hew::ConstantOp>(location, strRefType, builder.getStringAttr(sym)).getResult();
-  return builder
-      .create<hew::BitcastOp>(location, mlir::LLVM::LLVMPointerType::get(&context), strRef)
-      .getResult();
-}
-
-// ============================================================================
-// Foo_to_json / Foo_from_json
-// ============================================================================
-
-void MLIRGen::generateWireToJson(const ast::WireDecl &decl) {
+void MLIRGen::generateWireToSerial(
+    const ast::WireDecl &decl, llvm::StringRef format,
+    const std::optional<ast::NamingCase> &namingCase,
+    llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+        fieldOverride) {
   if (decl.kind != ast::WireDeclKind::Struct)
     return;
   auto location = currentLoc;
@@ -525,8 +520,7 @@ void MLIRGen::generateWireToJson(const ast::WireDecl &decl) {
   auto i64Type = builder.getI64Type();
   auto f64Type = builder.getF64Type();
 
-  std::string declName = decl.name;
-  const auto &jsonCase = decl.json_case;
+  const auto &declName = decl.name;
 
   llvm::SmallVector<mlir::Type, 8> paramTypes;
   for (const auto &field : decl.fields)
@@ -534,48 +528,53 @@ void MLIRGen::generateWireToJson(const ast::WireDecl &decl) {
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  std::string toJsonName = declName + "_to_json";
-  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(toJsonName))
+  std::string fnName = declName + "_to_" + format.str();
+  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fnName))
     existing.erase();
   auto fn = builder.create<mlir::func::FuncOp>(
-      location, toJsonName, mlir::FunctionType::get(&context, paramTypes, {ptrType}));
+      location, fnName, mlir::FunctionType::get(&context, paramTypes, {ptrType}));
   auto *entry = fn.addEntryBlock();
   builder.setInsertionPointToStart(entry);
 
-  // obj = hew_json_object_new()
-  auto objPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_json_object_new"),
-                                      mlir::ValueRange{})
-          .getResult();
+  // Runtime function names: hew_{format}_object_new, hew_{format}_object_set_*, etc.
+  std::string rtNew = "hew_" + format.str() + "_object_new";
+  std::string rtSetBool = "hew_" + format.str() + "_object_set_bool";
+  std::string rtSetFloat = "hew_" + format.str() + "_object_set_float";
+  std::string rtSetString = "hew_" + format.str() + "_object_set_string";
+  std::string rtSetInt = "hew_" + format.str() + "_object_set_int";
+  std::string rtStringify = "hew_" + format.str() + "_stringify";
+  std::string rtFree = "hew_" + format.str() + "_free";
+
+  // obj = hew_{format}_object_new()
+  auto objPtr = builder
+                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                                mlir::SymbolRefAttr::get(&context, rtNew),
+                                                mlir::ValueRange{})
+                    .getResult();
 
   unsigned idx = 0;
   for (const auto &field : decl.fields) {
-    auto keyPtr = wireStringPtr(location, jsonFieldName(field, jsonCase));
+    auto keyPtr = wireStringPtr(location, wireSerialFieldName(field, fieldOverride(field), namingCase));
     mlir::Value fv = entry->getArgument(idx++);
 
-    if (jsonKindOf(field.ty) == WireJsonKind::Bool) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_json_object_set_bool"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float32) {
+    auto jkind = jsonKindOf(field.ty);
+    if (jkind == WireJsonKind::Bool) {
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, rtSetBool),
+                                         mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (jkind == WireJsonKind::Float32) {
       auto f64v = builder.create<mlir::arith::ExtFOp>(location, f64Type, fv);
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_json_object_set_float"),
-          mlir::ValueRange{objPtr, keyPtr, f64v});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float64) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_json_object_set_float"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::String) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_json_object_set_string"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                         mlir::ValueRange{objPtr, keyPtr, f64v});
+    } else if (jkind == WireJsonKind::Float64) {
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                         mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (jkind == WireJsonKind::String) {
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, rtSetString),
+                                         mlir::ValueRange{objPtr, keyPtr, fv});
     } else {
       // Integer types: extend to i64 (zero-extend unsigned, sign-extend signed)
       mlir::Value v64 = fv;
@@ -585,29 +584,35 @@ void MLIRGen::generateWireToJson(const ast::WireDecl &decl) {
         else
           v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
       }
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_json_object_set_int"),
-          mlir::ValueRange{objPtr, keyPtr, v64});
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                         mlir::SymbolRefAttr::get(&context, rtSetInt),
+                                         mlir::ValueRange{objPtr, keyPtr, v64});
     }
   }
 
-  // result = hew_json_stringify(obj); hew_json_free(obj)
-  auto resultPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_json_stringify"),
-                                      mlir::ValueRange{objPtr})
-          .getResult();
+  // result = hew_{format}_stringify(obj); hew_{format}_free(obj)
+  auto resultPtr = builder
+                       .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                                   mlir::SymbolRefAttr::get(&context, rtStringify),
+                                                   mlir::ValueRange{objPtr})
+                       .getResult();
   builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                     mlir::SymbolRefAttr::get(&context, "hew_json_free"),
+                                     mlir::SymbolRefAttr::get(&context, rtFree),
                                      mlir::ValueRange{objPtr});
 
   builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{resultPtr});
   builder.restoreInsertionPoint(savedIP);
 }
 
-void MLIRGen::generateWireFromJson(const ast::WireDecl &decl) {
+// ============================================================================
+// Unified Foo_from_{json,yaml} generation
+// ============================================================================
+
+void MLIRGen::generateWireFromSerial(
+    const ast::WireDecl &decl, llvm::StringRef format,
+    const std::optional<ast::NamingCase> &namingCase,
+    llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
+        fieldOverride) {
   if (decl.kind != ast::WireDeclKind::Struct)
     return;
   auto location = currentLoc;
@@ -616,77 +621,80 @@ void MLIRGen::generateWireFromJson(const ast::WireDecl &decl) {
   auto i64Type = builder.getI64Type();
   auto f64Type = builder.getF64Type();
 
-  std::string declName = decl.name;
-  const auto &jsonCase = decl.json_case;
+  const auto &declName = decl.name;
   auto structType = structTypes.at(declName).mlirType;
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  std::string fromJsonName = declName + "_from_json";
-  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fromJsonName))
+  std::string fnName = declName + "_from_" + format.str();
+  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fnName))
     existing.erase();
   auto fn = builder.create<mlir::func::FuncOp>(
-      location, fromJsonName, mlir::FunctionType::get(&context, {ptrType}, {structType}));
+      location, fnName, mlir::FunctionType::get(&context, {ptrType}, {structType}));
   auto *entry = fn.addEntryBlock();
   builder.setInsertionPointToStart(entry);
 
-  // obj = hew_json_parse(json_str)
-  auto objPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_json_parse"),
-                                      mlir::ValueRange{entry->getArgument(0)})
-          .getResult();
+  // Runtime function names
+  std::string rtParse = "hew_" + format.str() + "_parse";
+  std::string rtGetField = "hew_" + format.str() + "_get_field";
+  std::string rtGetBool = "hew_" + format.str() + "_get_bool";
+  std::string rtGetFloat = "hew_" + format.str() + "_get_float";
+  std::string rtGetString = "hew_" + format.str() + "_get_string";
+  std::string rtGetInt = "hew_" + format.str() + "_get_int";
+  std::string rtFree = "hew_" + format.str() + "_free";
+
+  // obj = hew_{format}_parse(str)
+  auto objPtr = builder
+                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                                mlir::SymbolRefAttr::get(&context, rtParse),
+                                                mlir::ValueRange{entry->getArgument(0)})
+                    .getResult();
 
   mlir::Value result = builder.create<mlir::LLVM::UndefOp>(location, structType);
 
   unsigned idx = 0;
   for (const auto &field : decl.fields) {
-    auto keyPtr = wireStringPtr(location, jsonFieldName(field, jsonCase));
-    auto fieldJval =
-        builder
-            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                        mlir::SymbolRefAttr::get(&context, "hew_json_get_field"),
-                                        mlir::ValueRange{objPtr, keyPtr})
-            .getResult();
+    auto keyPtr =
+        wireStringPtr(location, wireSerialFieldName(field, fieldOverride(field), namingCase));
+    auto fieldJval = builder
+                         .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                                     mlir::SymbolRefAttr::get(&context, rtGetField),
+                                                     mlir::ValueRange{objPtr, keyPtr})
+                         .getResult();
 
     mlir::Value decoded;
-    if (jsonKindOf(field.ty) == WireJsonKind::Bool) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_json_get_bool"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float32) {
-      auto f64v =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_json_get_float"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
+    auto jkind = jsonKindOf(field.ty);
+    if (jkind == WireJsonKind::Bool) {
+      decoded = builder
+                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
+                                                mlir::SymbolRefAttr::get(&context, rtGetBool),
+                                                mlir::ValueRange{fieldJval})
+                    .getResult();
+    } else if (jkind == WireJsonKind::Float32) {
+      auto f64v = builder
+                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
+                                                  mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                                  mlir::ValueRange{fieldJval})
+                      .getResult();
       decoded = builder.create<mlir::arith::TruncFOp>(location, builder.getF32Type(), f64v);
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float64) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_json_get_float"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-    } else if (jsonKindOf(field.ty) == WireJsonKind::String) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                          mlir::SymbolRefAttr::get(&context, "hew_json_get_string"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
+    } else if (jkind == WireJsonKind::Float64) {
+      decoded = builder
+                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
+                                                mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                                mlir::ValueRange{fieldJval})
+                    .getResult();
+    } else if (jkind == WireJsonKind::String) {
+      decoded = builder
+                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                                mlir::SymbolRefAttr::get(&context, rtGetString),
+                                                mlir::ValueRange{fieldJval})
+                    .getResult();
     } else {
-      auto rawI64 =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_json_get_int"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
+      auto rawI64 = builder
+                        .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
+                                                    mlir::SymbolRefAttr::get(&context, rtGetInt),
+                                                    mlir::ValueRange{fieldJval})
+                        .getResult();
       auto fieldType = wireTypeToMLIR(builder, field.ty);
       decoded = (fieldType == i32Type)
                     ? builder.create<mlir::arith::TruncIOp>(location, i32Type, rawI64).getResult()
@@ -694,206 +702,14 @@ void MLIRGen::generateWireFromJson(const ast::WireDecl &decl) {
     }
 
     builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                       mlir::SymbolRefAttr::get(&context, "hew_json_free"),
+                                       mlir::SymbolRefAttr::get(&context, rtFree),
                                        mlir::ValueRange{fieldJval});
 
     result = builder.create<mlir::LLVM::InsertValueOp>(location, result, decoded, idx++);
   }
 
   builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                     mlir::SymbolRefAttr::get(&context, "hew_json_free"),
-                                     mlir::ValueRange{objPtr});
-
-  builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{result});
-  builder.restoreInsertionPoint(savedIP);
-}
-
-// ============================================================================
-// Foo_to_yaml / Foo_from_yaml
-// ============================================================================
-
-void MLIRGen::generateWireToYaml(const ast::WireDecl &decl) {
-  if (decl.kind != ast::WireDeclKind::Struct)
-    return;
-  auto location = currentLoc;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-  auto i32Type = builder.getI32Type();
-  auto i64Type = builder.getI64Type();
-  auto f64Type = builder.getF64Type();
-
-  std::string declName = decl.name;
-  const auto &yamlCase = decl.yaml_case;
-
-  llvm::SmallVector<mlir::Type, 8> paramTypes;
-  for (const auto &field : decl.fields)
-    paramTypes.push_back(wireTypeToMLIR(builder, field.ty));
-
-  auto savedIP = builder.saveInsertionPoint();
-  builder.setInsertionPointToEnd(module.getBody());
-  std::string toYamlName = declName + "_to_yaml";
-  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(toYamlName))
-    existing.erase();
-  auto fn = builder.create<mlir::func::FuncOp>(
-      location, toYamlName, mlir::FunctionType::get(&context, paramTypes, {ptrType}));
-  auto *entry = fn.addEntryBlock();
-  builder.setInsertionPointToStart(entry);
-
-  auto objPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_yaml_object_new"),
-                                      mlir::ValueRange{})
-          .getResult();
-
-  unsigned idx = 0;
-  for (const auto &field : decl.fields) {
-    auto keyPtr = wireStringPtr(location, yamlFieldName(field, yamlCase));
-    mlir::Value fv = entry->getArgument(idx++);
-
-    if (jsonKindOf(field.ty) == WireJsonKind::Bool) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_bool"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float32) {
-      auto f64v = builder.create<mlir::arith::ExtFOp>(location, f64Type, fv);
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_float"),
-          mlir::ValueRange{objPtr, keyPtr, f64v});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float64) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_float"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
-    } else if (jsonKindOf(field.ty) == WireJsonKind::String) {
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_string"),
-          mlir::ValueRange{objPtr, keyPtr, fv});
-    } else {
-      mlir::Value v64 = fv;
-      if (fv.getType() == i32Type) {
-        if (isUnsignedWireType(field.ty))
-          v64 = builder.create<mlir::arith::ExtUIOp>(location, i64Type, fv);
-        else
-          v64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, fv);
-      }
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{},
-          mlir::SymbolRefAttr::get(&context, "hew_yaml_object_set_int"),
-          mlir::ValueRange{objPtr, keyPtr, v64});
-    }
-  }
-
-  auto resultPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_yaml_stringify"),
-                                      mlir::ValueRange{objPtr})
-          .getResult();
-  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                     mlir::SymbolRefAttr::get(&context, "hew_yaml_free"),
-                                     mlir::ValueRange{objPtr});
-
-  builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{resultPtr});
-  builder.restoreInsertionPoint(savedIP);
-}
-
-void MLIRGen::generateWireFromYaml(const ast::WireDecl &decl) {
-  if (decl.kind != ast::WireDeclKind::Struct)
-    return;
-  auto location = currentLoc;
-  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-  auto i32Type = builder.getI32Type();
-  auto i64Type = builder.getI64Type();
-  auto f64Type = builder.getF64Type();
-
-  std::string declName = decl.name;
-  const auto &yamlCase = decl.yaml_case;
-  auto structType = structTypes.at(declName).mlirType;
-
-  auto savedIP = builder.saveInsertionPoint();
-  builder.setInsertionPointToEnd(module.getBody());
-  std::string fromYamlName = declName + "_from_yaml";
-  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fromYamlName))
-    existing.erase();
-  auto fn = builder.create<mlir::func::FuncOp>(
-      location, fromYamlName, mlir::FunctionType::get(&context, {ptrType}, {structType}));
-  auto *entry = fn.addEntryBlock();
-  builder.setInsertionPointToStart(entry);
-
-  auto objPtr =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                      mlir::SymbolRefAttr::get(&context, "hew_yaml_parse"),
-                                      mlir::ValueRange{entry->getArgument(0)})
-          .getResult();
-
-  mlir::Value result = builder.create<mlir::LLVM::UndefOp>(location, structType);
-
-  unsigned idx = 0;
-  for (const auto &field : decl.fields) {
-    auto keyPtr = wireStringPtr(location, yamlFieldName(field, yamlCase));
-    auto fieldJval =
-        builder
-            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                        mlir::SymbolRefAttr::get(&context, "hew_yaml_get_field"),
-                                        mlir::ValueRange{objPtr, keyPtr})
-            .getResult();
-
-    mlir::Value decoded;
-    if (jsonKindOf(field.ty) == WireJsonKind::Bool) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_yaml_get_bool"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float32) {
-      auto f64v =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_yaml_get_float"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-      decoded = builder.create<mlir::arith::TruncFOp>(location, builder.getF32Type(), f64v);
-    } else if (jsonKindOf(field.ty) == WireJsonKind::Float64) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{f64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_yaml_get_float"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-    } else if (jsonKindOf(field.ty) == WireJsonKind::String) {
-      decoded =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                          mlir::SymbolRefAttr::get(&context, "hew_yaml_get_string"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-    } else {
-      auto rawI64 =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_yaml_get_int"),
-                                          mlir::ValueRange{fieldJval})
-              .getResult();
-      auto fieldType = wireTypeToMLIR(builder, field.ty);
-      decoded = (fieldType == i32Type)
-                    ? builder.create<mlir::arith::TruncIOp>(location, i32Type, rawI64).getResult()
-                    : rawI64;
-    }
-
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                       mlir::SymbolRefAttr::get(&context, "hew_yaml_free"),
-                                       mlir::ValueRange{fieldJval});
-
-    result = builder.create<mlir::LLVM::InsertValueOp>(location, result, decoded, idx++);
-  }
-
-  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                     mlir::SymbolRefAttr::get(&context, "hew_yaml_free"),
+                                     mlir::SymbolRefAttr::get(&context, rtFree),
                                      mlir::ValueRange{objPtr});
 
   builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{result});

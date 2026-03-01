@@ -6,7 +6,7 @@ use crate::ast::{
     ActorDecl, ActorInit, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp, ConstDecl,
     ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl,
     ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, OverflowPolicy, Param, Pattern,
-    PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Stmt, StringPart,
+    PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Spanned, Stmt, StringPart,
     SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
     TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
     VariantDecl, VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl,
@@ -361,15 +361,17 @@ impl<'a> Formatter<'a> {
 
     fn format_trait_method(&mut self, m: &TraitMethod) {
         self.write_indent();
+        if m.is_pure {
+            self.write("pure ");
+        }
         self.write("fn ");
         self.write(&m.name);
-        self.write("(");
-        self.format_params(&m.params);
-        self.write(")");
-        if let Some(ret) = &m.return_type {
-            self.write(" -> ");
-            self.format_type_expr(&ret.0);
-        }
+        self.format_fn_signature(
+            m.type_params.as_ref(),
+            &m.params,
+            m.return_type.as_ref(),
+            m.where_clause.as_ref(),
+        );
         if let Some(body) = &m.body {
             self.write(" ");
             self.format_block(body, self.source.len());
@@ -667,19 +669,21 @@ impl<'a> Formatter<'a> {
 
     fn format_receive_fn(&mut self, recv: &ReceiveFnDecl, scope_end: usize) {
         self.write_indent();
+        if recv.is_pure {
+            self.write("pure ");
+        }
         if recv.is_generator {
             self.write("receive gen fn ");
         } else {
             self.write("receive fn ");
         }
         self.write(&recv.name);
-        self.write("(");
-        self.format_params(&recv.params);
-        self.write(")");
-        if let Some(ret) = &recv.return_type {
-            self.write(" -> ");
-            self.format_type_expr(&ret.0);
-        }
+        self.format_fn_signature(
+            recv.type_params.as_ref(),
+            &recv.params,
+            recv.return_type.as_ref(),
+            recv.where_clause.as_ref(),
+        );
         self.write(" ");
         self.format_block(&recv.body, scope_end);
         self.newline();
@@ -770,15 +774,12 @@ impl<'a> Formatter<'a> {
         }
         self.write("fn ");
         self.write(&decl.name);
-        self.format_opt_type_params(decl.type_params.as_ref());
-        self.write("(");
-        self.format_params(&decl.params);
-        self.write(")");
-        if let Some(ret) = &decl.return_type {
-            self.write(" -> ");
-            self.format_type_expr(&ret.0);
-        }
-        self.format_opt_where_clause(decl.where_clause.as_ref());
+        self.format_fn_signature(
+            decl.type_params.as_ref(),
+            &decl.params,
+            decl.return_type.as_ref(),
+            decl.where_clause.as_ref(),
+        );
         self.write(" ");
         self.format_block(&decl.body, span_end);
         self.newline();
@@ -864,6 +865,25 @@ impl<'a> Formatter<'a> {
                 self.write("_");
             }
         }
+    }
+
+    /// Format `<type_params>(params) -> return_type where clause`.
+    fn format_fn_signature(
+        &mut self,
+        type_params: Option<&Vec<TypeParam>>,
+        params: &[Param],
+        return_type: Option<&Spanned<TypeExpr>>,
+        where_clause: Option<&WhereClause>,
+    ) {
+        self.format_opt_type_params(type_params);
+        self.write("(");
+        self.format_params(params);
+        self.write(")");
+        if let Some(ret) = return_type {
+            self.write(" -> ");
+            self.format_type_expr(&ret.0);
+        }
+        self.format_opt_where_clause(where_clause);
     }
 
     fn format_opt_type_params(&mut self, params: Option<&Vec<TypeParam>>) {

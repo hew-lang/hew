@@ -120,8 +120,13 @@ impl HewLanguageServer {
 
         let line_offsets = compute_line_offsets(source);
 
-        let diagnostics =
-            build_diagnostics(uri, source, &line_offsets, &parse_result, type_output.as_ref());
+        let diagnostics = build_diagnostics(
+            uri,
+            source,
+            &line_offsets,
+            &parse_result,
+            type_output.as_ref(),
+        );
 
         self.documents.insert(
             uri.clone(),
@@ -319,7 +324,8 @@ impl LanguageServer for HewLanguageServer {
         }
 
         Ok(best.map(|(span_key, ty)| {
-            let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span_key.start, span_key.end);
+            let range =
+                offset_range_to_lsp(&doc.source, &doc.line_offsets, span_key.start, span_key.end);
             let snippet = &doc.source[span_key.start..span_key.end];
             let value = if let Ty::Function { params, ret } = ty {
                 let param_list: Vec<String> = params.iter().map(ToString::to_string).collect();
@@ -356,7 +362,9 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        if let Some(range) = find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word) {
+        if let Some(range) =
+            find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &word)
+        {
             return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range,
@@ -368,9 +376,12 @@ impl LanguageServer for HewLanguageServer {
         for separator in [".", "::"] {
             if let Some(method) = word.rsplit(separator).next() {
                 if method != word {
-                    if let Some(range) =
-                        find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, method)
-                    {
+                    if let Some(range) = find_definition_in_ast(
+                        &doc.source,
+                        &doc.line_offsets,
+                        &doc.parse_result,
+                        method,
+                    ) {
                         return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                             uri: uri.clone(),
                             range,
@@ -437,7 +448,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let item = find_type_hierarchy_item(uri, &doc.source, &doc.line_offsets, &doc.parse_result, &word);
+        let item = find_type_hierarchy_item(
+            uri,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &word,
+        );
         Ok(item.map(|i| vec![i]))
     }
 
@@ -450,7 +467,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let supers = collect_supertypes(&item.uri, &item.name, &doc.source, &doc.line_offsets, &doc.parse_result);
+        let supers = collect_supertypes(
+            &item.uri,
+            &item.name,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+        );
         Ok(non_empty(supers))
     }
 
@@ -463,7 +486,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let subs = collect_subtypes(&item.uri, &item.name, &doc.source, &doc.line_offsets, &doc.parse_result);
+        let subs = collect_subtypes(
+            &item.uri,
+            &item.name,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+        );
         Ok(non_empty(subs))
     }
 
@@ -498,9 +527,12 @@ impl LanguageServer for HewLanguageServer {
                     .next()
                     .and_then(|w| w.rsplit("::").next())
                     .unwrap_or(&word);
-                if let Some(def_range) =
-                    find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, plain_word)
-                {
+                if let Some(def_range) = find_definition_in_ast(
+                    &doc.source,
+                    &doc.line_offsets,
+                    &doc.parse_result,
+                    plain_word,
+                ) {
                     if !locations.iter().any(|l| l.range == def_range) {
                         locations.insert(
                             0,
@@ -568,7 +600,9 @@ impl LanguageServer for HewLanguageServer {
             })
             .collect();
 
-        if let Some(def_range) = find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &name) {
+        if let Some(def_range) =
+            find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &name)
+        {
             if !edits.iter().any(|e| e.range == def_range) {
                 edits.push(TextEdit {
                     range: def_range,
@@ -614,7 +648,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let item = find_callable_at(&uri, &doc.source, &doc.line_offsets, &doc.parse_result, &word);
+        let item = find_callable_at(
+            &uri,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &word,
+        );
         Ok(item.map(|it| vec![it]))
     }
 
@@ -627,7 +667,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let calls = find_incoming_calls(&item.uri, &doc.source, &doc.line_offsets, &doc.parse_result, &item.name);
+        let calls = find_incoming_calls(
+            &item.uri,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &item.name,
+        );
         Ok(non_empty(calls))
     }
 
@@ -640,7 +686,13 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let calls = find_outgoing_calls(&item.uri, &doc.source, &doc.line_offsets, &doc.parse_result, &item.name);
+        let calls = find_outgoing_calls(
+            &item.uri,
+            &doc.source,
+            &doc.line_offsets,
+            &doc.parse_result,
+            &item.name,
+        );
         Ok(non_empty(calls))
     }
 
@@ -705,7 +757,12 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let actions = build_code_actions(uri, &doc.source, &doc.line_offsets, &params.context.diagnostics);
+        let actions = build_code_actions(
+            uri,
+            &doc.source,
+            &doc.line_offsets,
+            &params.context.diagnostics,
+        );
         Ok(non_empty(actions))
     }
 
@@ -986,7 +1043,12 @@ fn make_replace_action(
     clippy::cast_possible_truncation,
     reason = "line/column values will not exceed u32"
 )]
-fn find_let_keyword(source: &str, lo: &[usize], diag_range: Range, var_name: Option<&str>) -> Option<Range> {
+fn find_let_keyword(
+    source: &str,
+    lo: &[usize],
+    diag_range: Range,
+    var_name: Option<&str>,
+) -> Option<Range> {
     let diag_start = position_to_offset(source, lo, diag_range.start);
     let search_start = diag_start.saturating_sub(200);
     let search_region = &source[search_start..diag_start];
@@ -1014,14 +1076,13 @@ fn find_let_keyword(source: &str, lo: &[usize], diag_range: Range, var_name: Opt
 // ── Folding Ranges ───────────────────────────────────────────────────
 
 /// Build folding ranges from the AST.
-fn build_folding_ranges(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<FoldingRange> {
+fn build_folding_ranges(
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
-    collect_import_groups(
-        source,
-        lo,
-        &parse_result.program.items,
-        &mut ranges,
-    );
+    collect_import_groups(source, lo, &parse_result.program.items, &mut ranges);
     for (item, span) in &parse_result.program.items {
         collect_item_folding(source, lo, item, span, &mut ranges);
     }
@@ -1828,7 +1889,11 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionItemKind)> {
 
 // ── Document symbols ─────────────────────────────────────────────────
 
-fn build_document_symbols(source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<DocumentSymbol> {
+fn build_document_symbols(
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
 
     for (item, span) in &parse_result.program.items {
@@ -1998,7 +2063,11 @@ fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
     clippy::cast_possible_truncation,
     reason = "token delta values in source files will not exceed u32"
 )]
-fn build_semantic_tokens(source: &str, lo: &[usize], _parse_result: &ParseResult) -> Vec<SemanticToken> {
+fn build_semantic_tokens(
+    source: &str,
+    lo: &[usize],
+    _parse_result: &ParseResult,
+) -> Vec<SemanticToken> {
     let lexer_tokens = hew_lexer::lex(source);
     let mut result = Vec::new();
     let mut prev_line: u32 = 0;
@@ -2167,7 +2236,12 @@ fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> 
 // ── Go-to-definition ─────────────────────────────────────────────────
 
 /// Search for a definition matching `word` in the AST, including nested items.
-fn find_definition_in_ast(source: &str, lo: &[usize], parse_result: &ParseResult, word: &str) -> Option<Range> {
+fn find_definition_in_ast(
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+    word: &str,
+) -> Option<Range> {
     for (item, span) in &parse_result.program.items {
         // Top-level name matching.
         let name = match item {
@@ -2904,7 +2978,12 @@ fn format_type_def_hover(type_def: &hew_types::check::TypeDef) -> String {
 
 // ── Document links ──────────────────────────────────────────────────
 
-fn build_document_links(uri: &Url, source: &str, lo: &[usize], parse_result: &ParseResult) -> Vec<DocumentLink> {
+fn build_document_links(
+    uri: &Url,
+    source: &str,
+    lo: &[usize],
+    parse_result: &ParseResult,
+) -> Vec<DocumentLink> {
     let mut links = Vec::new();
 
     let workspace_root = uri.to_file_path().ok().and_then(|p| {
@@ -3059,7 +3138,9 @@ fn collect_subtypes(
                         hew_parser::ast::TypeExpr::Named { name: tname, .. } => tname.as_str(),
                         _ => continue,
                     };
-                    if let Some(hi) = find_type_hierarchy_item(uri, source, lo, parse_result, target) {
+                    if let Some(hi) =
+                        find_type_hierarchy_item(uri, source, lo, parse_result, target)
+                    {
                         subs.push(hi);
                     }
                 }
@@ -3072,7 +3153,9 @@ fn collect_subtypes(
         if let Item::Actor(a) = item {
             if let Some(bounds) = &a.super_traits {
                 if bounds.iter().any(|b| b.name == trait_name) {
-                    if let Some(hi) = find_type_hierarchy_item(uri, source, lo, parse_result, &a.name) {
+                    if let Some(hi) =
+                        find_type_hierarchy_item(uri, source, lo, parse_result, &a.name)
+                    {
                         subs.push(hi);
                     }
                 }
@@ -3515,10 +3598,7 @@ fn build_code_lenses(source: &str, lo: &[usize], parse_result: &ParseResult) -> 
         CodeLens {
             range,
             command: Some(Command {
-                title: format!(
-                    "{count} reference{}",
-                    if count == 1 { "" } else { "s" }
-                ),
+                title: format!("{count} reference{}", if count == 1 { "" } else { "s" }),
                 command: String::new(),
                 arguments: None,
             }),
@@ -3654,7 +3734,10 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
             }
         }
         Stmt::IfLet {
-            expr, body, else_body, ..
+            expr,
+            body,
+            else_body,
+            ..
         } => {
             count_idents_in_expr(&expr.0, counts);
             count_idents_in_block(body, counts);
@@ -3677,7 +3760,9 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
         Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
             count_idents_in_expr(&expr.0, counts);
         }
-        Stmt::Break { value: Some(val), .. } => count_idents_in_expr(&val.0, counts),
+        Stmt::Break {
+            value: Some(val), ..
+        } => count_idents_in_expr(&val.0, counts),
         _ => {}
     }
 }
@@ -3741,7 +3826,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             }
         }
         Expr::IfLet {
-            expr, body, else_body, ..
+            expr,
+            body,
+            else_body,
+            ..
         } => {
             count_idents_in_expr(&expr.0, counts);
             count_idents_in_block(body, counts);
@@ -3774,7 +3862,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             count_idents_in_expr(&target.0, counts);
             count_idents_in_expr(&message.0, counts);
         }
-        Expr::Select { arms: sel_arms, timeout } => {
+        Expr::Select {
+            arms: sel_arms,
+            timeout,
+        } => {
             for arm in sel_arms {
                 count_idents_in_expr(&arm.body.0, counts);
             }
@@ -4010,7 +4101,7 @@ fn collect_inlay_hints_from_stmt(
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = pattern.1.end;
-                        let (line, col) = offset_to_line_col(source, lo,name_end);
+                        let (line, col) = offset_to_line_col(source, lo, name_end);
                         hints.push(InlayHint {
                             position: Position::new(line as u32, col as u32),
                             label: InlayHintLabel::String(format!(": {inferred_ty}")),
@@ -4039,7 +4130,7 @@ fn collect_inlay_hints_from_stmt(
                     };
                     if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
                         let name_end = find_var_name_end(source, &value_expr.1, name);
-                        let (line, col) = offset_to_line_col(source, lo,name_end);
+                        let (line, col) = offset_to_line_col(source, lo, name_end);
                         hints.push(InlayHint {
                             position: Position::new(line as u32, col as u32),
                             label: InlayHintLabel::String(format!(": {inferred_ty}")),

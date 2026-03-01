@@ -79,6 +79,16 @@ impl<'a> Formatter<'a> {
         }
     }
 
+    /// Write a comma-separated list using a per-item formatting closure.
+    fn comma_sep<T>(&mut self, items: &[T], mut fmt_item: impl FnMut(&mut Self, &T)) {
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            fmt_item(self, item);
+        }
+    }
+
     fn write_visibility(&mut self, vis: Visibility) {
         match vis {
             Visibility::Private => {}
@@ -214,16 +224,13 @@ impl<'a> Formatter<'a> {
                     ImportSpec::Glob => self.write("::*"),
                     ImportSpec::Names(names) => {
                         self.write("::{");
-                        for (i, n) in names.iter().enumerate() {
-                            if i > 0 {
-                                self.write(", ");
-                            }
-                            self.write(&n.name);
+                        self.comma_sep(names, |f, n| {
+                            f.write(&n.name);
                             if let Some(alias) = &n.alias {
-                                self.write(" as ");
-                                self.write(alias);
+                                f.write(" as ");
+                                f.write(alias);
                             }
-                        }
+                        });
                         self.write("}");
                     }
                 }
@@ -294,25 +301,17 @@ impl<'a> Formatter<'a> {
             VariantKind::Tuple(fields) => {
                 if !fields.is_empty() {
                     self.write("(");
-                    for (i, ty) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.format_type_expr(&ty.0);
-                    }
+                    self.comma_sep(fields, |f, ty| f.format_type_expr(&ty.0));
                     self.write(")");
                 }
             }
             VariantKind::Struct(fields) => {
                 self.write(" { ");
-                for (i, (name, ty)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write(name);
-                    self.write(": ");
-                    self.format_type_expr(&ty.0);
-                }
+                self.comma_sep(fields, |f, (name, ty)| {
+                    f.write(name);
+                    f.write(": ");
+                    f.format_type_expr(&ty.0);
+                });
                 self.write(" }");
             }
         }
@@ -735,12 +734,7 @@ impl<'a> Formatter<'a> {
         self.write(&spec.actor_type);
         if !spec.args.is_empty() {
             self.write("(");
-            for (i, arg) in spec.args.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
-                }
-                self.format_expr(&arg.0);
-            }
+            self.comma_sep(&spec.args, |f, arg| f.format_expr(&arg.0));
             self.write(")");
         }
         if let Some(restart) = &spec.restart {
@@ -800,12 +794,7 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 if let Some(args) = type_args {
                     self.write("<");
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.format_type_expr(&arg.0);
-                    }
+                    self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
                     self.write(">");
                 }
             }
@@ -823,12 +812,7 @@ impl<'a> Formatter<'a> {
             }
             TypeExpr::Tuple(elems) => {
                 self.write("(");
-                for (i, elem) in elems.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_type_expr(&elem.0);
-                }
+                self.comma_sep(elems, |f, elem| f.format_type_expr(&elem.0));
                 self.write(")");
             }
             TypeExpr::Array { element, size } => {
@@ -848,12 +832,7 @@ impl<'a> Formatter<'a> {
                 return_type,
             } => {
                 self.write("fn(");
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_type_expr(&p.0);
-                }
+                self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
                 self.write(") -> ");
                 self.format_type_expr(&return_type.0);
             }
@@ -875,9 +854,7 @@ impl<'a> Formatter<'a> {
                 } else {
                     self.write("(");
                     for (i, bound) in bounds.iter().enumerate() {
-                        if i > 0 {
-                            self.write(" + ");
-                        }
+                        if i > 0 { self.write(" + "); }
                         self.format_trait_bound(bound);
                     }
                     self.write(")");
@@ -892,16 +869,13 @@ impl<'a> Formatter<'a> {
     fn format_opt_type_params(&mut self, params: Option<&Vec<TypeParam>>) {
         if let Some(params) = params {
             self.write("<");
-            for (i, p) in params.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
-                }
-                self.write(&p.name);
+            self.comma_sep(params, |f, p| {
+                f.write(&p.name);
                 if !p.bounds.is_empty() {
-                    self.write(": ");
-                    self.format_trait_bound_list(&p.bounds);
+                    f.write(": ");
+                    f.format_trait_bound_list(&p.bounds);
                 }
-            }
+            });
             self.write(">");
         }
     }
@@ -910,12 +884,7 @@ impl<'a> Formatter<'a> {
         self.write(&bound.name);
         if let Some(args) = &bound.type_args {
             self.write("<");
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
-                }
-                self.format_type_expr(&arg.0);
-            }
+            self.comma_sep(args, |f, arg| f.format_type_expr(&arg.0));
             self.write(">");
         }
     }
@@ -932,29 +901,23 @@ impl<'a> Formatter<'a> {
     fn format_opt_where_clause(&mut self, clause: Option<&WhereClause>) {
         if let Some(clause) = clause {
             self.write(" where ");
-            for (i, pred) in clause.predicates.iter().enumerate() {
-                if i > 0 {
-                    self.write(", ");
-                }
-                self.format_type_expr(&pred.ty.0);
-                self.write(": ");
-                self.format_trait_bound_list(&pred.bounds);
-            }
+            self.comma_sep(&clause.predicates, |f, pred| {
+                f.format_type_expr(&pred.ty.0);
+                f.write(": ");
+                f.format_trait_bound_list(&pred.bounds);
+            });
         }
     }
 
     fn format_params(&mut self, params: &[Param]) {
-        for (i, p) in params.iter().enumerate() {
-            if i > 0 {
-                self.write(", ");
-            }
+        self.comma_sep(params, |f, p| {
             if p.is_mutable {
-                self.write("var ");
+                f.write("var ");
             }
-            self.write(&p.name);
-            self.write(": ");
-            self.format_type_expr(&p.ty.0);
-        }
+            f.write(&p.name);
+            f.write(": ");
+            f.format_type_expr(&p.ty.0);
+        });
     }
 
     // ------------------------------------------------------------------
@@ -1269,22 +1232,12 @@ impl<'a> Formatter<'a> {
             Expr::Identifier(name) => self.write(name),
             Expr::Tuple(elems) => {
                 self.write("(");
-                for (i, elem) in elems.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_expr(&elem.0);
-                }
+                self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
                 self.write(")");
             }
             Expr::Array(elems) => {
                 self.write("[");
-                for (i, elem) in elems.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_expr(&elem.0);
-                }
+                self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
                 self.write("]");
             }
             Expr::ArrayRepeat { value, count } => {
@@ -1365,14 +1318,11 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&target.0);
                 if !args.is_empty() {
                     self.write("(");
-                    for (i, (name, value)) in args.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write(name);
-                        self.write(": ");
-                        self.format_expr(&value.0);
-                    }
+                    self.comma_sep(args, |f, (name, value)| {
+                        f.write(name);
+                        f.write(": ");
+                        f.format_expr(&value.0);
+                    });
                     self.write(")");
                 }
             }
@@ -1428,12 +1378,7 @@ impl<'a> Formatter<'a> {
                 self.format_expr(&function.0);
                 if let Some(type_args) = type_args {
                     self.write("::<");
-                    for (i, ta) in type_args.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.format_type_expr(&ta.0);
-                    }
+                    self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }
                 self.write("(");
@@ -1455,14 +1400,11 @@ impl<'a> Formatter<'a> {
             Expr::StructInit { name, fields } => {
                 self.write(name);
                 self.write(" { ");
-                for (i, (fname, fval)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.write(fname);
-                    self.write(": ");
-                    self.format_expr(&fval.0);
-                }
+                self.comma_sep(fields, |f, (fname, fval)| {
+                    f.write(fname);
+                    f.write(": ");
+                    f.format_expr(&fval.0);
+                });
                 self.write(" }");
             }
             Expr::Send { target, message } => {
@@ -1593,32 +1535,24 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_call_args(&mut self, args: &[CallArg]) {
-        for (i, arg) in args.iter().enumerate() {
-            if i > 0 {
-                self.write(", ");
+        self.comma_sep(args, |f, arg| match arg {
+            CallArg::Named { name, value } => {
+                f.write(name);
+                f.write(": ");
+                f.format_expr(&value.0);
             }
-            match arg {
-                CallArg::Named { name, value } => {
-                    self.write(name);
-                    self.write(": ");
-                    self.format_expr(&value.0);
-                }
-                CallArg::Positional(e) => self.format_expr(&e.0),
-            }
-        }
+            CallArg::Positional(e) => f.format_expr(&e.0),
+        });
     }
 
     fn format_lambda_params(&mut self, params: &[LambdaParam]) {
-        for (i, p) in params.iter().enumerate() {
-            if i > 0 {
-                self.write(", ");
-            }
-            self.write(&p.name);
+        self.comma_sep(params, |f, p| {
+            f.write(&p.name);
             if let Some(ty) = &p.ty {
-                self.write(": ");
-                self.format_type_expr(&ty.0);
+                f.write(": ");
+                f.format_type_expr(&ty.0);
             }
-        }
+        });
     }
 
     fn format_literal(&mut self, lit: &Literal) {
@@ -1679,34 +1613,19 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 if !patterns.is_empty() {
                     self.write("(");
-                    for (i, p) in patterns.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.format_pattern(&p.0);
-                    }
+                    self.comma_sep(patterns, |f, p| f.format_pattern(&p.0));
                     self.write(")");
                 }
             }
             Pattern::Struct { name, fields } => {
                 self.write(name);
                 self.write(" { ");
-                for (i, f) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_pattern_field(f);
-                }
+                self.comma_sep(fields, Self::format_pattern_field);
                 self.write(" }");
             }
             Pattern::Tuple(patterns) => {
                 self.write("(");
-                for (i, p) in patterns.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.format_pattern(&p.0);
-                }
+                self.comma_sep(patterns, |f, p| f.format_pattern(&p.0));
                 self.write(")");
             }
             Pattern::Or(left, right) => {

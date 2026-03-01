@@ -9,7 +9,6 @@
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
-#include "MLIRGenHelpers.h"
 
 #include <climits>
 

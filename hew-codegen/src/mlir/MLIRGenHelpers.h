@@ -11,14 +11,10 @@
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/HewTypes.h"
 
-#include <functional>
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Value.h"
 
@@ -48,7 +44,7 @@ inline std::string normalizeElemTypeName(const std::string &name) {
 /// Returns "Vec<elem>", "HashMap<key,val>", "bytes", or "" (not a collection).
 inline std::string typeExprToCollectionString(
     const ast::TypeExpr &te,
-    const std::function<std::string(const std::string &)> &resolveAlias = nullptr) {
+    llvm::function_ref<std::string(const std::string &)> resolveAlias = nullptr) {
   auto *named = std::get_if<ast::TypeNamed>(&te.kind);
   if (!named)
     return "";
@@ -84,8 +80,8 @@ inline std::string typeExprToCollectionString(
     auto *v = std::get_if<ast::TypeNamed>(&(*named->type_args)[1].value.kind);
     if (!k || !v)
       return "";
-    std::string keyType = resolve(k->name);
-    std::string valType = resolve(v->name);
+    std::string keyType = normalizeElemTypeName(resolve(k->name));
+    std::string valType = normalizeElemTypeName(resolve(v->name));
     return "HashMap<" + keyType + "," + valType + ">";
   }
   return "";
@@ -196,8 +192,7 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
     return builder.create<mlir::LLVM::ZeroOp>(loc, type);
   // Hew pointer-like types: create a null pointer then cast to the Hew type
-  if (mlir::isa<hew::StringRefType, hew::ActorRefType, hew::TypedActorRefType, hew::VecType,
-                hew::HashMapType, hew::HandleType>(type)) {
+  if (isPointerLikeType(type) && !mlir::isa<mlir::LLVM::LLVMPointerType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());
     auto zero = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
     return builder.create<hew::BitcastOp>(loc, type, zero);
@@ -262,10 +257,9 @@ inline mlir::ArrayAttr buildPayloadPositionsAttr(mlir::OpBuilder &builder,
   return nullptr;
 }
 
-/// Check if a statement might contain a return (recursively).
-inline bool stmtMightContainReturn(const ast::Stmt &s) {
-  return std::holds_alternative<ast::StmtReturn>(s.kind) ||
-         std::holds_alternative<ast::StmtIf>(s.kind) ||
+/// Check if a statement has nested sub-statements (compound control flow).
+inline bool stmtIsCompound(const ast::Stmt &s) {
+  return std::holds_alternative<ast::StmtIf>(s.kind) ||
          std::holds_alternative<ast::StmtIfLet>(s.kind) ||
          std::holds_alternative<ast::StmtWhile>(s.kind) ||
          std::holds_alternative<ast::StmtFor>(s.kind) ||
@@ -273,17 +267,16 @@ inline bool stmtMightContainReturn(const ast::Stmt &s) {
          std::holds_alternative<ast::StmtMatch>(s.kind);
 }
 
+/// Check if a statement might contain a return (recursively).
+inline bool stmtMightContainReturn(const ast::Stmt &s) {
+  return std::holds_alternative<ast::StmtReturn>(s.kind) || stmtIsCompound(s);
+}
+
 /// Check if a statement might contain break or continue.
 inline bool stmtMightContainBreakOrContinue(const ast::Stmt &s) {
   return std::holds_alternative<ast::StmtBreak>(s.kind) ||
          std::holds_alternative<ast::StmtContinue>(s.kind) ||
-         std::holds_alternative<ast::StmtReturn>(s.kind) ||
-         std::holds_alternative<ast::StmtIf>(s.kind) ||
-         std::holds_alternative<ast::StmtIfLet>(s.kind) ||
-         std::holds_alternative<ast::StmtMatch>(s.kind) ||
-         std::holds_alternative<ast::StmtLoop>(s.kind) ||
-         std::holds_alternative<ast::StmtWhile>(s.kind) ||
-         std::holds_alternative<ast::StmtFor>(s.kind);
+         std::holds_alternative<ast::StmtReturn>(s.kind) || stmtIsCompound(s);
 }
 
 /// Check if a block has a "real" terminator (not just an auto-inserted

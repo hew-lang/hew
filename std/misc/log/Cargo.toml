@@ -3,7 +3,7 @@ name = "hew-std-misc-log"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Hew std::misc::log — logging via log + env_logger"
+description = "Hew std::misc::log — structured logging (export metadata only)"
 readme = "README.md"
 repository = "https://github.com/hew-lang/hew"
 keywords = ["hew", "stdlib"]
@@ -16,15 +16,8 @@ crate-type = ["staticlib", "lib"]
 export-meta = ["dep:hew-export-macro", "dep:hew-export-types"]
 
 [dependencies]
-hew-cabi = { path = "../../../hew-cabi" }
-log = "0.4"
-env_logger = "0.11"
-libc = "0.2"
 hew-export-macro = { path = "../../../hew-export-macro", optional = true }
 hew-export-types = { path = "../../../hew-export-types", optional = true }
-
-[dev-dependencies]
-hew-runtime = { path = "../../../hew-runtime" }
 
 [lints]
 workspace = true

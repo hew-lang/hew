@@ -1484,13 +1484,9 @@ impl Checker {
 
     /// Log function names that accept keyword arguments for structured fields.
     const LOG_KWARGS_FUNCTIONS: &'static [&'static str] = &[
-        // C extern names
-        "hew_log_error",
-        "hew_log_warn",
-        "hew_log_info",
-        "hew_log_debug",
-        "hew_log_trace",
-        // Wrapper function (clean) names
+        // C extern (used by codegen interception for legacy compatibility)
+        "hew_log_emit",
+        // Wrapper function (clean) names from log.hew
         "error",
         "warn",
         "info",

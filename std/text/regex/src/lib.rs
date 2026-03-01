@@ -1,12 +1,11 @@
-//! Hew runtime: `regex_engine` module.
+//! Hew runtime: `std::text::regex` module.
 //!
 //! Provides regular expression matching and replacement for compiled Hew
 //! programs. All returned strings are allocated with `libc::malloc` so callers
-//! can free them with the corresponding free function.
+//! can free them with `libc::free`.
 
-use hew_cabi::cabi::malloc_cstring;
-use std::ffi::CStr;
-use std::os::raw::c_char;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use std::ffi::c_char;
 
 /// Opaque handle wrapping a compiled [`regex::Regex`].
 ///
@@ -14,21 +13,6 @@ use std::os::raw::c_char;
 #[derive(Debug)]
 pub struct HewRegex {
     inner: regex::Regex,
-}
-
-/// Result of a single regex match with positional information.
-///
-/// Reserved for future use when the language exposes match start/end offsets.
-/// Currently [`hew_regex_find`] returns just the matched string pointer.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewRegexMatch {
-    /// Byte offset of match start, or -1 if no match.
-    pub start: i32,
-    /// Byte offset of match end (exclusive), or -1 if no match.
-    pub end: i32,
-    /// NUL-terminated matched substring (allocated with `malloc`), or null.
-    pub matched: *mut c_char,
 }
 
 /// Compile a regular expression pattern.
@@ -41,11 +25,8 @@ pub struct HewRegexMatch {
 /// `pattern` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_regex_new(pattern: *const c_char) -> *mut HewRegex {
-    if pattern.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: pattern is a valid NUL-terminated C string per caller contract.
-    let Ok(pat) = unsafe { CStr::from_ptr(pattern) }.to_str() else {
+    // SAFETY: caller guarantees pattern is a valid NUL-terminated C string.
+    let Some(pat) = (unsafe { cstr_to_str(pattern) }) else {
         return std::ptr::null_mut();
     };
     match regex::Regex::new(pat) {
@@ -64,13 +45,13 @@ pub unsafe extern "C" fn hew_regex_new(pattern: *const c_char) -> *mut HewRegex 
 /// - `text` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_char) -> i32 {
-    if re.is_null() || text.is_null() {
+    if re.is_null() {
         return 0;
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
-    let Ok(text_str) = unsafe { CStr::from_ptr(text) }.to_str() else {
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
         return 0;
     };
     i32::from(regex.inner.is_match(text_str))
@@ -88,21 +69,17 @@ pub unsafe extern "C" fn hew_regex_is_match(re: *const HewRegex, text: *const c_
 /// - `text` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_regex_find(re: *const HewRegex, text: *const c_char) -> *mut c_char {
-    if re.is_null() || text.is_null() {
+    if re.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
-    let Ok(text_str) = unsafe { CStr::from_ptr(text) }.to_str() else {
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
         return std::ptr::null_mut();
     };
     match regex.inner.find(text_str) {
-        Some(m) => {
-            let matched_bytes = m.as_str().as_bytes();
-            // SAFETY: matched_bytes is valid for its length.
-            unsafe { malloc_cstring(matched_bytes.as_ptr(), matched_bytes.len()) }
-        }
+        Some(m) => str_to_malloc(m.as_str()),
         None => std::ptr::null_mut(),
     }
 }
@@ -122,23 +99,20 @@ pub unsafe extern "C" fn hew_regex_replace(
     text: *const c_char,
     replacement: *const c_char,
 ) -> *mut c_char {
-    if re.is_null() || text.is_null() || replacement.is_null() {
+    if re.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: re is a valid HewRegex pointer per caller contract.
     let regex = unsafe { &*re };
     // SAFETY: text is a valid NUL-terminated C string per caller contract.
-    let Ok(text_str) = unsafe { CStr::from_ptr(text) }.to_str() else {
+    let Some(text_str) = (unsafe { cstr_to_str(text) }) else {
         return std::ptr::null_mut();
     };
     // SAFETY: replacement is a valid NUL-terminated C string per caller contract.
-    let Ok(repl_str) = unsafe { CStr::from_ptr(replacement) }.to_str() else {
+    let Some(repl_str) = (unsafe { cstr_to_str(replacement) }) else {
         return std::ptr::null_mut();
     };
-    let result = regex.inner.replace_all(text_str, repl_str);
-    let result_bytes = result.as_bytes();
-    // SAFETY: result_bytes is valid for its length.
-    unsafe { malloc_cstring(result_bytes.as_ptr(), result_bytes.len()) }
+    str_to_malloc(&regex.inner.replace_all(text_str, repl_str))
 }
 
 /// Free a compiled [`HewRegex`] previously returned by [`hew_regex_new`].
@@ -156,30 +130,10 @@ pub unsafe extern "C" fn hew_regex_free(re: *mut HewRegex) {
     drop(unsafe { Box::from_raw(re) });
 }
 
-/// Free the `matched` string inside a [`HewRegexMatch`].
-///
-/// # Safety
-///
-/// `m` must point to a valid [`HewRegexMatch`] whose `matched` field was
-/// allocated by [`hew_regex_find`] and has not been freed already.
-#[no_mangle]
-pub unsafe extern "C" fn hew_regex_match_free(m: *mut HewRegexMatch) {
-    if m.is_null() {
-        return;
-    }
-    // SAFETY: m is a valid HewRegexMatch pointer per caller contract.
-    let match_ref = unsafe { &mut *m };
-    if !match_ref.matched.is_null() {
-        // SAFETY: matched was allocated with libc::malloc in hew_regex_find.
-        unsafe { libc::free(match_ref.matched.cast()) };
-        match_ref.matched = std::ptr::null_mut();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
 
     #[test]
     fn test_regex_is_match() {

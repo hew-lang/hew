@@ -792,7 +792,7 @@ impl WireDecl {
                 is_repeated: f.is_repeated,
                 json_name: f.json_name.clone(),
                 yaml_name: f.yaml_name.clone(),
-                since: None,
+                since: f.since,
             })
             .collect();
 
@@ -899,6 +899,9 @@ pub struct WireFieldDecl {
     pub json_name: Option<String>,
     /// Per-field YAML key override (`yaml("name")`).
     pub yaml_name: Option<String>,
+    /// Schema version that introduced this field, from `since N` modifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1009,4 +1012,52 @@ pub enum RestartPolicy {
     Permanent,
     Transient,
     Temporary,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn into_type_decl_preserves_since() {
+        let decl = WireDecl {
+            visibility: Visibility::Private,
+            kind: WireDeclKind::Struct,
+            name: "Msg".to_string(),
+            fields: vec![
+                WireFieldDecl {
+                    name: "id".to_string(),
+                    ty: "i32".to_string(),
+                    field_number: 1,
+                    is_optional: false,
+                    is_repeated: false,
+                    is_reserved: false,
+                    is_deprecated: false,
+                    json_name: None,
+                    yaml_name: None,
+                    since: None,
+                },
+                WireFieldDecl {
+                    name: "added".to_string(),
+                    ty: "String".to_string(),
+                    field_number: 2,
+                    is_optional: true,
+                    is_repeated: false,
+                    is_reserved: false,
+                    is_deprecated: false,
+                    json_name: None,
+                    yaml_name: None,
+                    since: Some(2),
+                },
+            ],
+            variants: vec![],
+            json_case: None,
+            yaml_case: None,
+        };
+
+        let td = decl.into_type_decl();
+        let wire = td.wire.expect("should have wire metadata");
+        assert_eq!(wire.field_meta[0].since, None);
+        assert_eq!(wire.field_meta[1].since, Some(2));
+    }
 }

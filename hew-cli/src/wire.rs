@@ -185,6 +185,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                                     is_deprecated: fm.is_deprecated,
                                     json_name: fm.json_name,
                                     yaml_name: fm.yaml_name,
+                                    since: fm.since,
                                 }
                             })
                             .collect(),

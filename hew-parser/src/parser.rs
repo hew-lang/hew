@@ -2297,6 +2297,7 @@ impl<'src> Parser<'src> {
                         is_deprecated,
                         json_name,
                         yaml_name,
+                        since: None,
                     });
 
                     if !self.eat(&Token::Semicolon) {

@@ -2746,7 +2746,7 @@ mod sched_metrics_tests {
     use hew_runtime::scheduler::{
         hew_sched_init, hew_sched_metrics_active_workers, hew_sched_metrics_messages_received,
         hew_sched_metrics_messages_sent, hew_sched_metrics_reset, hew_sched_metrics_steals,
-        hew_sched_metrics_tasks_completed, hew_sched_metrics_tasks_spawned, hew_sched_shutdown,
+        hew_sched_metrics_tasks_completed, hew_sched_metrics_tasks_spawned,
     };
     use std::ffi::c_void;
     use std::ptr;
@@ -2825,7 +2825,10 @@ mod sched_metrics_tests {
         assert_eq!(hew_sched_metrics_tasks_spawned(), 0);
         assert_eq!(hew_sched_metrics_tasks_completed(), 0);
 
-        hew_sched_shutdown();
+        // NOTE: Do NOT call hew_sched_shutdown() here. The global scheduler
+        // cannot be re-initialized after shutdown, so shutting it down would
+        // break any subsequent test that needs the scheduler (e.g. supervisor
+        // tests that call hew_sched_init via ensure_scheduler).
     }
 }
 
@@ -3118,19 +3121,17 @@ mod cancellation_tests {
 mod rest_for_one_tests {
     use std::ffi::{c_char, c_void};
     use std::ptr;
-    use std::sync::atomic::{AtomicI32, Ordering};
 
     use hew_runtime::actor::hew_actor_trap;
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_new,
-        hew_supervisor_start, hew_supervisor_stop, HewChildSpec,
+        hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
+        hew_supervisor_wait_restart, HewChildSpec,
     };
 
     const STRATEGY_REST_FOR_ONE: i32 = 2;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
-
-    static DISPATCH_CALL_COUNT: AtomicI32 = AtomicI32::new(0);
 
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
@@ -3138,7 +3139,6 @@ mod rest_for_one_tests {
         _data: *mut c_void,
         _data_size: usize,
     ) {
-        DISPATCH_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
     }
 
     static SCHED_INIT: std::sync::Once = std::sync::Once::new();
@@ -3156,6 +3156,7 @@ mod rest_for_one_tests {
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_REST_FOR_ONE, 10, 60);
             assert!(!sup.is_null());
+            hew_supervisor_set_restart_notify(sup);
 
             let mut states: [i32; 3] = [0, 0, 0];
 
@@ -3188,20 +3189,9 @@ mod rest_for_one_tests {
             // Crash child 1 (middle child).
             hew_actor_trap(child1, 1);
 
-            // Wait for the supervisor to restart children.
-            // Use a generous 10s deadline — under heavy workspace parallelism
-            // the supervisor's restart timer thread may be starved for CPU.
-            let mut restarted = false;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let c1 = hew_supervisor_get_child(sup, 1);
-                if !c1.is_null() && (*c1).id != id1_before {
-                    restarted = true;
-                    break;
-                }
-            }
-            assert!(restarted, "child 1 was never restarted");
+            // Wait for the restart cycle to complete (condvar, no polling).
+            let count = hew_supervisor_wait_restart(sup, 1, 10_000);
+            assert!(count >= 1, "restart cycle never completed");
 
             // Child 0 should NOT be restarted.
             let new_child0 = hew_supervisor_get_child(sup, 0);
@@ -3239,7 +3229,8 @@ mod supervisor_escalation_tests {
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_add_child_supervisor,
         hew_supervisor_get_child, hew_supervisor_is_running, hew_supervisor_new,
-        hew_supervisor_start, hew_supervisor_stop, HewChildSpec,
+        hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
+        hew_supervisor_wait_restart, HewChildSpec,
     };
 
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -3263,7 +3254,6 @@ mod supervisor_escalation_tests {
     }
 
     #[test]
-    #[ignore = "flaky: timing-sensitive supervisor escalation race"]
     fn exhausted_child_supervisor_escalates_to_parent() {
         ensure_scheduler();
 
@@ -3274,6 +3264,10 @@ mod supervisor_escalation_tests {
             let child = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 60);
             assert!(!parent.is_null());
             assert!(!child.is_null());
+
+            // Install restart notification on both supervisors.
+            hew_supervisor_set_restart_notify(child);
+            hew_supervisor_set_restart_notify(parent);
 
             // Add an actor to the child supervisor via spec.
             let mut state: i32 = 0;
@@ -3299,21 +3293,11 @@ mod supervisor_escalation_tests {
             // First crash — child supervisor restarts actor (within budget).
             let actor = hew_supervisor_get_child(child, 0);
             assert!(!actor.is_null());
-            let original_id = (*actor).id;
             hew_actor_trap(actor, 1);
 
-            // Wait for first restart to complete.
-            let mut first_restarted = false;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let c = hew_supervisor_get_child(child, 0);
-                if !c.is_null() && (*c).id != original_id {
-                    first_restarted = true;
-                    break;
-                }
-            }
-            assert!(first_restarted, "first restart should have completed");
+            // Wait for first restart via condvar (no polling).
+            let count = hew_supervisor_wait_restart(child, 1, 10_000);
+            assert!(count >= 1, "first restart should have completed");
             assert_eq!(
                 hew_supervisor_is_running(child),
                 1,
@@ -3322,37 +3306,26 @@ mod supervisor_escalation_tests {
 
             // Second crash — child supervisor exhausts budget, should escalate.
             let child_actor = hew_supervisor_get_child(child, 0);
-            if !child_actor.is_null() {
-                hew_actor_trap(child_actor, 1);
-            }
+            assert!(!child_actor.is_null());
+            hew_actor_trap(child_actor, 1);
 
-            // Wait for escalation to propagate.
-            let mut escalated = false;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                if hew_supervisor_is_running(child) == 0 {
-                    escalated = true;
-                    break;
-                }
-            }
-            assert!(
-                escalated,
+            // Wait for escalation: child supervisor notifies on budget exhaustion,
+            // then parent notifies when it processes the escalation.
+            let count = hew_supervisor_wait_restart(child, 2, 10_000);
+            assert!(count >= 2, "child should notify on budget exhaustion");
+
+            let count = hew_supervisor_wait_restart(parent, 1, 10_000);
+            assert!(count >= 1, "parent should process escalation");
+
+            // Both supervisors should have stopped.
+            assert_eq!(
+                hew_supervisor_is_running(child),
+                0,
                 "child supervisor should stop after exhausting restart budget",
             );
-
-            // Parent should have received the escalation and shut down.
-            let mut parent_stopped = false;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                if hew_supervisor_is_running(parent) == 0 {
-                    parent_stopped = true;
-                    break;
-                }
-            }
-            assert!(
-                parent_stopped,
+            assert_eq!(
+                hew_supervisor_is_running(parent),
+                0,
                 "parent supervisor should stop after child escalation",
             );
 

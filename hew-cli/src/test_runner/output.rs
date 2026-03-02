@@ -307,7 +307,10 @@ mod tests {
 
     #[test]
     fn xml_escape_special_chars() {
-        assert_eq!(xml_escape(r#"a<b>c&d"e'f"#), "a&lt;b&gt;c&amp;d&quot;e&apos;f");
+        assert_eq!(
+            xml_escape(r#"a<b>c&d"e'f"#),
+            "a&lt;b&gt;c&amp;d&quot;e&apos;f"
+        );
     }
 
     #[test]

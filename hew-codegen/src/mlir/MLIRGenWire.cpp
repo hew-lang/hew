@@ -481,11 +481,18 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     auto scratchFieldNum = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
     auto scratchWireType = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
 
-    // TLV dispatch loop: while(buf has remaining data)
+    // Flag to signal a decode error (set in "after" block, checked in "before" block).
+    // If hew_wire_decode_tag fails the buffer doesn't advance, so without this
+    // flag the loop would spin forever on truncated input.
+    auto decodeError = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 0),
+                                        decodeError);
+
+    // TLV dispatch loop: while(buf has remaining data && no decode error)
     auto whileOp =
         builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
 
-    // "before" block: check if buffer has remaining data
+    // "before" block: check if buffer has remaining data and no prior error
     auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
     builder.setInsertionPointToStart(beforeBlock);
     auto hasData = builder
@@ -494,9 +501,14 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                            mlir::SymbolRefAttr::get(&context, "hew_wire_buf_has_remaining"),
                            mlir::ValueRange{bufPtr})
                        .getResult();
-    auto cond =
+    auto hasDataBool =
         builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, hasData,
                                             createIntConstant(builder, location, i32Type, 0));
+    auto errVal = builder.create<mlir::LLVM::LoadOp>(location, i32Type, decodeError);
+    auto noError =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, errVal,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto cond = builder.create<mlir::arith::AndIOp>(location, hasDataBool, noError);
     builder.create<mlir::scf::ConditionOp>(location, cond, mlir::ValueRange{});
 
     // "after" block: decode tag, dispatch by field number
@@ -504,9 +516,31 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     builder.setInsertionPointToStart(afterBlock);
 
     // Decode the tag: hew_wire_decode_tag(buf, &field_num, &wire_type)
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                       mlir::SymbolRefAttr::get(&context, "hew_wire_decode_tag"),
-                                       mlir::ValueRange{bufPtr, scratchFieldNum, scratchWireType});
+    // Returns 0 on success, non-zero on error (e.g. truncated buffer).
+    auto tagResult =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_decode_tag"),
+                                        mlir::ValueRange{bufPtr, scratchFieldNum, scratchWireType})
+            .getResult();
+    // On error, set the decodeError flag so the loop exits on next "before" check.
+    auto tagFailed =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, tagResult,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto tagFailedIf = builder.create<mlir::scf::IfOp>(location, tagFailed, /*hasElse=*/false);
+    builder.setInsertionPointToStart(&tagFailedIf.getThenRegion().front());
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 1),
+                                        decodeError);
+    builder.setInsertionPointAfter(tagFailedIf);
+
+    // Only dispatch if tag decode succeeded (tagResult == 0).
+    // When it fails, decodeError is set and the loop exits on next "before" check.
+    auto tagOk =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tagResult,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto tagOkIf = builder.create<mlir::scf::IfOp>(location, tagOk, /*hasElse=*/false);
+    builder.setInsertionPointToStart(&tagOkIf.getThenRegion().front());
+
     auto fieldNum = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchFieldNum);
     auto wireType = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchWireType);
 
@@ -605,6 +639,9 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                          mlir::ValueRange{bufPtr, wireType});
       builder.setInsertionPointAfter(skipIf);
     }
+
+    // End of tagOk guard
+    builder.setInsertionPointAfter(tagOkIf);
 
     builder.create<mlir::scf::YieldOp>(location);
 

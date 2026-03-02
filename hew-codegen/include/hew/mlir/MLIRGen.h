@@ -110,6 +110,8 @@ private:
       llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
           fieldOverride);
   void generateSupervisorDecl(const ast::SupervisorDecl &decl);
+  void registerMachineDecl(const ast::MachineDecl &decl);
+  void generateMachineDecl(const ast::MachineDecl &decl);
 
   // ── Actor type registry (declared early for method signatures) ────
   struct ActorReceiveInfo {

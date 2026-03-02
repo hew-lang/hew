@@ -194,3 +194,54 @@ Transition bodies are `Spanned<Expr>` (typically `Expr::Block`), preserving sour
 2. **Codegen** — Lower machines to tagged union + `step()` switch in MLIR
 3. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
 4. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`
+
+---
+
+## Phase 3: MLIR Code Generation (2025-07-26)
+
+### What was implemented
+
+- **Machine type registration** (`MLIRGen.cpp: registerMachineDecl()`): Registers the machine as an enum type in `enumTypes` using an identified LLVM struct type `{ i32 }` (tag-only for unit states) or `{ i32, field1, field2, ... }` (with per-variant payload slots). Machines always use struct layout (never bare `i32`) so that method dispatch (`step()`, `state_name()`) can resolve the type name. Registers both unqualified (`Off`) and qualified (`Light::Off`) variant names in `variantLookup`.
+
+- **Companion event enum**: Registers `{MachineName}Event` as a standard enum type with its own variants and lookup entries. Events follow the regular enum layout rules (unit-only events use `i32`, payload events use struct).
+
+- **State constructor functions**: State constructors work through the existing `EnumConstructOp` infrastructure. Qualified names like `Light::Off` and unqualified names like `Off` both resolve correctly via `variantLookup`.
+
+- **`state_name()` function** (`MLIRGen.cpp: generateMachineDecl()`): Generates a function `MachineName__state_name(self) -> ptr` that extracts the tag and returns the corresponding state name string. Uses `arith.select` chain with global string constants. Returns `!llvm.ptr` (not `!hew.string_ref`) to avoid unrealized_conversion_cast issues.
+
+- **`step()` function**: Generates a function `MachineName__step(self, event) -> MachineName` that implements a tag-based state transition table. For v1, transitions only change the tag (transition bodies are not executed). Uses a flat if-else chain over `(stateTag, eventTag)` pairs with `arith.cmpi` + `arith.andi` + `arith.select`. Wildcard transitions (`on Event: _ -> _`) fill all state slots not covered by explicit transitions.
+
+- **Pattern matching support**: Machine values participate in pattern matching identically to enum values via the existing `EnumExtractTagOp` / `EnumExtractPayloadOp` infrastructure. Both `match m { On => ..., Off => ... }` and `match m { _ => ... }` work.
+
+- **Type checker fixes** (`hew-types/src/check.rs`):
+  - Added qualified variant name resolution for `Expr::Identifier` — `Light::Off` is now resolved by splitting on `::` and looking up the variant in the type definition.
+  - Added `Ty::Machine` arm in `check_method_call()` so that `step()` and `state_name()` method calls on machine values resolve to the registered method signatures.
+
+- **Pipeline integration**: Machine type registration runs in Pass 1b (alongside struct/enum registration). Machine function generation runs in Pass 1k0 (before user function bodies in Pass 1k), so user code can call machine methods.
+
+### Design decisions
+
+**Decision 1: Machines always use identified struct type, even for unit-only states**
+Regular enums with all-unit variants use bare `i32`. Machines always wrap the tag in a named struct (`!llvm.struct<"Light", (i32)>`) so that method call dispatch can resolve the type name. This is a deliberate divergence from enum layout to enable the `step()` and `state_name()` generated methods.
+
+**Decision 2: Per-variant payload positions for state fields**
+When states have fields, each variant gets its own dedicated struct slots (per-variant layout), not union-style shared positions. This avoids type mismatches between states that have different field types or counts, at the cost of a larger struct. Union-style optimization can be added later.
+
+**Decision 3: Tag-only step() for v1 (no transition body execution)**
+The step function only changes the tag to the target state's index. Transition bodies from the AST are not compiled or executed. This is sufficient for state machines where the transition logic is "go to state X" without computing new field values. Full body execution requires scoping `self` fields and event payloads, which is deferred to v2.
+
+**Decision 4: state_name() returns !llvm.ptr, not !hew.string_ref**
+Using the Hew `StringRefType` in `arith.select` would leave `unrealized_conversion_cast` ops that fail during final lowering. Returning `!llvm.ptr` directly avoids this by staying at the LLVM level for the select chain.
+
+### Artifacts produced
+
+- `hew-codegen/include/hew/mlir/MLIRGen.h` — `registerMachineDecl()`, `generateMachineDecl()` declarations
+- `hew-codegen/src/mlir/MLIRGen.cpp` — Machine registration (type + event enum), step/state_name codegen, pipeline wiring
+- `hew-types/src/check.rs` — Qualified variant resolution, `Ty::Machine` method dispatch
+
+### Next steps
+
+1. **Transition body execution** — Compile transition bodies with `self` field extraction and event payload scoping
+2. **State fields in step()** — Copy/transform payload fields during transitions
+3. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
+4. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`

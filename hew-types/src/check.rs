@@ -3206,11 +3206,48 @@ impl Checker {
                     for (type_name, td) in &self.type_defs {
                         if let Some(variant) = td.variants.get(name) {
                             if matches!(variant, VariantDef::Unit) {
-                                found = Some(Ty::Named {
-                                    name: type_name.clone(),
-                                    args: vec![],
-                                });
+                                let ty = if matches!(td.kind, TypeDefKind::Machine) {
+                                    Ty::Machine { name: type_name.clone() }
+                                } else {
+                                    Ty::Named { name: type_name.clone(), args: vec![] }
+                                };
+                                found = Some(ty);
                                 break;
+                            }
+                        }
+                    }
+                    // Handle qualified variant names (e.g., Light::Off, LightEvent::Toggle)
+                    if found.is_none() {
+                        if let Some(pos) = name.rfind("::") {
+                            let type_prefix = &name[..pos];
+                            let variant_name = &name[pos + 2..];
+                            if let Some(td) = self.type_defs.get(type_prefix) {
+                                if let Some(variant) = td.variants.get(variant_name) {
+                                    if matches!(variant, VariantDef::Unit) {
+                                        let ty = if matches!(td.kind, TypeDefKind::Machine) {
+                                            Ty::Machine { name: type_prefix.to_string() }
+                                        } else {
+                                            Ty::Named { name: type_prefix.to_string(), args: vec![] }
+                                        };
+                                        found = Some(ty);
+                                    }
+                                }
+                            }
+                            // Also check fn_sigs for qualified constructors
+                            if found.is_none() {
+                                if let Some(sig) = self.fn_sigs.get(variant_name) {
+                                    if sig.params.is_empty() {
+                                        let ret = &sig.return_type;
+                                        let matches_type = match ret {
+                                            Ty::Machine { name: n } => n == type_prefix,
+                                            Ty::Named { name: n, .. } => n == type_prefix,
+                                            _ => false,
+                                        };
+                                        if matches_type {
+                                            found = Some(sig.return_type.clone());
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -5260,6 +5297,42 @@ impl Checker {
                         Ty::Error
                     }
                 }
+            }
+            // Machine methods: step(), state_name()
+            (Ty::Machine { name }, _) => {
+                if let Some(td) = self.lookup_type_def(name) {
+                    if let Some(sig) = td.methods.get(method) {
+                        if args.len() != sig.params.len() {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "method '{}' expects {} argument(s), found {}",
+                                    method,
+                                    sig.params.len(),
+                                    args.len(),
+                                ),
+                            );
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            if let Some(param_ty) = sig.params.get(i) {
+                                let (expr, sp) = arg.expr();
+                                self.check_against(expr, sp, param_ty);
+                            }
+                        }
+                        return sig.return_type.clone();
+                    }
+                }
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on `{name}`"),
+                );
+                Ty::Error
             }
             // User-defined struct/actor methods from type_defs
             (

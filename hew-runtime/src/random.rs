@@ -54,12 +54,16 @@ impl MtState {
         self.init_genrand(19650218);
         let mut i: usize = 1;
         let mut j: usize = 0;
-        let k = if N > init_key.len() { N } else { init_key.len() };
+        let k = if N > init_key.len() {
+            N
+        } else {
+            init_key.len()
+        };
         for _ in 0..k {
             self.mt[i] = (self.mt[i]
                 ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1664525)))
-                .wrapping_add(init_key[j])
-                .wrapping_add(j as u32);
+            .wrapping_add(init_key[j])
+            .wrapping_add(j as u32);
             i += 1;
             j += 1;
             if i >= N {
@@ -73,7 +77,7 @@ impl MtState {
         for _ in 0..(N - 1) {
             self.mt[i] = (self.mt[i]
                 ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1566083941)))
-                .wrapping_sub(i as u32);
+            .wrapping_sub(i as u32);
             i += 1;
             if i >= N {
                 self.mt[0] = self.mt[N - 1];
@@ -94,8 +98,9 @@ impl MtState {
             }
             for kk in (N - M)..(N - 1) {
                 let y = (self.mt[kk] & UPPER_MASK) | (self.mt[kk + 1] & LOWER_MASK);
-                self.mt[kk] =
-                    self.mt[kk.wrapping_add(M).wrapping_sub(N)] ^ (y >> 1) ^ MAG01[(y & 1) as usize];
+                self.mt[kk] = self.mt[kk.wrapping_add(M).wrapping_sub(N)]
+                    ^ (y >> 1)
+                    ^ MAG01[(y & 1) as usize];
             }
             let y = (self.mt[N - 1] & UPPER_MASK) | (self.mt[0] & LOWER_MASK);
             self.mt[N - 1] = self.mt[M - 1] ^ (y >> 1) ^ MAG01[(y & 1) as usize];
@@ -122,7 +127,11 @@ impl MtState {
 
     /// Number of bits needed to represent `n`.
     fn bit_length(n: u64) -> u32 {
-        if n == 0 { 0 } else { 64 - n.leading_zeros() }
+        if n == 0 {
+            0
+        } else {
+            64 - n.leading_zeros()
+        }
     }
 
     /// CPython `getrandbits(k)` — generate a k-bit random integer.

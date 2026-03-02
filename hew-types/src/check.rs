@@ -619,8 +619,10 @@ impl Checker {
         // std::math module — always available, no import needed
         self.modules.insert("math".to_string());
         // Single-argument math functions: f64 → f64
-        for name in &["exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs",
-                       "tanh", "log2", "log10", "exp2"] {
+        for name in &[
+            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "tanh", "log2", "log10",
+            "exp2",
+        ] {
             self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
         }
         // Two-argument math functions: (f64, f64) → f64
@@ -4446,17 +4448,17 @@ impl Checker {
             // .to_u32(), .to_u64(), .to_f32(), .to_f64(), .to_isize(), .to_usize()
             (resolved, method) if resolved.is_numeric() && method.starts_with("to_") => {
                 match method {
-                    "to_i8"    => Ty::I8,
-                    "to_i16"   => Ty::I16,
-                    "to_i32"   => Ty::I32,
-                    "to_i64"   => Ty::I64,
-                    "to_u8"    => Ty::U8,
-                    "to_u16"   => Ty::U16,
-                    "to_u32"   => Ty::U32,
-                    "to_u64"   => Ty::U64,
-                    "to_f32"   => Ty::F32,
-                    "to_f64"   => Ty::F64,
-                    "to_isize" => Ty::I64,  // platform-dependent, default 64-bit
+                    "to_i8" => Ty::I8,
+                    "to_i16" => Ty::I16,
+                    "to_i32" => Ty::I32,
+                    "to_i64" => Ty::I64,
+                    "to_u8" => Ty::U8,
+                    "to_u16" => Ty::U16,
+                    "to_u32" => Ty::U32,
+                    "to_u64" => Ty::U64,
+                    "to_f32" => Ty::F32,
+                    "to_f64" => Ty::F64,
+                    "to_isize" => Ty::I64, // platform-dependent, default 64-bit
                     "to_usize" => Ty::U64,
                     _ => {
                         self.report_error(
@@ -4467,7 +4469,7 @@ impl Checker {
                         Ty::Error
                     }
                 }
-            },
+            }
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();

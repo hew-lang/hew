@@ -55,8 +55,8 @@ pub struct Module {
     pub items: Vec<Spanned<Item>>,
     /// Imports declared in this module.
     pub imports: Vec<ModuleImport>,
-    /// Source file path (if file-backed).
-    pub source_path: Option<PathBuf>,
+    /// Source file paths (one for single-file modules, multiple for directory modules).
+    pub source_paths: Vec<PathBuf>,
     /// Module-level documentation.
     pub doc: Option<String>,
 }
@@ -216,7 +216,7 @@ mod tests {
                     span: 0..0,
                 })
                 .collect(),
-            source_path: None,
+            source_paths: Vec::new(),
             doc: None,
         }
     }

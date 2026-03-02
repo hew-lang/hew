@@ -217,7 +217,7 @@ mod tests {
                     spec: None,
                     span: 0..0,
                 }],
-                source_path: None,
+                source_paths: Vec::new(),
                 doc: Some("root module".into()),
             },
         );
@@ -227,7 +227,7 @@ mod tests {
                 id: dep_id.clone(),
                 items: vec![],
                 imports: vec![],
-                source_path: None,
+                source_paths: Vec::new(),
                 doc: None,
             },
         );

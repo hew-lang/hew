@@ -1645,7 +1645,8 @@ static std::string vecElemSuffix(mlir::Type elemType) {
   if (mlir::isa<hew::StringRefType>(elemType))
     return "_str";
   if (mlir::isa<hew::ActorRefType>(elemType) || mlir::isa<hew::TypedActorRefType>(elemType) ||
-      mlir::isa<hew::HandleType>(elemType) || mlir::isa<mlir::LLVM::LLVMPointerType>(elemType))
+      mlir::isa<hew::HandleType>(elemType) || mlir::isa<mlir::LLVM::LLVMPointerType>(elemType) ||
+      mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
@@ -1665,7 +1666,8 @@ static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
   if (mlir::isa<hew::StringRefType>(elemType))
     return "_str";
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(elemType) || mlir::isa<hew::ActorRefType>(elemType) ||
-      mlir::isa<hew::TypedActorRefType>(elemType) || mlir::isa<hew::HandleType>(elemType))
+      mlir::isa<hew::TypedActorRefType>(elemType) || mlir::isa<hew::HandleType>(elemType) ||
+      mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";

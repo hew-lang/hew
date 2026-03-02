@@ -856,11 +856,7 @@ impl Checker {
         // Static methods registered as fn sigs: TypeName.decode(bytes) -> Self, etc.
         let static_methods = [
             ("decode", vec![bytes_ty], self_ty.clone()),
-            (
-                "from_json",
-                vec![Ty::String],
-                self_ty.clone(),
-            ),
+            ("from_json", vec![Ty::String], self_ty.clone()),
             ("from_yaml", vec![Ty::String], self_ty),
         ];
 

@@ -738,7 +738,8 @@ impl<'src> Parser<'src> {
                         let key = self.expect_ident().unwrap_or_default();
                         // Check for key = value syntax
                         if self.eat(&Token::Equal) {
-                            let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
+                            let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok))
+                            {
                                 self.expect_ident().unwrap_or_default()
                             } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
                                 self.peek()
@@ -2065,8 +2066,15 @@ impl<'src> Parser<'src> {
         let mut auto_counter: u32 = 1;
         let mut resolved_meta = Vec::new();
 
-        for (field_name, explicit_num, is_optional, is_deprecated, is_repeated, json_name, yaml_name) in
-            field_meta
+        for (
+            field_name,
+            explicit_num,
+            is_optional,
+            is_deprecated,
+            is_repeated,
+            json_name,
+            yaml_name,
+        ) in field_meta
         {
             let field_number = if let Some(n) = explicit_num {
                 n
@@ -2090,14 +2098,16 @@ impl<'src> Parser<'src> {
         }
 
         // Extract struct-level JSON/YAML naming conventions from attributes.
-        let json_case = attrs
-            .iter()
-            .find(|a| a.name == "json")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
-        let yaml_case = attrs
-            .iter()
-            .find(|a| a.name == "yaml")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
+        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
+            a.args
+                .first()
+                .and_then(|s| NamingCase::from_attr(s.as_str()))
+        });
+        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
+            a.args
+                .first()
+                .and_then(|s| NamingCase::from_attr(s.as_str()))
+        });
 
         Some(TypeDecl {
             visibility,
@@ -2306,14 +2316,16 @@ impl<'src> Parser<'src> {
         self.expect(&Token::RightBrace)?;
 
         // Extract struct-level JSON/YAML naming conventions from outer attributes.
-        let json_case = attrs
-            .iter()
-            .find(|a| a.name == "json")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
-        let yaml_case = attrs
-            .iter()
-            .find(|a| a.name == "yaml")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
+        let json_case = attrs.iter().find(|a| a.name == "json").and_then(|a| {
+            a.args
+                .first()
+                .and_then(|s| NamingCase::from_attr(s.as_str()))
+        });
+        let yaml_case = attrs.iter().find(|a| a.name == "yaml").and_then(|a| {
+            a.args
+                .first()
+                .and_then(|s| NamingCase::from_attr(s.as_str()))
+        });
 
         Some(WireDecl {
             visibility,

@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use hew_parser::ast::{Item, TypeBodyItem, TypeDeclKind, TypeExpr, WireDecl, WireDeclKind, WireFieldDecl};
+use hew_parser::ast::{
+    Item, TypeBodyItem, TypeDeclKind, TypeExpr, WireDecl, WireDeclKind, WireFieldDecl,
+};
 
 #[derive(Debug, Default)]
 struct CompatibilityReport {
@@ -149,10 +151,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<WireDecl>, String> {
                         .field_meta
                         .into_iter()
                         .map(|fm| {
-                            let ty = field_types
-                                .get(&fm.field_name)
-                                .cloned()
-                                .unwrap_or_default();
+                            let ty = field_types.get(&fm.field_name).cloned().unwrap_or_default();
                             WireFieldDecl {
                                 name: fm.field_name,
                                 ty,
@@ -344,11 +343,17 @@ fn warn_new_required_and_deprecated_fields(
 
 fn type_expr_to_string(te: &TypeExpr) -> String {
     match te {
-        TypeExpr::Named { name, type_args: Some(args) } => {
+        TypeExpr::Named {
+            name,
+            type_args: Some(args),
+        } => {
             let arg_strs: Vec<String> = args.iter().map(|a| type_expr_to_string(&a.0)).collect();
             format!("{name}<{}>", arg_strs.join(", "))
         }
-        TypeExpr::Named { name, type_args: None } => name.clone(),
+        TypeExpr::Named {
+            name,
+            type_args: None,
+        } => name.clone(),
         TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(&inner.0)),
         TypeExpr::Tuple(items) => {
             let parts: Vec<String> = items.iter().map(|i| type_expr_to_string(&i.0)).collect();

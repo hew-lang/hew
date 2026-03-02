@@ -1064,7 +1064,11 @@ pub unsafe extern "C" fn hew_wire_buf_len(buf: *const HewWireBuf) -> usize {
 pub unsafe extern "C" fn hew_wire_buf_has_remaining(buf: *const HewWireBuf) -> i32 {
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &*buf };
-    if b.read_pos < b.len { 1 } else { 0 }
+    if b.read_pos < b.len {
+        1
+    } else {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------

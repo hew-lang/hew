@@ -4,13 +4,13 @@ use std::ops::Range;
 
 use crate::ast::{
     ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp,
-    ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, NamingCase,
-    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy,
-    SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
-    TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
-    WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
+    ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl,
+    ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, NamingCase, OverflowPolicy, Param,
+    Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind,
+    WireFieldDecl, WireMetadata,
 };
 
 /// Format an AST [`Program`] as canonical Hew source text (comments are not preserved).

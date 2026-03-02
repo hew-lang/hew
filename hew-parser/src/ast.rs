@@ -799,7 +799,11 @@ impl WireDecl {
                     0..0,
                 ),
             })
-            .chain(self.variants.iter().map(|v| TypeBodyItem::Variant(v.clone())))
+            .chain(
+                self.variants
+                    .iter()
+                    .map(|v| TypeBodyItem::Variant(v.clone())),
+            )
             .collect();
 
         TypeDecl {

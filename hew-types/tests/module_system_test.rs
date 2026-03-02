@@ -57,6 +57,7 @@ fn make_user_import(
         spec,
         file_path: None,
         resolved_items: Some(items),
+        resolved_source_paths: Vec::new(),
     }
 }
 
@@ -72,7 +73,7 @@ fn module_node(id: &str, deps: &[&str]) -> Module {
                 span: 0..0,
             })
             .collect(),
-        source_path: None,
+        source_paths: Vec::new(),
         doc: None,
     }
 }

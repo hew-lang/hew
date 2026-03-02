@@ -1622,9 +1622,12 @@ static ast::Module parseModule(const msgpack::object &obj) {
     return parseSpanned<ast::Item>(o, parseItem);
   });
   m.imports = parseVec<ast::ModuleImport>(mapReq(obj, "imports"), parseModuleImport);
-  const auto *sp = mapGet(obj, "source_path");
-  if (sp && !isNil(*sp))
-    m.source_path = getString(*sp);
+  const auto *sp = mapGet(obj, "source_paths");
+  if (sp && !isNil(*sp)) {
+    m.source_paths = parseVec<std::string>(*sp, [](const msgpack::object &o) {
+      return getString(o);
+    });
+  }
   const auto *doc = mapGet(obj, "doc");
   if (doc && !isNil(*doc))
     m.doc = getString(*doc);

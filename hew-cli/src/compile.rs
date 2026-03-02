@@ -605,7 +605,7 @@ fn build_module_graph(
         id: root_id,
         items: items.clone(),
         imports: root_imports,
-        source_path: Some(input_canonical),
+        source_paths: vec![input_canonical],
         doc: module_doc,
     };
     graph.add_module(root_module);
@@ -637,7 +637,7 @@ fn extract_module_info(
         let Item::Import(decl) = item else { continue };
 
         // Derive ModuleId from the import declaration.
-        let (module_id, module_source_path) = if !decl.path.is_empty() {
+        let (module_id, first_source_path) = if !decl.path.is_empty() {
             (ModuleId::new(decl.path.clone()), None)
         } else if let Some(fp) = &decl.file_path {
             let resolved = current_source.parent().unwrap_or(source_dir).join(fp);
@@ -661,20 +661,28 @@ fn extract_module_info(
         // Add the module node if not already present (handles diamond deps).
         if seen_ids.insert(module_id.clone()) {
             if let Some(resolved) = &decl.resolved_items {
+                let child_source = first_source_path.as_deref().unwrap_or(current_source);
                 let child_imports = extract_module_info(
                     resolved,
-                    module_source_path.as_deref().unwrap_or(current_source),
+                    child_source,
                     source_dir,
                     root_source,
                     root_id,
                     graph,
                     seen_ids,
                 );
+                // Use resolved_source_paths from ImportDecl if available
+                // (populated for directory modules with multiple peer files).
+                let source_paths = if decl.resolved_source_paths.is_empty() {
+                    first_source_path.into_iter().collect()
+                } else {
+                    decl.resolved_source_paths.clone()
+                };
                 let module = Module {
                     id: module_id,
                     items: resolved.clone(),
                     imports: child_imports,
-                    source_path: module_source_path,
+                    source_paths,
                     doc: None,
                 };
                 graph.add_module(module);
@@ -837,66 +845,172 @@ fn resolve_file_imports(
         }
         imported.insert(canonical.clone());
 
-        let source = match std::fs::read_to_string(&canonical) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error reading imported file '{}': {e}", canonical.display());
-                std::process::exit(1);
-            }
+        // Check if this is a directory-form module (e.g. std/net/http/http.hew).
+        // If so, collect all peer .hew files in that directory and merge their items.
+        let module_dir = canonical.parent();
+        let is_directory_module = module_dir.is_some_and(|dir| {
+            let dir_name = dir.file_name().and_then(|n| n.to_str());
+            let file_stem = canonical.file_stem().and_then(|n| n.to_str());
+            dir_name.is_some() && dir_name == file_stem
+        });
+
+        let peer_files = if is_directory_module {
+            let dir = module_dir.unwrap();
+            let mut peers: Vec<PathBuf> = std::fs::read_dir(dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("hew") && *p != canonical)
+                .collect();
+            peers.sort(); // deterministic order
+            peers
+        } else {
+            Vec::new()
         };
 
-        let result = hew_parser::parse(&source);
-        if !result.errors.is_empty() {
-            let display_path = canonical.display().to_string();
-            for err in &result.errors {
-                let hints: Vec<String> = err.hint.iter().cloned().collect();
-                match err.severity {
-                    hew_parser::Severity::Warning => {
-                        super::diagnostic::render_warning(
-                            &source,
-                            &display_path,
-                            &err.span,
-                            &err.message,
-                            &[],
-                            &hints,
-                        );
-                    }
-                    hew_parser::Severity::Error => {
-                        super::diagnostic::render_diagnostic(
-                            &source,
-                            &display_path,
-                            &err.span,
-                            &err.message,
-                            &[],
-                            &hints,
-                        );
-                    }
-                }
-            }
-            if result
-                .errors
-                .iter()
-                .any(|e| e.severity == hew_parser::Severity::Error)
-            {
-                std::process::exit(1);
-            }
-        }
-
-        let mut import_items = result.program.items;
-        resolve_file_imports(
+        let mut import_items = parse_and_resolve_file(
             &canonical,
-            &mut import_items,
             imported,
             manifest_deps,
             extra_pkg_path,
             locked_versions,
         );
 
-        // Store resolved items on the ImportDecl instead of flattening them
-        // into the parent's item list. This preserves module boundaries so the
-        // type checker can register items under the module's namespace.
+        // Parse and merge peer files for directory modules.
+        for peer in &peer_files {
+            let peer_canonical = peer.canonicalize().unwrap_or_else(|_| peer.clone());
+            if imported.contains(&peer_canonical) {
+                continue;
+            }
+            imported.insert(peer_canonical.clone());
+
+            let mut peer_items = parse_and_resolve_file(
+                &peer_canonical,
+                imported,
+                manifest_deps,
+                extra_pkg_path,
+                locked_versions,
+            );
+            import_items.append(&mut peer_items);
+        }
+
+        // Check for duplicate pub names in multi-file modules.
+        if !peer_files.is_empty() {
+            if let Item::Import(decl) = &items[*idx].0 {
+                let module_str = if !decl.path.is_empty() {
+                    decl.path.join("::")
+                } else {
+                    canonical.display().to_string()
+                };
+                check_duplicate_pub_names(&import_items, &module_str);
+            }
+        }
+
+        // Store resolved items and source paths on the ImportDecl instead of
+        // flattening them into the parent's item list. This preserves module
+        // boundaries so the type checker can register items under the module's namespace.
         if let Item::Import(decl) = &mut items[*idx].0 {
             decl.resolved_items = Some(import_items);
+            let mut source_paths = vec![canonical.clone()];
+            for peer in &peer_files {
+                source_paths.push(peer.canonicalize().unwrap_or_else(|_| peer.clone()));
+            }
+            decl.resolved_source_paths = source_paths;
+        }
+    }
+}
+
+/// Parse a single `.hew` file, report diagnostics, and recursively resolve its imports.
+fn parse_and_resolve_file(
+    canonical: &Path,
+    imported: &mut HashSet<PathBuf>,
+    manifest_deps: Option<&[String]>,
+    extra_pkg_path: Option<&Path>,
+    locked_versions: Option<&[(String, String)]>,
+) -> Vec<Spanned<Item>> {
+    let source = match std::fs::read_to_string(canonical) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading imported file '{}': {e}", canonical.display());
+            std::process::exit(1);
+        }
+    };
+
+    let result = hew_parser::parse(&source);
+    if !result.errors.is_empty() {
+        let display_path = canonical.display().to_string();
+        for err in &result.errors {
+            let hints: Vec<String> = err.hint.iter().cloned().collect();
+            match err.severity {
+                hew_parser::Severity::Warning => {
+                    super::diagnostic::render_warning(
+                        &source,
+                        &display_path,
+                        &err.span,
+                        &err.message,
+                        &[],
+                        &hints,
+                    );
+                }
+                hew_parser::Severity::Error => {
+                    super::diagnostic::render_diagnostic(
+                        &source,
+                        &display_path,
+                        &err.span,
+                        &err.message,
+                        &[],
+                        &hints,
+                    );
+                }
+            }
+        }
+        if result
+            .errors
+            .iter()
+            .any(|e| e.severity == hew_parser::Severity::Error)
+        {
+            std::process::exit(1);
+        }
+    }
+
+    let mut import_items = result.program.items;
+    resolve_file_imports(
+        canonical,
+        &mut import_items,
+        imported,
+        manifest_deps,
+        extra_pkg_path,
+        locked_versions,
+    );
+
+    import_items
+}
+
+/// Check for duplicate `pub` item names across files in a multi-file module.
+fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) {
+    use hew_parser::ast::Visibility;
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (item, _) in items {
+        let name = match item {
+            Item::Function(f) if f.visibility == Visibility::Pub => Some(f.name.as_str()),
+            Item::TypeAlias(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
+            Item::TypeDecl(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
+            Item::Actor(a) if a.visibility == Visibility::Pub => Some(a.name.as_str()),
+            Item::Trait(t) if t.visibility == Visibility::Pub => Some(t.name.as_str()),
+            Item::Const(c) if c.visibility == Visibility::Pub => Some(c.name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = name {
+            let count = seen.entry(name).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                eprintln!("Error: duplicate pub name `{name}` in module {module_name}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -954,6 +1068,7 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
                     spec: None,
                     file_path: None,
                     resolved_items: None,
+                    resolved_source_paths: Vec::new(),
                 }),
                 0..0,
             ));
@@ -971,6 +1086,7 @@ mod tests {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
     }
@@ -981,6 +1097,7 @@ mod tests {
             spec: None,
             file_path: Some(file.to_string()),
             resolved_items: None,
+            resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
     }

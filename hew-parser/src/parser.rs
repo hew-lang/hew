@@ -2105,6 +2105,7 @@ impl<'src> Parser<'src> {
                 spec: None,
                 file_path: Some(file_path),
                 resolved_items: None,
+                resolved_source_paths: Vec::new(),
             });
         }
 
@@ -2185,6 +2186,7 @@ impl<'src> Parser<'src> {
             spec,
             file_path: None,
             resolved_items: None,
+            resolved_source_paths: Vec::new(),
         })
     }
 

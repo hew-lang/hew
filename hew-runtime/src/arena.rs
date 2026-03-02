@@ -26,7 +26,7 @@ const MEM_RELEASE: u32 = 0x8000;
 #[cfg(windows)]
 const PAGE_READWRITE: u32 = 0x04;
 
-/// Memory chunk allocated via mmap (Unix) or VirtualAlloc (Windows).
+/// Memory chunk allocated via mmap (Unix) or `VirtualAlloc` (Windows).
 #[derive(Debug)]
 struct ArenaChunk {
     base: *mut u8,

@@ -154,12 +154,9 @@ impl HewRemoteSupervisor {
                 if state.notified_dead {
                     false
                 } else {
-                    let suspect_since = match state.suspect_since {
-                        Some(ts) => ts,
-                        None => {
-                            state.suspect_since = Some(now);
-                            now
-                        }
+                    let suspect_since = if let Some(ts) = state.suspect_since { ts } else {
+                        state.suspect_since = Some(now);
+                        now
                     };
                     state.pending_dead = true;
                     if now.duration_since(suspect_since) >= quarantine {
@@ -411,39 +408,36 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
             }
         });
 
-    match handle {
-        Ok(h) => {
-            sup.heartbeat_thread = Some(h);
-            0
-        }
-        Err(_) => {
-            sup.running.store(false, Ordering::Release);
-            let mut clear_cluster_callback = false;
-            {
-                let mut registry = match subscriptions.lock() {
-                    Ok(guard) => guard,
-                    Err(e) => e.into_inner(),
-                };
-                if let Some(entry) = registry.get_mut(&cluster_key) {
-                    entry.retain(|addr| *addr != sup_addr);
-                    if entry.is_empty() {
-                        registry.remove(&cluster_key);
-                        clear_cluster_callback = true;
-                    }
+    if let Ok(h) = handle {
+        sup.heartbeat_thread = Some(h);
+        0
+    } else {
+        sup.running.store(false, Ordering::Release);
+        let mut clear_cluster_callback = false;
+        {
+            let mut registry = match subscriptions.lock() {
+                Ok(guard) => guard,
+                Err(e) => e.into_inner(),
+            };
+            if let Some(entry) = registry.get_mut(&cluster_key) {
+                entry.retain(|addr| *addr != sup_addr);
+                if entry.is_empty() {
+                    registry.remove(&cluster_key);
+                    clear_cluster_callback = true;
                 }
             }
-            if clear_cluster_callback {
-                // SAFETY: cluster pointer belongs to local node and is valid while supervisor lives.
-                unsafe {
-                    cluster::hew_cluster_set_membership_callback(
-                        node.cluster,
-                        noop_membership_callback,
-                        ptr::null_mut(),
-                    );
-                }
-            }
-            -1
         }
+        if clear_cluster_callback {
+            // SAFETY: cluster pointer belongs to local node and is valid while supervisor lives.
+            unsafe {
+                cluster::hew_cluster_set_membership_callback(
+                    node.cluster,
+                    noop_membership_callback,
+                    ptr::null_mut(),
+                );
+            }
+        }
+        -1
     }
 }
 

@@ -496,8 +496,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
         TypeExpr::TraitObject(bounds) => {
             let name = bounds.first().map_or("", |b| b.name.as_str());
             format!(
-                "Ty::TraitObject {{ trait_name: \"{}\".to_string(), args: vec![] }}",
-                name
+                "Ty::TraitObject {{ trait_name: \"{name}\".to_string(), args: vec![] }}"
             )
         }
         TypeExpr::Infer => "Ty::Error".to_string(),

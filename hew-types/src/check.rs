@@ -819,7 +819,7 @@ impl Checker {
         }
     }
 
-    /// Register codec methods for a wire type (encode, decode, to_json, from_json, etc.).
+    /// Register codec methods for a wire type (encode, decode, `to_json`, `from_json`, etc.).
     fn register_wire_methods(&mut self, type_name: &str) {
         let self_ty = Ty::Named {
             name: type_name.to_string(),
@@ -1320,7 +1320,7 @@ impl Checker {
                     associated_types.push(TraitAssociatedTypeInfo {
                         name: name.clone(),
                         default: default.clone(),
-                    })
+                    });
                 }
             }
         }
@@ -1406,8 +1406,7 @@ impl Checker {
                             TypeErrorKind::UndefinedType,
                             span,
                             format!(
-                                "impl `{}` for `{}` must define associated type `{}`",
-                                tb_name, target_name, name
+                                "impl `{tb_name}` for `{target_name}` must define associated type `{name}`"
                             ),
                         );
                     }
@@ -1433,42 +1432,39 @@ impl Checker {
         };
         let expr = {
             let scope = &mut self.impl_alias_scopes[scope_index];
-            match scope.entries.get_mut(alias) {
-                Some(entry) => {
-                    if let Some(resolved) = &entry.resolved {
-                        return Some(resolved.clone());
-                    }
-                    if entry.resolving {
-                        let should_report = scope.report_missing
-                            && scope.missing_reported.insert(alias.to_string());
-                        let err_span = entry.expr.1.clone();
-                        if should_report {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                &err_span,
-                                format!(
-                                    "associated type `Self::{alias}` recursively references itself"
-                                ),
-                            );
-                        }
-                        return Some(Ty::Error);
-                    }
-                    entry.resolving = true;
-                    entry.expr.clone()
+            if let Some(entry) = scope.entries.get_mut(alias) {
+                if let Some(resolved) = &entry.resolved {
+                    return Some(resolved.clone());
                 }
-                None => {
-                    let should_report =
-                        scope.report_missing && scope.missing_reported.insert(alias.to_string());
-                    let err_span = scope.span.clone();
+                if entry.resolving {
+                    let should_report = scope.report_missing
+                        && scope.missing_reported.insert(alias.to_string());
+                    let err_span = entry.expr.1.clone();
                     if should_report {
                         self.report_error(
-                            TypeErrorKind::UndefinedType,
+                            TypeErrorKind::InvalidOperation,
                             &err_span,
-                            format!("type alias `Self::{alias}` is not defined in this impl"),
+                            format!(
+                                "associated type `Self::{alias}` recursively references itself"
+                            ),
                         );
                     }
                     return Some(Ty::Error);
                 }
+                entry.resolving = true;
+                entry.expr.clone()
+            } else {
+                let should_report =
+                    scope.report_missing && scope.missing_reported.insert(alias.to_string());
+                let err_span = scope.span.clone();
+                if should_report {
+                    self.report_error(
+                        TypeErrorKind::UndefinedType,
+                        &err_span,
+                        format!("type alias `Self::{alias}` is not defined in this impl"),
+                    );
+                }
+                return Some(Ty::Error);
             }
         };
         let ty = self.resolve_type_expr(&expr.0);
@@ -1783,7 +1779,7 @@ impl Checker {
         self.fn_sigs.insert(name.to_string(), sig);
     }
 
-    /// Register an impl method on a type's method table and fn_sigs.
+    /// Register an impl method on a type's method table and `fn_sigs`.
     ///
     /// Returns the built `FnSig` for callers that need to insert it
     /// on additional type names (e.g., qualified aliases).
@@ -3113,7 +3109,7 @@ impl Checker {
                         Ty::Tuple(vec![args[0].clone(), args[1].clone()])
                     }
                     Ty::Named { name, args }
-                        if (name == "Generator" && args.len() >= 1)
+                        if (name == "Generator" && !args.is_empty())
                             || (name == "AsyncGenerator" && args.len() == 1) =>
                     {
                         args[0].clone()
@@ -3236,7 +3232,7 @@ impl Checker {
             }
             Expr::Literal(Literal::Bool(_)) => Ty::Bool,
             Expr::Literal(Literal::Char(_)) => Ty::Char,
-            Expr::Literal(Literal::Integer { .. }) | Expr::Literal(Literal::Duration(_)) => Ty::I64,
+            Expr::Literal(Literal::Integer { .. } | Literal::Duration(_)) => Ty::I64,
 
             // Identifier lookup
             Expr::Identifier(name) => {
@@ -6336,8 +6332,7 @@ impl Checker {
                     TypeErrorKind::BoundsNotSatisfied,
                     span,
                     format!(
-                        "type `{}` does not implement trait `{}` required by `{}`",
-                        resolved_arg, bound, param_name
+                        "type `{resolved_arg}` does not implement trait `{bound}` required by `{param_name}`"
                     ),
                 );
             }

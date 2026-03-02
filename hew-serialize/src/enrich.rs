@@ -116,7 +116,7 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
                 }
             }
             // Generator, AsyncGenerator, Range are handled by C++ via built-in logic
-            ("Generator", _) | ("AsyncGenerator", _) | ("Range", _) => return None,
+            ("Generator" | "AsyncGenerator" | "Range", _) => return None,
             _ => {
                 let type_args = if args.is_empty() {
                     None
@@ -187,7 +187,7 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
                             None
                         } else {
                             let mapped: Option<Vec<_>> =
-                                b.args.iter().map(|a| ty_to_type_expr(a)).collect();
+                                b.args.iter().map(ty_to_type_expr).collect();
                             mapped
                         },
                     })
@@ -1338,7 +1338,6 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
                         method: "len".to_string(),
                         args: Vec::new(),
                     };
-                    return;
                 }
             }
         }

@@ -372,12 +372,9 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         Some(q) => q,
         None => return ptr::null_mut(),
     };
-    let sys_queue = match MpscQueue::new() {
-        Some(q) => q,
-        None => {
-            unsafe { user_fast.drain_and_free() };
-            return ptr::null_mut();
-        }
+    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+        unsafe { user_fast.drain_and_free() };
+        return ptr::null_mut();
     };
 
     Box::into_raw(Box::new(HewMailbox {
@@ -410,12 +407,9 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         Some(q) => q,
         None => return ptr::null_mut(),
     };
-    let sys_queue = match MpscQueue::new() {
-        Some(q) => q,
-        None => {
-            unsafe { user_fast.drain_and_free() };
-            return ptr::null_mut();
-        }
+    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+        unsafe { user_fast.drain_and_free() };
+        return ptr::null_mut();
     };
 
     let policy = HewOverflowPolicy::DropNew;
@@ -454,12 +448,9 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         Some(q) => q,
         None => return ptr::null_mut(),
     };
-    let sys_queue = match MpscQueue::new() {
-        Some(q) => q,
-        None => {
-            unsafe { user_fast.drain_and_free() };
-            return ptr::null_mut();
-        }
+    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+        unsafe { user_fast.drain_and_free() };
+        return ptr::null_mut();
     };
 
     let cap = if capacity == 0 {
@@ -498,12 +489,9 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         Some(q) => q,
         None => return ptr::null_mut(),
     };
-    let sys_queue = match MpscQueue::new() {
-        Some(q) => q,
-        None => {
-            unsafe { user_fast.drain_and_free() };
-            return ptr::null_mut();
-        }
+    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+        unsafe { user_fast.drain_and_free() };
+        return ptr::null_mut();
     };
 
     let cap = i64::from(capacity);

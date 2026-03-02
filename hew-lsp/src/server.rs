@@ -3442,7 +3442,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             }
         }
         Expr::Scope { body, .. } | Expr::ScopeLaunch(body) | Expr::ScopeSpawn(body) => {
-            collect_calls_in_block(body, calls)
+            collect_calls_in_block(body, calls);
         }
         Expr::Select { arms, timeout, .. } => {
             for arm in arms {

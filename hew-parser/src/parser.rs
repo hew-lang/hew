@@ -97,7 +97,7 @@ fn unescape_string(s: &str) -> String {
                     let hi = chars.next();
                     let lo = chars.next();
                     if let (Some(h), Some(l)) = (hi, lo) {
-                        if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                        if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
                             out.push(byte as char);
                         } else {
                             out.push('\\');
@@ -165,7 +165,7 @@ fn parse_string_parts(
                 'x' if idx + 3 < chars.len() => {
                     let (_, h) = chars[idx + 2];
                     let (_, l) = chars[idx + 3];
-                    if let Ok(byte) = u8::from_str_radix(&format!("{}{}", h, l), 16) {
+                    if let Ok(byte) = u8::from_str_radix(&format!("{h}{l}"), 16) {
                         literal_buf.push(byte as char);
                     } else {
                         literal_buf.push('\\');
@@ -383,12 +383,9 @@ impl<'src> Parser<'src> {
     fn expect(&mut self, expected: &Token<'_>) -> Option<Span> {
         if let Some(tok) = self.peek() {
             if std::mem::discriminant(tok) == std::mem::discriminant(expected) {
-                let (_, span) = match self.advance() {
-                    Some(t) => t,
-                    None => {
-                        self.error(format!("unexpected end of input, expected {expected:?}"));
-                        return None;
-                    }
+                let (_, span) = if let Some(t) = self.advance() { t } else {
+                    self.error(format!("unexpected end of input, expected {expected:?}"));
+                    return None;
                 };
                 return Some(span);
             }
@@ -888,7 +885,7 @@ impl<'src> Parser<'src> {
                 let vis = self.parse_visibility();
                 let is_pure = self.eat(&Token::Pure);
                 match self.peek() {
-                    Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => {
+                    Some(Token::Fn | Token::Async | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, is_pure, attrs, &doc_comment)?
                     }
                     Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
@@ -959,20 +956,17 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
-            Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => {
+            Some(Token::Fn | Token::Async | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, false, attrs, &doc_comment)?
             }
             Some(Token::Pure) => {
                 self.advance();
-                match self.peek() {
-                    Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => self
-                        .parse_fn_with_modifiers(Visibility::Private, true, attrs, &doc_comment)?,
-                    _ => {
-                        self.error(
-                            "'pure' can only be applied to function declarations".to_string(),
-                        );
-                        return None;
-                    }
+                if let Some(Token::Fn | Token::Async | Token::Gen) = self.peek() { self
+                .parse_fn_with_modifiers(Visibility::Private, true, attrs, &doc_comment)? } else {
+                    self.error(
+                        "'pure' can only be applied to function declarations".to_string(),
+                    );
+                    return None;
                 }
             }
             Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
@@ -1443,8 +1437,7 @@ impl<'src> Parser<'src> {
                 }
                 other => {
                     self.error(format!(
-                        "expected 'fn' or 'type' in impl body, found {:?}",
-                        other
+                        "expected 'fn' or 'type' in impl body, found {other:?}"
                     ));
                     self.advance(); // error recovery: skip the bad token
                 }
@@ -1589,11 +1582,10 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
                 // Skip optional `= expr` initializer
-                if self.eat(&Token::Equal) {
-                    if self.parse_expr().is_none() {
+                if self.eat(&Token::Equal)
+                    && self.parse_expr().is_none() {
                         self.error("expected expression for field initializer".to_string());
                     }
-                }
                 if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
                     self.error("use `;` instead of `,` to separate fields".to_string());
                     self.advance();
@@ -4151,8 +4143,8 @@ impl<'src> Parser<'src> {
                 Expr::Cooperate
             }
             // Contextual keywords that can be used as identifiers in expressions
-            tok if Self::contextual_keyword_name(&tok).is_some() => {
-                let name = Self::contextual_keyword_name(&tok).unwrap();
+            tok if Self::contextual_keyword_name(tok).is_some() => {
+                let name = Self::contextual_keyword_name(tok).unwrap();
                 self.advance();
                 Expr::Identifier(name.to_string())
             }

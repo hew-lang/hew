@@ -762,7 +762,7 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
     let e = unsafe { &*env };
     let msg_type = i64::from(e.msg_type);
     if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
-        set_last_error(&format!("msg_type {} out of valid range", e.msg_type));
+        set_last_error(format!("msg_type {} out of valid range", e.msg_type));
         return -1;
     }
 
@@ -864,7 +864,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 }
                 let msg_type = hew_wire_zigzag_decode(v);
                 if !(0..=MAX_MSG_TYPE).contains(&msg_type) {
-                    set_last_error(&format!("invalid msg_type: {msg_type}"));
+                    set_last_error(format!("invalid msg_type: {msg_type}"));
                     return -1;
                 }
                 #[expect(
@@ -1064,11 +1064,7 @@ pub unsafe extern "C" fn hew_wire_buf_len(buf: *const HewWireBuf) -> usize {
 pub unsafe extern "C" fn hew_wire_buf_has_remaining(buf: *const HewWireBuf) -> i32 {
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &*buf };
-    if b.read_pos < b.len {
-        1
-    } else {
-        0
-    }
+    i32::from(b.read_pos < b.len)
 }
 
 // ---------------------------------------------------------------------------

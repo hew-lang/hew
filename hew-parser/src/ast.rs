@@ -555,8 +555,10 @@ pub struct WherePredicate {
 
 /// Item visibility level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Visibility {
     /// Not visible outside the defining module.
+    #[default]
     Private,
     /// Fully public.
     Pub,
@@ -566,11 +568,6 @@ pub enum Visibility {
     PubSuper,
 }
 
-impl Default for Visibility {
-    fn default() -> Self {
-        Self::Private
-    }
-}
 
 impl Visibility {
     /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).

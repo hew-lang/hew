@@ -38,7 +38,7 @@ impl MtState {
         s
     }
 
-    /// CPython `init_genrand`.
+    /// `CPython` `init_genrand`.
     fn init_genrand(&mut self, seed: u32) {
         self.mt[0] = seed;
         for i in 1..N {
@@ -49,7 +49,7 @@ impl MtState {
         self.mti = N;
     }
 
-    /// CPython `init_by_array`.
+    /// `CPython` `init_by_array`.
     fn init_by_array(&mut self, init_key: &[u32]) {
         self.init_genrand(19650218);
         let mut i: usize = 1;
@@ -118,7 +118,7 @@ impl MtState {
         y
     }
 
-    /// CPython `random()` — 53-bit precision float in [0.0, 1.0).
+    /// `CPython` `random()` — 53-bit precision float in [0.0, 1.0).
     fn random(&mut self) -> f64 {
         let a = self.genrand_uint32() >> 5; // 27 bits
         let b = self.genrand_uint32() >> 6; // 26 bits
@@ -134,7 +134,7 @@ impl MtState {
         }
     }
 
-    /// CPython `getrandbits(k)` — generate a k-bit random integer.
+    /// `CPython` `getrandbits(k)` — generate a k-bit random integer.
     fn getrandbits(&mut self, k: u32) -> u64 {
         if k == 0 {
             return 0;
@@ -151,7 +151,7 @@ impl MtState {
         result
     }
 
-    /// CPython `_randbelow(n)` using rejection sampling.
+    /// `CPython` `_randbelow(n)` using rejection sampling.
     fn randbelow(&mut self, n: u64) -> u64 {
         if n <= 1 {
             return 0;
@@ -291,7 +291,7 @@ pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: 
         let mut lo: usize = 0;
         let mut hi: usize = len;
         while lo < hi {
-            let mid = (lo + hi) / 2;
+            let mid = usize::midpoint(lo, hi);
             if r >= *data.add(mid) {
                 lo = mid + 1;
             } else {

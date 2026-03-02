@@ -256,7 +256,7 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
 
             // Compare as sets: for each bound in a, find a matching bound in b by trait_name
             let mut matched = vec![false; b_traits.len()];
-            for a_bound in a_traits.iter() {
+            for a_bound in a_traits {
                 let Some(idx) = b_traits.iter().enumerate().position(|(i, b_bound)| {
                     !matched[i] && b_bound.trait_name == a_bound.trait_name
                 }) else {

@@ -589,7 +589,7 @@ unsafe fn hew_conn_handshake_send(
     handshake: HewHandshake,
 ) -> c_int {
     // SAFETY: transport and conn_id are validated by caller; serialize returns a fixed-size buffer.
-    c_int::from(!unsafe { hew_conn_send_frame(transport, conn_id, &handshake.serialize()) }) * -1
+    -c_int::from(!unsafe { hew_conn_send_frame(transport, conn_id, &handshake.serialize()) })
 }
 
 unsafe fn hew_conn_handshake_recv(
@@ -1229,7 +1229,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let transport_send = SendTransport(mgr.transport);
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
-    let mgr_send = SendConnMgr(mgr as *const HewConnMgr as *mut HewConnMgr);
+    let mgr_send = SendConnMgr(std::ptr::from_ref::<HewConnMgr>(mgr).cast_mut());
     #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
@@ -1245,18 +1245,15 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
                 router,
                 #[cfg(feature = "encryption")]
                 noise_transport,
-            )
+            );
         });
 
-    match handle {
-        Ok(h) => actor.reader_handle = Some(h),
-        Err(_) => {
-            unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
-            set_last_error(format!(
-                "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
-            ));
-            return -1;
-        }
+    if let Ok(h) = handle { actor.reader_handle = Some(h) } else {
+        unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
+        set_last_error(format!(
+            "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
+        ));
+        return -1;
     }
 
     let mut conns = match mgr.connections.lock() {

@@ -172,7 +172,7 @@ pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
         if i > 0 {
             json.push(',');
         }
-        let _ = write!(json, r#"{{"node_id":{},"conn_id":{}}}"#, node_id, conn_id,);
+        let _ = write!(json, r#"{{"node_id":{node_id},"conn_id":{conn_id}}}"#,);
     }
     json.push_str("]}");
     json

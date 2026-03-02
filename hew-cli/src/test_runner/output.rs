@@ -1,6 +1,6 @@
 //! Output formatting for test results.
 //!
-//! Supports colored text (default) and JUnit XML for CI integration.
+//! Supports colored text (default) and `JUnit` XML for CI integration.
 
 use super::runner::{TestOutcome, TestSummary};
 
@@ -9,7 +9,7 @@ use super::runner::{TestOutcome, TestSummary};
 pub enum OutputFormat {
     /// Human-readable colored text (default).
     Text,
-    /// JUnit XML for CI systems.
+    /// `JUnit` XML for CI systems.
     Junit,
 }
 
@@ -96,11 +96,11 @@ pub fn print_results(summary: &TestSummary, use_color: bool) {
     );
 }
 
-/// Print test results as JUnit XML to stdout.
+/// Print test results as `JUnit` XML to stdout.
 ///
 /// Produces a `<testsuites>` document with one `<testsuite>` per source file.
 /// Compatible with Jenkins, GitHub Actions (`mikepenz/action-junit-report`),
-/// and other JUnit XML consumers.
+/// and other `JUnit` XML consumers.
 fn print_junit(summary: &TestSummary) {
     use std::collections::BTreeMap;
 

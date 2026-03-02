@@ -475,11 +475,7 @@ pub unsafe extern "C" fn hew_string_compare(a: *const c_char, b: *const c_char) 
     let cmp = unsafe { libc::strcmp(a, b) };
     if cmp < 0 {
         -1
-    } else if cmp > 0 {
-        1
-    } else {
-        0
-    }
+    } else { i32::from(cmp > 0) }
 }
 
 /// Compare two C strings for equality. Returns 1 if equal, 0 otherwise.

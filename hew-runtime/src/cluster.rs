@@ -334,8 +334,7 @@ impl HewCluster {
     ) {
         if from_node != source_conn_node_id {
             eprintln!(
-                "[cluster] rejecting message: from_node {} doesn't match connection node {}",
-                from_node, source_conn_node_id
+                "[cluster] rejecting message: from_node {from_node} doesn't match connection node {source_conn_node_id}"
             );
             return;
         }

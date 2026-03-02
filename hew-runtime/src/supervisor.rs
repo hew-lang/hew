@@ -7,6 +7,7 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::actor::{self, HewActor, HewActorOpts};
 use crate::internal::types::{HewActorState, HewDispatchFn, HewOverflowPolicy};
@@ -126,6 +127,11 @@ pub struct HewSupervisor {
     parent: *mut HewSupervisor,
     /// Index of this supervisor in parent's `child_supervisors` vec.
     index_in_parent: usize,
+
+    /// Optional condvar notified after each completed restart cycle.
+    /// The counter increments once per `restart_with_budget_and_strategy` call
+    /// (including when the budget is exhausted and the supervisor stops).
+    restart_notify: Option<Arc<(Mutex<usize>, Condvar)>>,
 }
 
 /// Circuit breaker configuration and state for a child.
@@ -470,6 +476,16 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
     spec.next_restart_time_ns = monotonic_time_ns().wrapping_add(delay_ns);
 }
 
+/// Increment the restart counter and wake any thread waiting on
+/// [`hew_supervisor_wait_restart`].
+fn notify_restart(sup: &HewSupervisor) {
+    if let Some(ref pair) = sup.restart_notify {
+        let mut count = pair.0.lock().unwrap();
+        *count += 1;
+        pair.1.notify_all();
+    }
+}
+
 /// Restart a child from its spec, returning the new actor pointer.
 ///
 /// # Safety
@@ -534,6 +550,7 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
     let recent = restart_within_window(sup);
     if recent >= sup.max_restarts {
         sup.running.store(0, Ordering::Release);
+        notify_restart(sup);
         if !sup.parent.is_null() {
             escalate_to_parent(sup);
         }
@@ -611,6 +628,8 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
         }
         _ => {}
     }
+
+    notify_restart(sup);
 }
 
 /// Apply the restart strategy after a child failure.
@@ -712,6 +731,7 @@ unsafe extern "C" fn supervisor_dispatch(
             // child_index == -1 signals a child supervisor escalation.
             if event.child_index < 0 {
                 sup.running.store(0, Ordering::Release);
+                notify_restart(sup);
                 return;
             }
 
@@ -786,6 +806,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         cancelled: AtomicBool::new(false),
         pending_restart_timers: AtomicUsize::new(0),
         self_actor: ptr::null_mut(),
+        restart_notify: None,
     });
     Box::into_raw(sup)
 }
@@ -1564,3 +1585,70 @@ pub static HEW_CIRCUIT_BREAKER_OPEN: c_int = 1;
 /// Circuit breaker state: `HALF_OPEN` (probe restart).
 #[no_mangle]
 pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
+
+// ── Restart notification (deterministic testing) ────────────────────────────
+
+/// Install a restart notification condvar on this supervisor.
+///
+/// After installation, every completed restart cycle (including budget
+/// exhaustion) increments an internal counter and wakes any thread blocked
+/// in [`hew_supervisor_wait_restart`].
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervisor) {
+    if sup.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
+    let s = unsafe { &mut *sup };
+    s.restart_notify = Some(Arc::new((Mutex::new(0), Condvar::new())));
+}
+
+/// Block until the supervisor's restart counter reaches at least `target`,
+/// or `timeout_ms` milliseconds elapse.
+///
+/// Returns the current restart count on success, or `0` on timeout / null
+/// pointer.  The counter is cumulative and never resets.
+///
+/// # Panics
+///
+/// Panics if the internal mutex is poisoned (a thread panicked while holding it).
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`] with a
+/// restart notifier installed via [`hew_supervisor_set_restart_notify`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_wait_restart(
+    sup: *mut HewSupervisor,
+    target: usize,
+    timeout_ms: u64,
+) -> usize {
+    if sup.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
+    let s = unsafe { &*sup };
+    let pair = match s.restart_notify {
+        Some(ref p) => Arc::clone(p),
+        None => return 0,
+    };
+    let timeout = std::time::Duration::from_millis(timeout_ms);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut count = pair.0.lock().unwrap();
+    while *count < target {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return 0;
+        }
+        let (guard, wait_result) = pair.1.wait_timeout(count, remaining).unwrap();
+        count = guard;
+        if wait_result.timed_out() && *count < target {
+            return 0;
+        }
+    }
+    *count
+}

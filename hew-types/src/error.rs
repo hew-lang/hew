@@ -375,6 +375,8 @@ pub enum TypeErrorKind {
     OrphanImpl,
     /// Feature is not available on the selected compilation target
     PlatformLimitation,
+    /// Machine state × event exhaustiveness violation
+    MachineExhaustivenessError,
 }
 
 #[cfg(test)]

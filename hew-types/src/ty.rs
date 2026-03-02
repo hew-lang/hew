@@ -130,6 +130,9 @@ pub enum Ty {
         traits: Vec<TraitObjectBound>,
     },
 
+    /// Machine type (value-type state machine)
+    Machine { name: String },
+
     /// Error recovery — a type that unifies with anything
     Error,
 }
@@ -446,6 +449,9 @@ impl Ty {
                 name: name.clone(),
                 args: args.iter().map(f).collect(),
             },
+            Ty::Machine { name } => Ty::Machine {
+                name: name.clone(),
+            },
             Ty::Function { params, ret } => Ty::Function {
                 params: params.iter().map(f).collect(),
                 ret: Box::new(f(ret)),
@@ -600,6 +606,7 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
+            Ty::Machine { name } => write!(f, "{name}"),
             Ty::Error => write!(f, "<error>"),
         }
     }

@@ -280,6 +280,17 @@ pub fn unify(subst: &mut Substitution, a: &Ty, b: &Ty) -> Result<(), UnifyError>
             Ok(())
         }
 
+        // Machine types: same name
+        (Ty::Machine { name: an }, Ty::Machine { name: bn }) if an == bn => Ok(()),
+
+        // Machine unifies with Named of the same name (interop with pattern matching)
+        (Ty::Machine { name: mn }, Ty::Named { name: nn, args })
+        | (Ty::Named { name: nn, args }, Ty::Machine { name: mn })
+            if mn == nn && args.is_empty() =>
+        {
+            Ok(())
+        }
+
         // Mismatch
         _ => Err(UnifyError::Mismatch {
             expected: a,

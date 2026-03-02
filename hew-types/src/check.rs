@@ -13,9 +13,10 @@ use crate::unify::unify;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
     ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MatchArm, Pattern, Program, ReceiveFnDecl,
-    Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
+    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Pattern, Program,
+    ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod,
+    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
+    WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -136,6 +137,7 @@ pub enum TypeDefKind {
     Struct,
     Enum,
     Actor,
+    Machine,
 }
 
 #[derive(Debug, Clone)]
@@ -696,6 +698,10 @@ impl Checker {
                         sd.children.iter().map(|c| c.actor_type.clone()).collect();
                     self.supervisor_children.insert(sd.name.clone(), children);
                 }
+                Item::Machine(md) => {
+                    self.register_machine_decl(md);
+                    self.local_type_defs.insert(md.name.clone());
+                }
                 _ => {}
             }
         }
@@ -960,6 +966,180 @@ impl Checker {
                         notes: vec![],
                         suggestions: vec![],
                     });
+                }
+            }
+        }
+    }
+
+    /// Register a machine declaration as a type definition with variants and methods.
+    fn register_machine_decl(&mut self, md: &MachineDecl) {
+        let machine_ty = Ty::Machine {
+            name: md.name.clone(),
+        };
+        let event_type_name = format!("{}Event", md.name);
+        let event_ty = Ty::Named {
+            name: event_type_name.clone(),
+            args: vec![],
+        };
+
+        // Build state variants
+        let mut variants = HashMap::new();
+        for state in &md.states {
+            if state.fields.is_empty() {
+                variants.insert(state.name.clone(), VariantDef::Unit);
+                // Register unit state constructor as a function
+                self.fn_sigs.insert(
+                    state.name.clone(),
+                    FnSig {
+                        type_params: vec![],
+                        type_param_bounds: HashMap::new(),
+                        param_names: vec![],
+                        params: vec![],
+                        return_type: machine_ty.clone(),
+                        is_async: false,
+                        is_pure: true,
+                        accepts_kwargs: false,
+                        doc_comment: None,
+                    },
+                );
+            } else {
+                let variant_fields: Vec<(String, Ty)> = state
+                    .fields
+                    .iter()
+                    .map(|(name, spanned_te)| (name.clone(), self.resolve_type_expr(&spanned_te.0)))
+                    .collect();
+                variants.insert(state.name.clone(), VariantDef::Struct(variant_fields));
+            }
+        }
+
+        let type_def = TypeDef {
+            kind: TypeDefKind::Machine,
+            name: md.name.clone(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants,
+            methods: HashMap::new(),
+            doc_comment: None,
+        };
+
+        // Register field types for Send/Frozen derivation
+        let mut all_field_types = Vec::new();
+        for state in &md.states {
+            for (_, spanned_te) in &state.fields {
+                all_field_types.push(self.resolve_type_expr(&spanned_te.0));
+            }
+        }
+        self.registry
+            .register_type(md.name.clone(), all_field_types);
+
+        self.type_defs.insert(md.name.clone(), type_def);
+        self.known_types.insert(md.name.clone());
+
+        // Register the generated event companion enum
+        let mut event_variants = HashMap::new();
+        for event in &md.events {
+            if event.fields.is_empty() {
+                event_variants.insert(event.name.clone(), VariantDef::Unit);
+            } else {
+                let variant_fields: Vec<(String, Ty)> = event
+                    .fields
+                    .iter()
+                    .map(|(name, spanned_te)| (name.clone(), self.resolve_type_expr(&spanned_te.0)))
+                    .collect();
+                event_variants.insert(event.name.clone(), VariantDef::Struct(variant_fields));
+            }
+        }
+        let event_type_def = TypeDef {
+            kind: TypeDefKind::Enum,
+            name: event_type_name.clone(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants: event_variants,
+            methods: HashMap::new(),
+            doc_comment: None,
+        };
+        self.type_defs
+            .insert(event_type_name.clone(), event_type_def);
+        self.known_types.insert(event_type_name);
+
+        // Register the step() method on the machine type
+        if let Some(td) = self.type_defs.get_mut(&md.name) {
+            td.methods.insert(
+                "step".to_string(),
+                FnSig {
+                    type_params: vec![],
+                    type_param_bounds: HashMap::new(),
+                    param_names: vec!["event".to_string()],
+                    params: vec![event_ty],
+                    return_type: machine_ty.clone(),
+                    is_async: false,
+                    is_pure: true,
+                    accepts_kwargs: false,
+                    doc_comment: None,
+                },
+            );
+            // Register state_name() method
+            td.methods.insert(
+                "state_name".to_string(),
+                FnSig {
+                    type_params: vec![],
+                    type_param_bounds: HashMap::new(),
+                    param_names: vec![],
+                    params: vec![],
+                    return_type: Ty::String,
+                    is_async: false,
+                    is_pure: true,
+                    accepts_kwargs: false,
+                    doc_comment: None,
+                },
+            );
+        }
+    }
+
+    /// Check that the machine's state × event matrix is fully covered.
+    fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
+        let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
+        let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
+
+        // Build coverage: track explicit (state, event) pairs and wildcard events
+        let mut covered: HashSet<(String, String)> = HashSet::new();
+        let mut wildcard_events: HashSet<String> = HashSet::new();
+
+        for transition in &md.transitions {
+            if transition.source_state == "_" {
+                wildcard_events.insert(transition.event_name.clone());
+            } else {
+                let key = (
+                    transition.source_state.clone(),
+                    transition.event_name.clone(),
+                );
+                if covered.contains(&key) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::MachineExhaustivenessError,
+                        span.clone(),
+                        format!(
+                            "machine '{}': duplicate transition for state '{}' on event '{}'",
+                            md.name, transition.source_state, transition.event_name
+                        ),
+                    ));
+                }
+                covered.insert(key);
+            }
+        }
+
+        // Check that every (state, event) pair is covered
+        for state in &state_names {
+            for event in &event_names {
+                let key = (state.to_string(), event.to_string());
+                if !covered.contains(&key) && !wildcard_events.contains(*event) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::MachineExhaustivenessError,
+                        span.clone(),
+                        format!(
+                            "machine '{}': state '{}' does not handle event '{}'",
+                            md.name, state, event
+                        ),
+                    ));
                 }
             }
         }
@@ -2260,6 +2440,7 @@ impl Checker {
             Item::Actor(ad) => self.check_actor(ad),
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
+            Item::Machine(md) => self.check_machine_exhaustiveness(md, span),
             _ => {} // Imports, types, traits, extern — already collected
         }
     }
@@ -6561,6 +6742,46 @@ impl Checker {
                 }
             }
             Ty::Named { name, .. } => {
+                if let Some(td) = self.lookup_type_def(name) {
+                    if !td.variants.is_empty() {
+                        let mut has_binding_identifier = false;
+                        let mut covered = Vec::new();
+                        for arm in arms {
+                            if arm.guard.is_some() {
+                                continue;
+                            }
+                            visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
+                                Pattern::Constructor { name, .. }
+                                | Pattern::Struct { name, .. } => covered.push(name.clone()),
+                                Pattern::Identifier(id) => {
+                                    if td.variants.contains_key(id) {
+                                        covered.push(id.clone());
+                                    } else {
+                                        has_binding_identifier = true;
+                                    }
+                                }
+                                _ => {}
+                            });
+                        }
+                        if has_binding_identifier {
+                            return;
+                        }
+                        let missing: Vec<_> = td
+                            .variants
+                            .keys()
+                            .filter(|v| !covered.contains(v))
+                            .collect();
+                        if !missing.is_empty() {
+                            let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
+                            self.warn_non_exhaustive(
+                                span,
+                                &format!("missing {}", names.join(", ")),
+                            );
+                        }
+                    }
+                }
+            }
+            Ty::Machine { name } => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if !td.variants.is_empty() {
                         let mut has_binding_identifier = false;

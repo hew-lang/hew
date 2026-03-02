@@ -905,6 +905,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
         TypeErrorKind::PurityViolation => "PurityViolation",
         TypeErrorKind::OrphanImpl => "OrphanImpl",
         TypeErrorKind::PlatformLimitation => "PlatformLimitation",
+        TypeErrorKind::MachineExhaustivenessError => "MachineExhaustivenessError",
     };
     serde_json::json!({
         "kind": kind_str,
@@ -2933,6 +2934,7 @@ fn format_type_def_hover(type_def: &hew_types::check::TypeDef) -> String {
         TypeDefKind::Struct => "type",
         TypeDefKind::Enum => "enum",
         TypeDefKind::Actor => "actor",
+        TypeDefKind::Machine => "machine",
     };
     let type_params = if type_def.type_params.is_empty() {
         String::new()

@@ -101,6 +101,63 @@ The spec allows `machine Foo<T> { ... }` but the parser does not yet parse type 
 
 ---
 
+## Phase 2: Type Checker (2025-07-25)
+
+### What was implemented
+
+- **`Ty::Machine` variant** (`hew-types/src/ty.rs`): Added a new `Machine { name: String }` variant to the `Ty` enum representing machine types. Updated `map_children`, `Display`, and all downstream match sites (`traits.rs`, `unify.rs`).
+
+- **Type registration** (`hew-types/src/check.rs`): Added `register_machine_decl()` which registers the machine as a `TypeDef` with `TypeDefKind::Machine`. Each state becomes a variant (unit or struct), and unit states get constructor function signatures. Registers all state field types with the trait registry for Send/Frozen derivation.
+
+- **Companion event enum**: The type checker generates a `{MachineName}Event` companion enum type with variants matching the machine's event declarations. This is registered as a standard `TypeDefKind::Enum` type definition.
+
+- **Generated methods**: Registers `step(event: MEvent) -> M` and `state_name() -> String` as methods on the machine type definition.
+
+- **Exhaustiveness checking** (`check_machine_exhaustiveness()`): Validates the state × event matrix. For each state S and event E, checks that either an explicit `on E: S -> ...` transition exists or a wildcard `on E: _ -> ...` covers it. Emits `MachineExhaustivenessError` for uncovered pairs and duplicate explicit transitions.
+
+- **Pattern matching support**: Added `Ty::Machine` case to `check_exhaustiveness()` for `match` expressions, so machine values can be pattern-matched like enums with exhaustiveness checking.
+
+- **Unification**: `Ty::Machine` unifies with itself (same name) and with `Ty::Named` of the same name (for interop with pattern matching and enum-like usage).
+
+- **Cross-crate fixes**: Updated `hew-serialize/src/enrich.rs` (machine type serialization), `hew-lsp/src/server.rs` (diagnostic kind mapping and hover display), and `hew-types/src/traits.rs` (marker trait derivation) to handle the new `Ty::Machine` and `TypeDefKind::Machine` variants.
+
+- **Tests** (`hew-types/tests/machine_typecheck.rs`): Seven tests covering well-formed machines, wildcard transitions, missing transition errors, type def registration, companion event generation, state field registration, and duplicate transition detection. All pass alongside the full workspace suite.
+
+### Design decisions
+
+**Decision 1: `Ty::Machine` is a distinct variant, not `Ty::Named`**
+Machines are nominal types with specific semantics (exhaustiveness checking, generated step() method). Using a dedicated `Ty` variant makes it easy to dispatch machine-specific logic without inspecting `TypeDefKind` at every use site. `Ty::Machine` unifies with `Ty::Named` of the same name for interop.
+
+**Decision 2: Exhaustiveness runs in `check_item`, not `collect_types`**
+Registration happens in pass 1 (`collect_types`), exhaustiveness validation in pass 3 (`check_item`). This matches how actors and functions are validated — registration first, then semantic checking.
+
+**Decision 3: Transition body type checking deferred to v2**
+For this phase, transition bodies pass through with basic expression type checking. Full checking of `self` bindings, event payload scoping, and return type validation against target states will be added incrementally once the core type registration and exhaustiveness checking are proven solid.
+
+**Decision 4: Machine marker traits derive from field types**
+Machines implement Send/Frozen/etc. if all their state field types do, matching the behavior of enums and structs. The trait registry receives all field types across all states.
+
+### Artifacts produced
+
+- `hew-types/src/ty.rs` — `Ty::Machine { name }` variant + `map_children` + `Display`
+- `hew-types/src/check.rs` — `TypeDefKind::Machine`, `register_machine_decl()`, `check_machine_exhaustiveness()`, match exhaustiveness for `Ty::Machine`
+- `hew-types/src/error.rs` — `TypeErrorKind::MachineExhaustivenessError`
+- `hew-types/src/unify.rs` — `Ty::Machine` unification rules
+- `hew-types/src/traits.rs` — `Ty::Machine` marker trait derivation
+- `hew-types/tests/machine_typecheck.rs` — 7 tests
+- `hew-serialize/src/enrich.rs` — `Ty::Machine` serialization
+- `hew-lsp/src/server.rs` — diagnostic + hover support for machines
+
+### Next steps
+
+1. **Transition body type checking** — Check `self` binding, event payload scoping, and return type validation in transition bodies
+2. **Serialization** — Serialize full `MachineDecl` to MessagePack in `hew-serialize`
+3. **Codegen** — Lower machines to tagged union + `step()` switch in MLIR
+4. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
+5. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`
+
+---
+
 ## Phase 2: Serialization (2025-07-25)
 
 ### What was implemented

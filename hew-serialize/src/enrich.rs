@@ -197,6 +197,12 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
 
         // Skip these types gracefully - they shouldn't be serialized
         Ty::Var(_) | Ty::Error => return None,
+
+        // Machine types map to Named for serialization
+        Ty::Machine { name } => TypeExpr::Named {
+            name: name.clone(),
+            type_args: None,
+        },
     };
 
     Some((te, span))

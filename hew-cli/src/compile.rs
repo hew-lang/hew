@@ -568,7 +568,10 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 /// `program.module_graph` for serialisation; the existing `resolved_items`
 /// on each `ImportDecl` remain populated so that `flatten_import_items` can
 /// continue to work as a temporary compatibility shim.
-#[expect(clippy::too_many_arguments, reason = "module graph construction needs all context")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "module graph construction needs all context"
+)]
 fn build_module_graph(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,
@@ -738,7 +741,10 @@ fn flatten_import_items(program: &mut hew_parser::ast::Program) {
     clippy::too_many_lines,
     reason = "sequential import resolution steps for file and module imports"
 )]
-#[expect(clippy::too_many_arguments, reason = "import resolution needs all context")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "import resolution needs all context"
+)]
 fn resolve_file_imports(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,

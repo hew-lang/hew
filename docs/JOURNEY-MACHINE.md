@@ -98,3 +98,42 @@ The spec allows `machine Foo<T> { ... }` but the parser does not yet parse type 
 3. **Codegen** — Lower machines to tagged union + `step()` switch in MLIR
 4. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
 5. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`
+
+---
+
+## Phase 2: Serialization (2025-07-25)
+
+### What was implemented
+
+- **Enrichment** (`hew-serialize/src/enrich.rs`): Added `Item::Machine` handling in three enrichment passes — `enrich_item` (enriches transition body expressions), `rewrite_builtin_calls_in_item` (rewrites builtins in transition bodies), and `normalize_item_types` (normalizes type expressions in state fields, event fields, and transition bodies).
+
+- **MessagePack serialization** (`hew-serialize/src/msgpack.rs`): The `MachineDecl` AST type already derives `Serialize`/`Deserialize` via serde, so it serializes through the existing `rmp_serde::to_vec_named` pipeline without additional code. Added a `round_trip_machine_decl` test that verifies a complete machine declaration (with states, events with typed fields, and transitions) survives serialize → deserialize intact.
+
+- **C++ AST types** (`hew-codegen/include/hew/ast_types.h`): Added `MachineState`, `MachineEvent`, `MachineTransition`, and `MachineDecl` structs mirroring the Rust AST. State and event fields use `std::vector<std::pair<std::string, Spanned<TypeExpr>>>` matching the serde tuple serialization. Added `MachineDecl` to the `Item` variant type.
+
+- **C++ MessagePack reader** (`hew-codegen/src/msgpack_reader.cpp`): Added `parseMachineField` (reads serde tuple `[name, spanned_type]`), `parseMachineState`, `parseMachineEvent`, `parseMachineTransition`, and `parseMachineDecl` functions. Wired `"Machine"` variant into `parseItem`. Format matches the Rust serde output exactly.
+
+### Design decisions
+
+**Decision 1: No custom serialization logic needed**
+The Rust `MachineDecl` and its children already derive `Serialize`/`Deserialize`. The existing `serialize_to_msgpack` function serializes all `Item` variants uniformly through serde, so Machine serialization works automatically.
+
+**Decision 2: State/event fields as serde tuples**
+Rust `Vec<(String, Spanned<TypeExpr>)>` serializes as an array of 2-element arrays `[name, spanned_type]`. The C++ reader uses `parseMachineField` to deserialize this tuple format, matching the serde convention used elsewhere (e.g., struct variant fields).
+
+**Decision 3: Transition body carries full Spanned<Expr>**
+Transition bodies are `Spanned<Expr>` (typically `Expr::Block`), preserving source spans for error reporting in codegen. The C++ reader uses the existing `parseSpanned<Expr>` + `parseExpr` infrastructure.
+
+### Artifacts produced
+
+- `hew-serialize/src/enrich.rs` — Machine handling in 3 enrichment passes
+- `hew-serialize/src/msgpack.rs` — Round-trip test for MachineDecl
+- `hew-codegen/include/hew/ast_types.h` — 4 new C++ structs + Item variant update
+- `hew-codegen/src/msgpack_reader.cpp` — 5 new parse functions + Item wiring
+
+### Next steps
+
+1. **Type checker** — Register machine types as tagged unions in `hew-types`; validate exhaustiveness matrix; generate `{Machine}Event` companion enum
+2. **Codegen** — Lower machines to tagged union + `step()` switch in MLIR
+3. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
+4. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`

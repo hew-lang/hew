@@ -1593,6 +1593,56 @@ static ast::SupervisorDecl parseSupervisorDecl(const msgpack::object &obj) {
   return sd;
 }
 
+// ── MachineDecl ─────────────────────────────────────────────────────────
+
+static std::pair<std::string, ast::Spanned<ast::TypeExpr>>
+parseMachineField(const msgpack::object &obj) {
+  // Serde tuple: [name, spanned_type_expr]
+  uint32_t sz;
+  const auto *arr = arrayData(obj, sz);
+  if (sz != 2)
+    fail("MachineField tuple should have 2 elements");
+  return {getString(arr[0]), parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr)};
+}
+
+static ast::MachineState parseMachineState(const msgpack::object &obj) {
+  ast::MachineState ms;
+  ms.name = getString(mapReq(obj, "name"));
+  ms.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
+      mapReq(obj, "fields"), parseMachineField);
+  return ms;
+}
+
+static ast::MachineEvent parseMachineEvent(const msgpack::object &obj) {
+  ast::MachineEvent me;
+  me.name = getString(mapReq(obj, "name"));
+  me.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
+      mapReq(obj, "fields"), parseMachineField);
+  return me;
+}
+
+static ast::MachineTransition parseMachineTransition(const msgpack::object &obj) {
+  ast::MachineTransition mt;
+  mt.event_name = getString(mapReq(obj, "event_name"));
+  mt.source_state = getString(mapReq(obj, "source_state"));
+  mt.target_state = getString(mapReq(obj, "target_state"));
+  mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  return mt;
+}
+
+static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
+  ast::MachineDecl md;
+  const auto *vis = mapGet(obj, "visibility");
+  if (vis && !isNil(*vis))
+    md.visibility = parseVisibility(*vis);
+  md.name = getString(mapReq(obj, "name"));
+  md.states = parseVec<ast::MachineState>(mapReq(obj, "states"), parseMachineState);
+  md.events = parseVec<ast::MachineEvent>(mapReq(obj, "events"), parseMachineEvent);
+  md.transitions =
+      parseVec<ast::MachineTransition>(mapReq(obj, "transitions"), parseMachineTransition);
+  return md;
+}
+
 // ── Item ────────────────────────────────────────────────────────────────────
 
 static ast::Item parseItem(const msgpack::object &obj) {
@@ -1620,6 +1670,8 @@ static ast::Item parseItem(const msgpack::object &obj) {
     return ast::Item{parseActorDecl(*payload)};
   if (name == "Supervisor")
     return ast::Item{parseSupervisorDecl(*payload)};
+  if (name == "Machine")
+    return ast::Item{parseMachineDecl(*payload)};
   fail("unknown Item variant: " + name);
 }
 

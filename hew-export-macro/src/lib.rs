@@ -198,6 +198,7 @@ pub fn hew_export(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "proc-macro API requires owned types")]
 fn hew_export_impl(
     args: HewExportArgs,
     func: ItemFn,

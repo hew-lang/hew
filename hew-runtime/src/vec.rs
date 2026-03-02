@@ -951,6 +951,7 @@ pub unsafe extern "C" fn hew_vec_remove_i64(v: *mut HewVec, val: i64) {
 /// # Safety
 ///
 /// `v` must be a valid f64 `HewVec` pointer.
+#[expect(clippy::float_cmp, reason = "exact equality is intentional for element removal")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_remove_f64(v: *mut HewVec, val: f64) {
     cabi_guard!(v.is_null());

@@ -80,6 +80,7 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
 /// `func` must be a valid function pointer. `arg` must remain valid until
 /// `func` completes.
 #[no_mangle]
+#[expect(clippy::missing_panics_doc, reason = "panics indicate unrecoverable thread pool failure")]
 pub unsafe extern "C" fn hew_blocking_pool_submit(
     pool: *mut HewBlockingPool,
     func: HewBlockingFn,

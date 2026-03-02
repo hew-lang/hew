@@ -444,6 +444,7 @@ pub enum Token<'src> {
 }
 
 impl std::fmt::Display for Token<'_> {
+    #[expect(clippy::too_many_lines, reason = "lexer Display covers all token types")]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             // Keywords

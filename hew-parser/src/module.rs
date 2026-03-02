@@ -142,6 +142,7 @@ impl ModuleGraph {
 
     /// Compute a topological ordering of the module graph via DFS.
     /// Returns `Err(CycleError)` if a cycle is detected.
+    #[expect(clippy::missing_errors_doc, reason = "internal API")]
     pub fn compute_topo_order(&mut self) -> Result<(), CycleError> {
         #[derive(Clone, Copy, PartialEq)]
         enum Mark {

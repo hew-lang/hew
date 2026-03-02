@@ -236,6 +236,7 @@ fn matches_any_glob(path: &str, patterns: &[String]) -> bool {
 /// - `*` — matches any characters within a single path segment
 /// - `**` — matches any number of path segments
 /// - Literal characters
+#[expect(clippy::similar_names, reason = "pat_parts and path_parts are distinct concepts")]
 fn glob_match(pattern: &str, path: &str) -> bool {
     let pat_parts: Vec<&str> = pattern.split('/').collect();
     let path_parts: Vec<&str> = path.split('/').collect();

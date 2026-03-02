@@ -403,6 +403,7 @@ fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan
     }
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "FFI callback signature requires owned values")]
 fn hew_connmgr_reconnect_worker_loop(
     mgr: SendConnMgr,
     shutdown: Arc<AtomicBool>,
@@ -1094,6 +1095,7 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 /// `conn_id` must be a valid connection ID from the transport.
 #[no_mangle]
+#[expect(clippy::too_many_lines, reason = "connection event loop handles all states")]
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_add: manager is null");
@@ -1587,6 +1589,7 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
 ///
 /// Each element: `{"conn_id":N,"peer_node_id":N,"state":"S","last_activity_ms":N}`
 #[cfg(feature = "profiler")]
+#[expect(clippy::missing_panics_doc, reason = "panics indicate unrecoverable connection failure")]
 pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
     use std::fmt::Write as _;
 

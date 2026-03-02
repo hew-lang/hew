@@ -135,6 +135,7 @@ fn unescape_string(s: &str) -> String {
 /// * `suffix_len` — bytes to strip from the end (1 for `"` or `` ` ``)
 /// * `expr_open` — the marker that opens an expression (`"{"` or `"${"`)
 /// * `span_start` — byte offset of the token in the original source
+#[expect(clippy::too_many_lines, reason = "top-level parser handles all statement types")]
 fn parse_string_parts(
     raw: &str,
     prefix_len: usize,
@@ -642,6 +643,7 @@ impl<'src> Parser<'src> {
         }
     }
 
+    #[expect(clippy::needless_pass_by_value, reason = "SavedPos is consumed to restore parser state")]
     fn restore_pos(&mut self, saved: SavedPos) {
         self.pos = saved.pos;
         self.errors.truncate(saved.error_count);
@@ -817,6 +819,7 @@ impl<'src> Parser<'src> {
 
     /// Parse a function declaration with optional `async`/`gen` modifiers.
     /// The current token must be `fn`, `async`, or `gen`.
+    #[expect(clippy::ref_option, reason = "avoids cloning option contents")]
     fn parse_fn_with_modifiers(
         &mut self,
         vis: Visibility,
@@ -2034,6 +2037,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse `#[wire] struct Name { field: Type, ... }` into a `TypeDecl` with wire metadata.
+    #[expect(clippy::too_many_lines, reason = "expression parsing handles all expression types")]
     fn parse_wire_struct(
         &mut self,
         attrs: &[Attribute],
@@ -2787,6 +2791,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse optional `<T, U: Trait>` type parameters after a name.
+    #[expect(clippy::option_option, reason = "None vs Some(None) vs Some(Some(v)) distinguishes absent, present-but-empty, and present-with-value")]
     fn parse_opt_type_params(&mut self) -> Option<Option<Vec<TypeParam>>> {
         if self.eat(&Token::Less) {
             Some(Some(self.parse_type_params()?))
@@ -2796,6 +2801,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse optional `-> Type` return type annotation.
+    #[expect(clippy::option_option, reason = "None vs Some(None) vs Some(Some(v)) distinguishes absent, present-but-empty, and present-with-value")]
     fn parse_opt_return_type(&mut self) -> Option<Option<Spanned<TypeExpr>>> {
         if self.eat(&Token::Arrow) {
             Some(Some(self.parse_type()?))
@@ -2805,6 +2811,7 @@ impl<'src> Parser<'src> {
     }
 
     /// Parse optional `where T: Trait` clause.
+    #[expect(clippy::option_option, reason = "None vs Some(None) vs Some(Some(v)) distinguishes absent, present-but-empty, and present-with-value")]
     fn parse_opt_where_clause(&mut self) -> Option<Option<WhereClause>> {
         if self.peek() == Some(&Token::Where) {
             self.advance();

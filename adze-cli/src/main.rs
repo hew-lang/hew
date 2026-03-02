@@ -665,6 +665,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 /// For each `(name, requirement)` in `failures`, queries the remote API
 /// for available versions, finds the best match, downloads the tarball,
 /// and unpacks it into the global registry.
+#[expect(clippy::too_many_lines, reason = "CLI command handler requires many steps")]
 fn fetch_missing_packages(
     failures: &[(String, String)],
     manifest: &manifest::HewManifest,
@@ -856,6 +857,7 @@ fn verify_registry_signature(
         .map_err(|e| format!("registry signature invalid: {e}"))
 }
 
+#[expect(clippy::too_many_lines, reason = "CLI command handler requires many steps")]
 fn cmd_publish(registry: &registry::Registry, registry_name: Option<&str>) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let manifest_path = cwd.join("hew.toml");

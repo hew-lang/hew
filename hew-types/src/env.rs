@@ -136,6 +136,7 @@ impl TypeEnv {
     }
 
     /// Pop the current scope, returning diagnostics about unused/unmutated bindings.
+    #[expect(clippy::missing_panics_doc, reason = "internal API, panics on invariant violation")]
     pub fn pop_scope_with_warnings(&mut self) -> Vec<ScopeWarning> {
         let scope = self.scopes.pop().expect("cannot pop empty scope stack");
         let mut warnings = Vec::new();

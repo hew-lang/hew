@@ -89,7 +89,7 @@ struct ChildEvent {
 pub type SupervisorInitFn = unsafe extern "C" fn() -> *mut HewSupervisor;
 
 /// Specification for a child supervisor so the parent can restart it.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "reserved for parent-child supervisor restart")]
 #[derive(Debug)]
 struct SupervisorChildSpec {
     init_fn: SupervisorInitFn,

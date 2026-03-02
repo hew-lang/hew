@@ -642,6 +642,7 @@ impl RegistryClient {
     }
 
     /// Parse an error response body.
+    #[expect(clippy::unused_self, reason = "method is part of the client API")]
     fn parse_error_response(&self, resp: ureq::http::Response<ureq::Body>) -> ApiError {
         #[derive(Deserialize)]
         struct ErrorBody {

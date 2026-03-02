@@ -764,6 +764,10 @@ pub unsafe extern "C" fn hew_stream_chunks(
 ///
 /// Returns a malloc-allocated null-terminated string. The caller must free it.
 /// Consumes the stream.
+///
+/// # Safety
+///
+/// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut c_char {
     if stream.is_null() {
@@ -796,6 +800,10 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
 /// Count remaining items in a stream.
 ///
 /// Consumes the stream.
+///
+/// # Safety
+///
+/// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
     if stream.is_null() {

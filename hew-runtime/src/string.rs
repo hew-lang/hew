@@ -306,6 +306,7 @@ pub unsafe extern "C" fn hew_string_trim(s: *const c_char) -> *mut c_char {
 /// # Safety
 ///
 /// All three pointers must be valid NUL-terminated C strings (or null).
+#[expect(clippy::similar_names, reason = "count_times_nlen and count_times_olen are intentionally parallel")]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_replace(
     s: *const c_char,

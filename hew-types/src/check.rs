@@ -155,6 +155,7 @@ pub struct FnSig {
 
 /// The main type checker.
 #[derive(Debug)]
+#[expect(clippy::struct_excessive_bools, reason = "checker state flags are independent booleans")]
 pub struct Checker {
     env: TypeEnv,
     subst: Substitution,
@@ -174,7 +175,7 @@ pub struct Checker {
     known_types: HashSet<String>,
     type_aliases: HashMap<String, Ty>,
     trait_defs: HashMap<String, TraitInfo>,
-    /// Maps trait name → list of super-trait names (e.g., "Pet" → ["Animal"])
+    /// Maps trait name → list of super-trait names (e.g., `Pet` → [`Animal`])
     trait_super: HashMap<String, Vec<String>>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     trait_impls_set: HashSet<(String, String)>,
@@ -703,6 +704,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn register_type_decl(&mut self, td: &TypeDecl) {
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
@@ -1502,6 +1504,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "expression type checking requires many cases")]
     fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
@@ -1686,6 +1689,7 @@ impl Checker {
         self.register_fn_sig_with_name(&fd.name, fd);
     }
 
+    #[expect(clippy::unused_self, reason = "method signature is part of the checker API")]
     fn collect_type_param_bounds(
         &self,
         type_params: Option<&Vec<TypeParam>>,
@@ -2009,6 +2013,7 @@ impl Checker {
     }
 
     /// Determine whether a name should be imported unqualified based on the `ImportSpec`.
+    #[expect(clippy::ref_option, reason = "avoids cloning the option contents")]
     fn should_import_name(name: &str, spec: &Option<ImportSpec>) -> bool {
         match spec {
             None => false,                  // bare import → qualified only
@@ -2020,6 +2025,7 @@ impl Checker {
     }
 
     /// Resolve the binding name for an imported symbol, applying any alias.
+    #[expect(clippy::ref_option, reason = "avoids cloning the option contents")]
     fn resolve_import_name(spec: &Option<ImportSpec>, name: &str) -> Option<String> {
         match spec {
             Some(ImportSpec::Names(names)) => names
@@ -2208,6 +2214,7 @@ impl Checker {
     }
 
     /// Register items from a user module under the module's namespace.
+    #[expect(clippy::too_many_lines, clippy::ref_option, reason = "statement type checking requires many cases")]
     fn register_user_module(
         &mut self,
         module_short: &str,
@@ -3205,6 +3212,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "expression check covers all AST variants")]
     fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
         self.maybe_warn_wasm_expr(expr, span);
         let ty = match expr {
@@ -3896,6 +3904,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "builtin method resolution requires many cases")]
     fn check_binary_op(&mut self, left: &Spanned<Expr>, op: BinaryOp, right: &Spanned<Expr>) -> Ty {
         let left_ty = self.synthesize(&left.0, &left.1);
         let right_ty = self.synthesize(&right.0, &right.1);
@@ -5793,6 +5802,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "trait impl checking requires many cases")]
     fn check_struct_init(
         &mut self,
         name: &str,
@@ -5986,6 +5996,7 @@ impl Checker {
     }
 
     /// Pattern binding
+    #[expect(clippy::too_many_lines, reason = "impl method resolution requires many cases")]
     fn bind_pattern(&mut self, pattern: &Pattern, ty: &Ty, is_mutable: bool, span: &Span) {
         let ty = &self.subst.resolve(ty);
         match pattern {
@@ -6533,6 +6544,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "generic instantiation requires many cases")]
     fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
         match te {
             TypeExpr::Named { name, type_args } => {
@@ -6886,6 +6898,7 @@ impl Checker {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "associated type resolution requires many cases")]
     fn check_exhaustiveness(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
         fn visit_or_patterns<'a, F: FnMut(&'a Pattern)>(pattern: &'a Pattern, f: &mut F) {
             match pattern {

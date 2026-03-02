@@ -196,11 +196,9 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             TypeExpr::TraitObject(bounds?)
         }
 
-        // Skip Unit gracefully — C++ codegen handles it via built-in logic
-        Ty::Unit => return None,
-
-        // Skip these types gracefully - they shouldn't be serialized
-        Ty::Var(_) | Ty::Error => return None,
+        // Skip Unit, Var, and Error gracefully — C++ codegen handles Unit
+        // via built-in logic, and Var/Error shouldn't be serialized.
+        Ty::Unit | Ty::Var(_) | Ty::Error => return None,
 
         // Machine types map to Named for serialization
         Ty::Machine { name } => TypeExpr::Named {
@@ -514,6 +512,7 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "enrichment covers all AST variants")]
 fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
         Expr::Call { function, args, .. } => {
@@ -571,7 +570,7 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_block(block);
             }
         }
-        Expr::Block(block) => rewrite_builtin_calls_in_block(block),
+        Expr::Block(block) | Expr::Unsafe(block) => rewrite_builtin_calls_in_block(block),
         Expr::Index { object, index } => {
             rewrite_builtin_calls_in_expr(object);
             rewrite_builtin_calls_in_expr(index);
@@ -626,9 +625,9 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 }
             }
         }
-        Expr::PostfixTry(inner) => rewrite_builtin_calls_in_expr(inner),
-        Expr::Await(inner) => rewrite_builtin_calls_in_expr(inner),
-        Expr::Yield(Some(inner)) => rewrite_builtin_calls_in_expr(inner),
+        Expr::PostfixTry(inner) | Expr::Await(inner) | Expr::Yield(Some(inner)) => {
+            rewrite_builtin_calls_in_expr(inner);
+        }
         Expr::Send { target, message } => {
             rewrite_builtin_calls_in_expr(target);
             rewrite_builtin_calls_in_expr(message);
@@ -641,7 +640,6 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(e);
             }
         }
-        Expr::Unsafe(block) => rewrite_builtin_calls_in_block(block),
         Expr::Join(exprs) => {
             for e in exprs {
                 rewrite_builtin_calls_in_expr(e);
@@ -874,6 +872,7 @@ fn normalize_expr_types(expr: &mut Spanned<Expr>) {
     });
 }
 
+#[expect(clippy::too_many_lines, reason = "builtin rewriting covers all expression types")]
 fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
         Expr::Block(block)
@@ -1186,6 +1185,7 @@ fn enrich_else_block(else_block: &mut ElseBlock, tco: &TypeCheckOutput) {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "pattern enrichment covers all pattern variants")]
 fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
     match &mut expr.0 {
         Expr::Block(block) => enrich_block(block, tco),

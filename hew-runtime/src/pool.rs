@@ -36,15 +36,14 @@ pub struct HewActorPool {
 }
 
 fn lock_state(pool: &HewActorPool) -> Option<MutexGuard<'_, PoolState>> {
-    match pool.state.lock() {
-        Ok(state) => Some(state),
+    if let Ok(state) = pool.state.lock() {
+        Some(state)
+    } else {
         // Policy: per-pool state — a poisoned mutex means this pool is
         // corrupted and cannot be used safely.  Return None so C-ABI
         // callers can report an error instead of aborting the process.
-        Err(_) => {
-            set_last_error("pool mutex poisoned (a thread panicked)");
-            None
-        }
+        set_last_error("pool mutex poisoned (a thread panicked)");
+        None
     }
 }
 
@@ -70,7 +69,6 @@ pub unsafe extern "C" fn hew_pool_new(name: *const c_char, strategy: c_int) -> *
     }
 
     let strategy = match strategy {
-        0 => PoolStrategy::RoundRobin,
         1 => PoolStrategy::Random,
         _ => PoolStrategy::RoundRobin,
     };

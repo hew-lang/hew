@@ -250,10 +250,6 @@ fn do_check(
                 // On initial check of a directory, find the first .hew file
                 if let Some(entry) = find_first_hew_file(original_input) {
                     // Leak is acceptable here — this only runs once at startup.
-                    #[expect(
-                        clippy::leaked_box,
-                        reason = "one-time allocation for the initial directory scan target"
-                    )]
                     Box::leak(entry.into_boxed_str())
                 } else {
                     eprintln!("No .hew files found in '{original_input}'");

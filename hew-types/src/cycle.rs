@@ -84,14 +84,12 @@ fn collect_actor_refs<'a>(
         Ty::Named { name, args } => {
             if name == "ActorRef" {
                 // ActorRef<X> — record X if it's a known actor
-                if let Some(inner) = args.first() {
-                    if let Ty::Named {
-                        name: actor_name, ..
-                    } = inner
-                    {
-                        if type_defs.contains_key(actor_name) {
-                            out.insert(actor_name.as_str());
-                        }
+                if let Some(Ty::Named {
+                    name: actor_name, ..
+                }) = args.first()
+                {
+                    if type_defs.contains_key(actor_name) {
+                        out.insert(actor_name.as_str());
                     }
                 }
             } else {

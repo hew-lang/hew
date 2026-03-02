@@ -4352,9 +4352,7 @@ impl<'src> Parser<'src> {
                 ) =>
             {
                 self.advance(); // consume '-'
-                let Some((next, _)) = self.advance() else {
-                    return None;
-                };
+                let (next, _) = self.advance()?;
                 match next {
                     Token::Integer(s) => {
                         if let Ok((val, radix)) = parse_int_literal(s) {

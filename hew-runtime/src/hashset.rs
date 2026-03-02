@@ -3,10 +3,6 @@
 //! Hash set implementation backed by `HashMap<T, ()>` with C ABI.
 //! Uses the existing `HashMap` infrastructure for storage.
 
-#![expect(
-    clippy::cast_sign_loss,
-    reason = "len casts usize→i64 which is lossless for realistic sizes"
-)]
 
 use core::ffi::c_char;
 use core::ptr;

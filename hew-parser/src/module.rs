@@ -149,21 +149,6 @@ impl ModuleGraph {
             Permanent,
         }
 
-        let mut marks: HashMap<ModuleId, Mark> = HashMap::new();
-        let mut order: Vec<ModuleId> = Vec::new();
-
-        // Collect keys up-front to avoid borrow issues.
-        let ids: Vec<ModuleId> = self.modules.keys().cloned().collect();
-
-        for id in &ids {
-            if !marks.contains_key(id) {
-                visit(id, &self.modules, &mut marks, &mut order, &mut Vec::new())?;
-            }
-        }
-
-        self.topo_order = order;
-        return Ok(());
-
         fn visit(
             id: &ModuleId,
             modules: &HashMap<ModuleId, Module>,
@@ -197,6 +182,21 @@ impl ModuleGraph {
             order.push(id.clone());
             Ok(())
         }
+
+        let mut marks: HashMap<ModuleId, Mark> = HashMap::new();
+        let mut order: Vec<ModuleId> = Vec::new();
+
+        // Collect keys up-front to avoid borrow issues.
+        let ids: Vec<ModuleId> = self.modules.keys().cloned().collect();
+
+        for id in &ids {
+            if !marks.contains_key(id) {
+                visit(id, &self.modules, &mut marks, &mut order, &mut Vec::new())?;
+            }
+        }
+
+        self.topo_order = order;
+        Ok(())
     }
 }
 

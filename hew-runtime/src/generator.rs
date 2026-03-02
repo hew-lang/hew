@@ -378,7 +378,7 @@ pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
 
         // Join the generator thread.
         if let Some(handle) = (*ctx).handle.take() {
-            if let Err(_) = handle.join() {
+            if handle.join().is_err() {
                 set_last_error("generator thread panicked during execution");
             }
         }

@@ -802,13 +802,14 @@ fn verify_package_signature(
     signature: &str,
     key_fingerprint: &str,
 ) -> Result<(), String> {
+    use base64::Engine as _;
+
     // Fetch the public key from the registry.
     let key_record = api_client
         .get_public_key(key_fingerprint)
         .map_err(|e| format!("could not fetch signing key {key_fingerprint}: {e}"))?;
 
     // Decode the base64 public key to raw bytes.
-    use base64::Engine as _;
     let pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&key_record.public_key)
         .map_err(|e| format!("invalid public key encoding: {e}"))?;
@@ -835,11 +836,11 @@ fn verify_registry_signature(
     published_at: &str,
     registry_sig: &str,
 ) -> Result<(), String> {
+    use base64::Engine as _;
+
     let key_resp = api_client
         .get_registry_key()
         .map_err(|e| format!("could not fetch registry key: {e}"))?;
-
-    use base64::Engine as _;
     let pub_bytes = base64::engine::general_purpose::STANDARD
         .decode(&key_resp.public_key)
         .map_err(|e| format!("invalid registry public key encoding: {e}"))?;

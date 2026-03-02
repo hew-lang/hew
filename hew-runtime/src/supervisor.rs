@@ -309,10 +309,6 @@ fn record_restart(sup: &mut HewSupervisor) {
 /// # Safety
 ///
 /// `sup.parent` must be non-null and point to a valid `HewSupervisor`.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "index_in_parent fits in u64 for any reasonable supervisor tree"
-)]
 fn escalate_to_parent(sup: &HewSupervisor) {
     // SAFETY: caller guarantees parent is valid.
     let parent = unsafe { &*sup.parent };
@@ -637,10 +633,6 @@ unsafe fn restart_with_budget_and_strategy(sup: &mut HewSupervisor, failed_index
 /// # Safety
 ///
 /// `sup` must be valid.
-#[expect(
-    clippy::too_many_lines,
-    reason = "restart strategies (one-for-one/all/rest) need inline logic"
-)]
 unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state: c_int) {
     let spec = &mut sup.child_specs[failed_index];
 

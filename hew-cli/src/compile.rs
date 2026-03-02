@@ -745,7 +745,7 @@ fn flatten_import_items(program: &mut hew_parser::ast::Program) {
 )]
 fn resolve_file_imports(
     source_file: &Path,
-    items: &mut Vec<Spanned<Item>>,
+    items: &mut [Spanned<Item>],
     imported: &mut HashSet<PathBuf>,
     manifest_deps: Option<&[String]>,
     extra_pkg_path: Option<&Path>,

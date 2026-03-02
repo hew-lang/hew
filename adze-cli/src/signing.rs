@@ -171,10 +171,11 @@ pub fn default_key_dir() -> PathBuf {
 ///
 /// Returns [`SignError::Io`] if the files cannot be written.
 pub fn save_keypair(dir: &Path, keypair: &KeyPair) -> Result<(), SignError> {
+    use base64::Engine as _;
+
     std::fs::create_dir_all(dir)?;
 
     let secret_path = dir.join("id_ed25519");
-    use base64::Engine as _;
     let secret_b64 = base64::engine::general_purpose::STANDARD.encode(keypair.secret_key_bytes());
     std::fs::write(&secret_path, &secret_b64)?;
 
@@ -198,12 +199,13 @@ pub fn save_keypair(dir: &Path, keypair: &KeyPair) -> Result<(), SignError> {
 /// Returns [`SignError::NoKey`] if no key exists, [`SignError::InvalidKey`] if
 /// the key file is malformed.
 pub fn load_keypair(dir: &Path) -> Result<KeyPair, SignError> {
+    use base64::Engine as _;
+
     let secret_path = dir.join("id_ed25519");
     if !secret_path.exists() {
         return Err(SignError::NoKey);
     }
     let b64 = std::fs::read_to_string(&secret_path)?;
-    use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| SignError::InvalidKey(format!("bad base64: {e}")))?;

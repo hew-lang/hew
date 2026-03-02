@@ -241,13 +241,8 @@ fn extract_call_target(body: &Block) -> Option<String> {
     }
 
     // Check last statement
-    if let Some((stmt, _)) = body.stmts.last() {
-        match stmt {
-            Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
-                return call_target_from_expr(&expr.0)
-            }
-            _ => {}
-        }
+    if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
+        return call_target_from_expr(&expr.0);
     }
 
     None

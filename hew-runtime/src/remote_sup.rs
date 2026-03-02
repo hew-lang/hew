@@ -105,9 +105,7 @@ impl HewRemoteSupervisor {
             Ok(guard) => guard,
             Err(e) => e.into_inner(),
         };
-        let Some(callback) = callback else {
-            return None;
-        };
+        let callback = callback?;
 
         let monitored = match self.monitored.lock() {
             Ok(guard) => guard,

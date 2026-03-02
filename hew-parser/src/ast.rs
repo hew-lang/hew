@@ -678,10 +678,6 @@ pub struct WireMetadata {
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "mirrors wire format field attributes"
-)]
 pub struct WireFieldMeta {
     pub field_name: String,
     pub field_number: u32,

@@ -1688,10 +1688,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 }
             }
         }
-        Expr::PostfixTry(inner) => {
-            collect_locals_from_expr(&inner.0, offset, locals);
-        }
-        Expr::Cast { expr: inner, .. } => {
+        Expr::PostfixTry(inner) | Expr::Cast { expr: inner, .. } => {
             collect_locals_from_expr(&inner.0, offset, locals);
         }
         Expr::Select { arms, timeout } => {
@@ -2771,10 +2768,10 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
             collect_refs_in_expr(&e.0, &e.1, name, spans);
             collect_refs_in_expr(&duration.0, &duration.1, name, spans);
         }
-        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
-            collect_refs_in_expr(&inner.0, &inner.1, name, spans);
-        }
-        Expr::Cast { expr: inner, .. } => {
+        Expr::Await(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Yield(Some(inner))
+        | Expr::Cast { expr: inner, .. } => {
             collect_refs_in_expr(&inner.0, &inner.1, name, spans);
         }
         Expr::Range { start, end, .. } => {

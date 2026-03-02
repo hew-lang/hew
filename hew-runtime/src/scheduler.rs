@@ -252,7 +252,7 @@ pub extern "C" fn hew_sched_shutdown() {
     };
     for handle in &mut *handles {
         if let Some(h) = handle.take() {
-            if let Err(_) = h.join() {
+            if h.join().is_err() {
                 eprintln!("hew: scheduler worker thread panicked during shutdown");
             }
         }

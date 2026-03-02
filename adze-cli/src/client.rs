@@ -260,6 +260,8 @@ impl RegistryClient {
         tarball: &[u8],
         request: &PublishRequest,
     ) -> Result<(), ApiError> {
+        use base64::Engine as _;
+
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
         let url = format!(
             "{}/packages/{}/{}",
@@ -270,8 +272,6 @@ impl RegistryClient {
 
         let metadata_json =
             serde_json::to_string(request).map_err(|e| ApiError::Parse(e.to_string()))?;
-
-        use base64::Engine as _;
         let tarball_b64 = base64::engine::general_purpose::STANDARD.encode(tarball);
 
         let body = serde_json::json!({
@@ -365,17 +365,17 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn get_package(&self, name: &str) -> Result<Vec<IndexEntry>, ApiError> {
         self.try_with_fallback(|base_url| {
+            #[derive(Deserialize)]
+            struct PackageRecord {
+                versions: Vec<IndexEntry>,
+            }
+
             let url = format!("{}/packages/{}", base_url, encode_name(name));
 
             let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
-            }
-
-            #[derive(Deserialize)]
-            struct PackageRecord {
-                versions: Vec<IndexEntry>,
             }
 
             let record: PackageRecord = resp
@@ -434,6 +434,11 @@ impl RegistryClient {
     ///
     /// Returns [`ApiError`] on HTTP, auth, or server failures.
     pub fn register_key(&self, public_key_b64: &str) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct KeyResponse {
+            fingerprint: String,
+        }
+
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
         let url = format!("{}/keys", self.api_url);
 
@@ -449,11 +454,6 @@ impl RegistryClient {
 
         if resp.status().as_u16() != 200 && resp.status().as_u16() != 201 {
             return Err(self.parse_error_response(resp));
-        }
-
-        #[derive(Deserialize)]
-        struct KeyResponse {
-            fingerprint: String,
         }
         let kr: KeyResponse = resp
             .into_body()
@@ -507,13 +507,13 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP failures.
     pub fn download_tarball(&self, url: &str) -> Result<Vec<u8>, ApiError> {
         let do_download = |download_url: &str| -> Result<Vec<u8>, ApiError> {
+            use std::io::Read as _;
+
             let resp = ureq::get(download_url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
             }
-
-            use std::io::Read as _;
             let mut data = Vec::new();
             resp.into_body()
                 .into_reader()
@@ -643,13 +643,13 @@ impl RegistryClient {
 
     /// Parse an error response body.
     fn parse_error_response(&self, resp: ureq::http::Response<ureq::Body>) -> ApiError {
-        let status: u16 = resp.status().into();
-
         #[derive(Deserialize)]
         struct ErrorBody {
             message: Option<String>,
             error: Option<String>,
         }
+
+        let status: u16 = resp.status().into();
 
         let message = resp
             .into_body()

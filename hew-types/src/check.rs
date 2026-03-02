@@ -1427,9 +1427,7 @@ impl Checker {
     }
 
     fn resolve_impl_associated_type(&mut self, alias: &str) -> Option<Ty> {
-        let Some(scope_index) = self.impl_alias_scopes.len().checked_sub(1) else {
-            return None;
-        };
+        let scope_index = self.impl_alias_scopes.len().checked_sub(1)?;
         let expr = {
             let scope = &mut self.impl_alias_scopes[scope_index];
             if let Some(entry) = scope.entries.get_mut(alias) {
@@ -2248,7 +2246,6 @@ impl Checker {
                     }
                     self.known_types.insert(td.name.clone());
                 }
-                Item::TypeAlias(_) => {}
                 Item::Trait(tr) => {
                     if !tr.visibility.is_pub() {
                         continue;
@@ -3195,7 +3192,7 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } => {
+            Expr::Scope { .. } | Expr::Join(_) => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
@@ -3203,9 +3200,6 @@ impl Checker {
             }
             Expr::Select { .. } => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Select);
-            }
-            Expr::Join(_) => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             _ => {}
         }
@@ -4313,9 +4307,8 @@ impl Checker {
                 let (idx_expr, idx_sp) = args[1].expr();
                 self.check_against(idx_expr, idx_sp, &Ty::I64);
 
-                if let Some(inner) = sup_ty_resolved.as_actor_ref() {
-                    if let Ty::Named { name: sup_name, .. } = inner {
-                        if let Some(children) = self.supervisor_children.get(sup_name) {
+                if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
+                    if let Some(children) = self.supervisor_children.get(sup_name) {
                             if let Expr::Literal(hew_parser::ast::Literal::Integer {
                                 value: idx,
                                 ..
@@ -4338,7 +4331,6 @@ impl Checker {
                             // Non-constant index: fresh type var
                             return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
                         }
-                    }
                 }
                 return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
             }
@@ -4945,15 +4937,15 @@ impl Checker {
                     "to_i8" => Ty::I8,
                     "to_i16" => Ty::I16,
                     "to_i32" => Ty::I32,
-                    "to_i64" => Ty::I64,
+                    // to_isize maps to I64 (platform-dependent, default 64-bit)
+                    "to_i64" | "to_isize" => Ty::I64,
                     "to_u8" => Ty::U8,
                     "to_u16" => Ty::U16,
                     "to_u32" => Ty::U32,
-                    "to_u64" => Ty::U64,
+                    // to_usize maps to U64 (platform-dependent, default 64-bit)
+                    "to_u64" | "to_usize" => Ty::U64,
                     "to_f32" => Ty::F32,
                     "to_f64" => Ty::F64,
-                    "to_isize" => Ty::I64, // platform-dependent, default 64-bit
-                    "to_usize" => Ty::U64,
                     _ => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
@@ -5297,11 +5289,7 @@ impl Checker {
                 },
                 "next",
             ) if name == "Generator" || name == "AsyncGenerator" => {
-                if name == "Generator" {
-                    type_args.first().cloned().unwrap_or(Ty::Error)
-                } else {
-                    type_args.first().cloned().unwrap_or(Ty::Error)
-                }
+                type_args.first().cloned().unwrap_or(Ty::Error)
             }
             // Stream<T> methods
             (
@@ -6791,7 +6779,6 @@ impl Checker {
     }
 
     /// Check if an expression is typically used for side effects (not for its return value).
-
     fn record_type(&mut self, span: &Span, ty: &Ty) {
         self.expr_types.insert(SpanKey::from(span), ty.clone());
     }

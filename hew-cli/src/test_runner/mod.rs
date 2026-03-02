@@ -190,22 +190,18 @@ fn detect_and_build_ffi_lib(start_dir: &std::path::Path) -> Result<Option<String
 /// workspace `Cargo.toml` (one containing `[workspace]`).
 fn find_cargo_target_dir(package_dir: &std::path::Path) -> std::path::PathBuf {
     let mut dir = package_dir.to_path_buf();
-    loop {
-        if let Some(parent) = dir.parent() {
-            let candidate = parent.join("Cargo.toml");
-            if candidate.exists() {
-                if let Ok(content) = std::fs::read_to_string(&candidate) {
-                    if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
-                        if parsed.get("workspace").is_some() {
-                            return parent.join("target");
-                        }
+    while let Some(parent) = dir.parent() {
+        let candidate = parent.join("Cargo.toml");
+        if candidate.exists() {
+            if let Ok(content) = std::fs::read_to_string(&candidate) {
+                if let Ok(parsed) = toml::from_str::<toml::Value>(&content) {
+                    if parsed.get("workspace").is_some() {
+                        return parent.join("target");
                     }
                 }
             }
-            dir = parent.to_path_buf();
-        } else {
-            break;
         }
+        dir = parent.to_path_buf();
     }
     // Fallback: use the package's own target directory.
     package_dir.join("target")

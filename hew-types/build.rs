@@ -524,13 +524,8 @@ fn extract_call_target(body: &Block) -> Option<(String, usize)> {
     if let Some(trailing) = &body.trailing_expr {
         return call_target_from_expr(&trailing.0);
     }
-    if let Some((stmt, _)) = body.stmts.last() {
-        match stmt {
-            Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
-                return call_target_from_expr(&expr.0)
-            }
-            _ => {}
-        }
+    if let Some((Stmt::Expression(expr) | Stmt::Return(Some(expr)), _)) = body.stmts.last() {
+        return call_target_from_expr(&expr.0);
     }
     None
 }
@@ -826,16 +821,22 @@ fn generate_resolve_handle_method(out: &mut String, modules: &BTreeMap<String, M
         }
     }
     for ((type_name, c_symbol), methods) in &grouped {
-        let patterns: Vec<String> = methods
-            .iter()
-            .map(|m| format!("(\"{type_name}\", \"{m}\")"))
-            .collect();
-        writeln!(
-            out,
-            "        {} => Some(\"{c_symbol}\"),",
-            patterns.join(" | ")
-        )
-        .unwrap();
+        if methods.len() == 1 {
+            writeln!(
+                out,
+                "        (\"{type_name}\", \"{}\") => Some(\"{c_symbol}\"),",
+                methods[0]
+            )
+            .unwrap();
+        } else {
+            let method_pats: Vec<String> = methods.iter().map(|m| format!("\"{m}\"")).collect();
+            writeln!(
+                out,
+                "        (\"{type_name}\", {}) => Some(\"{c_symbol}\"),",
+                method_pats.join(" | ")
+            )
+            .unwrap();
+        }
     }
 
     writeln!(out, "        _ => None,").unwrap();

@@ -9,7 +9,8 @@ machine Counter {
 
     on Inc: Zero -> Count { Count { n: 1 } }
     on Inc: Count -> Count { Count { n: self.n + 1 } }
-    on Reset: _ -> Zero { Zero }
+    on Reset: Zero -> Zero { Zero }
+    on Reset: Count -> Zero { Zero }
 }
 
 fn main() -> Int {
@@ -19,10 +20,10 @@ fn main() -> Int {
     c = c.step(CounterEvent::Inc);
 
     match c {
-        Count(n) => {
+        Count { n } => {
             println(f"count = {n}");
-            if n == 3 { 0 } else { 1 }
+            if n == 3 { println("PASS"); 0 } else { println("FAIL"); 1 }
         },
-        _ => 1,
+        _ => { println("FAIL: wrong state"); 1 },
     }
 }

@@ -220,6 +220,8 @@ pub struct Checker {
     wasm_target: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
+    /// Inside a machine transition body, the (machine_name, source_state_name) pair.
+    current_machine_transition: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,6 +351,7 @@ impl Checker {
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),
+            current_machine_transition: None,
         }
     }
 
@@ -1192,16 +1195,21 @@ impl Checker {
                 covered.insert(key);
             }
 
-            // Fix 6: Basic transition body validation
-            // Bind `self` as the machine type so body expressions can reference it.
-            // Full self-scoping (fields, event payload) can come later.
+            // Fix 6: Transition body validation with source-state field scoping.
+            // Bind `self` as the machine type, and track the source state so
+            // that `self.field` access resolves correctly for payload states.
             self.env.push_scope();
             self.env.define(
                 "self".to_string(),
                 Ty::Machine { name: md.name.clone() },
                 false,
             );
+            if transition.source_state != "_" {
+                self.current_machine_transition =
+                    Some((md.name.clone(), transition.source_state.clone()));
+            }
             self.synthesize(&transition.body.0, &transition.body.1);
+            self.current_machine_transition = None;
             self.env.pop_scope();
         }
 
@@ -5629,6 +5637,32 @@ impl Checker {
                     Ty::Error
                 }
             }
+            Ty::Machine { name } => {
+                // Allow `self.field` inside a transition body when the source
+                // state is known and has the requested field.
+                if let Some((ref mn, ref src_state)) = self.current_machine_transition {
+                    if mn == name {
+                        if let Some(td) = self.lookup_type_def(name) {
+                            if let Some(VariantDef::Struct(variant_fields)) =
+                                td.variants.get(src_state).cloned()
+                            {
+                                if let Some((_, field_ty)) = variant_fields
+                                    .iter()
+                                    .find(|(fname, _)| fname == field)
+                                {
+                                    return field_ty.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedField,
+                    span,
+                    format!("cannot access field `{field}` on `{resolved}`"),
+                );
+                Ty::Error
+            }
             _ => {
                 if resolved != Ty::Error {
                     self.report_error(
@@ -5856,12 +5890,26 @@ impl Checker {
                 name: name.to_string(),
                 args: type_args,
             }
-        } else if let Some((enum_name, variant_fields)) =
+        } else if let Some((enum_name, variant_fields, is_machine)) =
             self.type_defs
                 .iter()
-                .find_map(|(type_name, td)| match td.variants.get(name) {
-                    Some(VariantDef::Struct(fields)) => Some((type_name.clone(), fields.clone())),
-                    _ => None,
+                .find_map(|(type_name, td)| {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    // For qualified names (e.g., Keeper::Holding), verify prefix
+                    if name.contains("::") {
+                        let prefix = name.split("::").next().unwrap_or("");
+                        if prefix != type_name {
+                            return None;
+                        }
+                    }
+                    match td.variants.get(name).or_else(|| td.variants.get(short)) {
+                        Some(VariantDef::Struct(fields)) => Some((
+                            type_name.clone(),
+                            fields.clone(),
+                            td.kind == TypeDefKind::Machine,
+                        )),
+                        _ => None,
+                    }
                 })
         {
             for (field_name, (expr, es)) in fields {
@@ -5892,9 +5940,13 @@ impl Checker {
                     );
                 }
             }
-            Ty::Named {
-                name: enum_name,
-                args: vec![],
+            if is_machine {
+                Ty::Machine { name: enum_name }
+            } else {
+                Ty::Named {
+                    name: enum_name,
+                    args: vec![],
+                }
             }
         } else {
             let similar = crate::error::find_similar(
@@ -5994,10 +6046,14 @@ impl Checker {
             }
             Pattern::Struct { name, fields } => {
                 // Bind field patterns to field types
-                if let Ty::Named {
-                    name: type_name, ..
-                } = ty
-                {
+                let type_name_opt = match ty {
+                    Ty::Named {
+                        name: type_name, ..
+                    } => Some(type_name.as_str()),
+                    Ty::Machine { name } => Some(name.as_str()),
+                    _ => None,
+                };
+                if let Some(type_name) = type_name_opt {
                     if let Some(td) = self.lookup_type_def(type_name) {
                         if let Some(VariantDef::Struct(variant_fields)) =
                             td.variants.get(name).cloned()
@@ -6107,10 +6163,15 @@ impl Checker {
         }
         // Strip enum prefix from qualified names (e.g., "Color::Custom" -> "Custom")
         let short_name = variant_name.rsplit("::").next().unwrap_or(variant_name);
-        if let Ty::Named {
-            name: type_name, ..
-        } = enum_ty
-        {
+        // Extract the type name from Named or Machine types
+        let type_name_opt = match enum_ty {
+            Ty::Named {
+                name: type_name, ..
+            } => Some(type_name.as_str()),
+            Ty::Machine { name } => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(type_name) = type_name_opt {
             if let Some(td) = self.lookup_type_def(type_name) {
                 if let Some(v) = td.variants.get(short_name) {
                     return match v {

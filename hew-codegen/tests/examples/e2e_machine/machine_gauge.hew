@@ -10,6 +10,8 @@ machine Gauge {
 
     on TurnOn: Off -> On { On { level: 10 } }
     on TurnOff: On -> Off { Off }
+    on TurnOn: On -> On { self }
+    on TurnOff: Off -> Off { self }
     // Wildcard self-transitions preserve current state and fields
     on Noop: _ -> _ { self }
 }
@@ -28,7 +30,7 @@ fn main() -> Int {
 
     // Check payload preserved after noop
     match g {
-        On(level) => {
+        On { level } => {
             println(f"level = {level}");
             if level == 10 { 0 } else { 1 }
         },

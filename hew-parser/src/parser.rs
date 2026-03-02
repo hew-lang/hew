@@ -1999,6 +1999,7 @@ impl<'src> Parser<'src> {
             let mut is_repeated = false;
             let mut json_name: Option<String> = None;
             let mut yaml_name: Option<String> = None;
+            let mut since: Option<u32> = None;
 
             loop {
                 match self.peek() {
@@ -2015,6 +2016,16 @@ impl<'src> Parser<'src> {
                         let ident = self.expect_ident().unwrap_or_default();
                         if ident == "repeated" {
                             is_repeated = true;
+                        } else if ident == "since" {
+                            // `since N` — schema version that introduced this field
+                            if let Some(Token::Integer(n_str)) = self.peek() {
+                                since = parse_int_literal(n_str)
+                                    .ok()
+                                    .and_then(|(v, _)| u32::try_from(v).ok());
+                                self.advance();
+                            } else {
+                                self.error("expected version number after 'since'".to_string());
+                            }
                         } else if ident == "json" && self.eat(&Token::LeftParen) {
                             if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
                                 json_name = Some(unquote_str(s).to_string());
@@ -2048,6 +2059,7 @@ impl<'src> Parser<'src> {
                 is_repeated,
                 json_name,
                 yaml_name,
+                since,
             ));
 
             // Accept comma or semicolon as separator
@@ -2074,6 +2086,7 @@ impl<'src> Parser<'src> {
             is_repeated,
             json_name,
             yaml_name,
+            since,
         ) in field_meta
         {
             let field_number = if let Some(n) = explicit_num {
@@ -2094,6 +2107,7 @@ impl<'src> Parser<'src> {
                 is_repeated,
                 json_name,
                 yaml_name,
+                since,
             });
         }
 
@@ -2109,6 +2123,23 @@ impl<'src> Parser<'src> {
                 .and_then(|s| NamingCase::from_attr(s.as_str()))
         });
 
+        // Extract version and min_version from #[wire(version = N, min_version = M)]
+        let wire_attr = attrs.iter().find(|a| a.name == "wire");
+        let version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "version" => value.parse().ok(),
+                _ => None,
+            })
+        });
+        let min_version = wire_attr.and_then(|a| {
+            a.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == "min_version" => {
+                    value.parse().ok()
+                }
+                _ => None,
+            })
+        });
+
         Some(TypeDecl {
             visibility,
             kind: TypeDeclKind::Struct,
@@ -2122,6 +2153,8 @@ impl<'src> Parser<'src> {
                 reserved_numbers,
                 json_case,
                 yaml_case,
+                version,
+                min_version,
             }),
         })
     }

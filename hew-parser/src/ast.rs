@@ -665,6 +665,12 @@ pub struct WireMetadata {
     pub reserved_numbers: Vec<u32>,
     pub json_case: Option<NamingCase>,
     pub yaml_case: Option<NamingCase>,
+    /// Schema version from `#[wire(version = N)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// Minimum version that can decode this schema, from `#[wire(min_version = N)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<u32>,
 }
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
@@ -681,6 +687,9 @@ pub struct WireFieldMeta {
     pub is_repeated: bool,
     pub json_name: Option<String>,
     pub yaml_name: Option<String>,
+    /// Schema version that introduced this field, from `since N` modifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -783,6 +792,7 @@ impl WireDecl {
                 is_repeated: f.is_repeated,
                 json_name: f.json_name.clone(),
                 yaml_name: f.yaml_name.clone(),
+                since: None,
             })
             .collect();
 
@@ -822,6 +832,8 @@ impl WireDecl {
                 reserved_numbers: vec![],
                 json_case: self.json_case,
                 yaml_case: self.yaml_case,
+                version: None,
+                min_version: None,
             }),
         }
     }

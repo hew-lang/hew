@@ -322,6 +322,16 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                                         mlir::ValueRange{})
             .getResult();
 
+    // If schema has a version, encode it as field 0 (reserved for version tag)
+    if (decl.version.has_value()) {
+      auto tagZero = createIntConstant(builder, location, i32Type, 0);
+      auto versionVal = createIntConstant(builder, location, i64Type, *decl.version);
+      builder.create<hew::RuntimeCallOp>(
+          location, mlir::TypeRange{i32Type},
+          mlir::SymbolRefAttr::get(&context, "hew_wire_encode_field_varint"),
+          mlir::ValueRange{bufPtr, tagZero, versionVal});
+    }
+
     // Encode each field
     unsigned encIdx = 0;
     for (const auto &field : decl.fields) {
@@ -499,11 +509,11 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         auto rawI64 = builder.create<mlir::LLVM::LoadOp>(location, i64Type, scratchI64);
         decoded = builder.create<mlir::arith::BitcastOp>(location, builder.getF64Type(), rawI64);
       } else if (jkind == WireJsonKind::String) {
-        builder.create<hew::RuntimeCallOp>(
-            location, mlir::TypeRange{i32Type},
-            mlir::SymbolRefAttr::get(&context, "hew_wire_decode_bytes"),
-            mlir::ValueRange{bufPtr, scratchPtr, scratchLen});
-        decoded = builder.create<mlir::LLVM::LoadOp>(location, ptrType, scratchPtr);
+        // Decode as null-terminated C string (copies data + appends '\0')
+        decoded = builder.create<hew::RuntimeCallOp>(
+            location, mlir::TypeRange{ptrType},
+            mlir::SymbolRefAttr::get(&context, "hew_wire_decode_string"),
+            mlir::ValueRange{bufPtr}).getResult();
       } else {
         builder.create<hew::RuntimeCallOp>(
             location, mlir::TypeRange{i32Type},
@@ -972,15 +982,11 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
         mlir::ValueRange{wireBuf}).getResult();
 
     // Call Foo_decode(ptr, len) → struct
+    // Note: the wire buf is intentionally NOT destroyed here because decoded
+    // string fields may contain zero-copy pointers into the buffer data.
     auto decodeCallee = module.lookupSymbol<mlir::func::FuncOp>(declName + "_decode");
     auto decoded = builder.create<mlir::func::CallOp>(
         location, decodeCallee, mlir::ValueRange{dataPtr, bufLen}).getResult(0);
-
-    // Destroy the temporary wire buf
-    builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_destroy"),
-        mlir::ValueRange{wireBuf});
 
     builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{decoded});
     builder.restoreInsertionPoint(savedIP);

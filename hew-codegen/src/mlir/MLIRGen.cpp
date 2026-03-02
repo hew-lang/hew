@@ -91,6 +91,8 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
 
   wd.json_case = wm.json_case;
   wd.yaml_case = wm.yaml_case;
+  wd.version = wm.version;
+  wd.min_version = wm.min_version;
   return wd;
 }
 

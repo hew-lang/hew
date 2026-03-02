@@ -1365,6 +1365,9 @@ static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
   const auto *yn = mapGet(obj, "yaml_name");
   if (yn && !isNil(*yn))
     fm.yaml_name = getString(*yn);
+  const auto *si = mapGet(obj, "since");
+  if (si && !isNil(*si))
+    fm.since = static_cast<uint32_t>(getUint(*si));
   return fm;
 }
 
@@ -1380,6 +1383,12 @@ static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
   const auto *yc = mapGet(obj, "yaml_case");
   if (yc && !isNil(*yc))
     wm.yaml_case = parseNamingCase(*yc);
+  const auto *ver = mapGet(obj, "version");
+  if (ver && !isNil(*ver))
+    wm.version = static_cast<uint32_t>(getUint(*ver));
+  const auto *mver = mapGet(obj, "min_version");
+  if (mver && !isNil(*mver))
+    wm.min_version = static_cast<uint32_t>(getUint(*mver));
   return wm;
 }
 

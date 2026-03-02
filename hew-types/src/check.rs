@@ -811,8 +811,9 @@ impl Checker {
         self.type_defs.insert(td.name.clone(), type_def);
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
-        if td.wire.is_some() {
+        if let Some(ref wire) = td.wire {
             self.register_wire_methods(&td.name);
+            self.validate_wire_version_constraints(&td.name, wire);
         }
     }
 
@@ -876,6 +877,75 @@ impl Checker {
                     doc_comment: None,
                 },
             );
+        }
+    }
+
+    /// Validate version constraints on a wire type.
+    fn validate_wire_version_constraints(
+        &mut self,
+        type_name: &str,
+        wire: &hew_parser::ast::WireMetadata,
+    ) {
+        use crate::error::{Severity, TypeError, TypeErrorKind};
+
+        let version = wire.version;
+        let min_version = wire.min_version;
+
+        // min_version cannot exceed version
+        if let (Some(min_v), Some(v)) = (min_version, version) {
+            if min_v > v {
+                self.errors.push(TypeError {
+                    severity: Severity::Error,
+                    kind: TypeErrorKind::InvalidOperation,
+                    span: 0..0,
+                    message: format!(
+                        "wire `{type_name}`: min_version ({min_v}) cannot exceed version ({v})"
+                    ),
+                    notes: vec![],
+                    suggestions: vec![],
+                });
+            }
+        }
+
+        // Per-field `since` constraints
+        for fm in &wire.field_meta {
+            if let Some(since) = fm.since {
+                // since cannot exceed version
+                if let Some(v) = version {
+                    if since > v {
+                        self.errors.push(TypeError {
+                            severity: Severity::Error,
+                            kind: TypeErrorKind::InvalidOperation,
+                            span: 0..0,
+                            message: format!(
+                                "wire `{type_name}.{}`: since ({since}) cannot exceed \
+                                 schema version ({v})",
+                                fm.field_name
+                            ),
+                            notes: vec![],
+                            suggestions: vec![],
+                        });
+                    }
+                }
+            }
+
+            // Warn if version > 1 and a non-optional field lacks `since`
+            if let Some(v) = version {
+                if v > 1 && fm.since.is_none() && !fm.is_optional {
+                    self.warnings.push(TypeError {
+                        severity: Severity::Warning,
+                        kind: TypeErrorKind::StyleSuggestion,
+                        span: 0..0,
+                        message: format!(
+                            "wire `{type_name}.{}`: non-optional field has no `since` annotation \
+                             (schema version is {v})",
+                            fm.field_name
+                        ),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
+                }
+            }
         }
     }
 

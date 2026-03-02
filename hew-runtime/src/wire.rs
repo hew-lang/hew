@@ -1143,6 +1143,50 @@ pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec
 }
 
 // ---------------------------------------------------------------------------
+// String decode helper
+// ---------------------------------------------------------------------------
+
+/// Decode a length-delimited field as a null-terminated C string.
+///
+/// Reads the varint length, copies the data, and appends a null terminator.
+/// Returns a `malloc`-allocated C string that the caller must free.
+///
+/// # Safety
+///
+/// `buf` must be a valid, non-null pointer to a [`HewWireBuf`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_decode_string(buf: *mut HewWireBuf) -> *const c_char {
+    if buf.is_null() {
+        return std::ptr::null();
+    }
+    let mut length: u64 = 0;
+    if unsafe { hew_wire_decode_varint(buf, &raw mut length) } != 0 {
+        return std::ptr::null();
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "wire payloads bounded by buffer size which fits in usize"
+    )]
+    let len = length as usize;
+    let b = unsafe { &mut *buf };
+    let Some(ptr) = b.peek(len) else {
+        return std::ptr::null();
+    };
+    b.read_pos += len;
+
+    // Allocate len+1 bytes and copy with null terminator
+    let dst = unsafe { libc::malloc(len + 1) }.cast::<u8>();
+    if dst.is_null() {
+        return std::ptr::null();
+    }
+    if len > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(ptr, dst, len) };
+    }
+    unsafe { *dst.add(len) = 0 };
+    dst.cast::<c_char>()
+}
+
+// ---------------------------------------------------------------------------
 // Wire buffer ↔ bytes (HewVec) bridge
 // ---------------------------------------------------------------------------
 

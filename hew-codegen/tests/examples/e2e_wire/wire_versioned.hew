@@ -1,0 +1,18 @@
+// Test: versioned wire struct with since modifier
+#[wire(version = 2)]
+struct Config {
+    host: String,
+    port: i32,
+    tls: bool since 2,
+}
+
+fn main() {
+    let c = Config { host: "localhost", port: 8080, tls: true };
+    let json = c.to_json();
+    println(json);
+
+    // Binary roundtrip with version tag in wire format
+    let buf = c.encode();
+    let c2 = Config.decode(buf);
+    println(c2.to_json());
+}

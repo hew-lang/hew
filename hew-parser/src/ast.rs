@@ -602,6 +602,10 @@ pub struct ImportDecl {
     /// Used by the type checker to register user module items under the module namespace.
     #[serde(skip)]
     pub resolved_items: Option<Vec<Spanned<Item>>>,
+    /// Source file paths for the resolved module (populated by `resolve_file_imports`).
+    /// Multiple paths indicate a directory module with peer files.
+    #[serde(skip)]
+    pub resolved_source_paths: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

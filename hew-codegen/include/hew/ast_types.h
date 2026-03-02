@@ -910,7 +910,7 @@ struct Module {
   ModuleId id;
   std::vector<Spanned<Item>> items;
   std::vector<ModuleImport> imports;
-  std::optional<std::string> source_path;
+  std::vector<std::string> source_paths;
   std::optional<std::string> doc;
 };
 

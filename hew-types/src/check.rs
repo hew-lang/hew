@@ -8368,6 +8368,7 @@ fn main() {
             spec,
             file_path: None,
             resolved_items: Some(items),
+            resolved_source_paths: Vec::new(),
         }
     }
 
@@ -8751,6 +8752,7 @@ fn main() {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_source_paths: Vec::new(),
         };
         let output = check_items(vec![(Item::Import(import), 0..0)]);
 
@@ -8865,6 +8867,7 @@ fn main() {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_source_paths: Vec::new(),
         };
         let output = check_items(vec![(Item::Import(import), 0..0)]);
         // Should not register anything but should not crash
@@ -9196,6 +9199,7 @@ fn main() {
             spec: None,
             file_path: Some("private_lib.hew".to_string()),
             resolved_items: Some(resolved),
+            resolved_source_paths: Vec::new(),
         };
 
         let program = Program {

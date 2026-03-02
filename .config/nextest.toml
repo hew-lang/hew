@@ -1,0 +1,13 @@
+# Nextest configuration for the Hew workspace.
+# https://nexte.st/docs/configuration/
+
+[profile.default]
+# Exclude hew-wasm by default (requires wasmtime).
+default-filter = "not package(hew-wasm)"
+
+[profile.ci]
+# CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
+default-filter = "not package(hew-wasm)"
+
+[profile.ci.junit]
+path = "junit.xml"

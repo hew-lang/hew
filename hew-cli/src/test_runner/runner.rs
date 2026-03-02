@@ -25,6 +25,8 @@ pub struct TestResult {
     pub outcome: TestOutcome,
     /// Captured program output.
     pub output: String,
+    /// Wall-clock duration of the test (compile + run).
+    pub duration: Duration,
 }
 
 /// Summary of a full test run.
@@ -78,6 +80,7 @@ pub fn run_tests(
                         test: (*test).clone(),
                         outcome: TestOutcome::Failed(format!("cannot read {file}: {e}")),
                         output: String::new(),
+                        duration: Duration::ZERO,
                     });
                 }
                 continue;
@@ -91,6 +94,7 @@ pub fn run_tests(
                     test: (*test).clone(),
                     outcome: TestOutcome::Ignored,
                     output: String::new(),
+                    duration: Duration::ZERO,
                 });
                 continue;
             }
@@ -226,6 +230,8 @@ fn compile_test(
 /// Build a synthetic program that calls the test function, compile it natively,
 /// and execute the resulting binary.
 fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> TestResult {
+    let start = std::time::Instant::now();
+
     let tmp_binary = match compile_test(source, test, ffi_lib) {
         Ok((_src, bin)) => bin,
         Err(msg) => {
@@ -240,6 +246,7 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
                 test: test.clone(),
                 outcome,
                 output: String::new(),
+                duration: start.elapsed(),
             };
         }
     };
@@ -247,6 +254,7 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
     // Execute the compiled binary with a timeout.
     let run_result = run_binary_with_timeout(&tmp_binary, Duration::from_secs(30));
 
+    let duration = start.elapsed();
     match run_result {
         RunOutcome::Success { stdout, .. } => {
             if test.should_panic {
@@ -256,12 +264,14 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
                         "expected test to panic, but it completed successfully".into(),
                     ),
                     output: stdout,
+                    duration,
                 }
             } else {
                 TestResult {
                     test: test.clone(),
                     outcome: TestOutcome::Passed,
                     output: stdout,
+                    duration,
                 }
             }
         }
@@ -271,6 +281,7 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
                     test: test.clone(),
                     outcome: TestOutcome::Passed,
                     output: stdout,
+                    duration,
                 }
             } else {
                 let msg = if stderr.is_empty() {
@@ -282,6 +293,7 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
                     test: test.clone(),
                     outcome: TestOutcome::Failed(msg),
                     output: stdout,
+                    duration,
                 }
             }
         }
@@ -289,11 +301,13 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
             test: test.clone(),
             outcome: TestOutcome::Failed("test timed out after 30s".into()),
             output: String::new(),
+            duration,
         },
         RunOutcome::Error(e) => TestResult {
             test: test.clone(),
             outcome: TestOutcome::Failed(format!("cannot execute test binary: {e}")),
             output: String::new(),
+            duration,
         },
     }
 }

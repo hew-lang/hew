@@ -383,7 +383,7 @@ impl<'src> Parser<'src> {
     fn expect(&mut self, expected: &Token<'_>) -> Option<Span> {
         if let Some(tok) = self.peek() {
             if std::mem::discriminant(tok) == std::mem::discriminant(expected) {
-                let (_, span) = if let Some(t) = self.advance() { t } else {
+                let Some((_, span)) = self.advance() else {
                     self.error(format!("unexpected end of input, expected {expected:?}"));
                     return None;
                 };

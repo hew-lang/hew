@@ -271,9 +271,8 @@ pub unsafe extern "C" fn hew_vec_push_i32(v: *mut HewVec, val: i32) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let slot = (*v).data.cast::<i32>().add(len);
@@ -292,9 +291,8 @@ pub unsafe extern "C" fn hew_vec_push_i64(v: *mut HewVec, val: i64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let slot = (*v).data.cast::<i64>().add(len);
@@ -313,9 +311,8 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let duped = libc::strdup(val);
@@ -338,9 +335,8 @@ pub unsafe extern "C" fn hew_vec_push_f64(v: *mut HewVec, val: f64) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let slot = (*v).data.cast::<f64>().add(len);
@@ -359,9 +355,8 @@ pub unsafe extern "C" fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let slot = (*v).data.cast::<*mut c_void>().add(len);
@@ -849,9 +844,8 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
         if (*dst).elem_size != (*src).elem_size || (*dst).elem_kind != (*src).elem_kind {
             libc::abort();
         }
-        let new_len = match (*dst).len.checked_add(src_len) {
-            Some(v) => v,
-            None => libc::abort(),
+        let Some(new_len) = (*dst).len.checked_add(src_len) else {
+            libc::abort();
         };
         ensure_cap(dst, new_len);
         let elem_size = (*dst).elem_size;
@@ -1207,9 +1201,8 @@ pub unsafe extern "C" fn hew_vec_push_generic(v: *mut HewVec, data: *const core:
     // SAFETY: caller guarantees `v` and `data` are valid.
     unsafe {
         let len = (*v).len;
-        let new_len = match len.checked_add(1) {
-            Some(n) => n,
-            None => libc::abort(),
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
         };
         ensure_cap(v, new_len);
         let elem_size = (*v).elem_size;

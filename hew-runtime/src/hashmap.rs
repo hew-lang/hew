@@ -127,14 +127,12 @@ unsafe fn resize(m: *mut HewHashMap) {
         let map = &mut *m;
         let old_cap = map.cap;
         let old_entries = map.entries;
-        let new_cap = match old_cap.checked_mul(2) {
-            Some(v) => v,
-            None => libc::abort(),
+        let Some(new_cap) = old_cap.checked_mul(2) else {
+            libc::abort();
         };
 
-        let layout_size = match new_cap.checked_mul(core::mem::size_of::<HewMapEntry>()) {
-            Some(v) => v,
-            None => libc::abort(),
+        let Some(layout_size) = new_cap.checked_mul(core::mem::size_of::<HewMapEntry>()) else {
+            libc::abort();
         };
         let new_entries: *mut HewMapEntry =
             libc::calloc(new_cap, core::mem::size_of::<HewMapEntry>()).cast();

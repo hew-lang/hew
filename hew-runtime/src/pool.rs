@@ -100,9 +100,8 @@ pub unsafe extern "C" fn hew_pool_add(pool: *mut HewActorPool, actor_pid: u64) -
     if pool_is_freed(pool) {
         return -1;
     }
-    let mut state = match lock_state(pool) {
-        Some(s) => s,
-        None => return -1,
+    let Some(mut state) = lock_state(pool) else {
+        return -1;
     };
     state.members.push(actor_pid);
     0
@@ -125,9 +124,8 @@ pub unsafe extern "C" fn hew_pool_remove(pool: *mut HewActorPool, actor_pid: u64
     if pool_is_freed(pool) {
         return -1;
     }
-    let mut state = match lock_state(pool) {
-        Some(s) => s,
-        None => return -1,
+    let Some(mut state) = lock_state(pool) else {
+        return -1;
     };
     if let Some(idx) = state.members.iter().position(|&pid| pid == actor_pid) {
         state.members.swap_remove(idx);
@@ -174,9 +172,8 @@ pub unsafe extern "C" fn hew_pool_select(pool: *mut HewActorPool) -> u64 {
     if pool_is_freed(pool) {
         return 0;
     }
-    let mut state = match lock_state(pool) {
-        Some(s) => s,
-        None => return 0,
+    let Some(mut state) = lock_state(pool) else {
+        return 0;
     };
     if state.members.is_empty() {
         return 0;

@@ -368,11 +368,10 @@ fn update_high_water_mark(mb: &HewMailbox) {
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
-    let user_fast = match MpscQueue::new() {
-        Some(q) => q,
-        None => return ptr::null_mut(),
+    let Some(user_fast) = MpscQueue::new() else {
+        return ptr::null_mut();
     };
-    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+    let Some(sys_queue) = MpscQueue::new() else {
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -403,11 +402,10 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailbox {
-    let user_fast = match MpscQueue::new() {
-        Some(q) => q,
-        None => return ptr::null_mut(),
+    let Some(user_fast) = MpscQueue::new() else {
+        return ptr::null_mut();
     };
-    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+    let Some(sys_queue) = MpscQueue::new() else {
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -444,11 +442,10 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
     capacity: usize,
     policy: OverflowPolicy,
 ) -> *mut HewMailbox {
-    let user_fast = match MpscQueue::new() {
-        Some(q) => q,
-        None => return ptr::null_mut(),
+    let Some(user_fast) = MpscQueue::new() else {
+        return ptr::null_mut();
     };
-    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+    let Some(sys_queue) = MpscQueue::new() else {
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -485,11 +482,10 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
 /// Returned pointer must be freed with [`hew_mailbox_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMailbox {
-    let user_fast = match MpscQueue::new() {
-        Some(q) => q,
-        None => return ptr::null_mut(),
+    let Some(user_fast) = MpscQueue::new() else {
+        return ptr::null_mut();
     };
-    let sys_queue = if let Some(q) = MpscQueue::new() { q } else {
+    let Some(sys_queue) = MpscQueue::new() else {
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };

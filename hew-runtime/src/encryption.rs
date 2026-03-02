@@ -864,14 +864,12 @@ pub unsafe extern "C" fn hew_noise_keygen(
         return -1;
     }
 
-    let pattern = match NOISE_PATTERN.parse() {
-        Ok(p) => p,
-        Err(_) => return -1,
+    let Ok(pattern) = NOISE_PATTERN.parse() else {
+        return -1;
     };
     let builder = Builder::new(pattern);
-    let mut keypair = match builder.generate_keypair() {
-        Ok(k) => k,
-        Err(_) => return -1,
+    let Ok(mut keypair) = builder.generate_keypair() else {
+        return -1;
     };
 
     // SAFETY: pointers are validated non-null and caller guarantees writable
@@ -901,9 +899,8 @@ pub unsafe extern "C" fn hew_noise_key_save(
     }
 
     // SAFETY: path is non-null and expected to be valid C string.
-    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
-        Ok(p) => p,
-        Err(_) => return -1,
+    let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
+        return -1;
     };
 
     // SAFETY: pointers are validated non-null and caller guarantees KEY_LEN bytes.
@@ -916,9 +913,8 @@ pub unsafe extern "C" fn hew_noise_key_save(
     #[cfg(unix)]
     opts.mode(0o600);
 
-    let mut file = match opts.open(path_str) {
-        Ok(f) => f,
-        Err(_) => return -1,
+    let Ok(mut file) = opts.open(path_str) else {
+        return -1;
     };
     if file.write_all(public).is_err() || file.write_all(private).is_err() {
         return -1;
@@ -949,13 +945,11 @@ pub unsafe extern "C" fn hew_noise_key_load(
     }
 
     // SAFETY: path is non-null and expected to be valid C string.
-    let path_str = match unsafe { CStr::from_ptr(path) }.to_str() {
-        Ok(p) => p,
-        Err(_) => return -1,
+    let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
+        return -1;
     };
-    let mut bytes = match fs::read(path_str) {
-        Ok(b) => b,
-        Err(_) => return -1,
+    let Ok(mut bytes) = fs::read(path_str) else {
+        return -1;
     };
     if bytes.len() != KEYPAIR_FILE_LEN {
         bytes.zeroize();

@@ -213,14 +213,11 @@ pub extern "C" fn hew_sched_init() {
     let Some(sched) = get_scheduler() else {
         return;
     };
-    let mut lock = match sched.worker_handles.lock() {
-        Ok(g) => g,
+    let Ok(mut lock) = sched.worker_handles.lock() else {
         // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
         // scheduler integrity is lost; report error and bail.
-        Err(_) => {
-            set_last_error("hew_sched_init: mutex poisoned (a thread panicked)");
-            return;
-        }
+        set_last_error("hew_sched_init: mutex poisoned (a thread panicked)");
+        return;
     };
     *lock = handles;
 
@@ -247,14 +244,11 @@ pub extern "C" fn hew_sched_shutdown() {
     }
 
     // Join worker threads.
-    let mut handles = match sched.worker_handles.lock() {
-        Ok(g) => g,
+    let Ok(mut handles) = sched.worker_handles.lock() else {
         // Policy: per-scheduler state (C-ABI) — poisoned worker_handles means
         // scheduler integrity is lost; report error and bail.
-        Err(_) => {
-            set_last_error("hew_sched_shutdown: mutex poisoned (a thread panicked)");
-            return;
-        }
+        set_last_error("hew_sched_shutdown: mutex poisoned (a thread panicked)");
+        return;
     };
     for handle in &mut *handles {
         if let Some(h) = handle.take() {
@@ -372,13 +366,12 @@ fn worker_loop(id: usize, local: &WorkDeque) {
 
         // 5. Park on per-worker condvar until notified or timeout.
         let parker = &sched.parkers[id];
-        let guard = match parker.mutex.lock() {
-            Ok(g) => g,
+        let Ok(guard) = parker.mutex.lock() else {
             // Policy: per-scheduler state — poisoned parker means worker
             // integrity is lost; shut down this worker.
-            Err(_) => panic!(
+            panic!(
                 "hew: worker parker mutex poisoned (a thread panicked); cannot safely continue"
-            ),
+            );
         };
         if sched.shutdown.load(Ordering::Acquire) {
             break;

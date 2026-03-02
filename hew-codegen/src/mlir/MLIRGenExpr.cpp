@@ -2693,6 +2693,54 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       return nullptr;
     }
 
+    // std::random module — route to hew_random_* runtime functions
+    if (ident->name == "random") {
+      auto f64Type = builder.getF64Type();
+      auto i64Type = builder.getI64Type();
+
+      if (methodName == "seed") {
+        auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!arg) return nullptr;
+        if (arg.getType() != i64Type) arg = coerceType(arg, i64Type, location);
+        emitRuntimeCall("hew_random_seed", {}, {arg}, location);
+        return nullptr;
+      }
+      if (methodName == "random") {
+        return emitRuntimeCall("hew_random_random", f64Type, {}, location);
+      }
+      if (methodName == "gauss") {
+        auto mu = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!mu || !sigma) return nullptr;
+        if (mu.getType() != f64Type) mu = coerceType(mu, f64Type, location);
+        if (sigma.getType() != f64Type) sigma = coerceType(sigma, f64Type, location);
+        return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
+      }
+      if (methodName == "randint") {
+        auto lo = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!lo || !hi) return nullptr;
+        if (lo.getType() != i64Type) lo = coerceType(lo, i64Type, location);
+        if (hi.getType() != i64Type) hi = coerceType(hi, i64Type, location);
+        return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
+      }
+      if (methodName == "shuffle") {
+        auto vec = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!vec) return nullptr;
+        emitRuntimeCall("hew_random_shuffle_i64", {}, {vec}, location);
+        return nullptr;
+      }
+      if (methodName == "choices") {
+        auto cumWeights = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto total = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        auto n = generateExpression(ast::callArgExpr(mc.args[2]).value);
+        if (!cumWeights || !total || !n) return nullptr;
+        return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
+      }
+      emitError(location) << "unknown random function: random." << methodName;
+      return nullptr;
+    }
+
     // General module-qualified call: string.from_int(), crypto.sha256(), etc.
     auto modIt = moduleNameToPath.find(ident->name);
     if (modIt != moduleNameToPath.end()) {

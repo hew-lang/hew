@@ -631,6 +631,19 @@ impl Checker {
         for name in &["pi", "e"] {
             self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);
         }
+
+        // std::random module — always available, no import needed
+        self.modules.insert("random".to_string());
+        self.register_builtin_fn("random.seed", vec![Ty::I64], Ty::Unit);
+        self.register_builtin_fn("random.random", vec![], Ty::F64);
+        self.register_builtin_fn("random.gauss", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("random.randint", vec![Ty::I64, Ty::I64], Ty::I64);
+        self.register_builtin_fn("random.shuffle", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        self.register_builtin_fn(
+            "random.choices",
+            vec![Ty::Var(TypeVar::fresh()), Ty::F64, Ty::I64],
+            Ty::I64,
+        );
     }
 
     fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {

@@ -4412,6 +4412,33 @@ impl Checker {
                     Ty::Error
                 }
             },
+            // Numeric type conversion methods (§10.1 intrinsics)
+            // .to_i8(), .to_i16(), .to_i32(), .to_i64(), .to_u8(), .to_u16(),
+            // .to_u32(), .to_u64(), .to_f32(), .to_f64(), .to_isize(), .to_usize()
+            (resolved, method) if resolved.is_numeric() && method.starts_with("to_") => {
+                match method {
+                    "to_i8"    => Ty::I8,
+                    "to_i16"   => Ty::I16,
+                    "to_i32"   => Ty::I32,
+                    "to_i64"   => Ty::I64,
+                    "to_u8"    => Ty::U8,
+                    "to_u16"   => Ty::U16,
+                    "to_u32"   => Ty::U32,
+                    "to_u64"   => Ty::U64,
+                    "to_f32"   => Ty::F32,
+                    "to_f64"   => Ty::F64,
+                    "to_isize" => Ty::I64,  // platform-dependent, default 64-bit
+                    "to_usize" => Ty::U64,
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no conversion method `{method}` on `{resolved}`"),
+                        );
+                        Ty::Error
+                    }
+                }
+            },
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();

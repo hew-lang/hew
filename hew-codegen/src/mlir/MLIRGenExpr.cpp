@@ -2560,6 +2560,42 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         .getResult();
   }
 
+  // --- Numeric type conversion methods (.to_i8, .to_i16, .to_i32, .to_i64,
+  //     .to_u8, .to_u16, .to_u32, .to_u64, .to_f32, .to_f64,
+  //     .to_isize, .to_usize) ---
+  // These are spec §10.1 compiler intrinsics on all numeric types.
+  {
+    mlir::Type targetType = nullptr;
+    bool isUnsigned = false;
+
+    if (method == "to_i8")    { targetType = builder.getIntegerType(8); }
+    else if (method == "to_i16")  { targetType = builder.getIntegerType(16); }
+    else if (method == "to_i32")  { targetType = builder.getIntegerType(32); }
+    else if (method == "to_i64")  { targetType = builder.getIntegerType(64); }
+    else if (method == "to_u8")   { targetType = builder.getIntegerType(8);  isUnsigned = true; }
+    else if (method == "to_u16")  { targetType = builder.getIntegerType(16); isUnsigned = true; }
+    else if (method == "to_u32")  { targetType = builder.getIntegerType(32); isUnsigned = true; }
+    else if (method == "to_u64")  { targetType = builder.getIntegerType(64); isUnsigned = true; }
+    else if (method == "to_f32")  { targetType = builder.getF32Type(); }
+    else if (method == "to_f64")  { targetType = builder.getF64Type(); }
+    else if (method == "to_isize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); }
+    else if (method == "to_usize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); isUnsigned = true; }
+
+    if (targetType) {
+      bool srcIsInt = llvm::isa<mlir::IntegerType>(receiverType);
+      bool srcIsFloat = llvm::isa<mlir::FloatType>(receiverType);
+      if (srcIsInt || srcIsFloat) {
+        // Use the same CastOp infrastructure as coerceType
+        if (receiverType == targetType)
+          return receiver; // no-op cast
+        auto castOp = builder.create<hew::CastOp>(location, targetType, receiver);
+        if (isUnsigned)
+          castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+        return castOp.getResult();
+      }
+    }
+  }
+
   return std::nullopt;
 }
 
@@ -2940,6 +2976,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           .getResult();
     }
   }
+
+  // Try builtin methods on non-pointer scalar types (numeric conversions, etc.)
+  if (auto builtinMethodResult = generateBuiltinMethodCall(mc, receiver, location))
+    return *builtinMethodResult;
 
   // Determine struct type name from the receiver's MLIR type
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);

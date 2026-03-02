@@ -809,6 +809,74 @@ impl Checker {
         self.registry.register_type(td.name.clone(), field_types);
 
         self.type_defs.insert(td.name.clone(), type_def);
+
+        // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
+        if td.wire.is_some() {
+            self.register_wire_methods(&td.name);
+        }
+    }
+
+    /// Register codec methods for a wire type (encode, decode, to_json, from_json, etc.).
+    fn register_wire_methods(&mut self, type_name: &str) {
+        let self_ty = Ty::Named {
+            name: type_name.to_string(),
+            args: vec![],
+        };
+        let bytes_ty = Ty::Named {
+            name: "bytes".to_string(),
+            args: vec![],
+        };
+
+        // Instance methods: encode(self) -> bytes, to_json(self) -> String, to_yaml(self) -> String
+        let instance_methods = [
+            ("encode", vec![], bytes_ty.clone()),
+            ("to_json", vec![], Ty::String),
+            ("to_yaml", vec![], Ty::String),
+        ];
+
+        if let Some(type_def) = self.type_defs.get_mut(type_name) {
+            for (method_name, params, return_type) in instance_methods {
+                type_def.methods.insert(
+                    method_name.to_string(),
+                    FnSig {
+                        type_params: vec![],
+                        type_param_bounds: HashMap::new(),
+                        param_names: vec![],
+                        params,
+                        return_type,
+                        is_async: false,
+                        is_pure: true,
+                        accepts_kwargs: false,
+                        doc_comment: None,
+                    },
+                );
+            }
+        }
+
+        // Static methods registered as fn sigs: TypeName.decode(bytes) -> Self, etc.
+        let static_methods = [
+            ("decode", vec![bytes_ty], self_ty.clone()),
+            ("from_json", vec![Ty::String], self_ty.clone()),
+            ("from_yaml", vec![Ty::String], self_ty),
+        ];
+
+        for (method_name, params, return_type) in static_methods {
+            let qualified_name = format!("{type_name}.{method_name}");
+            self.fn_sigs.insert(
+                qualified_name,
+                FnSig {
+                    type_params: vec![],
+                    type_param_bounds: HashMap::new(),
+                    param_names: vec![],
+                    params,
+                    return_type,
+                    is_async: false,
+                    is_pure: true,
+                    accepts_kwargs: false,
+                    doc_comment: None,
+                },
+            );
+        }
     }
 
     fn register_actor_decl(&mut self, ad: &ActorDecl) {
@@ -4131,6 +4199,30 @@ impl Checker {
                     format!("no function `{method}` in module `{name}`"),
                 );
                 return Ty::Error;
+            }
+
+            // Static method calls on type names: e.g. Point.from_json(json)
+            // Look up "TypeName.method" in fn_sigs (registered by wire types etc.)
+            let static_key = format!("{name}.{method}");
+            if let Some(sig) = self.fn_sigs.get(&static_key).cloned() {
+                if args.len() != sig.params.len() {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!(
+                            "expected {} arguments, found {}",
+                            sig.params.len(),
+                            args.len()
+                        ),
+                    );
+                }
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(param_ty) = sig.params.get(i) {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, param_ty);
+                    }
+                }
+                return sig.return_type;
             }
         }
 
@@ -8609,6 +8701,7 @@ fn main() {
                 ),
             }],
             doc_comment: None,
+            wire: None,
         };
         let import = make_user_import(
             vec!["myapp", "config"],
@@ -9007,6 +9100,7 @@ fn main() {
             where_clause: None,
             body: vec![],
             doc_comment: None,
+            wire: None,
         };
         let impl_decl = ImplDecl {
             type_params: None,
@@ -9092,6 +9186,7 @@ fn main() {
             where_clause: None,
             body: vec![],
             doc_comment: None,
+            wire: None,
         });
 
         let resolved: Vec<Spanned<Item>> = vec![

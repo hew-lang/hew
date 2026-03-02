@@ -44,6 +44,57 @@ using namespace hew;
 using namespace mlir;
 
 // ============================================================================
+// Helpers
+// ============================================================================
+
+/// Convert a TypeDecl with wire metadata into a WireDecl for the existing
+/// codegen pipeline. This is temporary until the wire codegen is refactored
+/// to work directly with TypeDecl.
+static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
+  ast::WireDecl wd;
+  wd.visibility = td.visibility;
+  wd.kind = (td.kind == ast::TypeDeclKind::Enum) ? ast::WireDeclKind::Enum
+                                                  : ast::WireDeclKind::Struct;
+  wd.name = td.name;
+
+  const auto &wm = *td.wire;
+
+  // Build a map from field name → type string from body items
+  std::unordered_map<std::string, std::string> fieldTypeMap;
+  for (const auto &bodyItem : td.body) {
+    if (auto *f = std::get_if<ast::TypeBodyItemField>(&bodyItem.kind)) {
+      // For wire types, fields are simple Named types
+      if (auto *named = std::get_if<ast::TypeNamed>(&f->ty.value.kind)) {
+        fieldTypeMap[f->name] = named->name;
+      }
+    }
+  }
+
+  // Convert WireFieldMeta → WireFieldDecl
+  for (const auto &fm : wm.field_meta) {
+    ast::WireFieldDecl wf;
+    wf.name = fm.field_name;
+    wf.ty = fieldTypeMap.count(fm.field_name) ? fieldTypeMap[fm.field_name] : "";
+    wf.field_number = fm.field_number;
+    wf.is_optional = fm.is_optional;
+    wf.is_repeated = fm.is_repeated;
+    wf.is_reserved = false;
+    wf.is_deprecated = fm.is_deprecated;
+    wf.json_name = fm.json_name;
+    wf.yaml_name = fm.yaml_name;
+    wd.fields.push_back(std::move(wf));
+  }
+
+  // Note: variants are not copied here since VariantDecl contains non-copyable
+  // types. Wire enums coming through TypeDecl should still work via the
+  // WireDecl path for now. Only struct wire types are converted.
+
+  wd.json_case = wm.json_case;
+  wd.yaml_case = wm.yaml_case;
+  return wd;
+}
+
+// ============================================================================
 // Constructor
 // ============================================================================
 
@@ -1796,6 +1847,11 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     const auto &item = spannedItem.value;
     if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
       generateWireDecl(*wd);
+    } else if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
+      if (td->wire.has_value()) {
+        auto wd = wireMetadataToWireDecl(*td);
+        generateWireDecl(wd);
+      }
     }
   });
 
@@ -2015,6 +2071,10 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
 // ============================================================================
 
 void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
+  // Wire types are registered in generateWireDecl (pass 1h), skip here.
+  if (decl.wire.has_value())
+    return;
+
   const std::string &declName = decl.name;
 
   // Generic struct/enum: store for lazy specialization, don't register yet.

@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use hew_parser::ast::{Item, WireDecl, WireDeclKind, WireFieldDecl};
+use hew_parser::ast::{
+    Item, TypeBodyItem, TypeDeclKind, TypeExpr, WireDecl, WireDeclKind, WireFieldDecl,
+};
 
 #[derive(Debug, Default)]
 struct CompatibilityReport {
@@ -124,6 +126,50 @@ fn parse_wire_decls(path: &str) -> Result<Vec<WireDecl>, String> {
         .into_iter()
         .filter_map(|(item, _)| match item {
             Item::Wire(decl) => Some(decl),
+            Item::TypeDecl(td) if td.wire.is_some() => {
+                let wire = td.wire.unwrap();
+                let kind = match td.kind {
+                    TypeDeclKind::Struct => WireDeclKind::Struct,
+                    TypeDeclKind::Enum => WireDeclKind::Enum,
+                };
+                // Build a map of field name → type string from the body
+                let field_types: std::collections::HashMap<String, String> = td
+                    .body
+                    .iter()
+                    .filter_map(|item| match item {
+                        TypeBodyItem::Field { name, ty } => {
+                            Some((name.clone(), type_expr_to_string(&ty.0)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                Some(WireDecl {
+                    visibility: td.visibility,
+                    kind,
+                    name: td.name,
+                    fields: wire
+                        .field_meta
+                        .into_iter()
+                        .map(|fm| {
+                            let ty = field_types.get(&fm.field_name).cloned().unwrap_or_default();
+                            WireFieldDecl {
+                                name: fm.field_name,
+                                ty,
+                                field_number: fm.field_number,
+                                is_optional: fm.is_optional,
+                                is_repeated: fm.is_repeated,
+                                is_reserved: false,
+                                is_deprecated: fm.is_deprecated,
+                                json_name: fm.json_name,
+                                yaml_name: fm.yaml_name,
+                            }
+                        })
+                        .collect(),
+                    variants: vec![],
+                    json_case: wire.json_case,
+                    yaml_case: wire.yaml_case,
+                })
+            }
             _ => None,
         })
         .collect())
@@ -292,6 +338,28 @@ fn warn_new_required_and_deprecated_fields(
                 field.name, field.field_number
             ));
         }
+    }
+}
+
+fn type_expr_to_string(te: &TypeExpr) -> String {
+    match te {
+        TypeExpr::Named {
+            name,
+            type_args: Some(args),
+        } => {
+            let arg_strs: Vec<String> = args.iter().map(|a| type_expr_to_string(&a.0)).collect();
+            format!("{name}<{}>", arg_strs.join(", "))
+        }
+        TypeExpr::Named {
+            name,
+            type_args: None,
+        } => name.clone(),
+        TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(&inner.0)),
+        TypeExpr::Tuple(items) => {
+            let parts: Vec<String> = items.iter().map(|i| type_expr_to_string(&i.0)).collect();
+            format!("({})", parts.join(", "))
+        }
+        _ => String::from("?"),
     }
 }
 

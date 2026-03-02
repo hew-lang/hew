@@ -2773,6 +2773,34 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         return callOp.getResult(0);
       return nullptr;
     }
+
+    // Wire type static methods: Point.from_json(json), Point.decode(buf), etc.
+    // When the receiver is an identifier naming a known struct type (not a
+    // variable or module), look up the mangled static method and call it.
+    auto structIt = structTypes.find(ident->name);
+    if (structIt != structTypes.end()) {
+      std::string funcName = mangleName(currentModulePath, ident->name, methodName);
+      auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+      if (callee) {
+        llvm::SmallVector<mlir::Value, 4> args;
+        auto calleeFuncType = callee.getFunctionType();
+        for (size_t i = 0; i < mc.args.size(); ++i) {
+          auto val = generateExpression(ast::callArgExpr(mc.args[i]).value);
+          if (!val)
+            return nullptr;
+          if (i < calleeFuncType.getNumInputs()) {
+            auto expectedType = calleeFuncType.getInput(i);
+            if (val.getType() != expectedType)
+              val = coerceType(val, expectedType, location);
+          }
+          args.push_back(val);
+        }
+        auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+        if (callOp.getNumResults() > 0)
+          return callOp.getResult(0);
+        return nullptr;
+      }
+    }
   }
 
   // Generate receiver

@@ -1,0 +1,17 @@
+// Test: #[wire] struct with JSON naming convention and mixed field numbers
+#[wire]
+#[json(camelCase)]
+struct UserEvent {
+    user_name: String,
+    event_type: i32 @5,
+    is_active: i32,
+}
+
+extern "C" {
+    fn UserEvent_to_json(user_name: String, event_type: i32, is_active: i32) -> String;
+}
+
+fn main() {
+    let json = unsafe { UserEvent_to_json("alice", 42, 1) };
+    println(json);
+}

@@ -20,13 +20,33 @@ pub struct Program {
 
 // ── Attributes ───────────────────────────────────────────────────────
 
+/// A single attribute argument — either positional or key-value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AttributeArg {
+    /// Positional argument, e.g. `camelCase` in `#[json(camelCase)]`.
+    Positional(String),
+    /// Key-value argument, e.g. `since = 1` in `#[wire(since = 1)]`.
+    KeyValue { key: String, value: String },
+}
+
+impl AttributeArg {
+    /// Get the value as a string regardless of whether it's positional or key-value.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            AttributeArg::Positional(s) => s,
+            AttributeArg::KeyValue { value, .. } => value,
+        }
+    }
+}
+
 /// An attribute annotation like `#[test]` or `#[should_panic]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attribute {
     /// Attribute name, e.g. `"test"`, `"ignore"`, `"should_panic"`.
     pub name: String,
-    /// Optional parenthesised arguments, e.g. `#[cfg(feature = "x")]`.
-    pub args: Vec<String>,
+    /// Optional parenthesised arguments, e.g. `#[json(camelCase)]` or `#[wire(since = 1)]`.
+    pub args: Vec<AttributeArg>,
     /// Source span of the attribute (from `#` through `]`).
     pub span: Span,
 }
@@ -619,6 +639,9 @@ pub struct TypeDecl {
     pub where_clause: Option<WhereClause>,
     pub body: Vec<TypeBodyItem>,
     pub doc_comment: Option<String>,
+    /// Wire protocol metadata — present when the type has `#[wire]` attribute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<WireMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -633,6 +656,31 @@ pub struct TypeAliasDecl {
 pub enum TypeDeclKind {
     Struct,
     Enum,
+}
+
+/// Wire protocol metadata attached to a `TypeDecl` via `#[wire]`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireMetadata {
+    pub field_meta: Vec<WireFieldMeta>,
+    pub reserved_numbers: Vec<u32>,
+    pub json_case: Option<NamingCase>,
+    pub yaml_case: Option<NamingCase>,
+}
+
+/// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors wire format field attributes"
+)]
+pub struct WireFieldMeta {
+    pub field_name: String,
+    pub field_number: u32,
+    pub is_optional: bool,
+    pub is_deprecated: bool,
+    pub is_repeated: bool,
+    pub json_name: Option<String>,
+    pub yaml_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -716,6 +764,67 @@ pub struct WireDecl {
     pub json_case: Option<NamingCase>,
     /// Struct-level YAML key naming convention (`#[yaml(snake_case)]` etc.).
     pub yaml_case: Option<NamingCase>,
+}
+
+impl WireDecl {
+    /// Convert a `WireDecl` to a `TypeDecl` with wire metadata.
+    /// This desugars the old `wire type Foo { ... }` syntax into the new
+    /// `TypeDecl { wire: Some(WireMetadata { ... }) }` form.
+    #[must_use]
+    pub fn into_type_decl(self) -> TypeDecl {
+        let field_meta: Vec<WireFieldMeta> = self
+            .fields
+            .iter()
+            .map(|f| WireFieldMeta {
+                field_name: f.name.clone(),
+                field_number: f.field_number,
+                is_optional: f.is_optional,
+                is_deprecated: f.is_deprecated,
+                is_repeated: f.is_repeated,
+                json_name: f.json_name.clone(),
+                yaml_name: f.yaml_name.clone(),
+            })
+            .collect();
+
+        let body: Vec<TypeBodyItem> = self
+            .fields
+            .iter()
+            .map(|f| TypeBodyItem::Field {
+                name: f.name.clone(),
+                ty: (
+                    TypeExpr::Named {
+                        name: f.ty.clone(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+            })
+            .chain(
+                self.variants
+                    .iter()
+                    .map(|v| TypeBodyItem::Variant(v.clone())),
+            )
+            .collect();
+
+        TypeDecl {
+            visibility: self.visibility,
+            kind: match self.kind {
+                WireDeclKind::Struct => TypeDeclKind::Struct,
+                WireDeclKind::Enum => TypeDeclKind::Enum,
+            },
+            name: self.name,
+            type_params: None,
+            where_clause: None,
+            body,
+            doc_comment: None,
+            wire: Some(WireMetadata {
+                field_meta,
+                reserved_numbers: vec![],
+                json_case: self.json_case,
+                yaml_case: self.yaml_case,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

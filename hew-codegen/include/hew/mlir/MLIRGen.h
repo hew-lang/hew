@@ -89,6 +89,9 @@ private:
   void registerActorDecl(const ast::ActorDecl &decl);
   void generateActorDecl(const ast::ActorDecl &decl);
   void generateWireDecl(const ast::WireDecl &decl);
+  /// Generate mangled method wrappers for wire types so that method dispatch
+  /// (o.to_json(), Point.from_json()) works through the standard struct path.
+  void generateWireMethodWrappers(const ast::WireDecl &decl);
   /// Return an !llvm.ptr to a NUL-terminated global string constant.
   mlir::Value wireStringPtr(mlir::Location location, llvm::StringRef value);
   /// Generate Foo_to_{json,yaml} — parameterized by format and field name resolver.

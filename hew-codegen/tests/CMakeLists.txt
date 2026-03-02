@@ -412,6 +412,10 @@ add_e2e_file_test(wire_json_roundtrip   e2e_wire wire_json_roundtrip)
 add_e2e_file_test(wire_yaml_scalars     e2e_wire wire_yaml_scalars)
 add_e2e_file_test(wire_yaml_naming      e2e_wire wire_yaml_naming)
 add_e2e_file_test(wire_yaml_roundtrip   e2e_wire wire_yaml_roundtrip)
+add_e2e_file_test(wire_struct_basic    e2e_wire wire_struct_basic)
+add_e2e_file_test(wire_struct_json     e2e_wire wire_struct_json)
+add_e2e_file_test(wire_method_to_json  e2e_wire wire_method_to_json)
+add_e2e_file_test(wire_method_from_json e2e_wire wire_method_from_json)
 
 # ── Generics monomorphization tests ──────────────────────────────────────────
 add_e2e_file_test(generic_identity      e2e_generics generic_identity)

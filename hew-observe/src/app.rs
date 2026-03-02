@@ -110,6 +110,7 @@ pub struct App {
     pub msg_rate: f64,
     pub sparkline_msgs: Vec<u64>,
     pub sparkline_actors: Vec<u64>,
+    pub sparkline_memory: Vec<u64>,
 
     // Selection state
     pub actor_selected: usize,
@@ -169,6 +170,7 @@ impl App {
             msg_rate: 0.0,
             sparkline_msgs: Vec::new(),
             sparkline_actors: Vec::new(),
+            sparkline_memory: Vec::new(),
             actor_selected: 0,
             sort_column: SortColumn::Id,
             crash_selected: 0,
@@ -273,7 +275,7 @@ impl App {
         self.trace_filter_actor = Some(actor_id);
     }
 
-    /// Filter messages by the actor_id of the currently scrolled-to event.
+    /// Filter messages by the `actor_id` of the currently scrolled-to event.
     pub fn messages_filter_selected(&mut self) {
         let events: Vec<&TraceEvent> = self
             .trace_events
@@ -461,8 +463,14 @@ impl App {
             self.cluster_routing = r;
         }
 
-        if let Some(mut t) = traces {
-            self.trace_events.append(&mut t);
+        if let Some(t) = traces {
+            // Filter out begin/end span events at ingestion — they carry
+            // dispatch timing data but are not actionable in the swimlane
+            // display, and including them inflates the event counter.
+            self.trace_events.extend(
+                t.into_iter()
+                    .filter(|e| e.event_type != "begin" && e.event_type != "end"),
+            );
             // Cap at 1000 entries
             if self.trace_events.len() > 1000 {
                 let drain = self.trace_events.len() - 1000;
@@ -496,6 +504,9 @@ impl App {
 
         // Active workers sparkline
         self.sparkline_actors = history.iter().map(|h| h.active_workers).collect();
+
+        // Memory sparkline (bytes_live over time)
+        self.sparkline_memory = history.iter().map(|h| h.bytes_live).collect();
     }
 
     #[expect(
@@ -646,6 +657,10 @@ impl App {
         // Demo sparklines
         self.sparkline_msgs = vec![12, 45, 30, 67, 23, 89, 54, 32, 78, 41, 55, 90, 44, 61, 37];
         self.sparkline_actors = vec![4, 4, 4, 3, 4, 4, 4, 4, 3, 4, 4, 4, 4, 4, 4];
+        self.sparkline_memory = vec![
+            28_672, 30_720, 31_744, 32_768, 30_720, 32_768, 34_816, 32_768, 31_744, 32_768, 34_816,
+            36_864, 34_816, 32_768, 32_768,
+        ];
 
         // Demo cluster members (3 nodes)
         self.cluster_members = vec![

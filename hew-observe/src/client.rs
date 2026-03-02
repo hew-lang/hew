@@ -6,10 +6,6 @@ use serde::Deserialize;
 
 /// Metrics snapshot from `/api/metrics`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
-)]
 pub struct Metrics {
     #[serde(default)]
     pub timestamp_secs: f64,
@@ -72,7 +68,7 @@ impl ActorInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[expect(
     dead_code,
-    reason = "Fields deserialized from JSON; used for future display features"
+    reason = "Fields deserialized from JSON; only a subset used for sparklines currently"
 )]
 pub struct HistoryEntry {
     #[serde(default)]
@@ -81,14 +77,26 @@ pub struct HistoryEntry {
     pub tasks_spawned: u64,
     #[serde(default, rename = "tc")]
     pub tasks_completed: u64,
+    #[serde(default, rename = "st")]
+    pub steals: u64,
     #[serde(default, rename = "ms")]
     pub messages_sent: u64,
     #[serde(default, rename = "mr")]
     pub messages_received: u64,
     #[serde(default, rename = "aw")]
     pub active_workers: u64,
+    #[serde(default, rename = "ac")]
+    pub alloc_count: u64,
+    #[serde(default, rename = "dc")]
+    pub dealloc_count: u64,
+    #[serde(default, rename = "ba")]
+    pub bytes_allocated: u64,
+    #[serde(default, rename = "bf")]
+    pub bytes_freed: u64,
     #[serde(default, rename = "bl")]
     pub bytes_live: u64,
+    #[serde(default, rename = "pb")]
+    pub peak_bytes_live: u64,
 }
 
 /// Cluster member from `/api/cluster/members`.

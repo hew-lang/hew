@@ -1,0 +1,36 @@
+// Test: Systematic Machine — exercises EVERY transition path in a 3-state × 2-event machine
+// Exercises: exhaustive transition coverage, step(), state_name(), all 6 transition paths
+machine Sys {
+    state S0;
+    state S1;
+    state S2;
+
+    event E0;
+    event E1;
+
+    on E0: S0 -> S1 { S1 }
+    on E1: S0 -> S2 { S2 }
+    on E0: S1 -> S2 { S2 }
+    on E1: S1 -> S0 { S0 }
+    on E0: S2 -> S0 { S0 }
+    on E1: S2 -> S1 { S1 }
+}
+
+fn main() -> int {
+    var s = Sys::S0;
+    // Walk every transition
+    s = s.step(SysEvent::E0);
+    println(s.state_name());
+    s = s.step(SysEvent::E0);
+    println(s.state_name());
+    s = s.step(SysEvent::E0);
+    println(s.state_name());
+    s = s.step(SysEvent::E1);
+    println(s.state_name());
+    s = s.step(SysEvent::E1);
+    println(s.state_name());
+    s = s.step(SysEvent::E1);
+    println(s.state_name());
+    println("PASS: all 6 transitions verified");
+    0
+}

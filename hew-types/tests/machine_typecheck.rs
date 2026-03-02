@@ -396,3 +396,148 @@ fn valid_machine_all_checks_pass() {
         output.errors
     );
 }
+
+// ── Property-based: exhaustive 3×3 machine ─────────────────────────
+
+#[test]
+fn exhaustive_3x3_machine_ok() {
+    let states = vec![unit_state("A"), unit_state("B"), unit_state("C")];
+    let events = vec![unit_event("X"), unit_event("Y"), unit_event("Z")];
+    let transitions = vec![
+        transition("X", "A", "B"), transition("Y", "A", "C"), transition("Z", "A", "A"),
+        transition("X", "B", "A"), transition("Y", "B", "B"), transition("Z", "B", "C"),
+        transition("X", "C", "C"), transition("Y", "C", "A"), transition("Z", "C", "B"),
+    ];
+    let md = make_machine("M", states, events, transitions);
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "fully exhaustive 3×3 machine should have no errors: {:?}",
+        output.errors
+    );
+}
+
+// ── Property-based: removing any single transition causes error ─────
+
+#[test]
+fn property_removal_of_any_transition_causes_error() {
+    let state_names = ["A", "B", "C"];
+    let event_names = ["X", "Y"];
+    let n_transitions = state_names.len() * event_names.len(); // 6
+
+    let mut transitions = Vec::new();
+    for s in &state_names {
+        for e in &event_names {
+            transitions.push((*e, *s));
+        }
+    }
+
+    // Full machine should pass
+    let full_trans: Vec<_> = transitions.iter()
+        .map(|(e, s)| transition(e, s, "A"))
+        .collect();
+    let md = make_machine(
+        "M",
+        state_names.iter().map(|n| unit_state(n)).collect(),
+        event_names.iter().map(|n| unit_event(n)).collect(),
+        full_trans,
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(output.errors.is_empty(), "full machine should pass: {:?}", output.errors);
+
+    // Removing any single transition should fail
+    for i in 0..n_transitions {
+        let mut reduced: Vec<_> = transitions.iter()
+            .map(|(e, s)| transition(e, s, "A"))
+            .collect();
+        reduced.remove(i);
+        let md = make_machine(
+            "M",
+            state_names.iter().map(|n| unit_state(n)).collect(),
+            event_names.iter().map(|n| unit_event(n)).collect(),
+            reduced,
+        );
+        let output = check_items(vec![(Item::Machine(md), 0..0)]);
+        assert!(
+            !output.errors.is_empty(),
+            "removing transition {i} ({},{}) should cause an error",
+            transitions[i].0, transitions[i].1
+        );
+    }
+}
+
+// ── Property-based: wildcard covers remaining states ────────────────
+
+#[test]
+fn wildcard_covers_remaining_3_state() {
+    let md = make_machine(
+        "M",
+        vec![unit_state("A"), unit_state("B"), unit_state("C")],
+        vec![unit_event("X"), unit_event("Y")],
+        vec![
+            transition("X", "A", "B"),
+            wildcard_transition("X"), // covers B and C for event X
+            wildcard_transition("Y"), // covers all 3 for event Y
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "wildcards should cover remaining states: {:?}",
+        output.errors
+    );
+}
+
+// ── Property-based: missing single transition in 3×3 detected ───────
+
+#[test]
+fn missing_single_transition_detected_3x3() {
+    // 3 states × 3 events = 9 transitions, remove the one for (B, Y)
+    let md = make_machine(
+        "M",
+        vec![unit_state("A"), unit_state("B"), unit_state("C")],
+        vec![unit_event("X"), unit_event("Y"), unit_event("Z")],
+        vec![
+            transition("X", "A", "B"), transition("Y", "A", "C"), transition("Z", "A", "A"),
+            transition("X", "B", "A"), /* MISSING: Y,B */        transition("Z", "B", "C"),
+            transition("X", "C", "C"), transition("Y", "C", "A"), transition("Z", "C", "B"),
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(!output.errors.is_empty(), "missing transition must be detected");
+    let msg = format!("{:?}", output.errors);
+    assert!(
+        msg.contains("B") && msg.contains("Y"),
+        "error should mention state B and event Y: {msg}"
+    );
+}
+
+// ── Property-based: transition count = states × events ──────────────
+
+#[test]
+fn transition_count_equals_states_times_events() {
+    let state_names = ["S0", "S1", "S2", "S3"];
+    let event_names = ["E0", "E1", "E2"];
+    let expected = state_names.len() * event_names.len(); // 12
+
+    let mut transitions = Vec::new();
+    for s in &state_names {
+        for e in &event_names {
+            transitions.push(transition(e, s, "S0"));
+        }
+    }
+    assert_eq!(transitions.len(), expected);
+
+    let md = make_machine(
+        "Big",
+        state_names.iter().map(|n| unit_state(n)).collect(),
+        event_names.iter().map(|n| unit_event(n)).collect(),
+        transitions,
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "4×3 fully exhaustive machine should pass: {:?}",
+        output.errors
+    );
+}

@@ -386,3 +386,40 @@ type checking.
 - `hew-codegen/include/hew/mlir/MLIRGen.h`
 - `hew-codegen/src/mlir/MLIRGen.cpp` — `generateMachineDecl`
 - `hew-codegen/src/mlir/MLIRGenExpr.cpp` — `ExprFieldAccess` handler
+
+---
+
+## Phase 5 — Property-based & systematic machine tests
+
+**Goal:** Strengthen test coverage with property-based, edge-case, and fuzz tests
+for the machine type system.
+
+### Property-based type checker tests
+
+Added to `hew-types/tests/machine_typecheck.rs`:
+
+- **`exhaustive_3x3_machine_ok`** — 3 states × 3 events, all 9 transitions present → no errors
+- **`missing_single_transition_detected_3x3`** — remove 1 of 9 transitions → error names state & event
+- **`wildcard_covers_remaining_3_state`** — wildcard fills remaining states for each event
+- **`property_removal_of_any_transition_causes_error`** — generates 3×2 machine, verifies removing
+  *any* single transition is caught by the exhaustiveness checker
+- **`transition_count_equals_states_times_events`** — 4×3 fully exhaustive machine (12 transitions)
+
+### Systematic E2E test
+
+- `e2e_machine/machine_systematic.hew` — 3 states × 2 events, walks all 6 transitions and verifies
+  each target state via `state_name()` comparison
+
+### Parser fuzz target
+
+- `hew-parser/fuzz/fuzz_targets/fuzz_machine.rs` — wraps arbitrary bytes inside
+  `machine Fuzz { ... } fn main() {}` and feeds to `hew_parser::parser::parse()`
+  to find crashes in machine-specific parsing
+
+**Test results:** 18/18 type checker tests pass, E2E test produces correct output.
+
+**Files changed:**
+- `hew-types/tests/machine_typecheck.rs` — 5 new property/systematic tests
+- `hew-codegen/tests/examples/e2e_machine/machine_systematic.hew` + `.expected`
+- `hew-codegen/tests/CMakeLists.txt` — registered `machine_systematic` E2E test
+- `hew-parser/fuzz/fuzz_targets/fuzz_machine.rs` + `fuzz/Cargo.toml`

@@ -367,42 +367,60 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     }
     llvm::StringRef structName = structType.getName();
     auto it = structTypes.find(structName.str());
-    if (it == structTypes.end()) {
-      emitError(location) << "unknown struct type '" << structName << "'";
+    if (it != structTypes.end()) {
+      const auto &info = it->second;
+
+      // Find the field
+      for (const auto &field : info.fields) {
+        if (field.name == fieldName) {
+          auto fieldVal = builder
+                              .create<hew::FieldGetOp>(location, field.type, operandVal,
+                                                       builder.getStringAttr(fieldName),
+                                                       builder.getI64IntegerAttr(field.index))
+                              .getResult();
+          if ((mlir::isa<hew::VecType>(field.semanticType) ||
+               mlir::isa<hew::HashMapType>(field.semanticType)) &&
+              field.semanticType != field.type)
+            return coerceType(fieldVal, field.semanticType, location);
+          return fieldVal;
+        }
+      }
+
+      {
+        ++errorCount_;
+        auto diag = emitError(location)
+                    << "no field '" << fieldName << "' on struct '" << structName << "'";
+        if (!info.fields.empty()) {
+          diag << "; available fields: ";
+          for (size_t i = 0; i < info.fields.size(); ++i) {
+            if (i > 0)
+              diag << ", ";
+            diag << info.fields[i].name;
+          }
+        }
+      }
       return nullptr;
     }
 
-    const auto &info = it->second;
-
-    // Find the field
-    for (const auto &field : info.fields) {
-      if (field.name == fieldName) {
-        auto fieldVal = builder
-                            .create<hew::FieldGetOp>(location, field.type, operandVal,
-                                                     builder.getStringAttr(fieldName),
-                                                     builder.getI64IntegerAttr(field.index))
-                            .getResult();
-        if ((mlir::isa<hew::VecType>(field.semanticType) ||
-             mlir::isa<hew::HashMapType>(field.semanticType)) &&
-            field.semanticType != field.type)
-          return coerceType(fieldVal, field.semanticType, location);
-        return fieldVal;
-      }
-    }
-
-    {
-      ++errorCount_;
-      auto diag = emitError(location)
-                  << "no field '" << fieldName << "' on struct '" << structName << "'";
-      if (!info.fields.empty()) {
-        diag << "; available fields: ";
-        for (size_t i = 0; i < info.fields.size(); ++i) {
-          if (i > 0)
-            diag << ", ";
-          diag << info.fields[i].name;
+    // Machine/enum field access: resolve `self.field` inside transition bodies
+    auto enumIt = enumTypes.find(structName.str());
+    if (enumIt != enumTypes.end() && !currentMachineSourceVariant_.empty()) {
+      const auto &enumInfo = enumIt->second;
+      for (const auto &variant : enumInfo.variants) {
+        if (variant.name != currentMachineSourceVariant_)
+          continue;
+        for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
+          if (variant.fieldNames[i] == fieldName) {
+            auto fieldTy = getEnumFieldType(operandType, variant.payloadPositions[i]);
+            return builder.create<hew::EnumExtractPayloadOp>(
+                location, fieldTy, operandVal, variant.payloadPositions[i]);
+          }
         }
+        break;
       }
     }
+
+    emitError(location) << "unknown struct type '" << structName << "'";
     return nullptr;
   }
 

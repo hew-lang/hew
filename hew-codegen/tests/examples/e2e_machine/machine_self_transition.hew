@@ -1,0 +1,28 @@
+// Test: Verify self-transitions preserve payload fields
+// Exercises: wildcard self-transitions, explicit self-transitions, field preservation
+machine Keeper {
+    state Holding { value: Int; }
+    state Empty;
+
+    event Poke;
+    event Drop;
+
+    on Poke: Holding -> Holding { self }
+    on Poke: Empty -> Empty { self }
+    on Drop: Holding -> Empty { Empty }
+    on Drop: Empty -> Empty { self }
+}
+
+fn main() -> Int {
+    var k = Keeper::Holding { value: 42 };
+    k = k.step(KeeperEvent::Poke);
+    k = k.step(KeeperEvent::Poke);
+
+    match k {
+        Holding { value } => {
+            println(f"value = {value}");
+            if value == 42 { println("PASS"); 0 } else { println("FAIL: wrong value"); 1 }
+        },
+        _ => { println("FAIL: wrong state"); 1 },
+    }
+}

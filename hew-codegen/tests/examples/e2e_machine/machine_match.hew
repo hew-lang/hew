@@ -1,0 +1,58 @@
+// Test: Machine with pattern matching and wildcard self-transitions
+// Exercises: match on machine states, wildcard _ -> _ transitions, describe function
+machine Door {
+    state Locked;
+    state Unlocked;
+    state Open;
+
+    event Lock;
+    event Unlock;
+    event Push;
+    event Pull;
+
+    on Unlock: Locked -> Unlocked { Unlocked }
+    on Lock: Unlocked -> Locked { Locked }
+    on Push: Unlocked -> Open { Open }
+    on Pull: Open -> Unlocked { Unlocked }
+
+    // Wildcard self-transitions for invalid actions
+    on Lock: _ -> _ { self }
+    on Unlock: _ -> _ { self }
+    on Push: _ -> _ { self }
+    on Pull: _ -> _ { self }
+}
+
+fn describe(d: Door) -> String {
+    match d {
+        Locked => "The door is locked",
+        Unlocked => "The door is unlocked",
+        Open => "The door is open",
+    }
+}
+
+fn main() -> int {
+    var door = Door::Locked;
+    println(describe(door));
+
+    // Unlock
+    door = door.step(Unlock);
+    println(describe(door));
+
+    // Push open
+    door = door.step(Push);
+    println(describe(door));
+
+    // Pull closed
+    door = door.step(Pull);
+    println(describe(door));
+
+    // Lock
+    door = door.step(Lock);
+    println(describe(door));
+
+    // Invalid: push a locked door (stays locked)
+    door = door.step(Push);
+    println(describe(door));
+
+    0
+}

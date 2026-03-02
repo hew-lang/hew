@@ -865,6 +865,33 @@ struct SupervisorDecl {
   std::vector<ChildSpec> children;
 };
 
+// ── Machine ──────────────────────────────────────────────────────────
+
+struct MachineState {
+  std::string name;
+  std::vector<std::pair<std::string, Spanned<TypeExpr>>> fields;
+};
+
+struct MachineEvent {
+  std::string name;
+  std::vector<std::pair<std::string, Spanned<TypeExpr>>> fields;
+};
+
+struct MachineTransition {
+  std::string event_name;
+  std::string source_state;
+  std::string target_state;
+  Spanned<Expr> body;
+};
+
+struct MachineDecl {
+  Visibility visibility = Visibility::Private;
+  std::string name;
+  std::vector<MachineState> states;
+  std::vector<MachineEvent> events;
+  std::vector<MachineTransition> transitions;
+};
+
 // ── Function declaration ──────────────────────────────────────────────────
 
 struct FnDecl {
@@ -886,7 +913,7 @@ struct FnDecl {
 
 struct Item {
   std::variant<ImportDecl, ConstDecl, TypeDecl, TypeAliasDecl, TraitDecl, ImplDecl, WireDecl,
-               FnDecl, ExternBlock, ActorDecl, SupervisorDecl>
+               FnDecl, ExternBlock, ActorDecl, SupervisorDecl, MachineDecl>
       kind;
 };
 

@@ -1,0 +1,43 @@
+// Test: Real-world circuit breaker machine with payload
+// Exercises: multi-state transitions, state_name(), payload reset, self-transitions
+machine CircuitBreaker {
+    state Closed { failures: Int; };
+    state Open;
+    state HalfOpen;
+
+    event Success;
+    event Failure;
+    event Timeout;
+
+    on Success: Closed -> Closed { Closed { failures: 0 } }
+    on Failure: Closed -> Open { Open }
+    on Timeout: Open -> HalfOpen { HalfOpen }
+    on Success: HalfOpen -> Closed { Closed { failures: 0 } }
+    on Failure: HalfOpen -> Open { Open }
+    on Success: Open -> Open { self }
+    on Failure: Open -> Open { self }
+    on Timeout: Closed -> Closed { self }
+    on Timeout: HalfOpen -> HalfOpen { self }
+}
+
+fn main() -> Int {
+    var cb = CircuitBreaker::Closed { failures: 0 };
+    println(cb.state_name());
+
+    cb = cb.step(CircuitBreakerEvent::Failure);
+    println(cb.state_name());
+
+    cb = cb.step(CircuitBreakerEvent::Timeout);
+    println(cb.state_name());
+
+    cb = cb.step(CircuitBreakerEvent::Success);
+    println(cb.state_name());
+
+    match cb {
+        Closed { failures } => {
+            println(f"failures = {failures}");
+            if failures == 0 { println("PASS"); 0 } else { println("FAIL"); 1 }
+        },
+        _ => { println("FAIL: wrong state"); 1 },
+    }
+}

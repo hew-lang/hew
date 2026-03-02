@@ -4,12 +4,13 @@ use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
     ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MatchArm, NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField,
-    Program, ReceiveFnDecl, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind,
-    WireFieldDecl, WireFieldMeta, WireMetadata,
+    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
+    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
+    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta,
+    WireMetadata,
 };
 use hew_lexer::Token;
 use std::cell::Cell;
@@ -601,6 +602,9 @@ impl<'src> Parser<'src> {
             Token::Optional => Some("optional"),
             Token::Deprecated => Some("deprecated"),
             Token::Reserved => Some("reserved"),
+            Token::State => Some("state"),
+            Token::Event => Some("event"),
+            Token::On => Some("on"),
             _ => None,
         }
     }
@@ -926,6 +930,10 @@ impl<'src> Parser<'src> {
                         self.advance();
                         Item::Supervisor(self.parse_supervisor_decl(vis)?)
                     }
+                    Some(Token::Machine) => {
+                        self.advance();
+                        Item::Machine(self.parse_machine_decl(vis)?)
+                    }
                     Some(Token::Wire) => {
                         self.advance();
                         let wd = self.parse_wire_decl(&attrs, vis)?;
@@ -1019,6 +1027,10 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Item::Supervisor(self.parse_supervisor_decl(Visibility::Private)?)
             }
+            Some(Token::Machine) => {
+                self.advance();
+                Item::Machine(self.parse_machine_decl(Visibility::Private)?)
+            }
             Some(Token::Extern) => {
                 self.advance();
                 Item::ExternBlock(self.parse_extern_block()?)
@@ -1070,7 +1082,7 @@ impl<'src> Parser<'src> {
                     }
                 }
                 self.error(format!(
-                    "expected item (fn, actor, type, import, ...), found {found}"
+                    "expected item (fn, actor, machine, type, import, ...), found {found}"
                 ));
                 return None;
             }
@@ -1709,6 +1721,108 @@ impl<'src> Parser<'src> {
                 }
             }
             _ => None,
+        }
+    }
+
+    fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
+        let name = self.expect_ident()?;
+
+        self.expect(&Token::LeftBrace)?;
+
+        let mut states = Vec::new();
+        let mut events = Vec::new();
+        let mut transitions = Vec::new();
+
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::State) {
+                self.advance();
+                let state_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let ty = self.parse_type()?;
+                        if !self.eat(&Token::Semicolon) {
+                            self.eat(&Token::Comma);
+                        }
+                        fields.push((field_name, ty));
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                self.eat(&Token::Semicolon);
+                states.push(MachineState {
+                    name: state_name,
+                    fields,
+                });
+            } else if self.peek() == Some(&Token::Event) {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let ty = self.parse_type()?;
+                        if !self.eat(&Token::Semicolon) {
+                            self.eat(&Token::Comma);
+                        }
+                        fields.push((field_name, ty));
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                self.eat(&Token::Semicolon);
+                events.push(MachineEvent {
+                    name: event_name,
+                    fields,
+                });
+            } else if self.peek() == Some(&Token::On) {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let source_state = self.parse_state_pattern()?;
+                self.expect(&Token::Arrow)?;
+                let target_state = self.parse_state_pattern()?;
+                let body_start = self.peek_span().start;
+                let body_block = self.parse_block()?;
+                let body_end = self.peek_span().start;
+                transitions.push(MachineTransition {
+                    event_name,
+                    source_state,
+                    target_state,
+                    body: (Expr::Block(body_block), body_start..body_end),
+                });
+            } else {
+                self.error("expected state, event, or transition in machine body".to_string());
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RightBrace)?;
+
+        Some(MachineDecl {
+            visibility,
+            name,
+            states,
+            events,
+            transitions,
+        })
+    }
+
+    /// Parse a state pattern: an identifier or `_` (wildcard).
+    fn parse_state_pattern(&mut self) -> Option<String> {
+        match self.peek() {
+            Some(Token::Identifier(name)) if *name == "_" => {
+                self.advance();
+                Some("_".to_string())
+            }
+            _ => self.expect_ident(),
         }
     }
 

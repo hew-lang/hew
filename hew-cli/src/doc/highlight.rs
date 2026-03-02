@@ -91,7 +91,11 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Catch
         | Token::Defer
         | Token::Pure
-        | Token::As => KW,
+        | Token::As
+        | Token::Machine
+        | Token::State
+        | Token::Event
+        | Token::On => KW,
 
         // ── Constants (strategy values + booleans) ────────────────────
         Token::Permanent

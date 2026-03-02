@@ -345,6 +345,15 @@ impl TraitRegistry {
                     false
                 }
             }),
+
+            // Machine types: check registered field types (like Named)
+            Ty::Machine { name } => {
+                if let Some(fields) = self.type_fields.get(name) {
+                    fields.iter().all(|f| self.implements_marker(f, marker))
+                } else {
+                    false
+                }
+            }
         }
     }
 

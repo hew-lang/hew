@@ -5,12 +5,12 @@ use std::ops::Range;
 use crate::ast::{
     ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp,
     ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl,
-    ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, NamingCase, OverflowPolicy, Param,
-    Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind,
-    WireFieldDecl, WireMetadata,
+    ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl, MatchArm, NamingCase,
+    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
+    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireDecl,
+    WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format an AST [`Program`] as canonical Hew source text (comments are not preserved).
@@ -208,6 +208,7 @@ impl<'a> Formatter<'a> {
             Item::ExternBlock(decl) => self.format_extern_block(decl, span_end),
             Item::Actor(decl) => self.format_actor(decl, span_end),
             Item::Supervisor(decl) => self.format_supervisor(decl),
+            Item::Machine(decl) => self.format_machine(decl, span_end),
         }
     }
 
@@ -731,6 +732,87 @@ impl<'a> Formatter<'a> {
         if self.has_comments() {
             self.flush_block_end_comments(span_end);
         }
+        self.indent -= 1;
+        self.writeln("}");
+    }
+
+    fn format_machine(&mut self, decl: &MachineDecl, span_end: usize) {
+        self.write_indent();
+        self.write_visibility(decl.visibility);
+        self.write("machine ");
+        self.write(&decl.name);
+        self.write(" {\n");
+        self.indent += 1;
+
+        for state in &decl.states {
+            self.write_indent();
+            self.write("state ");
+            self.write(&state.name);
+            if state.fields.is_empty() {
+                self.write(";\n");
+            } else {
+                self.write(" { ");
+                for (i, (name, ty)) in state.fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(" ");
+                    }
+                    self.write(name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                    self.write(";");
+                }
+                self.write(" };\n");
+            }
+        }
+
+        if !decl.states.is_empty() && !decl.events.is_empty() {
+            self.newline();
+        }
+
+        for event in &decl.events {
+            self.write_indent();
+            self.write("event ");
+            self.write(&event.name);
+            if event.fields.is_empty() {
+                self.write(";\n");
+            } else {
+                self.write(" { ");
+                for (i, (name, ty)) in event.fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(" ");
+                    }
+                    self.write(name);
+                    self.write(": ");
+                    self.format_type_expr(&ty.0);
+                    self.write(";");
+                }
+                self.write(" };\n");
+            }
+        }
+
+        if !decl.events.is_empty() && !decl.transitions.is_empty() {
+            self.newline();
+        }
+
+        for transition in &decl.transitions {
+            self.write_indent();
+            self.write("on ");
+            self.write(&transition.event_name);
+            self.write(": ");
+            self.write(&transition.source_state);
+            self.write(" -> ");
+            self.write(&transition.target_state);
+            self.write(" ");
+            if let Expr::Block(block) = &transition.body.0 {
+                self.format_block(block, span_end);
+            } else {
+                self.write("{ ");
+                self.format_expr(&transition.body.0);
+                self.write(" }");
+            }
+            self.newline();
+        }
+
         self.indent -= 1;
         self.writeln("}");
     }

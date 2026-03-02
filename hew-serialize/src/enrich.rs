@@ -201,6 +201,12 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
 
         // Skip these types gracefully - they shouldn't be serialized
         Ty::Var(_) | Ty::Error => return None,
+
+        // Machine types map to Named for serialization
+        Ty::Machine { name } => TypeExpr::Named {
+            name: name.clone(),
+            type_args: None,
+        },
     };
 
     Some((te, span))
@@ -405,6 +411,11 @@ fn rewrite_builtin_calls_in_item(item: &mut Item) {
             }
             for recv in &mut actor.receive_fns {
                 rewrite_builtin_calls_in_block(&mut recv.body);
+            }
+        }
+        Item::Machine(machine) => {
+            for transition in &mut machine.transitions {
+                rewrite_builtin_calls_in_expr(&mut transition.body);
             }
         }
         Item::Impl(imp) => {
@@ -740,6 +751,21 @@ fn normalize_item_types(item: &mut Item) {
         Item::TypeAlias(type_alias) => {
             normalize_type_expr(&mut type_alias.ty.0);
         }
+        Item::Machine(machine) => {
+            for state in &mut machine.states {
+                for (_name, ty) in &mut state.fields {
+                    normalize_type_expr(&mut ty.0);
+                }
+            }
+            for event in &mut machine.events {
+                for (_name, ty) in &mut event.fields {
+                    normalize_type_expr(&mut ty.0);
+                }
+            }
+            for transition in &mut machine.transitions {
+                normalize_expr_types(&mut transition.body);
+            }
+        }
         _ => {}
     }
 }
@@ -1021,6 +1047,11 @@ fn enrich_item(item: &mut Item, tco: &TypeCheckOutput) {
     match item {
         Item::Function(fn_decl) => enrich_fn_decl(fn_decl, tco),
         Item::Actor(actor) => enrich_actor(actor, tco),
+        Item::Machine(machine) => {
+            for transition in &mut machine.transitions {
+                enrich_expr(&mut transition.body, tco);
+            }
+        }
         Item::Impl(impl_decl) => {
             for method in &mut impl_decl.methods {
                 enrich_fn_decl(method, tco);

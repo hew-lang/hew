@@ -66,6 +66,7 @@ pub enum Item {
     ExternBlock(ExternBlock),
     Actor(ActorDecl),
     Supervisor(SupervisorDecl),
+    Machine(MachineDecl),
 }
 
 // ── Expressions ──────────────────────────────────────────────────────
@@ -1065,4 +1066,36 @@ mod tests {
         assert_eq!(wire.field_meta[0].since, None);
         assert_eq!(wire.field_meta[1].since, Some(2));
     }
+}
+
+// ── Machine declarations ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineDecl {
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: String,
+    pub states: Vec<MachineState>,
+    pub events: Vec<MachineEvent>,
+    pub transitions: Vec<MachineTransition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineState {
+    pub name: String,
+    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineEvent {
+    pub name: String,
+    pub fields: Vec<(String, Spanned<TypeExpr>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineTransition {
+    pub event_name: String,
+    pub source_state: String,
+    pub target_state: String,
+    pub body: Spanned<Expr>,
 }

@@ -38,6 +38,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <map>
 #include <string>
 
 using namespace hew;
@@ -1727,6 +1728,8 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     const auto &item = spannedItem.value;
     if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
       registerTypeDecl(*td);
+    } else if (auto *md = std::get_if<ast::MachineDecl>(&item.kind)) {
+      registerMachineDecl(*md);
     }
   });
 
@@ -1910,6 +1913,15 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     }
   });
 
+  // Pass 1k0: Generate machine step() and state_name() functions.
+  // Must run before function bodies so user code can call machine methods.
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    if (auto *md = std::get_if<ast::MachineDecl>(&item.kind)) {
+      generateMachineDecl(*md);
+    }
+  });
+
   // Pass 1k: Generate regular function bodies before actor bodies so that
   // actor receive functions can call user-defined functions (including void
   // functions that were skipped by the forward-declaration pass 1d).
@@ -1946,7 +1958,8 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
         std::holds_alternative<ast::FnDecl>(item.kind) ||
         std::holds_alternative<ast::ConstDecl>(item.kind) ||
         std::holds_alternative<ast::ExternBlock>(item.kind) ||
-        std::holds_alternative<ast::WireDecl>(item.kind))
+        std::holds_alternative<ast::WireDecl>(item.kind) ||
+        std::holds_alternative<ast::MachineDecl>(item.kind))
       return; // already handled in pass 1
     generateItem(item);
   });
@@ -2031,6 +2044,8 @@ void MLIRGen::generateItem(const ast::Item &item) {
     generateSupervisorDecl(*sd);
   } else if (std::holds_alternative<ast::TypeAliasDecl>(item.kind)) {
     // Handled in pre-registration pass
+  } else if (std::holds_alternative<ast::MachineDecl>(item.kind)) {
+    // Handled in pass 1b (registration) and pass 1m (code generation)
   }
 }
 
@@ -2264,6 +2279,368 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
   }
 
   structTypes[declName] = std::move(info);
+}
+
+// ============================================================================
+// Machine declaration registration
+// ============================================================================
+
+void MLIRGen::registerMachineDecl(const ast::MachineDecl &decl) {
+  const auto &machineName = decl.name;
+
+  // ── Register the machine type as an enum (states are variants) ──
+  {
+    EnumTypeInfo info;
+    info.name = machineName;
+
+    unsigned idx = 0;
+    for (const auto &state : decl.states) {
+      EnumVariantInfo vi;
+      vi.name = state.name;
+      vi.index = idx++;
+      for (const auto &[fieldName, fieldType] : state.fields) {
+        vi.payloadTypes.push_back(convertType(fieldType.value));
+        vi.fieldNames.push_back(fieldName);
+      }
+      info.variants.push_back(std::move(vi));
+    }
+
+    // Register variant name → (machine, index) for quick lookup
+    // Register both unqualified (Off) and qualified (Light::Off) forms
+    for (const auto &v : info.variants) {
+      variantLookup[v.name] = {machineName, v.index};
+      variantLookup[machineName + "::" + v.name] = {machineName, v.index};
+    }
+
+    // Determine if any variant has payloads
+    bool anyPayload = false;
+    for (const auto &v : info.variants) {
+      if (!v.payloadTypes.empty()) {
+        anyPayload = true;
+        break;
+      }
+    }
+    // Machines always use struct layout, so hasPayloads must be true
+    // for EnumConstructOp to emit struct-based code (not bare i32).
+    info.hasPayloads = true;
+
+    // Machines always use an identified struct type (even unit-only) so that
+    // method dispatch (step(), state_name()) can resolve the type name.
+    {
+      llvm::SmallVector<mlir::Type, 4> structFields;
+      structFields.push_back(builder.getI32Type()); // tag
+
+      if (anyPayload) {
+        // Union overlay: find max fields across all variants
+        unsigned maxFields = 0;
+        for (const auto &v : info.variants)
+          maxFields = std::max(maxFields, (unsigned)v.payloadTypes.size());
+
+        // For each position, use the widest type across all variants
+        for (unsigned pos = 0; pos < maxFields; pos++) {
+          mlir::Type widest;
+          unsigned widestBits = 0;
+          for (const auto &v : info.variants) {
+            if (pos < v.payloadTypes.size()) {
+              auto ty = v.payloadTypes[pos];
+              unsigned bits = 64; // default for pointers/other
+              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+                bits = intTy.getWidth();
+              else if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+                bits = fltTy.getWidth();
+              if (!widest || bits > widestBits) {
+                widest = ty;
+                widestBits = bits;
+              }
+            }
+          }
+          structFields.push_back(widest);
+        }
+
+        // All variants overlay starting from position 1
+        for (auto &v : info.variants) {
+          v.payloadPositions.clear();
+          for (unsigned i = 0; i < v.payloadTypes.size(); i++)
+            v.payloadPositions.push_back(1 + i);
+        }
+      }
+
+      auto structType = mlir::LLVM::LLVMStructType::getIdentified(&context, machineName);
+      if (!structType.isInitialized())
+        (void)structType.setBody(structFields, /*isPacked=*/false);
+      info.mlirType = structType;
+    }
+
+    enumTypes[machineName] = std::move(info);
+  }
+
+  // ── Register the event type as a separate enum ──
+  {
+    std::string eventTypeName = machineName + "Event";
+    EnumTypeInfo info;
+    info.name = eventTypeName;
+
+    unsigned idx = 0;
+    for (const auto &event : decl.events) {
+      EnumVariantInfo vi;
+      vi.name = event.name;
+      vi.index = idx++;
+      for (const auto &[fieldName, fieldType] : event.fields) {
+        vi.payloadTypes.push_back(convertType(fieldType.value));
+        vi.fieldNames.push_back(fieldName);
+      }
+      info.variants.push_back(std::move(vi));
+    }
+
+    for (const auto &v : info.variants) {
+      variantLookup[v.name] = {eventTypeName, v.index};
+      variantLookup[eventTypeName + "::" + v.name] = {eventTypeName, v.index};
+    }
+
+    bool anyPayload = false;
+    size_t maxPayloadFields = 0;
+    for (const auto &v : info.variants) {
+      if (!v.payloadTypes.empty()) {
+        anyPayload = true;
+        maxPayloadFields = std::max(maxPayloadFields, v.payloadTypes.size());
+      }
+    }
+    info.hasPayloads = anyPayload;
+
+    if (!anyPayload) {
+      info.mlirType = builder.getI32Type();
+    } else {
+      llvm::SmallVector<mlir::Type, 4> structFields;
+      structFields.push_back(builder.getI32Type()); // tag
+
+      int64_t nextField = 1;
+      for (auto &v : info.variants) {
+        v.payloadPositions.clear();
+        for (unsigned i = 0; i < v.payloadTypes.size(); i++)
+          v.payloadPositions.push_back(nextField + i);
+      }
+
+      // Union overlay: for each position, use the widest type
+      for (unsigned pos = 0; pos < maxPayloadFields; pos++) {
+        mlir::Type widest;
+        unsigned widestBits = 0;
+        for (const auto &v : info.variants) {
+          if (pos < v.payloadTypes.size()) {
+            auto ty = v.payloadTypes[pos];
+            unsigned bits = 64;
+            if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+              bits = intTy.getWidth();
+            else if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+              bits = fltTy.getWidth();
+            if (!widest || bits > widestBits) {
+              widest = ty;
+              widestBits = bits;
+            }
+          }
+        }
+        structFields.push_back(widest);
+      }
+
+      info.mlirType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);
+    }
+
+    enumTypes[eventTypeName] = std::move(info);
+  }
+}
+
+// ============================================================================
+// Machine declaration code generation (step + state_name functions)
+// ============================================================================
+
+void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
+  const auto &machineName = decl.name;
+  std::string eventTypeName = machineName + "Event";
+
+  auto machineEnumIt = enumTypes.find(machineName);
+  auto eventEnumIt = enumTypes.find(eventTypeName);
+  if (machineEnumIt == enumTypes.end() || eventEnumIt == enumTypes.end())
+    return;
+
+  const auto &machineInfo = machineEnumIt->second;
+  const auto &eventInfo = eventEnumIt->second;
+  auto machineType = machineInfo.mlirType;
+  auto eventType = eventInfo.mlirType;
+  auto location = builder.getUnknownLoc();
+
+  // ── Generate state_name() function ──
+  {
+    std::string funcName = mangleName(currentModulePath, machineName, "state_name");
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto funcType = builder.getFunctionType({machineType}, {ptrType});
+
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+    auto funcOp = builder.create<mlir::func::FuncOp>(location, funcName, funcType);
+    auto *entryBlock = funcOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    auto selfArg = entryBlock->getArgument(0);
+    auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), selfArg);
+
+    // Build if-else chain: if tag==0 return "State0", elif tag==1 ...
+    mlir::Value result = nullptr;
+    for (int i = static_cast<int>(decl.states.size()) - 1; i >= 0; --i) {
+      auto symName = getOrCreateGlobalString(decl.states[i].name);
+      auto strVal = builder.create<hew::ConstantOp>(
+          location, hew::StringRefType::get(&context), builder.getStringAttr(symName));
+      auto strPtr = builder.create<hew::BitcastOp>(location, ptrType, strVal);
+
+      if (result == nullptr) {
+        // Last (default) case
+        result = strPtr;
+      } else {
+        auto tagVal = createIntConstant(builder, location, builder.getI32Type(), i);
+        auto cond = builder.create<mlir::arith::CmpIOp>(
+            location, mlir::arith::CmpIPredicate::eq, tag, tagVal);
+        result = builder.create<mlir::arith::SelectOp>(location, cond, strPtr, result);
+      }
+    }
+
+    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{result});
+    builder.restoreInsertionPoint(savedIP);
+  }
+
+  // ── Generate step() function ──
+  {
+    std::string funcName = mangleName(currentModulePath, machineName, "step");
+    auto funcType = builder.getFunctionType({machineType, eventType}, {machineType});
+
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+    auto funcOp = builder.create<mlir::func::FuncOp>(location, funcName, funcType);
+    auto *entryBlock = funcOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    auto selfArg = entryBlock->getArgument(0);
+    auto eventArg = entryBlock->getArgument(1);
+
+    auto stateTag = builder.create<hew::EnumExtractTagOp>(
+        location, builder.getI32Type(), selfArg);
+    auto eventTag = builder.create<hew::EnumExtractTagOp>(
+        location, builder.getI32Type(), eventArg);
+
+    // Build a map from (source_state_idx, event_idx) → transition info.
+    // Wildcard source "_" maps to all states not explicitly covered.
+    struct TransitionTarget {
+      unsigned targetStateIdx;
+      const ast::MachineTransition *transition = nullptr;
+    };
+    std::map<std::pair<unsigned, unsigned>, TransitionTarget> transitionMap;
+
+    // Build event name → index map
+    std::unordered_map<std::string, unsigned> eventNameToIdx;
+    for (unsigned i = 0; i < decl.events.size(); ++i)
+      eventNameToIdx[decl.events[i].name] = i;
+
+    // Build state name → index map
+    std::unordered_map<std::string, unsigned> stateNameToIdx;
+    for (unsigned i = 0; i < decl.states.size(); ++i)
+      stateNameToIdx[decl.states[i].name] = i;
+
+    // Collect wildcard transitions (source == "_")
+    std::unordered_map<unsigned, std::pair<unsigned, const ast::MachineTransition *>>
+        wildcardEventToTarget;
+
+    for (const auto &trans : decl.transitions) {
+      auto eventIt = eventNameToIdx.find(trans.event_name);
+      if (eventIt == eventNameToIdx.end())
+        continue;
+      unsigned eventIdx = eventIt->second;
+
+      if (trans.source_state == "_") {
+        // Wildcard: determine target
+        if (trans.target_state == "_") {
+          // self transition — target = source (handled per-state below)
+          wildcardEventToTarget[eventIdx] = {UINT_MAX, &trans}; // sentinel: self
+        } else {
+          auto targetIt = stateNameToIdx.find(trans.target_state);
+          if (targetIt != stateNameToIdx.end())
+            wildcardEventToTarget[eventIdx] = {targetIt->second, &trans};
+        }
+      } else {
+        auto sourceIt = stateNameToIdx.find(trans.source_state);
+        if (sourceIt == stateNameToIdx.end())
+          continue;
+        unsigned sourceIdx = sourceIt->second;
+        unsigned targetIdx = sourceIdx; // default: self
+        if (trans.target_state != "_") {
+          auto targetIt = stateNameToIdx.find(trans.target_state);
+          if (targetIt != stateNameToIdx.end())
+            targetIdx = targetIt->second;
+        }
+        transitionMap[{sourceIdx, eventIdx}] = {targetIdx, &trans};
+      }
+    }
+
+    // Fill wildcard slots for states that don't have explicit transitions
+    for (unsigned si = 0; si < decl.states.size(); ++si) {
+      for (const auto &[eventIdx, wildcardInfo] : wildcardEventToTarget) {
+        auto key = std::make_pair(si, eventIdx);
+        if (transitionMap.find(key) == transitionMap.end()) {
+          unsigned finalTarget = (wildcardInfo.first == UINT_MAX) ? si : wildcardInfo.first;
+          transitionMap[key] = {finalTarget, wildcardInfo.second};
+        }
+      }
+    }
+
+    // Helper: check if body expression is just the identifier `self`
+    auto isSelfBodyExpr = [](const ast::Expr &expr) -> bool {
+      if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+        return ident->name == "self";
+      return false;
+    };
+
+    // Build nested if-else chain over (stateTag, eventTag) pairs.
+    // Result defaults to self (identity transition for unmatched pairs).
+    mlir::Value result = selfArg;
+
+    // Iterate in reverse so the first pair ends up as the outermost condition
+    for (auto it = transitionMap.rbegin(); it != transitionMap.rend(); ++it) {
+      unsigned sourceIdx = it->first.first;
+      unsigned eventIdx = it->first.second;
+      const auto *trans = it->second.transition;
+
+      // Build condition: stateTag == sourceIdx && eventTag == eventIdx
+      auto stateConst = createIntConstant(builder, location, builder.getI32Type(), sourceIdx);
+      auto eventConst = createIntConstant(builder, location, builder.getI32Type(), eventIdx);
+      auto stateCmp = builder.create<mlir::arith::CmpIOp>(
+          location, mlir::arith::CmpIPredicate::eq, stateTag, stateConst);
+      auto eventCmp = builder.create<mlir::arith::CmpIOp>(
+          location, mlir::arith::CmpIPredicate::eq, eventTag, eventConst);
+      auto cond = builder.create<mlir::arith::AndIOp>(location, stateCmp, eventCmp);
+
+      mlir::Value targetVal;
+
+      if (trans && isSelfBodyExpr(trans->body.value)) {
+        // Self-transition: return selfArg unchanged (preserves all fields)
+        targetVal = selfArg;
+      } else if (trans) {
+        // Evaluate the transition body expression (e.g. Count { n: self.n + 1 })
+        SymbolTableScopeT bodyScope(symbolTable);
+        declareVariable("self", selfArg);
+        currentMachineSourceVariant_ = decl.states[sourceIdx].name;
+        targetVal = generateExpression(trans->body.value);
+        currentMachineSourceVariant_.clear();
+      } else {
+        // Fallback: construct tag-only value
+        targetVal = builder.create<hew::EnumConstructOp>(
+            location, machineType, static_cast<int32_t>(it->second.targetStateIdx),
+            builder.getStringAttr(machineName), mlir::ValueRange{},
+            /*payload_positions=*/nullptr);
+      }
+
+      if (targetVal)
+        result = builder.create<mlir::arith::SelectOp>(location, cond, targetVal, result);
+    }
+
+    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{result});
+    builder.restoreInsertionPoint(savedIP);
+  }
 }
 
 // ============================================================================

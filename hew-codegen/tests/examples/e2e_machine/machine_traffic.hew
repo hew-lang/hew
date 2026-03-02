@@ -1,0 +1,31 @@
+// Test: Traffic Light Machine — multi-state cycle with wildcard emergency
+// Exercises: 3+ states, multiple events, wildcard transition, cyclic transitions
+machine TrafficLight {
+    state Red;
+    state Yellow;
+    state Green;
+
+    event Next;
+    event Emergency;
+
+    on Next: Red -> Green { Green }
+    on Next: Green -> Yellow { Yellow }
+    on Next: Yellow -> Red { Red }
+    on Emergency: _ -> Red { Red }
+}
+
+fn main() -> int {
+    var light = TrafficLight::Red;
+    println(light.state_name());
+    light = light.step(Next);
+    println(light.state_name());
+    light = light.step(Next);
+    println(light.state_name());
+    light = light.step(Next);
+    println(light.state_name());
+    // Emergency from Green
+    light = light.step(Next);
+    light = light.step(Emergency);
+    println(light.state_name());
+    0
+}

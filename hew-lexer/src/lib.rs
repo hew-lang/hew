@@ -254,6 +254,14 @@ pub enum Token<'src> {
     Pure,
     #[token("as")]
     As,
+    #[token("machine")]
+    Machine,
+    #[token("state")]
+    State,
+    #[token("event")]
+    Event,
+    #[token("on")]
+    On,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -506,6 +514,10 @@ impl std::fmt::Display for Token<'_> {
             Token::Defer => f.write_str("`defer`"),
             Token::Pure => f.write_str("`pure`"),
             Token::As => f.write_str("`as`"),
+            Token::Machine => f.write_str("`machine`"),
+            Token::State => f.write_str("`state`"),
+            Token::Event => f.write_str("`event`"),
+            Token::On => f.write_str("`on`"),
             // Delimiters and punctuation
             Token::LeftParen => f.write_str("`(`"),
             Token::RightParen => f.write_str("`)`"),
@@ -653,6 +665,10 @@ impl Token<'_> {
             Token::Defer => Some("defer"),
             Token::Pure => Some("pure"),
             Token::As => Some("as"),
+            Token::Machine => Some("machine"),
+            Token::State => Some("state"),
+            Token::Event => Some("event"),
+            Token::On => Some("on"),
             _ => None,
         }
     }

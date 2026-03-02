@@ -146,7 +146,8 @@ pub fn deserialize_from_msgpack(
 mod tests {
     use super::*;
     use hew_parser::ast::{
-        Block, Expr, FnDecl, IntRadix, Item, Literal, Program, Stmt, Visibility,
+        Block, Expr, FnDecl, IntRadix, Item, Literal, MachineDecl, MachineEvent, MachineState,
+        MachineTransition, Program, Stmt, TypeExpr, Visibility,
     };
 
     /// Round-trip: serialize → deserialize should produce an identical AST.
@@ -261,6 +262,69 @@ mod tests {
         };
 
         let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
+        assert_eq!(program, restored);
+    }
+
+    /// Round-trip a MachineDecl through MessagePack.
+    #[test]
+    fn round_trip_machine_decl() {
+        let program = Program {
+            items: vec![(
+                Item::Machine(MachineDecl {
+                    visibility: Visibility::Pub,
+                    name: "TrafficLight".into(),
+                    states: vec![
+                        MachineState {
+                            name: "Red".into(),
+                            fields: vec![],
+                        },
+                        MachineState {
+                            name: "Green".into(),
+                            fields: vec![(
+                                "duration".into(),
+                                (
+                                    TypeExpr::Named {
+                                        name: "Int".into(),
+                                        type_args: None,
+                                    },
+                                    10..13,
+                                ),
+                            )],
+                        },
+                    ],
+                    events: vec![MachineEvent {
+                        name: "Timer".into(),
+                        fields: vec![],
+                    }],
+                    transitions: vec![MachineTransition {
+                        event_name: "Timer".into(),
+                        source_state: "Red".into(),
+                        target_state: "Green".into(),
+                        body: (
+                            Expr::Block(Block {
+                                stmts: vec![],
+                                trailing_expr: Some(Box::new((
+                                    Expr::Literal(Literal::Integer {
+                                        value: 0,
+                                        radix: IntRadix::Decimal,
+                                    }),
+                                    20..21,
+                                ))),
+                            }),
+                            15..25,
+                        ),
+                    }],
+                }),
+                0..100,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        assert!(!bytes.is_empty());
+
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
     }

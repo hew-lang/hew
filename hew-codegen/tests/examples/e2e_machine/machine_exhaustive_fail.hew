@@ -1,0 +1,11 @@
+// Negative test: machine with missing transitions must produce a compile error.
+// Missing: on Y: A, on X: B, on Y: B
+machine Broken {
+    state A;
+    state B;
+    event X;
+    event Y;
+    on X: A -> B { B }
+}
+
+fn main() -> int { 0 }

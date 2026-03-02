@@ -131,6 +131,7 @@ fn extract_symbols(program: &hew_parser::ast::Program) -> Vec<SymbolInfo> {
             hew_parser::ast::Item::Function(f) => Some((&f.name, "function")),
             hew_parser::ast::Item::Actor(a) => Some((&a.name, "actor")),
             hew_parser::ast::Item::Supervisor(s) => Some((&s.name, "supervisor")),
+            hew_parser::ast::Item::Machine(m) => Some((&m.name, "machine")),
             hew_parser::ast::Item::Trait(t) => Some((&t.name, "trait")),
             hew_parser::ast::Item::TypeDecl(t) => Some((&t.name, "type")),
             hew_parser::ast::Item::Const(c) => Some((&c.name, "constant")),

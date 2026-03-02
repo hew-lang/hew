@@ -331,6 +331,13 @@ add_e2e_file_test(hex_test            e2e_hex             hex_test)
 add_e2e_file_test(base64_test         e2e_base64          base64_test)
 add_e2e_file_test(crypto_test         e2e_crypto          crypto_test)
 
+# Machine type tests (state machines with compile-time exhaustiveness)
+add_e2e_file_test(machine_basic       e2e_machine machine_basic)
+add_e2e_file_test(machine_traffic     e2e_machine machine_traffic)
+add_e2e_file_test(machine_match       e2e_machine machine_match)
+add_e2e_file_test(machine_qualified   e2e_machine machine_qualified_event)
+add_e2e_reject_test(machine_exhaustive e2e_machine machine_exhaustive_fail "does not handle event")
+
 # HashMap for-in iteration (sorted because HashMap order is non-deterministic)
 add_e2e_file_test_sorted(hashmap_forin    e2e_hashmap_forin hashmap_forin)
 

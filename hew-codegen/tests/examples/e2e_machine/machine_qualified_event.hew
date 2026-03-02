@@ -1,0 +1,19 @@
+// Test: Qualified event constructor syntax (LightEvent::Toggle)
+// Exercises: using the generated companion event enum with qualified names
+machine Light {
+    state Off;
+    state On;
+    event Toggle;
+    on Toggle: Off -> On { On }
+    on Toggle: On -> Off { Off }
+}
+
+fn main() -> int {
+    var light = Light::Off;
+    println(light.state_name());
+    light = light.step(LightEvent::Toggle);
+    println(light.state_name());
+    light = light.step(LightEvent::Toggle);
+    println(light.state_name());
+    0
+}

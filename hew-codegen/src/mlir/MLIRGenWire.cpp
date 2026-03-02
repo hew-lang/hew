@@ -544,6 +544,11 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     auto fieldNum = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchFieldNum);
     auto wireType = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchWireType);
 
+    // Track whether any field-number match fired, to skip unknown fields.
+    auto matchedAny = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 0),
+                                        matchedAny);
+
     // Dispatch by field number using chained if-else.
     // Each known field number decodes the value and stores it.
     // Unknown fields are skipped via hew_wire_skip_field.
@@ -602,35 +607,18 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                       : val;
       }
       builder.create<mlir::LLVM::StoreOp>(location, decoded, fieldSlots[i]);
+      builder.create<mlir::LLVM::StoreOp>(
+          location, createIntConstant(builder, location, i32Type, 1), matchedAny);
 
       // Move insertion point after this if-op for the next field check
       builder.setInsertionPointAfter(ifOp);
     }
 
-    // After all known field checks: if none matched, skip the unknown field
-    // We detect "none matched" by checking that fieldNum didn't match any known number.
-    // Build a compound OR of all match conditions by checking if we're still here
-    // after all the if-ops (if any matched, we decoded + stored; the skip is harmless
-    // since hew_wire_skip_field only advances read_pos for the remaining payload).
-    // Simpler approach: always call skip for unknown fields. We track whether we
-    // decoded by using a flag.
-    //
-    // Actually the simplest correct approach: build a single "matched" flag.
-    // If none of the if-ops fired, we need to skip. We use alloca + store pattern.
+    // If no field-number matched, skip the unknown field.
     {
-      // Check all field numbers again and skip if none matched.
-      // This is O(N) comparisons but N is small for wire structs.
-      mlir::Value anyMatch = createIntConstant(builder, location, i32Type, 0);
-      for (unsigned i = 0; i < decl.fields.size(); ++i) {
-        auto fieldNumConst =
-            createIntConstant(builder, location, i32Type, decl.fields[i].field_number);
-        auto isMatch = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                                           fieldNum, fieldNumConst);
-        auto isMatchI32 = builder.create<mlir::arith::ExtUIOp>(location, i32Type, isMatch);
-        anyMatch = builder.create<mlir::arith::OrIOp>(location, anyMatch, isMatchI32);
-      }
+      auto matched = builder.create<mlir::LLVM::LoadOp>(location, i32Type, matchedAny);
       auto noneMatched =
-          builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, anyMatch,
+          builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, matched,
                                               createIntConstant(builder, location, i32Type, 0));
       auto skipIf = builder.create<mlir::scf::IfOp>(location, noneMatched, /*hasElse=*/false);
       builder.setInsertionPointToStart(&skipIf.getThenRegion().front());

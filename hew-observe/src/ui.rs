@@ -671,6 +671,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     draw_overview_top_actors(f, app, chunks[2]);
 }
 
+#[expect(clippy::too_many_lines, reason = "Stats layout is one cohesive block")]
 fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
     let m = &app.metrics;
     let stats_text = vec![
@@ -739,9 +740,28 @@ fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::Magenta),
             ),
             Span::raw("    "),
+            Span::styled("Allocated: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format_bytes(m.bytes_allocated),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("    "),
+            Span::styled("Freed: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format_bytes(m.bytes_freed),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
             Span::styled("Allocs: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format!("{}", m.alloc_count),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("    "),
+            Span::styled("Deallocs: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", m.dealloc_count),
                 Style::default().fg(Color::Cyan),
             ),
         ]),
@@ -764,7 +784,11 @@ fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
 fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
     let spark_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
         .split(area);
 
     let msg_sparkline = Sparkline::default()
@@ -786,6 +810,16 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
         .data(&app.sparkline_actors)
         .style(Style::default().fg(Color::Green));
     f.render_widget(actor_sparkline, spark_chunks[1]);
+
+    let mem_sparkline = Sparkline::default()
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Memory (live) "),
+        )
+        .data(&app.sparkline_memory)
+        .style(Style::default().fg(Color::Magenta));
+    f.render_widget(mem_sparkline, spark_chunks[2]);
 }
 
 fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
@@ -847,6 +881,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
         Cell::from("PID"),
         Cell::from("State"),
         Cell::from("Messages"),
+        Cell::from("Avg (µs)"),
         Cell::from("Mailbox"),
         Cell::from("HWM"),
         Cell::from("CPU Time"),
@@ -875,6 +910,12 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(format!("{}", a.pid)),
                 Cell::from(a.state_name()).style(Style::default().fg(state_color)),
                 Cell::from(format!("{}", a.msgs)),
+                #[expect(clippy::cast_precision_loss, reason = "Display-only, 1 decimal place")]
+                Cell::from(if a.msgs > 0 {
+                    format!("{:.1}", a.time_ns as f64 / a.msgs as f64 / 1000.0)
+                } else {
+                    "\u{2014}".to_owned()
+                }),
                 Cell::from(format!("{}", a.mbox_depth)),
                 Cell::from(format!("{}", a.mbox_hwm)),
                 Cell::from(format_ns(a.time_ns)),
@@ -890,6 +931,7 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(8),
             Constraint::Length(12),
             Constraint::Length(12),
+            Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(8),
             Constraint::Min(12),

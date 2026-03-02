@@ -1142,6 +1142,62 @@ pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec
     unsafe { hew_wire_validate_header(bytes.as_ptr(), bytes.len()) }
 }
 
+// ---------------------------------------------------------------------------
+// Wire buffer ↔ bytes (HewVec) bridge
+// ---------------------------------------------------------------------------
+
+/// Convert a `HewWireBuf*` to a `bytes` (`HewVec*`).
+///
+/// Copies the buffer's data into a new `HewVec` (i32 elements, one byte per
+/// slot) and destroys the original `HewWireBuf`.
+///
+/// # Safety
+///
+/// `buf` must be a valid, non-null pointer returned by [`hew_wire_buf_new`].
+/// After this call, `buf` is freed and must not be used.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_buf_to_bytes(buf: *mut HewWireBuf) -> *mut crate::vec::HewVec {
+    if buf.is_null() {
+        return unsafe { crate::vec::hew_vec_new() };
+    }
+    let b = unsafe { &*buf };
+    let slice = if b.data.is_null() || b.len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(b.data, b.len) }
+    };
+    let v = unsafe { crate::vec::u8_to_hwvec(slice) };
+    unsafe { hew_wire_buf_destroy(buf) };
+    v
+}
+
+/// Convert a `bytes` (`HewVec*`) to a `HewWireBuf*` for decoding.
+///
+/// Copies the vec's byte data into a new `HewWireBuf` set up for reading
+/// (read_pos = 0). The caller still owns the `HewVec`.
+///
+/// # Safety
+///
+/// `vec` must be a valid, non-null pointer to a `HewVec` with i32 elements.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_bytes_to_buf(vec: *mut crate::vec::HewVec) -> *mut HewWireBuf {
+    let bytes = unsafe { crate::vec::hwvec_to_u8(vec) };
+    let buf = unsafe { hew_wire_buf_new() };
+    if buf.is_null() {
+        return buf;
+    }
+    let b = unsafe { &mut *buf };
+    if !bytes.is_empty() {
+        if !unsafe { b.push_bytes(bytes.as_ptr(), bytes.len()) } {
+            set_last_error("hew_wire_bytes_to_buf: allocation failed");
+            unsafe { hew_wire_buf_destroy(buf) };
+            return std::ptr::null_mut();
+        }
+    }
+    b.read_pos = 0;
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1192,6 +1248,51 @@ mod tests {
             assert_eq!(decoded.payload_len, 1024);
 
             libc::free(header.cast::<c_void>());
+        }
+    }
+
+    #[test]
+    fn wire_buf_to_bytes_roundtrip() {
+        unsafe {
+            // Encode some data into a wire buffer
+            let buf = hew_wire_buf_new();
+            assert!(!buf.is_null());
+            assert_eq!(hew_wire_encode_varint(buf, 42), 0);
+            assert_eq!(hew_wire_encode_varint(buf, 300), 0);
+            let orig_len = (*buf).len;
+
+            // Convert to bytes (HewVec)
+            let vec = hew_wire_buf_to_bytes(buf);
+            // buf is now freed — don't use it
+
+            assert!(!vec.is_null());
+            assert_eq!(crate::vec::hew_vec_len(vec), orig_len as i64);
+
+            // Convert back to wire buf for decoding
+            let buf2 = hew_wire_bytes_to_buf(vec);
+            assert!(!buf2.is_null());
+            assert_eq!((*buf2).len, orig_len);
+
+            // Decode and verify
+            let mut val: u64 = 0;
+            assert_eq!(hew_wire_decode_varint(buf2, &raw mut val), 0);
+            assert_eq!(val, 42);
+            assert_eq!(hew_wire_decode_varint(buf2, &raw mut val), 0);
+            assert_eq!(val, 300);
+
+            hew_wire_buf_destroy(buf2);
+            crate::vec::hew_vec_free(vec);
+        }
+    }
+
+    #[test]
+    fn wire_buf_to_bytes_empty() {
+        unsafe {
+            let buf = hew_wire_buf_new();
+            let vec = hew_wire_buf_to_bytes(buf);
+            assert!(!vec.is_null());
+            assert_eq!(crate::vec::hew_vec_len(vec), 0);
+            crate::vec::hew_vec_free(vec);
         }
     }
 }

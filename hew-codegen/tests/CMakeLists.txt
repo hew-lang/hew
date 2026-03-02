@@ -416,6 +416,7 @@ add_e2e_file_test(wire_struct_basic    e2e_wire wire_struct_basic)
 add_e2e_file_test(wire_struct_json     e2e_wire wire_struct_json)
 add_e2e_file_test(wire_method_to_json  e2e_wire wire_method_to_json)
 add_e2e_file_test(wire_method_from_json e2e_wire wire_method_from_json)
+add_e2e_file_test(wire_binary_roundtrip e2e_wire wire_binary_roundtrip)
 
 # ── Generics monomorphization tests ──────────────────────────────────────────
 add_e2e_file_test(generic_identity      e2e_generics generic_identity)

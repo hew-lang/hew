@@ -159,6 +159,7 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Up => app.messages_scroll_up(),
             KeyCode::Down => app.messages_scroll_down(),
             KeyCode::Char('p' | ' ') => app.messages_toggle_pause(),
+            KeyCode::Char('f') => app.messages_filter_selected(),
             KeyCode::Char('c') => app.messages_clear_filter(),
             _ => {}
         },

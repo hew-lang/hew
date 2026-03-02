@@ -1279,8 +1279,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     drop(conns);
 
     if peer_hs.node_id != 0 {
-        // TODO: route entries only store bare conn_id (no generation), so conn_id reuse can
-        // cause stale lookups to target a different connection; add generation tokens.
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_hs.node_id, conn_id) };
         // SAFETY: pointer validity is checked by the callee.
@@ -1389,7 +1387,10 @@ pub unsafe extern "C" fn hew_connmgr_send(
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
 
-    // Verify connection exists and is active.
+    // Verify connection exists, is active, and targets the correct peer node.
+    // The peer_node_id check prevents sends to recycled conn_ids that now
+    // belong to a different node (conn_id reuse safety).
+    let target_node_id = (target_actor_id >> 48) as u16;
     #[cfg(feature = "encryption")]
     let maybe_noise: Option<Arc<Mutex<Option<snow::TransportState>>>>;
     {
@@ -1404,7 +1405,10 @@ pub unsafe extern "C" fn hew_connmgr_send(
         };
         let conn = conns.iter().find(|c| c.conn_id == conn_id);
         match conn {
-            Some(c) if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE => {
+            Some(c)
+                if c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE
+                    && (target_node_id == 0 || c.peer_node_id == target_node_id) =>
+            {
                 #[cfg(feature = "encryption")]
                 {
                     maybe_noise = Some(Arc::clone(&c.noise_transport));

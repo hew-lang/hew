@@ -269,12 +269,32 @@ impl App {
         self.trace_paused = !self.trace_paused;
     }
 
-    #[expect(
-        dead_code,
-        reason = "Will be wired to key bindings in Messages tab UI task"
-    )]
     pub fn messages_set_filter(&mut self, actor_id: u64) {
         self.trace_filter_actor = Some(actor_id);
+    }
+
+    /// Filter messages by the actor_id of the currently scrolled-to event.
+    pub fn messages_filter_selected(&mut self) {
+        let events: Vec<&TraceEvent> = self
+            .trace_events
+            .iter()
+            .filter(|e| {
+                if let Some(filter_id) = self.trace_filter_actor {
+                    e.actor_id == filter_id
+                } else {
+                    true
+                }
+            })
+            .filter(|e| {
+                e.event_type == "send"
+                    || e.event_type == "spawn"
+                    || e.event_type == "crash"
+                    || e.event_type == "stop"
+            })
+            .collect();
+        if let Some(evt) = events.get(self.trace_scroll) {
+            self.messages_set_filter(evt.actor_id);
+        }
     }
 
     pub fn messages_clear_filter(&mut self) {

@@ -697,7 +697,7 @@ pub unsafe extern "C" fn hew_actor_send_wire(
     let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
     // SAFETY: actor is valid, data slice is valid.
     unsafe { actor_send_internal(actor, msg_type, data.as_ptr() as *mut c_void, data.len()) };
-    // Free the encoded bytes vec — mailbox has its own copy.
+    // SAFETY: bytes was allocated by hew_vec and is no longer needed.
     unsafe { crate::vec::hew_vec_free(bytes) };
 }
 

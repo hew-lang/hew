@@ -123,7 +123,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
         let details = parsed
             .errors
             .iter()
-            .map(|e| format!("{}", e.message))
+            .map(|e| e.message.clone())
             .collect::<Vec<_>>()
             .join("\n");
         return Err(format!("Error: cannot parse {path}:\n{details}"));

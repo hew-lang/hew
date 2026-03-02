@@ -1,0 +1,12 @@
+pub actor Worker {
+    var total: int = 0;
+
+    receive fn add(n: int) -> int {
+        self.total = self.total + n;
+        self.total
+    }
+
+    receive fn get_total() -> int {
+        self.total
+    }
+}

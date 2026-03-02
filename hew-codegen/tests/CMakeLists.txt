@@ -531,6 +531,9 @@ add_e2e_file_test(module_diamond        e2e_modules module_diamond)
 add_e2e_file_test(module_enum           e2e_modules module_enum)
 add_e2e_file_test(module_trait_dispatch e2e_modules module_trait_dispatch)
 add_e2e_file_test(module_trait_inherit  e2e_modules module_trait_inherit)
+add_e2e_file_test(module_actor          e2e_modules module_actor)
+add_e2e_file_test(module_multifile      e2e_modules module_multifile)
+add_e2e_file_test(module_spawn_qualified e2e_modules module_spawn_qualified)
 
 # ── Drop trait tests ─────────────────────────────────────────────────────────
 add_e2e_file_test(drop_trait            e2e_drop_trait drop_trait)

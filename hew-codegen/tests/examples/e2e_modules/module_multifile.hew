@@ -1,0 +1,15 @@
+import multilib;
+
+fn main() {
+    // From multilib.hew
+    let msg = multilib.greet("multi");
+    println(msg);
+    let sq = multilib.square(5);
+    println(sq);
+
+    // From multilib_helpers.hew (peer file)
+    let dbl = multilib.double(7);
+    println(dbl);
+    let ex = multilib.exclaim("wow");
+    println(ex);
+}

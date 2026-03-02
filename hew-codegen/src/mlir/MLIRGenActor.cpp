@@ -194,6 +194,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
   auto location = currentLoc;
   const std::string &actorName = decl.name;
 
+  // De-duplicate: imported actors may appear in both forEachItem iterations
+  // (module graph) and flattened root items. Only generate bodies once.
+  if (!generatedActorBodies.insert(actorName).second)
+    return;
+
   // State struct and registry entry already set up by registerActorDecl
   auto stIt = structTypes.find(actorName);
   if (stIt == structTypes.end())

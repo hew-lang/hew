@@ -1,0 +1,11 @@
+import actorlib;
+
+fn main() {
+    let w = spawn actorlib.Worker();
+    let v1 = await w.add(10);
+    println(v1);
+    let v2 = await w.add(5);
+    println(v2);
+    let v3 = await w.get_total();
+    println(v3);
+}

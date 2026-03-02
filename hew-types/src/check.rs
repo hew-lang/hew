@@ -555,14 +555,7 @@ impl Checker {
                 args: vec![Ty::Var(TypeVar::fresh())],
             },
         );
-        self.register_builtin_fn(
-            "bytes::new",
-            vec![],
-            Ty::Named {
-                name: "bytes".to_string(),
-                args: vec![],
-            },
-        );
+        self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
 
         // More print variants
         self.register_builtin_fn("println_f64", vec![Ty::F64], Ty::Unit);
@@ -823,10 +816,7 @@ impl Checker {
             name: type_name.to_string(),
             args: vec![],
         };
-        let bytes_ty = Ty::Named {
-            name: "bytes".to_string(),
-            args: vec![],
-        };
+        let bytes_ty = Ty::Bytes;
 
         // Instance methods: encode(self) -> bytes, to_json(self) -> String, to_yaml(self) -> String
         let instance_methods = [
@@ -2966,6 +2956,7 @@ impl Checker {
                 name: "regex.Pattern".to_string(),
                 args: vec![],
             },
+            Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => Ty::Bytes,
             Expr::InterpolatedString(parts) => {
                 for part in parts {
                     if let StringPart::Expr((expr, expr_span)) = part {
@@ -3976,10 +3967,7 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                return Ty::Named {
-                    name: "bytes".to_string(),
-                    args: vec![],
-                };
+                return Ty::Bytes;
             }
             "Vec::from" => {
                 if args.len() != 1 {
@@ -4575,10 +4563,8 @@ impl Checker {
                     }
                 }
             }
-            // bytes methods (mutable byte buffer)
-            // NOTE: Using i32 for element types to match current runtime ABI.
-            // When runtime is updated to use u8 natively, change these to Ty::U8.
-            (Ty::Named { name, .. }, _) if name == "bytes" => match method {
+            // bytes methods (ref-counted byte buffer)
+            (Ty::Bytes, _) => match method {
                 "push" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
@@ -4586,7 +4572,8 @@ impl Checker {
                     }
                     Ty::Unit
                 }
-                "pop" | "len" => Ty::I32,
+                "pop" => Ty::I32,
+                "len" => Ty::I64,
                 "get" => {
                     if let Some(idx) = args.first() {
                         let (expr, sp) = idx.expr();
@@ -4606,6 +4593,14 @@ impl Checker {
                     Ty::Unit
                 }
                 "is_empty" => Ty::Bool,
+                "clear" => Ty::Unit,
+                "remove" => {
+                    if let Some(idx) = args.first() {
+                        let (expr, sp) = idx.expr();
+                        self.check_against(expr, sp, &Ty::I64);
+                    }
+                    Ty::I32
+                }
                 "contains" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
@@ -4617,14 +4612,7 @@ impl Checker {
                 "append" | "extend" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
-                        self.check_against(
-                            expr,
-                            sp,
-                            &Ty::Named {
-                                name: "bytes".to_string(),
-                                args: vec![],
-                            },
-                        );
+                        self.check_against(expr, sp, &Ty::Bytes);
                     }
                     Ty::Unit
                 }
@@ -4632,7 +4620,7 @@ impl Checker {
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,
-                        format!("no method `{method}` on bytes"),
+                        format!("no method `{method}` on `bytes`"),
                     );
                     Ty::Error
                 }
@@ -4902,21 +4890,11 @@ impl Checker {
             },
             // net.Connection methods
             (Ty::Named { name, .. }, _) if name == "net.Connection" => match method {
-                "read" => Ty::Named {
-                    name: "bytes".to_string(),
-                    args: vec![],
-                },
+                "read" => Ty::Bytes,
                 "write" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();
-                        self.check_against(
-                            expr,
-                            sp,
-                            &Ty::Named {
-                                name: "bytes".to_string(),
-                                args: vec![],
-                            },
-                        );
+                        self.check_against(expr, sp, &Ty::Bytes);
                     }
                     Ty::I32
                 }
@@ -6220,6 +6198,7 @@ impl Checker {
                     "bool" | "Bool" => Ty::Bool,
                     "char" | "Char" => Ty::Char,
                     "string" | "String" | "str" => Ty::String,
+                    "bytes" | "Bytes" => Ty::Bytes,
                     "()" => Ty::Unit,
                     _ => {
                         let args = type_args.as_ref().map_or(vec![], |ta| {

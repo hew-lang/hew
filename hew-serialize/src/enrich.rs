@@ -93,6 +93,10 @@ fn ty_to_type_expr(ty: &Ty) -> Option<Spanned<TypeExpr>> {
             name: "string".into(),
             type_args: None,
         },
+        Ty::Bytes => TypeExpr::Named {
+            name: "bytes".into(),
+            type_args: None,
+        },
         Ty::Never => TypeExpr::Named {
             name: "!".into(),
             type_args: None,

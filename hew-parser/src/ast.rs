@@ -229,6 +229,11 @@ pub enum Expr {
 
     /// Regex literal, e.g. `re"pattern"`.
     RegexLiteral(String),
+
+    /// Byte string literal, e.g. `b"hello"`.
+    ByteStringLiteral(Vec<u8>),
+    /// Byte array literal, e.g. `bytes [0x48, 0x65]`.
+    ByteArrayLiteral(Vec<u8>),
 }
 
 // ── Statements ───────────────────────────────────────────────────────

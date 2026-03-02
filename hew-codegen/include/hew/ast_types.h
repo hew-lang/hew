@@ -465,6 +465,12 @@ struct ExprArrayRepeat {
   std::unique_ptr<Spanned<Expr>> value;
   std::unique_ptr<Spanned<Expr>> count;
 };
+struct ExprByteStringLiteral {
+  std::vector<uint8_t> data;
+};
+struct ExprByteArrayLiteral {
+  std::vector<uint8_t> data;
+};
 
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
@@ -472,7 +478,8 @@ struct Expr {
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
-               ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat>
+               ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
+               ExprByteStringLiteral, ExprByteArrayLiteral>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };

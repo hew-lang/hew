@@ -202,6 +202,7 @@ private:
   mlir::Value generateSelectExpr(const ast::ExprSelect &expr);
   mlir::Value generateJoinExpr(const ast::ExprJoin &expr);
   mlir::Value generateInterpolatedString(const ast::ExprInterpolatedString &expr);
+  mlir::Value generateBytesLiteral(const std::vector<uint8_t> &data);
   mlir::Value generateRegexLiteral(const ast::ExprRegexLiteral &expr);
 
   // ── Block lowering ───────────────────────────────────────────────

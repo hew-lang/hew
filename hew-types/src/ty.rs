@@ -73,6 +73,8 @@ pub enum Ty {
     Char,
     /// UTF-8 string
     String,
+    /// Ref-counted byte buffer
+    Bytes,
     /// Unit type (void)
     Unit,
     /// Never type (diverging, `!`)
@@ -368,6 +370,12 @@ impl Ty {
         self.is_integer() || self.is_float()
     }
 
+    /// Check if this is the bytes type.
+    #[must_use]
+    pub fn is_bytes(&self) -> bool {
+        matches!(self, Ty::Bytes)
+    }
+
     /// Check if this is an integer type.
     #[must_use]
     pub fn is_integer(&self) -> bool {
@@ -514,6 +522,7 @@ impl fmt::Display for Ty {
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),
             Ty::String => write!(f, "String"),
+            Ty::Bytes => write!(f, "bytes"),
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
             Ty::Var(v) => write!(f, "{v}"),

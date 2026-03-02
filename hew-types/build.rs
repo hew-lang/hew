@@ -409,7 +409,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             "f64" => "Ty::F64".to_string(),
             "bool" => "Ty::Bool".to_string(),
             "char" => "Ty::Char".to_string(),
-            "bytes" => "Ty::Named { name: \"bytes\".to_string(), args: vec![] }".to_string(),
+            "bytes" => "Ty::Bytes".to_string(),
             n if n.contains('.') => {
                 let args_code = type_args_to_code(type_args, module_short);
                 format!("Ty::Named {{ name: \"{n}\".to_string(), args: {args_code} }}")

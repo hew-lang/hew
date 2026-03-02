@@ -1,0 +1,23 @@
+fn main() {
+    // Byte string literal creates a bytes value from ASCII data
+    let greeting = b"Hello";
+    println(greeting.len());
+    println(greeting.get(0)); // H = 72
+    println(greeting.get(4)); // o = 111
+
+    // Byte array literal creates a bytes value from explicit byte values
+    let data = bytes [0x48, 0x65, 0x77]; // "Hew"
+    println(data.len());
+    println(data.get(0)); // 0x48 = 72
+    println(data.get(2)); // 0x77 = 119
+
+    // Can push onto a byte literal
+    data.push(0x21); // '!'
+    println(data.len());
+    println(data.get(3)); // 0x21 = 33
+
+    // Empty byte string
+    let empty = b"";
+    println(empty.len());
+    println(empty.is_empty());
+}

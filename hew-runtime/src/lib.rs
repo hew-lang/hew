@@ -143,6 +143,8 @@ pub mod result;
 pub mod string;
 pub mod vec;
 
+pub mod bytes;
+
 pub mod internal;
 mod tagged_union;
 

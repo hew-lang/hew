@@ -398,6 +398,10 @@ pub enum Token<'src> {
     #[regex(r#"re"([^"\\]|\\.)*""#)]
     RegexLiteral(&'src str),
 
+    /// Byte string literal `b"..."`.
+    #[regex(r#"b"([^"\\]|\\.)*""#)]
+    ByteStringLit(&'src str),
+
     /// Regular string literal `"..."` with escape sequences.
     #[regex(r#""([^"\\]|\\.)*""#)]
     StringLit(&'src str),
@@ -565,6 +569,7 @@ impl std::fmt::Display for Token<'_> {
             Token::CharLit(_) => f.write_str("char literal"),
             Token::InterpolatedString(_) => f.write_str("interpolated string"),
             Token::RawString(_) => f.write_str("raw string"),
+            Token::ByteStringLit(_) => f.write_str("byte string literal"),
             Token::RegexLiteral(_) => f.write_str("regex literal"),
             Token::Duration(val) => write!(f, "duration `{val}`"),
             Token::Label(name) => write!(f, "label `{name}`"),

@@ -897,6 +897,16 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
 
   if (name == "RegexLiteral")
     return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
+  if (name == "ByteStringLiteral")
+    return ast::Expr{ast::ExprByteStringLiteral{
+        parseVec<uint8_t>(*payload, [](const msgpack::object &o) {
+          return static_cast<uint8_t>(getInt(o));
+        })}, {}};
+  if (name == "ByteArrayLiteral")
+    return ast::Expr{ast::ExprByteArrayLiteral{
+        parseVec<uint8_t>(*payload, [](const msgpack::object &o) {
+          return static_cast<uint8_t>(getInt(o));
+        })}, {}};
   fail("unknown Expr variant: " + name);
 }
 

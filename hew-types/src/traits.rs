@@ -207,6 +207,17 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // Bytes: Send + Sync + Clone + Eq + Hash + Debug (ref-counted, not Copy)
+            Ty::Bytes => matches!(
+                marker,
+                MarkerTrait::Send
+                    | MarkerTrait::Sync
+                    | MarkerTrait::Clone
+                    | MarkerTrait::Eq
+                    | MarkerTrait::Hash
+                    | MarkerTrait::Debug
+            ),
+
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)
             Ty::Named { name, .. } if name == "ActorRef" => matches!(
                 marker,

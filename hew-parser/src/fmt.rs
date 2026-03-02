@@ -1630,6 +1630,27 @@ impl<'a> Formatter<'a> {
                 self.write(pattern);
                 self.write("\"");
             }
+            Expr::ByteStringLiteral(data) => {
+                self.write("b\"");
+                for &b in data {
+                    if b.is_ascii_graphic() || b == b' ' {
+                        self.write(&(b as char).to_string());
+                    } else {
+                        self.write(&format!("\\x{b:02x}"));
+                    }
+                }
+                self.write("\"");
+            }
+            Expr::ByteArrayLiteral(data) => {
+                self.write("bytes [");
+                for (i, &b) in data.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(&format!("0x{b:02x}"));
+                }
+                self.write("]");
+            }
         }
     }
 

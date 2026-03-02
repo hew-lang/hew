@@ -188,6 +188,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateInterpolatedString(*interp);
   if (auto *regex = std::get_if<ast::ExprRegexLiteral>(&expr.kind))
     return generateRegexLiteral(*regex);
+  if (auto *bsl = std::get_if<ast::ExprByteStringLiteral>(&expr.kind))
+    return generateBytesLiteral(bsl->data);
+  if (auto *bal = std::get_if<ast::ExprByteArrayLiteral>(&expr.kind))
+    return generateBytesLiteral(bal->data);
   if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind))
     return generateIfLetExpr(*ifLet, expr.span);
   if (auto *arrRepeat = std::get_if<ast::ExprArrayRepeat>(&expr.kind))
@@ -691,6 +695,29 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
 // ============================================================================
 // Regex literal expression generation
 // ============================================================================
+
+mlir::Value MLIRGen::generateBytesLiteral(const std::vector<uint8_t> &data) {
+  auto location = currentLoc;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i32Ty = builder.getI32Type();
+
+  // Store byte data as a global string constant (reusing string infrastructure).
+  std::string dataStr(data.begin(), data.end());
+  auto symName = getOrCreateGlobalString(dataStr);
+
+  // Get pointer to the global string data.
+  auto dataPtr =
+      builder.create<hew::ConstantOp>(location, ptrType, builder.getStringAttr(symName));
+
+  // Create length constant.
+  auto lenVal = createIntConstant(builder, location, i32Ty, static_cast<int64_t>(data.size()));
+
+  // Call hew_vec_from_u8_data(ptr, len) -> *HewVec
+  auto funcType = mlir::FunctionType::get(&context, {ptrType, i32Ty}, {ptrType});
+  auto func = getOrCreateExternFunc("hew_vec_from_u8_data", funcType);
+  auto call = builder.create<mlir::func::CallOp>(location, func, mlir::ValueRange{dataPtr, lenVal});
+  return call.getResult(0);
+}
 
 mlir::Value MLIRGen::generateRegexLiteral(const ast::ExprRegexLiteral &regex) {
   auto location = currentLoc;

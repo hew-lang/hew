@@ -108,7 +108,8 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::RawString(_)
         | Token::InterpolatedString(_)
         | Token::RegexLiteral(_)
-        | Token::CharLit(_) => STR,
+        | Token::CharLit(_)
+        | Token::ByteStringLit(_) => STR,
 
         // ── Numeric literals ──────────────────────────────────────────
         Token::Integer(_) | Token::Float(_) | Token::Duration(_) => NUM,

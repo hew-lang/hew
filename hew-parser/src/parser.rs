@@ -3468,6 +3468,16 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
+            Token::ByteStringLit(s) => {
+                // Strip b"..." wrapper and unescape.
+                let inner = s
+                    .strip_prefix("b\"")
+                    .and_then(|s| s.strip_suffix('"'))
+                    .unwrap_or(s);
+                let unescaped = unescape_string(inner);
+                self.advance();
+                Expr::ByteStringLiteral(unescaped.into_bytes())
+            }
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
                 self.advance();
@@ -3491,6 +3501,44 @@ impl<'src> Parser<'src> {
             Token::False => {
                 self.advance();
                 Expr::Literal(Literal::Bool(false))
+            }
+            Token::Identifier(name)
+                if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
+            {
+                self.advance(); // consume "bytes"
+                self.advance(); // consume "["
+
+                let mut values: Vec<u8> = Vec::new();
+                while self.peek() != Some(&Token::RightBracket) {
+                    let elem_expr = self.parse_expr()?;
+                    match &elem_expr.0 {
+                        Expr::Literal(Literal::Integer { value, .. }) => {
+                            if *value < 0 || *value > 255 {
+                                self.error(format!(
+                                    "byte value {value} out of range (must be 0..255)"
+                                ));
+                                return None;
+                            }
+                            #[expect(
+                                clippy::cast_possible_truncation,
+                                clippy::cast_sign_loss,
+                                reason = "Checked to be 0..=255 above"
+                            )]
+                            values.push(*value as u8);
+                        }
+                        _ => {
+                            self.error(
+                                "byte array literal elements must be integer literals".to_string(),
+                            );
+                            return None;
+                        }
+                    }
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RightBracket)?;
+                Expr::ByteArrayLiteral(values)
             }
             Token::Identifier(name) => {
                 let mut name = name.to_string();

@@ -3466,6 +3466,8 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         | Expr::Cooperate
         | Expr::ScopeCancel
         | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
         | Expr::Yield(None) => {}
     }
 }

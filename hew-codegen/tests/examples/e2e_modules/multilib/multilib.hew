@@ -1,0 +1,7 @@
+pub fn greet(name: String) -> String {
+    "hello " + name
+}
+
+pub fn square(n: int) -> int {
+    n * n
+}

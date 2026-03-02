@@ -454,6 +454,7 @@ private:
 
   // ── Actor type registry ───────────────────────────────────────────
   std::unordered_map<std::string, ActorInfo> actorRegistry;
+  std::unordered_set<std::string> generatedActorBodies;
 
   // ── Supervisor names → child actor types ─────────────────────
   // Maps supervisor name → ordered list of child actor type names

@@ -1,0 +1,7 @@
+pub fn double(n: int) -> int {
+    n * 2
+}
+
+pub fn exclaim(msg: String) -> String {
+    msg + "!"
+}

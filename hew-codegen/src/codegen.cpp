@@ -22,6 +22,7 @@
 
 // MLIR conversion includes
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
@@ -4345,6 +4346,8 @@ mlir::LogicalResult Codegen::lowerToLLVMDialect(mlir::ModuleOp module) {
   pm.addPass(std::make_unique<SetTailCallsPass>());
   // Arith → LLVM
   pm.addPass(mlir::createArithToLLVMConversionPass());
+
+  pm.addPass(mlir::createConvertMathToLLVMPass());
   // ControlFlow → LLVM
   pm.addPass(mlir::createConvertControlFlowToLLVMPass());
   // MemRef → LLVM

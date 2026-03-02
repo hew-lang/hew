@@ -16,6 +16,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -2613,6 +2614,83 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // Special handling for log (has custom emit logic).
     if (ident->name == "log") {
       return generateLogCall(mc);
+    }
+
+    // std::math module — emit LLVM math intrinsics directly
+    // No import required: math.exp(x), math.log(x), etc. are always available.
+    if (ident->name == "math") {
+      if (mc.args.empty()) {
+        // Constants: math.pi, math.e
+        if (methodName == "pi")
+          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(3.14159265358979323846)).getResult();
+        if (methodName == "e")
+          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(2.71828182845904523536)).getResult();
+        emitError(location) << "unknown math constant: math." << methodName;
+        return nullptr;
+      }
+
+      auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!arg) return nullptr;
+      auto f64Type = builder.getF64Type();
+      if (arg.getType() != f64Type)
+        arg = coerceType(arg, f64Type, location);
+
+      // Single-argument math functions → LLVM intrinsics
+      if (methodName == "exp")
+        return builder.create<mlir::math::ExpOp>(location, arg).getResult();
+      if (methodName == "log")
+        return builder.create<mlir::math::LogOp>(location, arg).getResult();
+      if (methodName == "sqrt")
+        return builder.create<mlir::math::SqrtOp>(location, arg).getResult();
+      if (methodName == "sin")
+        return builder.create<mlir::math::SinOp>(location, arg).getResult();
+      if (methodName == "cos")
+        return builder.create<mlir::math::CosOp>(location, arg).getResult();
+      if (methodName == "floor")
+        return builder.create<mlir::math::FloorOp>(location, arg).getResult();
+      if (methodName == "ceil")
+        return builder.create<mlir::math::CeilOp>(location, arg).getResult();
+      if (methodName == "abs")
+        return builder.create<mlir::math::AbsFOp>(location, arg).getResult();
+      if (methodName == "tanh")
+        return builder.create<mlir::math::TanhOp>(location, arg).getResult();
+      if (methodName == "log2")
+        return builder.create<mlir::math::Log2Op>(location, arg).getResult();
+      if (methodName == "log10")
+        return builder.create<mlir::math::Log10Op>(location, arg).getResult();
+      if (methodName == "exp2")
+        return builder.create<mlir::math::Exp2Op>(location, arg).getResult();
+
+      // Two-argument: math.pow(base, exp)
+      if (methodName == "pow") {
+        if (mc.args.size() < 2) {
+          emitError(location) << "math.pow requires 2 arguments";
+          return nullptr;
+        }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type)
+          arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::math::PowFOp>(location, arg, arg2).getResult();
+      }
+      // math.max(a, b), math.min(a, b)
+      if (methodName == "max") {
+        if (mc.args.size() < 2) { emitError(location) << "math.max requires 2 arguments"; return nullptr; }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::arith::MaximumFOp>(location, arg, arg2).getResult();
+      }
+      if (methodName == "min") {
+        if (mc.args.size() < 2) { emitError(location) << "math.min requires 2 arguments"; return nullptr; }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::arith::MinimumFOp>(location, arg, arg2).getResult();
+      }
+
+      emitError(location) << "unknown math function: math." << methodName;
+      return nullptr;
     }
 
     // General module-qualified call: string.from_int(), crypto.sha256(), etc.

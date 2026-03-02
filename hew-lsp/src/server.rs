@@ -1183,7 +1183,8 @@ fn collect_item_folding(
         | Item::Impl(_)
         | Item::Wire(_)
         | Item::ExternBlock(_)
-        | Item::Supervisor(_) => {
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {
             add_region(source, lo, span, r);
         }
         Item::Import(_) | Item::Const(_) | Item::TypeAlias(_) => {}
@@ -1883,6 +1884,7 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionItemKind)> {
         }
         Item::Wire(w) => Some((w.name.clone(), CompletionItemKind::STRUCT)),
         Item::TypeAlias(ta) => Some((ta.name.clone(), CompletionItemKind::TYPE_PARAMETER)),
+        Item::Machine(m) => Some((m.name.clone(), CompletionItemKind::ENUM)),
         Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
     }
 }
@@ -1974,6 +1976,7 @@ fn build_document_symbols(
                 sym
             }
             Item::Wire(w) => make_symbol(&w.name, SymbolKind::STRUCT, range),
+            Item::Machine(m) => make_symbol(&m.name, SymbolKind::ENUM, range),
             Item::TypeAlias(ta) => make_symbol(&ta.name, SymbolKind::TYPE_PARAMETER, range),
             Item::ExternBlock(eb) => {
                 let mut sym =
@@ -2376,6 +2379,7 @@ fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
             Item::TypeDecl(td) => Some(td.name.as_str()),
             Item::Wire(w) => Some(w.name.as_str()),
             Item::TypeAlias(ta) => Some(ta.name.as_str()),
+            Item::Machine(m) => Some(m.name.as_str()),
             Item::Import(_) | Item::ExternBlock(_) | Item::Impl(_) => None,
         };
         if item_name == Some(name) {
@@ -2539,7 +2543,8 @@ fn collect_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
         | Item::ExternBlock(_)
         | Item::Wire(_)
         | Item::TypeAlias(_)
-        | Item::Supervisor(_) => {}
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {}
     }
 }
 
@@ -3693,7 +3698,8 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
         | Item::ExternBlock(_)
         | Item::Wire(_)
         | Item::TypeAlias(_)
-        | Item::Supervisor(_) => {}
+        | Item::Supervisor(_)
+        | Item::Machine(_) => {}
     }
 }
 

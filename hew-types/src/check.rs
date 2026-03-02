@@ -1201,7 +1201,9 @@ impl Checker {
             self.env.push_scope();
             self.env.define(
                 "self".to_string(),
-                Ty::Machine { name: md.name.clone() },
+                Ty::Machine {
+                    name: md.name.clone(),
+                },
                 false,
             );
             if transition.source_state != "_" {
@@ -3293,9 +3295,14 @@ impl Checker {
                         if let Some(variant) = td.variants.get(name) {
                             if matches!(variant, VariantDef::Unit) {
                                 let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                                    Ty::Machine { name: type_name.clone() }
+                                    Ty::Machine {
+                                        name: type_name.clone(),
+                                    }
                                 } else {
-                                    Ty::Named { name: type_name.clone(), args: vec![] }
+                                    Ty::Named {
+                                        name: type_name.clone(),
+                                        args: vec![],
+                                    }
                                 };
                                 found = Some(ty);
                                 break;
@@ -3311,9 +3318,14 @@ impl Checker {
                                 if let Some(variant) = td.variants.get(variant_name) {
                                     if matches!(variant, VariantDef::Unit) {
                                         let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                                            Ty::Machine { name: type_prefix.to_string() }
+                                            Ty::Machine {
+                                                name: type_prefix.to_string(),
+                                            }
                                         } else {
-                                            Ty::Named { name: type_prefix.to_string(), args: vec![] }
+                                            Ty::Named {
+                                                name: type_prefix.to_string(),
+                                                args: vec![],
+                                            }
                                         };
                                         found = Some(ty);
                                     }
@@ -5646,9 +5658,8 @@ impl Checker {
                             if let Some(VariantDef::Struct(variant_fields)) =
                                 td.variants.get(src_state).cloned()
                             {
-                                if let Some((_, field_ty)) = variant_fields
-                                    .iter()
-                                    .find(|(fname, _)| fname == field)
+                                if let Some((_, field_ty)) =
+                                    variant_fields.iter().find(|(fname, _)| fname == field)
                                 {
                                     return field_ty.clone();
                                 }
@@ -5891,26 +5902,24 @@ impl Checker {
                 args: type_args,
             }
         } else if let Some((enum_name, variant_fields, is_machine)) =
-            self.type_defs
-                .iter()
-                .find_map(|(type_name, td)| {
-                    let short = name.rsplit("::").next().unwrap_or(name);
-                    // For qualified names (e.g., Keeper::Holding), verify prefix
-                    if name.contains("::") {
-                        let prefix = name.split("::").next().unwrap_or("");
-                        if prefix != type_name {
-                            return None;
-                        }
+            self.type_defs.iter().find_map(|(type_name, td)| {
+                let short = name.rsplit("::").next().unwrap_or(name);
+                // For qualified names (e.g., Keeper::Holding), verify prefix
+                if name.contains("::") {
+                    let prefix = name.split("::").next().unwrap_or("");
+                    if prefix != type_name {
+                        return None;
                     }
-                    match td.variants.get(name).or_else(|| td.variants.get(short)) {
-                        Some(VariantDef::Struct(fields)) => Some((
-                            type_name.clone(),
-                            fields.clone(),
-                            td.kind == TypeDefKind::Machine,
-                        )),
-                        _ => None,
-                    }
-                })
+                }
+                match td.variants.get(name).or_else(|| td.variants.get(short)) {
+                    Some(VariantDef::Struct(fields)) => Some((
+                        type_name.clone(),
+                        fields.clone(),
+                        td.kind == TypeDefKind::Machine,
+                    )),
+                    _ => None,
+                }
+            })
         {
             for (field_name, (expr, es)) in fields {
                 if let Some((_, declared_ty)) =

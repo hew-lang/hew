@@ -283,10 +283,13 @@ mod tests {
                             name: "Green".into(),
                             fields: vec![(
                                 "duration".into(),
-                                (TypeExpr::Named {
-                                    name: "Int".into(),
-                                    type_args: None,
-                                }, 10..13),
+                                (
+                                    TypeExpr::Named {
+                                        name: "Int".into(),
+                                        type_args: None,
+                                    },
+                                    10..13,
+                                ),
                             )],
                         },
                     ],

@@ -1799,9 +1799,7 @@ impl<'src> Parser<'src> {
                     body: (Expr::Block(body_block), body_start..body_end),
                 });
             } else {
-                self.error(
-                    "expected state, event, or transition in machine body".to_string(),
-                );
+                self.error("expected state, event, or transition in machine body".to_string());
                 self.advance();
             }
         }

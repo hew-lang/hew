@@ -70,10 +70,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
-        body: (
-            Expr::Literal(Literal::Bool(true)),
-            0..0,
-        ),
+        body: (Expr::Literal(Literal::Bool(true)), 0..0),
     }
 }
 
@@ -144,14 +141,13 @@ fn missing_transition_error() {
         ],
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
-    assert!(
-        !output.errors.is_empty(),
-        "expected exhaustiveness errors"
-    );
+    assert!(!output.errors.is_empty(), "expected exhaustiveness errors");
     // Should have errors for both (Off, Dim) and (On, Dim)
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("does not handle event 'Dim'")),
+        messages
+            .iter()
+            .any(|m| m.contains("does not handle event 'Dim'")),
         "expected Dim error, got: {messages:?}"
     );
 }
@@ -189,7 +185,10 @@ fn machine_registers_type_def() {
     assert!(td.variants.contains_key("Established"));
 
     // step() and state_name() should be registered as methods
-    assert!(td.methods.contains_key("step"), "step method not registered");
+    assert!(
+        td.methods.contains_key("step"),
+        "step method not registered"
+    );
     assert!(
         td.methods.contains_key("state_name"),
         "state_name method not registered"
@@ -269,7 +268,9 @@ fn duplicate_transition_error() {
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     assert!(
-        output.errors.iter().any(|e| e.message.contains("duplicate transition for event 'Toggle' in state 'Off'")),
+        output.errors.iter().any(|e| e
+            .message
+            .contains("duplicate transition for event 'Toggle' in state 'Off'")),
         "expected duplicate transition error, got: {:?}",
         output.errors
     );
@@ -291,7 +292,9 @@ fn unknown_state_name_error() {
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("transition references unknown state 'Onn'")),
+        messages
+            .iter()
+            .any(|m| m.contains("transition references unknown state 'Onn'")),
         "expected unknown state error, got: {messages:?}"
     );
 }
@@ -312,7 +315,9 @@ fn unknown_event_name_error() {
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("transition references unknown event 'Toggl'")),
+        messages
+            .iter()
+            .any(|m| m.contains("transition references unknown event 'Toggl'")),
         "expected unknown event error, got: {messages:?}"
     );
 }
@@ -333,7 +338,9 @@ fn duplicate_wildcard_error() {
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("duplicate wildcard transition for event 'Toggle'")),
+        messages
+            .iter()
+            .any(|m| m.contains("duplicate wildcard transition for event 'Toggle'")),
         "expected duplicate wildcard error, got: {messages:?}"
     );
 }
@@ -351,7 +358,9 @@ fn too_few_states_error() {
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("must declare at least 2 states")),
+        messages
+            .iter()
+            .any(|m| m.contains("must declare at least 2 states")),
         "expected min-states error, got: {messages:?}"
     );
 }
@@ -369,7 +378,9 @@ fn zero_events_error() {
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
     assert!(
-        messages.iter().any(|m| m.contains("must declare at least 1 event")),
+        messages
+            .iter()
+            .any(|m| m.contains("must declare at least 1 event")),
         "expected min-events error, got: {messages:?}"
     );
 }
@@ -404,9 +415,15 @@ fn exhaustive_3x3_machine_ok() {
     let states = vec![unit_state("A"), unit_state("B"), unit_state("C")];
     let events = vec![unit_event("X"), unit_event("Y"), unit_event("Z")];
     let transitions = vec![
-        transition("X", "A", "B"), transition("Y", "A", "C"), transition("Z", "A", "A"),
-        transition("X", "B", "A"), transition("Y", "B", "B"), transition("Z", "B", "C"),
-        transition("X", "C", "C"), transition("Y", "C", "A"), transition("Z", "C", "B"),
+        transition("X", "A", "B"),
+        transition("Y", "A", "C"),
+        transition("Z", "A", "A"),
+        transition("X", "B", "A"),
+        transition("Y", "B", "B"),
+        transition("Z", "B", "C"),
+        transition("X", "C", "C"),
+        transition("Y", "C", "A"),
+        transition("Z", "C", "B"),
     ];
     let md = make_machine("M", states, events, transitions);
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
@@ -433,7 +450,8 @@ fn property_removal_of_any_transition_causes_error() {
     }
 
     // Full machine should pass
-    let full_trans: Vec<_> = transitions.iter()
+    let full_trans: Vec<_> = transitions
+        .iter()
         .map(|(e, s)| transition(e, s, "A"))
         .collect();
     let md = make_machine(
@@ -443,11 +461,16 @@ fn property_removal_of_any_transition_causes_error() {
         full_trans,
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
-    assert!(output.errors.is_empty(), "full machine should pass: {:?}", output.errors);
+    assert!(
+        output.errors.is_empty(),
+        "full machine should pass: {:?}",
+        output.errors
+    );
 
     // Removing any single transition should fail
     for i in 0..n_transitions {
-        let mut reduced: Vec<_> = transitions.iter()
+        let mut reduced: Vec<_> = transitions
+            .iter()
             .map(|(e, s)| transition(e, s, "A"))
             .collect();
         reduced.remove(i);
@@ -461,7 +484,8 @@ fn property_removal_of_any_transition_causes_error() {
         assert!(
             !output.errors.is_empty(),
             "removing transition {i} ({},{}) should cause an error",
-            transitions[i].0, transitions[i].1
+            transitions[i].0,
+            transitions[i].1
         );
     }
 }
@@ -498,13 +522,21 @@ fn missing_single_transition_detected_3x3() {
         vec![unit_state("A"), unit_state("B"), unit_state("C")],
         vec![unit_event("X"), unit_event("Y"), unit_event("Z")],
         vec![
-            transition("X", "A", "B"), transition("Y", "A", "C"), transition("Z", "A", "A"),
-            transition("X", "B", "A"), /* MISSING: Y,B */        transition("Z", "B", "C"),
-            transition("X", "C", "C"), transition("Y", "C", "A"), transition("Z", "C", "B"),
+            transition("X", "A", "B"),
+            transition("Y", "A", "C"),
+            transition("Z", "A", "A"),
+            transition("X", "B", "A"),
+            /* MISSING: Y,B */ transition("Z", "B", "C"),
+            transition("X", "C", "C"),
+            transition("Y", "C", "A"),
+            transition("Z", "C", "B"),
         ],
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
-    assert!(!output.errors.is_empty(), "missing transition must be detected");
+    assert!(
+        !output.errors.is_empty(),
+        "missing transition must be detected"
+    );
     let msg = format!("{:?}", output.errors);
     assert!(
         msg.contains("B") && msg.contains("Y"),

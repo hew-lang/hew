@@ -449,9 +449,7 @@ impl Ty {
                 name: name.clone(),
                 args: args.iter().map(f).collect(),
             },
-            Ty::Machine { name } => Ty::Machine {
-                name: name.clone(),
-            },
+            Ty::Machine { name } => Ty::Machine { name: name.clone() },
             Ty::Function { params, ret } => Ty::Function {
                 params: params.iter().map(f).collect(),
                 ret: Box::new(f(ret)),

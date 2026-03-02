@@ -137,6 +137,7 @@ pub mod hashmap;
 pub mod hashset;
 pub mod option;
 pub mod print;
+pub mod random;
 pub mod rc;
 pub mod result;
 pub mod string;

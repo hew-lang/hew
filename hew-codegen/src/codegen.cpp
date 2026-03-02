@@ -22,6 +22,7 @@
 
 // MLIR conversion includes
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
@@ -1626,7 +1627,8 @@ static std::string vecElemSuffix(mlir::Type elemType) {
   if (mlir::isa<hew::StringRefType>(elemType))
     return "_str";
   if (mlir::isa<hew::ActorRefType>(elemType) || mlir::isa<hew::TypedActorRefType>(elemType) ||
-      mlir::isa<hew::HandleType>(elemType) || mlir::isa<mlir::LLVM::LLVMPointerType>(elemType))
+      mlir::isa<hew::HandleType>(elemType) || mlir::isa<mlir::LLVM::LLVMPointerType>(elemType) ||
+      mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
@@ -1646,7 +1648,8 @@ static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
   if (mlir::isa<hew::StringRefType>(elemType))
     return "_str";
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(elemType) || mlir::isa<hew::ActorRefType>(elemType) ||
-      mlir::isa<hew::TypedActorRefType>(elemType) || mlir::isa<hew::HandleType>(elemType))
+      mlir::isa<hew::TypedActorRefType>(elemType) || mlir::isa<hew::HandleType>(elemType) ||
+      mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
     return "_ptr";
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
@@ -4327,6 +4330,8 @@ mlir::LogicalResult Codegen::lowerToLLVMDialect(mlir::ModuleOp module) {
   pm.addPass(std::make_unique<SetTailCallsPass>());
   // Arith → LLVM
   pm.addPass(mlir::createArithToLLVMConversionPass());
+
+  pm.addPass(mlir::createConvertMathToLLVMPass());
   // ControlFlow → LLVM
   pm.addPass(mlir::createConvertControlFlowToLLVMPass());
   // MemRef → LLVM

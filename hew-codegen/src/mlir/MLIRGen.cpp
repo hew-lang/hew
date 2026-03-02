@@ -2331,13 +2331,37 @@ void MLIRGen::registerMachineDecl(const ast::MachineDecl &decl) {
       structFields.push_back(builder.getI32Type()); // tag
 
       if (anyPayload) {
-        int64_t nextField = 1;
+        // Union overlay: find max fields across all variants
+        unsigned maxFields = 0;
+        for (const auto &v : info.variants)
+          maxFields = std::max(maxFields, (unsigned)v.payloadTypes.size());
+
+        // For each position, use the widest type across all variants
+        for (unsigned pos = 0; pos < maxFields; pos++) {
+          mlir::Type widest;
+          unsigned widestBits = 0;
+          for (const auto &v : info.variants) {
+            if (pos < v.payloadTypes.size()) {
+              auto ty = v.payloadTypes[pos];
+              unsigned bits = 64; // default for pointers/other
+              if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+                bits = intTy.getWidth();
+              else if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+                bits = fltTy.getWidth();
+              if (!widest || bits > widestBits) {
+                widest = ty;
+                widestBits = bits;
+              }
+            }
+          }
+          structFields.push_back(widest);
+        }
+
+        // All variants overlay starting from position 1
         for (auto &v : info.variants) {
           v.payloadPositions.clear();
-          for (const auto &pt : v.payloadTypes) {
-            v.payloadPositions.push_back(nextField++);
-            structFields.push_back(pt);
-          }
+          for (unsigned i = 0; i < v.payloadTypes.size(); i++)
+            v.payloadPositions.push_back(1 + i);
         }
       }
 
@@ -2392,10 +2416,29 @@ void MLIRGen::registerMachineDecl(const ast::MachineDecl &decl) {
       int64_t nextField = 1;
       for (auto &v : info.variants) {
         v.payloadPositions.clear();
-        for (const auto &pt : v.payloadTypes) {
-          v.payloadPositions.push_back(nextField++);
-          structFields.push_back(pt);
+        for (unsigned i = 0; i < v.payloadTypes.size(); i++)
+          v.payloadPositions.push_back(nextField + i);
+      }
+
+      // Union overlay: for each position, use the widest type
+      for (unsigned pos = 0; pos < maxPayloadFields; pos++) {
+        mlir::Type widest;
+        unsigned widestBits = 0;
+        for (const auto &v : info.variants) {
+          if (pos < v.payloadTypes.size()) {
+            auto ty = v.payloadTypes[pos];
+            unsigned bits = 64;
+            if (auto intTy = llvm::dyn_cast<mlir::IntegerType>(ty))
+              bits = intTy.getWidth();
+            else if (auto fltTy = llvm::dyn_cast<mlir::FloatType>(ty))
+              bits = fltTy.getWidth();
+            if (!widest || bits > widestBits) {
+              widest = ty;
+              widestBits = bits;
+            }
+          }
         }
+        structFields.push_back(widest);
       }
 
       info.mlirType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);

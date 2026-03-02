@@ -303,3 +303,35 @@ Closed six validation gaps in `check_machine_exhaustiveness`:
 
 All six fixes live in `hew-types/src/check.rs` inside `check_machine_exhaustiveness`.
 Tests in `hew-types/tests/machine_typecheck.rs` (13 tests, all passing).
+
+---
+
+## Fix: Machine struct layout — union overlay instead of flat concatenation
+
+**Problem:** Machine states with payload fields produced a flat struct
+concatenating all variant fields. A machine with states `Closed` (0 fields),
+`Listen { backlog: i64 }`, and `Established { local_seq: i64; remote_seq: i64 }`
+generated `{i32, i64, i64, i64}` (tag + 3 separate slots = 28 bytes) instead of
+the correct union layout `{i32, i64, i64}` (tag + 2 overlaid slots = 20 bytes).
+
+**Root cause:** In `registerMachineDecl` (MLIRGen.cpp), the loop building the
+struct type appended every variant's payload fields sequentially, giving each
+variant unique `payloadPositions`. Variant B's first field got position 2 instead
+of sharing position 1 with variant A.
+
+**Fix (Option B — overlay):** All variants now share struct positions starting
+from field 1. The struct contains `max(variant field counts)` payload slots.
+At each position, the widest type across all variants is used.
+
+```
+Before: {i32, i64, i64, i64}   // positions: Listen=[1], Established=[2,3]
+After:  {i32, i64, i64}         // positions: Listen=[1], Established=[1,2]
+```
+
+Same fix applied to the machine event type registration.
+
+**Files changed:** `hew-codegen/src/mlir/MLIRGen.cpp` — `registerMachineDecl`
+
+**Downstream compatibility:** `EnumConstructOp` and `EnumExtractPayloadOp`
+already use `payloadPositions` for field access, so the overlay positions flow
+through correctly without changes to codegen.cpp.

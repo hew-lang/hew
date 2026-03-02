@@ -221,9 +221,9 @@ fn compare_wire_schemas(
             if let Some(baseline_vwd) = baseline_by_name.get(name) {
                 if let Some(bv) = baseline_vwd.version {
                     if v > bv {
-                        report.warnings.push(format!(
-                            "wire `{name}` version advanced from {bv} to {v}"
-                        ));
+                        report
+                            .warnings
+                            .push(format!("wire `{name}` version advanced from {bv} to {v}"));
                     }
                 }
             }
@@ -323,9 +323,10 @@ fn compare_wire_struct(
         } else {
             // New field — suppress "no default" warning if it has `since` and
             // that version is newer than the baseline schema version
-            let is_expected_new = current.field_since.get(number).is_some_and(|since| {
-                baseline.version.is_some_and(|bv| *since > bv)
-            });
+            let is_expected_new = current
+                .field_since
+                .get(number)
+                .is_some_and(|since| baseline.version.is_some_and(|bv| *since > bv));
             if !current_field.is_optional && !is_expected_new {
                 report.warnings.push(format!(
                     "new required field `{wire_name}.{} @{number}` has no default",

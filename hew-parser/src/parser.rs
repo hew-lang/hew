@@ -2133,9 +2133,7 @@ impl<'src> Parser<'src> {
         });
         let min_version = wire_attr.and_then(|a| {
             a.args.iter().find_map(|arg| match arg {
-                AttributeArg::KeyValue { key, value } if key == "min_version" => {
-                    value.parse().ok()
-                }
+                AttributeArg::KeyValue { key, value } if key == "min_version" => value.parse().ok(),
                 _ => None,
             })
         });

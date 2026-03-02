@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  checks: write
+  security-events: write
 
 env:
   LLVM_VERSION: "21"
@@ -47,6 +49,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)
+  # Produces SARIF output for GitHub Code Scanning inline annotations.
   # ─────────────────────────────────────────────────────────────────────────
   lint:
     name: Clippy & format
@@ -71,11 +74,36 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Install SARIF tools
+        run: |
+          gh release download clippy-sarif-latest --repo psastras/sarif-rs \
+            --pattern "clippy-sarif-x86_64-unknown-linux-gnu" --output clippy-sarif --clobber
+          gh release download sarif-fmt-latest --repo psastras/sarif-rs \
+            --pattern "sarif-fmt-x86_64-unknown-linux-gnu" --output sarif-fmt --clobber
+          chmod +x clippy-sarif sarif-fmt
+          mv clippy-sarif sarif-fmt /usr/local/bin/
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Clippy
-        run: cargo clippy --workspace --tests
+        run: >
+          cargo clippy --workspace --tests --message-format=json
+          | clippy-sarif
+          | tee clippy-results.sarif
+          | sarif-fmt
+        continue-on-error: true
+
+      - name: Upload Clippy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: clippy-results.sarif
+          category: clippy
+          wait-for-processing: true
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Rust workspace tests + hew-codegen E2E (single LLVM install)
+  # Produces JUnit XML for GitHub Actions test reporting.
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Build & test (Rust + codegen E2E)
@@ -104,6 +132,8 @@ jobs:
             libssl-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@nextest
 
       - uses: actions/cache@v4
         with:
@@ -168,16 +198,92 @@ jobs:
             -p hew-std-misc-uuid -p hew-std-misc-log
 
       - name: Run Rust workspace tests
-        run: cargo test --workspace --exclude hew-wasm
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests
-        run: cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|translate)$"
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure --output-junit codegen-unit.xml
+          -R "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (native)
-        run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure --output-junit codegen-e2e-native.xml
+          -j"$(nproc)" -LE wasm -E "^(mlir_dialect|translate)$"
 
       - name: Run codegen E2E tests (WASM)
-        run: cd hew-codegen/build && ctest --output-on-failure -j"$(nproc)" -L wasm
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure --output-junit codegen-e2e-wasm.xml
+          -j"$(nproc)" -L wasm
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: |
+            target/nextest/ci/junit.xml
+            hew-codegen/build/codegen-unit.xml
+            hew-codegen/build/codegen-e2e-native.xml
+            hew-codegen/build/codegen-e2e-wasm.xml
+          check_name: Test Results (Linux)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov
+  # ─────────────────────────────────────────────────────────────────────────
+  coverage:
+    name: Code coverage
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: coverage-${{ runner.os }}-
+
+      - name: Run tests with coverage
+        run: >
+          cargo llvm-cov nextest
+          --workspace --exclude hew-wasm
+          --lcov --output-path lcov.info
+
+      - name: Generate HTML report
+        run: >
+          cargo llvm-cov report
+          --html --output-dir coverage-html
+
+      - name: Coverage summary
+        run: cargo llvm-cov report | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage (lcov)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+      - name: Upload coverage (HTML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage-html/
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Windows (LLVM provisioning deferred)
@@ -199,6 +305,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: taiki-e/install-action@nextest
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -216,6 +324,14 @@ jobs:
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
         run: >-
-          cargo test --workspace
+          cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
+          --profile ci
+
+      - name: Upload test reports
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Test Results (Windows)

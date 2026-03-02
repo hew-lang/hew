@@ -12,6 +12,7 @@ pub fn cmd_test(args: &[String]) {
     let mut filter: Option<String> = None;
     let mut use_color = true;
     let mut include_ignored = false;
+    let mut format = output::OutputFormat::Text;
     let mut paths: Vec<String> = Vec::new();
     let mut i = 0;
 
@@ -27,6 +28,21 @@ pub fn cmd_test(args: &[String]) {
             }
             "--no-color" => use_color = false,
             "--include-ignored" => include_ignored = true,
+            "--format" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --format requires an argument (text, junit)");
+                    std::process::exit(1);
+                }
+                format = match args[i].as_str() {
+                    "text" => output::OutputFormat::Text,
+                    "junit" => output::OutputFormat::Junit,
+                    other => {
+                        eprintln!("Error: unknown format '{other}' (expected: text, junit)");
+                        std::process::exit(1);
+                    }
+                };
+            }
             arg => paths.push(arg.to_string()),
         }
         i += 1;
@@ -89,7 +105,7 @@ pub fn cmd_test(args: &[String]) {
         include_ignored,
         ffi_lib.as_deref(),
     );
-    output::print_results(&summary, use_color);
+    output::output_results(&summary, use_color, format);
 
     if summary.failed > 0 {
         std::process::exit(1);

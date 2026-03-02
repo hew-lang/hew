@@ -628,6 +628,7 @@ Watch options:
   --debounce <ms>                 Debounce time in milliseconds (default: 300)
 Test options:
   --filter <pattern>              Run only tests matching pattern
+  --format <text|junit>           Output format (default: text)
   --no-color                      Disable colored output
   --include-ignored               Run ignored tests too
 

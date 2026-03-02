@@ -2056,6 +2056,11 @@ impl Checker {
             if fn_name.contains("::") {
                 continue;
             }
+            // Skip stdlib module functions — imported modules register all their
+            // functions, and users typically only call a subset.
+            if fn_name.starts_with("std.") || fn_name.contains('.') {
+                continue;
+            }
             if reachable.contains(fn_name) {
                 continue;
             }

@@ -1,0 +1,81 @@
+// observe_workload.hew — Long-running actor workload for testing hew-observe.
+// Spawns multiple actors with different message patterns to exercise
+// the observer's metrics, actor list, and message tracing views.
+
+actor Counter {
+    let name: String;
+    let count: Int;
+
+    receive fn tick() {
+        self.count += 1;
+    }
+
+    receive fn get_count() -> Int {
+        self.count
+    }
+}
+
+actor Relay {
+    let id: Int;
+    let target: Counter;
+
+    receive fn forward(n: Int) {
+        var i = 0;
+        while i < n {
+            self.target.tick();
+            i += 1;
+        }
+    }
+}
+
+actor Monitor {
+    let c1: Counter;
+    let c2: Counter;
+    let c3: Counter;
+    let checks: Int;
+
+    receive fn check() {
+        let a = await self.c1.get_count();
+        let b = await self.c2.get_count();
+        let c = await self.c3.get_count();
+        self.checks += 1;
+        println(f"[check #{self.checks}] counters: {a}, {b}, {c}");
+    }
+}
+
+fn main() {
+    println("=== hew-observe workload ===");
+    println("Profiler should be at http://localhost:6060/");
+    println("Run: hew-observe --addr localhost:6060");
+    println("");
+
+    let c1 = spawn Counter(name: "alpha", count: 0);
+    let c2 = spawn Counter(name: "beta", count: 0);
+    let c3 = spawn Counter(name: "gamma", count: 0);
+
+    let r1 = spawn Relay(id: 1, target: c1);
+    let r2 = spawn Relay(id: 2, target: c2);
+    let r3 = spawn Relay(id: 3, target: c3);
+
+    let monitor = spawn Monitor(c1: c1, c2: c2, c3: c3, checks: 0);
+
+    // Run 20 rounds with varied message bursts
+    var round = 0;
+    while round < 20 {
+        r1.forward(5);
+        r2.forward(3);
+        r3.forward(7);
+        sleep_ms(200);
+
+        // Check counts periodically
+        monitor.check();
+        sleep_ms(300);
+
+        round += 1;
+    }
+
+    let total1 = await c1.get_count();
+    let total2 = await c2.get_count();
+    let total3 = await c3.get_count();
+    println(f"Final: alpha={total1}, beta={total2}, gamma={total3}");
+}

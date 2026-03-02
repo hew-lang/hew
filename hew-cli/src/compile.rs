@@ -568,6 +568,7 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 /// `program.module_graph` for serialisation; the existing `resolved_items`
 /// on each `ImportDecl` remain populated so that `flatten_import_items` can
 /// continue to work as a temporary compatibility shim.
+#[expect(clippy::too_many_arguments, reason = "module graph construction needs all context")]
 fn build_module_graph(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,
@@ -737,6 +738,7 @@ fn flatten_import_items(program: &mut hew_parser::ast::Program) {
     clippy::too_many_lines,
     reason = "sequential import resolution steps for file and module imports"
 )]
+#[expect(clippy::too_many_arguments, reason = "import resolution needs all context")]
 fn resolve_file_imports(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,
@@ -787,9 +789,8 @@ fn resolve_file_imports(
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
                 // Check if this is a local project import (first segment matches package name).
-                let is_local = package_name.is_some_and(|pkg| {
-                    decl.path.first().is_some_and(|seg| seg == pkg)
-                });
+                let is_local =
+                    package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg));
                 let rest_path: Vec<&str> = if is_local {
                     decl.path[1..].iter().map(String::as_str).collect()
                 } else {
@@ -904,7 +905,9 @@ fn resolve_file_imports(
                 .flatten()
                 .filter_map(|e| e.ok())
                 .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("hew") && *p != canonical)
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()) == Some("hew") && *p != canonical
+                })
                 .collect();
             peers.sort(); // deterministic order
             peers
@@ -1215,6 +1218,9 @@ mod tests {
         // Imports matching the package name are local and skip manifest validation.
         let items = vec![make_module_import(vec!["myapp", "models"])];
         let errs = validate_imports_against_manifest(&items, &[], Some("myapp"));
-        assert!(errs.is_empty(), "local imports should be exempt from manifest validation");
+        assert!(
+            errs.is_empty(),
+            "local imports should be exempt from manifest validation"
+        );
     }
 }

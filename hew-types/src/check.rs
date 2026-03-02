@@ -615,6 +615,37 @@ impl Checker {
             Ty::Unit,
         );
         self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
+
+        // std::math module — always available, no import needed
+        self.modules.insert("math".to_string());
+        // Single-argument math functions: f64 → f64
+        for name in &[
+            "exp", "log", "sqrt", "sin", "cos", "floor", "ceil", "abs", "tanh", "log2", "log10",
+            "exp2",
+        ] {
+            self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64], Ty::F64);
+        }
+        // Two-argument math functions: (f64, f64) → f64
+        for name in &["pow", "max", "min"] {
+            self.register_builtin_fn(&format!("math.{name}"), vec![Ty::F64, Ty::F64], Ty::F64);
+        }
+        // Constants (zero-argument): () → f64
+        for name in &["pi", "e"] {
+            self.register_builtin_fn(&format!("math.{name}"), vec![], Ty::F64);
+        }
+
+        // std::random module — always available, no import needed
+        self.modules.insert("random".to_string());
+        self.register_builtin_fn("random.seed", vec![Ty::I64], Ty::Unit);
+        self.register_builtin_fn("random.random", vec![], Ty::F64);
+        self.register_builtin_fn("random.gauss", vec![Ty::F64, Ty::F64], Ty::F64);
+        self.register_builtin_fn("random.randint", vec![Ty::I64, Ty::I64], Ty::I64);
+        self.register_builtin_fn("random.shuffle", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        self.register_builtin_fn(
+            "random.choices",
+            vec![Ty::Var(TypeVar::fresh()), Ty::F64, Ty::I64],
+            Ty::I64,
+        );
     }
 
     fn register_builtin_fn(&mut self, name: &str, params: Vec<Ty>, return_type: Ty) {
@@ -4412,6 +4443,33 @@ impl Checker {
                     Ty::Error
                 }
             },
+            // Numeric type conversion methods (§10.1 intrinsics)
+            // .to_i8(), .to_i16(), .to_i32(), .to_i64(), .to_u8(), .to_u16(),
+            // .to_u32(), .to_u64(), .to_f32(), .to_f64(), .to_isize(), .to_usize()
+            (resolved, method) if resolved.is_numeric() && method.starts_with("to_") => {
+                match method {
+                    "to_i8" => Ty::I8,
+                    "to_i16" => Ty::I16,
+                    "to_i32" => Ty::I32,
+                    "to_i64" => Ty::I64,
+                    "to_u8" => Ty::U8,
+                    "to_u16" => Ty::U16,
+                    "to_u32" => Ty::U32,
+                    "to_u64" => Ty::U64,
+                    "to_f32" => Ty::F32,
+                    "to_f64" => Ty::F64,
+                    "to_isize" => Ty::I64, // platform-dependent, default 64-bit
+                    "to_usize" => Ty::U64,
+                    _ => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no conversion method `{method}` on `{resolved}`"),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();

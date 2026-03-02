@@ -16,6 +16,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
@@ -2560,6 +2561,42 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         .getResult();
   }
 
+  // --- Numeric type conversion methods (.to_i8, .to_i16, .to_i32, .to_i64,
+  //     .to_u8, .to_u16, .to_u32, .to_u64, .to_f32, .to_f64,
+  //     .to_isize, .to_usize) ---
+  // These are spec §10.1 compiler intrinsics on all numeric types.
+  {
+    mlir::Type targetType = nullptr;
+    bool isUnsigned = false;
+
+    if (method == "to_i8")    { targetType = builder.getIntegerType(8); }
+    else if (method == "to_i16")  { targetType = builder.getIntegerType(16); }
+    else if (method == "to_i32")  { targetType = builder.getIntegerType(32); }
+    else if (method == "to_i64")  { targetType = builder.getIntegerType(64); }
+    else if (method == "to_u8")   { targetType = builder.getIntegerType(8);  isUnsigned = true; }
+    else if (method == "to_u16")  { targetType = builder.getIntegerType(16); isUnsigned = true; }
+    else if (method == "to_u32")  { targetType = builder.getIntegerType(32); isUnsigned = true; }
+    else if (method == "to_u64")  { targetType = builder.getIntegerType(64); isUnsigned = true; }
+    else if (method == "to_f32")  { targetType = builder.getF32Type(); }
+    else if (method == "to_f64")  { targetType = builder.getF64Type(); }
+    else if (method == "to_isize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); }
+    else if (method == "to_usize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); isUnsigned = true; }
+
+    if (targetType) {
+      bool srcIsInt = llvm::isa<mlir::IntegerType>(receiverType);
+      bool srcIsFloat = llvm::isa<mlir::FloatType>(receiverType);
+      if (srcIsInt || srcIsFloat) {
+        // Use the same CastOp infrastructure as coerceType
+        if (receiverType == targetType)
+          return receiver; // no-op cast
+        auto castOp = builder.create<hew::CastOp>(location, targetType, receiver);
+        if (isUnsigned)
+          castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
+        return castOp.getResult();
+      }
+    }
+  }
+
   return std::nullopt;
 }
 
@@ -2577,6 +2614,131 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // Special handling for log (has custom emit logic).
     if (ident->name == "log") {
       return generateLogCall(mc);
+    }
+
+    // std::math module — emit LLVM math intrinsics directly
+    // No import required: math.exp(x), math.log(x), etc. are always available.
+    if (ident->name == "math") {
+      if (mc.args.empty()) {
+        // Constants: math.pi, math.e
+        if (methodName == "pi")
+          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(3.14159265358979323846)).getResult();
+        if (methodName == "e")
+          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(2.71828182845904523536)).getResult();
+        emitError(location) << "unknown math constant: math." << methodName;
+        return nullptr;
+      }
+
+      auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!arg) return nullptr;
+      auto f64Type = builder.getF64Type();
+      if (arg.getType() != f64Type)
+        arg = coerceType(arg, f64Type, location);
+
+      // Single-argument math functions → LLVM intrinsics
+      if (methodName == "exp")
+        return builder.create<mlir::math::ExpOp>(location, arg).getResult();
+      if (methodName == "log")
+        return builder.create<mlir::math::LogOp>(location, arg).getResult();
+      if (methodName == "sqrt")
+        return builder.create<mlir::math::SqrtOp>(location, arg).getResult();
+      if (methodName == "sin")
+        return builder.create<mlir::math::SinOp>(location, arg).getResult();
+      if (methodName == "cos")
+        return builder.create<mlir::math::CosOp>(location, arg).getResult();
+      if (methodName == "floor")
+        return builder.create<mlir::math::FloorOp>(location, arg).getResult();
+      if (methodName == "ceil")
+        return builder.create<mlir::math::CeilOp>(location, arg).getResult();
+      if (methodName == "abs")
+        return builder.create<mlir::math::AbsFOp>(location, arg).getResult();
+      if (methodName == "tanh")
+        return builder.create<mlir::math::TanhOp>(location, arg).getResult();
+      if (methodName == "log2")
+        return builder.create<mlir::math::Log2Op>(location, arg).getResult();
+      if (methodName == "log10")
+        return builder.create<mlir::math::Log10Op>(location, arg).getResult();
+      if (methodName == "exp2")
+        return builder.create<mlir::math::Exp2Op>(location, arg).getResult();
+
+      // Two-argument: math.pow(base, exp)
+      if (methodName == "pow") {
+        if (mc.args.size() < 2) {
+          emitError(location) << "math.pow requires 2 arguments";
+          return nullptr;
+        }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type)
+          arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::math::PowFOp>(location, arg, arg2).getResult();
+      }
+      // math.max(a, b), math.min(a, b)
+      if (methodName == "max") {
+        if (mc.args.size() < 2) { emitError(location) << "math.max requires 2 arguments"; return nullptr; }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::arith::MaximumFOp>(location, arg, arg2).getResult();
+      }
+      if (methodName == "min") {
+        if (mc.args.size() < 2) { emitError(location) << "math.min requires 2 arguments"; return nullptr; }
+        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!arg2) return nullptr;
+        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        return builder.create<mlir::arith::MinimumFOp>(location, arg, arg2).getResult();
+      }
+
+      emitError(location) << "unknown math function: math." << methodName;
+      return nullptr;
+    }
+
+    // std::random module — route to hew_random_* runtime functions
+    if (ident->name == "random") {
+      auto f64Type = builder.getF64Type();
+      auto i64Type = builder.getI64Type();
+
+      if (methodName == "seed") {
+        auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!arg) return nullptr;
+        if (arg.getType() != i64Type) arg = coerceType(arg, i64Type, location);
+        emitRuntimeCall("hew_random_seed", {}, {arg}, location);
+        return nullptr;
+      }
+      if (methodName == "random") {
+        return emitRuntimeCall("hew_random_random", f64Type, {}, location);
+      }
+      if (methodName == "gauss") {
+        auto mu = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!mu || !sigma) return nullptr;
+        if (mu.getType() != f64Type) mu = coerceType(mu, f64Type, location);
+        if (sigma.getType() != f64Type) sigma = coerceType(sigma, f64Type, location);
+        return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
+      }
+      if (methodName == "randint") {
+        auto lo = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        if (!lo || !hi) return nullptr;
+        if (lo.getType() != i64Type) lo = coerceType(lo, i64Type, location);
+        if (hi.getType() != i64Type) hi = coerceType(hi, i64Type, location);
+        return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
+      }
+      if (methodName == "shuffle") {
+        auto vec = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!vec) return nullptr;
+        emitRuntimeCall("hew_random_shuffle_i64", {}, {vec}, location);
+        return nullptr;
+      }
+      if (methodName == "choices") {
+        auto cumWeights = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        auto total = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        auto n = generateExpression(ast::callArgExpr(mc.args[2]).value);
+        if (!cumWeights || !total || !n) return nullptr;
+        return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
+      }
+      emitError(location) << "unknown random function: random." << methodName;
+      return nullptr;
     }
 
     // General module-qualified call: string.from_int(), crypto.sha256(), etc.
@@ -2940,6 +3102,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           .getResult();
     }
   }
+
+  // Try builtin methods on non-pointer scalar types (numeric conversions, etc.)
+  if (auto builtinMethodResult = generateBuiltinMethodCall(mc, receiver, location))
+    return *builtinMethodResult;
 
   // Determine struct type name from the receiver's MLIR type
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);

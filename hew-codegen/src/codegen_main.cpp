@@ -19,6 +19,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/MLIRContext.h"
@@ -107,6 +108,7 @@ void initMLIRContext(mlir::MLIRContext &context) {
   context.loadDialect<mlir::memref::MemRefDialect>();
   context.loadDialect<mlir::cf::ControlFlowDialect>();
   context.loadDialect<mlir::LLVM::LLVMDialect>();
+  context.loadDialect<mlir::math::MathDialect>();
 }
 
 } // namespace

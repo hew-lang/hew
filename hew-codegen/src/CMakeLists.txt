@@ -45,6 +45,7 @@ if(HEW_STATIC_LINK)
     # Conversion passes (Hew dialect → LLVM IR)
     MLIRFuncToLLVM
     MLIRArithToLLVM
+    MLIRMathToLLVM
     MLIRMemRefToLLVM
     MLIRControlFlowToLLVM
     MLIRSCFToControlFlow

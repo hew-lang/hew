@@ -94,24 +94,6 @@ static bool isNative64(mlir::ModuleOp module) {
   return true;
 }
 
-/// Get or declare an external runtime function in the module (LLVM dialect).
-[[maybe_unused]]
-mlir::LLVM::LLVMFuncOp getOrInsertLLVMFunc(mlir::ModuleOp module, mlir::OpBuilder &builder,
-                                           llvm::StringRef name, mlir::Type resultType,
-                                           llvm::ArrayRef<mlir::Type> argTypes) {
-  if (auto func = module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(name))
-    return func;
-
-  auto savedIP = builder.saveInsertionPoint();
-  builder.setInsertionPointToStart(module.getBody());
-
-  auto funcType = mlir::LLVM::LLVMFunctionType::get(resultType, argTypes);
-  auto funcOp = builder.create<mlir::LLVM::LLVMFuncOp>(builder.getUnknownLoc(), name, funcType);
-
-  builder.restoreInsertionPoint(savedIP);
-  return funcOp;
-}
-
 /// Get or declare an external function using func.func (used before
 /// the full LLVM lowering, so we can use func.call).
 mlir::func::FuncOp getOrInsertFuncDecl(mlir::ModuleOp module, mlir::OpBuilder &builder,

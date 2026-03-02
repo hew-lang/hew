@@ -448,7 +448,7 @@ fn draw_message_controls(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
     let text = format!(
-        " [space/p] pause  [↑↓] scroll  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
+        " [space/p] pause  [↑↓] scroll  [f] filter actor  [c] clear filter │ Events: {} │ Paused: {paused_str}{filter_str}",
         app.trace_events.len()
     );
     let bar = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
@@ -1127,6 +1127,10 @@ fn draw_help_popup(f: &mut Frame) {
         Line::from(vec![
             Span::styled("  n              ", style_key()),
             Span::raw("Snap to now (Timeline)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  f              ", style_key()),
+            Span::raw("Filter by selected actor (Messages)"),
         ]),
         Line::from(vec![
             Span::styled("  c              ", style_key()),

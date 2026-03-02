@@ -156,6 +156,7 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
         unsafe { libc::free(t.result) };
     }
     if !t.env_ptr.is_null() {
+        // SAFETY: env_ptr was set by hew_task_set_env from a valid Rc allocation.
         unsafe { hew_rc_drop(t.env_ptr.cast()) };
     }
 }
@@ -171,6 +172,7 @@ pub unsafe extern "C" fn hew_task_set_env(task: *mut HewTask, env: *mut c_void) 
     if task.is_null() {
         return;
     }
+    // SAFETY: caller guarantees `task` is a valid, non-null pointer.
     let t = unsafe { &mut *task };
     t.env_ptr = env;
 }
@@ -185,6 +187,7 @@ pub unsafe extern "C" fn hew_task_get_env(task: *mut HewTask) -> *mut c_void {
     if task.is_null() {
         return ptr::null_mut();
     }
+    // SAFETY: caller guarantees `task` is a valid, non-null pointer.
     unsafe { (*task).env_ptr }
 }
 

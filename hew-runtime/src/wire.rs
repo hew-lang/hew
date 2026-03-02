@@ -994,8 +994,9 @@ pub unsafe extern "C" fn hew_wire_skip_field(buf: *mut HewWireBuf, wire_type: u3
             0
         }
         HEW_WIRE_FIXED32 => {
-            // SAFETY: caller guarantees `buf` is valid.
+            // SAFETY: caller guarantees `buf` is a valid, initialised wire buffer.
             let rp = unsafe { (*buf).read_pos };
+            // SAFETY: same buf validity guarantee as above.
             let bl = unsafe { (*buf).len };
             if bl.saturating_sub(rp) < 4 {
                 return -1;
@@ -1007,8 +1008,9 @@ pub unsafe extern "C" fn hew_wire_skip_field(buf: *mut HewWireBuf, wire_type: u3
             0
         }
         HEW_WIRE_FIXED64 => {
-            // SAFETY: caller guarantees `buf` is valid.
+            // SAFETY: caller guarantees `buf` is a valid, initialised wire buffer.
             let rp = unsafe { (*buf).read_pos };
+            // SAFETY: same buf validity guarantee as above.
             let bl = unsafe { (*buf).len };
             if bl.saturating_sub(rp) < 8 {
                 return -1;

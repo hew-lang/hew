@@ -1121,12 +1121,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     #[cfg(feature = "encryption")]
     let local_noise_private = {
         let Ok(pattern) = NOISE_PATTERN.parse() else {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
             set_last_error("hew_connmgr_add: invalid noise pattern");
             return -1;
         };
         let builder = snow::Builder::new(pattern);
         let Ok(keypair) = builder.generate_keypair() else {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
             set_last_error("hew_connmgr_add: failed to generate noise keypair");
             return -1;
@@ -1136,8 +1138,10 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     let local_hs = hew_conn_local_handshake(local_noise_pubkey);
+    // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
     let Some(peer_hs) = (unsafe { hew_conn_handshake_exchange(mgr.transport, conn_id, local_hs) })
     else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
         return -1;
     };
@@ -1146,6 +1150,8 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let upgraded_noise = if hew_conn_supports_encryption(local_hs.feature_flags)
         && hew_conn_supports_encryption(peer_hs.feature_flags)
     {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract;
+        // local_hs, peer_hs, and local_noise_private are valid stack-local references.
         unsafe {
             hew_conn_upgrade_noise(
                 mgr.transport,
@@ -1164,6 +1170,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         && hew_conn_supports_encryption(peer_hs.feature_flags)
     {
         let Some((noise, peer_static_pubkey)) = upgraded_noise else {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: noise upgrade failed for conn {conn_id}"
@@ -1171,6 +1178,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             return -1;
         };
         if !crate::encryption::hew_allowlist_check_active_peer(&peer_static_pubkey) {
+            // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
             unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: peer key not allowlisted for conn {conn_id}"
@@ -1228,6 +1236,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         });
 
     if let Ok(h) = handle { actor.reader_handle = Some(h) } else {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: failed to spawn reader thread for conn {conn_id}"
@@ -1242,6 +1251,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     };
     if conns.iter().any(|c| c.conn_id == conn_id) {
+        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: connection {conn_id} became duplicate during install"
@@ -1387,6 +1397,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
 
     #[cfg(feature = "encryption")]
     if let Some(noise_transport) = maybe_noise {
+        // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
         let Some(encoded) =
             (unsafe { hew_conn_encode_envelope(target_actor_id, msg_type, data, size) })
         else {
@@ -1412,6 +1423,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
             }
         }
         if let Some(ciphertext) = maybe_ciphertext {
+            // SAFETY: mgr_ref.transport is valid per caller contract; conn_id verified active above.
             if unsafe { hew_conn_send_frame(mgr_ref.transport, conn_id, &ciphertext) } {
                 return 0;
             }

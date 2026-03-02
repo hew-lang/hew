@@ -66,10 +66,11 @@ pub unsafe extern "C" fn hew_datetime_format(epoch_ms: i64, fmt: *const c_char) 
 /// Both `s` and `fmt` must be valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_parse(s: *const c_char, fmt: *const c_char) -> i64 {
-    // SAFETY: caller guarantees both pointers are valid NUL-terminated C strings.
+    // SAFETY: caller guarantees `s` is a valid NUL-terminated C string.
     let Some(s_str) = (unsafe { cstr_to_str(s) }) else {
         return -1;
     };
+    // SAFETY: caller guarantees `fmt` is a valid NUL-terminated C string.
     let Some(fmt_str) = (unsafe { cstr_to_str(fmt) }) else {
         return -1;
     };

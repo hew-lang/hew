@@ -237,6 +237,8 @@ mod platform {
             // On Linux it's a method, on macOS it's a field.
             #[cfg(target_os = "linux")]
             {
+                // SAFETY: `info` was validated non-null above; si_addr() is an
+                // async-signal-safe read from the kernel-provided siginfo_t.
                 ctx.fault_addr = unsafe { (*info).si_addr() } as usize;
             }
             #[cfg(not(target_os = "linux"))]
@@ -521,10 +523,13 @@ mod platform {
     ///
     /// Must be called from a dispatch context.
     pub(crate) unsafe fn try_direct_longjmp() {
+        // SAFETY: accesses the thread-local recovery context via pthread key;
+        // caller guarantees we are in a dispatch context on the correct thread.
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return;
         }
+        // SAFETY: ctx is non-null and exclusively owned by this thread.
         let ctx = unsafe { &mut *ctx };
         if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
             return;
@@ -536,6 +541,8 @@ mod platform {
         ctx.crash_signal.store(libc::SIGSEGV, Ordering::Release);
         ctx.fault_addr = 0;
         ctx.jmp_buf_valid.store(false, Ordering::Release);
+        // SAFETY: jmp_buf was set by sigsetjmp in activate_actor on this
+        // thread. The stack frame that called sigsetjmp is still live.
         unsafe {
             siglongjmp(&raw mut ctx.jmp_buf, 1);
         }

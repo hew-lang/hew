@@ -188,6 +188,8 @@ pub(crate) unsafe fn wire_send_envelope(
     }
     // SAFETY: transport is valid per caller contract.
     let t = unsafe { &*transport };
+    // SAFETY: t.ops was set during transport creation and remains valid for
+    // the transport's lifetime; caller guarantees transport is not freed.
     let result = if let Some(ops) = unsafe { t.ops.as_ref() } {
         if let Some(send_fn) = ops.send {
             // SAFETY: buf was successfully encoded; data/len are valid.

@@ -372,6 +372,7 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
         return ptr::null_mut();
     };
     let Some(sys_queue) = MpscQueue::new() else {
+        // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -406,6 +407,7 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
         return ptr::null_mut();
     };
     let Some(sys_queue) = MpscQueue::new() else {
+        // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -446,6 +448,7 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
         return ptr::null_mut();
     };
     let Some(sys_queue) = MpscQueue::new() else {
+        // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };
@@ -486,6 +489,7 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
         return ptr::null_mut();
     };
     let Some(sys_queue) = MpscQueue::new() else {
+        // SAFETY: user_fast was just successfully created and has no enqueued nodes yet.
         unsafe { user_fast.drain_and_free() };
         return ptr::null_mut();
     };

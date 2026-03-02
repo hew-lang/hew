@@ -35,6 +35,7 @@ unsafe extern "system" {
 
 unsafe fn mutex_init(m: *mut PlatformMutex) {
     #[cfg(unix)]
+    // SAFETY: caller guarantees `m` points to a valid, uninitialised mutex.
     unsafe {
         libc::pthread_mutex_init(m, std::ptr::null())
     };
@@ -44,10 +45,12 @@ unsafe fn mutex_init(m: *mut PlatformMutex) {
 
 unsafe fn mutex_lock(m: *mut PlatformMutex) {
     #[cfg(unix)]
+    // SAFETY: caller guarantees `m` points to an initialised mutex.
     unsafe {
         libc::pthread_mutex_lock(m)
     };
     #[cfg(windows)]
+    // SAFETY: caller guarantees `m` points to an initialised SRWLOCK.
     unsafe {
         AcquireSRWLockExclusive(m)
     };
@@ -55,10 +58,12 @@ unsafe fn mutex_lock(m: *mut PlatformMutex) {
 
 unsafe fn mutex_unlock(m: *mut PlatformMutex) {
     #[cfg(unix)]
+    // SAFETY: caller guarantees `m` is locked by the current thread.
     unsafe {
         libc::pthread_mutex_unlock(m)
     };
     #[cfg(windows)]
+    // SAFETY: caller guarantees `m` is locked by the current thread.
     unsafe {
         ReleaseSRWLockExclusive(m)
     };
@@ -66,6 +71,7 @@ unsafe fn mutex_unlock(m: *mut PlatformMutex) {
 
 unsafe fn mutex_destroy(m: *mut PlatformMutex) {
     #[cfg(unix)]
+    // SAFETY: caller guarantees `m` is an initialised, unlocked mutex.
     unsafe {
         libc::pthread_mutex_destroy(m)
     };

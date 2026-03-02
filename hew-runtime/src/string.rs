@@ -33,9 +33,11 @@ pub unsafe extern "C" fn hew_string_concat(a: *const c_char, b: *const c_char) -
     // SAFETY: cstr_len handles null check internally; b is valid per contract.
     let lb = unsafe { cstr_len(b) };
     let Some(total) = la.checked_add(lb) else {
+        // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
     let Some(alloc_size) = total.checked_add(1) else {
+        // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
     // SAFETY: Requesting alloc_size bytes from malloc.
@@ -349,16 +351,20 @@ pub unsafe extern "C" fn hew_string_replace(
 
     // Use checked arithmetic to prevent overflow
     let Some(count_times_nlen) = count.checked_mul(nlen) else {
+        // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
     let Some(count_times_olen) = count.checked_mul(olen) else {
+        // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
     let result_len = match slen.checked_add(count_times_nlen) {
         Some(v) => match v.checked_sub(count_times_olen) {
             Some(result) => result,
+            // SAFETY: abort is always safe to call.
             None => unsafe { libc::abort() },
         },
+        // SAFETY: abort is always safe to call.
         None => unsafe { libc::abort() },
     };
     // SAFETY: Allocating result_len + 1 bytes via malloc.
@@ -522,6 +528,7 @@ pub unsafe extern "C" fn hew_string_split(
             // SAFETY: Allocating a substring via malloc_copy and pushing.
             let part = unsafe { malloc_cstring(s_bytes[start..start + pos].as_ptr(), pos) };
             if part.is_null() {
+                // SAFETY: abort is always safe to call.
                 unsafe {
                     libc::abort();
                 }
@@ -536,6 +543,7 @@ pub unsafe extern "C" fn hew_string_split(
             // SAFETY: Tail slice is within s_bytes bounds.
             let part = unsafe { malloc_cstring(s_bytes[start..].as_ptr(), tail_len) };
             if part.is_null() {
+                // SAFETY: abort is always safe to call.
                 unsafe {
                     libc::abort();
                 }
@@ -681,6 +689,7 @@ pub unsafe extern "C" fn hew_string_repeat(s: *const c_char, count: i32) -> *mut
     let len = unsafe { cstr_len(s) };
     let n = count as usize;
     let Some(total) = len.checked_mul(n) else {
+        // SAFETY: abort is always safe to call.
         unsafe { libc::abort() };
     };
     // SAFETY: Allocating total+1 bytes.

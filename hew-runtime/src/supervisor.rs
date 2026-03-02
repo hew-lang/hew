@@ -673,8 +673,9 @@ unsafe fn apply_restart(sup: &mut HewSupervisor, failed_index: usize, exit_state
         sup.pending_restart_timers.fetch_add(1, Ordering::AcqRel);
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-            // SAFETY: stop waits for pending timers before dropping supervisor.
             let sup_ptr = sup_addr as *mut HewSupervisor;
+            // SAFETY: hew_supervisor_stop spin-waits on pending_restart_timers
+            // before freeing the supervisor, so sup_ptr is still valid here.
             unsafe {
                 let s = &mut *sup_ptr;
                 if !s.cancelled.load(Ordering::Acquire) && s.running.load(Ordering::Acquire) != 0 {

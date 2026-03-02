@@ -34,7 +34,7 @@ impl MtState {
             gauss_has_spare: false,
         };
         // Default seed so calls before seed() still work.
-        s.init_genrand(19650218);
+        s.init_genrand(19_650_218);
         s
     }
 
@@ -42,7 +42,7 @@ impl MtState {
     fn init_genrand(&mut self, seed: u32) {
         self.mt[0] = seed;
         for i in 1..N {
-            self.mt[i] = 1812433253u32
+            self.mt[i] = 1_812_433_253u32
                 .wrapping_mul(self.mt[i - 1] ^ (self.mt[i - 1] >> 30))
                 .wrapping_add(i as u32);
         }
@@ -51,7 +51,7 @@ impl MtState {
 
     /// `CPython` `init_by_array`.
     fn init_by_array(&mut self, init_key: &[u32]) {
-        self.init_genrand(19650218);
+        self.init_genrand(19_650_218);
         let mut i: usize = 1;
         let mut j: usize = 0;
         let k = if N > init_key.len() {
@@ -61,7 +61,7 @@ impl MtState {
         };
         for _ in 0..k {
             self.mt[i] = (self.mt[i]
-                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1664525)))
+                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1_664_525)))
             .wrapping_add(init_key[j])
             .wrapping_add(j as u32);
             i += 1;
@@ -76,7 +76,7 @@ impl MtState {
         }
         for _ in 0..(N - 1) {
             self.mt[i] = (self.mt[i]
-                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1566083941)))
+                ^ ((self.mt[i - 1] ^ (self.mt[i - 1] >> 30)).wrapping_mul(1_566_083_941)))
             .wrapping_sub(i as u32);
             i += 1;
             if i >= N {
@@ -122,7 +122,7 @@ impl MtState {
     fn random(&mut self) -> f64 {
         let a = self.genrand_uint32() >> 5; // 27 bits
         let b = self.genrand_uint32() >> 6; // 26 bits
-        (f64::from(a) * 67108864.0 + f64::from(b)) / 9007199254740992.0
+        (f64::from(a) * 67_108_864.0 + f64::from(b)) / 9_007_199_254_740_992.0
     }
 
     /// Number of bits needed to represent `n`.

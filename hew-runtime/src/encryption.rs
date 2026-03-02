@@ -721,6 +721,7 @@ pub unsafe extern "C" fn hew_allowlist_add(
     public_key: *const u8,
 ) -> c_int {
     cabi_guard!(list.is_null(), -1);
+    // SAFETY: caller guarantees `public_key` points to at least 32 readable bytes.
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
@@ -749,6 +750,7 @@ pub unsafe extern "C" fn hew_allowlist_remove(
     public_key: *const u8,
 ) -> c_int {
     cabi_guard!(list.is_null(), -1);
+    // SAFETY: caller guarantees `public_key` points to at least 32 readable bytes.
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
@@ -777,6 +779,7 @@ pub unsafe extern "C" fn hew_allowlist_check(
     public_key: *const u8,
 ) -> c_int {
     cabi_guard!(list.is_null(), 0);
+    // SAFETY: caller guarantees `public_key` points to at least 32 readable bytes.
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return 0;
     };

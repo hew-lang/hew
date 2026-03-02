@@ -534,6 +534,23 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
       return builder.create<hew::ClosureCreateOp>(location, closureType, fnPtrVal, nullEnv);
     }
   }
+
+  // [T; N] → Vec<T> coercion: create Vec, push each array element
+  if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(value.getType())) {
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(targetType)) {
+      auto elemType = vecType.getElementType();
+      auto vec = builder.create<hew::VecNewOp>(location, vecType).getResult();
+      auto arraySize = arrayType.getSize();
+      for (int64_t i = 0; i < arraySize; ++i) {
+        auto elem = builder.create<hew::ArrayExtractOp>(location, arrayType.getElementType(), value,
+                                                        builder.getI64IntegerAttr(i));
+        auto coerced = coerceType(elem, elemType, location);
+        builder.create<hew::VecPushOp>(location, vec, coerced);
+      }
+      return vec;
+    }
+  }
+
   emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
                         << targetType;
   return value;

@@ -3420,6 +3420,17 @@ impl Checker {
                 expected.clone()
             }
 
+            // Array literal can coerce to Vec<T> when expected
+            (Expr::Array(elems), Ty::Named { name, args }) if name == "Vec" => {
+                let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                for elem in elems {
+                    let (expr, sp) = (&elem.0, &elem.1);
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);

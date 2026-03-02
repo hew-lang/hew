@@ -65,13 +65,13 @@ fn unit_event(name: &str) -> MachineEvent {
 }
 
 fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
-    // Body is a simple identifier expression (e.g., the target state name)
+    // Body is a boolean literal — a placeholder that always typechecks.
     MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
         body: (
-            Expr::Identifier(target.to_string()),
+            Expr::Literal(Literal::Bool(true)),
             0..0,
         ),
     }
@@ -269,8 +269,130 @@ fn duplicate_transition_error() {
     );
     let output = check_items(vec![(Item::Machine(md), 0..0)]);
     assert!(
-        output.errors.iter().any(|e| e.message.contains("duplicate transition")),
+        output.errors.iter().any(|e| e.message.contains("duplicate transition for event 'Toggle' in state 'Off'")),
         "expected duplicate transition error, got: {:?}",
+        output.errors
+    );
+}
+
+// ── Test: unknown state name in transition ──────────────────────────
+
+#[test]
+fn unknown_state_name_error() {
+    let md = make_machine(
+        "Light",
+        vec![unit_state("Off"), unit_state("On")],
+        vec![unit_event("Toggle")],
+        vec![
+            transition("Toggle", "Off", "On"),
+            transition("Toggle", "Onn", "Off"), // misspelled source
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("transition references unknown state 'Onn'")),
+        "expected unknown state error, got: {messages:?}"
+    );
+}
+
+// ── Test: unknown event name in transition ──────────────────────────
+
+#[test]
+fn unknown_event_name_error() {
+    let md = make_machine(
+        "Light",
+        vec![unit_state("Off"), unit_state("On")],
+        vec![unit_event("Toggle")],
+        vec![
+            transition("Toggle", "Off", "On"),
+            transition("Toggl", "On", "Off"), // misspelled event
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("transition references unknown event 'Toggl'")),
+        "expected unknown event error, got: {messages:?}"
+    );
+}
+
+// ── Test: duplicate wildcard transition ─────────────────────────────
+
+#[test]
+fn duplicate_wildcard_error() {
+    let md = make_machine(
+        "Light",
+        vec![unit_state("Off"), unit_state("On")],
+        vec![unit_event("Toggle")],
+        vec![
+            wildcard_transition("Toggle"),
+            wildcard_transition("Toggle"), // duplicate wildcard
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("duplicate wildcard transition for event 'Toggle'")),
+        "expected duplicate wildcard error, got: {messages:?}"
+    );
+}
+
+// ── Test: machine with fewer than 2 states ──────────────────────────
+
+#[test]
+fn too_few_states_error() {
+    let md = make_machine(
+        "Broken",
+        vec![unit_state("Only")],
+        vec![unit_event("Ping")],
+        vec![wildcard_transition("Ping")],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("must declare at least 2 states")),
+        "expected min-states error, got: {messages:?}"
+    );
+}
+
+// ── Test: machine with 0 events ─────────────────────────────────────
+
+#[test]
+fn zero_events_error() {
+    let md = make_machine(
+        "Broken",
+        vec![unit_state("A"), unit_state("B")],
+        vec![],
+        vec![],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    let messages: Vec<_> = output.errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("must declare at least 1 event")),
+        "expected min-events error, got: {messages:?}"
+    );
+}
+
+// ── Test: valid machine still passes ────────────────────────────────
+
+#[test]
+fn valid_machine_all_checks_pass() {
+    let md = make_machine(
+        "Door",
+        vec![unit_state("Open"), unit_state("Closed")],
+        vec![unit_event("Push"), unit_event("Pull")],
+        vec![
+            transition("Push", "Open", "Closed"),
+            transition("Push", "Closed", "Closed"),
+            transition("Pull", "Closed", "Open"),
+            transition("Pull", "Open", "Open"),
+        ],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "expected no errors, got: {:?}",
         output.errors
     );
 }

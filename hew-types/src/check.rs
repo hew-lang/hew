@@ -1101,30 +1101,108 @@ impl Checker {
         let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
         let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
 
+        // Fix 4: Enforce minimum cardinality
+        if md.states.len() < 2 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::MachineExhaustivenessError,
+                span.clone(),
+                format!("machine '{}' must declare at least 2 states", md.name),
+            ));
+        }
+        if md.events.is_empty() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::MachineExhaustivenessError,
+                span.clone(),
+                format!("machine '{}' must declare at least 1 event", md.name),
+            ));
+        }
+
         // Build coverage: track explicit (state, event) pairs and wildcard events
         let mut covered: HashSet<(String, String)> = HashSet::new();
         let mut wildcard_events: HashSet<String> = HashSet::new();
 
         for transition in &md.transitions {
+            // Fix 2: Reject unknown event names
+            if !event_names.contains(&transition.event_name.as_str()) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::MachineExhaustivenessError,
+                    span.clone(),
+                    format!(
+                        "machine '{}': transition references unknown event '{}'",
+                        md.name, transition.event_name
+                    ),
+                ));
+            }
+
+            // Fix 1: Reject unknown source/target state names
+            if transition.source_state != "_"
+                && !state_names.contains(&transition.source_state.as_str())
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::MachineExhaustivenessError,
+                    span.clone(),
+                    format!(
+                        "machine '{}': transition references unknown state '{}'",
+                        md.name, transition.source_state
+                    ),
+                ));
+            }
+            if transition.target_state != "_"
+                && !state_names.contains(&transition.target_state.as_str())
+            {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::MachineExhaustivenessError,
+                    span.clone(),
+                    format!(
+                        "machine '{}': transition references unknown state '{}'",
+                        md.name, transition.target_state
+                    ),
+                ));
+            }
+
             if transition.source_state == "_" {
+                // Fix 3: Reject duplicate wildcard transitions for same event
+                if wildcard_events.contains(&transition.event_name) {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::MachineExhaustivenessError,
+                        span.clone(),
+                        format!(
+                            "machine '{}': duplicate wildcard transition for event '{}'",
+                            md.name, transition.event_name
+                        ),
+                    ));
+                }
                 wildcard_events.insert(transition.event_name.clone());
             } else {
                 let key = (
                     transition.source_state.clone(),
                     transition.event_name.clone(),
                 );
+                // Fix 5: Reject duplicate explicit transitions
                 if covered.contains(&key) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
                         format!(
-                            "machine '{}': duplicate transition for state '{}' on event '{}'",
-                            md.name, transition.source_state, transition.event_name
+                            "machine '{}': duplicate transition for event '{}' in state '{}'",
+                            md.name, transition.event_name, transition.source_state
                         ),
                     ));
                 }
                 covered.insert(key);
             }
+
+            // Fix 6: Basic transition body validation
+            // Bind `self` as the machine type so body expressions can reference it.
+            // Full self-scoping (fields, event payload) can come later.
+            self.env.push_scope();
+            self.env.define(
+                "self".to_string(),
+                Ty::Machine { name: md.name.clone() },
+                false,
+            );
+            self.synthesize(&transition.body.0, &transition.body.1);
+            self.env.pop_scope();
         }
 
         // Check that every (state, event) pair is covered

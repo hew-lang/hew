@@ -287,3 +287,19 @@ All tests pass:
 2. **State fields in step()** — Copy/transform payload fields during transitions
 3. **Type parameters** — Add `parse_opt_type_params()` to `parse_machine_decl()` for generic machines
 4. **Tree-sitter** — Add machine grammar rules to `tree-sitter-hew`
+
+## Type Checker Validation Hardening
+
+Closed six validation gaps in `check_machine_exhaustiveness`:
+
+| Fix | What changed |
+|-----|-------------|
+| Unknown states | Reject transitions referencing undeclared `source_state` / `target_state` |
+| Unknown events | Reject transitions referencing undeclared `event_name` |
+| Duplicate wildcards | Detect two `_ -> …` transitions for the same event |
+| Duplicate explicit | Detect two `S -> …` transitions for the same (state, event) |
+| Minimum cardinality | Require ≥ 2 states and ≥ 1 event |
+| Body validation | Synthesize each transition body with `self` in scope |
+
+All six fixes live in `hew-types/src/check.rs` inside `check_machine_exhaustiveness`.
+Tests in `hew-types/tests/machine_typecheck.rs` (13 tests, all passing).

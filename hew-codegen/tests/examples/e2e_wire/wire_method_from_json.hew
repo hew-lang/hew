@@ -1,0 +1,14 @@
+// Test: wire struct static method .from_json() roundtrip
+#[wire]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() {
+    let p = Point { x: 42, y: 99 };
+    let json = p.to_json();
+    let p2 = Point.from_json(json);
+    let json2 = p2.to_json();
+    println(json2);
+}

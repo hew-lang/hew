@@ -1,14 +1,15 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, Attribute, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp,
-    ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl,
-    ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam, Literal,
-    MatchArm, NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
-    ReceiveFnDecl, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
-    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
-    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
+    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
+    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
+    Literal, MatchArm, NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField,
+    Program, ReceiveFnDecl, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind,
+    WireFieldDecl, WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use std::cell::Cell;
@@ -734,11 +735,32 @@ impl<'src> Parser<'src> {
                 while self.peek() != Some(&Token::RightParen) && !self.at_end() {
                     if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
                         // Safe to call: we know the token is identifier-like
-                        args.push(self.expect_ident().unwrap_or_default());
+                        let key = self.expect_ident().unwrap_or_default();
+                        // Check for key = value syntax
+                        if self.eat(&Token::Equal) {
+                            let value = if self.peek().is_some_and(|tok| Self::is_ident_token(tok)) {
+                                self.expect_ident().unwrap_or_default()
+                            } else if let Some(Token::StringLit(s) | Token::RawString(s)) =
+                                self.peek()
+                            {
+                                let val = unquote_str(s).to_string();
+                                self.advance();
+                                val
+                            } else if let Some(Token::Integer(n)) = self.peek() {
+                                let val = n.to_string();
+                                self.advance();
+                                val
+                            } else {
+                                String::new()
+                            };
+                            args.push(AttributeArg::KeyValue { key, value });
+                        } else {
+                            args.push(AttributeArg::Positional(key));
+                        }
                     } else if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
                         let val = unquote_str(s).to_string();
                         self.advance();
-                        args.push(val);
+                        args.push(AttributeArg::Positional(val));
                     } else {
                         break;
                     }
@@ -864,6 +886,11 @@ impl<'src> Parser<'src> {
                     Some(Token::Fn) | Some(Token::Async) | Some(Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, is_pure, attrs, &doc_comment)?
                     }
+                    Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
+                        let mut t = self.parse_wire_struct(&attrs, vis)?;
+                        t.doc_comment = doc_comment;
+                        Item::TypeDecl(t)
+                    }
                     Some(Token::Struct) => {
                         self.error("use 'type' instead of 'struct' to declare types".to_string());
                         return None;
@@ -900,7 +927,12 @@ impl<'src> Parser<'src> {
                     }
                     Some(Token::Wire) => {
                         self.advance();
-                        Item::Wire(self.parse_wire_decl(&attrs, vis)?)
+                        let wd = self.parse_wire_decl(&attrs, vis)?;
+                        if wd.kind == WireDeclKind::Struct {
+                            Item::TypeDecl(wd.into_type_decl())
+                        } else {
+                            Item::Wire(wd)
+                        }
                     }
                     Some(Token::Const) => {
                         self.advance();
@@ -934,6 +966,11 @@ impl<'src> Parser<'src> {
                     }
                 }
             }
+            Some(Token::Struct) if attrs.iter().any(|a| a.name == "wire") => {
+                let mut t = self.parse_wire_struct(&attrs, Visibility::Private)?;
+                t.doc_comment = doc_comment;
+                Item::TypeDecl(t)
+            }
             Some(Token::Struct) => {
                 self.error("use 'type' instead of 'struct' to declare types".to_string());
                 return None;
@@ -964,7 +1001,12 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Wire) => {
                 self.advance();
-                Item::Wire(self.parse_wire_decl(&attrs, Visibility::Private)?)
+                let wd = self.parse_wire_decl(&attrs, Visibility::Private)?;
+                if wd.kind == WireDeclKind::Struct {
+                    Item::TypeDecl(wd.into_type_decl())
+                } else {
+                    Item::Wire(wd)
+                }
             }
             Some(Token::Actor) => {
                 self.advance();
@@ -1150,6 +1192,7 @@ impl<'src> Parser<'src> {
             where_clause,
             body,
             doc_comment: None,
+            wire: None,
         })
     }
 
@@ -1883,6 +1926,196 @@ impl<'src> Parser<'src> {
         Some(ExternBlock { abi, functions })
     }
 
+    /// Parse `#[wire] struct Name { field: Type, ... }` into a `TypeDecl` with wire metadata.
+    fn parse_wire_struct(
+        &mut self,
+        attrs: &[Attribute],
+        visibility: Visibility,
+    ) -> Option<TypeDecl> {
+        self.expect(&Token::Struct)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::LeftBrace)?;
+
+        let mut fields = Vec::new();
+        let mut field_meta = Vec::new();
+        let mut reserved_numbers: Vec<u32> = Vec::new();
+        let mut explicit_numbers: Vec<u32> = Vec::new();
+
+        while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
+            // Check for `reserved @N, @M, ...;`
+            if self.peek() == Some(&Token::Reserved) {
+                self.advance();
+                while self.peek() != Some(&Token::Semicolon) && !self.at_end() {
+                    self.expect(&Token::At)?;
+                    if let Some(Token::Integer(n_str)) = self.peek() {
+                        if let Some(num) = parse_int_literal(n_str)
+                            .ok()
+                            .and_then(|(v, _)| u32::try_from(v).ok())
+                        {
+                            reserved_numbers.push(num);
+                        } else {
+                            self.error("invalid field number after '@'".to_string());
+                        }
+                        self.advance();
+                    } else {
+                        self.error("expected field number after '@'".to_string());
+                        break;
+                    }
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.eat(&Token::Semicolon);
+                continue;
+            }
+
+            // Parse field: name: Type [@N] [modifiers] [,|;]
+            let field_name = self.expect_ident()?;
+            self.expect(&Token::Colon)?;
+            let ty = self.parse_type()?;
+
+            // Optional explicit field number @N
+            let explicit_num = if self.eat(&Token::At) {
+                if let Some(Token::Integer(n_str)) = self.peek() {
+                    let num = parse_int_literal(n_str)
+                        .ok()
+                        .and_then(|(v, _)| u32::try_from(v).ok())
+                        .unwrap_or(0);
+                    explicit_numbers.push(num);
+                    self.advance();
+                    Some(num)
+                } else {
+                    self.error("expected field number after '@'".to_string());
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Parse wire field modifiers
+            let mut is_optional = false;
+            let mut is_deprecated = false;
+            let mut is_repeated = false;
+            let mut json_name: Option<String> = None;
+            let mut yaml_name: Option<String> = None;
+
+            loop {
+                match self.peek() {
+                    Some(Token::Optional) => {
+                        self.advance();
+                        is_optional = true;
+                    }
+                    Some(Token::Deprecated) => {
+                        self.advance();
+                        is_deprecated = true;
+                    }
+                    Some(tok) if Self::is_ident_token(tok) => {
+                        let saved = self.save_pos();
+                        let ident = self.expect_ident().unwrap_or_default();
+                        if ident == "repeated" {
+                            is_repeated = true;
+                        } else if ident == "json" && self.eat(&Token::LeftParen) {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                json_name = Some(unquote_str(s).to_string());
+                                self.advance();
+                            }
+                            let _ = self.expect(&Token::RightParen);
+                        } else if ident == "yaml" && self.eat(&Token::LeftParen) {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                yaml_name = Some(unquote_str(s).to_string());
+                                self.advance();
+                            }
+                            let _ = self.expect(&Token::RightParen);
+                        } else {
+                            self.restore_pos(saved);
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+
+            fields.push(TypeBodyItem::Field {
+                name: field_name.clone(),
+                ty,
+            });
+            field_meta.push((
+                field_name,
+                explicit_num,
+                is_optional,
+                is_deprecated,
+                is_repeated,
+                json_name,
+                yaml_name,
+            ));
+
+            // Accept comma or semicolon as separator
+            if !self.eat(&Token::Comma) {
+                self.eat(&Token::Semicolon);
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+
+        // Auto-assign field numbers: 1, 2, 3... skipping explicit @N and reserved numbers
+        let used_numbers: std::collections::HashSet<u32> = explicit_numbers
+            .iter()
+            .chain(reserved_numbers.iter())
+            .copied()
+            .collect();
+        let mut auto_counter: u32 = 1;
+        let mut resolved_meta = Vec::new();
+
+        for (field_name, explicit_num, is_optional, is_deprecated, is_repeated, json_name, yaml_name) in
+            field_meta
+        {
+            let field_number = if let Some(n) = explicit_num {
+                n
+            } else {
+                while used_numbers.contains(&auto_counter) {
+                    auto_counter += 1;
+                }
+                let n = auto_counter;
+                auto_counter += 1;
+                n
+            };
+            resolved_meta.push(WireFieldMeta {
+                field_name,
+                field_number,
+                is_optional,
+                is_deprecated,
+                is_repeated,
+                json_name,
+                yaml_name,
+            });
+        }
+
+        // Extract struct-level JSON/YAML naming conventions from attributes.
+        let json_case = attrs
+            .iter()
+            .find(|a| a.name == "json")
+            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
+        let yaml_case = attrs
+            .iter()
+            .find(|a| a.name == "yaml")
+            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
+
+        Some(TypeDecl {
+            visibility,
+            kind: TypeDeclKind::Struct,
+            name,
+            type_params: None,
+            where_clause: None,
+            body: fields,
+            doc_comment: None,
+            wire: Some(WireMetadata {
+                field_meta: resolved_meta,
+                reserved_numbers,
+                json_case,
+                yaml_case,
+            }),
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "wire decl parsing has many fields and variants"
@@ -2076,11 +2309,11 @@ impl<'src> Parser<'src> {
         let json_case = attrs
             .iter()
             .find(|a| a.name == "json")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s)));
+            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
         let yaml_case = attrs
             .iter()
             .find(|a| a.name == "yaml")
-            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s)));
+            .and_then(|a| a.args.first().and_then(|s| NamingCase::from_attr(s.as_str())));
 
         Some(WireDecl {
             visibility,

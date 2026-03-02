@@ -1,0 +1,16 @@
+// Test: #[wire] struct syntax with auto field numbering
+#[wire]
+struct Coord {
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+extern "C" {
+    fn Coord_to_json(x: i32, y: i32, z: i32) -> String;
+}
+
+fn main() {
+    let json = unsafe { Coord_to_json(10, 20, 30) };
+    println(json);
+}

@@ -149,6 +149,8 @@ static ast::TypeExpr parseTypeExpr(const msgpack::object &obj);
 static ast::Pattern parsePattern(const msgpack::object &obj);
 static ast::FnDecl parseFnDecl(const msgpack::object &obj);
 static ast::TypeParam parseTypeParam(const msgpack::object &obj);
+static ast::NamingCase parseNamingCase(const msgpack::object &obj);
+static ast::WireMetadata parseWireMetadata(const msgpack::object &obj);
 
 // ── Span / Spanned ──────────────────────────────────────────────────────────
 
@@ -1057,11 +1059,27 @@ static ast::WhereClause parseWhereClause(const msgpack::object &obj) {
 
 // ── Attribute ───────────────────────────────────────────────────────────────
 
+static ast::AttributeArg parseAttributeArg(const msgpack::object &obj) {
+  ast::AttributeArg arg;
+  // Serde externally-tagged enum:
+  //   Positional(String) → {"Positional": "value"}
+  //   KeyValue { key, value } → {"KeyValue": {"key": "...", "value": "..."}}
+  auto [variant, payload] = getEnumVariant(obj);
+  if (variant == "Positional" && payload) {
+    arg.kind = ast::AttributeArgPositional{getString(*payload)};
+  } else if (variant == "KeyValue" && payload) {
+    ast::AttributeArgKeyValue kv;
+    kv.key = getString(mapReq(*payload, "key"));
+    kv.value = getString(mapReq(*payload, "value"));
+    arg.kind = kv;
+  }
+  return arg;
+}
+
 static ast::Attribute parseAttribute(const msgpack::object &obj) {
   ast::Attribute attr;
   attr.name = getString(mapReq(obj, "name"));
-  attr.args = parseVec<std::string>(mapReq(obj, "args"),
-                                    [](const msgpack::object &o) { return getString(o); });
+  attr.args = parseVec<ast::AttributeArg>(mapReq(obj, "args"), parseAttributeArg);
   attr.span = parseSpan(mapReq(obj, "span"));
   return attr;
 }
@@ -1213,6 +1231,9 @@ static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   const auto *dc = mapGet(obj, "doc_comment");
   if (dc && !isNil(*dc))
     td.doc_comment = getString(*dc);
+  const auto *w = mapGet(obj, "wire");
+  if (w && !isNil(*w))
+    td.wire = parseWireMetadata(*w);
   return td;
 }
 
@@ -1329,6 +1350,37 @@ static ast::NamingCase parseNamingCase(const msgpack::object &obj) {
   if (s == "KebabCase")
     return ast::NamingCase::KebabCase;
   fail("unknown NamingCase: " + s);
+}
+
+static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
+  ast::WireFieldMeta fm;
+  fm.field_name = getString(mapReq(obj, "field_name"));
+  fm.field_number = static_cast<uint32_t>(getUint(mapReq(obj, "field_number")));
+  fm.is_optional = getBool(mapReq(obj, "is_optional"));
+  fm.is_deprecated = getBool(mapReq(obj, "is_deprecated"));
+  fm.is_repeated = getBool(mapReq(obj, "is_repeated"));
+  const auto *jn = mapGet(obj, "json_name");
+  if (jn && !isNil(*jn))
+    fm.json_name = getString(*jn);
+  const auto *yn = mapGet(obj, "yaml_name");
+  if (yn && !isNil(*yn))
+    fm.yaml_name = getString(*yn);
+  return fm;
+}
+
+static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
+  ast::WireMetadata wm;
+  wm.field_meta = parseVec<ast::WireFieldMeta>(mapReq(obj, "field_meta"), parseWireFieldMeta);
+  wm.reserved_numbers = parseVec<uint32_t>(
+      mapReq(obj, "reserved_numbers"),
+      [](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); });
+  const auto *jc = mapGet(obj, "json_case");
+  if (jc && !isNil(*jc))
+    wm.json_case = parseNamingCase(*jc);
+  const auto *yc = mapGet(obj, "yaml_case");
+  if (yc && !isNil(*yc))
+    wm.yaml_case = parseNamingCase(*yc);
+  return wm;
 }
 
 static ast::WireFieldDecl parseWireFieldDecl(const msgpack::object &obj) {

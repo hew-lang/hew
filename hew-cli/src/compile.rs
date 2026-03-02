@@ -150,10 +150,10 @@ pub fn compile(
         .unwrap_or_default();
     // Wire types always generate JSON encode/decode calls, so link the
     // JSON and YAML staticlibs even without an explicit import.
-    if program
-        .items
-        .iter()
-        .any(|(item, _)| matches!(item, Item::Wire(_)))
+    if program.items.iter().any(|(item, _)| {
+        matches!(item, Item::Wire(_))
+            || matches!(item, Item::TypeDecl(td) if td.wire.is_some())
+    })
     {
         for m in ["std::encoding::json", "std::encoding::yaml"] {
             if !imported_modules.contains(&m.to_string()) {

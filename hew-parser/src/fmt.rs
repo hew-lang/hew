@@ -3,13 +3,14 @@
 use std::ops::Range;
 
 use crate::ast::{
-    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp, ConstDecl,
-    ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl,
-    ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, OverflowPolicy, Param, Pattern,
-    PatternField, Program, ReceiveFnDecl, RestartPolicy, SelectArm, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WireDecl, WireDeclKind, WireFieldDecl,
+    ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, CompoundAssignOp,
+    ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl,
+    ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MatchArm, NamingCase,
+    OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl, RestartPolicy,
+    SelectArm, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
+    WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
 /// Format an AST [`Program`] as canonical Hew source text (comments are not preserved).
@@ -261,6 +262,10 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_type_decl(&mut self, decl: &TypeDecl, _span_end: usize) {
+        if let Some(wire) = &decl.wire {
+            self.format_wire_type_decl(decl, wire);
+            return;
+        }
         self.write_indent();
         match decl.kind {
             TypeDeclKind::Struct => self.write("type "),
@@ -291,6 +296,87 @@ impl<'a> Formatter<'a> {
         }
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    fn format_wire_type_decl(&mut self, decl: &TypeDecl, wire: &WireMetadata) {
+        // Emit struct-level naming attributes
+        self.format_naming_attr("json", wire.json_case);
+        self.format_naming_attr("yaml", wire.yaml_case);
+        self.write_indent();
+        self.write("#[wire]\n");
+        self.write_indent();
+        self.write("struct ");
+        self.write(&decl.name);
+        self.write(" {\n");
+        self.indent += 1;
+        for (i, item) in decl.body.iter().enumerate() {
+            if let TypeBodyItem::Field { name, ty } = item {
+                self.write_indent();
+                self.write(name);
+                self.write(": ");
+                self.format_type_expr(&ty.0);
+                // Emit wire field metadata
+                if let Some(meta) = wire.field_meta.get(i) {
+                    self.write(" @");
+                    self.write(&meta.field_number.to_string());
+                    if meta.is_optional {
+                        self.write(" optional");
+                    }
+                    if meta.is_deprecated {
+                        self.write(" deprecated");
+                    }
+                    if meta.is_repeated {
+                        self.write(" repeated");
+                    }
+                    if let Some(name) = &meta.json_name {
+                        self.write(" json(\"");
+                        self.write(name);
+                        self.write("\")");
+                    }
+                    if let Some(name) = &meta.yaml_name {
+                        self.write(" yaml(\"");
+                        self.write(name);
+                        self.write("\")");
+                    }
+                }
+                self.write(",");
+                self.newline();
+            }
+        }
+        // Emit reserved field numbers
+        if !wire.reserved_numbers.is_empty() {
+            self.write_indent();
+            self.write("reserved ");
+            for (i, n) in wire.reserved_numbers.iter().enumerate() {
+                if i > 0 {
+                    self.write(", ");
+                }
+                self.write("@");
+                self.write(&n.to_string());
+            }
+            self.write(";\n");
+        }
+        self.indent -= 1;
+        self.writeln("}");
+    }
+
+    fn format_naming_attr(&mut self, attr_name: &str, case: Option<NamingCase>) {
+        if let Some(case) = case {
+            self.write_indent();
+            let s = case.as_str();
+            let needs_quotes = s.contains('-');
+            self.write("#[");
+            self.write(attr_name);
+            self.write("(");
+            if needs_quotes {
+                self.write("\"");
+            }
+            self.write(s);
+            if needs_quotes {
+                self.write("\"");
+            }
+            self.write(")]\n");
+        }
     }
 
     fn format_variant(&mut self, v: &VariantDecl, trailing_semicolon: bool) {
@@ -759,7 +845,19 @@ impl<'a> Formatter<'a> {
             self.write(&attr.name);
             if !attr.args.is_empty() {
                 self.write("(");
-                self.write(&attr.args.join(", "));
+                for (i, arg) in attr.args.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    match arg {
+                        AttributeArg::Positional(s) => self.write(s),
+                        AttributeArg::KeyValue { key, value } => {
+                            self.write(key);
+                            self.write(" = ");
+                            self.write(value);
+                        }
+                    }
+                }
                 self.write(")");
             }
             self.write("]\n");

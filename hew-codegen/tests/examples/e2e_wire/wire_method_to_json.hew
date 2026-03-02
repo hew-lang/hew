@@ -1,0 +1,13 @@
+// Test: wire struct instance method .to_json()
+#[wire]
+struct Coord {
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+fn main() {
+    let c = Coord { x: 10, y: 20, z: 30 };
+    let json = c.to_json();
+    println(json);
+}

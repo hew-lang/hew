@@ -68,9 +68,28 @@ struct TypeParam;
 
 // ── Attributes ────────────────────────────────────────────────────────────
 
+struct AttributeArgPositional {
+  std::string value;
+};
+
+struct AttributeArgKeyValue {
+  std::string key;
+  std::string value;
+};
+
+struct AttributeArg {
+  std::variant<AttributeArgPositional, AttributeArgKeyValue> kind;
+
+  /// Get the string value regardless of positional/key-value.
+  const std::string &as_str() const {
+    return std::visit(
+        [](const auto &v) -> const std::string & { return v.value; }, kind);
+  }
+};
+
 struct Attribute {
   std::string name;
-  std::vector<std::string> args;
+  std::vector<AttributeArg> args;
   Span span;
 };
 
@@ -623,6 +642,35 @@ struct TypeBodyItem {
   std::variant<TypeBodyItemField, TypeBodyVariant, TypeBodyMethod> kind;
 };
 
+// ── Naming Case ──────────────────────────────────────────────────────────
+
+enum class NamingCase {
+  CamelCase,
+  PascalCase,
+  SnakeCase,
+  ScreamingSnake,
+  KebabCase,
+};
+
+// ── Wire Metadata (on TypeDecl for #[wire] structs) ──────────────────────
+
+struct WireFieldMeta {
+  std::string field_name;
+  uint32_t field_number = 0;
+  bool is_optional = false;
+  bool is_deprecated = false;
+  bool is_repeated = false;
+  std::optional<std::string> json_name;
+  std::optional<std::string> yaml_name;
+};
+
+struct WireMetadata {
+  std::vector<WireFieldMeta> field_meta;
+  std::vector<uint32_t> reserved_numbers;
+  std::optional<NamingCase> json_case;
+  std::optional<NamingCase> yaml_case;
+};
+
 struct TypeDecl {
   Visibility visibility = Visibility::Private;
   TypeDeclKind kind;
@@ -633,6 +681,7 @@ struct TypeDecl {
   std::optional<std::string> doc_comment;
   // Storage for TypeBodyMethod FnDecl pointers
   std::vector<std::unique_ptr<FnDecl>> method_storage;
+  std::optional<WireMetadata> wire;
 };
 
 struct TypeAliasDecl {
@@ -692,14 +741,6 @@ struct ImplDecl {
 // ── Wire ──────────────────────────────────────────────────────────────────
 
 enum class WireDeclKind { Struct, Enum };
-
-enum class NamingCase {
-  CamelCase,
-  PascalCase,
-  SnakeCase,
-  ScreamingSnake,
-  KebabCase,
-};
 
 struct WireFieldDecl {
   std::string name;

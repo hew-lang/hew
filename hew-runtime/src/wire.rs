@@ -942,6 +942,132 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
 }
 
 // ---------------------------------------------------------------------------
+// TLV helpers for the new #[wire] struct decoder
+// ---------------------------------------------------------------------------
+
+/// Decode a tag from the wire buffer. The tag is a varint encoding
+/// `(field_number << 3) | wire_type`. Writes the field number to `field_num`
+/// and the wire type to `wire_type`.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `buf` must point to a valid, initialized `HewWireBuf`.
+/// `field_num` and `wire_type` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_decode_tag(
+    buf: *mut HewWireBuf,
+    field_num: *mut u32,
+    wire_type: *mut u32,
+) -> c_int {
+    let mut tag: u64 = 0;
+    // SAFETY: caller guarantees `buf` is valid.
+    if unsafe { hew_wire_decode_varint(buf, &raw mut tag) } != 0 {
+        return -1;
+    }
+    // SAFETY: caller guarantees pointers are valid.
+    unsafe {
+        *field_num = (tag >> 3) as u32;
+        *wire_type = (tag & 7) as u32;
+    }
+    0
+}
+
+/// Skip a field in the wire buffer based on its wire type.
+/// This is used for forward compatibility — unknown fields are silently skipped.
+///
+/// Returns 0 on success, -1 on error (e.g. truncated buffer).
+///
+/// # Safety
+///
+/// `buf` must point to a valid, initialized `HewWireBuf`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_skip_field(buf: *mut HewWireBuf, wire_type: u32) -> c_int {
+    match wire_type {
+        HEW_WIRE_VARINT => {
+            let mut skip: u64 = 0;
+            // SAFETY: caller guarantees `buf` is valid.
+            if unsafe { hew_wire_decode_varint(buf, &raw mut skip) } != 0 {
+                return -1;
+            }
+            0
+        }
+        HEW_WIRE_FIXED32 => {
+            // SAFETY: caller guarantees `buf` is valid.
+            let rp = unsafe { (*buf).read_pos };
+            let bl = unsafe { (*buf).len };
+            if bl.saturating_sub(rp) < 4 {
+                return -1;
+            }
+            // SAFETY: caller guarantees `buf` is valid.
+            unsafe {
+                (*buf).read_pos += 4;
+            }
+            0
+        }
+        HEW_WIRE_FIXED64 => {
+            // SAFETY: caller guarantees `buf` is valid.
+            let rp = unsafe { (*buf).read_pos };
+            let bl = unsafe { (*buf).len };
+            if bl.saturating_sub(rp) < 8 {
+                return -1;
+            }
+            // SAFETY: caller guarantees `buf` is valid.
+            unsafe {
+                (*buf).read_pos += 8;
+            }
+            0
+        }
+        HEW_WIRE_LENGTH_DELIMITED => {
+            let mut skip_ptr: *const c_void = std::ptr::null();
+            let mut skip_len: usize = 0;
+            // SAFETY: caller guarantees `buf` is valid.
+            if unsafe { hew_wire_decode_bytes(buf, &raw mut skip_ptr, &raw mut skip_len) } != 0 {
+                return -1;
+            }
+            0
+        }
+        _ => -1, // unknown wire type
+    }
+}
+
+/// Get the data pointer from a wire buffer.
+///
+/// # Safety
+///
+/// `buf` must point to a valid, initialized `HewWireBuf`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_buf_data(buf: *const HewWireBuf) -> *const u8 {
+    // SAFETY: caller guarantees `buf` is valid.
+    unsafe { (*buf).data }
+}
+
+/// Get the data length from a wire buffer.
+///
+/// # Safety
+///
+/// `buf` must point to a valid, initialized `HewWireBuf`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_buf_len(buf: *const HewWireBuf) -> usize {
+    // SAFETY: caller guarantees `buf` is valid.
+    unsafe { (*buf).len }
+}
+
+/// Check if the wire buffer has remaining data to read.
+/// Returns 1 if `read_pos < len`, 0 otherwise.
+///
+/// # Safety
+///
+/// `buf` must point to a valid, initialized `HewWireBuf`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_wire_buf_has_remaining(buf: *const HewWireBuf) -> i32 {
+    // SAFETY: caller guarantees `buf` is valid.
+    let b = unsafe { &*buf };
+    if b.read_pos < b.len { 1 } else { 0 }
+}
+
+// ---------------------------------------------------------------------------
 // HewVec-ABI wrappers (used by std/wire.hew)
 // ---------------------------------------------------------------------------
 

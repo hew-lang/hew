@@ -886,7 +886,7 @@ impl Checker {
         type_name: &str,
         wire: &hew_parser::ast::WireMetadata,
     ) {
-        use crate::error::{Severity, TypeError, TypeErrorKind};
+        use crate::error::Severity;
 
         let version = wire.version;
         let min_version = wire.min_version;
@@ -910,6 +910,22 @@ impl Checker {
         // Per-field `since` constraints
         for fm in &wire.field_meta {
             if let Some(since) = fm.since {
+                if version.is_none() {
+                    // since has no effect without a schema version
+                    self.warnings.push(TypeError {
+                        severity: Severity::Warning,
+                        kind: TypeErrorKind::StyleSuggestion,
+                        span: 0..0,
+                        message: format!(
+                            "wire `{type_name}.{}`: field has `since {since}` but struct \
+                             has no #[wire(version = N)] attribute",
+                            fm.field_name
+                        ),
+                        notes: vec![],
+                        suggestions: vec![],
+                    });
+                }
+
                 // since cannot exceed version
                 if let Some(v) = version {
                     if since > v {
@@ -9431,6 +9447,82 @@ fn main() {
             output.errors.is_empty(),
             "type check errors: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    fn test_wire_since_without_version_warns() {
+        use hew_parser::ast::{WireFieldMeta, WireMetadata};
+        let wire = WireMetadata {
+            field_meta: vec![WireFieldMeta {
+                field_name: "added_field".to_string(),
+                field_number: 2,
+                is_optional: false,
+                is_deprecated: false,
+                is_repeated: false,
+                json_name: None,
+                yaml_name: None,
+                since: Some(2),
+            }],
+            reserved_numbers: vec![],
+            json_case: None,
+            yaml_case: None,
+            version: None,
+            min_version: None,
+        };
+
+        let mut checker = Checker::new();
+        checker.validate_wire_version_constraints("TestMsg", &wire);
+
+        assert!(checker.errors.is_empty(), "should not produce errors");
+        assert_eq!(checker.warnings.len(), 1);
+        assert!(
+            checker.warnings[0].message.contains("since 2"),
+            "warning should mention since: {}",
+            checker.warnings[0].message
+        );
+        assert!(
+            checker.warnings[0]
+                .message
+                .contains("no #[wire(version = N)]"),
+            "warning should mention missing version: {}",
+            checker.warnings[0].message
+        );
+    }
+
+    #[test]
+    fn test_wire_since_with_version_no_extra_warning() {
+        use hew_parser::ast::{WireFieldMeta, WireMetadata};
+        let wire = WireMetadata {
+            field_meta: vec![WireFieldMeta {
+                field_name: "added_field".to_string(),
+                field_number: 2,
+                is_optional: false,
+                is_deprecated: false,
+                is_repeated: false,
+                json_name: None,
+                yaml_name: None,
+                since: Some(2),
+            }],
+            reserved_numbers: vec![],
+            json_case: None,
+            yaml_case: None,
+            version: Some(3),
+            min_version: None,
+        };
+
+        let mut checker = Checker::new();
+        checker.validate_wire_version_constraints("TestMsg", &wire);
+
+        assert!(checker.errors.is_empty(), "should not produce errors");
+        // No "since without version" warning since version is present
+        let since_without_version = checker
+            .warnings
+            .iter()
+            .any(|w| w.message.contains("no #[wire(version = N)]"));
+        assert!(
+            !since_without_version,
+            "should not warn about missing version"
         );
     }
 }

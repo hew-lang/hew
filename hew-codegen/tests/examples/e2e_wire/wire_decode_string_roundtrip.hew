@@ -1,0 +1,13 @@
+// Test: wire encode/decode roundtrip with String fields survives buf free
+#[wire]
+struct Greeting {
+    name: String,
+    message: String,
+}
+
+fn main() {
+    let g = Greeting { name: "Alice", message: "hello" };
+    let buf = g.encode();
+    let g2 = Greeting.decode(buf);
+    println(g2.to_json());
+}

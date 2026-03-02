@@ -123,7 +123,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
         let details = parsed
             .errors
             .iter()
-            .map(|e| format!("{e:?}"))
+            .map(|e| format!("{}", e.message))
             .collect::<Vec<_>>()
             .join("\n");
         return Err(format!("Error: cannot parse {path}:\n{details}"));
@@ -185,6 +185,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                                     is_deprecated: fm.is_deprecated,
                                     json_name: fm.json_name,
                                     yaml_name: fm.yaml_name,
+                                    since: fm.since,
                                 }
                             })
                             .collect(),

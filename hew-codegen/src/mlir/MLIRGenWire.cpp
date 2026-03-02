@@ -327,10 +327,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   }
 
   // Track this struct as wire-typed (for actor codegen to detect wire messages)
-  wireStructNames[declName] = {
-      mangleName(currentModulePath, declName, "encode"),
-      mangleName(currentModulePath, declName, "decode")};
-
+  wireStructNames[declName] = {mangleName(currentModulePath, declName, "encode"),
+                               mangleName(currentModulePath, declName, "decode")};
 
   // ── Generate Foo_encode function ─────────────────────────────────
   // Signature: Foo_encode(field1, field2, ...) -> !llvm.ptr
@@ -464,11 +462,11 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       if (fty == ptrType)
         defaultVal = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
       else if (fty == builder.getF32Type())
-        defaultVal = builder.create<mlir::arith::ConstantOp>(
-            location, builder.getF32FloatAttr(0.0f));
+        defaultVal =
+            builder.create<mlir::arith::ConstantOp>(location, builder.getF32FloatAttr(0.0f));
       else if (fty == builder.getF64Type())
-        defaultVal = builder.create<mlir::arith::ConstantOp>(
-            location, builder.getF64FloatAttr(0.0));
+        defaultVal =
+            builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(0.0));
       else
         defaultVal = createIntConstant(builder, location, fty, 0);
       builder.create<mlir::LLVM::StoreOp>(location, defaultVal, slot);
@@ -483,11 +481,18 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     auto scratchFieldNum = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
     auto scratchWireType = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
 
-    // TLV dispatch loop: while(buf has remaining data)
+    // Flag to signal a decode error (set in "after" block, checked in "before" block).
+    // If hew_wire_decode_tag fails the buffer doesn't advance, so without this
+    // flag the loop would spin forever on truncated input.
+    auto decodeError = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 0),
+                                        decodeError);
+
+    // TLV dispatch loop: while(buf has remaining data && no decode error)
     auto whileOp =
         builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
 
-    // "before" block: check if buffer has remaining data
+    // "before" block: check if buffer has remaining data and no prior error
     auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
     builder.setInsertionPointToStart(beforeBlock);
     auto hasData = builder
@@ -496,9 +501,14 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                            mlir::SymbolRefAttr::get(&context, "hew_wire_buf_has_remaining"),
                            mlir::ValueRange{bufPtr})
                        .getResult();
-    auto cond = builder.create<mlir::arith::CmpIOp>(
-        location, mlir::arith::CmpIPredicate::ne, hasData,
-        createIntConstant(builder, location, i32Type, 0));
+    auto hasDataBool =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, hasData,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto errVal = builder.create<mlir::LLVM::LoadOp>(location, i32Type, decodeError);
+    auto noError =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, errVal,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto cond = builder.create<mlir::arith::AndIOp>(location, hasDataBool, noError);
     builder.create<mlir::scf::ConditionOp>(location, cond, mlir::ValueRange{});
 
     // "after" block: decode tag, dispatch by field number
@@ -506,12 +516,38 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     builder.setInsertionPointToStart(afterBlock);
 
     // Decode the tag: hew_wire_decode_tag(buf, &field_num, &wire_type)
-    builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{i32Type},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_decode_tag"),
-        mlir::ValueRange{bufPtr, scratchFieldNum, scratchWireType});
+    // Returns 0 on success, non-zero on error (e.g. truncated buffer).
+    auto tagResult =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_decode_tag"),
+                                        mlir::ValueRange{bufPtr, scratchFieldNum, scratchWireType})
+            .getResult();
+    // On error, set the decodeError flag so the loop exits on next "before" check.
+    auto tagFailed =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, tagResult,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto tagFailedIf = builder.create<mlir::scf::IfOp>(location, tagFailed, /*hasElse=*/false);
+    builder.setInsertionPointToStart(&tagFailedIf.getThenRegion().front());
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 1),
+                                        decodeError);
+    builder.setInsertionPointAfter(tagFailedIf);
+
+    // Only dispatch if tag decode succeeded (tagResult == 0).
+    // When it fails, decodeError is set and the loop exits on next "before" check.
+    auto tagOk =
+        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tagResult,
+                                            createIntConstant(builder, location, i32Type, 0));
+    auto tagOkIf = builder.create<mlir::scf::IfOp>(location, tagOk, /*hasElse=*/false);
+    builder.setInsertionPointToStart(&tagOkIf.getThenRegion().front());
+
     auto fieldNum = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchFieldNum);
     auto wireType = builder.create<mlir::LLVM::LoadOp>(location, i32Type, scratchWireType);
+
+    // Track whether any field-number match fired, to skip unknown fields.
+    auto matchedAny = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i32Type, one);
+    builder.create<mlir::LLVM::StoreOp>(location, createIntConstant(builder, location, i32Type, 0),
+                                        matchedAny);
 
     // Dispatch by field number using chained if-else.
     // Each known field number decodes the value and stores it.
@@ -520,8 +556,8 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
       const auto &field = decl.fields[i];
       auto fty = fieldTypes[i];
       auto fieldNumConst = createIntConstant(builder, location, i32Type, field.field_number);
-      auto isMatch = builder.create<mlir::arith::CmpIOp>(
-          location, mlir::arith::CmpIPredicate::eq, fieldNum, fieldNumConst);
+      auto isMatch = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
+                                                         fieldNum, fieldNumConst);
 
       auto ifOp = builder.create<mlir::scf::IfOp>(location, isMatch, /*hasElse=*/false);
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -545,10 +581,12 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
         decoded = builder.create<mlir::arith::BitcastOp>(location, builder.getF64Type(), rawI64);
       } else if (jkind == WireJsonKind::String) {
         // Decode as null-terminated C string (copies data + appends '\0')
-        decoded = builder.create<hew::RuntimeCallOp>(
-            location, mlir::TypeRange{ptrType},
-            mlir::SymbolRefAttr::get(&context, "hew_wire_decode_string"),
-            mlir::ValueRange{bufPtr}).getResult();
+        decoded = builder
+                      .create<hew::RuntimeCallOp>(
+                          location, mlir::TypeRange{ptrType},
+                          mlir::SymbolRefAttr::get(&context, "hew_wire_decode_string"),
+                          mlir::ValueRange{bufPtr})
+                      .getResult();
       } else {
         builder.create<hew::RuntimeCallOp>(
             location, mlir::TypeRange{i32Type},
@@ -569,43 +607,29 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
                       : val;
       }
       builder.create<mlir::LLVM::StoreOp>(location, decoded, fieldSlots[i]);
+      builder.create<mlir::LLVM::StoreOp>(
+          location, createIntConstant(builder, location, i32Type, 1), matchedAny);
 
       // Move insertion point after this if-op for the next field check
       builder.setInsertionPointAfter(ifOp);
     }
 
-    // After all known field checks: if none matched, skip the unknown field
-    // We detect "none matched" by checking that fieldNum didn't match any known number.
-    // Build a compound OR of all match conditions by checking if we're still here
-    // after all the if-ops (if any matched, we decoded + stored; the skip is harmless
-    // since hew_wire_skip_field only advances read_pos for the remaining payload).
-    // Simpler approach: always call skip for unknown fields. We track whether we
-    // decoded by using a flag.
-    //
-    // Actually the simplest correct approach: build a single "matched" flag.
-    // If none of the if-ops fired, we need to skip. We use alloca + store pattern.
+    // If no field-number matched, skip the unknown field.
     {
-      // Check all field numbers again and skip if none matched.
-      // This is O(N) comparisons but N is small for wire structs.
-      mlir::Value anyMatch = createIntConstant(builder, location, i32Type, 0);
-      for (unsigned i = 0; i < decl.fields.size(); ++i) {
-        auto fieldNumConst = createIntConstant(builder, location, i32Type, decl.fields[i].field_number);
-        auto isMatch = builder.create<mlir::arith::CmpIOp>(
-            location, mlir::arith::CmpIPredicate::eq, fieldNum, fieldNumConst);
-        auto isMatchI32 = builder.create<mlir::arith::ExtUIOp>(location, i32Type, isMatch);
-        anyMatch = builder.create<mlir::arith::OrIOp>(location, anyMatch, isMatchI32);
-      }
-      auto noneMatched = builder.create<mlir::arith::CmpIOp>(
-          location, mlir::arith::CmpIPredicate::eq, anyMatch,
-          createIntConstant(builder, location, i32Type, 0));
+      auto matched = builder.create<mlir::LLVM::LoadOp>(location, i32Type, matchedAny);
+      auto noneMatched =
+          builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, matched,
+                                              createIntConstant(builder, location, i32Type, 0));
       auto skipIf = builder.create<mlir::scf::IfOp>(location, noneMatched, /*hasElse=*/false);
       builder.setInsertionPointToStart(&skipIf.getThenRegion().front());
-      builder.create<hew::RuntimeCallOp>(
-          location, mlir::TypeRange{i32Type},
-          mlir::SymbolRefAttr::get(&context, "hew_wire_skip_field"),
-          mlir::ValueRange{bufPtr, wireType});
+      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
+                                         mlir::SymbolRefAttr::get(&context, "hew_wire_skip_field"),
+                                         mlir::ValueRange{bufPtr, wireType});
       builder.setInsertionPointAfter(skipIf);
     }
+
+    // End of tagOk guard
+    builder.setInsertionPointAfter(tagOkIf);
 
     builder.create<mlir::scf::YieldOp>(location);
 
@@ -686,15 +710,16 @@ void MLIRGen::generateWireToSerial(
   std::string rtFree = "hew_" + format.str() + "_free";
 
   // obj = hew_{format}_object_new()
-  auto objPtr = builder
-                    .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                                mlir::SymbolRefAttr::get(&context, rtNew),
-                                                mlir::ValueRange{})
-                    .getResult();
+  auto objPtr =
+      builder
+          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                      mlir::SymbolRefAttr::get(&context, rtNew), mlir::ValueRange{})
+          .getResult();
 
   unsigned idx = 0;
   for (const auto &field : decl.fields) {
-    auto keyPtr = wireStringPtr(location, wireSerialFieldName(field, fieldOverride(field), namingCase));
+    auto keyPtr =
+        wireStringPtr(location, wireSerialFieldName(field, fieldOverride(field), namingCase));
     mlir::Value fv = entry->getArgument(idx++);
 
     auto jkind = jsonKindOf(field.ty);
@@ -892,8 +917,7 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
 
   // Helper: generate an instance method wrapper that takes a struct,
   // extracts fields, and calls the old-style per-field function.
-  auto generateInstanceWrapper = [&](llvm::StringRef methodName,
-                                     const std::string &delegateName,
+  auto generateInstanceWrapper = [&](llvm::StringRef methodName, const std::string &delegateName,
                                      mlir::Type resultType) {
     std::string mangledName = mangleName(currentModulePath, declName, methodName.str());
 
@@ -911,8 +935,7 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
     mlir::Value selfStruct = entry->getArgument(0);
     llvm::SmallVector<mlir::Value, 8> fieldArgs;
     for (unsigned i = 0; i < fieldTypes.size(); ++i)
-      fieldArgs.push_back(
-          builder.create<mlir::LLVM::ExtractValueOp>(location, selfStruct, i));
+      fieldArgs.push_back(builder.create<mlir::LLVM::ExtractValueOp>(location, selfStruct, i));
 
     // Call the old-style function
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(delegateName);
@@ -922,10 +945,8 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
   };
 
   // Helper: generate a static method wrapper that just delegates.
-  auto generateStaticWrapper = [&](llvm::StringRef methodName,
-                                   const std::string &delegateName,
-                                   llvm::ArrayRef<mlir::Type> argTypes,
-                                   mlir::Type resultType) {
+  auto generateStaticWrapper = [&](llvm::StringRef methodName, const std::string &delegateName,
+                                   llvm::ArrayRef<mlir::Type> argTypes, mlir::Type resultType) {
     std::string mangledName = mangleName(currentModulePath, declName, methodName.str());
 
     auto savedIP = builder.saveInsertionPoint();
@@ -967,17 +988,17 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
     mlir::Value selfStruct = entry->getArgument(0);
     llvm::SmallVector<mlir::Value, 8> fieldArgs;
     for (unsigned i = 0; i < fieldTypes.size(); ++i)
-      fieldArgs.push_back(
-          builder.create<mlir::LLVM::ExtractValueOp>(location, selfStruct, i));
+      fieldArgs.push_back(builder.create<mlir::LLVM::ExtractValueOp>(location, selfStruct, i));
     auto callee = module.lookupSymbol<mlir::func::FuncOp>(declName + "_encode");
-    auto wireBuf = builder.create<mlir::func::CallOp>(location, callee, fieldArgs)
-                       .getResult(0);
+    auto wireBuf = builder.create<mlir::func::CallOp>(location, callee, fieldArgs).getResult(0);
 
     // Convert HewWireBuf* → bytes (HewVec*)
-    auto bytesVec = builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{ptrType},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_to_bytes"),
-        mlir::ValueRange{wireBuf}).getResult();
+    auto bytesVec =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_to_bytes"),
+                                        mlir::ValueRange{wireBuf})
+            .getResult();
 
     builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bytesVec});
     builder.restoreInsertionPoint(savedIP);
@@ -1001,27 +1022,39 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
     mlir::Value bytesVec = entry->getArgument(0);
 
     // Convert bytes → HewWireBuf*
-    auto wireBuf = builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{ptrType},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_bytes_to_buf"),
-        mlir::ValueRange{bytesVec}).getResult();
+    auto wireBuf =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_bytes_to_buf"),
+                                        mlir::ValueRange{bytesVec})
+            .getResult();
 
     // Extract data pointer and length from the wire buf
-    auto dataPtr = builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{ptrType},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_data"),
-        mlir::ValueRange{wireBuf}).getResult();
-    auto bufLen = builder.create<hew::RuntimeCallOp>(
-        location, mlir::TypeRange{i64Type},
-        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_len"),
-        mlir::ValueRange{wireBuf}).getResult();
+    auto dataPtr =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_data"),
+                                        mlir::ValueRange{wireBuf})
+            .getResult();
+    auto bufLen =
+        builder
+            .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
+                                        mlir::SymbolRefAttr::get(&context, "hew_wire_buf_len"),
+                                        mlir::ValueRange{wireBuf})
+            .getResult();
 
     // Call Foo_decode(ptr, len) → struct
-    // Note: the wire buf is intentionally NOT destroyed here because decoded
-    // string fields may contain zero-copy pointers into the buffer data.
     auto decodeCallee = module.lookupSymbol<mlir::func::FuncOp>(declName + "_decode");
-    auto decoded = builder.create<mlir::func::CallOp>(
-        location, decodeCallee, mlir::ValueRange{dataPtr, bufLen}).getResult(0);
+    auto decoded =
+        builder
+            .create<mlir::func::CallOp>(location, decodeCallee, mlir::ValueRange{dataPtr, bufLen})
+            .getResult(0);
+
+    // Free the temporary wire buffer. String fields are already copied by
+    // hew_wire_decode_bytes (malloc'd), so no use-after-free risk.
+    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
+                                       mlir::SymbolRefAttr::get(&context, "hew_wire_buf_destroy"),
+                                       mlir::ValueRange{wireBuf});
 
     builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{decoded});
     builder.restoreInsertionPoint(savedIP);

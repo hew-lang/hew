@@ -419,6 +419,7 @@ add_e2e_file_test(wire_method_from_json e2e_wire wire_method_from_json)
 add_e2e_file_test(wire_binary_roundtrip e2e_wire wire_binary_roundtrip)
 add_e2e_file_test(wire_versioned        e2e_wire wire_versioned)
 add_e2e_file_test(wire_actor_message    e2e_wire wire_actor_message)
+add_e2e_file_test(wire_decode_string_roundtrip e2e_wire wire_decode_string_roundtrip)
 
 # ── Generics monomorphization tests ──────────────────────────────────────────
 add_e2e_file_test(generic_identity      e2e_generics generic_identity)

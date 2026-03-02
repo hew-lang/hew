@@ -152,7 +152,9 @@ impl HewRemoteSupervisor {
                 if state.notified_dead {
                     false
                 } else {
-                    let suspect_since = if let Some(ts) = state.suspect_since { ts } else {
+                    let suspect_since = if let Some(ts) = state.suspect_since {
+                        ts
+                    } else {
                         state.suspect_since = Some(now);
                         now
                     };

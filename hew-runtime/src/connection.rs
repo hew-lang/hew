@@ -331,7 +331,9 @@ fn hew_connmgr_reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<Reconn
     let Ok(conns) = mgr.connections.lock() else {
         // Policy: per-connection-manager state — poisoned mutex means
         // connection registry is corrupted.
-        panic!("hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue");
+        panic!(
+            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
+        );
     };
     let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
     let reconnect = conn.reconnect.as_ref()?;
@@ -403,7 +405,10 @@ fn hew_connmgr_spawn_reconnect_worker(mgr: *mut HewConnMgr, conn_id: c_int, plan
     }
 }
 
-#[expect(clippy::needless_pass_by_value, reason = "FFI callback signature requires owned values")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "FFI callback signature requires owned values"
+)]
 fn hew_connmgr_reconnect_worker_loop(
     mgr: SendConnMgr,
     shutdown: Arc<AtomicBool>,
@@ -957,9 +962,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
             let Ok(mut conns) = mgr.connections.lock() else {
                 // Policy: per-connection-manager state (C-ABI) — poisoned mutex
                 // means connection registry is corrupted; report error and bail.
-                set_last_error(
-                    "hew_connmgr_free: connections mutex poisoned (a thread panicked)",
-                );
+                set_last_error("hew_connmgr_free: connections mutex poisoned (a thread panicked)");
                 return;
             };
             conns.drain(..).collect()
@@ -1095,7 +1098,10 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 /// `conn_id` must be a valid connection ID from the transport.
 #[no_mangle]
-#[expect(clippy::too_many_lines, reason = "connection event loop handles all states")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "connection event loop handles all states"
+)]
 pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
     if mgr.is_null() {
         set_last_error("hew_connmgr_add: manager is null");
@@ -1200,9 +1206,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         let Ok(mut guard) = actor.noise_transport.lock() else {
             // Policy: per-connection state (C-ABI) — poisoned noise transport
             // means this connection's encryption state is corrupted.
-            set_last_error(
-                "hew_connmgr_add: noise_transport mutex poisoned (a thread panicked)",
-            );
+            set_last_error("hew_connmgr_add: noise_transport mutex poisoned (a thread panicked)");
             return -1;
         };
         *guard = Some(noise);
@@ -1237,7 +1241,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
             );
         });
 
-    if let Ok(h) = handle { actor.reader_handle = Some(h) } else {
+    if let Ok(h) = handle {
+        actor.reader_handle = Some(h);
+    } else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { hew_conn_close_transport_conn(mgr.transport, conn_id) };
         set_last_error(format!(
@@ -1589,14 +1595,19 @@ pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c
 ///
 /// Each element: `{"conn_id":N,"peer_node_id":N,"state":"S","last_activity_ms":N}`
 #[cfg(feature = "profiler")]
-#[expect(clippy::missing_panics_doc, reason = "panics indicate unrecoverable connection failure")]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "panics indicate unrecoverable connection failure"
+)]
 pub fn snapshot_connections_json(mgr: &HewConnMgr) -> String {
     use std::fmt::Write as _;
 
     let Ok(connections) = mgr.connections.lock() else {
         // Policy: per-connection-manager state — poisoned mutex means
         // connection registry is corrupted.
-        panic!("hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue");
+        panic!(
+            "hew: connmgr connections mutex poisoned (a thread panicked); cannot safely continue"
+        );
     };
 
     let mut json = String::from("[");

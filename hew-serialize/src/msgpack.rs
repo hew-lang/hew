@@ -58,7 +58,11 @@ struct TypedProgram<'a> {
 ///
 /// Panics if serialization fails, which should never happen for a valid AST.
 #[must_use]
-#[expect(clippy::needless_pass_by_value, clippy::implicit_hasher, reason = "serialization consumes the map")]
+#[expect(
+    clippy::needless_pass_by_value,
+    clippy::implicit_hasher,
+    reason = "serialization consumes the map"
+)]
 pub fn serialize_to_msgpack(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,
@@ -109,7 +113,11 @@ struct TypedProgramJson<'a> {
 ///
 /// Panics if serialization fails, which should never happen for a valid AST.
 #[must_use]
-#[expect(clippy::needless_pass_by_value, clippy::implicit_hasher, reason = "serialization consumes the map")]
+#[expect(
+    clippy::needless_pass_by_value,
+    clippy::implicit_hasher,
+    reason = "serialization consumes the map"
+)]
 pub fn serialize_to_json(
     program: &hew_parser::ast::Program,
     expr_types: Vec<ExprTypeEntry>,

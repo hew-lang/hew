@@ -189,7 +189,10 @@ unsafe fn free_transport(transport: *mut HewTransport) {
     let _ = unsafe { Box::from_raw(transport) };
 }
 
-#[expect(clippy::fn_params_excessive_bools, reason = "node configuration flags are independent booleans")]
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "node configuration flags are independent booleans"
+)]
 unsafe fn cleanup_start_failure(
     node: &mut HewNode,
     created_transport: bool,
@@ -280,7 +283,10 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
 ///
 /// `node` must be a valid pointer returned by [`hew_node_new`].
 #[no_mangle]
-#[expect(clippy::too_many_lines, reason = "node event loop handles all message types")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "node event loop handles all message types"
+)]
 pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     if node.is_null() {
         set_last_error("hew_node_start: node is null");

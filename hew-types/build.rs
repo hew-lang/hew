@@ -16,7 +16,10 @@ use hew_parser::ast::{
     Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeExpr,
 };
 
-#[expect(clippy::too_many_lines, reason = "build script is inherently sequential")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "build script is inherently sequential"
+)]
 fn main() {
     let manifest_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
@@ -394,7 +397,10 @@ fn wrapper_fn_sig_code(func: &FnDecl, module_short: &str) -> (Vec<String>, Strin
 }
 
 /// Convert a Hew type expression to Rust source code that constructs the corresponding `Ty`.
-#[expect(clippy::too_many_lines, reason = "generated code mapping is inherently large")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "generated code mapping is inherently large"
+)]
 fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
     match texpr {
         TypeExpr::Named { name, type_args } => match name.as_str() {
@@ -497,9 +503,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
         }
         TypeExpr::TraitObject(bounds) => {
             let name = bounds.first().map_or("", |b| b.name.as_str());
-            format!(
-                "Ty::TraitObject {{ trait_name: \"{name}\".to_string(), args: vec![] }}"
-            )
+            format!("Ty::TraitObject {{ trait_name: \"{name}\".to_string(), args: vec![] }}")
         }
         TypeExpr::Infer => "Ty::Error".to_string(),
     }
@@ -599,7 +603,11 @@ fn generate_code(modules: &BTreeMap<String, ModuleData>) -> String {
 }
 
 fn generate_stdlib_functions(out: &mut String, modules: &BTreeMap<String, ModuleData>) {
-    writeln!(out, "#[expect(clippy::too_many_lines, reason = \"generated stdlib lookup table\")]").unwrap();
+    writeln!(
+        out,
+        "#[expect(clippy::too_many_lines, reason = \"generated stdlib lookup table\")]"
+    )
+    .unwrap();
     writeln!(out, "#[must_use]").unwrap();
     writeln!(
         out,
@@ -639,7 +647,11 @@ fn generate_stdlib_functions(out: &mut String, modules: &BTreeMap<String, Module
 /// because `synthesize_stdlib_externs` in the enricher generates extern declarations
 /// from `stdlib_functions` — wrapper fns must NOT get extern declarations.
 fn generate_wrapper_fn_sigs(out: &mut String, modules: &BTreeMap<String, ModuleData>) {
-    writeln!(out, "#[expect(clippy::too_many_lines, reason = \"generated wrapper lookup table\")]").unwrap();
+    writeln!(
+        out,
+        "#[expect(clippy::too_many_lines, reason = \"generated wrapper lookup table\")]"
+    )
+    .unwrap();
     writeln!(out, "#[must_use]").unwrap();
     writeln!(
         out,

@@ -18,7 +18,10 @@ use std::io;
 
 use hew_export_types::ExportMeta;
 
-#[expect(clippy::unnecessary_wraps, reason = "main returns Result for consistent error handling")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "main returns Result for consistent error handling"
+)]
 fn main() -> io::Result<()> {
     let mut exports = hew_runtime::export_meta::all_exports();
     exports.extend(hew_std_misc_uuid::export_meta::all_exports());

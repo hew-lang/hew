@@ -570,7 +570,10 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     clippy::too_many_arguments,
     reason = "module graph construction needs all context"
 )]
-#[expect(clippy::ptr_arg, reason = "items are cloned into module graph, needs Vec")]
+#[expect(
+    clippy::ptr_arg,
+    reason = "items are cloned into module graph, needs Vec"
+)]
 fn build_module_graph(
     source_file: &Path,
     items: &mut Vec<Spanned<Item>>,

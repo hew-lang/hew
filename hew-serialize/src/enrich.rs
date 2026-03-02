@@ -872,7 +872,10 @@ fn normalize_expr_types(expr: &mut Spanned<Expr>) {
     });
 }
 
-#[expect(clippy::too_many_lines, reason = "builtin rewriting covers all expression types")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "builtin rewriting covers all expression types"
+)]
 fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
     match &mut expr.0 {
         Expr::Block(block)
@@ -1185,7 +1188,10 @@ fn enrich_else_block(else_block: &mut ElseBlock, tco: &TypeCheckOutput) {
     }
 }
 
-#[expect(clippy::too_many_lines, reason = "pattern enrichment covers all pattern variants")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pattern enrichment covers all pattern variants"
+)]
 fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
     match &mut expr.0 {
         Expr::Block(block) => enrich_block(block, tco),

@@ -155,7 +155,10 @@ pub struct FnSig {
 
 /// The main type checker.
 #[derive(Debug)]
-#[expect(clippy::struct_excessive_bools, reason = "checker state flags are independent booleans")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "checker state flags are independent booleans"
+)]
 pub struct Checker {
     env: TypeEnv,
     subst: Substitution,
@@ -1437,8 +1440,8 @@ impl Checker {
                     return Some(resolved.clone());
                 }
                 if entry.resolving {
-                    let should_report = scope.report_missing
-                        && scope.missing_reported.insert(alias.to_string());
+                    let should_report =
+                        scope.report_missing && scope.missing_reported.insert(alias.to_string());
                     let err_span = entry.expr.1.clone();
                     if should_report {
                         self.report_error(
@@ -1504,7 +1507,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "expression type checking requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expression type checking requires many cases"
+    )]
     fn collect_function_item(&mut self, item: &Item, span: &Span) {
         match item {
             Item::Function(fd) => {
@@ -1689,7 +1695,10 @@ impl Checker {
         self.register_fn_sig_with_name(&fd.name, fd);
     }
 
-    #[expect(clippy::unused_self, reason = "method signature is part of the checker API")]
+    #[expect(
+        clippy::unused_self,
+        reason = "method signature is part of the checker API"
+    )]
     fn collect_type_param_bounds(
         &self,
         type_params: Option<&Vec<TypeParam>>,
@@ -2214,7 +2223,11 @@ impl Checker {
     }
 
     /// Register items from a user module under the module's namespace.
-    #[expect(clippy::too_many_lines, clippy::ref_option, reason = "statement type checking requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::ref_option,
+        reason = "statement type checking requires many cases"
+    )]
     fn register_user_module(
         &mut self,
         module_short: &str,
@@ -3212,7 +3225,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "expression check covers all AST variants")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "expression check covers all AST variants"
+    )]
     fn synthesize_inner(&mut self, expr: &Expr, span: &Span) -> Ty {
         self.maybe_warn_wasm_expr(expr, span);
         let ty = match expr {
@@ -3904,7 +3920,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "builtin method resolution requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "builtin method resolution requires many cases"
+    )]
     fn check_binary_op(&mut self, left: &Spanned<Expr>, op: BinaryOp, right: &Spanned<Expr>) -> Ty {
         let left_ty = self.synthesize(&left.0, &left.1);
         let right_ty = self.synthesize(&right.0, &right.1);
@@ -4318,28 +4337,27 @@ impl Checker {
 
                 if let Some(Ty::Named { name: sup_name, .. }) = sup_ty_resolved.as_actor_ref() {
                     if let Some(children) = self.supervisor_children.get(sup_name) {
-                            if let Expr::Literal(hew_parser::ast::Literal::Integer {
-                                value: idx,
-                                ..
-                            }) = idx_expr
-                            {
-                                #[expect(
-                                    clippy::cast_sign_loss,
-                                    clippy::cast_possible_truncation,
-                                    reason = "supervisor child index is always non-negative and small"
-                                )]
-                                let i = *idx as usize;
-                                if i < children.len() {
-                                    let child_type = &children[i];
-                                    return Ty::actor_ref(Ty::Named {
-                                        name: child_type.clone(),
-                                        args: vec![],
-                                    });
-                                }
+                        if let Expr::Literal(hew_parser::ast::Literal::Integer {
+                            value: idx, ..
+                        }) = idx_expr
+                        {
+                            #[expect(
+                                clippy::cast_sign_loss,
+                                clippy::cast_possible_truncation,
+                                reason = "supervisor child index is always non-negative and small"
+                            )]
+                            let i = *idx as usize;
+                            if i < children.len() {
+                                let child_type = &children[i];
+                                return Ty::actor_ref(Ty::Named {
+                                    name: child_type.clone(),
+                                    args: vec![],
+                                });
                             }
-                            // Non-constant index: fresh type var
-                            return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
                         }
+                        // Non-constant index: fresh type var
+                        return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
+                    }
                 }
                 return Ty::actor_ref(Ty::Var(TypeVar::fresh()));
             }
@@ -5802,7 +5820,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "trait impl checking requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "trait impl checking requires many cases"
+    )]
     fn check_struct_init(
         &mut self,
         name: &str,
@@ -5996,7 +6017,10 @@ impl Checker {
     }
 
     /// Pattern binding
-    #[expect(clippy::too_many_lines, reason = "impl method resolution requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "impl method resolution requires many cases"
+    )]
     fn bind_pattern(&mut self, pattern: &Pattern, ty: &Ty, is_mutable: bool, span: &Span) {
         let ty = &self.subst.resolve(ty);
         match pattern {
@@ -6544,7 +6568,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "generic instantiation requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "generic instantiation requires many cases"
+    )]
     fn resolve_type_expr(&mut self, te: &TypeExpr) -> Ty {
         match te {
             TypeExpr::Named { name, type_args } => {
@@ -6898,7 +6925,10 @@ impl Checker {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "associated type resolution requires many cases")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "associated type resolution requires many cases"
+    )]
     fn check_exhaustiveness(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
         fn visit_or_patterns<'a, F: FnMut(&'a Pattern)>(pattern: &'a Pattern, f: &mut F) {
             match pattern {

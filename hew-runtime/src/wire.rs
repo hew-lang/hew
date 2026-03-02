@@ -955,7 +955,10 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
 ///
 /// `buf` must point to a valid, initialized `HewWireBuf`.
 /// `field_num` and `wire_type` must be valid pointers.
-#[expect(clippy::cast_possible_truncation, reason = "wire tag field_num and wire_type fit in u32")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "wire tag field_num and wire_type fit in u32"
+)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_tag(
     buf: *mut HewWireBuf,

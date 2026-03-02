@@ -511,7 +511,10 @@ impl Ty {
 }
 
 impl fmt::Display for Ty {
-    #[expect(clippy::too_many_lines, reason = "type display covers all type variants")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "type display covers all type variants"
+    )]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Ty::I8 => write!(f, "i8"),

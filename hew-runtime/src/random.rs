@@ -39,7 +39,10 @@ impl MtState {
     }
 
     /// `CPython` `init_genrand`.
-    #[expect(clippy::cast_possible_truncation, reason = "MT19937 array index is always < 624, fits in u32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MT19937 array index is always < 624, fits in u32"
+    )]
     fn init_genrand(&mut self, seed: u32) {
         self.mt[0] = seed;
         for i in 1..N {
@@ -51,7 +54,10 @@ impl MtState {
     }
 
     /// `CPython` `init_by_array`.
-    #[expect(clippy::cast_possible_truncation, reason = "MT19937 array index is always < 624, fits in u32")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MT19937 array index is always < 624, fits in u32"
+    )]
     fn init_by_array(&mut self, init_key: &[u32]) {
         self.init_genrand(19_650_218);
         let mut i: usize = 1;
@@ -231,8 +237,14 @@ pub unsafe extern "C" fn hew_random_gauss(mu: f64, sigma: f64) -> f64 {
 ///
 /// Called from compiled Hew programs via C ABI.
 #[no_mangle]
-#[expect(clippy::cast_sign_loss, reason = "hi > lo is guaranteed by the check above")]
-#[expect(clippy::cast_possible_wrap, reason = "randbelow(range) < range which fits in i64")]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "hi > lo is guaranteed by the check above"
+)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "randbelow(range) < range which fits in i64"
+)]
 pub unsafe extern "C" fn hew_random_randint(lo: i64, hi: i64) -> i64 {
     if hi <= lo {
         return lo;
@@ -247,8 +259,14 @@ pub unsafe extern "C" fn hew_random_randint(lo: i64, hi: i64) -> i64 {
 ///
 /// `v` must be a valid `HewVec` pointer containing i64 elements.
 #[no_mangle]
-#[expect(clippy::cast_ptr_alignment, reason = "HewVec data is always properly aligned for its element type")]
-#[expect(clippy::cast_possible_truncation, reason = "shuffle index is bounded by vec length")]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "HewVec data is always properly aligned for its element type"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "shuffle index is bounded by vec length"
+)]
 pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
     if v.is_null() {
         return;
@@ -281,8 +299,14 @@ pub unsafe extern "C" fn hew_random_shuffle_i64(v: *mut HewVec) {
 ///
 /// `v` must be a valid `HewVec` pointer containing f64 cumulative weights.
 #[no_mangle]
-#[expect(clippy::cast_ptr_alignment, reason = "HewVec data is always properly aligned for its element type")]
-#[expect(clippy::cast_possible_wrap, reason = "bisect index is bounded by vec length")]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "HewVec data is always properly aligned for its element type"
+)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "bisect index is bounded by vec length"
+)]
 pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: i64) -> i64 {
     if v.is_null() {
         return 0;

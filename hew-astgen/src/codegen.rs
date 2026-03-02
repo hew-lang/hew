@@ -333,7 +333,10 @@ fn write_field_parse(
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "code generation requires full context")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "code generation requires full context"
+)]
 fn write_optional_field_parse(
     out: &mut String,
     field: &FieldDef,
@@ -372,7 +375,10 @@ fn write_optional_field_parse(
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "code generation requires full context")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "code generation requires full context"
+)]
 fn write_required_field_parse(
     out: &mut String,
     field: &FieldDef,

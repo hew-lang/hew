@@ -369,9 +369,7 @@ fn worker_loop(id: usize, local: &WorkDeque) {
         let Ok(guard) = parker.mutex.lock() else {
             // Policy: per-scheduler state — poisoned parker means worker
             // integrity is lost; shut down this worker.
-            panic!(
-                "hew: worker parker mutex poisoned (a thread panicked); cannot safely continue"
-            );
+            panic!("hew: worker parker mutex poisoned (a thread panicked); cannot safely continue");
         };
         if sched.shutdown.load(Ordering::Acquire) {
             break;

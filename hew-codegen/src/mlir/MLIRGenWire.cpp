@@ -173,6 +173,30 @@ mlir::Value MLIRGen::wireStringPtr(mlir::Location location, llvm::StringRef valu
 // Wire struct/enum declaration
 // ============================================================================
 
+void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
+  if (decl.kind != ast::WireDeclKind::Struct)
+    return;
+
+  const auto &declName = decl.name;
+  if (structTypes.find(declName) != structTypes.end())
+    return; // already registered
+
+  StructTypeInfo info;
+  info.name = declName;
+  llvm::SmallVector<mlir::Type, 8> fieldTypes;
+  unsigned fieldIdx = 0;
+  for (const auto &field : decl.fields) {
+    auto mlirTy = wireTypeToMLIR(builder, field.ty);
+    fieldTypes.push_back(mlirTy);
+    info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx, ""});
+    ++fieldIdx;
+  }
+  info.mlirType = mlir::LLVM::LLVMStructType::getIdentified(&context, declName);
+  if (!info.mlirType.isInitialized())
+    (void)info.mlirType.setBody(fieldTypes, /*isPacked=*/false);
+  structTypes[declName] = info;
+}
+
 void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
@@ -281,21 +305,32 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
 
   // ── Register the wire struct as a regular struct type ─────────────
   // This allows the rest of the compiler to work with the struct.
+  // Skip if already registered by preRegisterWireStructType (pass 1b2).
   const auto &declName = decl.name;
-  StructTypeInfo info;
-  info.name = declName;
   llvm::SmallVector<mlir::Type, 8> fieldTypes;
-  unsigned fieldIdx = 0;
   for (const auto &field : decl.fields) {
-    auto mlirTy = wireTypeToMLIR(builder, field.ty);
-    info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx, ""});
-    fieldTypes.push_back(mlirTy);
-    ++fieldIdx;
+    fieldTypes.push_back(wireTypeToMLIR(builder, field.ty));
   }
-  info.mlirType = mlir::LLVM::LLVMStructType::getIdentified(&context, declName);
-  if (!info.mlirType.isInitialized())
-    (void)info.mlirType.setBody(fieldTypes, /*isPacked=*/false);
-  structTypes[declName] = info;
+  if (structTypes.find(declName) == structTypes.end()) {
+    StructTypeInfo info;
+    info.name = declName;
+    unsigned fieldIdx = 0;
+    for (const auto &field : decl.fields) {
+      auto mlirTy = fieldTypes[fieldIdx];
+      info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx, ""});
+      ++fieldIdx;
+    }
+    info.mlirType = mlir::LLVM::LLVMStructType::getIdentified(&context, declName);
+    if (!info.mlirType.isInitialized())
+      (void)info.mlirType.setBody(fieldTypes, /*isPacked=*/false);
+    structTypes[declName] = info;
+  }
+
+  // Track this struct as wire-typed (for actor codegen to detect wire messages)
+  wireStructNames[declName] = {
+      mangleName(currentModulePath, declName, "encode"),
+      mangleName(currentModulePath, declName, "decode")};
+
 
   // ── Generate Foo_encode function ─────────────────────────────────
   // Signature: Foo_encode(field1, field2, ...) -> !llvm.ptr
@@ -393,7 +428,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
   // Uses TLV dispatch loop for forward compatibility — unknown fields are
   // silently skipped, fields can appear in any order.
   {
-    auto structType = info.mlirType;
+    auto structType = structTypes.at(declName).mlirType;
     auto decodeFnType = mlir::FunctionType::get(&context, {ptrType, i64Type}, {structType});
     std::string decodeName = declName + "_decode";
 

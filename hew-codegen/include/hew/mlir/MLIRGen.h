@@ -89,6 +89,9 @@ private:
   void registerActorDecl(const ast::ActorDecl &decl);
   void generateActorDecl(const ast::ActorDecl &decl);
   void generateWireDecl(const ast::WireDecl &decl);
+  /// Pre-register wire struct type with wire-aware field types so that actor
+  /// registration (pass 1e) can resolve wire struct parameter types.
+  void preRegisterWireStructType(const ast::WireDecl &decl);
   /// Generate mangled method wrappers for wire types so that method dispatch
   /// (o.to_json(), Point.from_json()) works through the standard struct path.
   void generateWireMethodWrappers(const ast::WireDecl &decl);
@@ -454,6 +457,15 @@ private:
   // ── Module-level constants ─────────────────────────────────────────
   // Stored as AST expressions, generated inline when referenced.
   std::unordered_map<std::string, const ast::Expr *> moduleConstants;
+
+  // ── Wire struct name registry ─────────────────────────────────────
+  /// Maps wire struct name → (encode_wrapper, decode_wrapper) mangled names.
+  /// Populated during wire codegen, used by actor codegen for wire messages.
+  struct WireWrapperNames {
+    std::string encodeName; // mangled encode wrapper function name
+    std::string decodeName; // mangled decode wrapper function name
+  };
+  std::unordered_map<std::string, WireWrapperNames> wireStructNames;
 
   // ── Actor type registry ───────────────────────────────────────────
   std::unordered_map<std::string, ActorInfo> actorRegistry;

@@ -674,6 +674,40 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
+/// Send a wire-encoded message to an actor.
+///
+/// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them
+/// into the actor's mailbox, and frees the `HewVec`.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function.
+/// - `bytes` must be a valid `HewVec*` (bytes type) or null.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_send_wire(
+    actor: *mut HewActor,
+    msg_type: i32,
+    bytes: *mut crate::vec::HewVec,
+) {
+    if bytes.is_null() || actor.is_null() {
+        return;
+    }
+    // SAFETY: bytes is a valid HewVec. Extract raw byte data.
+    let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
+    // SAFETY: actor is valid, data slice is valid.
+    unsafe {
+        actor_send_internal(
+            actor,
+            msg_type,
+            data.as_ptr() as *mut c_void,
+            data.len(),
+        )
+    };
+    // Free the encoded bytes vec — mailbox has its own copy.
+    unsafe { crate::vec::hew_vec_free(bytes) };
+}
+
 /// Send a message to an actor by actor ID.
 ///
 /// Returns 0 on success, -1 if the actor ID is not currently live.

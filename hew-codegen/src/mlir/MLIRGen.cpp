@@ -1720,11 +1720,29 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   });
 
   // Pass 1b: Register all type declarations so that functions and actors
-  // can reference struct/enum types.
+  // can reference struct/enum types. Wire structs (#[wire]) are skipped here
+  // and handled by pass 1b2 below, since they need wireTypeToMLIR (not
+  // convertType) for correct field types.
   forEachItem([&](const auto &spannedItem) {
     const auto &item = spannedItem.value;
     if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
       registerTypeDecl(*td);
+    }
+  });
+
+  // Pass 1b2: Pre-register wire struct types with wire-aware field types.
+  // This must happen before pass 1e (actor registration) so that actors with
+  // wire-typed receive parameters can resolve the struct type. Uses
+  // wireTypeToMLIR instead of convertType to produce correct wire field types.
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    if (auto *td = std::get_if<ast::TypeDecl>(&item.kind)) {
+      if (td->wire.has_value()) {
+        auto wd = wireMetadataToWireDecl(*td);
+        preRegisterWireStructType(wd);
+      }
+    } else if (auto *wd = std::get_if<ast::WireDecl>(&item.kind)) {
+      preRegisterWireStructType(*wd);
     }
   });
 
@@ -2073,11 +2091,13 @@ void MLIRGen::registerFunctionSignature(const ast::FnDecl &fn, const std::string
 // ============================================================================
 
 void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
-  // Wire types are registered in generateWireDecl (pass 1h), skip here.
-  if (decl.wire.has_value())
-    return;
 
   const std::string &declName = decl.name;
+
+  // Wire structs use wireTypeToMLIR (not convertType) for field types.
+  // They are pre-registered by preRegisterWireStructType() in pass 1b2.
+  if (decl.wire.has_value())
+    return;
 
   // Generic struct/enum: store for lazy specialization, don't register yet.
   // (Field types like T can't be resolved without typeParamSubstitutions.)

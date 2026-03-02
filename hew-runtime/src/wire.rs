@@ -1242,6 +1242,32 @@ pub unsafe extern "C" fn hew_wire_bytes_to_buf(vec: *mut crate::vec::HewVec) -> 
     buf
 }
 
+// ---------------------------------------------------------------------------
+// Raw bytes → HewVec (for actor wire decode)
+// ---------------------------------------------------------------------------
+
+/// Create a `HewVec` (bytes type) from a raw data pointer and length.
+///
+/// Copies the data into a new `HewVec`. Returns a valid `HewVec*` or null
+/// on allocation failure.
+///
+/// # Safety
+///
+/// `data` must point to at least `len` readable bytes, or be null when
+/// `len` is 0.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_from_raw_bytes(
+    data: *const u8,
+    len: usize,
+) -> *mut crate::vec::HewVec {
+    if data.is_null() || len == 0 {
+        return unsafe { crate::vec::hew_vec_new() };
+    }
+    // SAFETY: caller guarantees data[0..len] is valid.
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    unsafe { crate::vec::u8_to_hwvec(slice) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

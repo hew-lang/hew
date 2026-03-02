@@ -1,0 +1,19 @@
+// Test: wire-encoded actor messages
+#[wire]
+struct Ping {
+    seq: i32,
+}
+
+actor PingPong {
+    receive fn handle(msg: Ping) {
+        println(msg.to_json());
+    }
+}
+
+fn main() {
+    let a = spawn PingPong();
+    a.handle(Ping { seq: 42 });
+    a.handle(Ping { seq: 99 });
+    sleep_ms(200);
+    println("done");
+}

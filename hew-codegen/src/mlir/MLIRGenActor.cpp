@@ -546,29 +546,132 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     auto msgTypeArg = entryBlock->getArgument(1); // i32 (msg_type)
     auto dataArg = entryBlock->getArgument(2);    // ptr (data)
 
-    // Build handler symbol array for hew.receive op
     auto dataSizeArg = entryBlock->getArgument(3); // size_t (data_size)
-    llvm::SmallVector<mlir::Attribute, 4> handlerRefs;
+
+    // Check if any handler has a wire-typed single parameter
+    bool hasWireHandlers = false;
     for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
       const auto &recvFn = actorInfo.receiveFns[i];
-      std::string recvHandlerName = actorName + "_" + recvFn.name;
-
-      // Ensure handler function is declared in the module
-      llvm::SmallVector<mlir::Type, 4> recvParamTypes;
-      recvParamTypes.push_back(ptrType); // self
-      for (const auto &pt : recvFn.paramTypes)
-        recvParamTypes.push_back(pt);
-      llvm::SmallVector<mlir::Type, 1> recvResultTypes;
-      if (recvFn.returnType.has_value())
-        recvResultTypes.push_back(*recvFn.returnType);
-      auto recvFuncType = builder.getFunctionType(recvParamTypes, recvResultTypes);
-      getOrCreateExternFunc(recvHandlerName, recvFuncType);
-
-      handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, recvHandlerName));
+      if (recvFn.paramTypes.size() == 1) {
+        if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(recvFn.paramTypes[0])) {
+          auto name = st.getName();
+          if (!name.empty() && wireStructNames.count(name.str()))
+            hasWireHandlers = true;
+        }
+      }
     }
 
-    builder.create<hew::ReceiveOp>(location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                                   builder.getArrayAttr(handlerRefs));
+    if (hasWireHandlers) {
+      // Generate explicit dispatch with wire decode for wire handlers
+      for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
+        const auto &recvFn = actorInfo.receiveFns[i];
+        std::string recvHandlerName = actorName + "_" + recvFn.name;
+
+        // Ensure handler function is declared
+        llvm::SmallVector<mlir::Type, 4> recvParamTypes;
+        recvParamTypes.push_back(ptrType); // self/state
+        for (const auto &pt : recvFn.paramTypes)
+          recvParamTypes.push_back(pt);
+        llvm::SmallVector<mlir::Type, 1> recvResultTypes;
+        if (recvFn.returnType.has_value())
+          recvResultTypes.push_back(*recvFn.returnType);
+        auto recvFuncType = builder.getFunctionType(recvParamTypes, recvResultTypes);
+        getOrCreateExternFunc(recvHandlerName, recvFuncType);
+
+        // if (msg_type == i)
+        auto msgIdx = builder.create<mlir::arith::ConstantIntOp>(
+            location, i32Type, static_cast<int64_t>(i));
+        auto cond = builder.create<mlir::arith::CmpIOp>(
+            location, mlir::arith::CmpIPredicate::eq, msgTypeArg, msgIdx);
+        auto ifOp = builder.create<mlir::scf::IfOp>(location, cond, /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+
+        // Check if this handler uses wire encoding
+        const WireWrapperNames *wireNames = nullptr;
+        if (recvFn.paramTypes.size() == 1) {
+          if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(recvFn.paramTypes[0])) {
+            auto name = st.getName();
+            if (!name.empty()) {
+              auto it = wireStructNames.find(name.str());
+              if (it != wireStructNames.end())
+                wireNames = &it->second;
+            }
+          }
+        }
+
+        llvm::SmallVector<mlir::Value, 4> callArgs;
+        callArgs.push_back(stateArg);
+
+        if (wireNames && recvFn.paramTypes.size() == 1) {
+          // Wire decode path: create bytes from raw data, then decode
+          // bytes = hew_vec_from_raw_bytes(data, data_size)
+          auto vecFromRawType = builder.getFunctionType({ptrType, sizeType()}, {ptrType});
+          getOrCreateExternFunc("hew_vec_from_raw_bytes", vecFromRawType);
+          auto bytesVec = builder.create<mlir::func::CallOp>(
+              location, "hew_vec_from_raw_bytes", mlir::TypeRange{ptrType},
+              mlir::ValueRange{dataArg, dataSizeArg}).getResult(0);
+
+          // msg = decode_wrapper(bytes) → struct
+          auto decodeFuncType = builder.getFunctionType({ptrType}, {recvFn.paramTypes[0]});
+          getOrCreateExternFunc(wireNames->decodeName, decodeFuncType);
+          auto decoded = builder.create<mlir::func::CallOp>(
+              location, wireNames->decodeName, mlir::TypeRange{recvFn.paramTypes[0]},
+              mlir::ValueRange{bytesVec}).getResult(0);
+
+          // Free the temporary bytes vec
+          auto vecFreeType = builder.getFunctionType({ptrType}, {});
+          getOrCreateExternFunc("hew_vec_free", vecFreeType);
+          builder.create<mlir::func::CallOp>(location, "hew_vec_free", mlir::TypeRange{},
+                                             mlir::ValueRange{bytesVec});
+
+          callArgs.push_back(decoded);
+        } else {
+          // Non-wire path: load args from data buffer (same as ReceiveOpLowering)
+          if (recvFn.paramTypes.size() == 1) {
+            auto loaded = builder.create<mlir::LLVM::LoadOp>(
+                location, recvFn.paramTypes[0], dataArg);
+            callArgs.push_back(loaded);
+          } else if (recvFn.paramTypes.size() > 1) {
+            llvm::SmallVector<mlir::Type, 4> fieldTypes(recvFn.paramTypes.begin(),
+                                                         recvFn.paramTypes.end());
+            auto packType = mlir::LLVM::LLVMStructType::getLiteral(&context, fieldTypes);
+            auto packed = builder.create<mlir::LLVM::LoadOp>(location, packType, dataArg);
+            for (unsigned pi = 0; pi < fieldTypes.size(); ++pi) {
+              auto field = builder.create<mlir::LLVM::ExtractValueOp>(
+                  location, packed, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi)});
+              callArgs.push_back(field);
+            }
+          }
+        }
+
+        // Call handler
+        builder.create<mlir::func::CallOp>(location, recvHandlerName, recvResultTypes, callArgs);
+
+        builder.setInsertionPointAfter(ifOp);
+      }
+    } else {
+      // No wire handlers: use standard hew.receive op
+      llvm::SmallVector<mlir::Attribute, 4> handlerRefs;
+      for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
+        const auto &recvFn = actorInfo.receiveFns[i];
+        std::string recvHandlerName = actorName + "_" + recvFn.name;
+
+        llvm::SmallVector<mlir::Type, 4> recvParamTypes;
+        recvParamTypes.push_back(ptrType); // self
+        for (const auto &pt : recvFn.paramTypes)
+          recvParamTypes.push_back(pt);
+        llvm::SmallVector<mlir::Type, 1> recvResultTypes;
+        if (recvFn.returnType.has_value())
+          recvResultTypes.push_back(*recvFn.returnType);
+        auto recvFuncType = builder.getFunctionType(recvParamTypes, recvResultTypes);
+        getOrCreateExternFunc(recvHandlerName, recvFuncType);
+
+        handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, recvHandlerName));
+      }
+
+      builder.create<hew::ReceiveOp>(location, stateArg, msgTypeArg, dataArg, dataSizeArg,
+                                     builder.getArrayAttr(handlerRefs));
+    }
 
     // Return void from dispatch
     builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
@@ -1120,9 +1223,47 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
   if (!argVals)
     return nullptr;
 
-  // Emit hew.actor_send — the lowering pass handles arg packing and runtime call
-  builder.create<hew::ActorSendOp>(
-      location, actorPtr, builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
+  // Check if this is a wire-encoded message (single param that is a #[wire] struct)
+  const auto &recvFn = actorInfo.receiveFns[msgIdx];
+  const WireWrapperNames *wireNames = nullptr;
+  if (recvFn.paramTypes.size() == 1) {
+    auto paramType = recvFn.paramTypes[0];
+    if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(paramType)) {
+      auto name = structType.getName();
+      if (!name.empty()) {
+        auto it = wireStructNames.find(name.str());
+        if (it != wireStructNames.end())
+          wireNames = &it->second;
+      }
+    }
+  }
+
+  if (wireNames) {
+    // Wire send path: encode struct → bytes, send bytes via runtime
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+
+    // Call encode wrapper: Foo_encode_wrapper(struct) → HewVec* (bytes)
+    auto encodeFuncType = builder.getFunctionType({recvFn.paramTypes[0]}, {ptrType});
+    getOrCreateExternFunc(wireNames->encodeName, encodeFuncType);
+    auto bytesVec = builder.create<mlir::func::CallOp>(
+        location, wireNames->encodeName, mlir::TypeRange{ptrType}, *argVals).getResult(0);
+
+    // Cast actor ref to !llvm.ptr for runtime call
+    auto actorPtrCast = builder.create<hew::BitcastOp>(location, ptrType, actorPtr).getResult();
+
+    // Call hew_actor_send_wire(actor, msg_type, bytes)
+    auto sendWireFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
+    getOrCreateExternFunc("hew_actor_send_wire", sendWireFuncType);
+    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(
+        location, i32Type, static_cast<int64_t>(msgIdx));
+    builder.create<mlir::func::CallOp>(location, "hew_actor_send_wire", mlir::TypeRange{},
+                                       mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
+  } else {
+    // Standard path: hew.actor_send — the lowering pass handles arg packing
+    builder.create<hew::ActorSendOp>(
+        location, actorPtr, builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
+  }
 
   // Suppress sender-side Drop for moved (non-Copy) identifier arguments.
   // Ownership transfers to the actor; the sender must not free the handle.
@@ -1192,9 +1333,44 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   if (!actorVal || !msgVal)
     return nullptr;
 
-  // Emit hew.actor_send with msg_type = 0 (send expressions use handler 0)
-  builder.create<hew::ActorSendOp>(location, actorVal, builder.getI32IntegerAttr(0),
-                                   mlir::ValueRange{msgVal});
+  // Check if the message type is a wire struct
+  const WireWrapperNames *wireNames = nullptr;
+  auto msgType = msgVal.getType();
+  if (auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(msgType)) {
+    auto name = structType.getName();
+    if (!name.empty()) {
+      auto it = wireStructNames.find(name.str());
+      if (it != wireStructNames.end())
+        wireNames = &it->second;
+    }
+  }
+
+  if (wireNames) {
+    // Wire send path: encode struct → bytes, send bytes via runtime
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+
+    // Call encode wrapper: Foo_encode_wrapper(struct) → HewVec* (bytes)
+    auto encodeFuncType = builder.getFunctionType({msgType}, {ptrType});
+    getOrCreateExternFunc(wireNames->encodeName, encodeFuncType);
+    auto bytesVec = builder.create<mlir::func::CallOp>(
+        location, wireNames->encodeName, mlir::TypeRange{ptrType},
+        mlir::ValueRange{msgVal}).getResult(0);
+
+    // Cast actor ref to !llvm.ptr for runtime call
+    auto actorPtrCast = builder.create<hew::BitcastOp>(location, ptrType, actorVal).getResult();
+
+    // Call hew_actor_send_wire(actor, msg_type=0, bytes)
+    auto sendWireFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
+    getOrCreateExternFunc("hew_actor_send_wire", sendWireFuncType);
+    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, 0);
+    builder.create<mlir::func::CallOp>(location, "hew_actor_send_wire", mlir::TypeRange{},
+                                       mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
+  } else {
+    // Standard path: hew.actor_send with msg_type = 0
+    builder.create<hew::ActorSendOp>(location, actorVal, builder.getI32IntegerAttr(0),
+                                     mlir::ValueRange{msgVal});
+  }
 
   // Suppress sender-side Drop for the moved message variable.
   if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {

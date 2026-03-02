@@ -44,6 +44,11 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   hasActors = true;
   const std::string &actorName = decl.name;
 
+  // De-duplicate: imported actors may be registered via both forEachItem
+  // (module graph iteration) and flatten_import_items (top-level promotion).
+  if (actorRegistry.count(actorName))
+    return;
+
   // 1. Create actor state struct type from fields
   llvm::SmallVector<mlir::Type, 4> fieldTypes;
   std::vector<mlir::Type> fieldHewTypes; // Hew MLIR types before toLLVMStorageType
@@ -679,11 +684,13 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
-  // The target is an identifier (actor name)
-  // In the AST, spawn ActorName(field: value, ...) has target = Ident("ActorName") + named args
+  // The target is an identifier (actor name) or a field access (module.ActorName)
   std::string actorName;
   if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.target->value.kind)) {
     actorName = identExpr->name;
+  } else if (auto *fieldExpr = std::get_if<ast::ExprFieldAccess>(&expr.target->value.kind)) {
+    // spawn module.ActorName(...) — use the field (actor name) for registry lookup
+    actorName = fieldExpr->field;
   }
 
   if (actorName.empty()) {

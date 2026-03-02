@@ -3543,10 +3543,22 @@ impl<'src> Parser<'src> {
                     }
                 }
 
-                // Regular spawn: spawn ActorName(field: value, ...)
+                // Regular spawn: spawn ActorName(...) or spawn module.ActorName(...)
                 let name = self.expect_ident()?;
                 let name_end = self.peek_span().start;
-                let target = Box::new((Expr::Identifier(name), start..name_end));
+                let target = if self.eat(&Token::Dot) {
+                    let actor_name = self.expect_ident()?;
+                    let actor_end = self.peek_span().start;
+                    Box::new((
+                        Expr::FieldAccess {
+                            object: Box::new((Expr::Identifier(name), start..name_end)),
+                            field: actor_name,
+                        },
+                        start..actor_end,
+                    ))
+                } else {
+                    Box::new((Expr::Identifier(name), start..name_end))
+                };
                 let args = if self.eat(&Token::LeftParen) {
                     let mut args = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightParen) {

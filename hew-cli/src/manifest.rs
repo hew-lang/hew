@@ -6,7 +6,13 @@ use std::path::Path;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+struct PackageSection {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct TomlManifest {
+    package: Option<PackageSection>,
     #[serde(default)]
     dependencies: BTreeMap<String, String>,
 }
@@ -40,6 +46,15 @@ pub fn load_lockfile(dir: &Path) -> Option<Vec<(String, String)>> {
     )
 }
 
+/// Returns the `[package] name` from `hew.toml` in `dir`, or `None` when
+/// no manifest is present or it lacks a `[package]` section.
+pub fn load_package_name(dir: &Path) -> Option<String> {
+    let path = dir.join("hew.toml");
+    let text = std::fs::read_to_string(path).ok()?;
+    let manifest: TomlManifest = toml::from_str(&text).ok()?;
+    manifest.package.map(|p| p.name)
+}
+
 /// Returns the dependency module paths declared in `hew.toml` located in
 /// `dir`, or `None` when no manifest is present (script mode).
 /// Returns `Some(vec![])` when a manifest exists but has no dependencies.
@@ -71,6 +86,26 @@ mod tests {
     fn no_manifest_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_dependencies(dir.path()).is_none());
+    }
+
+    #[test]
+    fn package_name_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        write_toml(dir.path(), "[package]\nname = \"myapp\"\n");
+        assert_eq!(load_package_name(dir.path()), Some("myapp".to_string()));
+    }
+
+    #[test]
+    fn package_name_missing_section() {
+        let dir = tempfile::tempdir().unwrap();
+        write_toml(dir.path(), "[dependencies]\n");
+        assert_eq!(load_package_name(dir.path()), None);
+    }
+
+    #[test]
+    fn package_name_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load_package_name(dir.path()), None);
     }
 
     #[test]

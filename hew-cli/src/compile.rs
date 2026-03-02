@@ -67,6 +67,7 @@ pub fn compile(
     // Detect hew.toml manifest (script mode if absent).
     let project_dir = Path::new(input).parent().unwrap_or(Path::new("."));
     let manifest_deps = super::manifest::load_dependencies(project_dir);
+    let package_name = super::manifest::load_package_name(project_dir);
 
     // 1. Parse
     let result = hew_parser::parse(&source);
@@ -105,7 +106,7 @@ pub fn compile(
 
     // 2. Validate manifest imports then resolve file-path imports
     if let Some(deps) = &manifest_deps {
-        let errs = validate_imports_against_manifest(&program.items, deps);
+        let errs = validate_imports_against_manifest(&program.items, deps, package_name.as_deref());
         if !errs.is_empty() {
             for e in &errs {
                 eprintln!("{e}");
@@ -129,6 +130,8 @@ pub fn compile(
         manifest_deps.as_deref(),
         options.pkg_path.as_deref(),
         locked_versions.as_deref(),
+        package_name.as_deref(),
+        project_dir,
     )
     .map_err(|errs| errs.join("\n"))?;
     program.module_graph = Some(module_graph);
@@ -500,6 +503,7 @@ pub(crate) fn find_codegen_binary() -> Result<String, String> {
 pub(crate) fn validate_imports_against_manifest(
     items: &[Spanned<Item>],
     manifest_deps: &[String],
+    package_name: Option<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for (item, _) in items {
@@ -510,6 +514,10 @@ pub(crate) fn validate_imports_against_manifest(
         let module_str = decl.path.join("::");
         // Skip stdlib and ecosystem modules — they don't need manifest entries
         if is_builtin_module(&module_str) {
+            continue;
+        }
+        // Skip local project imports — they resolve to project source files
+        if package_name.is_some_and(|pkg| decl.path.first().is_some_and(|seg| seg == pkg)) {
             continue;
         }
         if !manifest_deps.contains(&module_str) {
@@ -567,6 +575,8 @@ fn build_module_graph(
     manifest_deps: Option<&[String]>,
     extra_pkg_path: Option<&Path>,
     locked_versions: Option<&[(String, String)]>,
+    package_name: Option<&str>,
+    project_dir: &Path,
 ) -> Result<hew_parser::module::ModuleGraph, Vec<String>> {
     use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
@@ -584,6 +594,8 @@ fn build_module_graph(
         manifest_deps,
         extra_pkg_path,
         locked_versions,
+        package_name,
+        project_dir,
     );
 
     // Phase 2: build the module graph from the resolved data.
@@ -732,6 +744,8 @@ fn resolve_file_imports(
     manifest_deps: Option<&[String]>,
     extra_pkg_path: Option<&Path>,
     locked_versions: Option<&[(String, String)]>,
+    package_name: Option<&str>,
+    project_dir: &Path,
 ) {
     let source_dir = source_file
         .parent()
@@ -772,6 +786,16 @@ fn resolve_file_imports(
             }
             Item::Import(decl) if !decl.path.is_empty() => {
                 let module_str = decl.path.join("::");
+                // Check if this is a local project import (first segment matches package name).
+                let is_local = package_name.is_some_and(|pkg| {
+                    decl.path.first().is_some_and(|seg| seg == pkg)
+                });
+                let rest_path: Vec<&str> = if is_local {
+                    decl.path[1..].iter().map(String::as_str).collect()
+                } else {
+                    Vec::new()
+                };
+
                 let rel_path: PathBuf = decl.path.iter().collect::<PathBuf>().with_extension("hew");
                 // Also try package-directory form: std/encoding/json/json.hew
                 let last = decl.path.last().expect("path is non-empty");
@@ -783,14 +807,32 @@ fn resolve_file_imports(
                 let exe_dir = std::env::current_exe()
                     .ok()
                     .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
-                let mut candidates = vec![
+                let mut candidates = Vec::new();
+
+                // Local project imports resolve relative to the project root
+                if is_local && !rest_path.is_empty() {
+                    let local_last = *rest_path.last().unwrap();
+                    let local_rel: PathBuf = rest_path.iter().collect();
+                    let local_dir = local_rel.join(format!("{local_last}.hew"));
+                    let local_flat = local_rel.with_extension("hew");
+                    // src/ subdirectory (preferred)
+                    candidates.push(project_dir.join("src").join(&local_dir));
+                    candidates.push(project_dir.join("src").join(&local_flat));
+                    // project root
+                    candidates.push(project_dir.join(&local_dir));
+                    candidates.push(project_dir.join(&local_flat));
+                }
+
+                // Standard candidates for non-local imports
+                // (also serve as fallback for local imports)
+                candidates.extend([
                     // Directory form first (preferred for packages)
                     source_dir.join(&dir_path),
                     cwd.join(&dir_path),
                     // Flat form
                     source_dir.join(&rel_path),
                     cwd.join(&rel_path),
-                ];
+                ]);
                 // Versioned package paths from lockfile (tried before unversioned)
                 if let Some(version) = locked_versions
                     .and_then(|lv| lv.iter().find(|(n, _)| n == &module_str))
@@ -876,6 +918,8 @@ fn resolve_file_imports(
             manifest_deps,
             extra_pkg_path,
             locked_versions,
+            package_name,
+            project_dir,
         );
 
         // Parse and merge peer files for directory modules.
@@ -892,6 +936,8 @@ fn resolve_file_imports(
                 manifest_deps,
                 extra_pkg_path,
                 locked_versions,
+                package_name,
+                project_dir,
             );
             import_items.append(&mut peer_items);
         }
@@ -929,6 +975,8 @@ fn parse_and_resolve_file(
     manifest_deps: Option<&[String]>,
     extra_pkg_path: Option<&Path>,
     locked_versions: Option<&[(String, String)]>,
+    package_name: Option<&str>,
+    project_dir: &Path,
 ) -> Vec<Spanned<Item>> {
     let source = match std::fs::read_to_string(canonical) {
         Ok(s) => s,
@@ -983,6 +1031,8 @@ fn parse_and_resolve_file(
         manifest_deps,
         extra_pkg_path,
         locked_versions,
+        package_name,
+        project_dir,
     );
 
     import_items
@@ -1106,7 +1156,7 @@ mod tests {
     fn validate_no_manifest_allows_all() {
         // When manifest exists but has no deps, undeclared imports are flagged.
         let items = vec![make_module_import(vec!["mylib", "utils"])];
-        let errs = validate_imports_against_manifest(&items, &[]);
+        let errs = validate_imports_against_manifest(&items, &[], None);
         assert_eq!(errs.len(), 1, "undeclared import should produce an error");
     }
 
@@ -1114,7 +1164,7 @@ mod tests {
     fn validate_declared_dep_is_ok() {
         let items = vec![make_module_import(vec!["mylib", "utils"])];
         let deps = vec!["mylib::utils".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps);
+        let errs = validate_imports_against_manifest(&items, &deps, None);
         assert!(errs.is_empty());
     }
 
@@ -1122,7 +1172,7 @@ mod tests {
     fn validate_undeclared_dep_errors() {
         let items = vec![make_module_import(vec!["mylib", "utils"])];
         let deps: Vec<String> = vec!["mylib::other".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps);
+        let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
         assert!(errs[0].contains("mylib::utils"));
         assert!(errs[0].contains("adze add"));
@@ -1133,7 +1183,7 @@ mod tests {
         // std::fs is a known stdlib module
         let items = vec![make_module_import(vec!["std", "fs"])];
         let deps: Vec<String> = vec![];
-        let errs = validate_imports_against_manifest(&items, &deps);
+        let errs = validate_imports_against_manifest(&items, &deps, None);
         assert!(errs.is_empty(), "stdlib imports are always allowed");
     }
 
@@ -1141,7 +1191,7 @@ mod tests {
     fn validate_file_import_is_not_validated() {
         let items = vec![make_file_import("./lib.hew")];
         let deps: Vec<String> = vec![];
-        let errs = validate_imports_against_manifest(&items, &deps);
+        let errs = validate_imports_against_manifest(&items, &deps, None);
         assert!(
             errs.is_empty(),
             "file-path imports are not subject to manifest validation"
@@ -1156,7 +1206,15 @@ mod tests {
             make_module_import(vec!["mylib", "c"]),
         ];
         let deps = vec!["mylib::a".to_string()];
-        let errs = validate_imports_against_manifest(&items, &deps);
+        let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn validate_local_import_is_exempt() {
+        // Imports matching the package name are local and skip manifest validation.
+        let items = vec![make_module_import(vec!["myapp", "models"])];
+        let errs = validate_imports_against_manifest(&items, &[], Some("myapp"));
+        assert!(errs.is_empty(), "local imports should be exempt from manifest validation");
     }
 }

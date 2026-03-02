@@ -1,0 +1,37 @@
+// Test: Machine with payload — self-transitions preserve fields
+// Exercises: wildcard self-transitions with payload, reset to unit state
+machine Gauge {
+    state Off;
+    state On { level: Int; }
+
+    event TurnOn;
+    event TurnOff;
+    event Noop;
+
+    on TurnOn: Off -> On { On { level: 10 } }
+    on TurnOff: On -> Off { Off }
+    // Wildcard self-transitions preserve current state and fields
+    on Noop: _ -> _ { self }
+}
+
+fn main() -> Int {
+    var g = Gauge::Off;
+    println(g.state_name());
+
+    // Turn on
+    g = g.step(GaugeEvent::TurnOn);
+    println(g.state_name());
+
+    // Noop should preserve On state with level
+    g = g.step(GaugeEvent::Noop);
+    println(g.state_name());
+
+    // Check payload preserved after noop
+    match g {
+        On(level) => {
+            println(f"level = {level}");
+            if level == 10 { 0 } else { 1 }
+        },
+        _ => 1,
+    }
+}

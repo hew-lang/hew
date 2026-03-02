@@ -433,6 +433,11 @@ private:
     return nullptr;
   }
 
+  // ── Machine transition body context ──────────────────────────────
+  // Set during transition body evaluation so that ExprFieldAccess can
+  // resolve `self.field` on machine enum values.
+  std::string currentMachineSourceVariant_;
+
   // ── Struct type registry ──────────────────────────────────────────
   std::unordered_map<std::string, StructTypeInfo> structTypes;
 

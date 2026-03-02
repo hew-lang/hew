@@ -1,0 +1,28 @@
+// Test: Machine with state payload fields and transition body execution
+// Exercises: state fields, variant construction in bodies, self.field access
+machine Counter {
+    state Zero;
+    state Count { n: Int; }
+
+    event Inc;
+    event Reset;
+
+    on Inc: Zero -> Count { Count { n: 1 } }
+    on Inc: Count -> Count { Count { n: self.n + 1 } }
+    on Reset: _ -> Zero { Zero }
+}
+
+fn main() -> Int {
+    var c = Counter::Zero;
+    c = c.step(CounterEvent::Inc);
+    c = c.step(CounterEvent::Inc);
+    c = c.step(CounterEvent::Inc);
+
+    match c {
+        Count(n) => {
+            println(f"count = {n}");
+            if n == 3 { 0 } else { 1 }
+        },
+        _ => 1,
+    }
+}

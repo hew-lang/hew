@@ -335,3 +335,54 @@ Same fix applied to the machine event type registration.
 **Downstream compatibility:** `EnumConstructOp` and `EnumExtractPayloadOp`
 already use `payloadPositions` for field access, so the overlay positions flow
 through correctly without changes to codegen.cpp.
+
+---
+
+## Execute transition bodies in machine step()
+
+**Problem:** The `step()` function only switched the tag discriminant — transition
+body expressions were never evaluated and payload fields were always `undef`.
+This made machines with state data (e.g. counters, protocol state with sequence
+numbers) non-functional.
+
+**Root cause:** In `generateMachineDecl`, the select chain built an
+`EnumConstructOp` with zero payloads for every transition, ignoring the
+`MachineTransition::body` expression entirely.
+
+**Fix — three changes:**
+
+1. **`MLIRGen.cpp` — `generateMachineDecl` step() generation:** For each
+   transition, evaluate the body expression via `generateExpression()` instead
+   of constructing a tag-only value. The transition body's `self` identifier is
+   bound to `selfArg` in a scoped symbol table. Self-transitions (`{ self }`)
+   short-circuit and return `selfArg` directly, preserving all payload fields.
+
+2. **`MLIRGenExpr.cpp` — `ExprFieldAccess` handler:** Added fallback for
+   machine/enum identified struct types. When `structTypes` lookup fails, checks
+   `enumTypes` and resolves named field access using the source variant's
+   `payloadPositions` via `EnumExtractPayloadOp`. Gated by the
+   `currentMachineSourceVariant_` context variable set during body evaluation.
+
+3. **`MLIRGen.h`:** Added `currentMachineSourceVariant_` member to track which
+   variant's fields are accessible during transition body codegen.
+
+**What works now:**
+- Constant payload construction: `Count { n: 1 }`
+- Self field access with arithmetic: `Count { n: self.n + 1 }`
+- Wildcard self-transitions preserving fields: `on Noop: _ -> _ { self }`
+- Reset to unit states: `on Reset: _ -> Zero { Zero }`
+- Tag-only machines (Light, Door, TrafficLight) unchanged
+
+**Test files added:**
+- `e2e_machine/machine_counter.hew` — Counter with Inc/Reset, `self.n + 1`
+- `e2e_machine/machine_gauge.hew` — Payload preservation across self-transitions
+
+**Known limitation:** The Rust type checker frontend does not yet support
+`self.field` access or destructured pattern matching for machine state variants.
+Tests use `--no-typecheck` for payload machines. Tag-only machines pass full
+type checking.
+
+**Files changed:**
+- `hew-codegen/include/hew/mlir/MLIRGen.h`
+- `hew-codegen/src/mlir/MLIRGen.cpp` — `generateMachineDecl`
+- `hew-codegen/src/mlir/MLIRGenExpr.cpp` — `ExprFieldAccess` handler

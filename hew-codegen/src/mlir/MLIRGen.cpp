@@ -2524,11 +2524,11 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
     auto eventTag = builder.create<hew::EnumExtractTagOp>(
         location, builder.getI32Type(), eventArg);
 
-    // Build a map from (source_state_idx, event_idx) → target_state_idx
-    // For v1, we only switch the tag (don't execute transition bodies).
+    // Build a map from (source_state_idx, event_idx) → transition info.
     // Wildcard source "_" maps to all states not explicitly covered.
     struct TransitionTarget {
       unsigned targetStateIdx;
+      const ast::MachineTransition *transition = nullptr;
     };
     std::map<std::pair<unsigned, unsigned>, TransitionTarget> transitionMap;
 
@@ -2543,7 +2543,8 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
       stateNameToIdx[decl.states[i].name] = i;
 
     // Collect wildcard transitions (source == "_")
-    std::unordered_map<unsigned, unsigned> wildcardEventToTarget;
+    std::unordered_map<unsigned, std::pair<unsigned, const ast::MachineTransition *>>
+        wildcardEventToTarget;
 
     for (const auto &trans : decl.transitions) {
       auto eventIt = eventNameToIdx.find(trans.event_name);
@@ -2555,11 +2556,11 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
         // Wildcard: determine target
         if (trans.target_state == "_") {
           // self transition — target = source (handled per-state below)
-          wildcardEventToTarget[eventIdx] = UINT_MAX; // sentinel: self
+          wildcardEventToTarget[eventIdx] = {UINT_MAX, &trans}; // sentinel: self
         } else {
           auto targetIt = stateNameToIdx.find(trans.target_state);
           if (targetIt != stateNameToIdx.end())
-            wildcardEventToTarget[eventIdx] = targetIt->second;
+            wildcardEventToTarget[eventIdx] = {targetIt->second, &trans};
         }
       } else {
         auto sourceIt = stateNameToIdx.find(trans.source_state);
@@ -2572,20 +2573,27 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
           if (targetIt != stateNameToIdx.end())
             targetIdx = targetIt->second;
         }
-        transitionMap[{sourceIdx, eventIdx}] = {targetIdx};
+        transitionMap[{sourceIdx, eventIdx}] = {targetIdx, &trans};
       }
     }
 
     // Fill wildcard slots for states that don't have explicit transitions
     for (unsigned si = 0; si < decl.states.size(); ++si) {
-      for (const auto &[eventIdx, targetIdx] : wildcardEventToTarget) {
+      for (const auto &[eventIdx, wildcardInfo] : wildcardEventToTarget) {
         auto key = std::make_pair(si, eventIdx);
         if (transitionMap.find(key) == transitionMap.end()) {
-          unsigned finalTarget = (targetIdx == UINT_MAX) ? si : targetIdx;
-          transitionMap[key] = {finalTarget};
+          unsigned finalTarget = (wildcardInfo.first == UINT_MAX) ? si : wildcardInfo.first;
+          transitionMap[key] = {finalTarget, wildcardInfo.second};
         }
       }
     }
+
+    // Helper: check if body expression is just the identifier `self`
+    auto isSelfBodyExpr = [](const ast::Expr &expr) -> bool {
+      if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
+        return ident->name == "self";
+      return false;
+    };
 
     // Build nested if-else chain over (stateTag, eventTag) pairs.
     // Result defaults to self (identity transition for unmatched pairs).
@@ -2595,7 +2603,7 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
     for (auto it = transitionMap.rbegin(); it != transitionMap.rend(); ++it) {
       unsigned sourceIdx = it->first.first;
       unsigned eventIdx = it->first.second;
-      unsigned targetIdx = it->second.targetStateIdx;
+      const auto *trans = it->second.transition;
 
       // Build condition: stateTag == sourceIdx && eventTag == eventIdx
       auto stateConst = createIntConstant(builder, location, builder.getI32Type(), sourceIdx);
@@ -2606,13 +2614,28 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
           location, mlir::arith::CmpIPredicate::eq, eventTag, eventConst);
       auto cond = builder.create<mlir::arith::AndIOp>(location, stateCmp, eventCmp);
 
-      // Construct the target state value (tag-only for v1)
-      mlir::Value targetVal = builder.create<hew::EnumConstructOp>(
-          location, machineType, static_cast<int32_t>(targetIdx),
-          builder.getStringAttr(machineName), mlir::ValueRange{},
-          /*payload_positions=*/nullptr);
+      mlir::Value targetVal;
 
-      result = builder.create<mlir::arith::SelectOp>(location, cond, targetVal, result);
+      if (trans && isSelfBodyExpr(trans->body.value)) {
+        // Self-transition: return selfArg unchanged (preserves all fields)
+        targetVal = selfArg;
+      } else if (trans) {
+        // Evaluate the transition body expression (e.g. Count { n: self.n + 1 })
+        SymbolTableScopeT bodyScope(symbolTable);
+        declareVariable("self", selfArg);
+        currentMachineSourceVariant_ = decl.states[sourceIdx].name;
+        targetVal = generateExpression(trans->body.value);
+        currentMachineSourceVariant_.clear();
+      } else {
+        // Fallback: construct tag-only value
+        targetVal = builder.create<hew::EnumConstructOp>(
+            location, machineType, static_cast<int32_t>(it->second.targetStateIdx),
+            builder.getStringAttr(machineName), mlir::ValueRange{},
+            /*payload_positions=*/nullptr);
+      }
+
+      if (targetVal)
+        result = builder.create<mlir::arith::SelectOp>(location, cond, targetVal, result);
     }
 
     builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{result});

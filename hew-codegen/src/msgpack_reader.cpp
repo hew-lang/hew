@@ -898,15 +898,15 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   if (name == "RegexLiteral")
     return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
   if (name == "ByteStringLiteral")
-    return ast::Expr{ast::ExprByteStringLiteral{
-        parseVec<uint8_t>(*payload, [](const msgpack::object &o) {
-          return static_cast<uint8_t>(getInt(o));
-        })}, {}};
+    return ast::Expr{
+        ast::ExprByteStringLiteral{parseVec<uint8_t>(
+            *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
+        {}};
   if (name == "ByteArrayLiteral")
-    return ast::Expr{ast::ExprByteArrayLiteral{
-        parseVec<uint8_t>(*payload, [](const msgpack::object &o) {
-          return static_cast<uint8_t>(getInt(o));
-        })}, {}};
+    return ast::Expr{
+        ast::ExprByteArrayLiteral{parseVec<uint8_t>(
+            *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
+        {}};
   fail("unknown Expr variant: " + name);
 }
 
@@ -1384,9 +1384,10 @@ static ast::WireFieldMeta parseWireFieldMeta(const msgpack::object &obj) {
 static ast::WireMetadata parseWireMetadata(const msgpack::object &obj) {
   ast::WireMetadata wm;
   wm.field_meta = parseVec<ast::WireFieldMeta>(mapReq(obj, "field_meta"), parseWireFieldMeta);
-  wm.reserved_numbers = parseVec<uint32_t>(
-      mapReq(obj, "reserved_numbers"),
-      [](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); });
+  wm.reserved_numbers =
+      parseVec<uint32_t>(mapReq(obj, "reserved_numbers"), [](const msgpack::object &o) {
+        return static_cast<uint32_t>(getUint(o));
+      });
   const auto *jc = mapGet(obj, "json_case");
   if (jc && !isNil(*jc))
     wm.json_case = parseNamingCase(*jc);
@@ -1618,16 +1619,16 @@ parseMachineField(const msgpack::object &obj) {
 static ast::MachineState parseMachineState(const msgpack::object &obj) {
   ast::MachineState ms;
   ms.name = getString(mapReq(obj, "name"));
-  ms.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
-      mapReq(obj, "fields"), parseMachineField);
+  ms.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"),
+                                                                            parseMachineField);
   return ms;
 }
 
 static ast::MachineEvent parseMachineEvent(const msgpack::object &obj) {
   ast::MachineEvent me;
   me.name = getString(mapReq(obj, "name"));
-  me.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(
-      mapReq(obj, "fields"), parseMachineField);
+  me.fields = parseVec<std::pair<std::string, ast::Spanned<ast::TypeExpr>>>(mapReq(obj, "fields"),
+                                                                            parseMachineField);
   return me;
 }
 
@@ -1650,6 +1651,9 @@ static ast::MachineDecl parseMachineDecl(const msgpack::object &obj) {
   md.events = parseVec<ast::MachineEvent>(mapReq(obj, "events"), parseMachineEvent);
   md.transitions =
       parseVec<ast::MachineTransition>(mapReq(obj, "transitions"), parseMachineTransition);
+  const auto *hd = mapGet(obj, "has_default");
+  if (hd && !isNil(*hd))
+    md.has_default = getBool(*hd);
   return md;
 }
 
@@ -1747,9 +1751,8 @@ static ast::Module parseModule(const msgpack::object &obj) {
   m.imports = parseVec<ast::ModuleImport>(mapReq(obj, "imports"), parseModuleImport);
   const auto *sp = mapGet(obj, "source_paths");
   if (sp && !isNil(*sp)) {
-    m.source_paths = parseVec<std::string>(*sp, [](const msgpack::object &o) {
-      return getString(o);
-    });
+    m.source_paths =
+        parseVec<std::string>(*sp, [](const msgpack::object &o) { return getString(o); });
   }
   const auto *doc = mapGet(obj, "doc");
   if (doc && !isNil(*doc))

@@ -1069,6 +1069,8 @@ pub struct MachineDecl {
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
     pub transitions: Vec<MachineTransition>,
+    #[serde(default)]
+    pub has_default: bool, // `default { self }` — unhandled events stay in current state
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

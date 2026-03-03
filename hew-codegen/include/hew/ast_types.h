@@ -82,8 +82,7 @@ struct AttributeArg {
 
   /// Get the string value regardless of positional/key-value.
   const std::string &as_str() const {
-    return std::visit(
-        [](const auto &v) -> const std::string & { return v.value; }, kind);
+    return std::visit([](const auto &v) -> const std::string & { return v.value; }, kind);
   }
 };
 
@@ -669,7 +668,7 @@ struct WireFieldMeta {
   bool is_repeated = false;
   std::optional<std::string> json_name;
   std::optional<std::string> yaml_name;
-  std::optional<uint32_t> since;  // schema version that introduced this field
+  std::optional<uint32_t> since; // schema version that introduced this field
 };
 
 struct WireMetadata {
@@ -677,8 +676,8 @@ struct WireMetadata {
   std::vector<uint32_t> reserved_numbers;
   std::optional<NamingCase> json_case;
   std::optional<NamingCase> yaml_case;
-  std::optional<uint32_t> version;      // from #[wire(version = N)]
-  std::optional<uint32_t> min_version;  // from #[wire(min_version = N)]
+  std::optional<uint32_t> version;     // from #[wire(version = N)]
+  std::optional<uint32_t> min_version; // from #[wire(min_version = N)]
 };
 
 struct TypeDecl {
@@ -772,8 +771,8 @@ struct WireDecl {
   std::vector<VariantDecl> variants;
   std::optional<NamingCase> json_case;
   std::optional<NamingCase> yaml_case;
-  std::optional<uint32_t> version;      // from #[wire(version = N)]
-  std::optional<uint32_t> min_version;  // from #[wire(min_version = N)]
+  std::optional<uint32_t> version;     // from #[wire(version = N)]
+  std::optional<uint32_t> min_version; // from #[wire(min_version = N)]
 };
 
 // ── Extern ────────────────────────────────────────────────────────────────
@@ -890,6 +889,7 @@ struct MachineDecl {
   std::vector<MachineState> states;
   std::vector<MachineEvent> events;
   std::vector<MachineTransition> transitions;
+  bool has_default = false;
 };
 
 // ── Function declaration ──────────────────────────────────────────────────

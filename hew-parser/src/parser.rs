@@ -1731,6 +1731,7 @@ impl<'src> Parser<'src> {
         let mut states = Vec::new();
         let mut events = Vec::new();
         let mut transitions = Vec::new();
+        let mut has_default = false;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::State) {
@@ -1797,6 +1798,28 @@ impl<'src> Parser<'src> {
                     target_state,
                     body: (Expr::Block(body_block), body_start..body_end),
                 });
+            } else if self.peek() == Some(&Token::Default) {
+                // `default { self }` — unhandled events stay in current state
+                self.advance();
+                if self.eat(&Token::LeftBrace) {
+                    let mut depth = 1;
+                    while depth > 0 && !self.at_end() {
+                        if self.peek() == Some(&Token::LeftBrace) {
+                            depth += 1;
+                        }
+                        if self.peek() == Some(&Token::RightBrace) {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        self.advance();
+                    }
+                    self.expect(&Token::RightBrace)?;
+                } else {
+                    self.eat(&Token::Semicolon);
+                }
+                has_default = true;
             } else {
                 self.error("expected state, event, or transition in machine body".to_string());
                 self.advance();
@@ -1811,6 +1834,7 @@ impl<'src> Parser<'src> {
             states,
             events,
             transitions,
+            has_default,
         })
     }
 

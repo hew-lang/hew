@@ -1219,10 +1219,11 @@ impl Checker {
         }
 
         // Check that every (state, event) pair is covered
+        // If has_default is true, unhandled pairs default to self-transition
         for state in &state_names {
             for event in &event_names {
                 let key = (state.to_string(), event.to_string());
-                if !covered.contains(&key) && !wildcard_events.contains(*event) {
+                if !covered.contains(&key) && !wildcard_events.contains(*event) && !md.has_default {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),

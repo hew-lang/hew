@@ -351,6 +351,9 @@ add_e2e_file_test_sorted(hashmap_forin    e2e_hashmap_forin hashmap_forin)
 # HashMapKeysOp: for-in over a HashMap produces key iteration via HashMapKeysOp
 add_e2e_file_test(hashmap_keys    e2e_collections hashmap_keys)
 
+# Empty [] coerced to Vec<T> via type annotation
+add_e2e_file_test(empty_vec_literal  e2e_collections empty_vec_literal)
+
 # Compound assignment on indexed targets
 add_e2e_file_test(indexed_compound  e2e_compound_assign indexed_compound)
 

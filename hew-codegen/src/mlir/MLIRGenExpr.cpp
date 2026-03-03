@@ -3367,6 +3367,12 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   auto location = currentLoc;
 
   if (arr.elements.empty()) {
+    // Empty array literal: coerce to Vec<T> if type context expects it
+    if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
+      auto vecType = mlir::cast<hew::VecType>(*pendingDeclaredType);
+      pendingDeclaredType.reset();
+      return builder.create<hew::VecNewOp>(location, vecType).getResult();
+    }
     emitWarning(location) << "empty array literal";
     return nullptr;
   }

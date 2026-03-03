@@ -1789,14 +1789,27 @@ impl<'src> Parser<'src> {
                 let source_state = self.parse_state_pattern()?;
                 self.expect(&Token::Arrow)?;
                 let target_state = self.parse_state_pattern()?;
-                let body_start = self.peek_span().start;
-                let body_block = self.parse_block()?;
-                let body_end = self.peek_span().start;
+
+                // Body is optional for unit target states:
+                //   on Event: Source -> Target;            ← no body, auto-construct Target
+                //   on Event: Source -> Target { expr }    ← explicit body
+                let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
+                    // No body — synthesize constructor: `TargetState`
+                    let span_pos = self.peek_span().start;
+                    let body_expr = Expr::Identifier(target_state.clone());
+                    (body_expr, span_pos, span_pos)
+                } else {
+                    let bs = self.peek_span().start;
+                    let block = self.parse_block()?;
+                    let be = self.peek_span().start;
+                    (Expr::Block(block), bs, be)
+                };
+
                 transitions.push(MachineTransition {
                     event_name,
                     source_state,
                     target_state,
-                    body: (Expr::Block(body_block), body_start..body_end),
+                    body: (body, body_start..body_end),
                 });
             } else if self.peek() == Some(&Token::Default) {
                 // `default { self }` — unhandled events stay in current state

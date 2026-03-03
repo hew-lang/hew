@@ -11,9 +11,9 @@ machine Light {
 fn main() -> int {
     var light = Light::Off;
     println(light.state_name());
-    light = light.step(LightEvent::Toggle);
+    light.step(LightEvent::Toggle);
     println(light.state_name());
-    light = light.step(LightEvent::Toggle);
+    light.step(LightEvent::Toggle);
     println(light.state_name());
     0
 }

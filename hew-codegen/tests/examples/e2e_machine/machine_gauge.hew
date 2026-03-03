@@ -21,11 +21,11 @@ fn main() -> Int {
     println(g.state_name());
 
     // Turn on
-    g = g.step(GaugeEvent::TurnOn);
+    g.step(GaugeEvent::TurnOn);
     println(g.state_name());
 
     // Noop should preserve On state with level
-    g = g.step(GaugeEvent::Noop);
+    g.step(GaugeEvent::Noop);
     println(g.state_name());
 
     // Check payload preserved after noop

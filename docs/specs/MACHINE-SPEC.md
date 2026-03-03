@@ -23,7 +23,7 @@ A `machine` declaration introduces a new nominal type with three components:
 2. **Events** — a closed set of named variants, each with optional payload fields.
 3. **Transitions** — rules mapping `(SourceState, Event)` → `TargetState`, with a body that constructs the target state value.
 
-A machine value is always in exactly one state. The only way to change state is via the generated `step()` method, which accepts an event and returns a new machine value. The original value is consumed (move semantics).
+A machine value is always in exactly one state. The only way to change state is via the generated `step()` method, which accepts an event and mutates the machine in place (like `Vec.push()`). It does not return a value.
 
 ### §1.1 Non-goals (v0.1)
 
@@ -194,7 +194,7 @@ actor ConnectionManager {
 
     receive fn handle(event: TcpStateEvent) {
         let old = self.tcp;
-        self.tcp = self.tcp.step(event);
+        self.tcp.step(event);
 
         // Side effects happen here, not in the machine
         match self.tcp {
@@ -385,14 +385,14 @@ Individual states are NOT types. `TcpState::Established` is a variant constructo
 
 For a machine named `M` with event type `MEvent`, the compiler generates:
 
-### §7.1 `M.step(event: MEvent) -> M`
+### §7.1 `M.step(event: MEvent)`
 
-The primary API. Accepts an event, applies the matching transition, returns the new state. The original value is consumed (move semantics).
+The primary API. Accepts an event, applies the matching transition, and mutates the machine in place. Does not return a value (like `Vec.push()`).
 
 ```hew
-let s1 = TcpState::Closed;
-let s2 = s1.step(TcpStateEvent::Connect);
-// s1 is consumed; s2 is TcpState::Listen { backlog: 128 }
+var s = TcpState::Closed;
+s.step(TcpStateEvent::Connect);
+// s is now TcpState::Listen { backlog: 128 }
 ```
 
 _Implementation note: `step()` compiles to a nested switch on (tag, event_tag). The outer switch dispatches on the current state tag; the inner switch dispatches on the event tag. Each branch executes the corresponding transition body._
@@ -465,7 +465,7 @@ Events follow the same pattern:
 
 ```hew
 let e = TcpStateEvent::Data { payload: "hello" };
-let s2 = s1.step(e);
+s1.step(e);
 ```
 
 Within transition bodies, event constructors are not used (the event is destructured automatically).
@@ -521,9 +521,10 @@ struct TcpStateEvent {
 
 ### §8.4 step() codegen
 
-The `step()` method compiles to a function with a nested switch:
+The `step()` method compiles to a function that computes the new state and stores it back into the receiver variable. At the call site, the compiler generates a call to the internal step function followed by a store to the machine variable's slot:
 
 ```
+// Internal step function (returns new value)
 TcpState TcpState_step(TcpState self, TcpStateEvent event) {
     switch (self.tag) {
         case 0: /* Closed */
@@ -546,9 +547,13 @@ TcpState TcpState_step(TcpState self, TcpStateEvent event) {
         // ...
     }
 }
+
+// Call site: m.step(event) compiles to:
+//   %new = call TcpState_step(%m, %event)
+//   store %new, %m_slot
 ```
 
-_Implementation note: The MLIR lowering SHOULD use `hew.machine.step` as a custom MLIR op, which is then lowered to `scf.switch` during progressive lowering._
+_Implementation note: The internal step function still returns the new machine value. The compiler handles the store-back at the call site, similar to how `Vec.push()` mutates through the binding._
 
 ### §8.5 MessagePack schema
 
@@ -660,12 +665,12 @@ actor ApiGateway {
         // Update machine based on outcome
         match result {
             Ok(resp) => {
-                self.breaker = self.breaker.step(CircuitBreakerEvent::Success);
+                self.breaker.step(CircuitBreakerEvent::Success);
                 Ok(resp)
             },
             Err(e) => {
                 let now = time::now_ms();
-                self.breaker = self.breaker.step(CircuitBreakerEvent::Failure { timestamp: now });
+                self.breaker.step(CircuitBreakerEvent::Failure { timestamp: now });
                 Err(e)
             },
         }
@@ -681,7 +686,7 @@ test "circuit opens after 5 failures" {
 
     // 5 failures should open the circuit
     for i in 0..5 {
-        breaker = breaker.step(CircuitBreakerEvent::Failure { timestamp: i * 1000 });
+        breaker.step(CircuitBreakerEvent::Failure { timestamp: i * 1000 });
     }
 
     match breaker {
@@ -694,7 +699,7 @@ test "half-open recovers after 3 successes" {
     var breaker = CircuitBreaker::HalfOpen { successes: 0 };
 
     for _ in 0..3 {
-        breaker = breaker.step(CircuitBreakerEvent::Success);
+        breaker.step(CircuitBreakerEvent::Success);
     }
 
     match breaker {

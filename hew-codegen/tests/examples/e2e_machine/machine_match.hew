@@ -35,23 +35,23 @@ fn main() -> int {
     println(describe(door));
 
     // Unlock
-    door = door.step(Unlock);
+    door.step(Unlock);
     println(describe(door));
 
     // Push open
-    door = door.step(Push);
+    door.step(Push);
     println(describe(door));
 
     // Pull closed
-    door = door.step(Pull);
+    door.step(Pull);
     println(describe(door));
 
     // Lock
-    door = door.step(Lock);
+    door.step(Lock);
     println(describe(door));
 
     // Invalid: push a locked door (stays locked)
-    door = door.step(Push);
+    door.step(Push);
     println(describe(door));
 
     0

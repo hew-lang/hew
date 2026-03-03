@@ -3264,6 +3264,41 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     return nullptr;
   }
 
+  // Machine step() — mutates the receiver variable in place.
+  // The generated step function still returns the new machine value; the
+  // call site stores it back into the receiver's mutable-variable slot.
+  if (methodName == "step") {
+    auto enumIt = enumTypes.find(structType.getName().str());
+    if (enumIt != enumTypes.end()) {
+      std::string funcName = mangleName(currentModulePath, structType.getName().str(), "step");
+      auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+      if (!callee)
+        callee = lookupImportedFunc(structType.getName(), "step");
+      if (callee) {
+        llvm::SmallVector<mlir::Value, 4> args;
+        args.push_back(receiver);
+        for (const auto &arg : mc.args) {
+          auto val = generateExpression(ast::callArgExpr(arg).value);
+          if (!val)
+            return nullptr;
+          args.push_back(val);
+        }
+        auto ft = callee.getFunctionType();
+        for (size_t i = 0; i < args.size() && i < ft.getNumInputs(); ++i) {
+          if (args[i].getType() != ft.getInput(i))
+            args[i] = coerceType(args[i], ft.getInput(i), location);
+        }
+        auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+        // Store result back into the receiver variable
+        if (callOp.getNumResults() > 0) {
+          if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+            storeVariable(ident->name, callOp.getResult(0));
+        }
+        return nullptr; // step() returns void to the caller
+      }
+    }
+  }
+
   std::string funcName = mangleName(currentModulePath, structType.getName().str(), methodName);
 
   llvm::SmallVector<mlir::Value, 4> args;

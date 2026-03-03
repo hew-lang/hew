@@ -193,6 +193,7 @@ private:
   mlir::Value generateLogEmit(const std::vector<ast::CallArg> &args, int levelInt);
   mlir::Value generateTupleExpr(const ast::ExprTuple &expr);
   mlir::Value generateArrayExpr(const ast::ExprArray &expr);
+  mlir::Value generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit, const ast::Span &exprSpan);
   mlir::Value generateArrayRepeatExpr(const ast::ExprArrayRepeat &expr, const ast::Span &exprSpan);
   mlir::Value generateLambdaExpr(const ast::ExprLambda &expr);
   mlir::Value generateScopeExpr(const ast::ExprScope &expr);

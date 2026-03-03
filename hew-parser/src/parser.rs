@@ -3994,7 +3994,20 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
-            Token::LeftBrace => Expr::Block(self.parse_block()?),
+            Token::LeftBrace => {
+                // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
+                // Note: bare {} remains a Block — empty HashMap coercion is
+                // handled in the type checker when expected type is HashMap.
+                // Use direct lookahead (no save/restore) for the common block path.
+                if matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
+                    && self.peek_at(self.pos + 2) == Some(&Token::Colon)
+                {
+                    self.advance(); // consume '{'
+                    self.parse_map_literal_entries()?
+                } else {
+                    Expr::Block(self.parse_block()?)
+                }
+            }
             Token::If => {
                 self.advance();
                 if self.eat(&Token::Let) {
@@ -4265,6 +4278,27 @@ impl<'src> Parser<'src> {
 
         let end = self.peek_span().start;
         Some((expr, start..end))
+    }
+
+    /// Parse map literal entries after the opening `{` has already been consumed.
+    /// Expects at least one `key: value` pair, followed by optional comma-separated pairs.
+    fn parse_map_literal_entries(&mut self) -> Option<Expr> {
+        let mut entries = Vec::new();
+        loop {
+            let key = self.parse_expr()?;
+            self.expect(&Token::Colon)?;
+            let value = self.parse_expr()?;
+            entries.push((key, value));
+
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+            if self.peek() == Some(&Token::RightBrace) {
+                break; // trailing comma
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        Some(Expr::MapLiteral { entries })
     }
 
     fn try_parse_lambda_params(&mut self) -> Option<Vec<LambdaParam>> {
@@ -5801,5 +5835,68 @@ mod tests {
         let source = "fn main() { let id = <T>(x: T) -> T => x; }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+    /// Helper: parse `fn main() { let x = <source>; }` and return the expression.
+    fn parse_let_expr(source: &str) -> Expr {
+        let full = format!("fn main() {{ let x = {source}; }}");
+        let result = parse(&full);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Function(f) = &result.program.items[0].0 else {
+            panic!("expected function");
+        };
+        let Stmt::Let {
+            value: Some((expr, _)),
+            ..
+        } = &f.body.stmts[0].0
+        else {
+            panic!("expected let with value");
+        };
+        expr.clone()
+    }
+
+    #[test]
+    fn parse_empty_braces_is_block() {
+        // {} is always a block — empty HashMap coercion happens in the type checker
+        let expr = parse_let_expr("{}");
+        assert!(
+            matches!(expr, Expr::Block(_)),
+            "expected Block, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn parse_map_literal_single_entry() {
+        let expr = parse_let_expr(r#"{"a": 1}"#);
+        assert!(
+            matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 1),
+            "expected MapLiteral with 1 entry, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn parse_map_literal_multiple_entries() {
+        let expr = parse_let_expr(r#"{"a": 1, "b": 2, "c": 3}"#);
+        assert!(
+            matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 3),
+            "expected MapLiteral with 3 entries, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn parse_map_literal_trailing_comma() {
+        let expr = parse_let_expr(r#"{"a": 1, "b": 2,}"#);
+        assert!(
+            matches!(expr, Expr::MapLiteral { ref entries } if entries.len() == 2),
+            "expected MapLiteral with 2 entries, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn parse_block_still_works() {
+        let expr = parse_let_expr("{ let y = 1; y }");
+        assert!(
+            matches!(expr, Expr::Block(_)),
+            "expected Block, got {expr:?}"
+        );
     }
 } // mod tests

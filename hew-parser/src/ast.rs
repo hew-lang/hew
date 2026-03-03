@@ -136,6 +136,9 @@ pub enum Expr {
         value: Box<Spanned<Expr>>,
         count: Box<Spanned<Expr>>,
     },
+    MapLiteral {
+        entries: Vec<(Spanned<Expr>, Spanned<Expr>)>,
+    },
     Block(Block),
     If {
         condition: Box<Spanned<Expr>>,

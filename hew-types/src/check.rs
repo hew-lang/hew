@@ -3556,6 +3556,30 @@ impl Checker {
                 }
             }
 
+            Expr::MapLiteral { entries } => {
+                if entries.is_empty() {
+                    let k = TypeVar::fresh();
+                    let v = TypeVar::fresh();
+                    Ty::Named {
+                        name: "HashMap".to_string(),
+                        args: vec![Ty::Var(k), Ty::Var(v)],
+                    }
+                } else {
+                    let (ref ke, ref ks) = entries[0].0;
+                    let (ref ve, ref vs) = entries[0].1;
+                    let first_key_ty = self.synthesize(ke, ks);
+                    let first_val_ty = self.synthesize(ve, vs);
+                    for (k, v) in &entries[1..] {
+                        self.check_against(&k.0, &k.1, &first_key_ty);
+                        self.check_against(&v.0, &v.1, &first_val_ty);
+                    }
+                    Ty::Named {
+                        name: "HashMap".to_string(),
+                        args: vec![first_key_ty, first_val_ty],
+                    }
+                }
+            }
+
             // Struct init
             Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
 
@@ -3942,6 +3966,26 @@ impl Checker {
                     let (expr, sp) = (&elem.0, &elem.1);
                     self.check_against(expr, sp, &elem_ty);
                 }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // Map literal can coerce to HashMap<K,V> when expected
+            (Expr::MapLiteral { entries }, Ty::Named { name, args }) if name == "HashMap" => {
+                let key_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                let val_ty = args.get(1).cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
+                for (k, v) in entries {
+                    self.check_against(&k.0, &k.1, &key_ty);
+                    self.check_against(&v.0, &v.1, &val_ty);
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // Empty block {} coerces to HashMap<K,V> when expected
+            (Expr::Block(block), Ty::Named { name, .. })
+                if name == "HashMap" && block.stmts.is_empty() && block.trailing_expr.is_none() =>
+            {
                 self.record_type(span, expected);
                 expected.clone()
             }

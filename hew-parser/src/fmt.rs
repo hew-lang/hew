@@ -1733,6 +1733,15 @@ impl<'a> Formatter<'a> {
                 }
                 self.write("]");
             }
+            Expr::MapLiteral { entries } => {
+                self.write("{");
+                self.comma_sep(entries, |f, (key, value)| {
+                    f.format_expr(&key.0);
+                    f.write(": ");
+                    f.format_expr(&value.0);
+                });
+                self.write("}");
+            }
         }
     }
 

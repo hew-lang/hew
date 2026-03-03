@@ -226,7 +226,7 @@ fn cmd_debug(args: &[String]) {
     // Find a debugger: prefer gdb, fall back to lldb
     let (debugger, debugger_args) = if which_exists("gdb") {
         // Load the Hew GDB helper script if it exists
-        let gdb_script = find_gdb_script();
+        let gdb_script = find_debug_script("hew-gdb.py");
         let mut gdb_args = Vec::new();
         if let Some(script) = &gdb_script {
             gdb_args.push("-x".to_string());
@@ -237,7 +237,7 @@ fn cmd_debug(args: &[String]) {
         gdb_args.extend(program_args.iter().cloned());
         ("gdb".to_string(), gdb_args)
     } else if which_exists("lldb") {
-        let lldb_script = find_lldb_script();
+        let lldb_script = find_debug_script("hew_lldb.py");
         let mut lldb_args = Vec::new();
         if let Some(script) = &lldb_script {
             lldb_args.push("-o".to_string());
@@ -282,11 +282,11 @@ fn which_exists(name: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-fn find_gdb_script() -> Option<String> {
+fn find_debug_script(name: &str) -> Option<String> {
     // Check next to the hew binary first, then the repo scripts/ dir
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let candidate = dir.join("../share/hew/hew-gdb.py");
+            let candidate = dir.join(format!("../share/hew/{name}"));
             if candidate.exists() {
                 return candidate
                     .canonicalize()
@@ -294,31 +294,7 @@ fn find_gdb_script() -> Option<String> {
                     .map(|p| p.display().to_string());
             }
             // Development layout
-            let candidate = dir.join("../../scripts/debug/hew-gdb.py");
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-        }
-    }
-    None
-}
-
-fn find_lldb_script() -> Option<String> {
-    // Check next to the hew binary first, then the repo scripts/ dir
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("../share/hew/hew-lldb.py");
-            if candidate.exists() {
-                return candidate
-                    .canonicalize()
-                    .ok()
-                    .map(|p| p.display().to_string());
-            }
-            // Development layout
-            let candidate = dir.join("../../scripts/debug/hew-lldb.py");
+            let candidate = dir.join(format!("../../scripts/debug/{name}"));
             if candidate.exists() {
                 return candidate
                     .canonicalize()

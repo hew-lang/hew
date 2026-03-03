@@ -44,10 +44,11 @@ pub struct CompileOptions {
 }
 
 /// Build a line map: a Vec where entry\[i\] is the byte offset of the start of line (i+1).
-/// Line 1 always starts at offset 0.
+/// Line 1 always starts at offset 0. Handles both `\n` and `\r\n` line endings.
 fn line_map_from_source(source: &str) -> Vec<usize> {
     let mut map = vec![0usize]; // line 1 starts at byte 0
-    for (i, byte) in source.bytes().enumerate() {
+    let bytes = source.as_bytes();
+    for (i, &byte) in bytes.iter().enumerate() {
         if byte == b'\n' {
             map.push(i + 1); // next line starts after the newline
         }
@@ -308,13 +309,13 @@ pub fn compile(
         .collect();
 
     // Compute debug metadata (source path + line map) when building with --debug.
-    let abs_source_path = std::fs::canonicalize(input)
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| input.to_string());
-    let line_map = if options.debug {
-        Some(line_map_from_source(&source))
+    let (abs_source_path, line_map) = if options.debug {
+        let path = std::fs::canonicalize(input)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| input.to_string());
+        (Some(path), Some(line_map_from_source(&source)))
     } else {
-        None
+        (None, None)
     };
 
     // 4d. If --emit-json, dump the full TypedProgram (same as what codegen
@@ -325,7 +326,7 @@ pub fn compile(
             expr_type_map,
             handle_types,
             handle_type_repr,
-            if options.debug { Some(abs_source_path.as_str()) } else { None },
+            abs_source_path.as_deref(),
             line_map.as_deref(),
         );
         println!("{json}");
@@ -337,7 +338,7 @@ pub fn compile(
         expr_type_map,
         handle_types,
         handle_type_repr,
-        if options.debug { Some(abs_source_path.as_str()) } else { None },
+        abs_source_path.as_deref(),
         line_map.as_deref(),
     );
 

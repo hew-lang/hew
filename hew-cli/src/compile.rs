@@ -43,6 +43,18 @@ pub struct CompileOptions {
     pub extra_link_libs: Vec<String>,
 }
 
+/// Build a line map: a Vec where entry\[i\] is the byte offset of the start of line (i+1).
+/// Line 1 always starts at offset 0.
+fn line_map_from_source(source: &str) -> Vec<usize> {
+    let mut map = vec![0usize]; // line 1 starts at byte 0
+    for (i, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            map.push(i + 1); // next line starts after the newline
+        }
+    }
+    map
+}
+
 /// Run the full compilation pipeline for a `.hew` source file.
 ///
 /// When `check_only` is `true` the pipeline stops after type-checking and no
@@ -295,6 +307,16 @@ pub fn compile(
         })
         .collect();
 
+    // Compute debug metadata (source path + line map) when building with --debug.
+    let abs_source_path = std::fs::canonicalize(input)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| input.to_string());
+    let line_map = if options.debug {
+        Some(line_map_from_source(&source))
+    } else {
+        None
+    };
+
     // 4d. If --emit-json, dump the full TypedProgram (same as what codegen
     // receives via msgpack) as pretty-printed JSON and return.
     if options.codegen_mode == CodegenMode::EmitJson {
@@ -303,8 +325,8 @@ pub fn compile(
             expr_type_map,
             handle_types,
             handle_type_repr,
-            None,
-            None,
+            if options.debug { Some(abs_source_path.as_str()) } else { None },
+            line_map.as_deref(),
         );
         println!("{json}");
         return Ok(String::new());
@@ -315,8 +337,8 @@ pub fn compile(
         expr_type_map,
         handle_types,
         handle_type_repr,
-        None,
-        None,
+        if options.debug { Some(abs_source_path.as_str()) } else { None },
+        line_map.as_deref(),
     );
 
     // 5. Invoke hew-codegen
@@ -1234,5 +1256,23 @@ mod tests {
             errs.is_empty(),
             "local imports should be exempt from manifest validation"
         );
+    }
+
+    #[test]
+    fn test_line_map_simple() {
+        let map = line_map_from_source("hello\nworld\n");
+        assert_eq!(map, vec![0, 6, 12]);
+    }
+
+    #[test]
+    fn test_line_map_single_line() {
+        let map = line_map_from_source("no newline");
+        assert_eq!(map, vec![0]);
+    }
+
+    #[test]
+    fn test_line_map_empty() {
+        let map = line_map_from_source("");
+        assert_eq!(map, vec![0]);
     }
 }

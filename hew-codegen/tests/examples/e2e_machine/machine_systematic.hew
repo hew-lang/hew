@@ -8,12 +8,12 @@ machine Sys {
     event E0;
     event E1;
 
-    on E0: S0 -> S1 { S1 }
-    on E1: S0 -> S2 { S2 }
-    on E0: S1 -> S2 { S2 }
-    on E1: S1 -> S0 { S0 }
-    on E0: S2 -> S0 { S0 }
-    on E1: S2 -> S1 { S1 }
+    on E0: S0 -> S1;
+    on E1: S0 -> S2;
+    on E0: S1 -> S2;
+    on E1: S1 -> S0;
+    on E0: S2 -> S0;
+    on E1: S2 -> S1;
 }
 
 fn main() -> int {

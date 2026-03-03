@@ -4,8 +4,8 @@ machine Light {
     state Off;
     state On;
     event Toggle;
-    on Toggle: Off -> On { On }
-    on Toggle: On -> Off { Off }
+    on Toggle: Off -> On;
+    on Toggle: On -> Off;
 }
 
 fn main() -> int {

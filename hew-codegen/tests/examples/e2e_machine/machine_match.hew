@@ -10,10 +10,10 @@ machine Door {
     event Push;
     event Pull;
 
-    on Unlock: Locked -> Unlocked { Unlocked }
-    on Lock: Unlocked -> Locked { Locked }
-    on Push: Unlocked -> Open { Open }
-    on Pull: Open -> Unlocked { Unlocked }
+    on Unlock: Locked -> Unlocked;
+    on Lock: Unlocked -> Locked;
+    on Push: Unlocked -> Open;
+    on Pull: Open -> Unlocked;
 
     // Wildcard self-transitions for invalid actions
     on Lock: _ -> _ { state }

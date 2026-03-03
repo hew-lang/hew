@@ -8,10 +8,10 @@ machine TrafficLight {
     event Next;
     event Emergency;
 
-    on Next: Red -> Green { Green }
-    on Next: Green -> Yellow { Yellow }
-    on Next: Yellow -> Red { Red }
-    on Emergency: _ -> Red { Red }
+    on Next: Red -> Green;
+    on Next: Green -> Yellow;
+    on Next: Yellow -> Red;
+    on Emergency: _ -> Red;
 }
 
 fn main() -> int {

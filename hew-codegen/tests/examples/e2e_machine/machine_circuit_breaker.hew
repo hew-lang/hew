@@ -24,13 +24,13 @@ fn main() -> Int {
     var cb = CircuitBreaker::Closed { failures: 0 };
     println(cb.state_name());
 
-    cb = cb.step(CircuitBreakerEvent::Failure);
+    cb.step(CircuitBreakerEvent::Failure);
     println(cb.state_name());
 
-    cb = cb.step(CircuitBreakerEvent::Timeout);
+    cb.step(CircuitBreakerEvent::Timeout);
     println(cb.state_name());
 
-    cb = cb.step(CircuitBreakerEvent::Success);
+    cb.step(CircuitBreakerEvent::Success);
     println(cb.state_name());
 
     match cb {

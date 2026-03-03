@@ -15,8 +15,8 @@ machine Keeper {
 
 fn main() -> Int {
     var k = Keeper::Holding { value: 42 };
-    k = k.step(KeeperEvent::Poke);
-    k = k.step(KeeperEvent::Poke);
+    k.step(KeeperEvent::Poke);
+    k.step(KeeperEvent::Poke);
 
     match k {
         Holding { value } => {

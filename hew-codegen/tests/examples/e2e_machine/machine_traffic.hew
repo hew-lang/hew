@@ -17,15 +17,15 @@ machine TrafficLight {
 fn main() -> int {
     var light = TrafficLight::Red;
     println(light.state_name());
-    light = light.step(Next);
+    light.step(Next);
     println(light.state_name());
-    light = light.step(Next);
+    light.step(Next);
     println(light.state_name());
-    light = light.step(Next);
+    light.step(Next);
     println(light.state_name());
     // Emergency from Green
-    light = light.step(Next);
-    light = light.step(Emergency);
+    light.step(Next);
+    light.step(Emergency);
     println(light.state_name());
     0
 }

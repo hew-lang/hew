@@ -15,9 +15,9 @@ machine Counter {
 
 fn main() -> Int {
     var c = Counter::Zero;
-    c = c.step(CounterEvent::Inc);
-    c = c.step(CounterEvent::Inc);
-    c = c.step(CounterEvent::Inc);
+    c.step(CounterEvent::Inc);
+    c.step(CounterEvent::Inc);
+    c.step(CounterEvent::Inc);
 
     match c {
         Count { n } => {

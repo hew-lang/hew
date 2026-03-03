@@ -14,8 +14,8 @@ machine Logger {
 }
 fn main() {
     var l = Logger::Idle;
-    l = l.step(Start);
-    l = l.step(Log { message: "hello" });
-    l = l.step(Log { message: "world" });
+    l.step(Start);
+    l.step(Log { message: "hello" });
+    l.step(Log { message: "world" });
     match l { Active { count } => println(f"logged {count} messages"), _ => {} }
 }

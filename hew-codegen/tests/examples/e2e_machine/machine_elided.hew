@@ -18,10 +18,10 @@ machine Pipeline {
 
 fn main() -> Int {
     var p = Pipeline::Idle;
-    p = p.step(Start);
-    p = p.step(Work { amount: 5 });
-    p = p.step(Work { amount: 3 });
-    p = p.step(Finish);
+    p.step(Start);
+    p.step(Work { amount: 5 });
+    p.step(Work { amount: 3 });
+    p.step(Finish);
     match p {
         Done { total } => {
             println(f"total = {total}");

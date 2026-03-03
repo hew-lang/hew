@@ -19,17 +19,17 @@ machine Sys {
 fn main() -> int {
     var s = Sys::S0;
     // Walk every transition
-    s = s.step(SysEvent::E0);
+    s.step(SysEvent::E0);
     println(s.state_name());
-    s = s.step(SysEvent::E0);
+    s.step(SysEvent::E0);
     println(s.state_name());
-    s = s.step(SysEvent::E0);
+    s.step(SysEvent::E0);
     println(s.state_name());
-    s = s.step(SysEvent::E1);
+    s.step(SysEvent::E1);
     println(s.state_name());
-    s = s.step(SysEvent::E1);
+    s.step(SysEvent::E1);
     println(s.state_name());
-    s = s.step(SysEvent::E1);
+    s.step(SysEvent::E1);
     println(s.state_name());
     println("PASS: all 6 transitions verified");
     0

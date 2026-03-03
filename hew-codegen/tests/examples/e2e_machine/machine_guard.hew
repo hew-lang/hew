@@ -16,10 +16,10 @@ machine TokenBucket {
 }
 fn main() {
     var tb = TokenBucket::Allowing { tokens: 3 };
-    tb = tb.step(Request);
-    tb = tb.step(Request);
-    tb = tb.step(Request);
+    tb.step(Request);
+    tb.step(Request);
+    tb.step(Request);
     println(tb.state_name());
-    tb = tb.step(Replenish);
+    tb.step(Replenish);
     println(tb.state_name());
 }

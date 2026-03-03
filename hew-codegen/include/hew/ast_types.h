@@ -470,6 +470,9 @@ struct ExprByteStringLiteral {
 struct ExprByteArrayLiteral {
   std::vector<uint8_t> data;
 };
+struct ExprMapLiteral {
+  std::vector<std::pair<std::unique_ptr<Spanned<Expr>>, std::unique_ptr<Spanned<Expr>>>> entries;
+};
 
 struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
@@ -478,7 +481,7 @@ struct Expr {
                ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
                ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
-               ExprByteStringLiteral, ExprByteArrayLiteral>
+               ExprByteStringLiteral, ExprByteArrayLiteral, ExprMapLiteral>
       kind;
   Span span; // Copied from Spanned<Expr> wrapper for codegen convenience
 };

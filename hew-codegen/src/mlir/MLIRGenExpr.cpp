@@ -182,6 +182,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateTupleExpr(*tup);
   if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind))
     return generateArrayExpr(*arr);
+  if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind))
+    return generateMapLiteralExpr(*mapLit);
   if (auto *lam = std::get_if<ast::ExprLambda>(&expr.kind))
     return generateLambdaExpr(*lam);
   if (auto *interp = std::get_if<ast::ExprInterpolatedString>(&expr.kind))
@@ -3394,6 +3396,45 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   return builder.create<hew::ArrayCreateOp>(location, arrayType, values);
 }
 
+// ============================================================================
+// Map literal expression
+// ============================================================================
+
+mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit) {
+  auto location = currentLoc;
+
+  // Determine HashMap type from pendingDeclaredType
+  mlir::Type hmType;
+  if (pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
+    hmType = *pendingDeclaredType;
+    pendingDeclaredType.reset();
+  } else {
+    emitError(location)
+        << "cannot determine key/value types for map literal; add explicit type annotation";
+    return nullptr;
+  }
+
+  auto hashMapType = mlir::cast<hew::HashMapType>(hmType);
+  auto keyType = hashMapType.getKeyType();
+  auto valueType = hashMapType.getValueType();
+
+  // Create empty HashMap
+  auto mapValue = builder.create<hew::HashMapNewOp>(location, hmType).getResult();
+
+  // Insert each entry
+  for (const auto &entry : mapLit.entries) {
+    auto key = generateExpression(entry.first->value);
+    auto val = generateExpression(entry.second->value);
+    if (!key || !val)
+      return nullptr;
+    key = coerceType(key, keyType, location);
+    val = coerceType(val, valueType, location);
+    builder.create<hew::HashMapInsertOp>(location, mapValue, key, val);
+  }
+
+  return mapValue;
+}
+
 mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
                                              const ast::Span &exprSpan) {
   auto location = currentLoc;
@@ -3512,6 +3553,11 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
   } else if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind)) {
     for (const auto &e : arr->elements)
       collectFreeVarsInExpr(e->value, bound, freeVars);
+  } else if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind)) {
+    for (const auto &entry : mapLit->entries) {
+      collectFreeVarsInExpr(entry.first->value, bound, freeVars);
+      collectFreeVarsInExpr(entry.second->value, bound, freeVars);
+    }
   } else if (auto *pf = std::get_if<ast::ExprPostfixTry>(&expr.kind)) {
     collectFreeVarsInExpr(pf->inner->value, bound, freeVars);
   } else if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {

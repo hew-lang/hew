@@ -652,6 +652,26 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
     return ast::Expr{std::move(e), {}};
   }
+  if (name == "MapLiteral") {
+    ast::ExprMapLiteral e;
+    if (payload) {
+      auto entriesArr = mapReq(*payload, "entries");
+      if (entriesArr.type == msgpack::type::ARRAY) {
+        for (uint32_t i = 0; i < entriesArr.via.array.size; ++i) {
+          auto &pairObj = entriesArr.via.array.ptr[i];
+          // Each entry is a 2-element array: [key, value]
+          if (pairObj.type == msgpack::type::ARRAY && pairObj.via.array.size == 2) {
+            auto key = std::make_unique<ast::Spanned<ast::Expr>>(
+                parseSpanned<ast::Expr>(pairObj.via.array.ptr[0], parseExpr));
+            auto val = std::make_unique<ast::Spanned<ast::Expr>>(
+                parseSpanned<ast::Expr>(pairObj.via.array.ptr[1], parseExpr));
+            e.entries.emplace_back(std::move(key), std::move(val));
+          }
+        }
+      }
+    }
+    return ast::Expr{std::move(e), {}};
+  }
   if (name == "ArrayRepeat") {
     ast::ExprArrayRepeat e;
     e.value = std::make_unique<ast::Spanned<ast::Expr>>(

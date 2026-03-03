@@ -361,6 +361,25 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     }
 
     // Named field: look up struct info by type name
+    // Special case: event types in machine transitions use anonymous structs.
+    // Try enum-based resolution first for event field access.
+    if (!structType.isIdentified() && !currentMachineEventTypeName_.empty()) {
+      auto enumIt = enumTypes.find(currentMachineEventTypeName_);
+      if (enumIt != enumTypes.end() && !currentMachineEventVariant_.empty()) {
+        for (const auto &variant : enumIt->second.variants) {
+          if (variant.name != currentMachineEventVariant_)
+            continue;
+          for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
+            if (variant.fieldNames[i] == fieldName) {
+              auto fieldTy = variant.payloadTypes[i];
+              return builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, operandVal,
+                                                               variant.payloadPositions[i]);
+            }
+          }
+          break;
+        }
+      }
+    }
     if (!structType.isIdentified()) {
       emitError(location) << "named field access on anonymous struct type";
       return nullptr;
@@ -402,8 +421,13 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       return nullptr;
     }
 
-    // Machine/enum field access: resolve `state.field` inside transition bodies
-    auto enumIt = enumTypes.find(structName.str());
+    // Machine/enum field access: resolve `state.field` and `event.field` inside transition bodies
+    std::string lookupName = structName.str();
+    // Event types use anonymous LLVM structs — look up by registered event type name instead
+    if (lookupName.empty() && !currentMachineEventTypeName_.empty()) {
+      lookupName = currentMachineEventTypeName_;
+    }
+    auto enumIt = enumTypes.find(lookupName);
     if (enumIt != enumTypes.end() && !currentMachineSourceVariant_.empty()) {
       const auto &enumInfo = enumIt->second;
       // Determine which variant to resolve: for event types use the event variant,

@@ -1,0 +1,12 @@
+fn main() {
+    let m: HashMap<String, i32> = {"a": 1, "b": 2};
+    println(m.len());
+    match m.get("a") {
+        Some(v) => println(v),
+        None => println("missing"),
+    }
+    match m.get("b") {
+        Some(v) => println(v),
+        None => println("missing"),
+    }
+}

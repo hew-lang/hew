@@ -186,6 +186,8 @@ auto main(int argc, char *argv[]) -> int {
     codegenOpts.emit_llvm_ir = true;
     codegenOpts.debug_info = opts.debug_info;
     codegenOpts.target_triple = opts.target_triple;
+    codegenOpts.source_path = program.source_path;
+    codegenOpts.line_map = program.line_map;
     int ret = codegen.compile(module, codegenOpts);
     module->destroy();
     return ret;
@@ -198,6 +200,8 @@ auto main(int argc, char *argv[]) -> int {
   codegenOpts.debug_info = opts.debug_info;
   codegenOpts.output_path = opts.output_path.empty() ? "output.o" : opts.output_path;
   codegenOpts.target_triple = opts.target_triple;
+  codegenOpts.source_path = program.source_path;
+  codegenOpts.line_map = program.line_map;
   int ret = codegen.compile(module, codegenOpts);
   module->destroy();
   return ret;

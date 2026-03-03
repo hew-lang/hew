@@ -176,6 +176,7 @@ endif()
 # ── Hew codegen library ───────────────────────────────────────────────────
 add_library(HewCodegen STATIC
   codegen.cpp
+  debug_info.cpp
 )
 
 target_include_directories(HewCodegen PUBLIC

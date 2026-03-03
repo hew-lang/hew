@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace hew {
 
@@ -27,6 +28,10 @@ struct CodegenOptions {
   std::string runtime_lib_dir; // directory containing libhew_rt.a
   std::string target_triple;   // --target=<triple>: cross-compilation target
   int opt_level = 0;           // -O0, -O1, -O2
+
+  // Debug info: source file path and line map for DWARF emission.
+  std::string source_path;           // original .hew source file path
+  std::vector<size_t> line_map;      // byte offset of each line start
 };
 
 class Codegen {

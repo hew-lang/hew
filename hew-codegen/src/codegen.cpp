@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "hew/codegen.h"
+#include "hew/debug_info.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/HewTypes.h"
@@ -4661,6 +4662,13 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
   auto llvmModule = lowerToLLVMIR(module, llvmContext, opts.debug_info);
   if (!llvmModule)
     return 1;
+
+  // Emit DWARF debug info when in debug mode and source path is available.
+  // This wraps the raw debug locations (from MLIR FileLineColLoc) in proper
+  // DI metadata (DICompileUnit, DISubprogram) so LLVM emits .debug_info.
+  if (opts.debug_info && !opts.source_path.empty()) {
+    hew::emitDebugInfo(*llvmModule, opts.source_path, opts.line_map);
+  }
 
   // WASM targets: create `__original_main` wrapper that calls the user's
   // `main` and returns i32 (WASI convention). Hew's `main` may return i64

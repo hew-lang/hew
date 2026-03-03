@@ -224,7 +224,7 @@ pub struct Checker {
     wasm_target: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
-    /// Inside a machine transition body, the (machine_name, source_state_name) pair.
+    /// Inside a machine transition body, the (`machine_name`, `source_state_name`) pair.
     current_machine_transition: Option<(String, String)>,
 }
 
@@ -970,6 +970,10 @@ impl Checker {
     }
 
     /// Register a machine declaration as a type definition with variants and methods.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "machine registration requires registering states, events, transitions, and methods"
+    )]
     fn register_machine_decl(&mut self, md: &MachineDecl) {
         let machine_ty = Ty::Machine {
             name: md.name.clone(),
@@ -1095,6 +1099,10 @@ impl Checker {
     }
 
     /// Check that the machine's state × event matrix is fully covered.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustiveness checking requires many validation steps"
+    )]
     fn check_machine_exhaustiveness(&mut self, md: &MachineDecl, span: &Span) {
         let state_names: Vec<&str> = md.states.iter().map(|s| s.name.as_str()).collect();
         let event_names: Vec<&str> = md.events.iter().map(|e| e.name.as_str()).collect();
@@ -3342,8 +3350,9 @@ impl Checker {
                                     if sig.params.is_empty() {
                                         let ret = &sig.return_type;
                                         let matches_type = match ret {
-                                            Ty::Machine { name: n } => n == type_prefix,
-                                            Ty::Named { name: n, .. } => n == type_prefix,
+                                            Ty::Machine { name: n } | Ty::Named { name: n, .. } => {
+                                                n == type_prefix
+                                            }
                                             _ => false,
                                         };
                                         if matches_type {
@@ -4905,7 +4914,7 @@ impl Checker {
                 }
                 "pop" => Ty::I32,
                 "len" => Ty::I64,
-                "get" => {
+                "get" | "remove" => {
                     if let Some(idx) = args.first() {
                         let (expr, sp) = idx.expr();
                         self.check_against(expr, sp, &Ty::I64);
@@ -4925,13 +4934,6 @@ impl Checker {
                 }
                 "is_empty" => Ty::Bool,
                 "clear" => Ty::Unit,
-                "remove" => {
-                    if let Some(idx) = args.first() {
-                        let (expr, sp) = idx.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    Ty::I32
-                }
                 "contains" => {
                     if let Some(arg) = args.first() {
                         let (expr, sp) = arg.expr();

@@ -245,6 +245,7 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
     // Pre-allocate capacity.
     // SAFETY: v is freshly created and valid.
     unsafe { ensure_cap(v, len as usize) };
+    // SAFETY: v is valid and has capacity for len i32 elements after ensure_cap.
     let dst = unsafe { (*v).data.cast::<i32>() };
     for i in 0..len as usize {
         // SAFETY: data is valid for len bytes; dst has capacity for len i32s.

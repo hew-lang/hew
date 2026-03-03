@@ -3640,27 +3640,22 @@ impl<'src> Parser<'src> {
                 let mut values: Vec<u8> = Vec::new();
                 while self.peek() != Some(&Token::RightBracket) {
                     let elem_expr = self.parse_expr()?;
-                    match &elem_expr.0 {
-                        Expr::Literal(Literal::Integer { value, .. }) => {
-                            if *value < 0 || *value > 255 {
-                                self.error(format!(
-                                    "byte value {value} out of range (must be 0..255)"
-                                ));
-                                return None;
-                            }
-                            #[expect(
-                                clippy::cast_possible_truncation,
-                                clippy::cast_sign_loss,
-                                reason = "Checked to be 0..=255 above"
-                            )]
-                            values.push(*value as u8);
-                        }
-                        _ => {
-                            self.error(
-                                "byte array literal elements must be integer literals".to_string(),
-                            );
+                    if let Expr::Literal(Literal::Integer { value, .. }) = &elem_expr.0 {
+                        if *value < 0 || *value > 255 {
+                            self.error(format!("byte value {value} out of range (must be 0..255)"));
                             return None;
                         }
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "Checked to be 0..=255 above"
+                        )]
+                        values.push(*value as u8);
+                    } else {
+                        self.error(
+                            "byte array literal elements must be integer literals".to_string(),
+                        );
+                        return None;
                     }
                     if !self.eat(&Token::Comma) {
                         break;

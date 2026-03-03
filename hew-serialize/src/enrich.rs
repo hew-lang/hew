@@ -657,6 +657,10 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "normalization covers all item variants"
+)]
 fn normalize_item_types(item: &mut Item) {
     match item {
         Item::Function(fn_decl) => normalize_fn_decl_types(fn_decl),

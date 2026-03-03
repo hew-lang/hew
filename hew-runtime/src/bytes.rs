@@ -55,6 +55,10 @@ pub struct BytesTriple {
 ///
 /// `data_ptr` must have been returned by [`hew_bytes_new`] (non-null).
 #[inline]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "header is 8-byte aligned from malloc, AtomicU32 needs 4"
+)]
 unsafe fn refcount(data_ptr: *mut u8) -> &'static AtomicU32 {
     // SAFETY: The header is at data_ptr - HEADER_SIZE. The first 4 bytes are
     // the AtomicU32 refcount. Caller guarantees data_ptr is valid.
@@ -67,6 +71,10 @@ unsafe fn refcount(data_ptr: *mut u8) -> &'static AtomicU32 {
 ///
 /// `data_ptr` must have been returned by [`hew_bytes_new`] (non-null).
 #[inline]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "header is 8-byte aligned from malloc, u32 needs 4"
+)]
 unsafe fn capacity(data_ptr: *mut u8) -> u32 {
     // SAFETY: Capacity is at offset 4 within the header (data_ptr - 4).
     // Caller guarantees data_ptr is valid.
@@ -79,6 +87,10 @@ unsafe fn capacity(data_ptr: *mut u8) -> u32 {
 ///
 /// `data_ptr` must have been returned by [`hew_bytes_new`] (non-null).
 #[inline]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "header is 8-byte aligned from malloc, u32 needs 4"
+)]
 unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
     // SAFETY: Capacity field is at data_ptr - 4. Caller guarantees data_ptr is
     // a valid bytes allocation.
@@ -95,6 +107,10 @@ unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
 /// # Safety
 ///
 /// `cap` must be > 0.
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "header is 8-byte aligned from malloc, u32 needs 4"
+)]
 unsafe fn alloc_buf(cap: u32) -> *mut u8 {
     let alloc_size = HEADER_SIZE + cap as usize;
     // SAFETY: alloc_size > 0 (cap > 0 plus header).
@@ -179,7 +195,7 @@ unsafe fn realloc_buf(ptr: *mut u8, _used: u32, new_cap: u32) -> *mut u8 {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
     }
-    // Update capacity in the header. Refcount is preserved by realloc.
+    // SAFETY: new_base is valid for at least HEADER_SIZE + new_cap bytes.
     let new_data = unsafe { new_base.add(HEADER_SIZE) };
     // SAFETY: new_base is valid for at least HEADER_SIZE + new_cap bytes.
     unsafe { set_capacity(new_data, new_cap) };
@@ -498,8 +514,9 @@ pub unsafe extern "C" fn hew_bytes_eq(
     if a_len == 0 {
         return true;
     }
-    // SAFETY: Both pointers are valid for their respective lengths per caller contract.
+    // SAFETY: a_ptr + a_off is valid for a_len bytes per caller contract.
     let a_slice = unsafe { std::slice::from_raw_parts(a_ptr.add(a_off as usize), a_len as usize) };
+    // SAFETY: b_ptr + b_off is valid for b_len bytes per caller contract.
     let b_slice = unsafe { std::slice::from_raw_parts(b_ptr.add(b_off as usize), b_len as usize) };
     a_slice == b_slice
 }

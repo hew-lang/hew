@@ -59,9 +59,9 @@ fn main() {
 
     let monitor = spawn Monitor(c1: c1, c2: c2, c3: c3, checks: 0);
 
-    // Run 20 rounds with varied message bursts
+    // Run 60 rounds with varied message bursts (~30 seconds total)
     var round = 0;
-    while round < 20 {
+    while round < 60 {
         r1.forward(5);
         r2.forward(3);
         r3.forward(7);

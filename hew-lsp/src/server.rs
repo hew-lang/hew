@@ -2744,6 +2744,12 @@ fn collect_refs_in_expr(expr: &Expr, span: &Span, name: &str, spans: &mut Vec<Sp
             collect_refs_in_expr(&value.0, &value.1, name, spans);
             collect_refs_in_expr(&count.0, &count.1, name, spans);
         }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                collect_refs_in_expr(&k.0, &k.1, name, spans);
+                collect_refs_in_expr(&v.0, &v.1, name, spans);
+            }
+        }
         Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
             for elem in elems {
                 collect_refs_in_expr(&elem.0, &elem.1, name, spans);
@@ -3418,6 +3424,12 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(value.as_ref(), calls);
             collect_calls_in_expr(count.as_ref(), calls);
         }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                collect_calls_in_expr(k, calls);
+                collect_calls_in_expr(v, calls);
+            }
+        }
         Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
             for e in exprs {
                 collect_calls_in_expr(e, calls);
@@ -3859,6 +3871,12 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         Expr::ArrayRepeat { value, count } => {
             count_idents_in_expr(&value.0, counts);
             count_idents_in_expr(&count.0, counts);
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                count_idents_in_expr(&k.0, counts);
+                count_idents_in_expr(&v.0, counts);
+            }
         }
         Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
             for elem in elems {

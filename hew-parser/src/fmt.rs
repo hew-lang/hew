@@ -1733,6 +1733,18 @@ impl<'a> Formatter<'a> {
                 }
                 self.write("]");
             }
+            Expr::MapLiteral { entries } => {
+                self.write("{");
+                for (i, (key, value)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.format_expr(&key.0);
+                    self.write(": ");
+                    self.format_expr(&value.0);
+                }
+                self.write("}");
+            }
         }
     }
 

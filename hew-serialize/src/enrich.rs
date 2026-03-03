@@ -585,6 +585,12 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
                 rewrite_builtin_calls_in_expr(e);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                rewrite_builtin_calls_in_expr(k);
+                rewrite_builtin_calls_in_expr(v);
+            }
+        }
         Expr::Match { scrutinee, arms } => {
             rewrite_builtin_calls_in_expr(scrutinee);
             for arm in arms {
@@ -931,6 +937,12 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
                 normalize_expr_types(e);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                normalize_expr_types(k);
+                normalize_expr_types(v);
+            }
+        }
         Expr::Lambda {
             return_type,
             body,
@@ -1235,6 +1247,12 @@ fn enrich_expr(expr: &mut Spanned<Expr>, tco: &TypeCheckOutput) {
         Expr::Array(elements) | Expr::Tuple(elements) => {
             for e in elements.iter_mut() {
                 enrich_expr(e, tco);
+            }
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                enrich_expr(k, tco);
+                enrich_expr(v, tco);
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {

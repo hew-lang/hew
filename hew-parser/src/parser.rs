@@ -3995,16 +3995,13 @@ impl<'src> Parser<'src> {
                 Expr::Array(elements)
             }
             Token::LeftBrace => {
-                // Disambiguate: {} → MapLiteral, {"str": expr, ...} → MapLiteral, else → Block
+                // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
+                // Note: bare {} remains a Block — empty HashMap coercion is
+                // handled in the type checker when expected type is HashMap.
                 let saved = self.save_pos();
                 self.advance(); // consume '{'
 
-                if self.eat(&Token::RightBrace) {
-                    // {} is an empty map literal
-                    Expr::MapLiteral {
-                        entries: Vec::new(),
-                    }
-                } else if matches!(self.peek(), Some(Token::StringLit(_))) {
+                if matches!(self.peek(), Some(Token::StringLit(_))) {
                     // Check if it's "string" : — if so, it's a map literal
                     let next_saved = self.save_pos();
                     self.advance(); // consume the string
@@ -5869,11 +5866,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_empty_map_literal() {
+    fn parse_empty_braces_is_block() {
+        // {} is always a block — empty HashMap coercion happens in the type checker
         let expr = parse_let_expr("{}");
         assert!(
-            matches!(expr, Expr::MapLiteral { ref entries } if entries.is_empty()),
-            "expected empty MapLiteral, got {expr:?}"
+            matches!(expr, Expr::Block(_)),
+            "expected Block, got {expr:?}"
         );
     }
 

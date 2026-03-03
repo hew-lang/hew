@@ -3980,6 +3980,16 @@ impl Checker {
                 expected.clone()
             }
 
+            // Empty block {} coerces to HashMap<K,V> when expected
+            (Expr::Block(block), Ty::Named { name, .. })
+                if name == "HashMap"
+                    && block.stmts.is_empty()
+                    && block.trailing_expr.is_none() =>
+            {
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);

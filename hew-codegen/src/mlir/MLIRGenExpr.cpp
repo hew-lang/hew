@@ -139,8 +139,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateCallExpr(*call);
   if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind))
     return generateIfExpr(*ifE, expr.span);
-  if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind))
+  if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
+    // Empty block {} coerces to HashMap when pendingDeclaredType expects it
+    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr &&
+        pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
+      auto hmType = *pendingDeclaredType;
+      pendingDeclaredType.reset();
+      return builder.create<hew::HashMapNewOp>(currentLoc, hmType).getResult();
+    }
     return generateBlockExpr(blockExpr->block);
+  }
   if (auto *cast = std::get_if<ast::ExprCast>(&expr.kind)) {
     auto location = currentLoc;
     auto value = generateExpression(cast->expr->value);

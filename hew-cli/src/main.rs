@@ -237,7 +237,14 @@ fn cmd_debug(args: &[String]) {
         gdb_args.extend(program_args.iter().cloned());
         ("gdb".to_string(), gdb_args)
     } else if which_exists("lldb") {
-        let mut lldb_args = vec!["--".to_string(), tmp_bin_str.clone()];
+        let lldb_script = find_lldb_script();
+        let mut lldb_args = Vec::new();
+        if let Some(script) = &lldb_script {
+            lldb_args.push("-o".to_string());
+            lldb_args.push(format!("command script import {}", script));
+        }
+        lldb_args.push("--".to_string());
+        lldb_args.push(tmp_bin_str.clone());
         lldb_args.extend(program_args.iter().cloned());
         ("lldb".to_string(), lldb_args)
     } else {
@@ -288,6 +295,30 @@ fn find_gdb_script() -> Option<String> {
             }
             // Development layout
             let candidate = dir.join("../../scripts/debug/hew-gdb.py");
+            if candidate.exists() {
+                return candidate
+                    .canonicalize()
+                    .ok()
+                    .map(|p| p.display().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn find_lldb_script() -> Option<String> {
+    // Check next to the hew binary first, then the repo scripts/ dir
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("../share/hew/hew-lldb.py");
+            if candidate.exists() {
+                return candidate
+                    .canonicalize()
+                    .ok()
+                    .map(|p| p.display().to_string());
+            }
+            // Development layout
+            let candidate = dir.join("../../scripts/debug/hew-lldb.py");
             if candidate.exists() {
                 return candidate
                     .canonicalize()

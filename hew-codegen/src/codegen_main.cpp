@@ -157,7 +157,8 @@ auto main(int argc, char *argv[]) -> int {
   initMLIRContext(context);
 
   // Generate MLIR
-  hew::MLIRGen mlirGen(context, opts.target_triple);
+  hew::MLIRGen mlirGen(context, opts.target_triple,
+                       program.source_path, program.line_map);
   auto module = mlirGen.generate(program);
   if (!module) {
     std::cerr << "Error: MLIR generation failed\n";

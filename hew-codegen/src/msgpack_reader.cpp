@@ -1831,6 +1831,17 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   if (mg && !isNil(*mg))
     prog.module_graph = parseModuleGraph(*mg);
 
+  // Source path for debug info (optional — old serializations won't have it)
+  const auto *sp = mapGet(obj, "source_path");
+  if (sp && !isNil(*sp))
+    prog.source_path = getString(*sp);
+
+  // Line map: byte offset of each line start (optional)
+  const auto *lm = mapGet(obj, "line_map");
+  if (lm && !isNil(*lm))
+    prog.line_map =
+        parseVec<size_t>(*lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
+
   return prog;
 }
 

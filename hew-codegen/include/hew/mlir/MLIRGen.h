@@ -52,7 +52,10 @@ struct StructTypeInfo {
 /// dialects (func, arith, scf, memref) plus the Hew dialect.
 class MLIRGen {
 public:
-  explicit MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple = "");
+  explicit MLIRGen(mlir::MLIRContext &context,
+                   const std::string &targetTriple = "",
+                   const std::string &sourcePath = "",
+                   const std::vector<size_t> &lineMap = {});
 
   /// Main entry point: lower a complete Hew Program AST to an MLIR module.
   /// Returns nullptr on failure.
@@ -300,6 +303,13 @@ private:
   void popLoopControl(const LoopControl &lc, mlir::Operation *whileOp);
 
   mlir::Location loc(const ast::Span &span);
+
+  /// Line map from serialized AST: byte offset of each line start.
+  std::vector<size_t> lineMap_;
+
+  /// Convert a byte offset to (line, column), both 1-based.
+  /// Returns (0, 0) if lineMap_ is empty (no debug info).
+  std::pair<unsigned, unsigned> byteOffsetToLineCol(size_t offset) const;
 
   /// Get or create an extern function declaration.
   mlir::func::FuncOp getOrCreateExternFunc(llvm::StringRef name, mlir::FunctionType type);

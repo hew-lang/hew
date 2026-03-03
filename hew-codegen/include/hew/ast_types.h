@@ -984,6 +984,11 @@ struct Program {
   /// Types not in this map default to opaque pointer (HandleType).
   std::unordered_map<std::string, std::string> handle_type_repr;
   std::optional<ModuleGraph> module_graph;
+
+  /// Source file path for DWARF debug info (empty if not provided).
+  std::string source_path;
+  /// Line map: byte offset of the start of each line. Empty if not provided.
+  std::vector<size_t> line_map;
 };
 
 } // namespace ast

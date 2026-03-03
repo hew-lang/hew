@@ -36,6 +36,7 @@
 
 #include "MLIRGenHelpers.h"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <map>
@@ -101,10 +102,12 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
 // Constructor
 // ============================================================================
 
-MLIRGen::MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple)
+MLIRGen::MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple,
+                 const std::string &sourcePath, const std::vector<size_t> &lineMap)
     : context(context), builder(&context), targetTriple(targetTriple),
-      currentLoc(builder.getUnknownLoc()) {
-  fileIdentifier = builder.getStringAttr("<unknown>");
+      currentLoc(builder.getUnknownLoc()), lineMap_(lineMap) {
+  fileIdentifier = builder.getStringAttr(
+      sourcePath.empty() ? "<unknown>" : sourcePath);
   isWasm32_ = targetTriple.find("wasm32") != std::string::npos;
   cachedSizeType_ = mlir::IntegerType::get(&context, isWasm32_ ? 32 : 64);
 }
@@ -154,8 +157,26 @@ mlir::IntegerType MLIRGen::sizeType() const {
 // Location helper
 // ============================================================================
 
+std::pair<unsigned, unsigned> MLIRGen::byteOffsetToLineCol(size_t offset) const {
+  if (lineMap_.empty())
+    return {0, 0};
+  auto it = std::upper_bound(lineMap_.begin(), lineMap_.end(), offset);
+  if (it == lineMap_.begin())
+    return {1, static_cast<unsigned>(offset + 1)};
+  --it;
+  unsigned line = static_cast<unsigned>(std::distance(lineMap_.begin(), it)) + 1;
+  unsigned col = static_cast<unsigned>(offset - *it) + 1;
+  return {line, col};
+}
+
 mlir::Location MLIRGen::loc(const ast::Span &span) {
-  return mlir::FileLineColLoc::get(fileIdentifier, static_cast<unsigned>(span.start), 0);
+  auto [line, col] = byteOffsetToLineCol(span.start);
+  if (line == 0) {
+    // No line map — fall back to byte offset as before
+    return mlir::FileLineColLoc::get(
+        fileIdentifier, static_cast<unsigned>(span.start), 0);
+  }
+  return mlir::FileLineColLoc::get(fileIdentifier, line, col);
 }
 
 // ============================================================================

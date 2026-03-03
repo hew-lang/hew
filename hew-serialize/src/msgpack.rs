@@ -46,6 +46,14 @@ struct TypedProgram<'a> {
     handle_type_repr: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     module_graph: Option<&'a ModuleGraph>,
+    /// Absolute path to the source .hew file (for DWARF debug info).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<&'a str>,
+    /// Byte offset of the start of each line in the source file.
+    /// line_map[0] = offset of line 1, line_map[1] = offset of line 2, etc.
+    /// Used by codegen to convert byte-offset spans to line:column for DWARF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_map: Option<&'a [usize]>,
 }
 
 /// Serialize a [`Program`](hew_parser::ast::Program) to `MessagePack` bytes,
@@ -68,6 +76,8 @@ pub fn serialize_to_msgpack(
     expr_types: Vec<ExprTypeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
+    source_path: Option<&str>,
+    line_map: Option<&[usize]>,
 ) -> Vec<u8> {
     let typed = TypedProgram {
         items: &program.items,
@@ -76,6 +86,8 @@ pub fn serialize_to_msgpack(
         handle_types,
         handle_type_repr,
         module_graph: program.module_graph.as_ref(),
+        source_path,
+        line_map,
     };
     rmp_serde::to_vec_named(&typed).expect("AST MessagePack serialization failed")
 }
@@ -100,6 +112,14 @@ struct TypedProgramJson<'a> {
     handle_type_repr: HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     module_graph: Option<ModuleGraphJson<'a>>,
+    /// Absolute path to the source .hew file (for DWARF debug info).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<&'a str>,
+    /// Byte offset of the start of each line in the source file.
+    /// line_map[0] = offset of line 1, line_map[1] = offset of line 2, etc.
+    /// Used by codegen to convert byte-offset spans to line:column for DWARF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line_map: Option<&'a [usize]>,
 }
 
 /// Serialize a [`Program`](hew_parser::ast::Program) to pretty-printed JSON.
@@ -123,6 +143,8 @@ pub fn serialize_to_json(
     expr_types: Vec<ExprTypeEntry>,
     handle_types: Vec<String>,
     handle_type_repr: HashMap<String, String>,
+    source_path: Option<&str>,
+    line_map: Option<&[usize]>,
 ) -> String {
     let module_graph_json = program.module_graph.as_ref().map(|mg| ModuleGraphJson {
         modules: mg.modules.iter().map(|(k, v)| (k.to_string(), v)).collect(),
@@ -136,6 +158,8 @@ pub fn serialize_to_json(
         handle_types,
         handle_type_repr,
         module_graph: module_graph_json,
+        source_path,
+        line_map,
     };
     serde_json::to_string_pretty(&typed).expect("AST JSON serialization failed")
 }
@@ -197,7 +221,7 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -255,7 +279,7 @@ mod tests {
             module_graph: Some(graph),
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
@@ -271,7 +295,7 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
     }
@@ -334,7 +358,7 @@ mod tests {
             module_graph: None,
         };
 
-        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new());
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
         assert!(!bytes.is_empty());
 
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");

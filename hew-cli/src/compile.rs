@@ -303,6 +303,8 @@ pub fn compile(
             expr_type_map,
             handle_types,
             handle_type_repr,
+            None,
+            None,
         );
         println!("{json}");
         return Ok(String::new());
@@ -313,6 +315,8 @@ pub fn compile(
         expr_type_map,
         handle_types,
         handle_type_repr,
+        None,
+        None,
     );
 
     // 5. Invoke hew-codegen

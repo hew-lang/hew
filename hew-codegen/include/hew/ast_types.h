@@ -470,8 +470,12 @@ struct ExprByteStringLiteral {
 struct ExprByteArrayLiteral {
   std::vector<uint8_t> data;
 };
+struct ExprMapEntry {
+  std::unique_ptr<Spanned<Expr>> key;
+  std::unique_ptr<Spanned<Expr>> value;
+};
 struct ExprMapLiteral {
-  std::vector<std::pair<std::unique_ptr<Spanned<Expr>>, std::unique_ptr<Spanned<Expr>>>> entries;
+  std::vector<ExprMapEntry> entries;
 };
 
 struct Expr {

@@ -661,11 +661,12 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
           auto &pairObj = entriesArr.via.array.ptr[i];
           // Each entry is a 2-element array: [key, value]
           if (pairObj.type == msgpack::type::ARRAY && pairObj.via.array.size == 2) {
-            auto key = std::make_unique<ast::Spanned<ast::Expr>>(
+            ast::ExprMapEntry entry;
+            entry.key = std::make_unique<ast::Spanned<ast::Expr>>(
                 parseSpanned<ast::Expr>(pairObj.via.array.ptr[0], parseExpr));
-            auto val = std::make_unique<ast::Spanned<ast::Expr>>(
+            entry.value = std::make_unique<ast::Spanned<ast::Expr>>(
                 parseSpanned<ast::Expr>(pairObj.via.array.ptr[1], parseExpr));
-            e.entries.emplace_back(std::move(key), std::move(val));
+            e.entries.emplace_back(std::move(entry));
           }
         }
       }

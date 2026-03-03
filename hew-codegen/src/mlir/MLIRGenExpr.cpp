@@ -3442,8 +3442,8 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
 
   // Insert each entry
   for (const auto &entry : mapLit.entries) {
-    auto key = generateExpression(entry.first->value);
-    auto val = generateExpression(entry.second->value);
+    auto key = generateExpression(entry.key->value);
+    auto val = generateExpression(entry.value->value);
     if (!key || !val)
       return nullptr;
     key = coerceType(key, keyType, location);
@@ -3574,8 +3574,8 @@ void MLIRGen::collectFreeVarsInExpr(const ast::Expr &expr, const std::set<std::s
       collectFreeVarsInExpr(e->value, bound, freeVars);
   } else if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind)) {
     for (const auto &entry : mapLit->entries) {
-      collectFreeVarsInExpr(entry.first->value, bound, freeVars);
-      collectFreeVarsInExpr(entry.second->value, bound, freeVars);
+      collectFreeVarsInExpr(entry.key->value, bound, freeVars);
+      collectFreeVarsInExpr(entry.value->value, bound, freeVars);
     }
   } else if (auto *pf = std::get_if<ast::ExprPostfixTry>(&expr.kind)) {
     collectFreeVarsInExpr(pf->inner->value, bound, freeVars);

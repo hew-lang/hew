@@ -12,15 +12,15 @@ Three changes to make Vec and HashMap initialization more ergonomic through type
 
 ## Feature 2: Empty map literal `{}`
 
-Add `{}` as an empty map literal that coerces to `HashMap<K,V>` when the type context expects it.
+`let m: HashMap<String, i32> = {}` coerces to an empty HashMap when the type context expects it.
 
-**Parser:** When `{` is immediately followed by `}` in expression position, parse as `Expr::MapLiteral { entries: [] }` instead of an empty block. Empty blocks evaluate to Unit and are rarely useful standalone.
+**Parser:** `{}` remains a Block (changing it to MapLiteral would break every `_ => {}` and `None => {}` in the codebase). The disambiguation happens in the type checker instead.
 
-**AST:** Add `MapLiteral { entries: Vec<(Spanned<Expr>, Spanned<Expr>)> }` to the `Expr` enum.
+**AST:** Add `MapLiteral { entries: Vec<(Spanned<Expr>, Spanned<Expr>)> }` to the `Expr` enum (used by Feature 3).
 
-**Type checker:** In `check_against`, when expected type is `HashMap<K,V>` and expression is `MapLiteral` with zero entries, coerce to the expected HashMap type.
+**Type checker:** In `check_against`, when expected type is `HashMap<K,V>` and expression is an empty Block (no stmts, no trailing expr), coerce to the expected HashMap type.
 
-**Codegen:** Generate `HashMapNewOp` for empty `MapLiteral`.
+**Codegen:** When an empty Block has `pendingDeclaredType` of `HashMapType`, emit `HashMapNewOp` directly instead of generating a block.
 
 ## Feature 3: Initialized map literal `{"key": value, ...}`
 
@@ -34,10 +34,9 @@ Add `{}` as an empty map literal that coerces to `HashMap<K,V>` when the type co
 
 ## Parsing disambiguation
 
-- `{}` → MapLiteral (empty)
-- `{"string": expr, ...}` → MapLiteral (string-keyed, unambiguous since `"string": expr` is never valid in a block)
+- `{}` → Block (empty HashMap coercion handled by type checker when expected type is HashMap)
+- `{"string": expr, ...}` → MapLiteral (2-token lookahead: `StringLit` then `:` after `{`)
 - `{ stmt; ... }` → Block (anything else)
-- `{ () }` → explicit empty block if ever needed
 
 ## Serialization
 

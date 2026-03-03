@@ -3565,11 +3565,13 @@ impl Checker {
                         args: vec![Ty::Var(k), Ty::Var(v)],
                     }
                 } else {
-                    let first_key_ty = self.synthesize(&entries[0].0 .0, &entries[0].0 .1);
-                    let first_val_ty = self.synthesize(&entries[0].1 .0, &entries[0].1 .1);
-                    for entry in &entries[1..] {
-                        self.check_against(&entry.0 .0, &entry.0 .1, &first_key_ty);
-                        self.check_against(&entry.1 .0, &entry.1 .1, &first_val_ty);
+                    let (ref ke, ref ks) = entries[0].0;
+                    let (ref ve, ref vs) = entries[0].1;
+                    let first_key_ty = self.synthesize(ke, ks);
+                    let first_val_ty = self.synthesize(ve, vs);
+                    for (k, v) in &entries[1..] {
+                        self.check_against(&k.0, &k.1, &first_key_ty);
+                        self.check_against(&v.0, &v.1, &first_val_ty);
                     }
                     Ty::Named {
                         name: "HashMap".to_string(),

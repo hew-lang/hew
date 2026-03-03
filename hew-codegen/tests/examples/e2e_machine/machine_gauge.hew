@@ -10,10 +10,10 @@ machine Gauge {
 
     on TurnOn: Off -> On { On { level: 10 } }
     on TurnOff: On -> Off { Off }
-    on TurnOn: On -> On { self }
-    on TurnOff: Off -> Off { self }
+    on TurnOn: On -> On { state }
+    on TurnOff: Off -> Off { state }
     // Wildcard self-transitions preserve current state and fields
-    on Noop: _ -> _ { self }
+    on Noop: _ -> _ { state }
 }
 
 fn main() -> Int {

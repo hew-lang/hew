@@ -1,5 +1,5 @@
 // Test: Machine with state payload fields and transition body execution
-// Exercises: state fields, variant construction in bodies, self.field access
+// Exercises: state fields, variant construction in bodies, state.field access
 machine Counter {
     state Zero;
     state Count { n: Int; }
@@ -8,7 +8,7 @@ machine Counter {
     event Reset;
 
     on Inc: Zero -> Count { Count { n: 1 } }
-    on Inc: Count -> Count { Count { n: self.n + 1 } }
+    on Inc: Count -> Count { Count { n: state.n + 1 } }
     on Reset: Zero -> Zero { Zero }
     on Reset: Count -> Zero { Zero }
 }

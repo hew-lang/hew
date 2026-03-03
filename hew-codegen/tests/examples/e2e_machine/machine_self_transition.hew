@@ -7,10 +7,10 @@ machine Keeper {
     event Poke;
     event Drop;
 
-    on Poke: Holding -> Holding { self }
-    on Poke: Empty -> Empty { self }
+    on Poke: Holding -> Holding { state }
+    on Poke: Empty -> Empty { state }
     on Drop: Holding -> Empty { Empty }
-    on Drop: Empty -> Empty { self }
+    on Drop: Empty -> Empty { state }
 }
 
 fn main() -> Int {

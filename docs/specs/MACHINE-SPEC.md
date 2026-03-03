@@ -69,7 +69,7 @@ machine TcpState {
     }
 
     on Data: Established -> Established {
-        Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
+        Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
     }
 
     on Close: Established -> FinWait {
@@ -133,19 +133,19 @@ on EventIdent : SourceIdent -> TargetIdent { Expr }
 
 ## §3 Transition semantics
 
-### §3.1 The `self` binding
+### §3.1 The `state` binding
 
-Inside a transition body, `self` is bound to the source state's data:
+Inside a transition body, `state` is bound to the source state's data:
 
-- If the source state has no fields, `self` is the unit-like state value.
+- If the source state has no fields, `state` is the unit-like state value.
 - If the source state has fields, `self.field_name` accesses each field.
-- `self` is consumed by the transition (move semantics). After the transition body executes, the old state no longer exists.
+- `state` is consumed by the transition (move semantics). After the transition body executes, the old state no longer exists.
 
 ```hew
-// self.local_seq and self.remote_seq are accessible because
+// state.local_seq and state.remote_seq are accessible because
 // the source state is Established { local_seq: Int; remote_seq: Int; }
 on Data: Established -> Established {
-    Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
+    Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
 }
 ```
 
@@ -159,7 +159,7 @@ event Data { payload: String; }
 on Data: Established -> Established {
     // 'payload' is accessible directly from the event
     log(payload);
-    Established { local_seq: self.local_seq + 1, remote_seq: self.remote_seq }
+    Established { local_seq: state.local_seq + 1, remote_seq: state.remote_seq }
 }
 ```
 
@@ -250,7 +250,7 @@ machine Light {
 Fix with a wildcard:
 
 ```hew
-    on Dim: _ -> _ { self }  // ignore Dim in all states
+    on Dim: _ -> _ { state }  // ignore Dim in all states
 ```
 
 ---
@@ -260,10 +260,10 @@ Fix with a wildcard:
 ### §5.1 Wildcard source (`_` as source state)
 
 ```hew
-on Timeout: _ -> _ { self }
+on Timeout: _ -> _ { state }
 ```
 
-This transition applies to every state that does not have an explicit `on Timeout` transition. The body receives `self` as the current state (type: the machine type itself, not a specific variant). The body MUST return a value of the machine type.
+This transition applies to every state that does not have an explicit `on Timeout` transition. The body receives `state` as the current state (type: the machine type itself, not a specific variant). The body MUST return a value of the machine type.
 
 ### §5.2 Wildcard target (`_` as target state)
 
@@ -287,10 +287,10 @@ This applies to all states without an explicit `on FatalError` transition, and t
 
 ### §5.4 Self-transition shorthand
 
-The expression `self` in a wildcard body returns the current state unchanged (identity transition). This is the canonical way to ignore an event:
+The expression `state` in a wildcard body returns the current state unchanged (identity transition). This is the canonical way to ignore an event:
 
 ```hew
-on Heartbeat: _ -> _ { self }
+on Heartbeat: _ -> _ { state }
 ```
 
 ---

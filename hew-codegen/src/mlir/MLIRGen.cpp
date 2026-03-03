@@ -54,8 +54,8 @@ using namespace mlir;
 static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
   ast::WireDecl wd;
   wd.visibility = td.visibility;
-  wd.kind = (td.kind == ast::TypeDeclKind::Enum) ? ast::WireDeclKind::Enum
-                                                  : ast::WireDeclKind::Struct;
+  wd.kind =
+      (td.kind == ast::TypeDeclKind::Enum) ? ast::WireDeclKind::Enum : ast::WireDeclKind::Struct;
   wd.name = td.name;
 
   const auto &wm = *td.wire;
@@ -2486,8 +2486,8 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
     mlir::Value result = nullptr;
     for (int i = static_cast<int>(decl.states.size()) - 1; i >= 0; --i) {
       auto symName = getOrCreateGlobalString(decl.states[i].name);
-      auto strVal = builder.create<hew::ConstantOp>(
-          location, hew::StringRefType::get(&context), builder.getStringAttr(symName));
+      auto strVal = builder.create<hew::ConstantOp>(location, hew::StringRefType::get(&context),
+                                                    builder.getStringAttr(symName));
       auto strPtr = builder.create<hew::BitcastOp>(location, ptrType, strVal);
 
       if (result == nullptr) {
@@ -2495,8 +2495,8 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
         result = strPtr;
       } else {
         auto tagVal = createIntConstant(builder, location, builder.getI32Type(), i);
-        auto cond = builder.create<mlir::arith::CmpIOp>(
-            location, mlir::arith::CmpIPredicate::eq, tag, tagVal);
+        auto cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
+                                                        tag, tagVal);
         result = builder.create<mlir::arith::SelectOp>(location, cond, strPtr, result);
       }
     }
@@ -2519,10 +2519,8 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
     auto selfArg = entryBlock->getArgument(0);
     auto eventArg = entryBlock->getArgument(1);
 
-    auto stateTag = builder.create<hew::EnumExtractTagOp>(
-        location, builder.getI32Type(), selfArg);
-    auto eventTag = builder.create<hew::EnumExtractTagOp>(
-        location, builder.getI32Type(), eventArg);
+    auto stateTag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), selfArg);
+    auto eventTag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), eventArg);
 
     // Build a map from (source_state_idx, event_idx) → transition info.
     // Wildcard source "_" maps to all states not explicitly covered.
@@ -2591,7 +2589,7 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
     // Helper: check if body expression is just the identifier `self`
     auto isSelfBodyExpr = [](const ast::Expr &expr) -> bool {
       if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind))
-        return ident->name == "self";
+        return ident->name == "state";
       return false;
     };
 
@@ -2608,10 +2606,10 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
       // Build condition: stateTag == sourceIdx && eventTag == eventIdx
       auto stateConst = createIntConstant(builder, location, builder.getI32Type(), sourceIdx);
       auto eventConst = createIntConstant(builder, location, builder.getI32Type(), eventIdx);
-      auto stateCmp = builder.create<mlir::arith::CmpIOp>(
-          location, mlir::arith::CmpIPredicate::eq, stateTag, stateConst);
-      auto eventCmp = builder.create<mlir::arith::CmpIOp>(
-          location, mlir::arith::CmpIPredicate::eq, eventTag, eventConst);
+      auto stateCmp = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
+                                                          stateTag, stateConst);
+      auto eventCmp = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
+                                                          eventTag, eventConst);
       auto cond = builder.create<mlir::arith::AndIOp>(location, stateCmp, eventCmp);
 
       mlir::Value targetVal;
@@ -2622,7 +2620,7 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
       } else if (trans) {
         // Evaluate the transition body expression (e.g. Count { n: self.n + 1 })
         SymbolTableScopeT bodyScope(symbolTable);
-        declareVariable("self", selfArg);
+        declareVariable("state", selfArg);
         currentMachineSourceVariant_ = decl.states[sourceIdx].name;
         targetVal = generateExpression(trans->body.value);
         currentMachineSourceVariant_.clear();

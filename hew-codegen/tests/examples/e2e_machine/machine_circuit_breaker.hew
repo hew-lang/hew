@@ -14,10 +14,10 @@ machine CircuitBreaker {
     on Timeout: Open -> HalfOpen { HalfOpen }
     on Success: HalfOpen -> Closed { Closed { failures: 0 } }
     on Failure: HalfOpen -> Open { Open }
-    on Success: Open -> Open { self }
-    on Failure: Open -> Open { self }
-    on Timeout: Closed -> Closed { self }
-    on Timeout: HalfOpen -> HalfOpen { self }
+    on Success: Open -> Open { state }
+    on Failure: Open -> Open { state }
+    on Timeout: Closed -> Closed { state }
+    on Timeout: HalfOpen -> HalfOpen { state }
 }
 
 fn main() -> Int {

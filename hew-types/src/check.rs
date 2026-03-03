@@ -1199,11 +1199,12 @@ impl Checker {
             }
 
             // Fix 6: Transition body validation with source-state field scoping.
-            // Bind `self` as the machine type, and track the source state so
-            // that `self.field` access resolves correctly for payload states.
+            // Bind `state` as the machine type, and track the source state so
+            // that `state.field` access resolves correctly for payload states.
+            // (`state` rather than `self` to avoid confusion with actor self)
             self.env.push_scope();
             self.env.define(
-                "self".to_string(),
+                "state".to_string(),
                 Ty::Machine {
                     name: md.name.clone(),
                 },

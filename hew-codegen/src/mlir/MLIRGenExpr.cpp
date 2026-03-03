@@ -402,7 +402,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       return nullptr;
     }
 
-    // Machine/enum field access: resolve `self.field` inside transition bodies
+    // Machine/enum field access: resolve `state.field` inside transition bodies
     auto enumIt = enumTypes.find(structName.str());
     if (enumIt != enumTypes.end() && !currentMachineSourceVariant_.empty()) {
       const auto &enumInfo = enumIt->second;
@@ -412,8 +412,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
           if (variant.fieldNames[i] == fieldName) {
             auto fieldTy = getEnumFieldType(operandType, variant.payloadPositions[i]);
-            return builder.create<hew::EnumExtractPayloadOp>(
-                location, fieldTy, operandVal, variant.payloadPositions[i]);
+            return builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, operandVal,
+                                                             variant.payloadPositions[i]);
           }
         }
         break;
@@ -724,8 +724,7 @@ mlir::Value MLIRGen::generateBytesLiteral(const std::vector<uint8_t> &data) {
   auto symName = getOrCreateGlobalString(dataStr);
 
   // Get pointer to the global string data.
-  auto dataPtr =
-      builder.create<hew::ConstantOp>(location, ptrType, builder.getStringAttr(symName));
+  auto dataPtr = builder.create<hew::ConstantOp>(location, ptrType, builder.getStringAttr(symName));
 
   // Create length constant.
   auto lenVal = createIntConstant(builder, location, i32Ty, static_cast<int64_t>(data.size()));
@@ -2614,18 +2613,36 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     mlir::Type targetType = nullptr;
     bool isUnsigned = false;
 
-    if (method == "to_i8")    { targetType = builder.getIntegerType(8); }
-    else if (method == "to_i16")  { targetType = builder.getIntegerType(16); }
-    else if (method == "to_i32")  { targetType = builder.getIntegerType(32); }
-    else if (method == "to_i64")  { targetType = builder.getIntegerType(64); }
-    else if (method == "to_u8")   { targetType = builder.getIntegerType(8);  isUnsigned = true; }
-    else if (method == "to_u16")  { targetType = builder.getIntegerType(16); isUnsigned = true; }
-    else if (method == "to_u32")  { targetType = builder.getIntegerType(32); isUnsigned = true; }
-    else if (method == "to_u64")  { targetType = builder.getIntegerType(64); isUnsigned = true; }
-    else if (method == "to_f32")  { targetType = builder.getF32Type(); }
-    else if (method == "to_f64")  { targetType = builder.getF64Type(); }
-    else if (method == "to_isize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); }
-    else if (method == "to_usize") { targetType = builder.getIntegerType(isWasm32_ ? 32 : 64); isUnsigned = true; }
+    if (method == "to_i8") {
+      targetType = builder.getIntegerType(8);
+    } else if (method == "to_i16") {
+      targetType = builder.getIntegerType(16);
+    } else if (method == "to_i32") {
+      targetType = builder.getIntegerType(32);
+    } else if (method == "to_i64") {
+      targetType = builder.getIntegerType(64);
+    } else if (method == "to_u8") {
+      targetType = builder.getIntegerType(8);
+      isUnsigned = true;
+    } else if (method == "to_u16") {
+      targetType = builder.getIntegerType(16);
+      isUnsigned = true;
+    } else if (method == "to_u32") {
+      targetType = builder.getIntegerType(32);
+      isUnsigned = true;
+    } else if (method == "to_u64") {
+      targetType = builder.getIntegerType(64);
+      isUnsigned = true;
+    } else if (method == "to_f32") {
+      targetType = builder.getF32Type();
+    } else if (method == "to_f64") {
+      targetType = builder.getF64Type();
+    } else if (method == "to_isize") {
+      targetType = builder.getIntegerType(isWasm32_ ? 32 : 64);
+    } else if (method == "to_usize") {
+      targetType = builder.getIntegerType(isWasm32_ ? 32 : 64);
+      isUnsigned = true;
+    }
 
     if (targetType) {
       bool srcIsInt = llvm::isa<mlir::IntegerType>(receiverType);
@@ -2667,15 +2684,22 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       if (mc.args.empty()) {
         // Constants: math.pi, math.e
         if (methodName == "pi")
-          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(3.14159265358979323846)).getResult();
+          return builder
+              .create<mlir::arith::ConstantOp>(location,
+                                               builder.getF64FloatAttr(3.14159265358979323846))
+              .getResult();
         if (methodName == "e")
-          return builder.create<mlir::arith::ConstantOp>(location, builder.getF64FloatAttr(2.71828182845904523536)).getResult();
+          return builder
+              .create<mlir::arith::ConstantOp>(location,
+                                               builder.getF64FloatAttr(2.71828182845904523536))
+              .getResult();
         emitError(location) << "unknown math constant: math." << methodName;
         return nullptr;
       }
 
       auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
-      if (!arg) return nullptr;
+      if (!arg)
+        return nullptr;
       auto f64Type = builder.getF64Type();
       if (arg.getType() != f64Type)
         arg = coerceType(arg, f64Type, location);
@@ -2713,24 +2737,35 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           return nullptr;
         }
         auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2) return nullptr;
+        if (!arg2)
+          return nullptr;
         if (arg2.getType() != f64Type)
           arg2 = coerceType(arg2, f64Type, location);
         return builder.create<mlir::math::PowFOp>(location, arg, arg2).getResult();
       }
       // math.max(a, b), math.min(a, b)
       if (methodName == "max") {
-        if (mc.args.size() < 2) { emitError(location) << "math.max requires 2 arguments"; return nullptr; }
+        if (mc.args.size() < 2) {
+          emitError(location) << "math.max requires 2 arguments";
+          return nullptr;
+        }
         auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2) return nullptr;
-        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        if (!arg2)
+          return nullptr;
+        if (arg2.getType() != f64Type)
+          arg2 = coerceType(arg2, f64Type, location);
         return builder.create<mlir::arith::MaximumFOp>(location, arg, arg2).getResult();
       }
       if (methodName == "min") {
-        if (mc.args.size() < 2) { emitError(location) << "math.min requires 2 arguments"; return nullptr; }
+        if (mc.args.size() < 2) {
+          emitError(location) << "math.min requires 2 arguments";
+          return nullptr;
+        }
         auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2) return nullptr;
-        if (arg2.getType() != f64Type) arg2 = coerceType(arg2, f64Type, location);
+        if (!arg2)
+          return nullptr;
+        if (arg2.getType() != f64Type)
+          arg2 = coerceType(arg2, f64Type, location);
         return builder.create<mlir::arith::MinimumFOp>(location, arg, arg2).getResult();
       }
 
@@ -2745,8 +2780,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
       if (methodName == "seed") {
         auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        if (!arg) return nullptr;
-        if (arg.getType() != i64Type) arg = coerceType(arg, i64Type, location);
+        if (!arg)
+          return nullptr;
+        if (arg.getType() != i64Type)
+          arg = coerceType(arg, i64Type, location);
         emitRuntimeCall("hew_random_seed", {}, {arg}, location);
         return nullptr;
       }
@@ -2756,22 +2793,29 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       if (methodName == "gauss") {
         auto mu = generateExpression(ast::callArgExpr(mc.args[0]).value);
         auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!mu || !sigma) return nullptr;
-        if (mu.getType() != f64Type) mu = coerceType(mu, f64Type, location);
-        if (sigma.getType() != f64Type) sigma = coerceType(sigma, f64Type, location);
+        if (!mu || !sigma)
+          return nullptr;
+        if (mu.getType() != f64Type)
+          mu = coerceType(mu, f64Type, location);
+        if (sigma.getType() != f64Type)
+          sigma = coerceType(sigma, f64Type, location);
         return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
       }
       if (methodName == "randint") {
         auto lo = generateExpression(ast::callArgExpr(mc.args[0]).value);
         auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!lo || !hi) return nullptr;
-        if (lo.getType() != i64Type) lo = coerceType(lo, i64Type, location);
-        if (hi.getType() != i64Type) hi = coerceType(hi, i64Type, location);
+        if (!lo || !hi)
+          return nullptr;
+        if (lo.getType() != i64Type)
+          lo = coerceType(lo, i64Type, location);
+        if (hi.getType() != i64Type)
+          hi = coerceType(hi, i64Type, location);
         return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
       }
       if (methodName == "shuffle") {
         auto vec = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        if (!vec) return nullptr;
+        if (!vec)
+          return nullptr;
         emitRuntimeCall("hew_random_shuffle_i64", {}, {vec}, location);
         return nullptr;
       }
@@ -2779,7 +2823,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto cumWeights = generateExpression(ast::callArgExpr(mc.args[0]).value);
         auto total = generateExpression(ast::callArgExpr(mc.args[1]).value);
         auto n = generateExpression(ast::callArgExpr(mc.args[2]).value);
-        if (!cumWeights || !total || !n) return nullptr;
+        if (!cumWeights || !total || !n)
+          return nullptr;
         return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
       }
       emitError(location) << "unknown random function: random." << methodName;

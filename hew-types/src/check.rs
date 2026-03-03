@@ -3984,9 +3984,7 @@ impl Checker {
 
             // Empty block {} coerces to HashMap<K,V> when expected
             (Expr::Block(block), Ty::Named { name, .. })
-                if name == "HashMap"
-                    && block.stmts.is_empty()
-                    && block.trailing_expr.is_none() =>
+                if name == "HashMap" && block.stmts.is_empty() && block.trailing_expr.is_none() =>
             {
                 self.record_type(span, expected);
                 expected.clone()

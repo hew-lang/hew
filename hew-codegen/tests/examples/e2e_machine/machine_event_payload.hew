@@ -1,0 +1,21 @@
+machine Logger {
+    state Idle;
+    state Active { count: Int; }
+
+    event Start;
+    event Log { message: String; }
+    event Stop;
+
+    on Start: Idle -> Active { Active { count: 0 } }
+    on Log: Active -> Active { Active { count: state.count + 1 } }
+    on Stop: Active -> Idle;
+
+    default { state }
+}
+fn main() {
+    var l = Logger::Idle;
+    l = l.step(Start);
+    l = l.step(Log { message: "hello" });
+    l = l.step(Log { message: "world" });
+    match l { Active { count } => println(f"logged {count} messages"), _ => {} }
+}

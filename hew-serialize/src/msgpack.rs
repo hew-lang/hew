@@ -311,6 +311,7 @@ mod tests {
                         event_name: "Timer".into(),
                         source_state: "Red".into(),
                         target_state: "Green".into(),
+                        guard: None,
                         body: (
                             Expr::Block(Block {
                                 stmts: vec![],
@@ -325,6 +326,7 @@ mod tests {
                             15..25,
                         ),
                     }],
+                    has_default: false,
                 }),
                 0..100,
             )],

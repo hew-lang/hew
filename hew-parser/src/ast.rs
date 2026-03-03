@@ -1090,5 +1090,7 @@ pub struct MachineTransition {
     pub event_name: String,
     pub source_state: String,
     pub target_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
 }

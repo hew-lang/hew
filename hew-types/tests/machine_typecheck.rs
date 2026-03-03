@@ -26,6 +26,7 @@ fn make_machine(
         states,
         events,
         transitions,
+        has_default: false,
     }
 }
 
@@ -70,6 +71,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
+        guard: None,
         body: (Expr::Literal(Literal::Bool(true)), 0..0),
     }
 }
@@ -79,7 +81,8 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         event_name: event.to_string(),
         source_state: "_".to_string(),
         target_state: "_".to_string(),
-        body: (Expr::Identifier("self".to_string()), 0..0),
+        guard: None,
+        body: (Expr::Identifier("state".to_string()), 0..0),
     }
 }
 

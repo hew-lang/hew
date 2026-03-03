@@ -262,6 +262,8 @@ pub enum Token<'src> {
     Event,
     #[token("on")]
     On,
+    #[token("when")]
+    When,
 
     // ── Multi-char operators (must precede single-char) ───────────────
     #[token("==")]
@@ -522,6 +524,7 @@ impl std::fmt::Display for Token<'_> {
             Token::State => f.write_str("`state`"),
             Token::Event => f.write_str("`event`"),
             Token::On => f.write_str("`on`"),
+            Token::When => f.write_str("`when`"),
             // Delimiters and punctuation
             Token::LeftParen => f.write_str("`(`"),
             Token::RightParen => f.write_str("`)`"),
@@ -673,6 +676,7 @@ impl Token<'_> {
             Token::State => Some("state"),
             Token::Event => Some("event"),
             Token::On => Some("on"),
+            Token::When => Some("when"),
             _ => None,
         }
     }

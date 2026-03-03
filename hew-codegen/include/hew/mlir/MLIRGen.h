@@ -148,9 +148,9 @@ private:
   std::optional<llvm::SmallVector<mlir::Value, 4>>
   generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Location location);
   /// Emit the gen-next null-check, wrap, cleanup, and return sequence.
-  void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr,
-                         mlir::LLVM::LLVMStructType stateType, unsigned genFrameIdx,
-                         mlir::Type yieldType, mlir::Type wrapperType, mlir::Location location);
+  void emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr, mlir::LLVM::LLVMStructType stateType,
+                         unsigned genFrameIdx, mlir::Type yieldType, mlir::Type wrapperType,
+                         mlir::Location location);
 
   // ── Statements ───────────────────────────────────────────────────
   void generateStatement(const ast::Stmt &stmt);
@@ -436,8 +436,10 @@ private:
 
   // ── Machine transition body context ──────────────────────────────
   // Set during transition body evaluation so that ExprFieldAccess can
-  // resolve `self.field` on machine enum values.
+  // resolve `state.field` and `event.field` on machine enum values.
   std::string currentMachineSourceVariant_;
+  std::string currentMachineEventVariant_;
+  std::string currentMachineEventTypeName_;
 
   // ── Struct type registry ──────────────────────────────────────────
   std::unordered_map<std::string, StructTypeInfo> structTypes;

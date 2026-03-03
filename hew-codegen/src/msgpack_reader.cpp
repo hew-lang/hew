@@ -1637,6 +1637,9 @@ static ast::MachineTransition parseMachineTransition(const msgpack::object &obj)
   mt.event_name = getString(mapReq(obj, "event_name"));
   mt.source_state = getString(mapReq(obj, "source_state"));
   mt.target_state = getString(mapReq(obj, "target_state"));
+  const auto *g = mapGet(obj, "guard");
+  if (g && !isNil(*g))
+    mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
   mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
   return mt;
 }

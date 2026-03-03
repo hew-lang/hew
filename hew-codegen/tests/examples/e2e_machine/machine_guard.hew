@@ -1,0 +1,25 @@
+machine TokenBucket {
+    state Allowing  { tokens: Int; }
+    state Throttled;
+
+    event Request;
+    event Replenish;
+
+    on Request: Allowing -> Allowing when state.tokens > 1 {
+        Allowing { tokens: state.tokens - 1 }
+    }
+    on Request: Allowing -> Throttled when state.tokens <= 1;
+    on Replenish: Throttled -> Allowing { Allowing { tokens: 5 } }
+    on Replenish: Allowing -> Allowing { Allowing { tokens: state.tokens + 1 } }
+
+    default { state }
+}
+fn main() {
+    var tb = TokenBucket::Allowing { tokens: 3 };
+    tb = tb.step(Request);
+    tb = tb.step(Request);
+    tb = tb.step(Request);
+    println(tb.state_name());
+    tb = tb.step(Replenish);
+    println(tb.state_name());
+}

@@ -341,6 +341,8 @@ add_e2e_file_test(machine_counter     e2e_machine machine_counter)
 add_e2e_file_test(machine_self_trans  e2e_machine machine_self_transition)
 add_e2e_file_test(machine_circuit_br  e2e_machine machine_circuit_breaker)
 add_e2e_file_test(machine_systematic  e2e_machine machine_systematic)
+add_e2e_file_test(machine_event_pay   e2e_machine machine_event_payload)
+add_e2e_file_test(machine_guard       e2e_machine machine_guard)
 add_e2e_reject_test(machine_exhaustive e2e_machine machine_exhaustive_fail "does not handle event")
 
 # HashMap for-in iteration (sorted because HashMap order is non-deterministic)

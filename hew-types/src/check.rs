@@ -224,8 +224,8 @@ pub struct Checker {
     wasm_target: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
-    /// Inside a machine transition body, the (`machine_name`, `source_state_name`) pair.
-    current_machine_transition: Option<(String, String)>,
+    /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
+    current_machine_transition: Option<(String, String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1184,8 +1184,8 @@ impl Checker {
                     transition.source_state.clone(),
                     transition.event_name.clone(),
                 );
-                // Fix 5: Reject duplicate explicit transitions
-                if covered.contains(&key) {
+                // Fix 5: Reject duplicate explicit transitions (unless guarded)
+                if covered.contains(&key) && transition.guard.is_none() {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::MachineExhaustivenessError,
                         span.clone(),
@@ -1210,9 +1210,33 @@ impl Checker {
                 },
                 false,
             );
+            // Bind `event` as the event companion enum type so that
+            // `event.field` resolves for events with payload fields.
+            let event_type_name = format!("{}Event", md.name);
+            self.env.define(
+                "event".to_string(),
+                Ty::Named {
+                    name: event_type_name,
+                    args: vec![],
+                },
+                false,
+            );
             if transition.source_state != "_" {
-                self.current_machine_transition =
-                    Some((md.name.clone(), transition.source_state.clone()));
+                self.current_machine_transition = Some((
+                    md.name.clone(),
+                    transition.source_state.clone(),
+                    transition.event_name.clone(),
+                ));
+            } else {
+                self.current_machine_transition = Some((
+                    md.name.clone(),
+                    "_".to_string(),
+                    transition.event_name.clone(),
+                ));
+            }
+            // Type-check guard expression if present
+            if let Some((guard_expr, guard_span)) = &transition.guard {
+                self.check_against(guard_expr, guard_span, &Ty::Bool);
             }
             self.synthesize(&transition.body.0, &transition.body.1);
             self.current_machine_transition = None;
@@ -5610,6 +5634,30 @@ impl Checker {
                             result_ty = self.substitute_named_param(&result_ty, param, arg);
                         }
                         result_ty
+                    } else if let Some((ref mn, _, ref evt_name)) = self.current_machine_transition
+                    {
+                        // Inside a machine transition: resolve `event.field` on the event enum type
+                        let event_type_name = format!("{}Event", mn);
+                        if *name == event_type_name && evt_name != "_" {
+                            if let Some(VariantDef::Struct(variant_fields)) =
+                                td.variants.get(evt_name).cloned()
+                            {
+                                if let Some((_, field_ty)) =
+                                    variant_fields.iter().find(|(fname, _)| fname == field)
+                                {
+                                    return field_ty.clone();
+                                }
+                            }
+                        }
+                        let similar =
+                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedField,
+                            span,
+                            format!("no field `{field}` on type `{name}`"),
+                            similar,
+                        );
+                        Ty::Error
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
@@ -5643,9 +5691,9 @@ impl Checker {
                 }
             }
             Ty::Machine { name } => {
-                // Allow `self.field` inside a transition body when the source
+                // Allow `state.field` inside a transition body when the source
                 // state is known and has the requested field.
-                if let Some((ref mn, ref src_state)) = self.current_machine_transition {
+                if let Some((ref mn, ref src_state, _)) = self.current_machine_transition {
                     if mn == name {
                         if let Some(td) = self.lookup_type_def(name) {
                             if let Some(VariantDef::Struct(variant_fields)) =

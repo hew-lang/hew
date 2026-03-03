@@ -606,6 +606,7 @@ impl<'src> Parser<'src> {
             Token::State => Some("state"),
             Token::Event => Some("event"),
             Token::On => Some("on"),
+            Token::When => Some("when"),
             _ => None,
         }
     }
@@ -1790,6 +1791,14 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::Arrow)?;
                 let target_state = self.parse_state_pattern()?;
 
+                // Optional guard: `when <expr>`
+                let guard = if self.peek() == Some(&Token::When) {
+                    self.advance();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+
                 // Body is optional for unit target states:
                 //   on Event: Source -> Target;            ← no body, auto-construct Target
                 //   on Event: Source -> Target { expr }    ← explicit body
@@ -1809,6 +1818,7 @@ impl<'src> Parser<'src> {
                     event_name,
                     source_state,
                     target_state,
+                    guard,
                     body: (body, body_start..body_end),
                 });
             } else if self.peek() == Some(&Token::Default) {

@@ -406,8 +406,14 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     auto enumIt = enumTypes.find(structName.str());
     if (enumIt != enumTypes.end() && !currentMachineSourceVariant_.empty()) {
       const auto &enumInfo = enumIt->second;
+      // Determine which variant to resolve: for event types use the event variant,
+      // otherwise use the source state variant (for `state.field`).
+      const std::string &variantName = (!currentMachineEventTypeName_.empty() &&
+                                        structName.str() == currentMachineEventTypeName_)
+                                           ? currentMachineEventVariant_
+                                           : currentMachineSourceVariant_;
       for (const auto &variant : enumInfo.variants) {
-        if (variant.name != currentMachineSourceVariant_)
+        if (variant.name != variantName)
           continue;
         for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
           if (variant.fieldNames[i] == fieldName) {

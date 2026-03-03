@@ -880,6 +880,7 @@ struct MachineTransition {
   std::string event_name;
   std::string source_state;
   std::string target_state;
+  std::unique_ptr<Spanned<Expr>> guard; // nullptr if no guard
   Spanned<Expr> body;
 };
 

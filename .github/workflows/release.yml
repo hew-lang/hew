@@ -665,20 +665,13 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     if: ${{ !cancelled() && needs.build.result != 'failure' }}
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
-
-      - name: Download Linux tarballs
-        uses: actions/download-artifact@v4
-        with:
-          pattern: "hew-v*-linux-*"
-          path: docker-ctx/
-          merge-multiple: true
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -700,10 +693,12 @@ jobs:
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
-          context: docker-ctx/
+          context: .
           file: installers/docker/Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
           tags: |
             ghcr.io/hew-lang/hew:${{ steps.version.outputs.version }}
             ghcr.io/hew-lang/hew:latest

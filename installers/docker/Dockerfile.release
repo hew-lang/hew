@@ -1,46 +1,123 @@
 # syntax=docker/dockerfile:1
-# Multi-arch Dockerfile for CI release builds.
-# Expects both linux-x86_64 and linux-aarch64 tarballs in the build context.
-# Used with: docker buildx build --platform linux/amd64,linux/arm64
+# Self-contained multi-stage Alpine build for the Hew compiler.
+# All binaries are built statically inside Docker — no gcompat, no glibc.
 #
 # Usage:
 #   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew build main.hew
 #   docker run --rm -v "$PWD:/work" ghcr.io/hew-lang/hew run main.hew
+#
+# Build:
+#   docker buildx build -f installers/docker/Dockerfile.release \
+#     --build-arg VERSION=0.1.6 -t hew:local .
 
-FROM alpine:3.23 AS fetch
-ARG TARGETARCH
-COPY *.tar.gz /tmp/
-RUN set -e; \
-    case "$TARGETARCH" in \
-      amd64)  ARCH=x86_64 ;; \
-      arm64)  ARCH=aarch64 ;; \
-      *)      echo "Unsupported arch: $TARGETARCH"; exit 1 ;; \
-    esac && \
-    tar -xzf /tmp/hew-v*-linux-${ARCH}.tar.gz -C /tmp && \
-    mv /tmp/hew-v*-linux-${ARCH} /tmp/hew
+ARG VERSION=0.0.0
 
-FROM alpine:3.23
-RUN apk add --no-cache \
-      gcompat \
-      libgcc \
-      libstdc++ \
-      ca-certificates \
-      gcc \
-      musl-dev \
-      lld
-COPY --from=fetch /tmp/hew/bin/hew           /usr/local/bin/hew
-COPY --from=fetch /tmp/hew/bin/adze          /usr/local/bin/adze
-COPY --from=fetch /tmp/hew/bin/hew-codegen   /usr/local/bin/hew-codegen
-COPY --from=fetch /tmp/hew/lib               /usr/local/lib/hew/
-COPY --from=fetch /tmp/hew/std               /usr/local/share/hew/std/
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage 1: Rust binaries + all std staticlibs (musl-static)
+# ═════════════════════════════════════════════════════════════════════════════
+FROM rust:alpine3.21 AS rust-builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /src
+COPY . .
+
+# On Alpine musl, +crt-static is the default — binaries are fully static.
+# Pure-Hew modules (hex, wire, mime) don't have staticlibs.
+RUN cargo build --release \
+    -p hew-cli \
+    -p adze-cli \
+    -p hew-lsp \
+    -p hew-runtime \
+    -p hew-std-encoding-base64 \
+    -p hew-std-encoding-csv \
+    -p hew-std-encoding-json \
+    -p hew-std-encoding-markdown \
+    -p hew-std-encoding-msgpack \
+    -p hew-std-encoding-protobuf \
+    -p hew-std-encoding-toml \
+    -p hew-std-encoding-yaml \
+    -p hew-std-encoding-compress \
+    -p hew-std-crypto-crypto \
+    -p hew-std-crypto-jwt \
+    -p hew-std-crypto-password \
+    -p hew-std-net-http \
+    -p hew-std-net-ipnet \
+    -p hew-std-net-smtp \
+    -p hew-std-net-url \
+    -p hew-std-net-websocket \
+    -p hew-std-text-regex \
+    -p hew-std-text-semver \
+    -p hew-std-time-cron \
+    -p hew-std-time-datetime \
+    -p hew-std-misc-uuid \
+    -p hew-std-misc-log
+
+# Strip debug info from staticlibs (~30% size reduction)
+RUN strip -d /src/target/release/libhew_runtime.a \
+    /src/target/release/libhew_std_*.a
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage 2: hew-codegen with statically linked LLVM/MLIR
+# ═════════════════════════════════════════════════════════════════════════════
+FROM ghcr.io/hew-lang/llvm-alpine:21 AS codegen-builder
+
+COPY hew-codegen/ /src/hew-codegen/
+
+RUN cmake -S /src/hew-codegen -B /tmp/build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_CXX_FLAGS="-fno-rtti" \
+    -DHEW_STATIC_LINK=ON \
+    -DLLVM_DIR=/opt/llvm-21/lib/cmake/llvm \
+    -DMLIR_DIR=/opt/llvm-21/lib/cmake/mlir
+
+RUN ninja -C /tmp/build -j$(nproc)
+RUN strip /tmp/build/src/hew-codegen
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage 3: Minimal runtime image
+# ═════════════════════════════════════════════════════════════════════════════
+FROM alpine:edge
+
+ARG VERSION
+
+# gcc + musl-dev: needed by `hew build` to link compiled programs (cc driver + libc).
+# lld is intentionally omitted — it pulls in 170MB of shared LLVM libs.
+# The compiler falls back to GNU ld when lld is absent.
+RUN apk add --no-cache ca-certificates gcc musl-dev
+
+# Non-root user
+RUN adduser -D -u 1000 hew
+
+# Binaries
+COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
+COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
+COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
+COPY --from=codegen-builder /tmp/build/src/hew-codegen /usr/local/bin/hew-codegen
+
+# Runtime staticlib
+COPY --from=rust-builder /src/target/release/libhew_runtime.a /usr/local/lib/hew/libhew_runtime.a
+
+# Std staticlibs (glob is safe — only crates with crate-type=["staticlib"] produce .a files)
+COPY --from=rust-builder /src/target/release/libhew_std_*.a /usr/local/lib/hew/
+
+# Standard library Hew source files
+COPY std/ /usr/local/share/hew/std/
+
 ENV HEW_STD=/usr/local/share/hew/std
+
+USER hew
 WORKDIR /work
+
 LABEL org.opencontainers.image.title="Hew" \
       org.opencontainers.image.description="Statically-typed, actor-oriented programming language" \
       org.opencontainers.image.url="https://hew.sh" \
       org.opencontainers.image.source="https://github.com/hew-lang/hew" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0" \
-      org.opencontainers.image.authors="Stephen Olesen <slepp@slepp.ca>"
+      org.opencontainers.image.authors="Stephen Olesen <slepp@slepp.ca>" \
+      org.opencontainers.image.version="${VERSION}"
 
 ENTRYPOINT ["/usr/local/bin/hew"]
 CMD ["--help"]

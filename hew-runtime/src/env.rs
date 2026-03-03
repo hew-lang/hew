@@ -340,7 +340,9 @@ mod tests {
 
     #[test]
     fn test_temp_dir_returns_nonempty() {
+        // SAFETY: hew_temp_dir returns a malloc'd C string; no preconditions.
         let ptr = unsafe { hew_temp_dir() };
+        // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
         let text = unsafe { read_and_free(ptr) };
         assert!(!text.is_empty());
         // Should not end with a separator.

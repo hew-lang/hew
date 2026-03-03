@@ -267,10 +267,11 @@ mod tests {
         let mut actor_a = create_test_actor(100);
         let mut actor_b = create_test_actor(200);
 
-        let a_ptr = &mut actor_a as *mut HewActor;
-        let b_ptr = &mut actor_b as *mut HewActor;
+        let a_ptr = &raw mut actor_a;
+        let b_ptr = &raw mut actor_b;
 
         // Create bidirectional link
+        // SAFETY: a_ptr and b_ptr are valid pointers to stack-allocated test actors.
         unsafe {
             hew_actor_link(a_ptr, b_ptr);
         }
@@ -284,17 +285,18 @@ mod tests {
             assert!(table_a
                 .links
                 .get(&100)
-                .map_or(false, |v| v.contains(&(b_ptr as usize))));
+                .is_some_and(|v| v.contains(&(b_ptr as usize))));
         }
         {
             let table_b = LINK_TABLE[shard_b].read().unwrap();
             assert!(table_b
                 .links
                 .get(&200)
-                .map_or(false, |v| v.contains(&(a_ptr as usize))));
+                .is_some_and(|v| v.contains(&(a_ptr as usize))));
         }
 
         // Remove link
+        // SAFETY: a_ptr and b_ptr are valid pointers to stack-allocated test actors.
         unsafe {
             hew_actor_unlink(a_ptr, b_ptr);
         }
@@ -305,23 +307,24 @@ mod tests {
             assert!(!table_a
                 .links
                 .get(&100)
-                .map_or(false, |v| v.contains(&(b_ptr as usize))));
+                .is_some_and(|v| v.contains(&(b_ptr as usize))));
         }
         {
             let table_b = LINK_TABLE[shard_b].read().unwrap();
             assert!(!table_b
                 .links
                 .get(&200)
-                .map_or(false, |v| v.contains(&(a_ptr as usize))));
+                .is_some_and(|v| v.contains(&(a_ptr as usize))));
         }
     }
 
     #[test]
     fn test_null_actor_handling() {
         let mut actor = create_test_actor(300);
-        let actor_ptr = &mut actor as *mut HewActor;
+        let actor_ptr = &raw mut actor;
 
         // These should not panic
+        // SAFETY: Testing null pointer handling; functions handle null gracefully.
         unsafe {
             hew_actor_link(std::ptr::null_mut(), actor_ptr);
             hew_actor_link(actor_ptr, std::ptr::null_mut());
@@ -333,6 +336,7 @@ mod tests {
         }
 
         // Self-linking should be ignored
+        // SAFETY: actor_ptr is a valid pointer; self-link is a no-op.
         unsafe {
             hew_actor_link(actor_ptr, actor_ptr);
         }

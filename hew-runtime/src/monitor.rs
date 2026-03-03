@@ -269,10 +269,11 @@ mod tests {
         let mut watcher = create_test_actor(watcher_id);
         let mut target = create_test_actor(target_id);
 
-        let watcher_ptr = &mut watcher as *mut HewActor;
-        let target_ptr = &mut target as *mut HewActor;
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
 
         // Create monitor
+        // SAFETY: Both pointers are valid stack-allocated test actors.
         let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
 
         assert_ne!(ref_id, 0);
@@ -304,7 +305,7 @@ mod tests {
                     || shard
                         .monitors
                         .get(&target_id)
-                        .map_or(true, |v| v.is_empty())
+                        .is_none_or(std::vec::Vec::is_empty)
             );
             assert!(!shard.ref_to_monitor.contains_key(&ref_id));
         }
@@ -317,12 +318,14 @@ mod tests {
         let mut watcher2 = create_test_actor(20_110);
         let mut target = create_test_actor(20_200);
 
-        let watcher1_ptr = &mut watcher1 as *mut HewActor;
-        let watcher2_ptr = &mut watcher2 as *mut HewActor;
-        let target_ptr = &mut target as *mut HewActor;
+        let watcher1_ptr = &raw mut watcher1;
+        let watcher2_ptr = &raw mut watcher2;
+        let target_ptr = &raw mut target;
 
         // Create two monitors for same target
+        // SAFETY: Both pointers are valid stack-allocated test actors.
         let ref_id1 = unsafe { hew_actor_monitor(watcher1_ptr, target_ptr) };
+        // SAFETY: Both pointers are valid stack-allocated test actors.
         let ref_id2 = unsafe { hew_actor_monitor(watcher2_ptr, target_ptr) };
 
         assert_ne!(ref_id1, ref_id2);
@@ -357,7 +360,10 @@ mod tests {
             let shard = MONITOR_TABLE[shard_index].read().unwrap();
             assert!(
                 !shard.monitors.contains_key(&20_200)
-                    || shard.monitors.get(&20_200).map_or(true, |v| v.is_empty())
+                    || shard
+                        .monitors
+                        .get(&20_200)
+                        .is_none_or(std::vec::Vec::is_empty)
             );
         }
     }
@@ -365,9 +371,10 @@ mod tests {
     #[test]
     fn test_null_actor_handling() {
         let mut actor = create_test_actor(300);
-        let actor_ptr = &mut actor as *mut HewActor;
+        let actor_ptr = &raw mut actor;
 
         // These should not panic and should return 0
+        // SAFETY: Testing null pointer handling; function returns 0 for null.
         unsafe {
             assert_eq!(hew_actor_monitor(std::ptr::null_mut(), actor_ptr), 0);
             assert_eq!(hew_actor_monitor(actor_ptr, std::ptr::null_mut()), 0);

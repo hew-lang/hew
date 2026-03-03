@@ -211,8 +211,8 @@ mod tests {
     fn test_regex_null_safety() {
         // SAFETY: Testing null pointer handling.
         assert!(unsafe { hew_regex_new(std::ptr::null()) }.is_null());
-        // SAFETY: Testing null pointer handling.
         assert_eq!(
+            // SAFETY: Testing null pointer handling.
             unsafe { hew_regex_is_match(std::ptr::null(), std::ptr::null()) },
             0
         );

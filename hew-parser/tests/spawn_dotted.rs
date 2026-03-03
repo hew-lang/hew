@@ -36,14 +36,14 @@ fn main() {
             if f.name == "main" {
                 // Walk into the block to find the spawn
                 for (stmt, _) in &f.body.stmts {
-                    if let hew_parser::ast::Stmt::Let { value, .. } = stmt {
-                        if let Some((expr, _)) = value {
-                            if let Expr::Spawn { target, .. } = expr {
-                                if let Expr::FieldAccess { field, .. } = &target.0 {
-                                    assert_eq!(field, "Worker");
-                                    found_field_access = true;
-                                }
-                            }
+                    if let hew_parser::ast::Stmt::Let {
+                        value: Some((Expr::Spawn { target, .. }, _)),
+                        ..
+                    } = stmt
+                    {
+                        if let Expr::FieldAccess { field, .. } = &target.0 {
+                            assert_eq!(field, "Worker");
+                            found_field_access = true;
                         }
                     }
                 }
@@ -58,11 +58,11 @@ fn main() {
 
 #[test]
 fn spawn_dotted_no_args() {
-    let source = r#"
+    let source = r"
 fn main() {
     let pid = spawn workers.Worker();
 }
-"#;
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),

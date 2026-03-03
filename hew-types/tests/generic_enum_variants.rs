@@ -16,7 +16,7 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
 #[test]
 fn variant_constructors_preserve_type_args() {
     let output = typecheck(
-        r#"
+        r"
         enum Maybe<T> {
             Just(T);
             Nothing;
@@ -35,7 +35,7 @@ fn variant_constructors_preserve_type_args() {
             let _: Maybe<int> = explicit;
             let _: int = y;
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.is_empty(),

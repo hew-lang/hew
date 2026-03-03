@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(m.dependencies["alice::db::postgres"].version_req(), "^2.0");
         match &m.dependencies["alice::db::postgres"] {
             DepSpec::Table(t) => assert_eq!(t.optional, Some(true)),
-            _ => panic!("expected table dep"),
+            DepSpec::Version(_) => panic!("expected table dep"),
         }
 
         assert_eq!(m.dependencies["alice::telemetry"].version_req(), "^1.0");

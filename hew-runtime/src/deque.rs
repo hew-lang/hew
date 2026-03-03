@@ -168,13 +168,13 @@ mod tests {
         // SAFETY: test pointers are just integers cast to *mut ().
         let (deque, _stealer) = unsafe { WorkDeque::new() };
 
-        deque.push(1_usize as *mut ());
+        deque.push(std::ptr::dangling_mut::<()>());
         deque.push(2_usize as *mut ());
         deque.push(3_usize as *mut ());
 
         assert_eq!(deque.pop(), Some(3_usize as *mut ()));
         assert_eq!(deque.pop(), Some(2_usize as *mut ()));
-        assert_eq!(deque.pop(), Some(1_usize as *mut ()));
+        assert_eq!(deque.pop(), Some(std::ptr::dangling_mut::<()>()));
         assert_eq!(deque.pop(), None);
     }
 
@@ -183,11 +183,11 @@ mod tests {
         // SAFETY: test pointers.
         let (deque, stealer) = unsafe { WorkDeque::new() };
 
-        deque.push(1_usize as *mut ());
+        deque.push(std::ptr::dangling_mut::<()>());
         deque.push(2_usize as *mut ());
         deque.push(3_usize as *mut ());
 
-        assert_eq!(stealer.steal(), Some(1_usize as *mut ()));
+        assert_eq!(stealer.steal(), Some(std::ptr::dangling_mut::<()>()));
         assert_eq!(stealer.steal(), Some(2_usize as *mut ()));
         assert_eq!(stealer.steal(), Some(3_usize as *mut ()));
         assert_eq!(stealer.steal(), None);
@@ -195,6 +195,7 @@ mod tests {
 
     #[test]
     fn empty_deque_returns_none() {
+        // SAFETY: Single-threaded test; deque/stealer used exclusively.
         let (deque, stealer) = unsafe { WorkDeque::new() };
         assert!(deque.is_empty());
         assert_eq!(deque.pop(), None);
@@ -203,7 +204,9 @@ mod tests {
 
     #[test]
     fn global_queue_inject_and_steal() {
+        // SAFETY: Single-threaded test; global queue and deque used exclusively.
         let global = unsafe { GlobalQueue::new() };
+        // SAFETY: Single-threaded test; deque used exclusively.
         let (deque, _stealer) = unsafe { WorkDeque::new() };
 
         global.push(10_usize as *mut ());
@@ -257,21 +260,20 @@ mod tests {
                 thread::spawn(move || {
                     let mut count = 0usize;
                     loop {
-                        match stealer.steal() {
-                            Some(_) => count += 1,
-                            None => {
-                                // Retry a few times.
-                                let mut got_more = false;
-                                for _ in 0..100 {
-                                    if stealer.steal().is_some() {
-                                        count += 1;
-                                        got_more = true;
-                                        break;
-                                    }
-                                }
-                                if !got_more {
+                        if stealer.steal().is_some() {
+                            count += 1;
+                        } else {
+                            // Retry a few times.
+                            let mut got_more = false;
+                            for _ in 0..100 {
+                                if stealer.steal().is_some() {
+                                    count += 1;
+                                    got_more = true;
                                     break;
                                 }
+                            }
+                            if !got_more {
+                                break;
                             }
                         }
                     }

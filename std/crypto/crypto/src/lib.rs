@@ -157,106 +157,6 @@ pub unsafe extern "C" fn hew_constant_time_eq(a: *const u8, b: *const u8, len: u
     i32::from(diff == 0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Known SHA-256 test vector: SHA-256("") = e3b0c44298fc1c149afbf4c8996fb924
-    ///                                          27ae41e4649b934ca495991b7852b855
-    #[test]
-    fn test_sha256_empty() {
-        let expected = [
-            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
-            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
-            0x78, 0x52, 0xb8, 0x55,
-        ];
-        let mut out = [0u8; 32];
-        // SAFETY: empty input and out is a valid 32-byte buffer.
-        unsafe { hew_sha256(std::ptr::null(), 0, out.as_mut_ptr()) };
-        assert_eq!(out, expected);
-    }
-
-    /// Known SHA-256 test vector: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223
-    ///                                             b00361a396177a9cb410ff61f20015ad
-    #[test]
-    fn test_sha256_abc() {
-        let expected = [
-            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
-            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
-            0xf2, 0x00, 0x15, 0xad,
-        ];
-        let data = b"abc";
-        let mut out = [0u8; 32];
-        // SAFETY: data and out are valid buffers.
-        unsafe { hew_sha256(data.as_ptr(), data.len(), out.as_mut_ptr()) };
-        assert_eq!(out, expected);
-    }
-
-    /// HMAC-SHA256 test vector from RFC 4231 Test Case 2:
-    /// Key = "Jefe", Data = "what do ya want for nothing?"
-    #[test]
-    fn test_hmac_sha256_rfc4231() {
-        let expected = [
-            0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e, 0x6a, 0x04, 0x24, 0x26, 0x08, 0x95,
-            0x75, 0xc7, 0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83, 0x9d, 0xec, 0x58, 0xb9,
-            0x64, 0xec, 0x38, 0x43,
-        ];
-        let key = b"Jefe";
-        let data = b"what do ya want for nothing?";
-        let mut out = [0u8; 32];
-        // SAFETY: key, data, and out are valid buffers.
-        unsafe {
-            hew_hmac_sha256(
-                key.as_ptr(),
-                key.len(),
-                data.as_ptr(),
-                data.len(),
-                out.as_mut_ptr(),
-            );
-        }
-        assert_eq!(out, expected);
-    }
-
-    #[test]
-    fn test_random_bytes_fills_buffer() {
-        let mut buf = [0u8; 64];
-        // SAFETY: buf is a valid 64-byte buffer.
-        unsafe { hew_random_bytes(buf.as_mut_ptr(), buf.len()) };
-        // Extremely unlikely that 64 random bytes are all zero.
-        assert_ne!(buf, [0u8; 64]);
-    }
-
-    #[test]
-    fn test_constant_time_eq() {
-        let a = [1u8, 2, 3, 4];
-        let b = [1u8, 2, 3, 4];
-        let c = [1u8, 2, 3, 5];
-        // SAFETY: all slices are valid for 4 bytes.
-        assert_eq!(
-            unsafe { hew_constant_time_eq(a.as_ptr(), b.as_ptr(), 4) },
-            1
-        );
-        // SAFETY: all slices are valid for 4 bytes.
-        assert_eq!(
-            unsafe { hew_constant_time_eq(a.as_ptr(), c.as_ptr(), 4) },
-            0
-        );
-    }
-
-    #[test]
-    fn test_sha512_empty() {
-        // Known SHA-512("") first 8 bytes
-        let mut out = [0u8; 64];
-        // SAFETY: empty input and out is a valid 64-byte buffer.
-        unsafe { hew_sha512(std::ptr::null(), 0, out.as_mut_ptr()) };
-        // SHA-512("") starts with cf83e1357eefb8bd...
-        assert_eq!(out[0], 0xcf);
-        assert_eq!(out[1], 0x83);
-        assert_eq!(out[2], 0xe1);
-        assert_eq!(out[3], 0x35);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // HewVec-ABI wrappers (used by std/crypto.hew)
 // ---------------------------------------------------------------------------
@@ -387,4 +287,104 @@ pub unsafe extern "C" fn hew_constant_time_eq_hew(
     }
     // SAFETY: both slices are valid and same length.
     unsafe { hew_constant_time_eq(a_bytes.as_ptr(), b_bytes.as_ptr(), a_bytes.len()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known SHA-256 test vector: SHA-256("") = e3b0c44298fc1c149afbf4c8996fb924
+    ///                                          27ae41e4649b934ca495991b7852b855
+    #[test]
+    fn test_sha256_empty() {
+        let expected = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ];
+        let mut out = [0u8; 32];
+        // SAFETY: empty input and out is a valid 32-byte buffer.
+        unsafe { hew_sha256(std::ptr::null(), 0, out.as_mut_ptr()) };
+        assert_eq!(out, expected);
+    }
+
+    /// Known SHA-256 test vector: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223
+    ///                                             b00361a396177a9cb410ff61f20015ad
+    #[test]
+    fn test_sha256_abc() {
+        let expected = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
+        ];
+        let data = b"abc";
+        let mut out = [0u8; 32];
+        // SAFETY: data and out are valid buffers.
+        unsafe { hew_sha256(data.as_ptr(), data.len(), out.as_mut_ptr()) };
+        assert_eq!(out, expected);
+    }
+
+    /// HMAC-SHA256 test vector from RFC 4231 Test Case 2:
+    /// Key = "Jefe", Data = "what do ya want for nothing?"
+    #[test]
+    fn test_hmac_sha256_rfc4231() {
+        let expected = [
+            0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e, 0x6a, 0x04, 0x24, 0x26, 0x08, 0x95,
+            0x75, 0xc7, 0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83, 0x9d, 0xec, 0x58, 0xb9,
+            0x64, 0xec, 0x38, 0x43,
+        ];
+        let key = b"Jefe";
+        let data = b"what do ya want for nothing?";
+        let mut out = [0u8; 32];
+        // SAFETY: key, data, and out are valid buffers.
+        unsafe {
+            hew_hmac_sha256(
+                key.as_ptr(),
+                key.len(),
+                data.as_ptr(),
+                data.len(),
+                out.as_mut_ptr(),
+            );
+        }
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_random_bytes_fills_buffer() {
+        let mut buf = [0u8; 64];
+        // SAFETY: buf is a valid 64-byte buffer.
+        unsafe { hew_random_bytes(buf.as_mut_ptr(), buf.len()) };
+        // Extremely unlikely that 64 random bytes are all zero.
+        assert_ne!(buf, [0u8; 64]);
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        let a = [1u8, 2, 3, 4];
+        let b = [1u8, 2, 3, 4];
+        let c = [1u8, 2, 3, 5];
+        assert_eq!(
+            // SAFETY: all slices are valid for 4 bytes.
+            unsafe { hew_constant_time_eq(a.as_ptr(), b.as_ptr(), 4) },
+            1
+        );
+        assert_eq!(
+            // SAFETY: all slices are valid for 4 bytes.
+            unsafe { hew_constant_time_eq(a.as_ptr(), c.as_ptr(), 4) },
+            0
+        );
+    }
+
+    #[test]
+    fn test_sha512_empty() {
+        // Known SHA-512("") first 8 bytes
+        let mut out = [0u8; 64];
+        // SAFETY: empty input and out is a valid 64-byte buffer.
+        unsafe { hew_sha512(std::ptr::null(), 0, out.as_mut_ptr()) };
+        // SHA-512("") starts with cf83e1357eefb8bd...
+        assert_eq!(out[0], 0xcf);
+        assert_eq!(out[1], 0x83);
+        assert_eq!(out[2], 0xe1);
+        assert_eq!(out[3], 0x35);
+    }
 }

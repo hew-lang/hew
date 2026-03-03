@@ -542,7 +542,7 @@ fn missing_single_transition_detected_3x3() {
     );
     let msg = format!("{:?}", output.errors);
     assert!(
-        msg.contains("B") && msg.contains("Y"),
+        msg.contains('B') && msg.contains('Y'),
         "error should mention state B and event Y: {msg}"
     );
 }

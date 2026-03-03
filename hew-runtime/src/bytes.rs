@@ -620,6 +620,10 @@ pub unsafe extern "C" fn hew_bytes_from_str(str_ptr: *const u8) -> BytesTriple {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test data: byte buffer sizes are small enough to fit in u32"
+)]
 mod tests {
     use super::*;
 

@@ -50,7 +50,7 @@ fn test_tar_symlink_extraction() {
         let path = entry.path().unwrap().into_owned();
         let entry_type = entry.header().entry_type();
 
-        println!("Entry: {:?}, Type: {:?}", path, entry_type);
+        println!("Entry: {path:?}, Type: {entry_type:?}");
 
         if entry_type.is_symlink() {
             symlink_found = true;
@@ -59,7 +59,7 @@ fn test_tar_symlink_extraction() {
             // Try to get link target
             if let Ok(Some(target)) = entry.link_name() {
                 symlink_target = target.to_string_lossy().to_string();
-                println!("  Symlink target: {:?}", symlink_target);
+                println!("  Symlink target: {symlink_target:?}");
             }
 
             // What does read_to_end return for a symlink?
@@ -118,7 +118,7 @@ fn test_unpack_does_not_check_symlinks() {
         let path = entry.path().unwrap().into_owned();
         let entry_type = entry.header().entry_type();
 
-        println!("Processing: {:?}, type: {:?}", path, entry_type);
+        println!("Processing: {path:?}, type: {entry_type:?}");
 
         // Current code only checks the path, not the type
         if path.is_absolute()
@@ -132,7 +132,7 @@ fn test_unpack_does_not_check_symlinks() {
 
         // This code WOULD execute for the symlink
         let target_path = target.join(&path);
-        println!("  -> Would write to: {:?}", target_path);
+        println!("  -> Would write to: {target_path:?}");
 
         // The symlink entry has no data - read_to_end returns 0 bytes
         let mut contents = Vec::new();

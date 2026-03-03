@@ -394,7 +394,7 @@ mod tests {
     fn test_error_with_suggestions() {
         let err =
             TypeError::inference_failed(0..5, "variable").with_suggestion("use let x: i32 = ...");
-        assert!(err.suggestions.len() >= 1);
+        assert!(!err.suggestions.is_empty());
     }
 
     #[test]

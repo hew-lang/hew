@@ -2,7 +2,7 @@ use hew_parser::ast::{Item, TraitItem};
 
 #[test]
 fn parses_trait_defaults_and_impl_type_aliases() {
-    let source = r#"
+    let source = r"
         trait Iterator {
             type Item = int;
             fn next(self) -> Self::Item;
@@ -18,7 +18,7 @@ fn parses_trait_defaults_and_impl_type_aliases() {
                 self.value
             }
         }
-    "#;
+    ";
 
     let parsed = hew_parser::parse(source);
     assert!(

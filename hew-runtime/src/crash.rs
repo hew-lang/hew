@@ -413,7 +413,7 @@ mod tests {
             actor_pid: 100,
             signal: 11,
             signal_code: 1,
-            fault_addr: 0xdeadbeef,
+            fault_addr: 0xdead_beef,
             msg_type: 5,
             timestamp_ns: 1000,
             worker_id: 3,

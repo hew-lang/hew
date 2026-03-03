@@ -7,11 +7,11 @@ fn lex_directory(dir: &Path) -> (usize, usize, Vec<(String, usize)>) {
     let mut errors = Vec::new();
 
     let mut entries: Vec<_> = fs::read_dir(dir).unwrap().filter_map(Result::ok).collect();
-    entries.sort_by_key(|e| e.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "hew") {
+        if path.extension().is_none_or(|e| e != "hew") {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap();

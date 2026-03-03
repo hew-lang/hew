@@ -267,6 +267,11 @@ impl Default for MpscQueue {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "test indices and counts are small enough to fit in i32"
+)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -388,9 +393,9 @@ mod tests {
         // SAFETY: single-threaded test, we are the consumer.
         let r = unsafe { q.pop() };
         // SAFETY: ptr was pushed as a TestNode; cast back is valid.
-        assert!(
-            matches!(r, PopResult::Success(ptr) if unsafe { (*TestNode::from_mpsc(ptr)).value } == 1)
-        );
+        assert!(matches!(r, PopResult::Success(ptr) if
+                // SAFETY: ptr was pushed as a TestNode; cast back is valid.
+                unsafe { (*TestNode::from_mpsc(ptr)).value } == 1));
 
         // SAFETY: node is valid and we are single-threaded.
         unsafe {
@@ -400,16 +405,16 @@ mod tests {
         // SAFETY: single-threaded test, we are the consumer.
         let r = unsafe { q.pop() };
         // SAFETY: ptr was pushed as a TestNode; cast back is valid.
-        assert!(
-            matches!(r, PopResult::Success(ptr) if unsafe { (*TestNode::from_mpsc(ptr)).value } == 2)
-        );
+        assert!(matches!(r, PopResult::Success(ptr) if
+                // SAFETY: ptr was pushed as a TestNode; cast back is valid.
+                unsafe { (*TestNode::from_mpsc(ptr)).value } == 2));
 
         // SAFETY: single-threaded test, we are the consumer.
         let r = unsafe { q.pop() };
         // SAFETY: ptr was pushed as a TestNode; cast back is valid.
-        assert!(
-            matches!(r, PopResult::Success(ptr) if unsafe { (*TestNode::from_mpsc(ptr)).value } == 3)
-        );
+        assert!(matches!(r, PopResult::Success(ptr) if
+                // SAFETY: ptr was pushed as a TestNode; cast back is valid.
+                unsafe { (*TestNode::from_mpsc(ptr)).value } == 3));
 
         // SAFETY: single-threaded test, we are the consumer.
         let r = unsafe { q.pop() };
@@ -467,6 +472,11 @@ mod tests {
 
     #[test]
     fn concurrent_producers() {
+        // Wrapper to send raw pointers across threads.
+        struct SendPtr(*mut MpscNode);
+        // SAFETY: Each pointer is exclusively owned by one producer thread.
+        unsafe impl Send for SendPtr {}
+
         const NUM_PRODUCERS: usize = 8;
         const PER_PRODUCER: usize = 5_000;
         let total = NUM_PRODUCERS * PER_PRODUCER;
@@ -478,11 +488,6 @@ mod tests {
         // Allocate all nodes up front.
         let all_nodes: Vec<*mut TestNode> =
             (0..total).map(|i| TestNode::new_boxed(i as i32)).collect();
-
-        // Wrapper to send raw pointers across threads.
-        struct SendPtr(*mut MpscNode);
-        // SAFETY: Each pointer is exclusively owned by one producer thread.
-        unsafe impl Send for SendPtr {}
 
         // Distribute nodes to producer threads.
         let mut handles = Vec::new();
@@ -555,12 +560,9 @@ mod tests {
             }
 
             let mut count = 0;
-            loop {
-                // SAFETY: single consumer.
-                match unsafe { q.pop() } {
-                    PopResult::Success(_) => count += 1,
-                    _ => break,
-                }
+            // SAFETY: single consumer.
+            while let PopResult::Success(_) = unsafe { q.pop() } {
+                count += 1;
             }
             assert_eq!(count, 100);
         }

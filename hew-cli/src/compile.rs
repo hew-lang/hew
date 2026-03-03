@@ -311,8 +311,7 @@ pub fn compile(
     // Compute debug metadata (source path + line map) when building with --debug.
     let (abs_source_path, line_map) = if options.debug {
         let path = std::fs::canonicalize(input)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| input.to_string());
+            .map_or_else(|_| input.to_string(), |p| p.display().to_string());
         (Some(path), Some(line_map_from_source(&source)))
     } else {
         (None, None)
@@ -1168,7 +1167,7 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 mod tests {
     use super::*;
 
-    fn make_module_import(path: Vec<&str>) -> Spanned<Item> {
+    fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
             path: path.iter().map(ToString::to_string).collect(),
             spec: None,
@@ -1193,14 +1192,14 @@ mod tests {
     #[test]
     fn validate_no_manifest_allows_all() {
         // When manifest exists but has no deps, undeclared imports are flagged.
-        let items = vec![make_module_import(vec!["mylib", "utils"])];
+        let items = vec![make_module_import(&["mylib", "utils"])];
         let errs = validate_imports_against_manifest(&items, &[], None);
         assert_eq!(errs.len(), 1, "undeclared import should produce an error");
     }
 
     #[test]
     fn validate_declared_dep_is_ok() {
-        let items = vec![make_module_import(vec!["mylib", "utils"])];
+        let items = vec![make_module_import(&["mylib", "utils"])];
         let deps = vec!["mylib::utils".to_string()];
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert!(errs.is_empty());
@@ -1208,7 +1207,7 @@ mod tests {
 
     #[test]
     fn validate_undeclared_dep_errors() {
-        let items = vec![make_module_import(vec!["mylib", "utils"])];
+        let items = vec![make_module_import(&["mylib", "utils"])];
         let deps: Vec<String> = vec!["mylib::other".to_string()];
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert_eq!(errs.len(), 1);
@@ -1219,7 +1218,7 @@ mod tests {
     #[test]
     fn validate_stdlib_import_is_always_ok() {
         // std::fs is a known stdlib module
-        let items = vec![make_module_import(vec!["std", "fs"])];
+        let items = vec![make_module_import(&["std", "fs"])];
         let deps: Vec<String> = vec![];
         let errs = validate_imports_against_manifest(&items, &deps, None);
         assert!(errs.is_empty(), "stdlib imports are always allowed");
@@ -1239,9 +1238,9 @@ mod tests {
     #[test]
     fn validate_multiple_imports_reports_all_errors() {
         let items = vec![
-            make_module_import(vec!["mylib", "a"]),
-            make_module_import(vec!["mylib", "b"]),
-            make_module_import(vec!["mylib", "c"]),
+            make_module_import(&["mylib", "a"]),
+            make_module_import(&["mylib", "b"]),
+            make_module_import(&["mylib", "c"]),
         ];
         let deps = vec!["mylib::a".to_string()];
         let errs = validate_imports_against_manifest(&items, &deps, None);
@@ -1251,7 +1250,7 @@ mod tests {
     #[test]
     fn validate_local_import_is_exempt() {
         // Imports matching the package name are local and skip manifest validation.
-        let items = vec![make_module_import(vec!["myapp", "models"])];
+        let items = vec![make_module_import(&["myapp", "models"])];
         let errs = validate_imports_against_manifest(&items, &[], Some("myapp"));
         assert!(
             errs.is_empty(),

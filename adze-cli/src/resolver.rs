@@ -607,7 +607,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("unresolvable"));
-        assert!(msg.contains("a"));
+        assert!(msg.contains('a'));
     }
 
     // ── resolve_version_from_entries ─────────────────────────────────

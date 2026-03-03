@@ -453,6 +453,10 @@ pub unsafe extern "C" fn hew_json_object_set_string(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::approx_constant,
+    reason = "test data uses hardcoded floats, not mathematical constants"
+)]
 mod tests {
     use super::*;
     use std::ffi::CString;
@@ -511,7 +515,7 @@ mod tests {
 
     #[test]
     fn parse_array_and_iterate() {
-        let val = parse(r#"[10, 20, 30]"#);
+        let val = parse(r"[10, 20, 30]");
         assert!(!val.is_null());
 
         // SAFETY: val is a valid HewJsonValue from parse.

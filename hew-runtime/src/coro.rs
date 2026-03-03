@@ -503,16 +503,17 @@ mod tests {
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn test_coro_context_init() {
         // Verify that coro_init sets up the context without crashing
+        unsafe extern "C" fn dummy_entry(_arg: *mut u8) {
+            // This won't be called in this test
+        }
+
+        // SAFETY: Stack and context are freshly allocated and valid for init.
         unsafe {
             let stack = CoroStack::new().expect("failed to allocate stack");
             let mut coro_ctx = CoroContext::new();
 
-            unsafe extern "C" fn dummy_entry(_arg: *mut u8) {
-                // This won't be called in this test
-            }
-
             coro_init(
-                &mut coro_ctx,
+                &raw mut coro_ctx,
                 stack.top(),
                 dummy_entry,
                 std::ptr::null_mut(),

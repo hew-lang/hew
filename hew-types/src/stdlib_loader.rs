@@ -454,7 +454,7 @@ mod tests {
         let has_string_fn = info
             .functions
             .iter()
-            .any(|(_, params, _)| params.iter().any(|p| *p == Ty::String));
+            .any(|(_, params, _)| params.contains(&Ty::String));
         assert!(
             has_string_fn,
             "base64 module should have String-typed functions"

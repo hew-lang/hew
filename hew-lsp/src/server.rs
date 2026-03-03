@@ -4811,13 +4811,13 @@ mod tests {
 
     #[test]
     fn completions_do_not_leak_if_block_locals_after_if() {
-        let source = r#"fn main() {
+        let source = r"fn main() {
     if true {
         let branch_only = 1;
     }
     let outside = 2;
     outside
-}"#;
+}";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -4842,7 +4842,7 @@ mod tests {
 
     #[test]
     fn completions_cover_type_impl_methods_if_else_match_and_patterns() {
-        let source = r#"
+        let source = r"
 type Point { x: i32; y: i32; }
 enum Result { Ok(i32); Err(i32); }
 
@@ -4875,7 +4875,7 @@ impl Worker {
         inner + code
     }
 }
-"#;
+";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),

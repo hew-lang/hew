@@ -1340,6 +1340,7 @@ mod tests {
 
     #[test]
     fn wire_buf_to_bytes_roundtrip() {
+        // SAFETY: FFI calls use valid wire buffer and vec pointers.
         unsafe {
             // Encode some data into a wire buffer
             let buf = hew_wire_buf_new();
@@ -1353,7 +1354,12 @@ mod tests {
             // buf is now freed — don't use it
 
             assert!(!vec.is_null());
-            assert_eq!(crate::vec::hew_vec_len(vec), orig_len as i64);
+            #[expect(
+                clippy::cast_possible_wrap,
+                reason = "test data: buffer length fits in i64"
+            )]
+            let expected_len = orig_len as i64;
+            assert_eq!(crate::vec::hew_vec_len(vec), expected_len);
 
             // Convert back to wire buf for decoding
             let buf2 = hew_wire_bytes_to_buf(vec);
@@ -1374,6 +1380,7 @@ mod tests {
 
     #[test]
     fn wire_buf_to_bytes_empty() {
+        // SAFETY: FFI calls use valid wire buffer and vec pointers.
         unsafe {
             let buf = hew_wire_buf_new();
             let vec = hew_wire_buf_to_bytes(buf);

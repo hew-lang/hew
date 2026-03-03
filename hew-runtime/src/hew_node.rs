@@ -831,6 +831,7 @@ mod tests {
 
     impl TestNode {
         unsafe fn new(node_id: u16, bind_addr: &CString) -> Self {
+            // SAFETY: Caller guarantees bind_addr is a valid C string.
             Self(unsafe { hew_node_new(node_id, bind_addr.as_ptr()) })
         }
 
@@ -1002,31 +1003,37 @@ mod tests {
 
     #[test]
     fn test_node_unregister() {
+        // SAFETY: bind_addr is a valid NUL-terminated C string literal.
         let node = unsafe { hew_node_new(50, c"127.0.0.1:0".as_ptr()) };
         assert!(!node.is_null());
         let name = c"test_unreg_actor";
 
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
             assert_eq!(hew_node_lookup(node, name.as_ptr()), 999);
         }
 
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
             assert_eq!(hew_node_lookup(node, name.as_ptr()), 0);
         }
 
         // Idempotent
+        // SAFETY: node is a valid pointer; name is a valid C string literal.
         unsafe {
             assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
         }
 
         // Null safety
+        // SAFETY: Testing null pointer handling; function returns -1.
         unsafe {
             assert_eq!(hew_node_unregister(std::ptr::null_mut(), name.as_ptr()), -1);
             assert_eq!(hew_node_unregister(node, std::ptr::null()), -1);
         }
 
+        // SAFETY: node was allocated by hew_node_new above.
         unsafe { hew_node_free(node) };
     }
 }

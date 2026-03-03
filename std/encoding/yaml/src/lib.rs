@@ -450,6 +450,10 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(
+    clippy::approx_constant,
+    reason = "test data uses hardcoded floats, not mathematical constants"
+)]
 mod tests {
     use super::*;
     use std::ffi::CString;

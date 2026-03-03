@@ -2062,7 +2062,8 @@ mod tests {
         let mut content =
             format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n\n[dependencies]\n");
         for (dep_name, dep_ver) in deps {
-            content.push_str(&format!("\"{dep_name}\" = \"{dep_ver}\"\n"));
+            use std::fmt::Write;
+            let _ = writeln!(content, "\"{dep_name}\" = \"{dep_ver}\"");
         }
         std::fs::write(dir.join("hew.toml"), content).unwrap();
     }

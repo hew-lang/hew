@@ -2,9 +2,9 @@ use hew_parser::ast::{CallArg, Expr, Item, Stmt};
 
 #[test]
 fn missing_param_type_reports_error() {
-    let source = r#"
+    let source = r"
         fn demo(a) {}
-    "#;
+    ";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.iter().any(|err| err
@@ -17,9 +17,9 @@ fn missing_param_type_reports_error() {
 
 #[test]
 fn invalid_pub_scope_reports_error() {
-    let source = r#"
+    let source = r"
         pub(invalid) fn demo() {}
-    "#;
+    ";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.iter().any(|err| err
@@ -32,9 +32,9 @@ fn invalid_pub_scope_reports_error() {
 
 #[test]
 fn invalid_char_escape_reports_error() {
-    let source = r#"
+    let source = r"
         fn demo() { let c = '\q'; }
-    "#;
+    ";
     let result = hew_parser::parse(source);
     assert!(
         result
@@ -48,9 +48,9 @@ fn invalid_char_escape_reports_error() {
 
 #[test]
 fn invalid_enum_decl_reports_error() {
-    let source = r#"
+    let source = r"
         enum {}
-    "#;
+    ";
     let result = hew_parser::parse(source);
     assert!(
         result
@@ -64,9 +64,9 @@ fn invalid_enum_decl_reports_error() {
 
 #[test]
 fn positional_after_named_arg_is_skipped() {
-    let source = r#"
+    let source = r"
         fn demo() { foo(a: 1, 2); }
-    "#;
+    ";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.iter().any(|err| err

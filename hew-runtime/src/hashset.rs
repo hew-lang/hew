@@ -253,6 +253,7 @@ mod tests {
 
     #[test]
     fn test_hashset_new_and_len() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             assert!(!s.is_null());
@@ -264,6 +265,7 @@ mod tests {
 
     #[test]
     fn test_hashset_insert_int() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             assert!(hew_hashset_insert_int(s, 1));
@@ -276,6 +278,7 @@ mod tests {
 
     #[test]
     fn test_hashset_contains_int() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             hew_hashset_insert_int(s, 42);
@@ -287,6 +290,7 @@ mod tests {
 
     #[test]
     fn test_hashset_remove_int() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             hew_hashset_insert_int(s, 10);
@@ -299,6 +303,7 @@ mod tests {
 
     #[test]
     fn test_hashset_insert_string() {
+        // SAFETY: FFI calls use valid set pointer and valid C strings.
         unsafe {
             let s = hew_hashset_new();
             let hello = CString::new("hello").unwrap();
@@ -313,6 +318,7 @@ mod tests {
 
     #[test]
     fn test_hashset_contains_string() {
+        // SAFETY: FFI calls use valid set pointer and valid C strings.
         unsafe {
             let s = hew_hashset_new();
             let val = CString::new("test").unwrap();
@@ -326,6 +332,7 @@ mod tests {
 
     #[test]
     fn test_hashset_remove_string() {
+        // SAFETY: FFI calls use valid set pointer and valid C strings.
         unsafe {
             let s = hew_hashset_new();
             let val = CString::new("remove_me").unwrap();
@@ -339,6 +346,7 @@ mod tests {
 
     #[test]
     fn test_hashset_clear() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             hew_hashset_insert_int(s, 1);
@@ -353,11 +361,13 @@ mod tests {
 
     #[test]
     fn test_hashset_free_null() {
+        // SAFETY: Null is explicitly handled by hew_hashset_free.
         unsafe { hew_hashset_free(core::ptr::null_mut()) };
     }
 
     #[test]
     fn test_hashset_many_elements() {
+        // SAFETY: FFI calls use valid set pointer returned by hew_hashset_new.
         unsafe {
             let s = hew_hashset_new();
             for i in 0..100 {

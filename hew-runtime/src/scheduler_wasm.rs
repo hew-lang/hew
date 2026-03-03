@@ -76,6 +76,8 @@ pub struct HewActor {
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
 // used from one thread at a time.
 unsafe impl Send for HewActor {}
+// SAFETY: Single-threaded on WASM; on native (tests), the struct is only
+// accessed from one thread at a time.
 unsafe impl Sync for HewActor {}
 
 // ── HewMsgNode layout (matches native mailbox.rs) ───────────────────────
@@ -106,7 +108,7 @@ extern "C" {
 static mut RUN_QUEUE: Option<VecDeque<*mut HewActor>> = None;
 static mut INITIALIZED: bool = false;
 
-/// Whether an actor is currently being activated (for active_workers metric).
+/// Whether an actor is currently being activated (for `active_workers` metric).
 static mut ACTIVATING: bool = false;
 
 /// The actor currently being dispatched (WASM equivalent of the native
@@ -181,12 +183,8 @@ pub extern "C" fn hew_runtime_cleanup() {
 pub extern "C" fn hew_sched_run() {
     // SAFETY: Single-threaded on WASM.
     unsafe {
-        loop {
-            let actor = match RUN_QUEUE {
-                Some(ref mut q) => q.pop_front(),
-                None => break,
-            };
-            let Some(actor) = actor else {
+        while let Some(ref mut q) = RUN_QUEUE {
+            let Some(actor) = q.pop_front() else {
                 break;
             };
             activate_actor_wasm(actor);
@@ -242,6 +240,7 @@ pub unsafe extern "C" fn hew_wasm_sched_enqueue(actor: *mut c_void) {
 ///
 /// The scheduler must have been initialized with [`hew_sched_init`].
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
@@ -299,10 +298,6 @@ pub unsafe extern "C" fn hew_wasm_sched_tick(max_activations: i32) -> i32 {
 /// # Safety
 ///
 /// `actor` must be a valid pointer to a live `HewActor`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "actor activation state machine with multiple state transitions"
-)]
 unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     // SAFETY: Only valid actor pointers are ever enqueued by the runtime.
     let a = unsafe { &*actor };
@@ -459,6 +454,7 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
 
 /// Return the total number of tasks spawned (enqueued) since startup or last reset.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_tasks_spawned() -> u64 {
     // SAFETY: Single-threaded on WASM.
     unsafe { TASKS_SPAWNED }
@@ -466,6 +462,7 @@ pub extern "C" fn hew_sched_metrics_tasks_spawned() -> u64 {
 
 /// Return the total number of actor activations completed since startup or last reset.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_tasks_completed() -> u64 {
     // SAFETY: Single-threaded on WASM.
     unsafe { TASKS_COMPLETED }
@@ -473,12 +470,14 @@ pub extern "C" fn hew_sched_metrics_tasks_completed() -> u64 {
 
 /// Return the total number of work-steals. Always 0 on WASM (no stealing).
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_steals() -> u64 {
     0
 }
 
 /// Return the total number of messages sent since startup or last reset.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_messages_sent() -> u64 {
     // SAFETY: Single-threaded on WASM.
     unsafe { MESSAGES_SENT }
@@ -486,6 +485,7 @@ pub extern "C" fn hew_sched_metrics_messages_sent() -> u64 {
 
 /// Return the total number of messages received since startup or last reset.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_messages_received() -> u64 {
     // SAFETY: Single-threaded on WASM.
     unsafe { MESSAGES_RECEIVED }
@@ -494,15 +494,10 @@ pub extern "C" fn hew_sched_metrics_messages_received() -> u64 {
 /// Return the number of workers currently processing actors.
 /// On WASM, returns 1 during activation, 0 otherwise.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_active_workers() -> u64 {
     // SAFETY: Single-threaded on WASM.
-    unsafe {
-        if ACTIVATING {
-            1
-        } else {
-            0
-        }
-    }
+    unsafe { u64::from(ACTIVATING) }
 }
 
 /// Reset all scheduler metrics counters to zero.
@@ -519,12 +514,14 @@ pub extern "C" fn hew_sched_metrics_reset() {
 
 /// Return the total number of worker threads. Always 1 on WASM.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_worker_count() -> u64 {
     1
 }
 
 /// Return the approximate length of the global run queue.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_sched_metrics_global_queue_len() -> u64 {
     // SAFETY: Single-threaded on WASM.
     unsafe {
@@ -602,16 +599,19 @@ mod tests {
 
     /// Read INITIALIZED without creating a shared reference.
     unsafe fn read_initialized() -> bool {
+        // SAFETY: Single-threaded test; no concurrent mutation of INITIALIZED.
         unsafe { ptr::addr_of!(INITIALIZED).read() }
     }
 
-    /// Read TASKS_SPAWNED without creating a shared reference.
+    /// Read `TASKS_SPAWNED` without creating a shared reference.
     unsafe fn read_tasks_spawned() -> u64 {
+        // SAFETY: Single-threaded test; no concurrent mutation of TASKS_SPAWNED.
         unsafe { ptr::addr_of!(TASKS_SPAWNED).read() }
     }
 
-    /// Read TASKS_COMPLETED without creating a shared reference.
+    /// Read `TASKS_COMPLETED` without creating a shared reference.
     unsafe fn read_tasks_completed() -> u64 {
+        // SAFETY: Single-threaded test; no concurrent mutation of TASKS_COMPLETED.
         unsafe { ptr::addr_of!(TASKS_COMPLETED).read() }
     }
 
@@ -684,7 +684,7 @@ mod tests {
         hew_sched_init();
 
         let actor = stub_actor();
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid, scheduler is initialized.
         unsafe { sched_enqueue(actor_ptr) };
@@ -722,7 +722,7 @@ mod tests {
         actor
             .actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid.
         unsafe { activate_actor_wasm(actor_ptr) };
@@ -747,7 +747,7 @@ mod tests {
         actor
             .actor_state
             .store(HewActorState::Crashed as i32, Ordering::Relaxed);
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid.
         unsafe { activate_actor_wasm(actor_ptr) };
@@ -772,7 +772,7 @@ mod tests {
         actor
             .actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid.
         unsafe { activate_actor_wasm(actor_ptr) };
@@ -795,7 +795,7 @@ mod tests {
         hew_sched_init();
 
         let actor = stub_actor();
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid.
         unsafe { sched_enqueue(actor_ptr) };
@@ -818,7 +818,7 @@ mod tests {
         hew_sched_init();
 
         let actor = stub_actor();
-        let actor_ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         // SAFETY: actor is valid.
         unsafe { sched_enqueue(actor_ptr) };
@@ -848,8 +848,8 @@ mod tests {
 
         let actor1 = stub_actor();
         let actor2 = stub_actor();
-        let ptr1: *mut HewActor = &actor1 as *const HewActor as *mut HewActor;
-        let ptr2: *mut HewActor = &actor2 as *const HewActor as *mut HewActor;
+        let ptr1: *mut HewActor = (&raw const actor1).cast_mut();
+        let ptr2: *mut HewActor = (&raw const actor2).cast_mut();
 
         // SAFETY: actors are valid.
         unsafe {

@@ -1357,6 +1357,7 @@ mod tests {
 
     #[test]
     fn test_vec_new_and_len() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             assert!(!v.is_null());
@@ -1368,6 +1369,7 @@ mod tests {
 
     #[test]
     fn test_vec_push_get_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 10);
@@ -1383,6 +1385,7 @@ mod tests {
 
     #[test]
     fn test_vec_push_get_i64() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_i64.
         unsafe {
             let v = hew_vec_new_i64();
             hew_vec_push_i64(v, 100);
@@ -1396,6 +1399,7 @@ mod tests {
 
     #[test]
     fn test_vec_push_get_f64() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_f64.
         unsafe {
             let v = hew_vec_new_f64();
             hew_vec_push_f64(v, 1.5);
@@ -1409,6 +1413,7 @@ mod tests {
 
     #[test]
     fn test_vec_push_get_str() {
+        // SAFETY: FFI calls use valid vec pointer and valid C strings.
         unsafe {
             let v = hew_vec_new_str();
             let s1 = CString::new("hello").unwrap();
@@ -1430,6 +1435,7 @@ mod tests {
 
     #[test]
     fn test_vec_set_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 1);
@@ -1443,6 +1449,7 @@ mod tests {
 
     #[test]
     fn test_vec_pop_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 10);
@@ -1456,6 +1463,7 @@ mod tests {
 
     #[test]
     fn test_vec_pop_i64() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new_i64.
         unsafe {
             let v = hew_vec_new_i64();
             hew_vec_push_i64(v, 100);
@@ -1469,6 +1477,7 @@ mod tests {
 
     #[test]
     fn test_vec_clear() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 1);
@@ -1483,6 +1492,7 @@ mod tests {
 
     #[test]
     fn test_vec_sort_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 3);
@@ -1498,6 +1508,7 @@ mod tests {
 
     #[test]
     fn test_vec_contains_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 10);
@@ -1511,6 +1522,7 @@ mod tests {
 
     #[test]
     fn test_vec_remove_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 10);
@@ -1526,6 +1538,7 @@ mod tests {
 
     #[test]
     fn test_vec_clone() {
+        // SAFETY: FFI calls use valid vec pointers returned by hew_vec_new/hew_vec_clone.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 1);
@@ -1544,6 +1557,7 @@ mod tests {
 
     #[test]
     fn test_vec_swap() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 10);
@@ -1558,6 +1572,7 @@ mod tests {
 
     #[test]
     fn test_vec_truncate() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 1);
@@ -1574,6 +1589,7 @@ mod tests {
 
     #[test]
     fn test_vec_many_pushes() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             for i in 0..100 {
@@ -1588,6 +1604,7 @@ mod tests {
 
     #[test]
     fn test_vec_reverse_i32() {
+        // SAFETY: FFI calls use valid vec pointer returned by hew_vec_new.
         unsafe {
             let v = hew_vec_new();
             hew_vec_push_i32(v, 1);
@@ -1603,6 +1620,7 @@ mod tests {
 
     #[test]
     fn test_vec_hwvec_to_u8_roundtrip() {
+        // SAFETY: FFI calls use valid data slices and vec pointers.
         unsafe {
             let data: &[u8] = &[72, 101, 108, 108, 111]; // "Hello"
             let v = u8_to_hwvec(data);
@@ -1614,6 +1632,7 @@ mod tests {
 
     #[test]
     fn test_vec_hwvec_to_u8_empty() {
+        // SAFETY: Empty slice is valid input to u8_to_hwvec.
         unsafe {
             let v = u8_to_hwvec(&[]);
             let result = hwvec_to_u8(v);
@@ -1624,6 +1643,7 @@ mod tests {
 
     #[test]
     fn test_vec_hwvec_to_u8_null() {
+        // SAFETY: Null is explicitly handled by hwvec_to_u8.
         unsafe {
             let result = hwvec_to_u8(core::ptr::null_mut());
             assert!(result.is_empty());

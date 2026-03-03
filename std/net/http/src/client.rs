@@ -390,6 +390,7 @@ mod tests {
         unsafe { hew_http_set_timeout(5_000) };
         assert_eq!(HTTP_TIMEOUT_MS.load(Ordering::Relaxed), 5_000);
         // Restore default so other tests are unaffected.
+        // SAFETY: no pointer arguments; just writes to an atomic.
         unsafe { hew_http_set_timeout(30_000) };
     }
 

@@ -2095,8 +2095,7 @@ mod tests {
     // User module call rewriting tests
     // -----------------------------------------------------------------------
 
-    /// Helper: create a TypeCheckOutput with user_modules set.
-    #[allow(unused_imports)]
+    /// Helper: create a `TypeCheckOutput` with `user_modules` set.
     use std::collections::{HashMap, HashSet};
 
     fn make_tco_with_user_modules(modules: Vec<&str>) -> TypeCheckOutput {

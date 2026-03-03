@@ -252,107 +252,6 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
     unsafe { libc::free(ptr.cast()) };
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper: compress then decompress, asserting the roundtrip matches.
-    unsafe fn assert_roundtrip(
-        input: &[u8],
-        compress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
-        decompress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
-    ) {
-        let mut compressed_len: usize = 0;
-        // SAFETY: input is a valid slice; compressed_len is writable.
-        let compressed = unsafe { compress_fn(input.as_ptr(), input.len(), &mut compressed_len) };
-        assert!(!compressed.is_null(), "compression returned null");
-        assert!(compressed_len > 0 || input.is_empty());
-
-        let mut decompressed_len: usize = 0;
-        // SAFETY: compressed is valid for compressed_len bytes; decompressed_len is writable.
-        let decompressed =
-            unsafe { decompress_fn(compressed, compressed_len, &mut decompressed_len) };
-        assert!(!decompressed.is_null(), "decompression returned null");
-        assert_eq!(decompressed_len, input.len());
-
-        // SAFETY: decompressed is valid for decompressed_len bytes.
-        let result = unsafe { std::slice::from_raw_parts(decompressed, decompressed_len) };
-        assert_eq!(result, input);
-
-        // SAFETY: both pointers were allocated by compression functions.
-        unsafe {
-            hew_compress_free(compressed);
-            hew_compress_free(decompressed);
-        };
-    }
-
-    #[test]
-    fn test_gzip_roundtrip() {
-        let input = b"Hello, Hew compression!";
-        // SAFETY: input is a valid byte slice.
-        unsafe { assert_roundtrip(input, hew_gzip_compress, hew_gzip_decompress) };
-    }
-
-    #[test]
-    fn test_deflate_roundtrip() {
-        let input = b"Deflate roundtrip test data";
-        // SAFETY: input is a valid byte slice.
-        unsafe { assert_roundtrip(input, hew_deflate_compress, hew_deflate_decompress) };
-    }
-
-    #[test]
-    fn test_zlib_roundtrip() {
-        let input = b"Zlib roundtrip test data";
-        // SAFETY: input is a valid byte slice.
-        unsafe { assert_roundtrip(input, hew_zlib_compress, hew_zlib_decompress) };
-    }
-
-    #[test]
-    fn test_large_data() {
-        // 64 KiB of repeating pattern — should compress well.
-        let input: Vec<u8> = (0..65_536).map(|i| (i % 251) as u8).collect();
-        // SAFETY: input is a valid byte slice.
-        unsafe {
-            assert_roundtrip(&input, hew_gzip_compress, hew_gzip_decompress);
-            assert_roundtrip(&input, hew_deflate_compress, hew_deflate_decompress);
-            assert_roundtrip(&input, hew_zlib_compress, hew_zlib_decompress);
-        };
-
-        // Verify compression actually reduced size.
-        let mut compressed_len: usize = 0;
-        // SAFETY: input is valid; compressed_len is writable.
-        let compressed =
-            unsafe { hew_gzip_compress(input.as_ptr(), input.len(), &mut compressed_len) };
-        assert!(!compressed.is_null());
-        assert!(
-            compressed_len < input.len(),
-            "expected compression to reduce size: {compressed_len} >= {}",
-            input.len()
-        );
-        // SAFETY: pointer was allocated by hew_gzip_compress.
-        unsafe { hew_compress_free(compressed) };
-    }
-
-    #[test]
-    fn test_null_handling() {
-        // Null data with len > 0 should return null.
-        let mut out_len: usize = 0;
-        // SAFETY: testing null handling; out_len is writable.
-        let result = unsafe { hew_gzip_compress(std::ptr::null(), 10, &mut out_len) };
-        assert!(result.is_null());
-
-        // Null out_len should return null.
-        let data = b"test";
-        // SAFETY: data is valid; testing null out_len.
-        let result = unsafe { hew_gzip_compress(data.as_ptr(), data.len(), std::ptr::null_mut()) };
-        assert!(result.is_null());
-
-        // Free null is a no-op.
-        // SAFETY: null is explicitly allowed.
-        unsafe { hew_compress_free(std::ptr::null_mut()) };
-    }
-}
-
 // ---------------------------------------------------------------------------
 // HewVec-ABI wrappers (used by std/compress.hew)
 // ---------------------------------------------------------------------------
@@ -460,4 +359,110 @@ pub unsafe extern "C" fn hew_zlib_decompress_hew(
 ) -> *mut hew_cabi::vec::HewVec {
     // SAFETY: v validity forwarded to compress_op.
     unsafe { compress_op(v, hew_zlib_decompress) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: compress then decompress, asserting the roundtrip matches.
+    unsafe fn assert_roundtrip(
+        input: &[u8],
+        compress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
+        decompress_fn: unsafe extern "C" fn(*const u8, usize, *mut usize) -> *mut u8,
+    ) {
+        let mut compressed_len: usize = 0;
+        // SAFETY: input is a valid slice; compressed_len is writable.
+        let compressed =
+            unsafe { compress_fn(input.as_ptr(), input.len(), &raw mut compressed_len) };
+        assert!(!compressed.is_null(), "compression returned null");
+        assert!(compressed_len > 0 || input.is_empty());
+
+        let mut decompressed_len: usize = 0;
+        // SAFETY: compressed is valid for compressed_len bytes; decompressed_len is writable.
+        let decompressed =
+            unsafe { decompress_fn(compressed, compressed_len, &raw mut decompressed_len) };
+        assert!(!decompressed.is_null(), "decompression returned null");
+        assert_eq!(decompressed_len, input.len());
+
+        // SAFETY: decompressed is valid for decompressed_len bytes.
+        let result = unsafe { std::slice::from_raw_parts(decompressed, decompressed_len) };
+        assert_eq!(result, input);
+
+        // SAFETY: both pointers were allocated by compression functions.
+        unsafe {
+            hew_compress_free(compressed);
+            hew_compress_free(decompressed);
+        };
+    }
+
+    #[test]
+    fn test_gzip_roundtrip() {
+        let input = b"Hello, Hew compression!";
+        // SAFETY: input is a valid byte slice.
+        unsafe { assert_roundtrip(input, hew_gzip_compress, hew_gzip_decompress) };
+    }
+
+    #[test]
+    fn test_deflate_roundtrip() {
+        let input = b"Deflate roundtrip test data";
+        // SAFETY: input is a valid byte slice.
+        unsafe { assert_roundtrip(input, hew_deflate_compress, hew_deflate_decompress) };
+    }
+
+    #[test]
+    fn test_zlib_roundtrip() {
+        let input = b"Zlib roundtrip test data";
+        // SAFETY: input is a valid byte slice.
+        unsafe { assert_roundtrip(input, hew_zlib_compress, hew_zlib_decompress) };
+    }
+
+    #[test]
+    fn test_large_data() {
+        // 64 KiB of repeating pattern — should compress well.
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "test data: modular result always fits in u8"
+        )]
+        let input: Vec<u8> = (0..65_536).map(|i| (i % 251) as u8).collect();
+        // SAFETY: input is a valid byte slice.
+        unsafe {
+            assert_roundtrip(&input, hew_gzip_compress, hew_gzip_decompress);
+            assert_roundtrip(&input, hew_deflate_compress, hew_deflate_decompress);
+            assert_roundtrip(&input, hew_zlib_compress, hew_zlib_decompress);
+        };
+
+        // Verify compression actually reduced size.
+        let mut compressed_len: usize = 0;
+        // SAFETY: input is valid; compressed_len is writable.
+        let compressed =
+            unsafe { hew_gzip_compress(input.as_ptr(), input.len(), &raw mut compressed_len) };
+        assert!(!compressed.is_null());
+        assert!(
+            compressed_len < input.len(),
+            "expected compression to reduce size: {compressed_len} >= {}",
+            input.len()
+        );
+        // SAFETY: pointer was allocated by hew_gzip_compress.
+        unsafe { hew_compress_free(compressed) };
+    }
+
+    #[test]
+    fn test_null_handling() {
+        // Null data with len > 0 should return null.
+        let mut out_len: usize = 0;
+        // SAFETY: testing null handling; out_len is writable.
+        let result = unsafe { hew_gzip_compress(std::ptr::null(), 10, &raw mut out_len) };
+        assert!(result.is_null());
+
+        // Null out_len should return null.
+        let data = b"test";
+        // SAFETY: data is valid; testing null out_len.
+        let result = unsafe { hew_gzip_compress(data.as_ptr(), data.len(), std::ptr::null_mut()) };
+        assert!(result.is_null());
+
+        // Free null is a no-op.
+        // SAFETY: null is explicitly allowed.
+        unsafe { hew_compress_free(std::ptr::null_mut()) };
+    }
 }

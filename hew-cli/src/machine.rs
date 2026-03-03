@@ -55,7 +55,7 @@ fn parse_machines(path: &str) -> Vec<MachineDecl> {
 
     if !result.errors.is_empty() {
         for err in &result.errors {
-            eprintln!("{path}: parse error: {:?}", err);
+            eprintln!("{path}: parse error: {err:?}");
         }
     }
 

@@ -385,9 +385,8 @@ mod tests {
     /// binary can exist without the separate hew-codegen binary.
     fn require_codegen() -> bool {
         ensure_hew_binary();
-        let hew = match find_hew_binary() {
-            Ok(h) => h,
-            Err(_) => return false,
+        let Ok(hew) = find_hew_binary() else {
+            return false;
         };
 
         // Try to compile a trivial program to verify hew-codegen is available.
@@ -462,12 +461,12 @@ mod tests {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 fn test_pass() {
     assert(true);
 }
-"#,
+",
         );
         assert_eq!(summary.passed, 1);
         assert_eq!(summary.failed, 0);
@@ -479,12 +478,12 @@ fn test_pass() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 fn test_fail() {
     assert(false);
 }
-"#,
+",
         );
         assert_eq!(summary.passed, 0);
         assert_eq!(summary.failed, 1);
@@ -496,14 +495,14 @@ fn test_fail() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[test]
 fn test_add() {
     assert_eq(add(1, 2), 3);
 }
-"#,
+",
         );
         assert_eq!(summary.passed, 1);
     }
@@ -514,12 +513,12 @@ fn test_add() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 fn test_bad_eq() {
     assert_eq(1, 2);
 }
-"#,
+",
         );
         assert_eq!(summary.failed, 1);
         if let TestOutcome::Failed(msg) = &summary.results[0].outcome {
@@ -533,13 +532,13 @@ fn test_bad_eq() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 #[should_panic]
 fn test_expected_panic() {
     assert(false);
 }
-"#,
+",
         );
         assert_eq!(summary.passed, 1);
     }
@@ -550,13 +549,13 @@ fn test_expected_panic() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 #[should_panic]
 fn test_no_panic() {
     assert(true);
 }
-"#,
+",
         );
         assert_eq!(summary.failed, 1);
     }
@@ -567,13 +566,13 @@ fn test_no_panic() {
             return;
         }
         let summary = run_inline(
-            r#"
+            r"
 #[test]
 #[ignore]
 fn test_skip() {
     assert(false);
 }
-"#,
+",
         );
         assert_eq!(summary.ignored, 1);
         assert_eq!(summary.passed, 0);

@@ -299,11 +299,16 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "test data is allocated with proper alignment by hew_arc_new"
+)]
 mod tests {
     use super::*;
 
     #[test]
     fn arc_basic_lifecycle() {
+        // SAFETY: Test exercises the Arc FFI lifecycle with valid pointers.
         unsafe {
             let val: i32 = 42;
             let arc = hew_arc_new((&raw const val).cast(), size_of::<i32>(), None);
@@ -333,6 +338,7 @@ mod tests {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
+        // SAFETY: Test exercises Arc FFI with a custom drop function and cross-thread clone.
         unsafe {
             DROP_COUNT.store(0, Ordering::SeqCst);
             let val: i32 = 100;
@@ -361,6 +367,7 @@ mod tests {
 
     #[test]
     fn arc_weak_upgrade() {
+        // SAFETY: Test exercises weak reference upgrade with valid Arc pointers.
         unsafe {
             let val: i32 = 77;
             let arc = hew_arc_new((&raw const val).cast(), size_of::<i32>(), None);

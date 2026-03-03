@@ -237,7 +237,13 @@ mod tests {
                 let shared = Arc::clone(&shared);
                 threads.push(thread::spawn(move || {
                     for i in 0..250usize {
+                        #[expect(clippy::cast_possible_truncation, reason = "mod 6 fits in u16")]
                         let node_id = 2 + ((tid + i) % 6) as u16;
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_possible_wrap,
+                            reason = "test data: small indices fit in c_int"
+                        )]
                         let conn = (tid * 1000 + i) as c_int;
                         hew_routing_add_route(shared.0, node_id, conn);
                         let pid = (u64::from(node_id) << PID_SERIAL_BITS) | (i as u64);

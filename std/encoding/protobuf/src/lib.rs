@@ -586,7 +586,7 @@ mod tests {
             hew_proto_msg_set_string(msg, 5, hello.as_ptr());
 
             let mut out_len: usize = 0;
-            let encoded = hew_proto_msg_encode(msg, &mut out_len);
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
             assert!(!encoded.is_null());
             assert!(out_len > 0);
 
@@ -627,7 +627,7 @@ mod tests {
             hew_proto_msg_set_varint(msg, 3, 300);
 
             let mut out_len: usize = 0;
-            let encoded = hew_proto_msg_encode(msg, &mut out_len);
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
             assert!(!encoded.is_null());
 
             let decoded = hew_proto_msg_decode(encoded, out_len);
@@ -658,7 +658,7 @@ mod tests {
             hew_proto_msg_set_string(msg, 2, empty.as_ptr());
 
             let mut out_len: usize = 0;
-            let encoded = hew_proto_msg_encode(msg, &mut out_len);
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
             let decoded = hew_proto_msg_decode(encoded, out_len);
             assert!(!decoded.is_null());
 
@@ -694,12 +694,12 @@ mod tests {
             hew_proto_msg_set_bytes(msg, 10, payload.as_ptr(), payload.len());
 
             let mut out_len: usize = 0;
-            let encoded = hew_proto_msg_encode(msg, &mut out_len);
+            let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
             let decoded = hew_proto_msg_decode(encoded, out_len);
             assert!(!decoded.is_null());
 
             let mut bytes_len: usize = 0;
-            let ptr = hew_proto_msg_get_bytes(decoded, 10, &mut bytes_len);
+            let ptr = hew_proto_msg_get_bytes(decoded, 10, &raw mut bytes_len);
             assert!(!ptr.is_null());
             assert_eq!(bytes_len, 5);
             let result = std::slice::from_raw_parts(ptr, bytes_len);
@@ -707,7 +707,7 @@ mod tests {
 
             // Missing bytes returns null.
             let mut missing_len: usize = 0;
-            assert!(hew_proto_msg_get_bytes(decoded, 99, &mut missing_len).is_null());
+            assert!(hew_proto_msg_get_bytes(decoded, 99, &raw mut missing_len).is_null());
             assert_eq!(missing_len, 0);
 
             libc::free(encoded.cast());
@@ -729,7 +729,7 @@ mod tests {
 
             // Encode inner.
             let mut inner_len: usize = 0;
-            let inner_buf = hew_proto_msg_encode(inner, &mut inner_len);
+            let inner_buf = hew_proto_msg_encode(inner, &raw mut inner_len);
             assert!(!inner_buf.is_null());
 
             // Embed inner as bytes field in outer.
@@ -739,7 +739,7 @@ mod tests {
 
             // Encode outer.
             let mut outer_len: usize = 0;
-            let outer_buf = hew_proto_msg_encode(outer, &mut outer_len);
+            let outer_buf = hew_proto_msg_encode(outer, &raw mut outer_len);
             assert!(!outer_buf.is_null());
 
             // Decode outer.
@@ -749,7 +749,7 @@ mod tests {
 
             // Extract and decode inner.
             let mut nested_len: usize = 0;
-            let nested_ptr = hew_proto_msg_get_bytes(decoded_outer, 2, &mut nested_len);
+            let nested_ptr = hew_proto_msg_get_bytes(decoded_outer, 2, &raw mut nested_len);
             assert!(!nested_ptr.is_null());
             let decoded_inner = hew_proto_msg_decode(nested_ptr, nested_len);
             assert!(!decoded_inner.is_null());

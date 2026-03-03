@@ -317,11 +317,11 @@ mod tests {
 
     #[test]
     fn extract_function_docs() {
-        let source = r#"/// Adds two numbers.
+        let source = r"/// Adds two numbers.
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
-"#;
+";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty());
         let module = extract_docs(&result.program, "test");
@@ -338,11 +338,11 @@ fn add(a: i32, b: i32) -> i32 {
 
     #[test]
     fn extract_module_doc() {
-        let source = r#"//! Module docs here.
+        let source = r"//! Module docs here.
 //! Second line.
 
 fn foo() {}
-"#;
+";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty());
         let module = extract_docs(&result.program, "test");
@@ -354,12 +354,12 @@ fn foo() {}
 
     #[test]
     fn extract_struct_docs() {
-        let source = r#"/// A point in space.
+        let source = r"/// A point in space.
 type Point {
     x: i32;
     y: i32;
 }
-"#;
+";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty());
         let module = extract_docs(&result.program, "test");
@@ -372,14 +372,14 @@ type Point {
 
     #[test]
     fn extract_actor_docs() {
-        let source = r#"/// A simple counter actor.
+        let source = r"/// A simple counter actor.
 actor Counter {
     count: i32;
     receive fn increment() {
         self.count = self.count + 1;
     }
 }
-"#;
+";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty());
         let module = extract_docs(&result.program, "test");

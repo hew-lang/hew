@@ -48,12 +48,12 @@ fn make_pub_fn(name: &str) -> FnDecl {
 }
 
 fn make_user_import(
-    path: Vec<&str>,
+    path: &[&str],
     spec: Option<ImportSpec>,
     items: Vec<Spanned<Item>>,
 ) -> ImportDecl {
     ImportDecl {
-        path: path.iter().map(|s| s.to_string()).collect(),
+        path: path.iter().map(std::string::ToString::to_string).collect(),
         spec,
         file_path: None,
         resolved_items: Some(items),
@@ -130,7 +130,7 @@ fn test_qualified_name_resolution() {
     // Bare `import utils;` → only qualified access `utils.helper` should be registered.
     let fn_helper = make_pub_fn("helper");
     let import = make_user_import(
-        vec!["myapp", "utils"],
+        &["myapp", "utils"],
         None, // bare import — no glob, no named spec
         vec![(Item::Function(fn_helper), 0..0)],
     );
@@ -159,7 +159,7 @@ fn test_glob_import_resolution() {
     let fn_helper = make_pub_fn("helper");
     let fn_other = make_pub_fn("other");
     let import = make_user_import(
-        vec!["myapp", "utils"],
+        &["myapp", "utils"],
         Some(ImportSpec::Glob),
         vec![
             (Item::Function(fn_helper), 0..0),
@@ -201,7 +201,7 @@ fn test_named_import_selective_resolution() {
     let fn_helper = make_pub_fn("helper");
     let fn_other = make_pub_fn("other");
     let import = make_user_import(
-        vec!["myapp", "utils"],
+        &["myapp", "utils"],
         Some(ImportSpec::Names(vec![ImportName {
             name: "helper".to_string(),
             alias: None,
@@ -259,7 +259,7 @@ fn test_private_items_not_visible() {
     let public_fn = make_pub_fn("public_fn");
 
     let import = make_user_import(
-        vec!["mod_a"],
+        &["mod_a"],
         Some(ImportSpec::Glob), // even glob should not expose private items
         vec![
             (Item::Function(private_fn), 0..0),
@@ -305,7 +305,7 @@ fn test_pub_type_accessible_qualified() {
         wire: None,
     };
     let import = make_user_import(
-        vec!["myapp", "config"],
+        &["myapp", "config"],
         None, // bare import
         vec![(Item::TypeDecl(pub_type), 0..0)],
     );
@@ -379,12 +379,12 @@ fn test_two_modules_same_fn_no_collision() {
     let fn_run_b = make_pub_fn("run");
 
     let import_a = make_user_import(
-        vec!["pkg", "alpha"],
+        &["pkg", "alpha"],
         None,
         vec![(Item::Function(fn_run_a), 0..0)],
     );
     let import_b = make_user_import(
-        vec!["pkg", "beta"],
+        &["pkg", "beta"],
         None,
         vec![(Item::Function(fn_run_b), 0..0)],
     );
@@ -429,7 +429,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
 }
 
 /// Create a minimal receive fn declaration.
-fn make_receive_fn(name: &str, params: Vec<(&str, &str)>, ret: Option<&str>) -> ReceiveFnDecl {
+fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> ReceiveFnDecl {
     ReceiveFnDecl {
         is_generator: false,
         is_pure: false,
@@ -472,11 +472,11 @@ fn make_receive_fn(name: &str, params: Vec<(&str, &str)>, ret: Option<&str>) -> 
 #[test]
 fn test_actor_bare_import_registers_type_and_methods() {
     // `import mymod;` with an actor → should register qualified type + methods
-    let recv_ping = make_receive_fn("ping", vec![("msg", "String")], Some("String"));
+    let recv_ping = make_receive_fn("ping", &[("msg", "String")], Some("String"));
     let actor = make_actor("MyActor", vec![recv_ping]);
 
     let import = make_user_import(
-        vec!["app", "mymod"],
+        &["app", "mymod"],
         None, // bare import
         vec![(Item::Actor(actor), 0..0)],
     );
@@ -523,11 +523,11 @@ fn test_actor_bare_import_registers_type_and_methods() {
 #[test]
 fn test_actor_glob_import_registers_unqualified() {
     // `import mymod::*;` → actor should be accessible unqualified
-    let recv_greet = make_receive_fn("greet", vec![("name", "String")], Some("String"));
+    let recv_greet = make_receive_fn("greet", &[("name", "String")], Some("String"));
     let actor = make_actor("Greeter", vec![recv_greet]);
 
     let import = make_user_import(
-        vec!["app", "mymod"],
+        &["app", "mymod"],
         Some(ImportSpec::Glob),
         vec![(Item::Actor(actor), 0..0)],
     );
@@ -555,12 +555,12 @@ fn test_actor_glob_import_registers_unqualified() {
 #[test]
 fn test_actor_named_import_selective() {
     // `import mymod::{Counter};` → only Counter accessible unqualified
-    let recv_inc = make_receive_fn("increment", vec![], Some("i32"));
+    let recv_inc = make_receive_fn("increment", &[], Some("i32"));
     let actor_counter = make_actor("Counter", vec![recv_inc]);
     let actor_timer = make_actor("Timer", vec![]);
 
     let import = make_user_import(
-        vec!["app", "mymod"],
+        &["app", "mymod"],
         Some(ImportSpec::Names(vec![ImportName {
             name: "Counter".to_string(),
             alias: None,
@@ -598,13 +598,13 @@ fn test_actor_named_import_selective() {
 #[test]
 fn test_actor_multiple_receive_fns() {
     // Actor with multiple receive fns — all should be registered
-    let recv_get = make_receive_fn("get", vec![("key", "String")], Some("String"));
-    let recv_set = make_receive_fn("set", vec![("key", "String"), ("val", "String")], None);
-    let recv_del = make_receive_fn("delete", vec![("key", "String")], Some("bool"));
+    let recv_get = make_receive_fn("get", &[("key", "String")], Some("String"));
+    let recv_set = make_receive_fn("set", &[("key", "String"), ("val", "String")], None);
+    let recv_del = make_receive_fn("delete", &[("key", "String")], Some("bool"));
     let actor = make_actor("Cache", vec![recv_get, recv_set, recv_del]);
 
     let import = make_user_import(
-        vec!["app", "cache"],
+        &["app", "cache"],
         Some(ImportSpec::Glob),
         vec![(Item::Actor(actor), 0..0)],
     );
@@ -631,12 +631,12 @@ fn test_actor_multiple_receive_fns() {
 #[test]
 fn test_actor_and_function_coexist_in_module() {
     // Module with both actors and functions — both should register
-    let recv_run = make_receive_fn("run", vec![], None);
+    let recv_run = make_receive_fn("run", &[], None);
     let actor = make_actor("Worker", vec![recv_run]);
     let func = make_pub_fn("create_worker");
 
     let import = make_user_import(
-        vec!["app", "workers"],
+        &["app", "workers"],
         Some(ImportSpec::Glob),
         vec![(Item::Actor(actor), 0..0), (Item::Function(func), 0..0)],
     );

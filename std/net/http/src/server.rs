@@ -561,6 +561,10 @@ mod tests {
 
     #[test]
     fn debug_impls_compile() {
+        // We cannot construct a HewHttpServer without binding, but we can
+        // verify the Debug impl exists via the type system.
+        fn assert_debug<T: std::fmt::Debug>() {}
+
         // HewHttpRequest with inner = None is safe to construct without a port.
         let req = HewHttpRequest {
             inner: None,
@@ -569,10 +573,7 @@ mod tests {
         let dbg = format!("{req:?}");
         assert!(dbg.contains("HewHttpRequest"));
 
-        // We cannot construct a HewHttpServer without binding, but we can
-        // verify the Debug impl exists via the type system.
-        fn _assert_debug<T: std::fmt::Debug>() {}
-        _assert_debug::<HewHttpServer>();
+        assert_debug::<HewHttpServer>();
     }
 
     #[test]
@@ -584,7 +585,8 @@ mod tests {
         };
         let ct = c"text/plain";
         // SAFETY: req is a valid local struct; body is empty.
-        let result = unsafe { hew_http_respond(&mut req, 200, std::ptr::null(), 0, ct.as_ptr()) };
+        let result =
+            unsafe { hew_http_respond(&raw mut req, 200, std::ptr::null(), 0, ct.as_ptr()) };
         assert_eq!(result, -1);
     }
 
@@ -595,15 +597,18 @@ mod tests {
             max_body_size: MAX_BODY_SIZE,
         };
         let ct = c"text/plain";
-        let sink = unsafe { hew_http_respond_stream(&mut req, 200, ct.as_ptr()) };
+        // SAFETY: req is a valid mutable pointer; ct is a valid C string literal.
+        let sink = unsafe { hew_http_respond_stream(&raw mut req, 200, ct.as_ptr()) };
         assert!(sink.is_null());
 
         let err = hew_cabi::sink::hew_stream_last_error();
         assert!(!err.is_null());
+        // SAFETY: err is a valid NUL-terminated C string from hew_stream_last_error.
         let err_msg = unsafe { CStr::from_ptr(err) }
             .to_str()
             .expect("error should be utf-8");
         assert_eq!(err_msg, "request already responded to");
+        // SAFETY: err was allocated by hew_stream_last_error (via libc::malloc).
         unsafe { libc::free(err.cast()) };
     }
 

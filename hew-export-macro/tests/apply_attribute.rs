@@ -15,27 +15,42 @@ use hew_export_macro::hew_export;
     name = "parse",
     doc = "Parse a JSON string"
 )]
+#[must_use]
+/// Parse a JSON string.
+///
+/// # Safety
+///
+/// `input` must be a valid NUL-terminated C string.
 pub unsafe extern "C" fn hew_json_parse(input: *const c_char) -> *const c_char {
     input // stub
 }
 
 #[hew_export(module = "std::file")]
+#[must_use]
+/// Read a file at the given path.
+///
+/// # Safety
+///
+/// `path` must be a valid NUL-terminated C string.
 pub unsafe extern "C" fn hew_file_read(path: *const c_char) -> *mut c_char {
     path.cast_mut() // stub
 }
 
 #[hew_export(module = "std::file", doc = "Check if a file exists")]
+#[must_use]
 pub extern "C" fn hew_file_exists(path: *const c_char) -> i32 {
     let _ = path;
     0
 }
 
 #[hew_export(module = "std::math", name = "add_ints")]
+#[must_use]
 pub extern "C" fn hew_math_add_ints(a: i32, b: i32) -> i32 {
     a + b
 }
 
 #[hew_export(module = "std::io", name = "read_line")]
+#[must_use]
 pub extern "C" fn hew_stdin_read_line() -> *mut c_char {
     std::ptr::null_mut()
 }

@@ -195,163 +195,6 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::{CStr, CString};
-
-    #[test]
-    fn json_roundtrip_object() {
-        let json = r#"{"name":"hew","version":42}"#;
-        let c_json = CString::new(json).unwrap();
-        let mut len: usize = 0;
-
-        // SAFETY: c_json is a valid C string; len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_from_json(c_json.as_ptr(), &mut len);
-            assert!(!buf.is_null());
-            assert!(len > 0);
-
-            let result = hew_msgpack_to_json(buf, len);
-            assert!(!result.is_null());
-            // SAFETY: result is a valid NUL-terminated C string from malloc.
-            let result_str = CStr::from_ptr(result).to_str().unwrap();
-            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
-            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
-            assert_eq!(v1, v2);
-
-            libc::free(result.cast());
-            hew_msgpack_free(buf);
-        }
-    }
-
-    #[test]
-    fn json_roundtrip_array() {
-        let json = r#"[1,2,3,"hello",true,null]"#;
-        let c_json = CString::new(json).unwrap();
-        let mut len: usize = 0;
-
-        // SAFETY: c_json is a valid C string; len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_from_json(c_json.as_ptr(), &mut len);
-            assert!(!buf.is_null());
-
-            let result = hew_msgpack_to_json(buf, len);
-            assert!(!result.is_null());
-            // SAFETY: result is a valid NUL-terminated C string from malloc.
-            let result_str = CStr::from_ptr(result).to_str().unwrap();
-            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
-            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
-            assert_eq!(v1, v2);
-
-            libc::free(result.cast());
-            hew_msgpack_free(buf);
-        }
-    }
-
-    #[test]
-    fn encode_int_roundtrip() {
-        let mut len: usize = 0;
-
-        // SAFETY: len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_encode_int(42, &mut len);
-            assert!(!buf.is_null());
-            assert!(len > 0);
-
-            // Decode and verify.
-            let slice = std::slice::from_raw_parts(buf, len);
-            let val: i64 = rmp_serde::from_slice(slice).unwrap();
-            assert_eq!(val, 42);
-
-            hew_msgpack_free(buf);
-        }
-    }
-
-    #[test]
-    fn encode_string_roundtrip() {
-        let s = CString::new("hello msgpack").unwrap();
-        let mut len: usize = 0;
-
-        // SAFETY: s is a valid C string; len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_encode_string(s.as_ptr(), &mut len);
-            assert!(!buf.is_null());
-            assert!(len > 0);
-
-            // Decode and verify.
-            let slice = std::slice::from_raw_parts(buf, len);
-            let val: String = rmp_serde::from_slice(slice).unwrap();
-            assert_eq!(val, "hello msgpack");
-
-            hew_msgpack_free(buf);
-        }
-    }
-
-    #[test]
-    fn encode_bytes_roundtrip() {
-        let data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
-        let mut len: usize = 0;
-
-        // SAFETY: data is a valid buffer; len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_encode_bytes(data.as_ptr(), data.len(), &mut len);
-            assert!(!buf.is_null());
-            assert!(len > 0);
-
-            // Decode and verify.
-            let slice = std::slice::from_raw_parts(buf, len);
-            let val: Vec<u8> = rmp_serde::from_slice(slice).unwrap();
-            assert_eq!(val, data);
-
-            hew_msgpack_free(buf);
-        }
-    }
-
-    #[test]
-    fn null_inputs_return_null() {
-        let mut len: usize = 0;
-
-        // SAFETY: Testing null-safety of all functions.
-        unsafe {
-            assert!(hew_msgpack_from_json(std::ptr::null(), &mut len).is_null());
-            assert!(hew_msgpack_to_json(std::ptr::null(), 10).is_null());
-            assert!(hew_msgpack_to_json([0u8].as_ptr(), 0).is_null());
-            assert!(hew_msgpack_encode_int(1, std::ptr::null_mut()).is_null());
-            assert!(hew_msgpack_encode_string(std::ptr::null(), &mut len).is_null());
-            assert!(hew_msgpack_encode_bytes(std::ptr::null(), 5, &mut len).is_null());
-        }
-    }
-
-    #[test]
-    fn nested_json_roundtrip() {
-        let json = r#"{"a":{"b":{"c":[1,2,3]}}}"#;
-        let c_json = CString::new(json).unwrap();
-        let mut len: usize = 0;
-
-        // SAFETY: c_json is a valid C string; len is a valid pointer.
-        unsafe {
-            let buf = hew_msgpack_from_json(c_json.as_ptr(), &mut len);
-            assert!(!buf.is_null());
-
-            let result = hew_msgpack_to_json(buf, len);
-            assert!(!result.is_null());
-            // SAFETY: result is a valid NUL-terminated C string from malloc.
-            let result_str = CStr::from_ptr(result).to_str().unwrap();
-            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
-            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
-            assert_eq!(v1, v2);
-
-            libc::free(result.cast());
-            hew_msgpack_free(buf);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // HewVec-ABI wrappers (used by std/msgpack.hew)
 // ---------------------------------------------------------------------------
 
@@ -478,4 +321,161 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(
     // SAFETY: ptr was allocated by hew_msgpack_encode_bytes.
     unsafe { hew_msgpack_free(ptr) };
     result
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn json_roundtrip_object() {
+        let json = r#"{"name":"hew","version":42}"#;
+        let c_json = CString::new(json).unwrap();
+        let mut len: usize = 0;
+
+        // SAFETY: c_json is a valid C string; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_from_json(c_json.as_ptr(), &raw mut len);
+            assert!(!buf.is_null());
+            assert!(len > 0);
+
+            let result = hew_msgpack_to_json(buf, len);
+            assert!(!result.is_null());
+            // SAFETY: result is a valid NUL-terminated C string from malloc.
+            let result_str = CStr::from_ptr(result).to_str().unwrap();
+            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
+            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
+            assert_eq!(v1, v2);
+
+            libc::free(result.cast());
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn json_roundtrip_array() {
+        let json = r#"[1,2,3,"hello",true,null]"#;
+        let c_json = CString::new(json).unwrap();
+        let mut len: usize = 0;
+
+        // SAFETY: c_json is a valid C string; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_from_json(c_json.as_ptr(), &raw mut len);
+            assert!(!buf.is_null());
+
+            let result = hew_msgpack_to_json(buf, len);
+            assert!(!result.is_null());
+            // SAFETY: result is a valid NUL-terminated C string from malloc.
+            let result_str = CStr::from_ptr(result).to_str().unwrap();
+            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
+            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
+            assert_eq!(v1, v2);
+
+            libc::free(result.cast());
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn encode_int_roundtrip() {
+        let mut len: usize = 0;
+
+        // SAFETY: len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_encode_int(42, &raw mut len);
+            assert!(!buf.is_null());
+            assert!(len > 0);
+
+            // Decode and verify.
+            let slice = std::slice::from_raw_parts(buf, len);
+            let val: i64 = rmp_serde::from_slice(slice).unwrap();
+            assert_eq!(val, 42);
+
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn encode_string_roundtrip() {
+        let s = CString::new("hello msgpack").unwrap();
+        let mut len: usize = 0;
+
+        // SAFETY: s is a valid C string; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_encode_string(s.as_ptr(), &raw mut len);
+            assert!(!buf.is_null());
+            assert!(len > 0);
+
+            // Decode and verify.
+            let slice = std::slice::from_raw_parts(buf, len);
+            let val: String = rmp_serde::from_slice(slice).unwrap();
+            assert_eq!(val, "hello msgpack");
+
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn encode_bytes_roundtrip() {
+        let data: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        let mut len: usize = 0;
+
+        // SAFETY: data is a valid buffer; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_encode_bytes(data.as_ptr(), data.len(), &raw mut len);
+            assert!(!buf.is_null());
+            assert!(len > 0);
+
+            // Decode and verify.
+            let slice = std::slice::from_raw_parts(buf, len);
+            let val: Vec<u8> = rmp_serde::from_slice(slice).unwrap();
+            assert_eq!(val, data);
+
+            hew_msgpack_free(buf);
+        }
+    }
+
+    #[test]
+    fn null_inputs_return_null() {
+        let mut len: usize = 0;
+
+        // SAFETY: Testing null-safety of all functions.
+        unsafe {
+            assert!(hew_msgpack_from_json(std::ptr::null(), &raw mut len).is_null());
+            assert!(hew_msgpack_to_json(std::ptr::null(), 10).is_null());
+            assert!(hew_msgpack_to_json([0u8].as_ptr(), 0).is_null());
+            assert!(hew_msgpack_encode_int(1, std::ptr::null_mut()).is_null());
+            assert!(hew_msgpack_encode_string(std::ptr::null(), &raw mut len).is_null());
+            assert!(hew_msgpack_encode_bytes(std::ptr::null(), 5, &raw mut len).is_null());
+        }
+    }
+
+    #[test]
+    fn nested_json_roundtrip() {
+        let json = r#"{"a":{"b":{"c":[1,2,3]}}}"#;
+        let c_json = CString::new(json).unwrap();
+        let mut len: usize = 0;
+
+        // SAFETY: c_json is a valid C string; len is a valid pointer.
+        unsafe {
+            let buf = hew_msgpack_from_json(c_json.as_ptr(), &raw mut len);
+            assert!(!buf.is_null());
+
+            let result = hew_msgpack_to_json(buf, len);
+            assert!(!result.is_null());
+            // SAFETY: result is a valid NUL-terminated C string from malloc.
+            let result_str = CStr::from_ptr(result).to_str().unwrap();
+            let v1: serde_json::Value = serde_json::from_str(json).unwrap();
+            let v2: serde_json::Value = serde_json::from_str(result_str).unwrap();
+            assert_eq!(v1, v2);
+
+            libc::free(result.cast());
+            hew_msgpack_free(buf);
+        }
+    }
 }

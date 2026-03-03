@@ -130,8 +130,8 @@ mod tests {
         let hash_ptr = unsafe { hew_password_hash(pw.as_ptr()) };
         assert!(!hash_ptr.is_null());
         // SAFETY: hash_ptr is a valid malloc'd C string.
-        let hash_str = unsafe { CStr::from_ptr(hash_ptr) }.to_str().unwrap();
-        assert!(hash_str.starts_with("$argon2id$"));
+        let hash_cstr = unsafe { CStr::from_ptr(hash_ptr) }.to_str().unwrap();
+        assert!(hash_cstr.starts_with("$argon2id$"));
         // SAFETY: hash_ptr was returned by hew_password_hash.
         unsafe { hew_password_free(hash_ptr) };
     }
@@ -170,8 +170,8 @@ mod tests {
         let hash_ptr = unsafe { hew_password_hash_custom(pw.as_ptr(), 2) };
         assert!(!hash_ptr.is_null());
         // SAFETY: hash_ptr is a valid malloc'd C string.
-        let hash_str = unsafe { CStr::from_ptr(hash_ptr) }.to_str().unwrap();
-        assert!(hash_str.starts_with("$argon2id$"));
+        let hash_cstr = unsafe { CStr::from_ptr(hash_ptr) }.to_str().unwrap();
+        assert!(hash_cstr.starts_with("$argon2id$"));
         // Verify the custom hash works with verify
         // SAFETY: both are valid C strings.
         let result = unsafe { hew_password_verify(pw.as_ptr(), hash_ptr) };
@@ -184,8 +184,8 @@ mod tests {
     fn null_inputs_return_error() {
         // SAFETY: testing null handling.
         assert!(unsafe { hew_password_hash(std::ptr::null()) }.is_null());
-        // SAFETY: null inputs are explicitly handled.
         assert_eq!(
+            // SAFETY: null inputs are explicitly handled.
             unsafe { hew_password_verify(std::ptr::null(), std::ptr::null()) },
             -1
         );

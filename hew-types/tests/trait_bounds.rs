@@ -3,7 +3,7 @@ use hew_types::Checker;
 
 #[test]
 fn trait_bound_violation_reports_error() {
-    let source = r#"
+    let source = r"
         trait Describable {
             fn describe(self) -> string;
         }
@@ -25,7 +25,7 @@ fn trait_bound_violation_reports_error() {
         fn main() {
             show(42);
         }
-    "#;
+    ";
 
     let parse = hew_parser::parse(source);
     assert!(parse.errors.is_empty(), "parser errors: {:?}", parse.errors);

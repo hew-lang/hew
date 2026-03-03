@@ -296,9 +296,9 @@ mod tests {
     #[test]
     fn run_args_echo() {
         let cmd = CString::new("echo").unwrap();
-        let arg1 = CString::new("hello").unwrap();
-        let arg2 = CString::new("world").unwrap();
-        let args = [arg1.as_ptr(), arg2.as_ptr()];
+        let first_arg = CString::new("hello").unwrap();
+        let second_arg = CString::new("world").unwrap();
+        let args = [first_arg.as_ptr(), second_arg.as_ptr()];
 
         // SAFETY: cmd and args are valid NUL-terminated C strings.
         let result = unsafe { hew_process_run_args(cmd.as_ptr(), args.as_ptr(), 2) };

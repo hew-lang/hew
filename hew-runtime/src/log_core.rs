@@ -241,9 +241,11 @@ mod tests {
         hew_log_set_level(2); // INFO
         let msg = CString::new("should appear").unwrap();
         // INFO (2) ≤ INFO (2): emitted (no crash)
+        // SAFETY: msg is a valid NUL-terminated C string.
         unsafe { hew_log_emit(2, msg.as_ptr()) };
         let dbg = CString::new("should be filtered").unwrap();
         // DEBUG (3) > INFO (2): filtered out
+        // SAFETY: dbg is a valid NUL-terminated C string.
         unsafe { hew_log_emit(3, dbg.as_ptr()) };
     }
 
@@ -259,6 +261,7 @@ mod tests {
         LOG_LEVEL.store(-1, Ordering::Relaxed);
         let msg = CString::new("hidden").unwrap();
         // Level 0 (ERROR) > -1: filtered out
+        // SAFETY: msg is a valid NUL-terminated C string.
         unsafe { hew_log_emit(0, msg.as_ptr()) };
         hew_log_set_level(2); // reset
     }

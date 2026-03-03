@@ -314,11 +314,16 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "test data is allocated with proper alignment by hew_rc_new"
+)]
 mod tests {
     use super::*;
 
     #[test]
     fn rc_basic_lifecycle() {
+        // SAFETY: Test exercises the Rc FFI lifecycle with valid pointers.
         unsafe {
             let val: i32 = 42;
             let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);
@@ -352,6 +357,7 @@ mod tests {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
+        // SAFETY: Test exercises Rc FFI with a custom drop function.
         unsafe {
             DROP_COUNT.store(0, Ordering::SeqCst);
             let val: i32 = 99;
@@ -372,6 +378,7 @@ mod tests {
 
     #[test]
     fn rc_weak_upgrade() {
+        // SAFETY: Test exercises weak reference upgrade with valid Rc pointers.
         unsafe {
             let val: i32 = 77;
             let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);

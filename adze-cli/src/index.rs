@@ -224,6 +224,8 @@ pub fn parse_index_lines(content: &str) -> Result<Vec<IndexEntry>, IndexError> {
 /// Returns [`IndexError::Io`] if the file cannot be written.
 #[cfg(test)]
 pub fn append_index_entry(index_root: &Path, entry: &IndexEntry) -> Result<(), IndexError> {
+    use std::io::Write as _;
+
     let path = index_root.join(index_path(&entry.name));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -232,7 +234,6 @@ pub fn append_index_entry(index_root: &Path, entry: &IndexEntry) -> Result<(), I
         serde_json::to_string(entry).map_err(|e| IndexError::Parse(format!("serialize: {e}")))?;
     line.push('\n');
 
-    use std::io::Write as _;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

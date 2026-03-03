@@ -387,10 +387,10 @@ mod tests {
             let last_segment = module.split("::").last().unwrap_or("").to_string();
             let long_prefix = format!("hew_{last_segment}_");
             let short_prefix = "hew_";
-            if c_name.starts_with(&long_prefix) {
-                c_name[long_prefix.len()..].to_string()
-            } else if c_name.starts_with(short_prefix) {
-                c_name[short_prefix.len()..].to_string()
+            if let Some(stripped) = c_name.strip_prefix(&*long_prefix) {
+                stripped.to_string()
+            } else if let Some(stripped) = c_name.strip_prefix(short_prefix) {
+                stripped.to_string()
             } else {
                 c_name.to_string()
             }

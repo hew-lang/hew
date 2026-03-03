@@ -336,6 +336,10 @@ pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: 
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test data: values are small enough to fit in target types"
+)]
 mod tests {
     use super::*;
 
@@ -350,13 +354,13 @@ mod tests {
             let r1 = st.random();
             // CPython: random.seed(42); random.random() ≈ 0.6394267984578837
             assert!(
-                (r0 - 0.6394267984578837).abs() < 1e-15,
-                "r0 = {r0}, expected 0.6394267984578837"
+                (r0 - 0.639_426_798_457_883_7).abs() < 1e-15,
+                "r0 = {r0}, expected 0.639_426_798_457_883_7"
             );
             // CPython: random.random() ≈ 0.025010755222666936
             assert!(
-                (r1 - 0.025010755222666936).abs() < 1e-15,
-                "r1 = {r1}, expected 0.025010755222666936"
+                (r1 - 0.025_010_755_222_666_936).abs() < 1e-15,
+                "r1 = {r1}, expected 0.025_010_755_222_666_936"
             );
         });
     }

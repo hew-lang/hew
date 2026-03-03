@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn discover_test_functions() {
-        let source = r#"
+        let source = r"
 fn helper() -> i32 { 42 }
 
 #[test]
@@ -126,7 +126,7 @@ fn test_ignored() {
 fn test_panic() {
     assert(false);
 }
-"#;
+";
         let result = hew_parser::parse(source);
         let tests = discover_tests(&result.program, "test.hew");
         assert_eq!(tests.len(), 3);

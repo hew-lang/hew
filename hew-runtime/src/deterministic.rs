@@ -378,7 +378,7 @@ mod tests {
     use super::*;
 
     /// Serialize deterministic tests since they share global state
-    /// (GLOBAL_SEED, SIMTIME_ENABLED, SIMTIME_MS, FAULTS).
+    /// (`GLOBAL_SEED`, `SIMTIME_ENABLED`, `SIMTIME_MS`, FAULTS).
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]

@@ -711,6 +711,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_new_and_len() {
+        // SAFETY: FFI calls use valid pointers returned by hew_hashmap_new_impl.
         unsafe {
             let m = hew_hashmap_new_impl();
             assert!(!m.is_null());
@@ -722,6 +723,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_insert_and_get() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("hello").unwrap();
@@ -734,6 +736,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_contains_key() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("present").unwrap();
@@ -747,6 +750,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_overwrite() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("key").unwrap();
@@ -761,6 +765,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_remove() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("key").unwrap();
@@ -775,6 +780,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_remove_missing_key() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("missing").unwrap();
@@ -785,6 +791,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_get_missing_returns_zero() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("missing").unwrap();
@@ -795,6 +802,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_multiple_entries() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let k1 = CString::new("a").unwrap();
@@ -813,6 +821,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_clear() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let k1 = CString::new("x").unwrap();
@@ -828,6 +837,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_get_or_default() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("key").unwrap();
@@ -841,6 +851,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_many_entries_triggers_resize() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             for i in 0..50 {
@@ -858,6 +869,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_insert_after_remove() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("key").unwrap();
@@ -872,6 +884,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_keys() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let k1 = CString::new("alpha").unwrap();
@@ -888,11 +901,13 @@ mod tests {
 
     #[test]
     fn test_hashmap_free_null() {
+        // SAFETY: Null is explicitly handled by hew_hashmap_free_impl.
         unsafe { hew_hashmap_free_impl(core::ptr::null_mut()) };
     }
 
     #[test]
     fn test_hashmap_with_string_values() {
+        // SAFETY: FFI calls use valid hashmap pointer and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key = CString::new("greeting").unwrap();
@@ -907,6 +922,7 @@ mod tests {
 
     #[test]
     fn test_hashmap_clone_impl_deep_copy() {
+        // SAFETY: FFI calls use valid hashmap pointers and valid C strings.
         unsafe {
             let m = hew_hashmap_new_impl();
             let key_str = CString::new("greeting").unwrap();

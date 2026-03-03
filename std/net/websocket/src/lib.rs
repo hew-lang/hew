@@ -255,10 +255,10 @@ mod tests {
         assert_eq!(msg.data_len, 42);
 
         // Verify C-repr field ordering via pointer offsets.
-        let base = &msg as *const HewWsMessage as usize;
-        let type_offset = &msg.msg_type as *const i32 as usize - base;
-        let data_offset = &msg.data as *const *mut u8 as usize - base;
-        let len_offset = &msg.data_len as *const usize as usize - base;
+        let base = &raw const msg as usize;
+        let type_offset = &raw const msg.msg_type as usize - base;
+        let data_offset = &raw const msg.data as usize - base;
+        let len_offset = &raw const msg.data_len as usize - base;
         assert_eq!(type_offset, 0, "msg_type must be at offset 0");
         assert!(data_offset > type_offset, "data must come after msg_type");
         assert!(len_offset > data_offset, "data_len must come after data");

@@ -50,7 +50,7 @@ struct TypedProgram<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<&'a str>,
     /// Byte offset of the start of each line in the source file.
-    /// line_map[0] = offset of line 1, line_map[1] = offset of line 2, etc.
+    /// `line_map`[0] = offset of line 1, `line_map`[1] = offset of line 2, etc.
     /// Used by codegen to convert byte-offset spans to line:column for DWARF.
     #[serde(skip_serializing_if = "Option::is_none")]
     line_map: Option<&'a [usize]>,
@@ -116,7 +116,7 @@ struct TypedProgramJson<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_path: Option<&'a str>,
     /// Byte offset of the start of each line in the source file.
-    /// line_map[0] = offset of line 1, line_map[1] = offset of line 2, etc.
+    /// `line_map`[0] = offset of line 1, `line_map`[1] = offset of line 2, etc.
     /// Used by codegen to convert byte-offset spans to line:column for DWARF.
     #[serde(skip_serializing_if = "Option::is_none")]
     line_map: Option<&'a [usize]>,
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(program, restored);
     }
 
-    /// Verify that a Program with a ModuleGraph round-trips correctly.
+    /// Verify that a Program with a `ModuleGraph` round-trips correctly.
     #[test]
     fn round_trip_with_module_graph() {
         use hew_parser::module::{Module, ModuleGraph, ModuleId, ModuleImport};
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(program, restored);
     }
 
-    /// Round-trip a MachineDecl through MessagePack.
+    /// Round-trip a `MachineDecl` through `MessagePack`.
     #[test]
     fn round_trip_machine_decl() {
         let program = Program {

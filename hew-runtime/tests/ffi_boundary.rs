@@ -9,8 +9,14 @@
     reason = "FFI test harness — safety invariants are documented per-test"
 )]
 #![expect(
-    clippy::missing_docs_in_crate_items,
-    reason = "integration tests don't need doc comments"
+    clippy::approx_constant,
+    reason = "test data uses hardcoded floats, not mathematical constants"
+)]
+#![expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    reason = "FFI tests use deliberate casts between pointer and integer types"
 )]
 
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -724,7 +730,7 @@ fn mailbox_free_null_is_noop() {
 /// with sleep, eliminating timing-dependent flakiness under load.
 static DISPATCH_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
-/// Serialization lock for tests that share DISPATCH_SIGNAL.
+/// Serialization lock for tests that share `DISPATCH_SIGNAL`.
 static DISPATCH_LOCK: Mutex<()> = Mutex::new(());
 
 fn reset_dispatch_signal() {
@@ -853,8 +859,6 @@ fn actor_send_dispatches_via_scheduler() {
 
 #[test]
 fn actor_send_multiple_messages() {
-    ensure_scheduler();
-
     static MULTI_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(0), Condvar::new());
 
     unsafe extern "C" fn multi_dispatch(
@@ -868,6 +872,7 @@ fn actor_send_multiple_messages() {
         MULTI_SIGNAL.1.notify_all();
     }
 
+    ensure_scheduler();
     *MULTI_SIGNAL.0.lock().unwrap() = 0;
 
     unsafe {
@@ -912,8 +917,6 @@ fn actor_send_multiple_messages() {
 
 #[test]
 fn actor_dispatch_receives_correct_data() {
-    ensure_scheduler();
-
     static DATA_SIGNAL: (Mutex<i32>, Condvar) = (Mutex::new(-1), Condvar::new());
 
     unsafe extern "C" fn data_dispatch(
@@ -930,6 +933,7 @@ fn actor_dispatch_receives_correct_data() {
         }
     }
 
+    ensure_scheduler();
     *DATA_SIGNAL.0.lock().unwrap() = -1;
 
     unsafe {
@@ -994,7 +998,7 @@ mod hashmap_extended {
             let k0 = read_cstr(hew_vec_get_str(keys, 0));
             let k1 = read_cstr(hew_vec_get_str(keys, 1));
             let mut got = vec![k0, k1];
-            got.sort();
+            got.sort_unstable();
             assert_eq!(got, vec!["alpha", "beta"]);
 
             hew_vec_free(keys);
@@ -1015,7 +1019,7 @@ mod hashmap_extended {
             assert_eq!(hew_vec_len(vals), 2);
 
             let mut got = vec![hew_vec_get_i32(vals, 0), hew_vec_get_i32(vals, 1)];
-            got.sort();
+            got.sort_unstable();
             assert_eq!(got, vec![10, 20]);
 
             hew_vec_free(vals);
@@ -1040,7 +1044,7 @@ mod hashmap_extended {
             let v0 = read_cstr(hew_vec_get_str(vals, 0));
             let v1 = read_cstr(hew_vec_get_str(vals, 1));
             let mut got = vec![v0, v1];
-            got.sort();
+            got.sort_unstable();
             assert_eq!(got, vec!["hello", "world"]);
 
             hew_vec_free(vals);
@@ -1954,7 +1958,7 @@ mod generic_vec_tests {
                 Point { x: 7, y: 8, z: 9 },
             ];
             for p in &pts {
-                hew_vec_push_generic(v, (p as *const Point).cast());
+                hew_vec_push_generic(v, std::ptr::from_ref::<Point>(p).cast());
             }
             assert_eq!(hew_vec_len(v), 3);
             for (i, expected) in pts.iter().enumerate() {
@@ -1970,13 +1974,13 @@ mod generic_vec_tests {
         unsafe {
             let v = hew_vec_new_generic(core::mem::size_of::<Point>() as i64, 0);
             let p1 = Point { x: 1, y: 2, z: 3 };
-            hew_vec_push_generic(v, (&p1 as *const Point).cast());
+            hew_vec_push_generic(v, (&raw const p1).cast());
             let p2 = Point {
                 x: 10,
                 y: 20,
                 z: 30,
             };
-            hew_vec_set_generic(v, 0, (&p2 as *const Point).cast());
+            hew_vec_set_generic(v, 0, (&raw const p2).cast());
             let got = &*hew_vec_get_generic(v, 0).cast::<Point>();
             assert_eq!(*got, p2);
             hew_vec_free(v);
@@ -1988,7 +1992,7 @@ mod generic_vec_tests {
         unsafe {
             let v = hew_vec_new_generic(core::mem::size_of::<Point>() as i64, 0);
             let p = Point { x: 42, y: 99, z: 0 };
-            hew_vec_push_generic(v, (&p as *const Point).cast());
+            hew_vec_push_generic(v, (&raw const p).cast());
             let mut out = core::mem::MaybeUninit::<Point>::uninit();
             let ok = hew_vec_pop_generic(v, out.as_mut_ptr().cast());
             assert_eq!(ok, 1);
@@ -2123,7 +2127,7 @@ mod option_tests {
     #[test]
     fn take_leaves_none() {
         let mut opt = hew_option_some_i32(7);
-        let taken = hew_option_take(&mut opt);
+        let taken = hew_option_take(&raw mut opt);
         assert_eq!(hew_option_unwrap_i32(taken), 7);
         assert_eq!(hew_option_is_none(opt), 1);
     }
@@ -2131,7 +2135,7 @@ mod option_tests {
     #[test]
     fn replace_returns_old() {
         let mut opt = hew_option_some_i32(10);
-        let old = hew_option_replace_i32(&mut opt, 20);
+        let old = hew_option_replace_i32(&raw mut opt, 20);
         assert_eq!(hew_option_unwrap_i32(old), 10);
         assert_eq!(hew_option_unwrap_i32(opt), 20);
     }
@@ -2151,24 +2155,24 @@ mod result_tests {
     #[test]
     fn ok_i32_roundtrip() {
         let res = hew_result_ok_i32(42);
-        assert_eq!(hew_result_is_ok(&res), 1);
-        assert_eq!(hew_result_is_err(&res), 0);
-        assert_eq!(hew_result_unwrap_i32(&res), 42);
+        assert_eq!(hew_result_is_ok(&raw const res), 1);
+        assert_eq!(hew_result_is_err(&raw const res), 0);
+        assert_eq!(hew_result_unwrap_i32(&raw const res), 42);
     }
 
     #[test]
     fn ok_i64_roundtrip() {
         let res = hew_result_ok_i64(123_456_789_000i64);
-        assert_eq!(hew_result_unwrap_i64(&res), 123_456_789_000i64);
+        assert_eq!(hew_result_unwrap_i64(&raw const res), 123_456_789_000i64);
     }
 
     #[test]
     fn err_code_only() {
         let res = hew_result_err_code(404);
-        assert_eq!(hew_result_is_err(&res), 1);
-        assert_eq!(hew_result_is_ok(&res), 0);
-        assert_eq!(hew_result_error_code(&res), 404);
-        let msg = hew_result_error_msg(&res);
+        assert_eq!(hew_result_is_err(&raw const res), 1);
+        assert_eq!(hew_result_is_ok(&raw const res), 0);
+        assert_eq!(hew_result_error_code(&raw const res), 404);
+        let msg = hew_result_error_msg(&raw const res);
         assert!(msg.is_null());
     }
 
@@ -2176,37 +2180,37 @@ mod result_tests {
     fn err_with_message() {
         let msg = cstr("file not found");
         let mut res = unsafe { hew_result_err(404, msg.as_ptr()) };
-        assert_eq!(hew_result_error_code(&res), 404);
-        let err_msg = hew_result_error_msg(&res);
+        assert_eq!(hew_result_error_code(&raw const res), 404);
+        let err_msg = hew_result_error_msg(&raw const res);
         assert!(!err_msg.is_null());
         let s = unsafe { read_cstr(err_msg) };
         assert_eq!(s, "file not found");
-        unsafe { hew_result_free(&mut res) };
+        unsafe { hew_result_free(&raw mut res) };
     }
 
     #[test]
     fn unwrap_or_on_err() {
         let res = hew_result_err_code(500);
-        assert_eq!(hew_result_unwrap_or_i32(&res, 99), 99);
-        assert_eq!(hew_result_unwrap_or_i64(&res, 77), 77);
+        assert_eq!(hew_result_unwrap_or_i32(&raw const res, 99), 99);
+        assert_eq!(hew_result_unwrap_or_i64(&raw const res, 77), 77);
     }
 
     #[test]
     fn unwrap_or_on_ok() {
         let res = hew_result_ok_i32(10);
-        assert_eq!(hew_result_unwrap_or_i32(&res, 99), 10);
+        assert_eq!(hew_result_unwrap_or_i32(&raw const res, 99), 10);
     }
 
     #[test]
     fn ok_error_code_is_zero() {
         let res = hew_result_ok_i32(5);
-        assert_eq!(hew_result_error_code(&res), 0);
+        assert_eq!(hew_result_error_code(&raw const res), 0);
     }
 
     #[test]
     fn free_ok_is_safe() {
         let mut res = hew_result_ok_i32(0);
-        unsafe { hew_result_free(&mut res) };
+        unsafe { hew_result_free(&raw mut res) };
         // Should not crash — no error_msg to free.
     }
 
@@ -3160,17 +3164,17 @@ mod rest_for_one_tests {
 
             let mut states: [i32; 3] = [0, 0, 0];
 
-            for i in 0..3 {
+            for state in &mut states {
                 let spec = HewChildSpec {
                     name: ptr::null::<c_char>(),
-                    init_state: (&raw mut states[i]).cast(),
+                    init_state: std::ptr::from_mut::<i32>(state).cast(),
                     init_state_size: size_of::<i32>(),
                     dispatch: Some(noop_dispatch),
                     restart_policy: RESTART_PERMANENT,
                     mailbox_capacity: -1,
                     overflow: OVERFLOW_DROP_NEW,
                 };
-                assert_eq!(hew_supervisor_add_child_spec(sup, &spec), 0);
+                assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             }
 
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3280,7 +3284,7 @@ mod supervisor_escalation_tests {
                 mailbox_capacity: -1,
                 overflow: OVERFLOW_DROP_NEW,
             };
-            assert_eq!(hew_supervisor_add_child_spec(child, &spec), 0);
+            assert_eq!(hew_supervisor_add_child_spec(child, &raw const spec), 0);
 
             // Start both and register child under parent.
             assert_eq!(hew_supervisor_start(child), 0);
@@ -3450,10 +3454,10 @@ mod dynamic_supervision_tests {
             };
 
             // Not started yet, so child won't be spawned but slot is allocated.
-            let idx = hew_supervisor_add_child_dynamic(sup, &spec);
+            let idx = hew_supervisor_add_child_dynamic(sup, &raw const spec);
             assert_eq!(idx, 0);
 
-            let idx2 = hew_supervisor_add_child_dynamic(sup, &spec);
+            let idx2 = hew_supervisor_add_child_dynamic(sup, &raw const spec);
             assert_eq!(idx2, 1);
 
             assert_eq!(hew_supervisor_child_count(sup), 2);
@@ -3477,8 +3481,8 @@ mod dynamic_supervision_tests {
                 overflow: OVERFLOW_DROP_NEW,
             };
 
-            hew_supervisor_add_child_dynamic(sup, &spec);
-            hew_supervisor_add_child_dynamic(sup, &spec);
+            hew_supervisor_add_child_dynamic(sup, &raw const spec);
+            hew_supervisor_add_child_dynamic(sup, &raw const spec);
             assert_eq!(hew_supervisor_child_count(sup), 2);
 
             let rc = hew_supervisor_remove_child(sup, 0);
@@ -3521,7 +3525,7 @@ mod dynamic_supervision_tests {
 
             // Add more than the old SUP_MAX_CHILDREN (64) limit.
             for i in 0..100 {
-                let idx = hew_supervisor_add_child_dynamic(sup, &spec);
+                let idx = hew_supervisor_add_child_dynamic(sup, &raw const spec);
                 assert_eq!(idx, i);
             }
             assert_eq!(hew_supervisor_child_count(sup), 100);
@@ -3546,8 +3550,8 @@ mod dynamic_supervision_tests {
                 overflow: OVERFLOW_DROP_NEW,
             };
 
-            hew_supervisor_add_child_dynamic(sup, &spec);
-            hew_supervisor_add_child_dynamic(sup, &spec);
+            hew_supervisor_add_child_dynamic(sup, &raw const spec);
+            hew_supervisor_add_child_dynamic(sup, &raw const spec);
 
             // Remove first child (swap-removes with last).
             hew_supervisor_remove_child(sup, 0);

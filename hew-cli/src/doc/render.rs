@@ -285,11 +285,11 @@ mod tests {
 
     #[test]
     fn render_contains_function() {
-        let source = r#"/// Adds numbers.
+        let source = r"/// Adds numbers.
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
-"#;
+";
         let result = hew_parser::parse(source);
         let module = extract_docs(&result.program, "math");
         let html = render_module(&module);

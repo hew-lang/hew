@@ -923,7 +923,7 @@ mod tests {
     #[test]
     fn activate_transitions_runnable_to_idle() {
         let actor = stub_actor();
-        let ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         activate_actor(ptr);
 
@@ -939,7 +939,7 @@ mod tests {
         actor
             .actor_state
             .store(HewActorState::Stopped as i32, Ordering::Release);
-        let ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         activate_actor(ptr);
 
@@ -956,7 +956,7 @@ mod tests {
         actor
             .actor_state
             .store(HewActorState::Idle as i32, Ordering::Release);
-        let ptr: *mut HewActor = &actor as *const HewActor as *mut HewActor;
+        let ptr: *mut HewActor = (&raw const actor).cast_mut();
 
         activate_actor(ptr);
 

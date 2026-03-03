@@ -15,7 +15,7 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
 #[test]
 fn impl_requires_associated_type_definition() {
     let output = typecheck(
-        r#"
+        r"
         trait Iterator {
             type Item;
             fn next(self) -> Self::Item;
@@ -30,7 +30,7 @@ fn impl_requires_associated_type_definition() {
                 self.value
             }
         }
-        "#,
+        ",
     );
     assert!(
         output
@@ -45,7 +45,7 @@ fn impl_requires_associated_type_definition() {
 #[test]
 fn impl_type_aliases_resolve_in_methods() {
     let output = typecheck(
-        r#"
+        r"
         trait Iterator {
             type Item;
             fn next(self) -> Self::Item;
@@ -68,7 +68,7 @@ fn impl_type_aliases_resolve_in_methods() {
             let counter = Counter { value: 1 };
             takes_int(counter.next());
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.is_empty(),
@@ -80,7 +80,7 @@ fn impl_type_aliases_resolve_in_methods() {
 #[test]
 fn trait_default_associated_type_used_in_impl() {
     let output = typecheck(
-        r#"
+        r"
         trait Identity {
             type Output = int;
             fn value(self) -> Self::Output;
@@ -102,7 +102,7 @@ fn trait_default_associated_type_used_in_impl() {
             let a = Answer { x: 1 };
             accepts_int(a.value());
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.is_empty(),

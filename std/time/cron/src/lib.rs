@@ -216,10 +216,10 @@ mod tests {
         assert_eq!(written, 5);
 
         // Each should be 60 seconds apart.
-        for i in 0..5 {
-            #[expect(clippy::cast_possible_wrap, reason = "test: i fits in i64")]
-            let expected = after + 60 * (i as i64 + 1);
-            assert_eq!(out[i], expected, "occurrence {i} mismatch");
+        for (idx, actual) in out.iter().enumerate() {
+            #[expect(clippy::cast_possible_wrap, reason = "test: idx fits in i64")]
+            let expected = after + 60 * (idx as i64 + 1);
+            assert_eq!(*actual, expected, "occurrence {idx} mismatch");
         }
 
         // SAFETY: expr was returned by hew_cron_parse.

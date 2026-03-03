@@ -241,7 +241,7 @@ fn cmd_debug(args: &[String]) {
         let mut lldb_args = Vec::new();
         if let Some(script) = &lldb_script {
             lldb_args.push("-o".to_string());
-            lldb_args.push(format!("command script import {}", script));
+            lldb_args.push(format!("command script import {script}"));
         }
         lldb_args.push("--".to_string());
         lldb_args.push(tmp_bin_str.clone());

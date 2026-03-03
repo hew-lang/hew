@@ -129,91 +129,6 @@ pub unsafe extern "C" fn hew_base64_free(ptr: *mut c_void) {
     unsafe { libc::free(ptr) };
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::{CStr, CString};
-
-    #[test]
-    fn test_encode_decode_roundtrip() {
-        let input = b"Hello, Hew!";
-        // SAFETY: input.as_ptr() is valid for input.len() bytes.
-        let encoded = unsafe { hew_base64_encode(input.as_ptr(), input.len()) };
-        assert!(!encoded.is_null());
-
-        // SAFETY: encoded is a valid NUL-terminated string.
-        let encoded_str = unsafe { CStr::from_ptr(encoded) }.to_str().unwrap();
-        assert_eq!(encoded_str, "SGVsbG8sIEhldyE=");
-
-        let mut out_len: usize = 0;
-        // SAFETY: encoded is a valid C string; out_len is a valid writable pointer.
-        let decoded = unsafe { hew_base64_decode(encoded, &mut out_len) };
-        assert!(!decoded.is_null());
-        assert_eq!(out_len, input.len());
-        // SAFETY: decoded is valid for out_len bytes.
-        let decoded_slice = unsafe { std::slice::from_raw_parts(decoded, out_len) };
-        assert_eq!(decoded_slice, input);
-
-        // SAFETY: pointers were allocated by hew_base64_encode/decode.
-        unsafe {
-            hew_base64_free(encoded.cast());
-            hew_base64_free(decoded.cast());
-        };
-    }
-
-    #[test]
-    fn test_url_safe_encoding() {
-        // Bytes that produce +/ in standard but -_ in URL-safe.
-        let input: &[u8] = &[0xfb, 0xff, 0xfe];
-        // SAFETY: input.as_ptr() is valid for input.len() bytes.
-        let standard = unsafe { hew_base64_encode(input.as_ptr(), input.len()) };
-        // SAFETY: input.as_ptr() is valid for input.len() bytes.
-        let url_safe = unsafe { hew_base64_encode_url(input.as_ptr(), input.len()) };
-
-        // SAFETY: both are valid NUL-terminated strings.
-        let std_str = unsafe { CStr::from_ptr(standard) }.to_str().unwrap();
-        let url_str = unsafe { CStr::from_ptr(url_safe) }.to_str().unwrap();
-
-        assert!(std_str.contains('+') || std_str.contains('/'));
-        assert!(!url_str.contains('+') && !url_str.contains('/'));
-
-        // SAFETY: pointers were allocated by hew_base64_encode*.
-        unsafe {
-            hew_base64_free(standard.cast());
-            hew_base64_free(url_safe.cast());
-        };
-    }
-
-    #[test]
-    fn test_decode_invalid_input() {
-        let invalid = CString::new("!!!not-base64!!!").unwrap();
-        let mut out_len: usize = 0;
-        // SAFETY: invalid.as_ptr() is a valid C string; out_len is writable.
-        let result = unsafe { hew_base64_decode(invalid.as_ptr(), &mut out_len) };
-        assert!(result.is_null());
-    }
-
-    #[test]
-    fn test_null_handling() {
-        // SAFETY: null data with len > 0 is explicitly handled by hew_base64_encode.
-        let result = unsafe { hew_base64_encode(std::ptr::null(), 10) };
-        assert!(result.is_null());
-
-        // SAFETY: null string is explicitly handled by hew_base64_decode.
-        let mut out_len: usize = 0;
-        let result = unsafe { hew_base64_decode(std::ptr::null(), &mut out_len) };
-        assert!(result.is_null());
-
-        // SAFETY: null out_len is explicitly handled by hew_base64_decode.
-        let s = CString::new("SGVsbG8=").unwrap();
-        let result = unsafe { hew_base64_decode(s.as_ptr(), std::ptr::null_mut()) };
-        assert!(result.is_null());
-
-        // SAFETY: null is explicitly accepted as a no-op by hew_base64_free.
-        unsafe { hew_base64_free(std::ptr::null_mut()) };
-    }
-}
-
 // ---------------------------------------------------------------------------
 // HewVec-ABI wrappers (used by std/base64.hew)
 // ---------------------------------------------------------------------------
@@ -271,4 +186,90 @@ pub unsafe extern "C" fn hew_base64_decode_hew(s: *const c_char) -> *mut hew_cab
     // SAFETY: ptr was allocated by hew_base64_decode.
     unsafe { hew_base64_free(ptr.cast::<c_void>()) };
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn test_encode_decode_roundtrip() {
+        let input = b"Hello, Hew!";
+        // SAFETY: input.as_ptr() is valid for input.len() bytes.
+        let encoded = unsafe { hew_base64_encode(input.as_ptr(), input.len()) };
+        assert!(!encoded.is_null());
+
+        // SAFETY: encoded is a valid NUL-terminated string.
+        let encoded_str = unsafe { CStr::from_ptr(encoded) }.to_str().unwrap();
+        assert_eq!(encoded_str, "SGVsbG8sIEhldyE=");
+
+        let mut out_len: usize = 0;
+        // SAFETY: encoded is a valid C string; out_len is a valid writable pointer.
+        let decoded = unsafe { hew_base64_decode(encoded, &raw mut out_len) };
+        assert!(!decoded.is_null());
+        assert_eq!(out_len, input.len());
+        // SAFETY: decoded is valid for out_len bytes.
+        let decoded_slice = unsafe { std::slice::from_raw_parts(decoded, out_len) };
+        assert_eq!(decoded_slice, input);
+
+        // SAFETY: pointers were allocated by hew_base64_encode/decode.
+        unsafe {
+            hew_base64_free(encoded.cast());
+            hew_base64_free(decoded.cast());
+        };
+    }
+
+    #[test]
+    fn test_url_safe_encoding() {
+        // Bytes that produce +/ in standard but -_ in URL-safe.
+        let input: &[u8] = &[0xfb, 0xff, 0xfe];
+        // SAFETY: input.as_ptr() is valid for input.len() bytes.
+        let standard = unsafe { hew_base64_encode(input.as_ptr(), input.len()) };
+        // SAFETY: input.as_ptr() is valid for input.len() bytes.
+        let url_safe = unsafe { hew_base64_encode_url(input.as_ptr(), input.len()) };
+
+        // SAFETY: standard is a valid NUL-terminated string from hew_base64_encode.
+        let std_str = unsafe { CStr::from_ptr(standard) }.to_str().unwrap();
+        // SAFETY: url_safe is a valid NUL-terminated string from hew_base64_encode_url.
+        let url_str = unsafe { CStr::from_ptr(url_safe) }.to_str().unwrap();
+
+        assert!(std_str.contains('+') || std_str.contains('/'));
+        assert!(!url_str.contains('+') && !url_str.contains('/'));
+
+        // SAFETY: pointers were allocated by hew_base64_encode*.
+        unsafe {
+            hew_base64_free(standard.cast());
+            hew_base64_free(url_safe.cast());
+        };
+    }
+
+    #[test]
+    fn test_decode_invalid_input() {
+        let invalid = CString::new("!!!not-base64!!!").unwrap();
+        let mut out_len: usize = 0;
+        // SAFETY: invalid.as_ptr() is a valid C string; out_len is writable.
+        let result = unsafe { hew_base64_decode(invalid.as_ptr(), &raw mut out_len) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_null_handling() {
+        // SAFETY: null data with len > 0 is explicitly handled by hew_base64_encode.
+        let result = unsafe { hew_base64_encode(std::ptr::null(), 10) };
+        assert!(result.is_null());
+
+        let mut out_len: usize = 0;
+        // SAFETY: null string is explicitly handled by hew_base64_decode.
+        let result = unsafe { hew_base64_decode(std::ptr::null(), &raw mut out_len) };
+        assert!(result.is_null());
+
+        let s = CString::new("SGVsbG8=").unwrap();
+        // SAFETY: null out_len is explicitly handled by hew_base64_decode.
+        let result = unsafe { hew_base64_decode(s.as_ptr(), std::ptr::null_mut()) };
+        assert!(result.is_null());
+
+        // SAFETY: null is explicitly accepted as a no-op by hew_base64_free.
+        unsafe { hew_base64_free(std::ptr::null_mut()) };
+    }
 }

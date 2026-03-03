@@ -14,10 +14,7 @@
     clippy::undocumented_unsafe_blocks,
     reason = "Integration test — safety invariants documented per-test"
 )]
-#![expect(
-    clippy::missing_docs_in_crate_items,
-    reason = "integration tests don't need doc comments"
-)]
+// (removed invalid lint: clippy::missing_docs_in_crate_items)
 
 use std::ffi::{c_void, CString};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -77,14 +74,16 @@ fn cstr(s: &str) -> CString {
 /// and the restarted actor processes subsequent messages.
 #[test]
 fn supervised_actor_crash_and_restart() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_scheduler();
-    hew_deterministic_reset();
-    DISPATCH_COUNT.store(0, Ordering::SeqCst);
-
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
 
     unsafe {
         // 1. Create and start supervisor
@@ -160,13 +159,15 @@ fn supervised_actor_crash_and_restart() {
 /// Supervisor with circuit breaker: repeated crashes should trip the breaker.
 #[test]
 fn circuit_breaker_trips_on_repeated_crashes() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_scheduler();
-    hew_deterministic_reset();
-
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
     const RESTART_PERMANENT: i32 = 0;
     const OVERFLOW_DROP_NEW: i32 = 1;
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
 
     unsafe {
         let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
@@ -239,13 +240,9 @@ fn circuit_breaker_trips_on_repeated_crashes() {
 
 /// Actor links: when a linked actor crashes, EXIT signal is delivered
 /// to the linked partner's mailbox. The partner's dispatch receives the
-/// EXIT system message (msg_type = 103).
+/// EXIT system message (`msg_type` = 103).
 #[test]
 fn link_delivers_exit_on_crash() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    ensure_scheduler();
-    hew_deterministic_reset();
-
     static LINK_EXIT_RECEIVED: AtomicI32 = AtomicI32::new(0);
 
     /// Dispatch that detects EXIT system messages.
@@ -261,6 +258,11 @@ fn link_delivers_exit_on_crash() {
         }
     }
 
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
     LINK_EXIT_RECEIVED.store(0, Ordering::SeqCst);
 
     unsafe {
@@ -315,7 +317,9 @@ fn link_delivers_exit_on_crash() {
 /// Monitor: when monitored actor crashes, watcher receives a DOWN notification.
 #[test]
 fn monitor_detects_crash() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_scheduler();
     hew_deterministic_reset();
     DISPATCH_COUNT.store(0, Ordering::SeqCst);
@@ -370,7 +374,9 @@ fn monitor_detects_crash() {
 /// Crash forensics: crash reports contain meaningful metadata.
 #[test]
 fn crash_report_has_metadata() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     ensure_scheduler();
     hew_deterministic_reset();
 
@@ -409,7 +415,9 @@ fn crash_report_has_metadata() {
 /// Deterministic testing: seed control and fault injection work correctly.
 #[test]
 fn deterministic_seed_and_fault_injection() {
-    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     hew_deterministic_reset();
 
     // Set a seed and verify it sticks

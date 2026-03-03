@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn error_display_coverage() {
-        let io_err = LockError::Io(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
+        let io_err = LockError::Io(std::io::Error::other("boom"));
         assert!(io_err.to_string().contains("boom"));
 
         let stale_err = LockError::Stale;

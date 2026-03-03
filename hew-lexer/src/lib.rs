@@ -1227,9 +1227,9 @@ mod tests {
                 categorized.push(v.as_str().expect("keyword should be a string"));
             }
         }
-        categorized.sort();
+        categorized.sort_unstable();
         let mut all_sorted: Vec<&str> = ALL_KEYWORDS.to_vec();
-        all_sorted.sort();
+        all_sorted.sort_unstable();
         assert_eq!(
             categorized, all_sorted,
             "union of keyword categories must equal all_keywords"

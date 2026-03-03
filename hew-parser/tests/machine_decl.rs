@@ -2,7 +2,7 @@
 
 #[test]
 fn parse_simple_machine() {
-    let source = r#"
+    let source = r"
 machine Light {
     state Off;
     state On;
@@ -20,7 +20,7 @@ machine Light {
 
 fn main() {
 }
-"#;
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -49,7 +49,7 @@ fn main() {
 
 #[test]
 fn parse_machine_with_fields() {
-    let source = r#"
+    let source = r"
 machine Counter {
     state Idle;
     state Running { count: Int; }
@@ -69,7 +69,7 @@ machine Counter {
         Idle
     }
 }
-"#;
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -94,7 +94,7 @@ machine Counter {
 
 #[test]
 fn parse_machine_with_event_payload() {
-    let source = r#"
+    let source = r"
 machine Tcp {
     state Closed;
     state Open { port: Int; }
@@ -110,7 +110,7 @@ machine Tcp {
         Closed
     }
 }
-"#;
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),
@@ -129,7 +129,7 @@ machine Tcp {
 
 #[test]
 fn parse_machine_wildcard_both() {
-    let source = r#"
+    let source = r"
 machine Noop {
     state A;
     state B;
@@ -140,7 +140,7 @@ machine Noop {
         self
     }
 }
-"#;
+";
     let result = hew_parser::parse(source);
     assert!(
         result.errors.is_empty(),

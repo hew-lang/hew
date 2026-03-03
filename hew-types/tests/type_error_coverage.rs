@@ -15,7 +15,7 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
 #[test]
 fn test_non_exhaustive_match() {
     let output = typecheck(
-        r#"
+        r"
         enum Color { Red; Green; Blue; }
         fn check(c: Color) -> int {
             match c {
@@ -26,7 +26,7 @@ fn test_non_exhaustive_match() {
         fn main() {
             check(Red);
         }
-    "#,
+    ",
     );
     assert!(output
         .warnings
@@ -37,7 +37,7 @@ fn test_non_exhaustive_match() {
 #[test]
 fn test_non_exhaustive_match_stmt() {
     let output = typecheck(
-        r#"
+        r"
         enum Color { Red; Green; Blue; }
         fn main() {
             let color: Color = Red;
@@ -46,7 +46,7 @@ fn test_non_exhaustive_match_stmt() {
                 Green => {},
             }
         }
-    "#,
+    ",
     );
     assert!(output
         .warnings
@@ -57,7 +57,7 @@ fn test_non_exhaustive_match_stmt() {
 #[test]
 fn test_exhaustive_or_option_match() {
     let output = typecheck(
-        r#"
+        r"
         fn check(opt: Option<int>) -> int {
             match opt {
                 Some(x) | None => 1,
@@ -66,7 +66,7 @@ fn test_exhaustive_or_option_match() {
         fn main() {
             check(Some(1));
         }
-    "#,
+    ",
     );
     assert!(!output
         .warnings
@@ -77,7 +77,7 @@ fn test_exhaustive_or_option_match() {
 #[test]
 fn test_non_exhaustive_option_match() {
     let output = typecheck(
-        r#"
+        r"
         fn check(opt: Option<int>) -> int {
             match opt {
                 Some(x) => x,
@@ -86,7 +86,7 @@ fn test_non_exhaustive_option_match() {
         fn main() {
             check(Some(1));
         }
-    "#,
+    ",
     );
     assert!(output
         .warnings
@@ -97,7 +97,7 @@ fn test_non_exhaustive_option_match() {
 #[test]
 fn test_exhaustive_or_result_match() {
     let output = typecheck(
-        r#"
+        r"
         fn check(res: Result<int, int>) -> int {
             match res {
                 Ok(x) | Err(e) => 1,
@@ -106,7 +106,7 @@ fn test_exhaustive_or_result_match() {
         fn main() {
             check(Ok(1));
         }
-    "#,
+    ",
     );
     assert!(!output
         .warnings
@@ -117,7 +117,7 @@ fn test_exhaustive_or_result_match() {
 #[test]
 fn test_exhaustive_or_enum_match() {
     let output = typecheck(
-        r#"
+        r"
         enum Color { Red; Green; Blue; }
         fn check(c: Color) -> int {
             match c {
@@ -127,7 +127,7 @@ fn test_exhaustive_or_enum_match() {
         fn main() {
             check(Red);
         }
-    "#,
+    ",
     );
     assert!(!output
         .warnings
@@ -138,12 +138,12 @@ fn test_exhaustive_or_enum_match() {
 #[test]
 fn test_mutability_error() {
     let output = typecheck(
-        r#"
+        r"
         fn main() {
             let x = 42;
             x = 100; // Error: cannot assign to immutable let binding
         }
-    "#,
+    ",
     );
     assert!(output
         .errors
@@ -154,14 +154,14 @@ fn test_mutability_error() {
 #[test]
 fn test_arity_mismatch() {
     let output = typecheck(
-        r#"
+        r"
         fn add(a: int, b: int) -> int {
             a + b
         }
         fn main() {
             add(5); // Error: wrong number of arguments
         }
-    "#,
+    ",
     );
     assert!(output
         .errors
@@ -173,12 +173,12 @@ fn test_arity_mismatch() {
 fn test_numeric_same_sign_coercion_allowed() {
     // With width check, narrowing i64 -> i8 should be rejected
     let output = typecheck(
-        r#"
+        r"
         fn main() {
             let x: i8 = 42;
             let y: i64 = x; // OK: widening i8 -> i64
         }
-    "#,
+    ",
     );
     assert!(
         output.errors.is_empty(),
@@ -190,12 +190,12 @@ fn test_numeric_same_sign_coercion_allowed() {
 #[test]
 fn test_numeric_widening_allowed() {
     let output = typecheck(
-        r#"
+        r"
         fn main() {
             let x: i8 = 42;
             let y: i32 = x; // OK: widening i8 -> i32
         }
-    "#,
+    ",
     );
     assert!(
         output.errors.is_empty(),
@@ -207,11 +207,11 @@ fn test_numeric_widening_allowed() {
 #[test]
 fn test_lambda_arity_mismatch() {
     let output = typecheck(
-        r#"
+        r"
         fn main() {
             let f: fn(int, int) -> int = (x: int) => x + 1; // Error: lambda has 1 param, expected 2
         }
-    "#,
+    ",
     );
     assert!(
         output

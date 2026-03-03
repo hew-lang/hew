@@ -199,6 +199,7 @@ fn meta_state() -> MutexGuard<'static, MetaState> {
 /// - `data_ptr` must point to `data_len` readable bytes (or be null if
 ///   `data_len` is 0).
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub unsafe extern "C" fn hew_wasm_send(
     name_ptr: *const u8,
     name_len: usize,
@@ -206,32 +207,9 @@ pub unsafe extern "C" fn hew_wasm_send(
     data_ptr: *const c_void,
     data_len: usize,
 ) -> i32 {
-    if name_ptr.is_null() || name_len == 0 {
-        return -1;
-    }
-
-    // SAFETY: Caller guarantees name_ptr/name_len validity.
-    let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
-    let name = match std::str::from_utf8(name_bytes) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
-    // Look up the actor in the registry.
-    let name_cstr = match std::ffi::CString::new(name) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
     extern "C" {
         fn hew_registry_lookup(name: *const std::ffi::c_char) -> *mut c_void;
         fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
-    }
-
-    // SAFETY: name_cstr is a valid NUL-terminated string.
-    let actor_ptr = unsafe { hew_registry_lookup(name_cstr.as_ptr()) };
-    if actor_ptr.is_null() {
-        return -1;
     }
 
     // Read the actor's mailbox pointer. The mailbox field is at a known
@@ -258,20 +236,6 @@ pub unsafe extern "C" fn hew_wasm_send(
     #[cfg(target_pointer_width = "32")]
     const _: () = assert!(MAILBOX_OFFSET == 36);
 
-    // SAFETY: actor_ptr is a valid HewActor pointer from the registry.
-    let mailbox_ptr = unsafe {
-        *(actor_ptr
-            .cast::<u8>()
-            .add(MAILBOX_OFFSET)
-            .cast::<*mut c_void>())
-    };
-    if mailbox_ptr.is_null() {
-        return -2;
-    }
-
-    // SAFETY: mailbox_ptr is valid, data_ptr/data_len are caller-guaranteed.
-    let rc = unsafe { hew_mailbox_send(mailbox_ptr, msg_type, data_ptr as *mut c_void, data_len) };
-
     // After sending, wake the actor: transition IDLE → RUNNABLE and enqueue.
     // This mirrors what the native scheduler does in hew_actor_send.
     //
@@ -289,6 +253,49 @@ pub unsafe extern "C" fn hew_wasm_send(
     const IDLE: i32 = 0; // HewActorState::Idle
     const RUNNABLE: i32 = 1; // HewActorState::Runnable
 
+    if name_ptr.is_null() || name_len == 0 {
+        return -1;
+    }
+
+    // SAFETY: Caller guarantees name_ptr/name_len validity.
+    let name_bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let Ok(name) = std::str::from_utf8(name_bytes) else {
+        return -1;
+    };
+
+    // Look up the actor in the registry.
+    let Ok(name_cstr) = std::ffi::CString::new(name) else {
+        return -1;
+    };
+
+    // SAFETY: name_cstr is a valid NUL-terminated string.
+    let actor_ptr = unsafe { hew_registry_lookup(name_cstr.as_ptr()) };
+    if actor_ptr.is_null() {
+        return -1;
+    }
+
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "pointer from registry has correct alignment"
+    )]
+    // SAFETY: actor_ptr is a valid HewActor pointer from the registry.
+    let mailbox_ptr = unsafe {
+        *(actor_ptr
+            .cast::<u8>()
+            .add(MAILBOX_OFFSET)
+            .cast::<*mut c_void>())
+    };
+    if mailbox_ptr.is_null() {
+        return -2;
+    }
+
+    // SAFETY: mailbox_ptr is valid, data_ptr/data_len are caller-guaranteed.
+    let rc = unsafe { hew_mailbox_send(mailbox_ptr, msg_type, data_ptr.cast_mut(), data_len) };
+
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "actor_ptr is aligned to HewActor which contains AtomicI32"
+    )]
     // SAFETY: actor_ptr + offset points to AtomicI32 actor_state.
     let state_ptr = unsafe {
         &*(actor_ptr
@@ -344,9 +351,9 @@ pub unsafe extern "C" fn hew_wasm_emit(msg_type: i32, data_ptr: *const c_void, d
 /// Header prepended to each message in the recv buffer.
 ///
 /// Layout (little-endian):
-///   0..4:  msg_type (i32)
-///   4..8:  data_len (u32)
-///   8..:   data bytes (data_len bytes)
+///   0..4:  `msg_type` (i32)
+///   4..8:  `data_len` (u32)
+///   8..:   data bytes (`data_len` bytes)
 const RECV_HEADER_SIZE: usize = 8;
 
 /// Poll for outbound messages from actors.
@@ -357,6 +364,10 @@ const RECV_HEADER_SIZE: usize = 8;
 /// Returns the number of bytes written. Returns 0 if no messages are
 /// pending. Messages that don't fit in the remaining buffer are left in
 /// the queue for the next call.
+///
+/// # Panics
+///
+/// Panics if the outbound queue mutex is poisoned.
 ///
 /// # Safety
 ///
@@ -415,6 +426,7 @@ pub unsafe extern "C" fn hew_wasm_recv(out_buf: *mut u8, buf_len: usize) -> i32 
 
 /// Return the number of pending outbound messages.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub extern "C" fn hew_wasm_outbound_len() -> i32 {
     #[expect(
         clippy::cast_possible_truncation,
@@ -441,6 +453,7 @@ pub extern "C" fn hew_wasm_outbound_len() -> i32 {
 ///
 /// The scheduler must have been initialized with `hew_sched_init`.
 #[cfg_attr(not(test), no_mangle)]
+#[must_use]
 pub unsafe extern "C" fn hew_wasm_tick(max_activations: i32) -> i32 {
     // SAFETY: Scheduler must be initialized.
     unsafe { crate::scheduler_wasm::hew_wasm_sched_tick(max_activations) }
@@ -468,12 +481,14 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
     // SAFETY: Caller guarantees meta validity.
     let meta = unsafe { &*meta };
 
+    // SAFETY: Caller guarantees meta.name is a valid NUL-terminated C string.
     let name = unsafe { cstr_to_string(meta.name) };
 
     let mut handlers = Vec::with_capacity(meta.handler_count as usize);
     for i in 0..meta.handler_count as usize {
         // SAFETY: handlers array has handler_count entries.
         let h = unsafe { &*meta.handlers.add(i) };
+        // SAFETY: Handler name is a valid NUL-terminated C string per caller contract.
         let handler_name = unsafe { cstr_to_string(h.name) };
 
         let mut params = Vec::with_capacity(h.param_count as usize);
@@ -481,7 +496,9 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
             // SAFETY: params array has param_count entries.
             let p = unsafe { &*h.params.add(j) };
             params.push(ParamMetaEntry {
+                // SAFETY: Param name is a valid NUL-terminated C string per caller contract.
                 name: unsafe { cstr_to_string(p.name) },
+                // SAFETY: Param type_name is a valid NUL-terminated C string per caller contract.
                 type_name: unsafe { cstr_to_string(p.type_name) },
                 offset: p.offset,
                 size: p.size,
@@ -495,6 +512,7 @@ pub unsafe extern "C" fn hew_wasm_register_actor_meta(meta: *const HewActorMeta)
             return_type: if h.return_type.is_null() {
                 None
             } else {
+                // SAFETY: Non-null return_type is a valid NUL-terminated C string.
                 Some(unsafe { cstr_to_string(h.return_type) })
             },
             return_size: h.return_size,
@@ -536,6 +554,10 @@ unsafe fn cstr_to_string(ptr: *const u8) -> String {
 ///
 /// The returned `*out_len` is set to the string length (excluding NUL).
 ///
+/// # Panics
+///
+/// Panics if the metadata registry mutex is poisoned.
+///
 /// # Safety
 ///
 /// - If non-null, `name_ptr` must point to `name_len` valid UTF-8 bytes.
@@ -573,15 +595,12 @@ pub unsafe extern "C" fn hew_wasm_query_meta(
     };
     drop(state);
 
-    let c_json = match CString::new(json_owned) {
-        Ok(s) => s,
-        Err(_) => {
-            if !out_len.is_null() {
-                // SAFETY: Caller guarantees out_len is valid.
-                unsafe { *out_len = 0 };
-            }
-            return std::ptr::null();
+    let Ok(c_json) = CString::new(json_owned) else {
+        if !out_len.is_null() {
+            // SAFETY: Caller guarantees out_len is valid.
+            unsafe { *out_len = 0 };
         }
+        return std::ptr::null();
     };
     let json_len = c_json.as_bytes().len();
     let json_ptr = c_json.into_raw().cast::<u8>();
@@ -689,7 +708,8 @@ fn json_escape_into(out: &mut String, s: &str) {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
             }
             c => out.push(c),
         }
@@ -740,6 +760,7 @@ mod tests {
         reset_bridge();
 
         let data: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+        // SAFETY: data is a valid byte slice; len matches the array size.
         unsafe {
             hew_wasm_emit(42, data.as_ptr().cast(), data.len());
         }
@@ -747,6 +768,7 @@ mod tests {
         assert_eq!(hew_wasm_outbound_len(), 1);
 
         let mut buf = [0u8; 64];
+        // SAFETY: buf is a valid mutable byte buffer of the given length.
         let written = unsafe { hew_wasm_recv(buf.as_mut_ptr(), buf.len()) };
 
         // Header: 4 bytes msg_type + 4 bytes data_len + 4 bytes data = 12
@@ -769,6 +791,7 @@ mod tests {
         reset_bridge();
 
         let mut buf = [0u8; 64];
+        // SAFETY: buf is a valid mutable byte buffer.
         let written = unsafe { hew_wasm_recv(buf.as_mut_ptr(), buf.len()) };
         assert_eq!(written, 0);
     }
@@ -778,7 +801,9 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         reset_bridge();
 
+        // SAFETY: Emitting with null data and zero length is explicitly supported.
         unsafe { hew_wasm_emit(1, std::ptr::null(), 0) };
+        // SAFETY: Testing null buffer handling; function should return 0.
         let written = unsafe { hew_wasm_recv(std::ptr::null_mut(), 0) };
         assert_eq!(written, 0);
     }
@@ -791,6 +816,7 @@ mod tests {
         // Emit two messages.
         let d1: [u8; 4] = [1, 2, 3, 4];
         let d2: [u8; 4] = [5, 6, 7, 8];
+        // SAFETY: Both data slices are valid byte arrays with matching lengths.
         unsafe {
             hew_wasm_emit(10, d1.as_ptr().cast(), d1.len());
             hew_wasm_emit(20, d2.as_ptr().cast(), d2.len());
@@ -799,6 +825,7 @@ mod tests {
 
         // Buffer only big enough for one message (12 bytes).
         let mut buf = [0u8; 12];
+        // SAFETY: buf is a valid 12-byte mutable buffer.
         let written = unsafe { hew_wasm_recv(buf.as_mut_ptr(), buf.len()) };
         assert_eq!(written, 12);
         assert_eq!(i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 10);
@@ -807,6 +834,7 @@ mod tests {
         assert_eq!(hew_wasm_outbound_len(), 1);
 
         // Drain the rest.
+        // SAFETY: buf is a valid 12-byte mutable buffer.
         let written = unsafe { hew_wasm_recv(buf.as_mut_ptr(), buf.len()) };
         assert_eq!(written, 12);
         assert_eq!(i32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]), 20);
@@ -819,10 +847,12 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         reset_bridge();
 
+        // SAFETY: Emitting with null data and zero length is explicitly supported.
         unsafe { hew_wasm_emit(99, std::ptr::null(), 0) };
         assert_eq!(hew_wasm_outbound_len(), 1);
 
         let mut buf = [0u8; 64];
+        // SAFETY: buf is a valid mutable byte buffer of the given length.
         let written = unsafe { hew_wasm_recv(buf.as_mut_ptr(), buf.len()) };
         // Header only: 4 + 4 = 8 bytes, data_len = 0.
         assert_eq!(written, 8);
@@ -836,6 +866,7 @@ mod tests {
         reset_bridge();
 
         let name = b"nonexistent";
+        // SAFETY: name is a valid byte slice with matching length; null data with zero len is valid.
         let rc = unsafe { hew_wasm_send(name.as_ptr(), name.len(), 0, std::ptr::null(), 0) };
         assert_eq!(rc, -1);
     }
@@ -845,6 +876,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         reset_bridge();
 
+        // SAFETY: Testing null name handling; function should return -1.
         let rc = unsafe { hew_wasm_send(std::ptr::null(), 0, 0, std::ptr::null(), 0) };
         assert_eq!(rc, -1);
     }
@@ -857,13 +889,16 @@ mod tests {
         reset_bridge();
 
         let mut len: usize = 0;
-        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
+        // SAFETY: Null name with zero len queries all actors; len is a valid out-pointer.
+        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &raw mut len) };
         assert!(len > 0);
 
+        // SAFETY: ptr/len are valid as returned by hew_wasm_query_meta.
         let json = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
         };
         assert_eq!(json, "{\"actors\":{}}");
+        // SAFETY: ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
@@ -874,29 +909,32 @@ mod tests {
 
         // Build metadata for a "Counter" actor with one handler.
         let param = HewParamMeta {
-            name: b"amount\0".as_ptr(),
-            type_name: b"i64\0".as_ptr(),
+            name: c"amount".as_ptr().cast(),
+            type_name: c"i64".as_ptr().cast(),
             offset: 0,
             size: 8,
         };
         let handler = HewHandlerMeta {
-            name: b"increment\0".as_ptr(),
+            name: c"increment".as_ptr().cast(),
             msg_type: 0,
             param_count: 1,
-            params: &param,
+            params: &raw const param,
             return_type: std::ptr::null(),
             return_size: 0,
         };
         let actor_meta = HewActorMeta {
-            name: b"Counter\0".as_ptr(),
+            name: c"Counter".as_ptr().cast(),
             handler_count: 1,
-            handlers: &handler,
+            handlers: &raw const handler,
         };
 
-        unsafe { hew_wasm_register_actor_meta(&actor_meta) };
+        // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
 
         let mut len: usize = 0;
-        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
+        // SAFETY: Null name with zero len queries all actors; len is a valid out-pointer.
+        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &raw mut len) };
+        // SAFETY: ptr/len are valid as returned by hew_wasm_query_meta.
         let json = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
         };
@@ -909,6 +947,7 @@ mod tests {
         assert!(json.contains("\"offset\":0"));
         assert!(json.contains("\"size\":8"));
         assert!(json.contains("\"return_type\":null"));
+        // SAFETY: ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
@@ -919,7 +958,7 @@ mod tests {
 
         // Register two actors.
         let h1 = HewHandlerMeta {
-            name: b"ping\0".as_ptr(),
+            name: c"ping".as_ptr().cast(),
             msg_type: 0,
             param_count: 0,
             params: std::ptr::null(),
@@ -927,13 +966,13 @@ mod tests {
             return_size: 0,
         };
         let m1 = HewActorMeta {
-            name: b"Pinger\0".as_ptr(),
+            name: c"Pinger".as_ptr().cast(),
             handler_count: 1,
-            handlers: &h1,
+            handlers: &raw const h1,
         };
 
         let h2 = HewHandlerMeta {
-            name: b"pong\0".as_ptr(),
+            name: c"pong".as_ptr().cast(),
             msg_type: 0,
             param_count: 0,
             params: std::ptr::null(),
@@ -941,20 +980,23 @@ mod tests {
             return_size: 0,
         };
         let m2 = HewActorMeta {
-            name: b"Ponger\0".as_ptr(),
+            name: c"Ponger".as_ptr().cast(),
             handler_count: 1,
-            handlers: &h2,
+            handlers: &raw const h2,
         };
 
+        // SAFETY: m1 and m2 are valid stack-allocated structs with valid C strings.
         unsafe {
-            hew_wasm_register_actor_meta(&m1);
-            hew_wasm_register_actor_meta(&m2);
+            hew_wasm_register_actor_meta(&raw const m1);
+            hew_wasm_register_actor_meta(&raw const m2);
         }
 
         // Query just "Pinger".
         let name = b"Pinger";
         let mut len: usize = 0;
-        let ptr = unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &mut len) };
+        // SAFETY: name is a valid byte slice; len is a valid out-pointer.
+        let ptr = unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &raw mut len) };
+        // SAFETY: ptr/len are valid as returned by hew_wasm_query_meta.
         let json = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
         };
@@ -963,6 +1005,7 @@ mod tests {
         assert!(json.contains("\"ping\""));
         // Should NOT contain the other actor.
         assert!(!json.contains("\"Ponger\""));
+        // SAFETY: ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
@@ -972,7 +1015,7 @@ mod tests {
         reset_bridge();
 
         let h1 = HewHandlerMeta {
-            name: b"ping\0".as_ptr(),
+            name: c"ping".as_ptr().cast(),
             msg_type: 0,
             param_count: 0,
             params: std::ptr::null(),
@@ -980,13 +1023,13 @@ mod tests {
             return_size: 0,
         };
         let m1 = HewActorMeta {
-            name: b"Pinger\0".as_ptr(),
+            name: c"Pinger".as_ptr().cast(),
             handler_count: 1,
-            handlers: &h1,
+            handlers: &raw const h1,
         };
 
         let h2 = HewHandlerMeta {
-            name: b"pong\0".as_ptr(),
+            name: c"pong".as_ptr().cast(),
             msg_type: 0,
             param_count: 0,
             params: std::ptr::null(),
@@ -994,30 +1037,36 @@ mod tests {
             return_size: 0,
         };
         let m2 = HewActorMeta {
-            name: b"Ponger\0".as_ptr(),
+            name: c"Ponger".as_ptr().cast(),
             handler_count: 1,
-            handlers: &h2,
+            handlers: &raw const h2,
         };
 
+        // SAFETY: m1 and m2 are valid stack-allocated structs with valid C strings.
         unsafe {
-            hew_wasm_register_actor_meta(&m1);
-            hew_wasm_register_actor_meta(&m2);
+            hew_wasm_register_actor_meta(&raw const m1);
+            hew_wasm_register_actor_meta(&raw const m2);
         }
 
         let name = b"Pinger";
         let mut filtered_len: usize = 0;
+        // SAFETY: name is a valid byte slice; filtered_len is a valid out-pointer.
         let filtered_ptr =
-            unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &mut filtered_len) };
+            unsafe { hew_wasm_query_meta(name.as_ptr(), name.len(), &raw mut filtered_len) };
+        // SAFETY: filtered_ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(filtered_ptr.cast_mut()) };
 
         let mut all_len: usize = 0;
-        let all_ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut all_len) };
+        // SAFETY: Null name queries all actors; all_len is a valid out-pointer.
+        let all_ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &raw mut all_len) };
+        // SAFETY: all_ptr/all_len are valid as returned by hew_wasm_query_meta.
         let json = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(all_ptr, all_len)).unwrap_or_default()
         };
 
         assert!(json.contains("\"Pinger\""));
         assert!(json.contains("\"Ponger\""));
+        // SAFETY: all_ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(all_ptr.cast_mut()) };
     }
 
@@ -1027,28 +1076,32 @@ mod tests {
         reset_bridge();
 
         let handler = HewHandlerMeta {
-            name: b"get_total\0".as_ptr(),
+            name: c"get_total".as_ptr().cast(),
             msg_type: 0,
             param_count: 0,
             params: std::ptr::null(),
-            return_type: b"i64\0".as_ptr(),
+            return_type: c"i64".as_ptr().cast(),
             return_size: 8,
         };
         let actor_meta = HewActorMeta {
-            name: b"Accumulator\0".as_ptr(),
+            name: c"Accumulator".as_ptr().cast(),
             handler_count: 1,
-            handlers: &handler,
+            handlers: &raw const handler,
         };
 
-        unsafe { hew_wasm_register_actor_meta(&actor_meta) };
+        // SAFETY: actor_meta is a valid stack-allocated struct with valid C strings.
+        unsafe { hew_wasm_register_actor_meta(&raw const actor_meta) };
 
         let mut len: usize = 0;
-        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &mut len) };
+        // SAFETY: Null name queries all actors; len is a valid out-pointer.
+        let ptr = unsafe { hew_wasm_query_meta(std::ptr::null(), 0, &raw mut len) };
+        // SAFETY: ptr/len are valid as returned by hew_wasm_query_meta.
         let json = unsafe {
             std::str::from_utf8(std::slice::from_raw_parts(ptr, len)).unwrap_or_default()
         };
 
         assert!(json.contains("\"return_type\":{\"type\":\"i64\",\"size\":8}"));
+        // SAFETY: ptr was allocated by hew_wasm_query_meta.
         unsafe { hew_wasm_free_meta_json(ptr.cast_mut()) };
     }
 
@@ -1057,6 +1110,7 @@ mod tests {
         let _guard = TEST_LOCK.lock().unwrap();
         bridge_init();
 
+        // SAFETY: Emitting with null data and zero length is explicitly supported.
         unsafe {
             hew_wasm_emit(1, std::ptr::null(), 0);
         }

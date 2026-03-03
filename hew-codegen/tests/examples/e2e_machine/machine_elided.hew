@@ -1,0 +1,32 @@
+// Test: elided target state name in transition bodies
+// `{ field: expr }` instead of `{ TargetState { field: expr } }`
+machine Pipeline {
+    state Idle;
+    state Active  { count: Int; }
+    state Done    { total: Int; }
+
+    event Start;
+    event Work { amount: Int; }
+    event Finish;
+
+    on Start:  Idle   -> Active { count: 0 }
+    on Work:   Active -> Active { count: state.count + event.amount }
+    on Finish: Active -> Done   { total: state.count }
+
+    default { state }
+}
+
+fn main() -> Int {
+    var p = Pipeline::Idle;
+    p = p.step(Start);
+    p = p.step(Work { amount: 5 });
+    p = p.step(Work { amount: 3 });
+    p = p.step(Finish);
+    match p {
+        Done { total } => {
+            println(f"total = {total}");
+            if total == 8 { println("PASS"); 0 } else { println("FAIL"); 1 }
+        },
+        _ => { println("FAIL"); 1 },
+    }
+}

@@ -1799,14 +1799,36 @@ impl<'src> Parser<'src> {
                     None
                 };
 
-                // Body is optional for unit target states:
-                //   on Event: Source -> Target;            ← no body, auto-construct Target
-                //   on Event: Source -> Target { expr }    ← explicit body
+                // Body is optional for unit target states, and target state
+                // name is inferred for payload states:
+                //   on Event: Source -> Target;                     ← no body
+                //   on Event: Source -> Target { field: expr, ... } ← struct fields, target inferred
+                //   on Event: Source -> Target { expression }       ← explicit body
                 let (body, body_start, body_end) = if self.eat(&Token::Semicolon) {
-                    // No body — synthesize constructor: `TargetState`
                     let span_pos = self.peek_span().start;
                     let body_expr = Expr::Identifier(target_state.clone());
                     (body_expr, span_pos, span_pos)
+                } else if target_state != "_" && self.is_struct_init_body() {
+                    // `{ field: expr, ... }` — wrap in TargetState { ... }
+                    let bs = self.peek_span().start;
+                    self.expect(&Token::LeftBrace)?;
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let fname = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let fval = self.parse_expr()?;
+                        fields.push((fname, fval));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    let be = self.peek_span().start;
+                    let struct_init = Expr::StructInit {
+                        name: target_state.clone(),
+                        fields,
+                    };
+                    (struct_init, bs, be)
                 } else {
                     let bs = self.peek_span().start;
                     let block = self.parse_block()?;
@@ -1870,6 +1892,24 @@ impl<'src> Parser<'src> {
             }
             _ => self.expect_ident(),
         }
+    }
+
+    /// Check if the next tokens look like a struct init body: `{ ident: expr }`.
+    /// Used to detect `on Event: S -> T { field: expr }` shorthand.
+    fn is_struct_init_body(&self) -> bool {
+        // Peek at `{`, then `ident`, then `:` — if all three, it's struct init
+        if self.peek() != Some(&Token::LeftBrace) {
+            return false;
+        }
+        // Look ahead: tokens[pos+1] should be Identifier, tokens[pos+2] should be Colon
+        let pos = self.pos;
+        if pos + 2 >= self.tokens.len() {
+            return false;
+        }
+        matches!(
+            (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
+            (Token::Identifier(_), Token::Colon)
+        )
     }
 
     #[expect(

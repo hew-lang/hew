@@ -191,7 +191,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   if (auto *arr = std::get_if<ast::ExprArray>(&expr.kind))
     return generateArrayExpr(*arr);
   if (auto *mapLit = std::get_if<ast::ExprMapLiteral>(&expr.kind))
-    return generateMapLiteralExpr(*mapLit);
+    return generateMapLiteralExpr(*mapLit, expr.span);
   if (auto *lam = std::get_if<ast::ExprLambda>(&expr.kind))
     return generateLambdaExpr(*lam);
   if (auto *interp = std::get_if<ast::ExprInterpolatedString>(&expr.kind))
@@ -3408,14 +3408,25 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
 // Map literal expression
 // ============================================================================
 
-mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit) {
+mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
+                                             const ast::Span &exprSpan) {
   auto location = currentLoc;
 
-  // Determine HashMap type from pendingDeclaredType
+  // Determine HashMap type: prefer pendingDeclaredType (from let/var annotation),
+  // fall back to the type inferred by the type checker (from expression type map).
   mlir::Type hmType;
   if (pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
     hmType = *pendingDeclaredType;
     pendingDeclaredType.reset();
+  } else if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    auto resolvedMlirType = convertType(*resolvedType);
+    if (mlir::isa<hew::HashMapType>(resolvedMlirType)) {
+      hmType = resolvedMlirType;
+    } else {
+      emitError(location)
+          << "map literal must produce a HashMap, got " << resolvedMlirType;
+      return nullptr;
+    }
   } else {
     emitError(location)
         << "cannot determine key/value types for map literal; add explicit type annotation";

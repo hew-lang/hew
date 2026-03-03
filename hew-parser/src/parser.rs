@@ -3998,24 +3998,13 @@ impl<'src> Parser<'src> {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
                 // handled in the type checker when expected type is HashMap.
-                let saved = self.save_pos();
-                self.advance(); // consume '{'
-
-                if matches!(self.peek(), Some(Token::StringLit(_))) {
-                    // Check if it's "string" : — if so, it's a map literal
-                    let next_saved = self.save_pos();
-                    self.advance(); // consume the string
-                    let is_map = self.peek() == Some(&Token::Colon);
-                    self.restore_pos(next_saved);
-
-                    if is_map {
-                        self.parse_map_literal_entries()?
-                    } else {
-                        self.restore_pos(saved);
-                        Expr::Block(self.parse_block()?)
-                    }
+                // Use direct lookahead (no save/restore) for the common block path.
+                if matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
+                    && self.peek_at(self.pos + 2) == Some(&Token::Colon)
+                {
+                    self.advance(); // consume '{'
+                    self.parse_map_literal_entries()?
                 } else {
-                    self.restore_pos(saved);
                     Expr::Block(self.parse_block()?)
                 }
             }

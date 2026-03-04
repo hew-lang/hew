@@ -65,6 +65,7 @@
       "rest_for_one"
     ],
     "logical": ["true", "false"],
+    "machine": ["machine", "state", "event", "on", "when"],
     "other": ["dyn", "unsafe", "pure"],
     "reserved_unused": ["try", "catch", "race", "foreign"]
   },
@@ -135,7 +136,12 @@
     "catch",
     "defer",
     "pure",
-    "as"
+    "as",
+    "machine",
+    "state",
+    "event",
+    "on",
+    "when"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
@@ -216,7 +222,7 @@
     "marker_traits": ["Send", "Frozen", "Copy", "Arc", "Rc", "Weak"],
     "other": ["Range", "ActorStream"]
   },
-  "string_prefixes": ["f", "r", "re"],
+  "string_prefixes": ["f", "r", "re", "b"],
   "comment_styles": {
     "line": "//",
     "doc": "///",

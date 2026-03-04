@@ -846,6 +846,11 @@ pub const ALL_KEYWORDS: &[&str] = &[
     "defer",
     "pure",
     "as",
+    "machine",
+    "state",
+    "event",
+    "on",
+    "when",
 ];
 
 #[cfg(test)]

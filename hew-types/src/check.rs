@@ -272,6 +272,18 @@ fn integer_type_info(ty: &Ty) -> Option<IntegerTypeInfo> {
     }
 }
 
+/// Check if an expression is an integer literal (including negated integer literals).
+fn is_integer_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(Literal::Integer { .. }) => true,
+        Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } => matches!(operand.0, Expr::Literal(Literal::Integer { .. })),
+        _ => false,
+    }
+}
+
 fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
     let Some(actual_info) = integer_type_info(actual) else {
         return false;
@@ -3769,6 +3781,38 @@ impl Checker {
                 Ty::range(ty)
             }
 
+            // Cast expression: `expr as Type`
+            Expr::Cast {
+                expr: inner,
+                ty: type_expr,
+            } => {
+                let actual = self.synthesize(&inner.0, &inner.1);
+                let target = self.resolve_type_expr(&type_expr.0);
+                let actual_resolved = self.subst.resolve(&actual);
+                let target_resolved = self.subst.resolve(&target);
+
+                // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
+                let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
+                    // Allow bool → integer
+                    || (actual_resolved == Ty::Bool && target_resolved.is_integer())
+                    // Allow integer → bool
+                    || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
+
+                if !valid {
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: target_resolved.to_string(),
+                            actual: actual_resolved.to_string(),
+                        },
+                        span,
+                        format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
+                    );
+                }
+
+                self.record_type(span, &target);
+                target
+            }
+
             _ => {
                 // Scope, Select, Join, Unsafe
                 // Purity check: these constructs are inherently impure
@@ -4004,8 +4048,37 @@ impl Checker {
         reason = "builtin method resolution requires many cases"
     )]
     fn check_binary_op(&mut self, left: &Spanned<Expr>, op: BinaryOp, right: &Spanned<Expr>) -> Ty {
-        let left_ty = self.synthesize(&left.0, &left.1);
-        let right_ty = self.synthesize(&right.0, &right.1);
+        let left_is_int_lit = is_integer_literal(&left.0);
+        let right_is_int_lit = is_integer_literal(&right.0);
+
+        // When one side is an integer literal and the other is a concrete
+        // integer type, use check_against so the literal adopts the
+        // non-literal's type instead of defaulting to i64.
+        let (left_ty, right_ty) = if left_is_int_lit && !right_is_int_lit {
+            let rt = self.synthesize(&right.0, &right.1);
+            let rt_resolved = self.subst.resolve(&rt);
+            if rt_resolved.is_integer() {
+                let lt = self.check_against(&left.0, &left.1, &rt_resolved);
+                (lt, rt)
+            } else {
+                let lt = self.synthesize(&left.0, &left.1);
+                (lt, rt)
+            }
+        } else if right_is_int_lit && !left_is_int_lit {
+            let lt = self.synthesize(&left.0, &left.1);
+            let lt_resolved = self.subst.resolve(&lt);
+            if lt_resolved.is_integer() {
+                let rt = self.check_against(&right.0, &right.1, &lt_resolved);
+                (lt, rt)
+            } else {
+                let rt = self.synthesize(&right.0, &right.1);
+                (lt, rt)
+            }
+        } else {
+            let lt = self.synthesize(&left.0, &left.1);
+            let rt = self.synthesize(&right.0, &right.1);
+            (lt, rt)
+        };
 
         // Resolve type variables through substitution so we check against
         // concrete types when available (bidirectional inference).
@@ -4123,7 +4196,16 @@ impl Checker {
             BinaryOp::Range | BinaryOp::RangeInclusive => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
                     if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
-                        Ty::range(common_ty)
+                        // When both bounds are integer literals (e.g. `0..8`),
+                        // use a fresh type variable so the element type can be
+                        // inferred from context (e.g. how the loop variable is
+                        // used).  If nothing constrains it, it stays as-is
+                        // and defaults to the literal type (i64).
+                        if left_is_int_lit && right_is_int_lit {
+                            Ty::range(Ty::Var(TypeVar::fresh()))
+                        } else {
+                            Ty::range(common_ty)
+                        }
                     } else {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -10069,6 +10151,112 @@ fn main() {
         assert!(
             !since_without_version,
             "should not warn about missing version"
+        );
+    }
+
+    #[test]
+    fn typecheck_integer_literal_coerces_in_arithmetic() {
+        // `n - 1` where n: i32 should work — literal 1 coerces to i32
+        let source = concat!(
+            "fn fib(n: i32) -> i32 {\n",
+            "    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n",
+            "}\n",
+            "fn main() { println(fib(10)); }\n"
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "integer literal should coerce in arithmetic: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_literal_range_infers_from_context() {
+        // `for i in 0..8 { fib(i) }` where fib takes i32 — range bounds
+        // should not force i64; the loop variable should be usable as i32
+        let source = concat!(
+            "fn fib(n: i32) -> i32 {\n",
+            "    if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n",
+            "}\n",
+            "fn main() {\n",
+            "    for i in 0..8 {\n",
+            "        println(fib(i));\n",
+            "    }\n",
+            "}\n"
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "literal range should infer element type from context: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_cast_expression_numeric() {
+        let source = concat!(
+            "fn main() {\n",
+            "    let x: i64 = 42;\n",
+            "    let y: i32 = x as i32;\n",
+            "    let z: f64 = y as f64;\n",
+            "    println(y);\n",
+            "    println(z);\n",
+            "}\n"
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output.errors.is_empty(),
+            "numeric casts should type-check: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_cast_expression_invalid() {
+        let source = concat!(
+            "fn main() {\n",
+            "    let s = \"hello\";\n",
+            "    let x = s as i32;\n",
+            "    println(x);\n",
+            "}\n"
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new();
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.message.contains("cannot cast")),
+            "should reject invalid cast: {:?}",
+            output.errors
         );
     }
 }

@@ -2653,10 +2653,10 @@ void MLIRGen::generateMachineDecl(const ast::MachineDecl &decl) {
           currentMachineEventTypeName_.clear();
         } else {
           // Fallback: construct tag-only value
-          targetVal = hew::EnumConstructOp::create(
-              builder, location, machineType, static_cast<int32_t>(ti->targetStateIdx),
-              builder.getStringAttr(machineName), mlir::ValueRange{},
-              /*payload_positions=*/mlir::ArrayAttr{});
+          targetVal = hew::EnumConstructOp::create(builder, location, machineType,
+                                                   static_cast<uint32_t>(ti->targetStateIdx),
+                                                   llvm::StringRef(machineName), mlir::ValueRange{},
+                                                   /*payload_positions=*/mlir::ArrayAttr{});
         }
 
         if (targetVal)

@@ -228,15 +228,15 @@ inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location l
   if (auto opt = mlir::dyn_cast<hew::OptionEnumType>(type)) {
     // Default Option: None (variant 0, no payloads)
     return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
-                                        builder.getStringAttr("Option"), mlir::ValueRange{},
+                                        llvm::StringRef("Option"), mlir::ValueRange{},
                                         /*payload_positions=*/mlir::ArrayAttr{});
   }
   if (auto res = mlir::dyn_cast<hew::ResultEnumType>(type)) {
     // Default Result: Ok(default_ok_value)
     auto okDefault = createDefaultValue(builder, loc, res.getOkType());
-    return hew::EnumConstructOp::create(
-        builder, loc, type, static_cast<uint32_t>(0), builder.getStringAttr("__Result"),
-        mlir::ValueRange{okDefault}, /*payload_positions=*/mlir::ArrayAttr{});
+    return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
+                                        llvm::StringRef("__Result"), mlir::ValueRange{okDefault},
+                                        /*payload_positions=*/mlir::ArrayAttr{});
   }
   // No valid default — this indicates a type we haven't handled.
   llvm::errs() << "MLIRGen: no default value for type: " << type << "\n";

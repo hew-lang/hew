@@ -243,6 +243,7 @@ mod platform {
             }
             #[cfg(not(target_os = "linux"))]
             {
+                // SAFETY: `info` is a valid siginfo_t provided by the kernel.
                 ctx.fault_addr = unsafe { (*info).si_addr } as usize;
             }
         }

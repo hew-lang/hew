@@ -27,7 +27,7 @@ fn main() {
     println(m.len());
     print("get(one): ");
     match m.get("one") {
-        Some(v) => println(v),
+        Some(val) => println(val),
         None => println("none"),
     }
     print("has three: ");

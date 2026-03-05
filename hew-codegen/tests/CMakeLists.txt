@@ -570,6 +570,18 @@ add_e2e_file_test(stress_mass_spawn     e2e_stress stress_mass_spawn)
 add_e2e_file_test(stress_ring           e2e_stress stress_ring)
 add_e2e_file_test(stress_message_burst  e2e_stress stress_message_burst)
 
+# Stress tests spawn many worker threads and are sensitive to extreme CPU/memory
+# contention from parallel test execution.  Serialize them against each other and
+# reserve enough ctest job slots so the OS scheduler isn't overwhelmed.
+set_tests_properties(
+  e2e_stress_stress_mass_spawn
+  e2e_stress_stress_ring
+  e2e_stress_stress_message_burst
+  PROPERTIES
+    RESOURCE_LOCK stress_tests
+    PROCESSORS   4
+)
+
 # ── Bytes stream tests (Stream<T> / Sink<T> first-class streams) ─────────────
 add_e2e_file_test(stream_file_count      e2e_bytes stream_file_count)
 add_e2e_file_test(stream_channel_count   e2e_bytes stream_channel_count)

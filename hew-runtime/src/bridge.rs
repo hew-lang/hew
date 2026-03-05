@@ -207,10 +207,8 @@ pub unsafe extern "C" fn hew_wasm_send(
     data_ptr: *const c_void,
     data_len: usize,
 ) -> i32 {
-    extern "C" {
-        fn hew_registry_lookup(name: *const std::ffi::c_char) -> *mut c_void;
-        fn hew_mailbox_send(mb: *mut c_void, msg_type: i32, data: *mut c_void, size: usize) -> i32;
-    }
+    use crate::mailbox_wasm::{hew_mailbox_send, HewMailboxWasm};
+    use crate::registry::hew_registry_lookup;
 
     // Read the actor's mailbox pointer. The mailbox field is at a known
     // offset in HewActor (field index 6, after sched_link_next, id, pid,
@@ -290,7 +288,14 @@ pub unsafe extern "C" fn hew_wasm_send(
     }
 
     // SAFETY: mailbox_ptr is valid, data_ptr/data_len are caller-guaranteed.
-    let rc = unsafe { hew_mailbox_send(mailbox_ptr, msg_type, data_ptr.cast_mut(), data_len) };
+    let rc = unsafe {
+        hew_mailbox_send(
+            mailbox_ptr.cast::<HewMailboxWasm>(),
+            msg_type,
+            data_ptr.cast_mut(),
+            data_len,
+        )
+    };
 
     #[expect(
         clippy::cast_ptr_alignment,

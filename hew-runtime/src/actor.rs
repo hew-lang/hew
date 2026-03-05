@@ -371,12 +371,10 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     }
 
     // Free the mailbox if present.
-    if !a.mailbox.is_null() {
-        extern "C" {
-            fn hew_mailbox_free(mb: *mut c_void);
-        }
+    let mb = a.mailbox.cast::<crate::mailbox_wasm::HewMailboxWasm>();
+    if !mb.is_null() {
         // SAFETY: Mailbox was allocated by hew_mailbox_new.
-        unsafe { hew_mailbox_free(a.mailbox) };
+        unsafe { crate::mailbox_wasm::hew_mailbox_free(mb) };
     }
 
     // SAFETY: Actor was allocated with Box::new / Box::into_raw.

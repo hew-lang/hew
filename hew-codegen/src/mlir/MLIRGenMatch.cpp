@@ -32,7 +32,7 @@ using namespace mlir;
 // ============================================================================
 
 int64_t MLIRGen::resolvePayloadFieldIndex(llvm::StringRef variantName,
-                                           size_t payloadOrdinal) const {
+                                          size_t payloadOrdinal) const {
   auto variantIt = variantLookup.find(variantName.str());
   if (variantIt == variantLookup.end())
     return 1 + static_cast<int64_t>(payloadOrdinal);
@@ -56,17 +56,17 @@ int64_t MLIRGen::resolvePayloadFieldIndex(llvm::StringRef variantName,
 }
 
 void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleValue,
-                                      mlir::Location location) {
+                                     mlir::Location location) {
   for (size_t i = 0; i < tp.elements.size(); ++i) {
     const auto &elem = tp.elements[i];
 
     mlir::Value elemVal;
     if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(tupleValue.getType())) {
-      elemVal = builder.create<hew::TupleExtractOp>(location, hewTuple.getElementTypes()[i],
-                                                    tupleValue, static_cast<int64_t>(i));
+      elemVal = hew::TupleExtractOp::create(builder, location, hewTuple.getElementTypes()[i],
+                                            tupleValue, static_cast<int64_t>(i));
     } else {
-      elemVal = builder.create<mlir::LLVM::ExtractValueOp>(
-          location, tupleValue, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
+      elemVal = mlir::LLVM::ExtractValueOp::create(
+          builder, location, tupleValue, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
     }
 
     if (auto *elemIdent = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
@@ -79,7 +79,7 @@ void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleV
 }
 
 void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
-                                          mlir::Location location) {
+                                         mlir::Location location) {
   if (!isEnumLikeType(scrutinee.getType()))
     return;
   const auto &ctorName = ctor.name;
@@ -89,13 +89,13 @@ void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::
       int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
       auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
       auto payloadVal =
-          builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+          hew::EnumExtractPayloadOp::create(builder, location, fieldTy, scrutinee, fieldIdx);
       declareVariable(subIdent->name, payloadVal);
     } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
       int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
       auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
       auto payloadVal =
-          builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+          hew::EnumExtractPayloadOp::create(builder, location, fieldTy, scrutinee, fieldIdx);
       bindTuplePatternFields(*subTuple, payloadVal, location);
     }
     // Wildcard sub-patterns: skip binding
@@ -103,10 +103,10 @@ void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::
 }
 
 mlir::Value MLIRGen::emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
-                                            mlir::Location location) {
-  auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), scrutinee);
+                                           mlir::Location location) {
+  auto tag = hew::EnumExtractTagOp::create(builder, location, builder.getI32Type(), scrutinee);
   auto tagVal = createIntConstant(builder, location, builder.getI32Type(), variantIndex);
-  return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
+  return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, tag, tagVal)
       .getResult();
 }
 
@@ -169,28 +169,28 @@ mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast
       return nullptr;
     auto scrType = scrutinee.getType();
     if (llvm::isa<mlir::FloatType>(scrType)) {
-      return builder.create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OEQ,
-                                                 scrutinee, litVal);
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OEQ,
+                                         scrutinee, litVal);
     }
     if (llvm::isa<hew::StringRefType>(scrType)) {
-      auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                          builder.getStringAttr("equals"),
-                                                          scrutinee, mlir::ValueRange{litVal});
+      auto eqResult = hew::StringMethodOp::create(builder, location, builder.getI32Type(),
+                                                  builder.getStringAttr("equals"), scrutinee,
+                                                  mlir::ValueRange{litVal});
       auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
-                                                 eqResult.getResult(), zero);
+      return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                         eqResult.getResult(), zero);
     }
     if (litVal.getType() != scrType)
       litVal = coerceType(litVal, scrType, location);
-    return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, scrutinee,
-                                               litVal);
+    return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, scrutinee,
+                                       litVal);
   }
   if (auto *orPat = std::get_if<ast::PatOr>(&pattern.kind)) {
     auto leftCond = generateOrPatternCondition(scrutinee, orPat->left->value, location);
     auto rightCond = generateOrPatternCondition(scrutinee, orPat->right->value, location);
     if (!leftCond || !rightCond)
       return nullptr;
-    return builder.create<mlir::arith::OrIOp>(location, leftCond, rightCond);
+    return mlir::arith::OrIOp::create(builder, location, leftCond, rightCond);
   }
   if (std::get_if<ast::PatWildcard>(&pattern.kind)) {
     return createIntConstant(builder, location, builder.getI1Type(), 1);
@@ -222,7 +222,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
                                             mlir::Type resultType, mlir::Location location) {
   if (idx >= arms.size()) {
     // No arm matched — non-exhaustive match at runtime. Trap.
-    builder.create<hew::PanicOp>(location);
+    hew::PanicOp::create(builder, location);
     if (resultType)
       return createDefaultValue(builder, location, resultType);
     return nullptr;
@@ -279,8 +279,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
             if (isEnumLikeType(scrutinee.getType())) {
               int64_t fieldIdx = resolvePayloadFieldIndex(spName, ordinal);
               auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
-              auto payloadVal =
-                  builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, scrutinee, fieldIdx);
+              auto payloadVal = hew::EnumExtractPayloadOp::create(builder, location, fieldTy,
+                                                                  scrutinee, fieldIdx);
               declareVariable(pf.name, payloadVal);
             }
           }
@@ -294,8 +294,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       for (const auto &pf : sp.fields) {
         for (const auto &fi : info.fields) {
           if (fi.name == pf.name) {
-            auto fieldVal = builder.create<hew::FieldGetOp>(
-                location,
+            auto fieldVal = hew::FieldGetOp::create(
+                builder, location,
                 mlir::cast<mlir::LLVM::LLVMStructType>(scrutinee.getType()).getBody()[fi.index],
                 scrutinee, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
             declareVariable(pf.name, fieldVal);
@@ -346,8 +346,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
   // Helper to generate if/else chain for tag comparison
   auto generateTagMatch = [&](mlir::Value cond) -> mlir::Value {
     if (resultType) {
-      auto ifOp = builder.create<mlir::scf::IfOp>(location, resultType, cond,
-                                                  /*withElseRegion=*/true);
+      auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond,
+                                          /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       auto thenVal = generateArmBody(arm);
@@ -355,10 +355,10 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
         if (thenVal) {
           thenVal = coerceType(thenVal, resultType, location);
-          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{thenVal});
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
         } else {
           auto defVal = createDefaultValue(builder, location, resultType);
-          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
         }
       }
 
@@ -368,10 +368,10 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
         if (elseVal) {
           elseVal = coerceType(elseVal, resultType, location);
-          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{elseVal});
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
         } else {
           auto defVal = createDefaultValue(builder, location, resultType);
-          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
         }
       }
 
@@ -379,7 +379,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       return ifOp.getResult(0);
     } else {
       bool hasMore = (idx + 1 < arms.size());
-      auto ifOp = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, cond, hasMore);
+      auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond, hasMore);
 
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       generateArmBody(arm);
@@ -427,28 +427,28 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     auto scrType = scrutinee.getType();
     mlir::Value cond;
     if (llvm::isa<mlir::FloatType>(scrType)) {
-      cond = builder.create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OEQ,
-                                                 scrutinee, litVal);
+      cond = mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OEQ,
+                                         scrutinee, litVal);
     } else if (llvm::isa<hew::StringRefType>(scrType)) {
       // String comparison via hew_string_equals runtime call
-      auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                          builder.getStringAttr("equals"),
-                                                          scrutinee, mlir::ValueRange{litVal});
+      auto eqResult = hew::StringMethodOp::create(builder, location, builder.getI32Type(),
+                                                  builder.getStringAttr("equals"), scrutinee,
+                                                  mlir::ValueRange{litVal});
       auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-      cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
-                                                 eqResult.getResult(), zero);
+      cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                         eqResult.getResult(), zero);
     } else {
       if (litVal.getType() != scrType)
         litVal = coerceType(litVal, scrType, location);
-      cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                                 scrutinee, litVal);
+      cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                         scrutinee, litVal);
     }
 
     // Guard: AND with pattern condition
     if (arm.guard) {
       auto guardCond = generateExpression(arm.guard->value);
       if (guardCond)
-        cond = builder.create<mlir::arith::AndIOp>(location, cond, guardCond);
+        cond = mlir::arith::AndIOp::create(builder, location, cond, guardCond);
     }
 
     return generateTagMatch(cond);
@@ -465,7 +465,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     if (arm.guard) {
       auto guardCond = generateExpression(arm.guard->value);
       if (guardCond)
-        cond = builder.create<mlir::arith::AndIOp>(location, cond, guardCond);
+        cond = mlir::arith::AndIOp::create(builder, location, cond, guardCond);
     }
 
     return generateTagMatch(cond);
@@ -477,14 +477,14 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
     const auto &ctorName = ctor->name;
     auto ctorVarIt = variantLookup.find(ctorName);
     if (ctorVarIt != variantLookup.end()) {
-      mlir::Value tagCond =
-          emitTagEqualCondition(scrutinee, static_cast<int64_t>(ctorVarIt->second.second), location);
+      mlir::Value tagCond = emitTagEqualCondition(
+          scrutinee, static_cast<int64_t>(ctorVarIt->second.second), location);
 
       // Guard: We must short-circuit to avoid extracting payload when tag doesn't match.
       // Use scf.if to only evaluate guard (and extract payload) when tag matches.
       if (arm.guard) {
-        auto guardIfOp = builder.create<mlir::scf::IfOp>(location, builder.getI1Type(), tagCond,
-                                                         /*withElseRegion=*/true);
+        auto guardIfOp = mlir::scf::IfOp::create(builder, location, builder.getI1Type(), tagCond,
+                                                 /*withElseRegion=*/true);
 
         // Then region: tag matches, extract payload and evaluate guard
         builder.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
@@ -497,13 +497,13 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
             emitError(location) << "failed to generate match guard expression";
             return nullptr;
           }
-          builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{guardCond});
+          mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{guardCond});
         }
 
         // Else region: tag doesn't match, return false
         builder.setInsertionPointToStart(&guardIfOp.getElseRegion().front());
         auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{falseVal});
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{falseVal});
 
         builder.setInsertionPointAfter(guardIfOp);
         mlir::Value cond = guardIfOp.getResult(0);
@@ -525,7 +525,7 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
       if (arm.guard) {
         auto guardCond = generateExpression(arm.guard->value);
         if (guardCond)
-          cond = builder.create<mlir::arith::AndIOp>(location, cond, guardCond);
+          cond = mlir::arith::AndIOp::create(builder, location, cond, guardCond);
       }
       return generateTagMatch(cond);
     }
@@ -538,8 +538,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
         emitTagEqualCondition(scrutinee, static_cast<int64_t>(varIt->second.second), location);
 
     if (arm.guard) {
-      auto guardIfOp = builder.create<mlir::scf::IfOp>(location, builder.getI1Type(), tagCond,
-                                                       /*withElseRegion=*/true);
+      auto guardIfOp = mlir::scf::IfOp::create(builder, location, builder.getI1Type(), tagCond,
+                                               /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&guardIfOp.getThenRegion().front());
       {
@@ -551,12 +551,12 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
           emitError(location) << "failed to generate match guard expression";
           return nullptr;
         }
-        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{guardCond});
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{guardCond});
       }
 
       builder.setInsertionPointToStart(&guardIfOp.getElseRegion().front());
       auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{falseVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{falseVal});
 
       builder.setInsertionPointAfter(guardIfOp);
       mlir::Value cond = guardIfOp.getResult(0);

@@ -86,8 +86,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
           optionType = currentFunction.getResultTypes()[0];
         else
           optionType = hew::OptionEnumType::get(&context, builder.getI32Type());
-        mlir::Value result = builder.create<hew::EnumConstructOp>(
-            location, optionType, static_cast<int32_t>(variantIndex),
+        mlir::Value result = hew::EnumConstructOp::create(
+            builder, location, optionType, static_cast<int32_t>(variantIndex),
             builder.getStringAttr("Option"), mlir::ValueRange{},
             /*payload_positions=*/nullptr);
         return result;
@@ -100,8 +100,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         if (enumInfo.hasPayloads) {
           // Unit variant of a payload enum: build struct { tag, undef... }
           auto location = currentLoc;
-          mlir::Value result = builder.create<hew::EnumConstructOp>(
-              location, enumInfo.mlirType, static_cast<int32_t>(variantIndex),
+          mlir::Value result = hew::EnumConstructOp::create(
+              builder, location, enumInfo.mlirType, static_cast<int32_t>(variantIndex),
               builder.getStringAttr(enumName), mlir::ValueRange{},
               /*payload_positions=*/nullptr);
           return result;
@@ -121,8 +121,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       funcOp = module.lookupSymbol<mlir::func::FuncOp>(name); // fallback to unmangled
     if (funcOp) {
       auto symName = funcOp.getSymName();
-      return builder.create<mlir::func::ConstantOp>(currentLoc, funcOp.getFunctionType(),
-                                                    mlir::SymbolRefAttr::get(&context, symName));
+      return mlir::func::ConstantOp::create(builder, currentLoc, funcOp.getFunctionType(),
+                                            mlir::SymbolRefAttr::get(&context, symName));
     }
 
     ++errorCount_;
@@ -141,11 +141,11 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
     // Empty block {} coerces to HashMap when pendingDeclaredType expects it
-    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr &&
-        pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
+    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr && pendingDeclaredType &&
+        mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
       auto hmType = *pendingDeclaredType;
       pendingDeclaredType.reset();
-      return builder.create<hew::HashMapNewOp>(currentLoc, hmType).getResult();
+      return hew::HashMapNewOp::create(builder, currentLoc, hmType).getResult();
     }
     return generateBlockExpr(blockExpr->block);
   }
@@ -228,17 +228,18 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
           auto valType = yieldVal.getType();
 
           // Alloca for the value
-          auto one = builder.create<mlir::arith::ConstantIntOp>(yieldLocation, i64Ty, 1);
-          auto valAlloca = builder.create<mlir::LLVM::AllocaOp>(yieldLocation, ptrTy, valType, one);
-          builder.create<mlir::LLVM::StoreOp>(yieldLocation, yieldVal, valAlloca);
+          auto one = mlir::arith::ConstantIntOp::create(builder, yieldLocation, i64Ty, 1);
+          auto valAlloca =
+              mlir::LLVM::AllocaOp::create(builder, yieldLocation, ptrTy, valType, one);
+          mlir::LLVM::StoreOp::create(builder, yieldLocation, yieldVal, valAlloca);
 
           // Compute sizeof(valType)
-          auto valSize = builder.create<hew::SizeOfOp>(yieldLocation, sizeType(),
-                                                       mlir::TypeAttr::get(valType));
+          auto valSize = hew::SizeOfOp::create(builder, yieldLocation, sizeType(),
+                                               mlir::TypeAttr::get(valType));
 
           // Call hew_gen_yield(ctx, &val, size) -> bool (i1)
           auto i1Ty = builder.getI1Type();
-          builder.create<hew::GenYieldOp>(yieldLocation, i1Ty, currentGenCtx, valAlloca, valSize);
+          hew::GenYieldOp::create(builder, yieldLocation, i1Ty, currentGenCtx, valAlloca, valSize);
           // For now, ignore the return value (cancellation not handled)
           return yieldVal; // Return the yielded value (unused by caller)
         }
@@ -254,7 +255,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
 
   if (std::get_if<ast::ExprCooperate>(&expr.kind)) {
     // Cooperative scheduler yield point
-    builder.create<hew::CooperateOp>(currentLoc);
+    hew::CooperateOp::create(builder, currentLoc);
     return createIntConstant(builder, currentLoc, builder.getI32Type(), 0);
   }
 
@@ -274,19 +275,17 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         auto strRefType = hew::StringRefType::get(&context);
         if (handleTy.getHandleKind() == "http.Request") {
           if (fieldName == "path") {
-            return builder
-                .create<hew::RuntimeCallOp>(
-                    location, mlir::TypeRange{strRefType},
-                    mlir::SymbolRefAttr::get(&context, "hew_http_request_path"),
-                    mlir::ValueRange{operandVal})
+            return hew::RuntimeCallOp::create(
+                       builder, location, mlir::TypeRange{strRefType},
+                       mlir::SymbolRefAttr::get(&context, "hew_http_request_path"),
+                       mlir::ValueRange{operandVal})
                 .getResult();
           }
           if (fieldName == "method") {
-            return builder
-                .create<hew::RuntimeCallOp>(
-                    location, mlir::TypeRange{strRefType},
-                    mlir::SymbolRefAttr::get(&context, "hew_http_request_method"),
-                    mlir::ValueRange{operandVal})
+            return hew::RuntimeCallOp::create(
+                       builder, location, mlir::TypeRange{strRefType},
+                       mlir::SymbolRefAttr::get(&context, "hew_http_request_method"),
+                       mlir::ValueRange{operandVal})
                 .getResult();
           }
         }
@@ -312,11 +311,11 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         for (const auto &field : stInfo.fields) {
           if (field.name == fieldName) {
             auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-            auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
-                location, ptrType, structType, operandVal,
+            auto fieldPtr = mlir::LLVM::GEPOp::create(
+                builder, location, ptrType, structType, operandVal,
                 llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
             auto fieldVal =
-                builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr).getResult();
+                mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
             if ((mlir::isa<hew::VecType>(field.semanticType) ||
                  mlir::isa<hew::HashMapType>(field.semanticType)) &&
                 field.semanticType != field.type)
@@ -344,8 +343,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                             << elemTypes.size() << ")";
         return nullptr;
       }
-      return builder.create<hew::TupleExtractOp>(location, elemTypes[numericIdx], operandVal,
-                                                 numericIdx);
+      return hew::TupleExtractOp::create(builder, location, elemTypes[numericIdx], operandVal,
+                                         numericIdx);
     }
 
     auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(operandType);
@@ -367,7 +366,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                             << bodyTypes.size() << ")";
         return nullptr;
       }
-      return builder.create<mlir::LLVM::ExtractValueOp>(location, operandVal, numericIdx);
+      return mlir::LLVM::ExtractValueOp::create(builder, location, operandVal, numericIdx);
     }
 
     // Named field: look up struct info by type name
@@ -382,8 +381,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
           for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
             if (variant.fieldNames[i] == fieldName) {
               auto fieldTy = variant.payloadTypes[i];
-              return builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, operandVal,
-                                                               variant.payloadPositions[i]);
+              return hew::EnumExtractPayloadOp::create(builder, location, fieldTy, operandVal,
+                                                       variant.payloadPositions[i]);
             }
           }
           break;
@@ -402,10 +401,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       // Find the field
       for (const auto &field : info.fields) {
         if (field.name == fieldName) {
-          auto fieldVal = builder
-                              .create<hew::FieldGetOp>(location, field.type, operandVal,
-                                                       builder.getStringAttr(fieldName),
-                                                       builder.getI64IntegerAttr(field.index))
+          auto fieldVal = hew::FieldGetOp::create(builder, location, field.type, operandVal,
+                                                  builder.getStringAttr(fieldName),
+                                                  builder.getI64IntegerAttr(field.index))
                               .getResult();
           if ((mlir::isa<hew::VecType>(field.semanticType) ||
                mlir::isa<hew::HashMapType>(field.semanticType)) &&
@@ -452,8 +450,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         for (size_t i = 0; i < variant.fieldNames.size(); ++i) {
           if (variant.fieldNames[i] == fieldName) {
             auto fieldTy = getEnumFieldType(operandType, variant.payloadPositions[i]);
-            return builder.create<hew::EnumExtractPayloadOp>(location, fieldTy, operandVal,
-                                                             variant.payloadPositions[i]);
+            return hew::EnumExtractPayloadOp::create(builder, location, fieldTy, operandVal,
+                                                     variant.payloadPositions[i]);
           }
         }
         break;
@@ -479,27 +477,27 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       // Constant index -> hew.array_extract
       if (auto constOp = indexVal.getDefiningOp<mlir::arith::ConstantIntOp>()) {
         auto idxConst = constOp.value();
-        return builder.create<hew::ArrayExtractOp>(location, hewArrayType.getElementType(),
-                                                   operandVal, idxConst);
+        return hew::ArrayExtractOp::create(builder, location, hewArrayType.getElementType(),
+                                           operandVal, idxConst);
       }
 
       // Dynamic index -> cast to LLVM array, spill to alloca, GEP, load
       auto llvmArrayType =
           mlir::LLVM::LLVMArrayType::get(hewArrayType.getElementType(), hewArrayType.getSize());
-      auto llvmArray = builder.create<hew::BitcastOp>(location, llvmArrayType, operandVal);
-      auto alloca = builder.create<mlir::LLVM::AllocaOp>(
-          location, mlir::LLVM::LLVMPointerType::get(&context), llvmArrayType,
-          builder.create<mlir::arith::ConstantIntOp>(location, 1, 64));
-      builder.create<mlir::LLVM::StoreOp>(location, llvmArray, alloca);
+      auto llvmArray = hew::BitcastOp::create(builder, location, llvmArrayType, operandVal);
+      auto alloca = mlir::LLVM::AllocaOp::create(
+          builder, location, mlir::LLVM::LLVMPointerType::get(&context), llvmArrayType,
+          mlir::arith::ConstantIntOp::create(builder, location, 1, 64));
+      mlir::LLVM::StoreOp::create(builder, location, llvmArray, alloca);
       auto i64Type = builder.getI64Type();
       mlir::Value idx64 = indexVal;
       if (indexVal.getType() != i64Type)
-        idx64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
-      auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
+        idx64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, indexVal);
+      auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 64);
       auto elemPtr =
-          builder.create<mlir::LLVM::GEPOp>(location, mlir::LLVM::LLVMPointerType::get(&context),
-                                            llvmArrayType, alloca, mlir::ValueRange{zero, idx64});
-      return builder.create<mlir::LLVM::LoadOp>(location, hewArrayType.getElementType(), elemPtr);
+          mlir::LLVM::GEPOp::create(builder, location, mlir::LLVM::LLVMPointerType::get(&context),
+                                    llvmArrayType, alloca, mlir::ValueRange{zero, idx64});
+      return mlir::LLVM::LoadOp::create(builder, location, hewArrayType.getElementType(), elemPtr);
     }
 
     auto arrayType = mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(operandVal.getType());
@@ -511,23 +509,23 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       // Constant index -> extractvalue
       if (auto constOp = indexVal.getDefiningOp<mlir::arith::ConstantIntOp>()) {
         auto idxConst = constOp.value();
-        return builder.create<mlir::LLVM::ExtractValueOp>(location, operandVal, idxConst);
+        return mlir::LLVM::ExtractValueOp::create(builder, location, operandVal, idxConst);
       }
 
       // Dynamic index -> spill array to alloca, GEP, load
-      auto alloca = builder.create<mlir::LLVM::AllocaOp>(
-          location, mlir::LLVM::LLVMPointerType::get(&context), arrayType,
-          builder.create<mlir::arith::ConstantIntOp>(location, 1, 64));
-      builder.create<mlir::LLVM::StoreOp>(location, operandVal, alloca);
+      auto alloca = mlir::LLVM::AllocaOp::create(
+          builder, location, mlir::LLVM::LLVMPointerType::get(&context), arrayType,
+          mlir::arith::ConstantIntOp::create(builder, location, 1, 64));
+      mlir::LLVM::StoreOp::create(builder, location, operandVal, alloca);
       auto i64Type = builder.getI64Type();
       mlir::Value idx64 = indexVal;
       if (indexVal.getType() != i64Type)
-        idx64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
-      auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
+        idx64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, indexVal);
+      auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 64);
       auto elemPtr =
-          builder.create<mlir::LLVM::GEPOp>(location, mlir::LLVM::LLVMPointerType::get(&context),
-                                            arrayType, alloca, mlir::ValueRange{zero, idx64});
-      return builder.create<mlir::LLVM::LoadOp>(location, arrayType.getElementType(), elemPtr);
+          mlir::LLVM::GEPOp::create(builder, location, mlir::LLVM::LLVMPointerType::get(&context),
+                                    arrayType, alloca, mlir::ValueRange{zero, idx64});
+      return mlir::LLVM::LoadOp::create(builder, location, arrayType.getElementType(), elemPtr);
     }
 
     if (auto vecType = mlir::dyn_cast<hew::VecType>(operandVal.getType())) {
@@ -537,8 +535,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       auto i64Type = builder.getI64Type();
       mlir::Value idx64 = indexVal;
       if (indexVal.getType() != i64Type)
-        idx64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
-      return builder.create<hew::VecGetOp>(location, vecType.getElementType(), operandVal, idx64);
+        idx64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, indexVal);
+      return hew::VecGetOp::create(builder, location, vecType.getElementType(), operandVal, idx64);
     }
 
     // Custom type indexing: desugar obj[key] → obj.get(key)
@@ -562,7 +560,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
             if (args[i].getType() != funcType.getInput(i))
               args[i] = coerceType(args[i], funcType.getInput(i), location);
           }
-          auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+          auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
           if (callOp.getNumResults() > 0)
             return callOp.getResult(0);
           return nullptr;
@@ -607,10 +605,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     if (auto handleTy = mlir::dyn_cast<hew::HandleType>(operand.getType())) {
       if (handleTy.getHandleKind() == "Task")
-        operand = builder.create<hew::BitcastOp>(location, ptrType, operand);
+        operand = hew::BitcastOp::create(builder, location, ptrType, operand);
     }
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(operand.getType())) {
-      auto resultPtr = builder.create<hew::ScopeAwaitOp>(location, ptrType, operand);
+      auto resultPtr = hew::ScopeAwaitOp::create(builder, location, ptrType, operand);
 
       mlir::Type resultType = builder.getI32Type();
       bool resolvedScopeAwaitType = false;
@@ -624,7 +622,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       if (!resolvedScopeAwaitType)
         emitWarning(location) << "cannot determine scope.await result type; defaulting to i32";
 
-      auto loadedResult = builder.create<mlir::LLVM::LoadOp>(location, resultType, resultPtr);
+      auto loadedResult = mlir::LLVM::LoadOp::create(builder, location, resultType, resultPtr);
       return loadedResult;
     }
     return operand;
@@ -652,7 +650,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       // For inclusive range ..=, add 1 to end value (assuming integer)
       if (endVal.getType().isIntOrIndex()) {
         auto one = createIntConstant(builder, currentLoc, endVal.getType(), 1);
-        endVal = builder.create<mlir::arith::AddIOp>(currentLoc, endVal, one);
+        endVal = mlir::arith::AddIOp::create(builder, currentLoc, endVal, one);
       } else {
         emitError(currentLoc) << "inclusive range only supported for integers";
         return nullptr;
@@ -660,8 +658,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     }
 
     auto tupleType = hew::HewTupleType::get(&context, {startVal.getType(), endVal.getType()});
-    return builder.create<hew::TupleCreateOp>(currentLoc, tupleType,
-                                              mlir::ValueRange{startVal, endVal});
+    return hew::TupleCreateOp::create(builder, currentLoc, tupleType,
+                                      mlir::ValueRange{startVal, endVal});
   }
 
   emitWarning(currentLoc) << "unsupported expression kind";
@@ -687,7 +685,7 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
       if (!text.empty()) {
         auto symName = getOrCreateGlobalString(text);
         partValues.push_back(
-            builder.create<hew::ConstantOp>(location, strRefType, builder.getStringAttr(symName)));
+            hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(symName)));
       }
     } else if (auto *exprPart = std::get_if<ast::StringPartExpr>(&part)) {
       if (exprPart->expr) {
@@ -701,7 +699,7 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
           // Already a string — use directly
           partValues.push_back(val);
         } else if (valType.isIntOrFloat() || valType.isInteger(1)) {
-          auto str = builder.create<hew::ToStringOp>(location, strRefType, val);
+          auto str = hew::ToStringOp::create(builder, location, strRefType, val);
           if (auto *typeExpr = resolvedTypeOf(exprPart->expr->span))
             if (isUnsignedTypeExpr(*typeExpr))
               str->setAttr("is_unsigned", builder.getBoolAttr(true));
@@ -717,7 +715,7 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
   // Empty interpolation -> return empty string
   if (partValues.empty()) {
     auto symName = getOrCreateGlobalString("");
-    return builder.create<hew::ConstantOp>(location, strRefType, builder.getStringAttr(symName));
+    return hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(symName));
   }
 
   // Single part — no concatenation needed
@@ -738,7 +736,7 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
   mlir::Value result = partValues[0];
   for (size_t j = 1; j < partValues.size(); ++j) {
     mlir::Value prevResult = result;
-    result = builder.create<hew::StringConcatOp>(location, strRefType, result, partValues[j]);
+    result = hew::StringConcatOp::create(builder, location, strRefType, result, partValues[j]);
     if (j > 1)
       ownedTemps.push_back(prevResult);
   }
@@ -764,7 +762,8 @@ mlir::Value MLIRGen::generateBytesLiteral(const std::vector<uint8_t> &data) {
   auto symName = getOrCreateGlobalString(dataStr);
 
   // Get pointer to the global string data.
-  auto dataPtr = builder.create<hew::ConstantOp>(location, ptrType, builder.getStringAttr(symName));
+  auto dataPtr =
+      hew::ConstantOp::create(builder, location, ptrType, builder.getStringAttr(symName));
 
   // Create length constant.
   auto lenVal = createIntConstant(builder, location, i32Ty, static_cast<int64_t>(data.size()));
@@ -772,7 +771,8 @@ mlir::Value MLIRGen::generateBytesLiteral(const std::vector<uint8_t> &data) {
   // Call hew_vec_from_u8_data(ptr, len) -> *HewVec
   auto funcType = mlir::FunctionType::get(&context, {ptrType, i32Ty}, {ptrType});
   auto func = getOrCreateExternFunc("hew_vec_from_u8_data", funcType);
-  auto call = builder.create<mlir::func::CallOp>(location, func, mlir::ValueRange{dataPtr, lenVal});
+  auto call =
+      mlir::func::CallOp::create(builder, location, func, mlir::ValueRange{dataPtr, lenVal});
   return call.getResult(0);
 }
 
@@ -783,9 +783,9 @@ mlir::Value MLIRGen::generateRegexLiteral(const ast::ExprRegexLiteral &regex) {
 
   auto symName = getOrCreateGlobalString(regex.pattern);
   auto patternStr =
-      builder.create<hew::ConstantOp>(location, ptrType, builder.getStringAttr(symName));
+      hew::ConstantOp::create(builder, location, ptrType, builder.getStringAttr(symName));
 
-  return builder.create<hew::RegexNewOp>(location, handleType, patternStr);
+  return hew::RegexNewOp::create(builder, location, handleType, patternStr);
 }
 
 // ============================================================================
@@ -801,8 +801,8 @@ mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit) {
   }
   if (auto *floatLit = std::get_if<ast::LitFloat>(&lit)) {
     auto type = defaultFloatType();
-    return builder.create<mlir::arith::ConstantOp>(location,
-                                                   builder.getFloatAttr(type, floatLit->value));
+    return mlir::arith::ConstantOp::create(builder, location,
+                                           builder.getFloatAttr(type, floatLit->value));
   }
   if (auto *boolLit = std::get_if<ast::LitBool>(&lit)) {
     auto type = builder.getI1Type();
@@ -810,12 +810,12 @@ mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit) {
   }
   if (auto *strLit = std::get_if<ast::LitString>(&lit)) {
     auto symName = getOrCreateGlobalString(strLit->value);
-    return builder.create<hew::ConstantOp>(location, hew::StringRefType::get(&context),
-                                           builder.getStringAttr(symName));
+    return hew::ConstantOp::create(builder, location, hew::StringRefType::get(&context),
+                                   builder.getStringAttr(symName));
   }
   if (auto *charLit = std::get_if<ast::LitChar>(&lit)) {
-    return builder.create<mlir::arith::ConstantIntOp>(location, builder.getI32Type(),
-                                                      static_cast<int64_t>(charLit->value));
+    return mlir::arith::ConstantIntOp::create(builder, location, builder.getI32Type(),
+                                              static_cast<int64_t>(charLit->value));
   }
   if (auto *durLit = std::get_if<ast::LitDuration>(&lit)) {
     auto type = defaultIntType();
@@ -839,18 +839,18 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return nullptr;
 
     auto i1Type = builder.getI1Type();
-    auto ifOp = builder.create<mlir::scf::IfOp>(location, i1Type, lhs,
-                                                /*withElseRegion=*/true);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, i1Type, lhs,
+                                        /*withElseRegion=*/true);
 
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     auto rhs = generateExpression(expr.right->value);
     if (!rhs)
       rhs = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{rhs});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{rhs});
 
     builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
     auto falseVal = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{falseVal});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{falseVal});
 
     builder.setInsertionPointAfter(ifOp);
     return ifOp.getResult(0);
@@ -862,18 +862,18 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return nullptr;
 
     auto i1Type = builder.getI1Type();
-    auto ifOp = builder.create<mlir::scf::IfOp>(location, i1Type, lhs,
-                                                /*withElseRegion=*/true);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, i1Type, lhs,
+                                        /*withElseRegion=*/true);
 
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     auto trueVal = createIntConstant(builder, location, i1Type, 1);
-    builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{trueVal});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{trueVal});
 
     builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
     auto rhs = generateExpression(expr.right->value);
     if (!rhs)
       rhs = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{rhs});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{rhs});
 
     builder.setInsertionPointAfter(ifOp);
     return ifOp.getResult(0);
@@ -909,15 +909,15 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       if (auto *lt = resolvedTypeOf(expr.left->span))
         lhsUnsigned = isUnsignedTypeExpr(*lt);
       lhs = lhsUnsigned
-                ? builder.create<mlir::arith::ExtUIOp>(location, rhs.getType(), lhs).getResult()
-                : builder.create<mlir::arith::ExtSIOp>(location, rhs.getType(), lhs).getResult();
+                ? mlir::arith::ExtUIOp::create(builder, location, rhs.getType(), lhs).getResult()
+                : mlir::arith::ExtSIOp::create(builder, location, rhs.getType(), lhs).getResult();
     } else {
       bool rhsUnsigned = false;
       if (auto *rt = resolvedTypeOf(expr.right->span))
         rhsUnsigned = isUnsignedTypeExpr(*rt);
       rhs = rhsUnsigned
-                ? builder.create<mlir::arith::ExtUIOp>(location, lhs.getType(), rhs).getResult()
-                : builder.create<mlir::arith::ExtSIOp>(location, lhs.getType(), rhs).getResult();
+                ? mlir::arith::ExtUIOp::create(builder, location, lhs.getType(), rhs).getResult()
+                : mlir::arith::ExtSIOp::create(builder, location, lhs.getType(), rhs).getResult();
     }
   }
 
@@ -950,11 +950,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       emitError(location, "ordering comparison on actor references is not supported");
       return nullptr;
     }
-    auto cmpResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                         builder.getStringAttr("compare"), lhs,
-                                                         mlir::ValueRange{rhs});
+    auto cmpResult =
+        hew::StringMethodOp::create(builder, location, builder.getI32Type(),
+                                    builder.getStringAttr("compare"), lhs, mlir::ValueRange{rhs});
     auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
-    return builder.create<mlir::arith::CmpIOp>(location, pred, cmpResult.getResult(), zero)
+    return mlir::arith::CmpIOp::create(builder, location, pred, cmpResult.getResult(), zero)
         .getResult();
   };
 
@@ -965,22 +965,22 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       mlir::Value lhsPtr = lhs, rhsPtr = rhs;
       if (!mlir::isa<mlir::LLVM::LLVMPointerType>(lhs.getType()))
-        lhsPtr = builder.create<hew::BitcastOp>(location, ptrType, lhs);
+        lhsPtr = hew::BitcastOp::create(builder, location, ptrType, lhs);
       if (!mlir::isa<mlir::LLVM::LLVMPointerType>(rhs.getType()))
-        rhsPtr = builder.create<hew::BitcastOp>(location, ptrType, rhs);
-      auto lhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, lhsPtr);
-      auto rhsI = builder.create<mlir::LLVM::PtrToIntOp>(location, i64Type, rhsPtr);
-      return builder.create<mlir::arith::CmpIOp>(location, pred, lhsI, rhsI).getResult();
+        rhsPtr = hew::BitcastOp::create(builder, location, ptrType, rhs);
+      auto lhsI = mlir::LLVM::PtrToIntOp::create(builder, location, i64Type, lhsPtr);
+      auto rhsI = mlir::LLVM::PtrToIntOp::create(builder, location, i64Type, rhsPtr);
+      return mlir::arith::CmpIOp::create(builder, location, pred, lhsI, rhsI).getResult();
     }
     // String equality: equals() returns non-zero on match.
-    auto eqResult = builder.create<hew::StringMethodOp>(location, builder.getI32Type(),
-                                                        builder.getStringAttr("equals"), lhs,
-                                                        mlir::ValueRange{rhs});
+    auto eqResult =
+        hew::StringMethodOp::create(builder, location, builder.getI32Type(),
+                                    builder.getStringAttr("equals"), lhs, mlir::ValueRange{rhs});
     auto zero = createIntConstant(builder, location, builder.getI32Type(), 0);
     // For ==, check equals() != 0; for !=, check equals() == 0.
     auto stringPred = (pred == mlir::arith::CmpIPredicate::eq) ? mlir::arith::CmpIPredicate::ne
                                                                : mlir::arith::CmpIPredicate::eq;
-    return builder.create<mlir::arith::CmpIOp>(location, stringPred, eqResult.getResult(), zero)
+    return mlir::arith::CmpIOp::create(builder, location, stringPred, eqResult.getResult(), zero)
         .getResult();
   };
 
@@ -988,147 +988,144 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   // Arithmetic
   case ast::BinaryOp::Add:
     if (isPtr) {
-      return builder
-          .create<hew::StringConcatOp>(location, hew::StringRefType::get(&context), lhs, rhs)
+      return hew::StringConcatOp::create(builder, location, hew::StringRefType::get(&context), lhs,
+                                         rhs)
           .getResult();
     }
-    return isFloat ? builder.create<mlir::arith::AddFOp>(location, lhs, rhs).getResult()
-                   : builder.create<mlir::arith::AddIOp>(location, lhs, rhs).getResult();
+    return isFloat ? mlir::arith::AddFOp::create(builder, location, lhs, rhs).getResult()
+                   : mlir::arith::AddIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Subtract:
-    return isFloat ? builder.create<mlir::arith::SubFOp>(location, lhs, rhs).getResult()
-                   : builder.create<mlir::arith::SubIOp>(location, lhs, rhs).getResult();
+    return isFloat ? mlir::arith::SubFOp::create(builder, location, lhs, rhs).getResult()
+                   : mlir::arith::SubIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Multiply:
-    return isFloat ? builder.create<mlir::arith::MulFOp>(location, lhs, rhs).getResult()
-                   : builder.create<mlir::arith::MulIOp>(location, lhs, rhs).getResult();
+    return isFloat ? mlir::arith::MulFOp::create(builder, location, lhs, rhs).getResult()
+                   : mlir::arith::MulIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Divide:
     if (isFloat)
-      return builder.create<mlir::arith::DivFOp>(location, lhs, rhs).getResult();
+      return mlir::arith::DivFOp::create(builder, location, lhs, rhs).getResult();
     if (isUnsigned)
-      return builder.create<mlir::arith::DivUIOp>(location, lhs, rhs).getResult();
-    return builder.create<mlir::arith::DivSIOp>(location, lhs, rhs).getResult();
+      return mlir::arith::DivUIOp::create(builder, location, lhs, rhs).getResult();
+    return mlir::arith::DivSIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Modulo:
     if (isFloat)
-      return builder.create<mlir::arith::RemFOp>(location, lhs, rhs).getResult();
+      return mlir::arith::RemFOp::create(builder, location, lhs, rhs).getResult();
     if (isUnsigned)
-      return builder.create<mlir::arith::RemUIOp>(location, lhs, rhs).getResult();
-    return builder.create<mlir::arith::RemSIOp>(location, lhs, rhs).getResult();
+      return mlir::arith::RemUIOp::create(builder, location, lhs, rhs).getResult();
+    return mlir::arith::RemSIOp::create(builder, location, lhs, rhs).getResult();
 
   // Comparisons
   case ast::BinaryOp::Less:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLT, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OLT, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrOrderingCmp(mlir::arith::CmpIPredicate::slt);
-    return builder
-        .create<mlir::arith::CmpIOp>(location,
-                                     isUnsigned ? mlir::arith::CmpIPredicate::ult
-                                                : mlir::arith::CmpIPredicate::slt,
-                                     lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location,
+                                       isUnsigned ? mlir::arith::CmpIPredicate::ult
+                                                  : mlir::arith::CmpIPredicate::slt,
+                                       lhs, rhs)
         .getResult();
   case ast::BinaryOp::LessEqual:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OLE, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OLE, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrOrderingCmp(mlir::arith::CmpIPredicate::sle);
-    return builder
-        .create<mlir::arith::CmpIOp>(location,
-                                     isUnsigned ? mlir::arith::CmpIPredicate::ule
-                                                : mlir::arith::CmpIPredicate::sle,
-                                     lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location,
+                                       isUnsigned ? mlir::arith::CmpIPredicate::ule
+                                                  : mlir::arith::CmpIPredicate::sle,
+                                       lhs, rhs)
         .getResult();
   case ast::BinaryOp::Greater:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGT, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OGT, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrOrderingCmp(mlir::arith::CmpIPredicate::sgt);
-    return builder
-        .create<mlir::arith::CmpIOp>(location,
-                                     isUnsigned ? mlir::arith::CmpIPredicate::ugt
-                                                : mlir::arith::CmpIPredicate::sgt,
-                                     lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location,
+                                       isUnsigned ? mlir::arith::CmpIPredicate::ugt
+                                                  : mlir::arith::CmpIPredicate::sgt,
+                                       lhs, rhs)
         .getResult();
   case ast::BinaryOp::GreaterEqual:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OGE, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OGE, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrOrderingCmp(mlir::arith::CmpIPredicate::sge);
-    return builder
-        .create<mlir::arith::CmpIOp>(location,
-                                     isUnsigned ? mlir::arith::CmpIPredicate::uge
-                                                : mlir::arith::CmpIPredicate::sge,
-                                     lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location,
+                                       isUnsigned ? mlir::arith::CmpIPredicate::uge
+                                                  : mlir::arith::CmpIPredicate::sge,
+                                       lhs, rhs)
         .getResult();
   case ast::BinaryOp::Equal:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::OEQ, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::OEQ, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrEqualityCmp(mlir::arith::CmpIPredicate::eq);
-    return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, lhs, rhs)
         .getResult();
   case ast::BinaryOp::NotEqual:
     if (isFloat)
-      return builder
-          .create<mlir::arith::CmpFOp>(location, mlir::arith::CmpFPredicate::ONE, lhs, rhs)
+      return mlir::arith::CmpFOp::create(builder, location, mlir::arith::CmpFPredicate::ONE, lhs,
+                                         rhs)
           .getResult();
     if (isPtr)
       return ptrEqualityCmp(mlir::arith::CmpIPredicate::ne);
-    return builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, lhs, rhs)
+    return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, lhs, rhs)
         .getResult();
 
   case ast::BinaryOp::RegexMatch: {
-    return builder.create<hew::RegexIsMatchOp>(location, builder.getI1Type(), rhs, lhs);
+    return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), rhs, lhs);
   }
   case ast::BinaryOp::RegexNotMatch: {
-    auto matchResult = builder.create<hew::RegexIsMatchOp>(location, builder.getI1Type(), rhs, lhs);
-    auto trueVal = builder.create<mlir::arith::ConstantOp>(location, builder.getBoolAttr(true));
-    return builder.create<mlir::arith::XOrIOp>(location, matchResult, trueVal).getResult();
+    auto matchResult =
+        hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), rhs, lhs);
+    auto trueVal = mlir::arith::ConstantOp::create(builder, location, builder.getBoolAttr(true));
+    return mlir::arith::XOrIOp::create(builder, location, matchResult, trueVal).getResult();
   }
 
   // Bitwise operators
   case ast::BinaryOp::BitAnd:
-    return builder.create<mlir::arith::AndIOp>(location, lhs, rhs).getResult();
+    return mlir::arith::AndIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::BitOr:
-    return builder.create<mlir::arith::OrIOp>(location, lhs, rhs).getResult();
+    return mlir::arith::OrIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::BitXor:
-    return builder.create<mlir::arith::XOrIOp>(location, lhs, rhs).getResult();
+    return mlir::arith::XOrIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Shl:
-    return builder.create<mlir::arith::ShLIOp>(location, lhs, rhs).getResult();
+    return mlir::arith::ShLIOp::create(builder, location, lhs, rhs).getResult();
   case ast::BinaryOp::Shr:
-    return isUnsigned ? builder.create<mlir::arith::ShRUIOp>(location, lhs, rhs).getResult()
-                      : builder.create<mlir::arith::ShRSIOp>(location, lhs, rhs).getResult();
+    return isUnsigned ? mlir::arith::ShRUIOp::create(builder, location, lhs, rhs).getResult()
+                      : mlir::arith::ShRSIOp::create(builder, location, lhs, rhs).getResult();
 
   case ast::BinaryOp::Range: {
     // Treat as range expression: start..end
     auto tupleType = hew::HewTupleType::get(&context, {lhs.getType(), rhs.getType()});
-    return builder.create<hew::TupleCreateOp>(location, tupleType, mlir::ValueRange{lhs, rhs});
+    return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{lhs, rhs});
   }
 
   case ast::BinaryOp::RangeInclusive: {
     // Treat as range expression: start..=end -> (start, end+1)
     if (rhs.getType().isIntOrIndex()) {
       auto one = createIntConstant(builder, location, rhs.getType(), 1);
-      rhs = builder.create<mlir::arith::AddIOp>(location, rhs, one);
+      rhs = mlir::arith::AddIOp::create(builder, location, rhs, one);
     } else {
       emitError(location) << "inclusive range only supported for integers";
       return nullptr;
     }
     auto tupleType = hew::HewTupleType::get(&context, {lhs.getType(), rhs.getType()});
-    return builder.create<hew::TupleCreateOp>(location, tupleType, mlir::ValueRange{lhs, rhs});
+    return hew::TupleCreateOp::create(builder, location, tupleType, mlir::ValueRange{lhs, rhs});
   }
 
   case ast::BinaryOp::Send:
-    builder.create<hew::ActorSendOp>(location, lhs, builder.getI32IntegerAttr(0),
-                                     mlir::ValueRange{rhs});
+    hew::ActorSendOp::create(builder, location, lhs, builder.getI32IntegerAttr(0),
+                             mlir::ValueRange{rhs});
     return nullptr;
 
   default:
@@ -1152,27 +1149,27 @@ mlir::Value MLIRGen::generateUnaryExpr(const ast::ExprUnary &expr) {
   case ast::UnaryOp::Negate: {
     auto type = operand.getType();
     if (llvm::isa<mlir::FloatType>(type)) {
-      return builder.create<mlir::arith::NegFOp>(location, operand).getResult();
+      return mlir::arith::NegFOp::create(builder, location, operand).getResult();
     }
     // Integer negate: 0 - operand
     auto zero = createIntConstant(builder, location, type, 0);
-    return builder.create<mlir::arith::SubIOp>(location, zero, operand).getResult();
+    return mlir::arith::SubIOp::create(builder, location, zero, operand).getResult();
   }
   case ast::UnaryOp::Not: {
     auto type = operand.getType();
     if (type == builder.getI1Type()) {
       auto trueVal = createIntConstant(builder, location, type, 1);
-      return builder.create<mlir::arith::XOrIOp>(location, operand, trueVal).getResult();
+      return mlir::arith::XOrIOp::create(builder, location, operand, trueVal).getResult();
     }
     auto zero = createIntConstant(builder, location, type, 0);
-    return builder
-        .create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, operand, zero)
+    return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, operand,
+                                       zero)
         .getResult();
   }
   case ast::UnaryOp::BitNot: {
     auto type = operand.getType();
     auto allOnes = createIntConstant(builder, location, type, -1);
-    return builder.create<mlir::arith::XOrIOp>(location, operand, allOnes).getResult();
+    return mlir::arith::XOrIOp::create(builder, location, operand, allOnes).getResult();
   }
   }
   return nullptr;
@@ -1201,12 +1198,12 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   if (calleeName == "hew_log_init") {
     // log.setup() → hew_log_set_level(2) (default INFO)
     auto i32Type = builder.getI32Type();
-    auto infoLevel = builder.create<mlir::arith::ConstantIntOp>(location, 2, 32);
+    auto infoLevel = mlir::arith::ConstantIntOp::create(builder, location, 2, 32);
     auto funcType = mlir::FunctionType::get(&context, {i32Type}, {});
     getOrCreateExternFunc("hew_log_set_level", funcType);
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                       mlir::SymbolRefAttr::get(&context, "hew_log_set_level"),
-                                       mlir::ValueRange{infoLevel});
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_log_set_level"),
+                               mlir::ValueRange{infoLevel});
     return nullptr;
   }
   {
@@ -1249,7 +1246,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
           args[i] = coerceType(args[i], expectedType, location);
         }
       }
-      auto callOp = builder.create<mlir::func::CallOp>(location, specializedFunc, args);
+      auto callOp = mlir::func::CallOp::create(builder, location, specializedFunc, args);
       if (call.is_tail_call)
         callOp->setAttr("hew.tail_call", builder.getUnitAttr());
       if (callOp.getNumResults() > 0)
@@ -1337,9 +1334,9 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         if (!argVal)
           return nullptr;
         auto optType = hew::OptionEnumType::get(&context, argVal.getType());
-        mlir::Value result = builder.create<hew::EnumConstructOp>(
-            location, optType, static_cast<int32_t>(variantIndex), builder.getStringAttr("Option"),
-            mlir::ValueRange{argVal},
+        mlir::Value result = hew::EnumConstructOp::create(
+            builder, location, optType, static_cast<int32_t>(variantIndex),
+            builder.getStringAttr("Option"), mlir::ValueRange{argVal},
             /*payload_positions=*/nullptr);
         return result;
       }
@@ -1361,8 +1358,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         else {
           resultType = hew::ResultEnumType::get(&context, argVal.getType(), builder.getI32Type());
         }
-        mlir::Value result = builder.create<hew::EnumConstructOp>(
-            location, resultType, static_cast<int32_t>(variantIndex),
+        mlir::Value result = hew::EnumConstructOp::create(
+            builder, location, resultType, static_cast<int32_t>(variantIndex),
             builder.getStringAttr("__Result"), mlir::ValueRange{argVal},
             /*payload_positions=*/nullptr);
         return result;
@@ -1385,8 +1382,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         else {
           resultType = hew::ResultEnumType::get(&context, builder.getI32Type(), argVal.getType());
         }
-        mlir::Value result = builder.create<hew::EnumConstructOp>(
-            location, resultType, static_cast<int32_t>(variantIndex),
+        mlir::Value result = hew::EnumConstructOp::create(
+            builder, location, resultType, static_cast<int32_t>(variantIndex),
             builder.getStringAttr("__Result"), mlir::ValueRange{argVal},
             /*payload_positions=*/nullptr);
         return result;
@@ -1417,8 +1414,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
           auto payloadPositionsAttr =
               vi ? buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size())
                  : nullptr;
-          mlir::Value result = builder.create<hew::EnumConstructOp>(
-              location, enumInfo.mlirType, static_cast<int32_t>(variantIndex),
+          mlir::Value result = hew::EnumConstructOp::create(
+              builder, location, enumInfo.mlirType, static_cast<int32_t>(variantIndex),
               builder.getStringAttr(enumName), payloads, payloadPositionsAttr);
           return result;
         }
@@ -1506,10 +1503,10 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       auto actualType = args[i].getType();
       if (actualType != expectedType && isPointerLikeType(actualType) &&
           mlir::isa<mlir::LLVM::LLVMPointerType>(expectedType)) {
-        args[i] = builder.create<hew::BitcastOp>(location, expectedType, args[i]);
+        args[i] = hew::BitcastOp::create(builder, location, expectedType, args[i]);
       } else if (actualType != expectedType && mlir::isa<mlir::LLVM::LLVMPointerType>(actualType) &&
                  isPointerLikeType(expectedType)) {
-        args[i] = builder.create<hew::BitcastOp>(location, expectedType, args[i]);
+        args[i] = hew::BitcastOp::create(builder, location, expectedType, args[i]);
       } else if (actualType != expectedType) {
         bool argUnsigned = false;
         if (i < call.args.size()) {
@@ -1520,7 +1517,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         args[i] = coerceType(args[i], expectedType, location, argUnsigned);
       }
     }
-    auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+    auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
     if (call.is_tail_call)
       callOp->setAttr("hew.tail_call", builder.getUnitAttr());
 
@@ -1534,8 +1531,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
           continue;
         if (!std::holds_alternative<ast::ExprLambda>(ast::callArgExpr(call.args[i]).value.kind))
           continue;
-        auto envPtr = builder.create<hew::ClosureGetEnvOp>(location, ptrType, args[i]);
-        builder.create<hew::DropOp>(location, envPtr, "hew_rc_drop", false);
+        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, args[i]);
+        hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
       }
     }
 
@@ -1545,7 +1542,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       if (externRetIt != externSemanticReturnTypes.end() &&
           mlir::isa<mlir::LLVM::LLVMPointerType>(result.getType()) &&
           result.getType() != externRetIt->second) {
-        result = builder.create<hew::BitcastOp>(location, externRetIt->second, result);
+        result = hew::BitcastOp::create(builder, location, externRetIt->second, result);
       }
       return result;
     }
@@ -1557,8 +1554,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   if (calleeVal) {
     if (auto closureType = mlir::dyn_cast<hew::ClosureType>(calleeVal.getType())) {
       auto closurePtrType = mlir::LLVM::LLVMPointerType::get(&context);
-      auto fnPtr = builder.create<hew::ClosureGetFnOp>(location, closurePtrType, calleeVal);
-      auto envPtr = builder.create<hew::ClosureGetEnvOp>(location, closurePtrType, calleeVal);
+      auto fnPtr = hew::ClosureGetFnOp::create(builder, location, closurePtrType, calleeVal);
+      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, closurePtrType, calleeVal);
 
       llvm::SmallVector<mlir::Type, 8> indirectParamTypes;
       indirectParamTypes.push_back(closurePtrType);
@@ -1571,7 +1568,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                   ? mlir::FunctionType::get(&context, indirectParamTypes, {retType})
                                   : mlir::FunctionType::get(&context, indirectParamTypes, {});
 
-      auto fnRef = builder.create<hew::BitcastOp>(location, indirectFuncType, fnPtr);
+      auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
 
       llvm::SmallVector<mlir::Value, 8> indirectArgs;
       indirectArgs.push_back(envPtr);
@@ -1581,7 +1578,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
         indirectArgs.push_back(args[i]);
       }
 
-      auto callOp = builder.create<mlir::func::CallIndirectOp>(location, fnRef, indirectArgs);
+      auto callOp = mlir::func::CallIndirectOp::create(builder, location, fnRef, indirectArgs);
       if (callOp.getNumResults() > 0)
         return callOp.getResult(0);
       return nullptr;
@@ -1609,7 +1606,7 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   if (!val)
     return nullptr;
 
-  auto printOp = builder.create<hew::PrintOp>(location, val, builder.getBoolAttr(newline));
+  auto printOp = hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
   // Propagate unsigned type info so the lowering uses unsigned print routines.
   if (auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[0]).span))
     if (isUnsignedTypeExpr(*argType))
@@ -1636,14 +1633,14 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   if (cond.getType() != builder.getI1Type()) {
     auto zero = createIntConstant(builder, location, cond.getType(), 0);
     cond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, cond, zero);
+        mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, cond, zero);
   }
 
   bool hasElse = ifE.else_block.has_value();
 
   if (!hasElse) {
-    auto ifOp = builder.create<mlir::scf::IfOp>(location, /*resultTypes=*/mlir::TypeRange{}, cond,
-                                                /*withElseRegion=*/false);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond,
+                                        /*withElseRegion=*/false);
 
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     if (ifE.then_block) {
@@ -1651,7 +1648,7 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
     }
     auto *thenBlock = builder.getInsertionBlock();
     if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
-      builder.create<mlir::scf::YieldOp>(location);
+      mlir::scf::YieldOp::create(builder, location);
     }
 
     builder.setInsertionPointAfter(ifOp);
@@ -1670,7 +1667,7 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
     resultType = defaultIntType();
   }
 
-  auto ifOp = builder.create<mlir::scf::IfOp>(location, resultType, cond, /*withElseRegion=*/true);
+  auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
 
   // Then branch
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -1682,10 +1679,10 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
       thenVal = coerceType(thenVal, resultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{thenVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
     }
   }
 
@@ -1699,10 +1696,10 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
       elseVal = coerceType(elseVal, resultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{elseVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
     }
   }
 
@@ -1733,10 +1730,10 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
 
   // Handle Option? — unwrap Some or propagate None
   if (auto optType = mlir::dyn_cast<hew::OptionEnumType>(operandType)) {
-    auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), operandVal);
+    auto tag = hew::EnumExtractTagOp::create(builder, location, builder.getI32Type(), operandVal);
     auto zeroTag = createIntConstant(builder, location, builder.getI32Type(), 0);
-    auto isNone =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, zeroTag);
+    auto isNone = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                              tag, zeroTag);
 
     auto innerType = optType.getInnerType();
     auto someFieldIndex = enumPayloadFieldIndex("__Option", /*variantIndex=*/1);
@@ -1748,21 +1745,21 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
     auto *noneBlock = currentFunction.addBlock();
     auto *someBlock = currentFunction.addBlock();
 
-    builder.create<mlir::cf::CondBranchOp>(location, isNone, noneBlock, someBlock);
+    mlir::cf::CondBranchOp::create(builder, location, isNone, noneBlock, someBlock);
 
     builder.setInsertionPointToStart(noneBlock);
     if (funcRetType && mlir::isa<hew::OptionEnumType>(funcRetType)) {
-      mlir::Value noneResult = builder.create<hew::EnumConstructOp>(
-          location, funcRetType, /*variant_index=*/0, builder.getStringAttr("Option"),
+      mlir::Value noneResult = hew::EnumConstructOp::create(
+          builder, location, funcRetType, static_cast<uint32_t>(0), builder.getStringAttr("Option"),
           mlir::ValueRange{}, /*payload_positions=*/nullptr);
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{noneResult});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{noneResult});
     } else {
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
     }
 
     builder.setInsertionPointToStart(someBlock);
-    auto someVal = builder.create<hew::EnumExtractPayloadOp>(location, innerType, operandVal,
-                                                             /*field_index=*/someFieldIndex);
+    auto someVal = hew::EnumExtractPayloadOp::create(builder, location, innerType, operandVal,
+                                                     /*field_index=*/someFieldIndex);
     return someVal;
   }
 
@@ -1772,10 +1769,10 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
     return nullptr;
   }
 
-  auto tag = builder.create<hew::EnumExtractTagOp>(location, builder.getI32Type(), operandVal);
+  auto tag = hew::EnumExtractTagOp::create(builder, location, builder.getI32Type(), operandVal);
   auto oneTag = createIntConstant(builder, location, builder.getI32Type(), 1);
   auto isErr =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq, tag, oneTag);
+      mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, tag, oneTag);
 
   auto okType = resType.getOkType();
   auto errType = resType.getErrType();
@@ -1789,30 +1786,30 @@ mlir::Value MLIRGen::generatePostfixExpr(const ast::ExprPostfixTry &expr) {
   auto *errBlock = currentFunction.addBlock();
   auto *okBlock = currentFunction.addBlock();
 
-  builder.create<mlir::cf::CondBranchOp>(location, isErr, errBlock, okBlock);
+  mlir::cf::CondBranchOp::create(builder, location, isErr, errBlock, okBlock);
 
   builder.setInsertionPointToStart(errBlock);
   if (tryErrorDest) {
-    auto errVal = builder.create<hew::EnumExtractPayloadOp>(location, errType, operandVal,
-                                                            /*field_index=*/errFieldIndex);
+    auto errVal = hew::EnumExtractPayloadOp::create(builder, location, errType, operandVal,
+                                                    /*field_index=*/errFieldIndex);
     auto coerced = coerceType(errVal, builder.getI32Type(), location);
     if (coerced)
-      builder.create<mlir::memref::StoreOp>(location, coerced, tryErrorSlot);
-    builder.create<mlir::cf::BranchOp>(location, tryErrorDest);
+      mlir::memref::StoreOp::create(builder, location, coerced, tryErrorSlot);
+    mlir::cf::BranchOp::create(builder, location, tryErrorDest);
   } else if (funcRetType) {
-    auto errVal = builder.create<hew::EnumExtractPayloadOp>(location, errType, operandVal,
-                                                            /*field_index=*/errFieldIndex);
-    mlir::Value errResult = builder.create<hew::EnumConstructOp>(
-        location, funcRetType, /*variant_index=*/1, builder.getStringAttr("__Result"),
+    auto errVal = hew::EnumExtractPayloadOp::create(builder, location, errType, operandVal,
+                                                    /*field_index=*/errFieldIndex);
+    mlir::Value errResult = hew::EnumConstructOp::create(
+        builder, location, funcRetType, /*variant_index=*/1, builder.getStringAttr("__Result"),
         mlir::ValueRange{errVal}, /*payload_positions=*/nullptr);
-    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{errResult});
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{errResult});
   } else {
-    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
   }
 
   builder.setInsertionPointToStart(okBlock);
-  auto okVal = builder.create<hew::EnumExtractPayloadOp>(location, okType, operandVal,
-                                                         /*field_index=*/okFieldIndex);
+  auto okVal = hew::EnumExtractPayloadOp::create(builder, location, okType, operandVal,
+                                                 /*field_index=*/okFieldIndex);
   return okVal;
 }
 
@@ -1892,8 +1889,8 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
         }
         auto payloadPositionsAttr =
             buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size());
-        return builder.create<hew::EnumConstructOp>(
-            location, enumInfo.mlirType, static_cast<int32_t>(varIt->second.second),
+        return hew::EnumConstructOp::create(
+            builder, location, enumInfo.mlirType, static_cast<int32_t>(varIt->second.second),
             builder.getStringAttr(enumName), payloads, payloadPositionsAttr);
       }
       emitError(location) << "unknown struct type '" << structName << "'";
@@ -1949,8 +1946,8 @@ mlir::Value MLIRGen::generateStructInit(const ast::ExprStructInit &si) {
   auto fieldNamesAttr = builder.getStrArrayAttr(
       llvm::SmallVector<llvm::StringRef, 4>(fieldNames.begin(), fieldNames.end()));
 
-  return builder.create<hew::StructInitOp>(location, info.mlirType, fieldValues, fieldNamesAttr,
-                                           builder.getStringAttr(structName));
+  return hew::StructInitOp::create(builder, location, info.mlirType, fieldValues, fieldNamesAttr,
+                                   builder.getStringAttr(structName));
 }
 
 // ============================================================================
@@ -1998,7 +1995,7 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
 
     // log.setup() takes no args but calls hew_log_set_level(2) (default INFO)
     if (method == "setup" && argVals.empty()) {
-      auto infoLevel = builder.create<mlir::arith::ConstantIntOp>(location, 2, 32);
+      auto infoLevel = mlir::arith::ConstantIntOp::create(builder, location, 2, 32);
       argVals.push_back(infoLevel);
     }
 
@@ -2014,11 +2011,11 @@ mlir::Value MLIRGen::generateLogCall(const ast::ExprMethodCall &mc) {
 
     auto calleeAttr = mlir::SymbolRefAttr::get(&context, callee);
     if (hasResult) {
-      auto op = builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type}, calleeAttr,
-                                                   argVals);
+      auto op = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type}, calleeAttr,
+                                           argVals);
       return op.getResult();
     }
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr, argVals);
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, calleeAttr, argVals);
     return nullptr;
   }
 
@@ -2040,20 +2037,19 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
   auto getLevelFuncType = mlir::FunctionType::get(&context, {}, {i32Type});
   getOrCreateExternFunc("hew_log_get_level", getLevelFuncType);
   auto currentLevel =
-      builder
-          .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                      mlir::SymbolRefAttr::get(&context, "hew_log_get_level"),
-                                      mlir::ValueRange{})
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                 mlir::SymbolRefAttr::get(&context, "hew_log_get_level"),
+                                 mlir::ValueRange{})
           .getResult();
 
   // 2. Compare: emit if levelInt <= currentLevel (i.e., the message level
   //    is at or above the configured filter).
   auto levelConst = createIntConstant(builder, location, i32Type, levelInt);
-  auto enabled = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::sle,
-                                                     levelConst, currentLevel);
+  auto enabled = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sle,
+                                             levelConst, currentLevel);
 
   // 3. Wrap the log emission in scf.if(enabled).
-  builder.create<mlir::scf::IfOp>(location, enabled, [&](mlir::OpBuilder &b, mlir::Location loc) {
+  mlir::scf::IfOp::create(builder, location, enabled, [&](mlir::OpBuilder &b, mlir::Location loc) {
     // Track heap-allocated intermediates for cleanup.
     std::vector<mlir::Value> ownedTemps;
 
@@ -2066,7 +2062,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       // Ensure it is a string; convert non-strings via hew.to_string.
       if (!mlir::isa<hew::StringRefType>(msgStr.getType()) &&
           !mlir::isa<mlir::LLVM::LLVMPointerType>(msgStr.getType())) {
-        auto toStr = b.create<hew::ToStringOp>(loc, strRefType, msgStr);
+        auto toStr = hew::ToStringOp::create(b, loc, strRefType, msgStr);
         if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[0]).span))
           if (isUnsignedTypeExpr(*argType))
             toStr->setAttr("is_unsigned", b.getBoolAttr(true));
@@ -2076,7 +2072,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
     } else {
       // No args at all — use empty string.
       auto sym = getOrCreateGlobalString("");
-      msgStr = b.create<hew::ConstantOp>(loc, strRefType, b.getStringAttr(sym));
+      msgStr = hew::ConstantOp::create(b, loc, strRefType, b.getStringAttr(sym));
     }
 
     // Prepend actor context if inside an actor body.
@@ -2085,30 +2081,30 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       std::string actorPrefix = " actor=" + currentActorName;
       auto actorPrefixSym = getOrCreateGlobalString(actorPrefix);
       auto actorPrefixStr =
-          b.create<hew::ConstantOp>(loc, strRefType, b.getStringAttr(actorPrefixSym));
+          hew::ConstantOp::create(b, loc, strRefType, b.getStringAttr(actorPrefixSym));
       ownedTemps.push_back(msgStr);
-      msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorPrefixStr);
+      msgStr = hew::StringConcatOp::create(b, loc, strRefType, msgStr, actorPrefixStr);
 
       // " actor_id=<runtime_id>" (runtime value)
       auto actorIdPrefixSym = getOrCreateGlobalString(" actor_id=");
       auto actorIdPrefixStr =
-          b.create<hew::ConstantOp>(loc, strRefType, b.getStringAttr(actorIdPrefixSym));
+          hew::ConstantOp::create(b, loc, strRefType, b.getStringAttr(actorIdPrefixSym));
 
       auto i64Type = b.getI64Type();
       auto getIdFuncType = mlir::FunctionType::get(&context, {}, {i64Type});
       getOrCreateExternFunc("hew_actor_current_id", getIdFuncType);
       auto actorId =
-          b.create<hew::RuntimeCallOp>(loc, mlir::TypeRange{i64Type},
-                                       mlir::SymbolRefAttr::get(&context, "hew_actor_current_id"),
-                                       mlir::ValueRange{})
+          hew::RuntimeCallOp::create(b, loc, mlir::TypeRange{i64Type},
+                                     mlir::SymbolRefAttr::get(&context, "hew_actor_current_id"),
+                                     mlir::ValueRange{})
               .getResult();
-      auto actorIdStr = b.create<hew::ToStringOp>(loc, strRefType, actorId);
+      auto actorIdStr = hew::ToStringOp::create(b, loc, strRefType, actorId);
       ownedTemps.push_back(actorIdStr);
 
       ownedTemps.push_back(msgStr);
-      msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorIdPrefixStr);
+      msgStr = hew::StringConcatOp::create(b, loc, strRefType, msgStr, actorIdPrefixStr);
       ownedTemps.push_back(msgStr);
-      msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, actorIdStr);
+      msgStr = hew::StringConcatOp::create(b, loc, strRefType, msgStr, actorIdStr);
     }
 
     // Append named arguments as " key=value" pairs.
@@ -2120,7 +2116,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       // Create the " key=" prefix string.
       std::string prefix = " " + name + "=";
       auto prefixSym = getOrCreateGlobalString(prefix);
-      auto prefixStr = b.create<hew::ConstantOp>(loc, strRefType, b.getStringAttr(prefixSym));
+      auto prefixStr = hew::ConstantOp::create(b, loc, strRefType, b.getStringAttr(prefixSym));
 
       // Generate the value expression.
       auto val = generateExpression(ast::callArgExpr(args[i]).value);
@@ -2133,7 +2129,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
           mlir::isa<mlir::LLVM::LLVMPointerType>(val.getType())) {
         valStr = val;
       } else {
-        auto toStr = b.create<hew::ToStringOp>(loc, strRefType, val);
+        auto toStr = hew::ToStringOp::create(b, loc, strRefType, val);
         if (auto *argType = resolvedTypeOf(ast::callArgExpr(args[i]).span))
           if (isUnsignedTypeExpr(*argType))
             toStr->setAttr("is_unsigned", b.getBoolAttr(true));
@@ -2143,23 +2139,23 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
 
       // Concat: msgStr + " key=" + valStr
       ownedTemps.push_back(msgStr);
-      msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, prefixStr);
+      msgStr = hew::StringConcatOp::create(b, loc, strRefType, msgStr, prefixStr);
       ownedTemps.push_back(msgStr);
-      msgStr = b.create<hew::StringConcatOp>(loc, strRefType, msgStr, valStr);
+      msgStr = hew::StringConcatOp::create(b, loc, strRefType, msgStr, valStr);
     }
 
     // Cast the final string to !llvm.ptr for the C ABI call.
     mlir::Value msgPtr = msgStr;
     if (!mlir::isa<mlir::LLVM::LLVMPointerType>(msgStr.getType()))
-      msgPtr = b.create<hew::BitcastOp>(loc, ptrType, msgStr);
+      msgPtr = hew::BitcastOp::create(b, loc, ptrType, msgStr);
 
     // Declare and call hew_log_emit(level, msg).
     auto emitFuncType = mlir::FunctionType::get(&context, {i32Type, ptrType}, {});
     getOrCreateExternFunc("hew_log_emit", emitFuncType);
 
-    b.create<hew::RuntimeCallOp>(loc, mlir::TypeRange{},
-                                 mlir::SymbolRefAttr::get(&context, "hew_log_emit"),
-                                 mlir::ValueRange{levelConst, msgPtr});
+    hew::RuntimeCallOp::create(b, loc, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_log_emit"),
+                               mlir::ValueRange{levelConst, msgPtr});
 
     // Free the final concatenated message string.
     emitStringDrop(msgStr);
@@ -2169,7 +2165,7 @@ mlir::Value MLIRGen::generateLogEmit(const std::vector<ast::CallArg> &args, int 
       if (temp != msgStr)
         emitStringDrop(temp);
 
-    b.create<mlir::scf::YieldOp>(loc);
+    mlir::scf::YieldOp::create(b, loc);
   });
 
   return nullptr;
@@ -2191,7 +2187,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!val)
         return true;
       val = coerceType(val, elemType, location);
-      builder.create<hew::VecPushOp>(location, vecValue, val);
+      hew::VecPushOp::create(builder, location, vecValue, val);
       resultOut = nullptr;
       return true;
     }
@@ -2200,8 +2196,8 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!idx)
         return true;
       if (idx.getType() != i64Type)
-        idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
-      resultOut = builder.create<hew::VecGetOp>(location, elemType, vecValue, idx).getResult();
+        idx = mlir::arith::ExtSIOp::create(builder, location, i64Type, idx);
+      resultOut = hew::VecGetOp::create(builder, location, elemType, vecValue, idx).getResult();
       return true;
     }
     if (method == "set") {
@@ -2210,14 +2206,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!idx || !val)
         return true;
       if (idx.getType() != i64Type)
-        idx = builder.create<mlir::arith::ExtSIOp>(location, i64Type, idx);
+        idx = mlir::arith::ExtSIOp::create(builder, location, i64Type, idx);
       val = coerceType(val, elemType, location);
-      builder.create<hew::VecSetOp>(location, vecValue, idx, val);
+      hew::VecSetOp::create(builder, location, vecValue, idx, val);
       resultOut = nullptr;
       return true;
     }
     if (method == "pop") {
-      resultOut = builder.create<hew::VecPopOp>(location, elemType, vecValue).getResult();
+      resultOut = hew::VecPopOp::create(builder, location, elemType, vecValue).getResult();
       return true;
     }
     if (method == "remove") {
@@ -2226,22 +2222,22 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         if (!argVal)
           return true;
         argVal = coerceType(argVal, elemType, location);
-        builder.create<hew::VecRemoveOp>(location, vecValue, argVal);
+        hew::VecRemoveOp::create(builder, location, vecValue, argVal);
       }
       resultOut = nullptr;
       return true;
     }
     if (method == "len") {
-      resultOut = builder.create<hew::VecLenOp>(location, i64Type, vecValue).getResult();
+      resultOut = hew::VecLenOp::create(builder, location, i64Type, vecValue).getResult();
       return true;
     }
     if (method == "is_empty") {
       resultOut =
-          builder.create<hew::VecIsEmptyOp>(location, builder.getI1Type(), vecValue).getResult();
+          hew::VecIsEmptyOp::create(builder, location, builder.getI1Type(), vecValue).getResult();
       return true;
     }
     if (method == "clear") {
-      builder.create<hew::VecClearOp>(location, vecValue);
+      hew::VecClearOp::create(builder, location, vecValue);
       resultOut = nullptr;
       return true;
     }
@@ -2257,17 +2253,16 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return true;
       }
       auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_vec_append");
-      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr,
-                                         mlir::ValueRange{vecValue, src});
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, calleeAttr,
+                                 mlir::ValueRange{vecValue, src});
       resultOut = nullptr;
       return true;
     }
     if (method == "to_string") {
       auto strType = hew::StringRefType::get(&context);
       auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_bytes_to_string");
-      resultOut = builder
-                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{strType}, calleeAttr,
-                                                  mlir::ValueRange{vecValue})
+      resultOut = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{strType},
+                                             calleeAttr, mlir::ValueRange{vecValue})
                       .getResult();
       return true;
     }
@@ -2283,7 +2278,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return true;
       key = coerceType(key, keyType, location);
       val = coerceType(val, valueType, location);
-      builder.create<hew::HashMapInsertOp>(location, mapValue, key, val);
+      hew::HashMapInsertOp::create(builder, location, mapValue, key, val);
       resultOut = nullptr;
       return true;
     }
@@ -2295,22 +2290,22 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       // Wrap raw value in Option<V>: check contains_key, then get or None
       auto optionType = hew::OptionEnumType::get(&context, valueType);
       auto exists =
-          builder.create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, key)
+          hew::HashMapContainsKeyOp::create(builder, location, builder.getI1Type(), mapValue, key)
               .getResult();
       auto ifOp =
-          builder.create<mlir::scf::IfOp>(location, optionType, exists, /*withElseRegion=*/true);
+          mlir::scf::IfOp::create(builder, location, optionType, exists, /*withElseRegion=*/true);
       builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
       auto rawVal =
-          builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
-      auto someVal = builder.create<hew::EnumConstructOp>(
-          location, optionType, /*variant_index=*/1, builder.getStringAttr("Option"),
+          hew::HashMapGetOp::create(builder, location, valueType, mapValue, key).getResult();
+      auto someVal = hew::EnumConstructOp::create(
+          builder, location, optionType, static_cast<uint32_t>(1), builder.getStringAttr("Option"),
           mlir::ValueRange{rawVal}, /*payload_positions=*/nullptr);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{someVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
       builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-      auto noneVal = builder.create<hew::EnumConstructOp>(
-          location, optionType, /*variant_index=*/0, builder.getStringAttr("Option"),
+      auto noneVal = hew::EnumConstructOp::create(
+          builder, location, optionType, static_cast<uint32_t>(0), builder.getStringAttr("Option"),
           mlir::ValueRange{}, /*payload_positions=*/nullptr);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{noneVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
       builder.setInsertionPointAfter(ifOp);
       resultOut = ifOp.getResult(0);
       return true;
@@ -2320,7 +2315,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       if (!key)
         return true;
       key = coerceType(key, keyType, location);
-      builder.create<hew::HashMapRemoveOp>(location, mapValue, key);
+      hew::HashMapRemoveOp::create(builder, location, mapValue, key);
       resultOut = nullptr;
       return true;
     }
@@ -2330,38 +2325,38 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return true;
       key = coerceType(key, keyType, location);
       resultOut =
-          builder.create<hew::HashMapContainsKeyOp>(location, builder.getI1Type(), mapValue, key)
+          hew::HashMapContainsKeyOp::create(builder, location, builder.getI1Type(), mapValue, key)
               .getResult();
       return true;
     }
     if (method == "keys") {
       auto keysType = hew::VecType::get(&context, keyType);
-      resultOut = builder.create<hew::HashMapKeysOp>(location, keysType, mapValue).getResult();
+      resultOut = hew::HashMapKeysOp::create(builder, location, keysType, mapValue).getResult();
       return true;
     }
     if (method == "values") {
       auto keysType = hew::VecType::get(&context, keyType);
-      auto keysVec = builder.create<hew::HashMapKeysOp>(location, keysType, mapValue).getResult();
+      auto keysVec = hew::HashMapKeysOp::create(builder, location, keysType, mapValue).getResult();
       auto valuesType = hew::VecType::get(&context, valueType);
-      auto valuesVec = builder.create<hew::VecNewOp>(location, valuesType).getResult();
-      auto len = builder.create<hew::VecLenOp>(location, i64Type, keysVec).getResult();
+      auto valuesVec = hew::VecNewOp::create(builder, location, valuesType).getResult();
+      auto len = hew::VecLenOp::create(builder, location, i64Type, keysVec).getResult();
       auto zero = createIntConstant(builder, location, i64Type, 0);
       auto one = createIntConstant(builder, location, i64Type, 1);
-      auto loop = builder.create<mlir::scf::ForOp>(location, zero, len, one);
+      auto loop = mlir::scf::ForOp::create(builder, location, zero, len, one);
       auto *body = loop.getBody();
       auto iv = loop.getInductionVar();
       // Insert before the implicit scf.yield created by ForOp builder
       builder.setInsertionPoint(body->getTerminator());
-      auto key = builder.create<hew::VecGetOp>(location, keyType, keysVec, iv).getResult();
-      auto val = builder.create<hew::HashMapGetOp>(location, valueType, mapValue, key).getResult();
-      builder.create<hew::VecPushOp>(location, valuesVec, val);
+      auto key = hew::VecGetOp::create(builder, location, keyType, keysVec, iv).getResult();
+      auto val = hew::HashMapGetOp::create(builder, location, valueType, mapValue, key).getResult();
+      hew::VecPushOp::create(builder, location, valuesVec, val);
       builder.setInsertionPointAfter(loop);
-      builder.create<hew::VecFreeOp>(location, keysVec);
+      hew::VecFreeOp::create(builder, location, keysVec);
       resultOut = valuesVec;
       return true;
     }
     if (method == "len") {
-      resultOut = builder.create<hew::HashMapLenOp>(location, i64Type, mapValue).getResult();
+      resultOut = hew::HashMapLenOp::create(builder, location, i64Type, mapValue).getResult();
       return true;
     }
     return false;
@@ -2386,10 +2381,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         emitError(location) << "HashSet::insert only supports int and String element types";
         return true;
       }
-      resultOut = builder
-                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
-                                                  mlir::SymbolRefAttr::get(&context, funcName),
-                                                  mlir::ValueRange{setValue, val})
+      resultOut = hew::RuntimeCallOp::create(
+                      builder, location, mlir::TypeRange{builder.getI1Type()},
+                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
       return true;
     }
@@ -2408,10 +2402,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         emitError(location) << "HashSet::contains only supports int and String element types";
         return true;
       }
-      resultOut = builder
-                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
-                                                  mlir::SymbolRefAttr::get(&context, funcName),
-                                                  mlir::ValueRange{setValue, val})
+      resultOut = hew::RuntimeCallOp::create(
+                      builder, location, mlir::TypeRange{builder.getI1Type()},
+                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
       return true;
     }
@@ -2430,35 +2423,31 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         emitError(location) << "HashSet::remove only supports int and String element types";
         return true;
       }
-      resultOut = builder
-                      .create<hew::RuntimeCallOp>(location, mlir::TypeRange{builder.getI1Type()},
-                                                  mlir::SymbolRefAttr::get(&context, funcName),
-                                                  mlir::ValueRange{setValue, val})
+      resultOut = hew::RuntimeCallOp::create(
+                      builder, location, mlir::TypeRange{builder.getI1Type()},
+                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
       return true;
     }
     if (method == "len") {
-      resultOut =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{i64Type},
-                                          mlir::SymbolRefAttr::get(&context, "hew_hashset_len"),
-                                          mlir::ValueRange{setValue})
-              .getResult();
-      return true;
-    }
-    if (method == "is_empty") {
-      resultOut = builder
-                      .create<hew::RuntimeCallOp>(
-                          location, mlir::TypeRange{builder.getI1Type()},
-                          mlir::SymbolRefAttr::get(&context, "hew_hashset_is_empty"),
-                          mlir::ValueRange{setValue})
+      resultOut = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                             mlir::SymbolRefAttr::get(&context, "hew_hashset_len"),
+                                             mlir::ValueRange{setValue})
                       .getResult();
       return true;
     }
+    if (method == "is_empty") {
+      resultOut =
+          hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{builder.getI1Type()},
+                                     mlir::SymbolRefAttr::get(&context, "hew_hashset_is_empty"),
+                                     mlir::ValueRange{setValue})
+              .getResult();
+      return true;
+    }
     if (method == "clear") {
-      builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                         mlir::SymbolRefAttr::get(&context, "hew_hashset_clear"),
-                                         mlir::ValueRange{setValue});
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, "hew_hashset_clear"),
+                                 mlir::ValueRange{setValue});
       resultOut = nullptr;
       return true;
     }
@@ -2515,23 +2504,20 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   }
 
   if (method == "trim") {
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("trim"), receiver, mlir::ValueRange{})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("trim"), receiver, mlir::ValueRange{})
         .getResult();
   }
   if (method == "to_lower" || method == "to_lowercase") {
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("to_lowercase"), receiver,
-                                     mlir::ValueRange{})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("to_lowercase"), receiver,
+                                       mlir::ValueRange{})
         .getResult();
   }
   if (method == "to_upper" || method == "to_uppercase") {
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("to_uppercase"), receiver,
-                                     mlir::ValueRange{})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("to_uppercase"), receiver,
+                                       mlir::ValueRange{})
         .getResult();
   }
   if (method == "replace") {
@@ -2539,10 +2525,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     auto new_s = generateExpression(ast::callArgExpr(mc.args[1]).value);
     if (!old_s || !new_s)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("replace"), receiver,
-                                     mlir::ValueRange{old_s, new_s})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("replace"), receiver,
+                                       mlir::ValueRange{old_s, new_s})
         .getResult();
   }
   if (method == "slice") {
@@ -2552,10 +2537,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       return mlir::Value{};
     start = coerceType(start, i32Type, location);
     end = coerceType(end, i32Type, location);
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("slice"), receiver,
-                                     mlir::ValueRange{start, end})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("slice"), receiver,
+                                       mlir::ValueRange{start, end})
         .getResult();
   }
   if (method == "repeat") {
@@ -2563,9 +2547,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!n)
       return mlir::Value{};
     n = coerceType(n, i32Type, location);
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("repeat"), receiver, mlir::ValueRange{n})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("repeat"), receiver,
+                                       mlir::ValueRange{n})
         .getResult();
   }
   if (method == "char_at") {
@@ -2573,65 +2557,60 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!idx)
       return mlir::Value{};
     idx = coerceType(idx, i32Type, location);
-    auto charCode = builder.create<hew::StringMethodOp>(
-        location, i32Type, builder.getStringAttr("char_at"), receiver, mlir::ValueRange{idx});
-    auto conv = builder.create<hew::ToStringOp>(location, hew::StringRefType::get(&context),
-                                                charCode.getResult());
+    auto charCode =
+        hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("char_at"),
+                                    receiver, mlir::ValueRange{idx});
+    auto conv = hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context),
+                                        charCode.getResult());
     return conv.getResult();
   }
   if (method == "split") {
     auto sep = generateExpression(ast::callArgExpr(mc.args[0]).value);
     if (!sep)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, hew::StringRefType::get(&context),
-                                     builder.getStringAttr("split"), receiver,
-                                     mlir::ValueRange{sep})
+    return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
+                                       builder.getStringAttr("split"), receiver,
+                                       mlir::ValueRange{sep})
         .getResult();
   }
   if (method == "contains") {
     auto sub = generateExpression(ast::callArgExpr(mc.args[0]).value);
     if (!sub)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, builder.getI1Type(),
-                                     builder.getStringAttr("contains"), receiver,
-                                     mlir::ValueRange{sub})
+    return hew::StringMethodOp::create(builder, location, builder.getI1Type(),
+                                       builder.getStringAttr("contains"), receiver,
+                                       mlir::ValueRange{sub})
         .getResult();
   }
   if (method == "starts_with") {
     auto prefix = generateExpression(ast::callArgExpr(mc.args[0]).value);
     if (!prefix)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, builder.getI1Type(),
-                                     builder.getStringAttr("starts_with"), receiver,
-                                     mlir::ValueRange{prefix})
+    return hew::StringMethodOp::create(builder, location, builder.getI1Type(),
+                                       builder.getStringAttr("starts_with"), receiver,
+                                       mlir::ValueRange{prefix})
         .getResult();
   }
   if (method == "ends_with") {
     auto suffix = generateExpression(ast::callArgExpr(mc.args[0]).value);
     if (!suffix)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, builder.getI1Type(),
-                                     builder.getStringAttr("ends_with"), receiver,
-                                     mlir::ValueRange{suffix})
+    return hew::StringMethodOp::create(builder, location, builder.getI1Type(),
+                                       builder.getStringAttr("ends_with"), receiver,
+                                       mlir::ValueRange{suffix})
         .getResult();
   }
   if (method == "len") {
-    return builder
-        .create<hew::StringMethodOp>(location, i32Type, builder.getStringAttr("length"), receiver,
-                                     mlir::ValueRange{})
+    return hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("length"),
+                                       receiver, mlir::ValueRange{})
         .getResult();
   }
   if (method == "find") {
     auto sub = generateExpression(ast::callArgExpr(mc.args[0]).value);
     if (!sub)
       return mlir::Value{};
-    return builder
-        .create<hew::StringMethodOp>(location, i32Type, builder.getStringAttr("find"), receiver,
-                                     mlir::ValueRange{sub})
+    return hew::StringMethodOp::create(builder, location, i32Type, builder.getStringAttr("find"),
+                                       receiver, mlir::ValueRange{sub})
         .getResult();
   }
   if (method == "index_of") {
@@ -2639,9 +2618,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     if (!sub)
       return mlir::Value{};
     auto startIdx = createIntConstant(builder, location, i32Type, 0);
-    return builder
-        .create<hew::StringMethodOp>(location, i32Type, builder.getStringAttr("index_of"), receiver,
-                                     mlir::ValueRange{sub, startIdx})
+    return hew::StringMethodOp::create(builder, location, i32Type,
+                                       builder.getStringAttr("index_of"), receiver,
+                                       mlir::ValueRange{sub, startIdx})
         .getResult();
   }
 
@@ -2691,7 +2670,7 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         // Use the same CastOp infrastructure as coerceType
         if (receiverType == targetType)
           return receiver; // no-op cast
-        auto castOp = builder.create<hew::CastOp>(location, targetType, receiver);
+        auto castOp = hew::CastOp::create(builder, location, targetType, receiver);
         if (isUnsigned)
           castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
         return castOp.getResult();
@@ -2724,14 +2703,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       if (mc.args.empty()) {
         // Constants: math.pi, math.e
         if (methodName == "pi")
-          return builder
-              .create<mlir::arith::ConstantOp>(location,
-                                               builder.getF64FloatAttr(3.14159265358979323846))
+          return mlir::arith::ConstantOp::create(builder, location,
+                                                 builder.getF64FloatAttr(3.14159265358979323846))
               .getResult();
         if (methodName == "e")
-          return builder
-              .create<mlir::arith::ConstantOp>(location,
-                                               builder.getF64FloatAttr(2.71828182845904523536))
+          return mlir::arith::ConstantOp::create(builder, location,
+                                                 builder.getF64FloatAttr(2.71828182845904523536))
               .getResult();
         emitError(location) << "unknown math constant: math." << methodName;
         return nullptr;
@@ -2746,29 +2723,29 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
       // Single-argument math functions → LLVM intrinsics
       if (methodName == "exp")
-        return builder.create<mlir::math::ExpOp>(location, arg).getResult();
+        return mlir::math::ExpOp::create(builder, location, arg).getResult();
       if (methodName == "log")
-        return builder.create<mlir::math::LogOp>(location, arg).getResult();
+        return mlir::math::LogOp::create(builder, location, arg).getResult();
       if (methodName == "sqrt")
-        return builder.create<mlir::math::SqrtOp>(location, arg).getResult();
+        return mlir::math::SqrtOp::create(builder, location, arg).getResult();
       if (methodName == "sin")
-        return builder.create<mlir::math::SinOp>(location, arg).getResult();
+        return mlir::math::SinOp::create(builder, location, arg).getResult();
       if (methodName == "cos")
-        return builder.create<mlir::math::CosOp>(location, arg).getResult();
+        return mlir::math::CosOp::create(builder, location, arg).getResult();
       if (methodName == "floor")
-        return builder.create<mlir::math::FloorOp>(location, arg).getResult();
+        return mlir::math::FloorOp::create(builder, location, arg).getResult();
       if (methodName == "ceil")
-        return builder.create<mlir::math::CeilOp>(location, arg).getResult();
+        return mlir::math::CeilOp::create(builder, location, arg).getResult();
       if (methodName == "abs")
-        return builder.create<mlir::math::AbsFOp>(location, arg).getResult();
+        return mlir::math::AbsFOp::create(builder, location, arg).getResult();
       if (methodName == "tanh")
-        return builder.create<mlir::math::TanhOp>(location, arg).getResult();
+        return mlir::math::TanhOp::create(builder, location, arg).getResult();
       if (methodName == "log2")
-        return builder.create<mlir::math::Log2Op>(location, arg).getResult();
+        return mlir::math::Log2Op::create(builder, location, arg).getResult();
       if (methodName == "log10")
-        return builder.create<mlir::math::Log10Op>(location, arg).getResult();
+        return mlir::math::Log10Op::create(builder, location, arg).getResult();
       if (methodName == "exp2")
-        return builder.create<mlir::math::Exp2Op>(location, arg).getResult();
+        return mlir::math::Exp2Op::create(builder, location, arg).getResult();
 
       // Two-argument: math.pow(base, exp)
       if (methodName == "pow") {
@@ -2781,7 +2758,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           return nullptr;
         if (arg2.getType() != f64Type)
           arg2 = coerceType(arg2, f64Type, location);
-        return builder.create<mlir::math::PowFOp>(location, arg, arg2).getResult();
+        return mlir::math::PowFOp::create(builder, location, arg, arg2).getResult();
       }
       // math.max(a, b), math.min(a, b)
       if (methodName == "max") {
@@ -2794,7 +2771,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           return nullptr;
         if (arg2.getType() != f64Type)
           arg2 = coerceType(arg2, f64Type, location);
-        return builder.create<mlir::arith::MaximumFOp>(location, arg, arg2).getResult();
+        return mlir::arith::MaximumFOp::create(builder, location, arg, arg2).getResult();
       }
       if (methodName == "min") {
         if (mc.args.size() < 2) {
@@ -2806,7 +2783,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           return nullptr;
         if (arg2.getType() != f64Type)
           arg2 = coerceType(arg2, f64Type, location);
-        return builder.create<mlir::arith::MinimumFOp>(location, arg, arg2).getResult();
+        return mlir::arith::MinimumFOp::create(builder, location, arg, arg2).getResult();
       }
 
       emitError(location) << "unknown math function: math." << methodName;
@@ -2898,7 +2875,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         args.push_back(val);
       }
 
-      auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+      auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
       if (callOp.getNumResults() > 0)
         return callOp.getResult(0);
       return nullptr;
@@ -2925,7 +2902,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           }
           args.push_back(val);
         }
-        auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+        auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
         if (callOp.getNumResults() > 0)
           return callOp.getResult(0);
         return nullptr;
@@ -3021,16 +2998,16 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     // regex.Pattern methods
     if (handleType == "regex.Pattern") {
       if (method == "is_match")
-        return builder.create<hew::RegexIsMatchOp>(location, builder.getI1Type(), argVals[0],
-                                                   argVals[1]);
+        return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), argVals[0],
+                                           argVals[1]);
       if (method == "find")
-        return builder.create<hew::RegexFindOp>(location, hew::StringRefType::get(&context),
-                                                argVals[0], argVals[1]);
+        return hew::RegexFindOp::create(builder, location, hew::StringRefType::get(&context),
+                                        argVals[0], argVals[1]);
       if (method == "replace")
-        return builder.create<hew::RegexReplaceOp>(location, hew::StringRefType::get(&context),
-                                                   argVals[0], argVals[1], argVals[2]);
+        return hew::RegexReplaceOp::create(builder, location, hew::StringRefType::get(&context),
+                                           argVals[0], argVals[1], argVals[2]);
       if (method == "free") {
-        builder.create<hew::RegexFreeOp>(location, argVals[0]);
+        hew::RegexFreeOp::create(builder, location, argVals[0]);
         return nullptr;
       }
     }
@@ -3153,11 +3130,11 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
     // Check for special methods on actor ptrs: stop(), close()
     if (methodName == "stop") {
-      builder.create<hew::ActorStopOp>(location, receiver);
+      hew::ActorStopOp::create(builder, location, receiver);
       return nullptr;
     }
     if (methodName == "close") {
-      builder.create<hew::ActorCloseOp>(location, receiver);
+      hew::ActorCloseOp::create(builder, location, receiver);
       return nullptr;
     }
 
@@ -3170,7 +3147,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           return nullptr;
         argVals.push_back(val);
       }
-      builder.create<hew::ActorSendOp>(location, receiver, builder.getI32IntegerAttr(0), argVals);
+      hew::ActorSendOp::create(builder, location, receiver, builder.getI32IntegerAttr(0), argVals);
       return nullptr;
     }
 
@@ -3182,8 +3159,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           std::string nextFuncName = git->second + "__next";
           auto nextFuncOp = module.lookupSymbol<mlir::func::FuncOp>(nextFuncName);
           if (nextFuncOp) {
-            auto callResult = builder.create<mlir::func::CallOp>(location, nextFuncOp,
-                                                                 mlir::ValueRange{receiver});
+            auto callResult = mlir::func::CallOp::create(builder, location, nextFuncOp,
+                                                         mlir::ValueRange{receiver});
             return callResult.getResult(0);
           }
         }
@@ -3217,8 +3194,8 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
-      auto dataPtr = builder.create<hew::TraitObjectDataOp>(location, ptrType, receiver);
-      auto vtablePtr = builder.create<hew::TraitObjectTagOp>(location, ptrType, receiver);
+      auto dataPtr = hew::TraitObjectDataOp::create(builder, location, ptrType, receiver);
+      auto vtablePtr = hew::TraitObjectTagOp::create(builder, location, ptrType, receiver);
 
       llvm::SmallVector<mlir::Value, 4> extraArgs;
       for (const auto &arg : mc.args) {
@@ -3247,16 +3224,15 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
 
       // Emit hew.trait_dispatch (vtable-based O(1) dispatch)
       if (!returnType) {
-        builder.create<hew::TraitDispatchOp>(
-            location, mlir::Type{}, builder.getStringAttr(traitName),
+        hew::TraitDispatchOp::create(
+            builder, location, mlir::Type{}, builder.getStringAttr(traitName),
             builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr);
         return nullptr;
       }
 
-      return builder
-          .create<hew::TraitDispatchOp>(location, returnType, builder.getStringAttr(traitName),
-                                        builder.getStringAttr(methodName), dataPtr, vtablePtr,
-                                        extraArgs, methodIndexAttr)
+      return hew::TraitDispatchOp::create(
+                 builder, location, returnType, builder.getStringAttr(traitName),
+                 builder.getStringAttr(methodName), dataPtr, vtablePtr, extraArgs, methodIndexAttr)
           .getResult();
     }
   }
@@ -3298,7 +3274,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           if (args[i].getType() != ft.getInput(i))
             args[i] = coerceType(args[i], ft.getInput(i), location);
         }
-        auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+        auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
         // Store result back into the receiver variable
         if (callOp.getNumResults() > 0) {
           if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
@@ -3338,7 +3314,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       args[i] = coerceType(args[i], funcType.getInput(i), location);
   }
 
-  auto callOp = builder.create<mlir::func::CallOp>(location, callee, args);
+  auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
   if (callOp.getNumResults() > 0)
     return callOp.getResult(0);
   return nullptr;
@@ -3366,7 +3342,7 @@ mlir::Value MLIRGen::generateTupleExpr(const ast::ExprTuple &tup) {
   }
 
   auto tupleType = hew::HewTupleType::get(&context, types);
-  return builder.create<hew::TupleCreateOp>(location, tupleType, values);
+  return hew::TupleCreateOp::create(builder, location, tupleType, values);
 }
 
 // ============================================================================
@@ -3381,7 +3357,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
     if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
       auto vecType = mlir::cast<hew::VecType>(*pendingDeclaredType);
       pendingDeclaredType.reset();
-      return builder.create<hew::VecNewOp>(location, vecType).getResult();
+      return hew::VecNewOp::create(builder, location, vecType).getResult();
     }
     emitWarning(location) << "empty array literal";
     return nullptr;
@@ -3401,7 +3377,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
   }
 
   auto arrayType = hew::HewArrayType::get(&context, elemType, values.size());
-  return builder.create<hew::ArrayCreateOp>(location, arrayType, values);
+  return hew::ArrayCreateOp::create(builder, location, arrayType, values);
 }
 
 // ============================================================================
@@ -3409,7 +3385,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
 // ============================================================================
 
 mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
-                                             const ast::Span &exprSpan) {
+                                            const ast::Span &exprSpan) {
   auto location = currentLoc;
 
   // Determine HashMap type: prefer pendingDeclaredType (from let/var annotation),
@@ -3423,8 +3399,7 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
     if (mlir::isa<hew::HashMapType>(resolvedMlirType)) {
       hmType = resolvedMlirType;
     } else {
-      emitError(location)
-          << "map literal must produce a HashMap, got " << resolvedMlirType;
+      emitError(location) << "map literal must produce a HashMap, got " << resolvedMlirType;
       return nullptr;
     }
   } else {
@@ -3438,7 +3413,7 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
   auto valueType = hashMapType.getValueType();
 
   // Create empty HashMap
-  auto mapValue = builder.create<hew::HashMapNewOp>(location, hmType).getResult();
+  auto mapValue = hew::HashMapNewOp::create(builder, location, hmType).getResult();
 
   // Insert each entry
   for (const auto &entry : mapLit.entries) {
@@ -3448,7 +3423,7 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
       return nullptr;
     key = coerceType(key, keyType, location);
     val = coerceType(val, valueType, location);
-    builder.create<hew::HashMapInsertOp>(location, mapValue, key, val);
+    hew::HashMapInsertOp::create(builder, location, mapValue, key, val);
   }
 
   return mapValue;
@@ -3493,14 +3468,14 @@ mlir::Value MLIRGen::generateArrayRepeatExpr(const ast::ExprArrayRepeat &repeat,
   if (!vecType)
     vecType = hew::VecType::get(&context, elementType);
 
-  auto vecValue = builder.create<hew::VecNewOp>(location, vecType).getResult();
+  auto vecValue = hew::VecNewOp::create(builder, location, vecType).getResult();
 
   auto zero = createIntConstant(builder, location, i64Type, 0);
   auto one = createIntConstant(builder, location, i64Type, 1);
-  auto loop = builder.create<mlir::scf::ForOp>(location, zero, countVal, one);
+  auto loop = mlir::scf::ForOp::create(builder, location, zero, countVal, one);
   auto *body = loop.getBody();
   builder.setInsertionPoint(body->getTerminator());
-  builder.create<hew::VecPushOp>(location, vecValue, valueVal);
+  hew::VecPushOp::create(builder, location, vecValue, valueVal);
   builder.setInsertionPointAfter(loop);
 
   return vecValue;
@@ -3784,18 +3759,18 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
         mutAlloca = remapIt->second;
       auto cellIt = heapCellValueTypes.find(mutAlloca);
       if (cellIt != heapCellValueTypes.end()) {
-        auto cellPtr = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
+        auto cellPtr = mlir::memref::LoadOp::create(builder, location, mutAlloca);
         capturedVars.push_back({fv, cellPtr, true, cellIt->second});
         continue;
       }
 
-      auto val = builder.create<mlir::memref::LoadOp>(location, mutAlloca);
+      auto val = mlir::memref::LoadOp::create(builder, location, mutAlloca);
       auto valueType = val.getType();
       auto cellSize =
-          builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(valueType));
-      auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-      auto cellPtr = builder.create<hew::RcNewOp>(location, ptrType, nullPtr, cellSize, nullPtr);
-      builder.create<mlir::LLVM::StoreOp>(location, val, cellPtr);
+          hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(valueType));
+      auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+      auto cellPtr = hew::RcNewOp::create(builder, location, ptrType, nullPtr, cellSize, nullPtr);
+      mlir::LLVM::StoreOp::create(builder, location, val, cellPtr);
 
       auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
       mlir::Value newAlloca;
@@ -3803,12 +3778,12 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
         auto savedIP = builder.saveInsertionPoint();
         auto &entryBlock = currentFunction.front();
         builder.setInsertionPointToStart(&entryBlock);
-        newAlloca = builder.create<mlir::memref::AllocaOp>(builder.getUnknownLoc(), ptrMemrefType);
+        newAlloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), ptrMemrefType);
         builder.restoreInsertionPoint(savedIP);
       } else {
-        newAlloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
+        newAlloca = mlir::memref::AllocaOp::create(builder, location, ptrMemrefType);
       }
-      builder.create<mlir::memref::StoreOp>(location, cellPtr, newAlloca);
+      mlir::memref::StoreOp::create(builder, location, cellPtr, newAlloca);
 
       auto internedName = intern(fv);
       mutableVars.insert(internedName, newAlloca);
@@ -3892,7 +3867,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   auto savedFunction = currentFunction;
 
   builder.setInsertionPointToEnd(module.getBody());
-  auto funcOp = builder.create<mlir::func::FuncOp>(location, lambdaName, funcType);
+  auto funcOp = mlir::func::FuncOp::create(builder, location, lambdaName, funcType);
   funcOp.setVisibility(mlir::SymbolTable::Visibility::Private);
 
   auto &entryBlock = *funcOp.addEntryBlock();
@@ -3915,17 +3890,17 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     auto envStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, capturedTypes);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
-      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, envStructType, envPtr,
+      auto gepOp = mlir::LLVM::GEPOp::create(
+          builder, location, ptrType, envStructType, envPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
-      auto loadedVal = builder.create<mlir::LLVM::LoadOp>(location, capturedTypes[i], gepOp);
+      auto loadedVal = mlir::LLVM::LoadOp::create(builder, location, capturedTypes[i], gepOp);
 
       if (capturedVars[i].isMutable) {
         // Mutable capture: loadedVal is the heap cell pointer (!llvm.ptr).
         // Create a local memref to hold it and register as a heap-cell var.
         auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
-        auto lambdaAlloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
-        builder.create<mlir::memref::StoreOp>(location, loadedVal, lambdaAlloca);
+        auto lambdaAlloca = mlir::memref::AllocaOp::create(builder, location, ptrMemrefType);
+        mlir::memref::StoreOp::create(builder, location, loadedVal, lambdaAlloca);
         auto internedName = intern(capturedVars[i].name);
         mutableVars.insert(internedName, lambdaAlloca);
         heapCellValueTypes[lambdaAlloca] = capturedVars[i].valueType;
@@ -3933,7 +3908,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         mlir::Value capturedVal = loadedVal;
         if (capturedTypes[i] != capturedVars[i].value.getType()) {
           capturedVal =
-              builder.create<hew::BitcastOp>(location, capturedVars[i].value.getType(), loadedVal);
+              hew::BitcastOp::create(builder, location, capturedVars[i].value.getType(), loadedVal);
         }
         declareVariable(capturedVars[i].name, capturedVal);
       }
@@ -3965,12 +3940,12 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
       (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
     if (returnType && bodyVal) {
       bodyVal = coerceType(bodyVal, returnType, location);
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyVal});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyVal});
     } else if (returnType) {
       auto defVal = createDefaultValue(builder, location, returnType);
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{defVal});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{defVal});
     } else {
-      builder.create<mlir::func::ReturnOp>(location);
+      mlir::func::ReturnOp::create(builder, location);
     }
   }
 
@@ -3987,40 +3962,39 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     auto envStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, capturedTypes);
 
     auto envSize =
-        builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(envStructType));
+        hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
-    auto nullData = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-    auto nullDropFn = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-    envPtrVal = builder.create<hew::RcNewOp>(location, ptrType, nullData, envSize, nullDropFn);
+    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, nullDropFn);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
         auto innerEnv =
-            builder.create<hew::ClosureGetEnvOp>(location, ptrType, capturedVars[i].value);
-        builder.create<hew::RcCloneOp>(location, ptrType, innerEnv);
+            hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
+        hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
-      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, envStructType, envPtrVal,
+      auto gepOp = mlir::LLVM::GEPOp::create(
+          builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
       mlir::Value storeVal = capturedVars[i].value;
       if (storeVal.getType() != capturedTypes[i]) {
-        storeVal = builder.create<hew::BitcastOp>(location, capturedTypes[i], storeVal);
+        storeVal = hew::BitcastOp::create(builder, location, capturedTypes[i], storeVal);
       }
-      builder.create<mlir::LLVM::StoreOp>(location, storeVal, gepOp);
+      mlir::LLVM::StoreOp::create(builder, location, storeVal, gepOp);
     }
   } else {
-    envPtrVal = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
+    envPtrVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
   }
 
-  auto fnPtrVal =
-      builder
-          .create<hew::FuncPtrOp>(location, ptrType, mlir::SymbolRefAttr::get(&context, lambdaName))
-          .getResult();
+  auto fnPtrVal = hew::FuncPtrOp::create(builder, location, ptrType,
+                                         mlir::SymbolRefAttr::get(&context, lambdaName))
+                      .getResult();
 
   mlir::Type closureRetType = returnType ? returnType : mlir::NoneType::get(&context);
   auto closureType = hew::ClosureType::get(&context, userParamTypes, closureRetType);
 
-  return builder.create<hew::ClosureCreateOp>(location, closureType, fnPtrVal, envPtrVal);
+  return hew::ClosureCreateOp::create(builder, location, closureType, fnPtrVal, envPtrVal);
 }
 
 // ============================================================================
@@ -4031,7 +4005,7 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
-  auto scopeCreateOp = builder.create<hew::ScopeCreateOp>(location, ptrType, ptrType);
+  auto scopeCreateOp = hew::ScopeCreateOp::create(builder, location, ptrType, ptrType);
   auto scopePtr = scopeCreateOp.getActorScope();
   auto taskScopePtr = scopeCreateOp.getTaskScope();
 
@@ -4055,8 +4029,8 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
   currentScopePtr = prevScope;
   currentTaskScopePtr = prevTaskScope;
 
-  builder.create<hew::ScopeJoinOp>(location, scopePtr, taskScopePtr);
-  builder.create<hew::ScopeDestroyOp>(location, scopePtr, taskScopePtr);
+  hew::ScopeJoinOp::create(builder, location, scopePtr, taskScopePtr);
+  hew::ScopeDestroyOp::create(builder, location, scopePtr, taskScopePtr);
 
   return bodyResult;
 }
@@ -4101,28 +4075,28 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
     envStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, capturedTypes);
 
     auto envSize =
-        builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(envStructType));
+        hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
-    auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-    envPtrVal = builder.create<hew::RcNewOp>(location, ptrType, nullPtr, envSize, nullPtr);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullPtr, envSize, nullPtr);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
         auto innerEnv =
-            builder.create<hew::ClosureGetEnvOp>(location, ptrType, capturedVars[i].value);
-        builder.create<hew::RcCloneOp>(location, ptrType, innerEnv);
+            hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
+        hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
-      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, envStructType, envPtrVal,
+      auto gepOp = mlir::LLVM::GEPOp::create(
+          builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
       mlir::Value storeVal = capturedVars[i].value;
       if (storeVal.getType() != capturedTypes[i]) {
-        storeVal = builder.create<hew::BitcastOp>(location, capturedTypes[i], storeVal);
+        storeVal = hew::BitcastOp::create(builder, location, capturedTypes[i], storeVal);
       }
-      builder.create<mlir::LLVM::StoreOp>(location, storeVal, gepOp);
+      mlir::LLVM::StoreOp::create(builder, location, storeVal, gepOp);
     }
   } else {
-    envPtrVal = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
+    envPtrVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
   }
 
   auto savedIP = builder.saveInsertionPoint();
@@ -4131,7 +4105,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto voidType = builder.getFunctionType({ptrType}, {});
 
   builder.setInsertionPointToEnd(module.getBody());
-  auto taskFn = builder.create<mlir::func::FuncOp>(location, taskFnName, voidType);
+  auto taskFn = mlir::func::FuncOp::create(builder, location, taskFnName, voidType);
   taskFn.setPrivate();
 
   auto *entryBlock = taskFn.addEntryBlock();
@@ -4152,17 +4126,17 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   MutableTableScopeT taskMutScope(mutableVars);
 
   if (!capturedVars.empty()) {
-    auto envPtr = builder.create<hew::TaskGetEnvOp>(location, ptrType, taskArg);
+    auto envPtr = hew::TaskGetEnvOp::create(builder, location, ptrType, taskArg);
     for (size_t i = 0; i < capturedVars.size(); ++i) {
-      auto gepOp = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, envStructType, envPtr,
+      auto gepOp = mlir::LLVM::GEPOp::create(
+          builder, location, ptrType, envStructType, envPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
-      auto loadedVal = builder.create<mlir::LLVM::LoadOp>(location, capturedTypes[i], gepOp);
+      auto loadedVal = mlir::LLVM::LoadOp::create(builder, location, capturedTypes[i], gepOp);
 
       if (capturedVars[i].isMutable) {
         auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
-        auto alloca = builder.create<mlir::memref::AllocaOp>(location, ptrMemrefType);
-        builder.create<mlir::memref::StoreOp>(location, loadedVal, alloca);
+        auto alloca = mlir::memref::AllocaOp::create(builder, location, ptrMemrefType);
+        mlir::memref::StoreOp::create(builder, location, loadedVal, alloca);
         auto internedName = intern(capturedVars[i].name);
         mutableVars.insert(internedName, alloca);
         heapCellValueTypes[alloca] = capturedVars[i].valueType;
@@ -4170,7 +4144,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
         mlir::Value capturedVal = loadedVal;
         if (capturedTypes[i] != capturedVars[i].value.getType()) {
           capturedVal =
-              builder.create<hew::BitcastOp>(location, capturedVars[i].value.getType(), loadedVal);
+              hew::BitcastOp::create(builder, location, capturedVars[i].value.getType(), loadedVal);
         }
         declareVariable(capturedVars[i].name, capturedVal);
       }
@@ -4187,37 +4161,34 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   if (bodyResult) {
     lastScopeLaunchResultType = bodyResult.getType();
 
-    auto sizeVal = builder.create<hew::SizeOfOp>(location, sizeType(),
-                                                 mlir::TypeAttr::get(bodyResult.getType()));
+    auto sizeVal = hew::SizeOfOp::create(builder, location, sizeType(),
+                                         mlir::TypeAttr::get(bodyResult.getType()));
 
-    auto resultPtr = builder
-                         .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                                     mlir::SymbolRefAttr::get(&context, "malloc"),
-                                                     mlir::ValueRange{sizeVal})
+    auto resultPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                mlir::SymbolRefAttr::get(&context, "malloc"),
+                                                mlir::ValueRange{sizeVal})
                          .getResult();
-    builder.create<mlir::LLVM::StoreOp>(location, bodyResult, resultPtr);
+    mlir::LLVM::StoreOp::create(builder, location, bodyResult, resultPtr);
 
-    builder.create<hew::TaskSetResultOp>(location, taskArg, resultPtr, sizeVal);
+    hew::TaskSetResultOp::create(builder, location, taskArg, resultPtr, sizeVal);
     // Free the temp buffer after result is copied into task
     auto freeFuncType = mlir::FunctionType::get(&context, {ptrType}, {});
     getOrCreateExternFunc("free", freeFuncType);
-    builder.create<mlir::func::CallOp>(location, "free", mlir::TypeRange{},
-                                       mlir::ValueRange{resultPtr});
+    mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                               mlir::ValueRange{resultPtr});
   }
 
-  builder.create<hew::TaskCompleteOp>(location, taskArg);
-  builder.create<mlir::func::ReturnOp>(location);
+  hew::TaskCompleteOp::create(builder, location, taskArg);
+  mlir::func::ReturnOp::create(builder, location);
 
   builder.restoreInsertionPoint(savedIP);
 
-  auto fnPtr =
-      builder
-          .create<hew::FuncPtrOp>(location, ptrType,
-                                  mlir::SymbolRefAttr::get(builder.getContext(), taskFnName))
-          .getResult();
+  auto fnPtr = hew::FuncPtrOp::create(builder, location, ptrType,
+                                      mlir::SymbolRefAttr::get(builder.getContext(), taskFnName))
+                   .getResult();
 
   auto taskPtr =
-      builder.create<hew::ScopeLaunchOp>(location, ptrType, currentTaskScopePtr, fnPtr, envPtrVal);
+      hew::ScopeLaunchOp::create(builder, location, ptrType, currentTaskScopePtr, fnPtr, envPtrVal);
 
   return taskPtr;
 }
@@ -4233,7 +4204,7 @@ mlir::Value MLIRGen::generateScopeCancelExpr() {
     return nullptr;
   }
 
-  builder.create<hew::ScopeCancelOp>(location, currentTaskScopePtr);
+  hew::ScopeCancelOp::create(builder, location, currentTaskScopePtr);
   return nullptr;
 }
 
@@ -4273,11 +4244,11 @@ mlir::Value MLIRGen::emitRuntimeCall(llvm::StringRef callee, mlir::Type resultTy
                                      mlir::ValueRange args, mlir::Location location) {
   auto calleeAttr = mlir::SymbolRefAttr::get(&context, callee);
   if (resultType) {
-    auto op =
-        builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{resultType}, calleeAttr, args);
+    auto op = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{resultType}, calleeAttr,
+                                         args);
     return op.getResult();
   }
-  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, calleeAttr, args);
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, calleeAttr, args);
   return nullptr;
 }
 
@@ -4329,7 +4300,7 @@ std::pair<mlir::Value, mlir::Value> MLIRGen::packArgsForSend(llvm::ArrayRef<mlir
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
 
   auto packOp =
-      builder.create<hew::PackArgsOp>(location, mlir::TypeRange{ptrType, sizeType()}, args);
+      hew::PackArgsOp::create(builder, location, mlir::TypeRange{ptrType, sizeType()}, args);
   return {packOp.getDataPtr(), packOp.getDataSize()};
 }
 
@@ -4404,7 +4375,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     }
     resultTypes.push_back(*recvInfo->returnType);
 
-    auto ch = builder.create<hew::SelectCreateOp>(location, ptrType);
+    auto ch = hew::SelectCreateOp::create(builder, location, ptrType);
     channels.push_back(ch);
 
     llvm::SmallVector<mlir::Value, 4> argVals;
@@ -4416,18 +4387,19 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     }
     auto [dataPtr, dataSize] = packArgsForSend(argVals, location);
 
-    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, msgIdx);
-    builder.create<hew::SelectAddOp>(location, receiver, msgTypeVal, dataPtr, dataSize, ch);
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, msgIdx);
+    hew::SelectAddOp::create(builder, location, receiver, msgTypeVal, dataPtr, dataSize, ch);
   }
 
-  auto armCountVal = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, armCount);
-  auto channelArray = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, ptrType, armCountVal);
+  auto armCountVal = mlir::arith::ConstantIntOp::create(builder, location, i64Type, armCount);
+  auto channelArray =
+      mlir::LLVM::AllocaOp::create(builder, location, ptrType, ptrType, armCountVal);
 
   for (size_t i = 0; i < armCount; ++i) {
-    auto gep = builder.create<mlir::LLVM::GEPOp>(
-        location, ptrType, ptrType, channelArray,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(i)});
-    builder.create<mlir::LLVM::StoreOp>(location, channels[i], gep);
+    auto gep =
+        mlir::LLVM::GEPOp::create(builder, location, ptrType, ptrType, channelArray,
+                                  llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(i)});
+    mlir::LLVM::StoreOp::create(builder, location, channels[i], gep);
   }
 
   int64_t timeoutMs = 2147483647;
@@ -4440,11 +4412,11 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     }
   }
 
-  auto countVal =
-      builder.create<mlir::arith::ConstantIntOp>(location, i32Type, static_cast<int64_t>(armCount));
-  auto timeoutVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, timeoutMs);
+  auto countVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
+                                                     static_cast<int64_t>(armCount));
+  auto timeoutVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, timeoutMs);
   auto winnerIdx =
-      builder.create<hew::SelectFirstOp>(location, i32Type, channelArray, countVal, timeoutVal);
+      hew::SelectFirstOp::create(builder, location, i32Type, channelArray, countVal, timeoutVal);
 
   mlir::Type selectResultType = resultTypes[0];
 
@@ -4469,30 +4441,30 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       MutableTableScopeT mutScope(mutableVars);
       const auto &arm = arms[armIdx];
 
-      auto replyPtr = builder.create<hew::SelectWaitOp>(location, ptrType, channels[armIdx]);
-      auto resultVal = builder.create<mlir::LLVM::LoadOp>(location, resultTypes[armIdx], replyPtr);
+      auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[armIdx]);
+      auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[armIdx], replyPtr);
       // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
       getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-      builder.create<mlir::func::CallOp>(location, "free", mlir::TypeRange{},
-                                         mlir::ValueRange{replyPtr});
+      mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                                 mlir::ValueRange{replyPtr});
 
       if (auto *ip = std::get_if<ast::PatIdentifier>(&arm.binding.value.kind))
         declareVariable(ip->name, resultVal);
 
       auto bodyVal = generateExpression(arm.body->value);
-      builder.create<hew::SelectDestroyOp>(location, channels[armIdx]);
+      hew::SelectDestroyOp::create(builder, location, channels[armIdx]);
 
       auto retVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
       return coerceType(retVal, selectResultType, location);
     }
 
-    auto armIdxVal =
-        builder.create<mlir::arith::ConstantIntOp>(location, i32Type, static_cast<int64_t>(armIdx));
-    auto cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::eq,
-                                                    winnerIdx, armIdxVal);
+    auto armIdxVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
+                                                        static_cast<int64_t>(armIdx));
+    auto cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                            winnerIdx, armIdxVal);
 
     auto ifOp =
-        builder.create<mlir::scf::IfOp>(location, selectResultType, cond, /*withElseRegion=*/true);
+        mlir::scf::IfOp::create(builder, location, selectResultType, cond, /*withElseRegion=*/true);
 
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
     {
@@ -4500,22 +4472,22 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       MutableTableScopeT mutScope(mutableVars);
       const auto &arm = arms[armIdx];
 
-      auto replyPtr = builder.create<hew::SelectWaitOp>(location, ptrType, channels[armIdx]);
-      auto resultVal = builder.create<mlir::LLVM::LoadOp>(location, resultTypes[armIdx], replyPtr);
+      auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[armIdx]);
+      auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[armIdx], replyPtr);
       // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
       getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-      builder.create<mlir::func::CallOp>(location, "free", mlir::TypeRange{},
-                                         mlir::ValueRange{replyPtr});
+      mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                                 mlir::ValueRange{replyPtr});
 
       if (auto *ip = std::get_if<ast::PatIdentifier>(&arm.binding.value.kind))
         declareVariable(ip->name, resultVal);
 
       auto bodyVal = generateExpression(arm.body->value);
-      builder.create<hew::SelectDestroyOp>(location, channels[armIdx]);
+      hew::SelectDestroyOp::create(builder, location, channels[armIdx]);
 
       auto yieldVal = bodyVal ? bodyVal : createDefaultValue(builder, location, selectResultType);
       yieldVal = coerceType(yieldVal, selectResultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{yieldVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
     }
 
     builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
@@ -4524,7 +4496,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
       auto yieldVal = elseVal ? elseVal : createDefaultValue(builder, location, selectResultType);
       yieldVal = coerceType(yieldVal, selectResultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{yieldVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{yieldVal});
     }
 
     builder.setInsertionPointAfter(ifOp);
@@ -4603,7 +4575,7 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     }
     resultTypes.push_back(*recvInfo->returnType);
 
-    auto ch = builder.create<hew::SelectCreateOp>(location, ptrType);
+    auto ch = hew::SelectCreateOp::create(builder, location, ptrType);
     channels.push_back(ch);
 
     llvm::SmallVector<mlir::Value, 4> argVals;
@@ -4615,20 +4587,20 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     }
     auto [dataPtr, dataSize] = packArgsForSend(argVals, location);
 
-    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, msgIdx);
-    builder.create<hew::SelectAddOp>(location, receiver, msgTypeVal, dataPtr, dataSize, ch);
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, msgIdx);
+    hew::SelectAddOp::create(builder, location, receiver, msgTypeVal, dataPtr, dataSize, ch);
   }
 
   llvm::SmallVector<mlir::Value, 4> results;
   for (size_t i = 0; i < exprCount; ++i) {
-    auto replyPtr = builder.create<hew::SelectWaitOp>(location, ptrType, channels[i]);
-    auto resultVal = builder.create<mlir::LLVM::LoadOp>(location, resultTypes[i], replyPtr);
+    auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[i]);
+    auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[i], replyPtr);
     results.push_back(resultVal);
     // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
     getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-    builder.create<mlir::func::CallOp>(location, "free", mlir::TypeRange{},
-                                       mlir::ValueRange{replyPtr});
-    builder.create<hew::SelectDestroyOp>(location, channels[i]);
+    mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                               mlir::ValueRange{replyPtr});
+    hew::SelectDestroyOp::create(builder, location, channels[i]);
   }
 
   if (exprCount == 1)
@@ -4639,5 +4611,5 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     tupleFieldTypes.push_back(rt);
   auto tupleType = hew::HewTupleType::get(&context, tupleFieldTypes);
 
-  return builder.create<hew::TupleCreateOp>(location, tupleType, results);
+  return hew::TupleCreateOp::create(builder, location, tupleType, results);
 }

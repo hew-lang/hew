@@ -252,7 +252,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto bodyFnType = builder.getFunctionType({ptrType, ptrType}, {});
         auto savedIP = builder.saveInsertionPoint();
         builder.setInsertionPointToEnd(module.getBody());
-        auto bodyFnOp = builder.create<mlir::func::FuncOp>(location, bodyFnName, bodyFnType);
+        auto bodyFnOp = mlir::func::FuncOp::create(builder, location, bodyFnName, bodyFnType);
         auto *entryBlock = bodyFnOp.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
 
@@ -273,19 +273,20 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         currentGenCtx = genCtxArg;
 
         // Load the args struct from the args pointer
-        auto argsStruct = builder.create<mlir::LLVM::LoadOp>(location, argsStructType, argsPtr);
+        auto argsStruct = mlir::LLVM::LoadOp::create(builder, location, argsStructType, argsPtr);
 
         // Extract self pointer (field 0)
-        auto selfPtr = builder.create<mlir::LLVM::ExtractValueOp>(location, argsStruct,
-                                                                  llvm::ArrayRef<int64_t>{0});
+        auto selfPtr = mlir::LLVM::ExtractValueOp::create(builder, location, argsStruct,
+                                                          llvm::ArrayRef<int64_t>{0});
         declareVariable("self", selfPtr);
 
         // Extract and bind message parameters (fields 1..N)
         {
           size_t pi = 0;
           for (const auto &param : recv.params) {
-            auto paramVal = builder.create<mlir::LLVM::ExtractValueOp>(
-                location, argsStruct, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
+            auto paramVal = mlir::LLVM::ExtractValueOp::create(
+                builder, location, argsStruct,
+                llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
             declareVariable(param.name, paramVal);
 
             // Register ActorRef<T> params for method dispatch
@@ -303,7 +304,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         // Ensure terminator
         if (!hasRealTerminator(builder.getInsertionBlock()))
-          builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+          mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
         currentGenCtx = prevGenCtx;
         currentFunction = prevFunction;
@@ -319,7 +320,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto initFuncType = builder.getFunctionType(initParamTypes, {wrapperType});
         auto savedIP = builder.saveInsertionPoint();
         builder.setInsertionPointToEnd(module.getBody());
-        auto initFuncOp = builder.create<mlir::func::FuncOp>(location, receiveName, initFuncType);
+        auto initFuncOp = mlir::func::FuncOp::create(builder, location, receiveName, initFuncType);
         auto *entryBlock = initFuncOp.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
 
@@ -329,45 +330,43 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto selfPtr = entryBlock->getArgument(0);
 
         // Allocate args struct on stack
-        auto one64 = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 1);
+        auto one64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
         auto argsAlloca =
-            builder.create<mlir::LLVM::AllocaOp>(location, ptrType, argsStructType, one64);
+            mlir::LLVM::AllocaOp::create(builder, location, ptrType, argsStructType, one64);
 
         // Pack self + params into the struct
-        auto argsUndef = builder.create<mlir::LLVM::UndefOp>(location, argsStructType);
-        mlir::Value argsStruct = builder.create<mlir::LLVM::InsertValueOp>(
-            location, argsUndef, selfPtr, llvm::ArrayRef<int64_t>{0});
+        auto argsUndef = mlir::LLVM::UndefOp::create(builder, location, argsStructType);
+        mlir::Value argsStruct = mlir::LLVM::InsertValueOp::create(
+            builder, location, argsUndef, selfPtr, llvm::ArrayRef<int64_t>{0});
         for (size_t pi = 0; pi < recv.params.size(); ++pi) {
-          argsStruct = builder.create<mlir::LLVM::InsertValueOp>(
-              location, argsStruct, entryBlock->getArgument(pi + 1),
+          argsStruct = mlir::LLVM::InsertValueOp::create(
+              builder, location, argsStruct, entryBlock->getArgument(pi + 1),
               llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi + 1)});
         }
-        builder.create<mlir::LLVM::StoreOp>(location, argsStruct, argsAlloca);
+        mlir::LLVM::StoreOp::create(builder, location, argsStruct, argsAlloca);
 
         // Compute args struct size
-        auto argsSizeVal = builder.create<hew::SizeOfOp>(location, sizeType(),
-                                                         mlir::TypeAttr::get(argsStructType));
+        auto argsSizeVal = hew::SizeOfOp::create(builder, location, sizeType(),
+                                                 mlir::TypeAttr::get(argsStructType));
 
         // Get body function pointer using func.constant + cast to ptr
         std::string bodyFnName = receiveName + "__body";
         auto bodyFnPtrType = builder.getFunctionType({ptrType, ptrType}, {});
         getOrCreateExternFunc(bodyFnName, bodyFnPtrType);
-        auto bodyFnAddr = builder
-                              .create<hew::FuncPtrOp>(
-                                  location, ptrType, mlir::SymbolRefAttr::get(&context, bodyFnName))
+        auto bodyFnAddr = hew::FuncPtrOp::create(builder, location, ptrType,
+                                                 mlir::SymbolRefAttr::get(&context, bodyFnName))
                               .getResult();
 
         // Call hew_gen_ctx_create(body_fn, args_ptr, args_size) → ctx
-        auto ctx =
-            builder
-                .create<hew::GenCtxCreateOp>(location, ptrType, bodyFnAddr, argsAlloca, argsSizeVal)
-                .getResult();
+        auto ctx = hew::GenCtxCreateOp::create(builder, location, ptrType, bodyFnAddr, argsAlloca,
+                                               argsSizeVal)
+                       .getResult();
 
         // Store ctx in state.__gen_frame_N
-        auto genFrameGEP = builder.create<mlir::LLVM::GEPOp>(
-            location, ptrType, stateType, selfPtr,
+        auto genFrameGEP = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, stateType, selfPtr,
             llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(genFrameIdx)});
-        builder.create<mlir::LLVM::StoreOp>(location, ctx, genFrameGEP);
+        mlir::LLVM::StoreOp::create(builder, location, ctx, genFrameGEP);
 
         // Emit gen-next → null check → wrap/cleanup → return
         emitGenNextResult(ctx, selfPtr, stateType, genFrameIdx, yieldType, wrapperType, location);
@@ -383,7 +382,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto savedIP = builder.saveInsertionPoint();
         builder.setInsertionPointToEnd(module.getBody());
         auto nextFuncOp =
-            builder.create<mlir::func::FuncOp>(location, nextHandlerName, nextFuncType);
+            mlir::func::FuncOp::create(builder, location, nextHandlerName, nextFuncType);
         auto *entryBlock = nextFuncOp.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
 
@@ -393,10 +392,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto selfPtr = entryBlock->getArgument(0);
 
         // Load gen ctx from state.__gen_frame_N
-        auto genFrameGEP = builder.create<mlir::LLVM::GEPOp>(
-            location, ptrType, stateType, selfPtr,
+        auto genFrameGEP = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, stateType, selfPtr,
             llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(genFrameIdx)});
-        auto ctx = builder.create<mlir::LLVM::LoadOp>(location, ptrType, genFrameGEP);
+        auto ctx = mlir::LLVM::LoadOp::create(builder, location, ptrType, genFrameGEP);
 
         // Emit gen-next → null check → wrap/cleanup → return
         emitGenNextResult(ctx, selfPtr, stateType, genFrameIdx, yieldType, wrapperType, location);
@@ -427,7 +426,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     auto funcType = builder.getFunctionType(paramTypes, resultTypes);
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
-    auto funcOp = builder.create<mlir::func::FuncOp>(location, receiveName, funcType);
+    auto funcOp = mlir::func::FuncOp::create(builder, location, receiveName, funcType);
     auto *entryBlock = funcOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
@@ -475,9 +474,9 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     if (!hasRealTerminator(builder.getInsertionBlock())) {
       if (!resultTypes.empty() && bodyValue) {
         bodyValue = coerceType(bodyValue, resultTypes[0], location);
-        builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{bodyValue});
+        mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{bodyValue});
       } else {
-        builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+        mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
       }
     }
 
@@ -495,7 +494,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
-    auto initFuncOp = builder.create<mlir::func::FuncOp>(location, initName, initFuncType);
+    auto initFuncOp = mlir::func::FuncOp::create(builder, location, initName, initFuncType);
     auto *entryBlock = initFuncOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
@@ -518,7 +517,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     // Ensure terminator
     if (!hasRealTerminator(builder.getInsertionBlock()))
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
@@ -538,7 +537,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
-    auto dispatchOp = builder.create<mlir::func::FuncOp>(location, dispatchName, dispatchType);
+    auto dispatchOp = mlir::func::FuncOp::create(builder, location, dispatchName, dispatchType);
     auto *entryBlock = dispatchOp.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
@@ -579,11 +578,11 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         getOrCreateExternFunc(recvHandlerName, recvFuncType);
 
         // if (msg_type == i)
-        auto msgIdx = builder.create<mlir::arith::ConstantIntOp>(
-            location, i32Type, static_cast<int64_t>(i));
-        auto cond = builder.create<mlir::arith::CmpIOp>(
-            location, mlir::arith::CmpIPredicate::eq, msgTypeArg, msgIdx);
-        auto ifOp = builder.create<mlir::scf::IfOp>(location, cond, /*withElseRegion=*/false);
+        auto msgIdx =
+            mlir::arith::ConstantIntOp::create(builder, location, i32Type, static_cast<int64_t>(i));
+        auto cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                                msgTypeArg, msgIdx);
+        auto ifOp = mlir::scf::IfOp::create(builder, location, cond, /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
 
         // Check if this handler uses wire encoding
@@ -607,45 +606,47 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           // bytes = hew_vec_from_raw_bytes(data, data_size)
           auto vecFromRawType = builder.getFunctionType({ptrType, sizeType()}, {ptrType});
           getOrCreateExternFunc("hew_vec_from_raw_bytes", vecFromRawType);
-          auto bytesVec = builder.create<mlir::func::CallOp>(
-              location, "hew_vec_from_raw_bytes", mlir::TypeRange{ptrType},
-              mlir::ValueRange{dataArg, dataSizeArg}).getResult(0);
+          auto bytesVec = mlir::func::CallOp::create(builder, location, "hew_vec_from_raw_bytes",
+                                                     mlir::TypeRange{ptrType},
+                                                     mlir::ValueRange{dataArg, dataSizeArg})
+                              .getResult(0);
 
           // msg = decode_wrapper(bytes) → struct
           auto decodeFuncType = builder.getFunctionType({ptrType}, {recvFn.paramTypes[0]});
           getOrCreateExternFunc(wireNames->decodeName, decodeFuncType);
-          auto decoded = builder.create<mlir::func::CallOp>(
-              location, wireNames->decodeName, mlir::TypeRange{recvFn.paramTypes[0]},
-              mlir::ValueRange{bytesVec}).getResult(0);
+          auto decoded = mlir::func::CallOp::create(builder, location, wireNames->decodeName,
+                                                    mlir::TypeRange{recvFn.paramTypes[0]},
+                                                    mlir::ValueRange{bytesVec})
+                             .getResult(0);
 
           // Free the temporary bytes vec
           auto vecFreeType = builder.getFunctionType({ptrType}, {});
           getOrCreateExternFunc("hew_vec_free", vecFreeType);
-          builder.create<mlir::func::CallOp>(location, "hew_vec_free", mlir::TypeRange{},
-                                             mlir::ValueRange{bytesVec});
+          mlir::func::CallOp::create(builder, location, "hew_vec_free", mlir::TypeRange{},
+                                     mlir::ValueRange{bytesVec});
 
           callArgs.push_back(decoded);
         } else {
           // Non-wire path: load args from data buffer (same as ReceiveOpLowering)
           if (recvFn.paramTypes.size() == 1) {
-            auto loaded = builder.create<mlir::LLVM::LoadOp>(
-                location, recvFn.paramTypes[0], dataArg);
+            auto loaded =
+                mlir::LLVM::LoadOp::create(builder, location, recvFn.paramTypes[0], dataArg);
             callArgs.push_back(loaded);
           } else if (recvFn.paramTypes.size() > 1) {
             llvm::SmallVector<mlir::Type, 4> fieldTypes(recvFn.paramTypes.begin(),
-                                                         recvFn.paramTypes.end());
+                                                        recvFn.paramTypes.end());
             auto packType = mlir::LLVM::LLVMStructType::getLiteral(&context, fieldTypes);
-            auto packed = builder.create<mlir::LLVM::LoadOp>(location, packType, dataArg);
+            auto packed = mlir::LLVM::LoadOp::create(builder, location, packType, dataArg);
             for (unsigned pi = 0; pi < fieldTypes.size(); ++pi) {
-              auto field = builder.create<mlir::LLVM::ExtractValueOp>(
-                  location, packed, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi)});
+              auto field = mlir::LLVM::ExtractValueOp::create(
+                  builder, location, packed, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi)});
               callArgs.push_back(field);
             }
           }
         }
 
         // Call handler
-        builder.create<mlir::func::CallOp>(location, recvHandlerName, recvResultTypes, callArgs);
+        mlir::func::CallOp::create(builder, location, recvHandlerName, recvResultTypes, callArgs);
 
         builder.setInsertionPointAfter(ifOp);
       }
@@ -669,12 +670,12 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, recvHandlerName));
       }
 
-      builder.create<hew::ReceiveOp>(location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                                     builder.getArrayAttr(handlerRefs));
+      hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
+                             builder.getArrayAttr(handlerRefs));
     }
 
     // Return void from dispatch
-    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -698,7 +699,7 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  auto funcOp = builder.create<mlir::func::FuncOp>(builder.getUnknownLoc(), fnName, funcType);
+  auto funcOp = mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), fnName, funcType);
   auto *entryBlock = funcOp.addEntryBlock();
   builder.setInsertionPointToStart(entryBlock);
 
@@ -706,7 +707,8 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
   auto dataPtr = entryBlock->getArgument(1);
 
   // Default: return msg_type as u64 (so each msg_type is its own key bucket)
-  auto defaultKey = builder.create<mlir::arith::ExtUIOp>(builder.getUnknownLoc(), i64Type, msgType);
+  auto defaultKey =
+      mlir::arith::ExtUIOp::create(builder, builder.getUnknownLoc(), i64Type, msgType);
 
   // For each receive fn, check if it has the coalesce key field as a parameter
   // If so, switch on msg_type, extract the field, return as u64
@@ -739,9 +741,9 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
 
     auto uloc = builder.getUnknownLoc();
     auto msgTypeConst =
-        builder.create<mlir::arith::ConstantIntOp>(uloc, i32Type, static_cast<int64_t>(i));
-    auto isThisMsg = builder.create<mlir::arith::CmpIOp>(uloc, mlir::arith::CmpIPredicate::eq,
-                                                         msgType, msgTypeConst);
+        mlir::arith::ConstantIntOp::create(builder, uloc, i32Type, static_cast<int64_t>(i));
+    auto isThisMsg = mlir::arith::CmpIOp::create(builder, uloc, mlir::arith::CmpIPredicate::eq,
+                                                 msgType, msgTypeConst);
 
     // Build the struct type for this message's packed args
     llvm::SmallVector<mlir::Type, 4> msgStructFields;
@@ -750,36 +752,36 @@ void MLIRGen::generateCoalesceKeyFn(const ActorInfo &actorInfo, const std::strin
     }
     auto msgStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, msgStructFields);
 
-    auto ifOp = builder.create<mlir::scf::IfOp>(uloc, i64Type, isThisMsg, /*withElseRegion=*/true);
+    auto ifOp = mlir::scf::IfOp::create(builder, uloc, i64Type, isThisMsg, /*withElseRegion=*/true);
 
     // Then: extract key field
     builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto fieldGEP = builder.create<mlir::LLVM::GEPOp>(
-        uloc, ptrType, msgStructType, dataPtr, llvm::ArrayRef<mlir::LLVM::GEPArg>{0, keyFieldIdx});
+    auto fieldGEP = mlir::LLVM::GEPOp::create(builder, uloc, ptrType, msgStructType, dataPtr,
+                                              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, keyFieldIdx});
 
     mlir::Value keyVal;
     if (keyFieldType == i32Type) {
-      auto loaded = builder.create<mlir::LLVM::LoadOp>(uloc, i32Type, fieldGEP);
-      keyVal = builder.create<mlir::arith::ExtUIOp>(uloc, i64Type, loaded);
+      auto loaded = mlir::LLVM::LoadOp::create(builder, uloc, i32Type, fieldGEP);
+      keyVal = mlir::arith::ExtUIOp::create(builder, uloc, i64Type, loaded);
     } else if (keyFieldType == i64Type) {
-      keyVal = builder.create<mlir::LLVM::LoadOp>(uloc, i64Type, fieldGEP);
+      keyVal = mlir::LLVM::LoadOp::create(builder, uloc, i64Type, fieldGEP);
     } else if (keyFieldType == ptrType) {
-      auto loaded = builder.create<mlir::LLVM::LoadOp>(uloc, ptrType, fieldGEP);
-      keyVal = builder.create<mlir::LLVM::PtrToIntOp>(uloc, i64Type, loaded);
+      auto loaded = mlir::LLVM::LoadOp::create(builder, uloc, ptrType, fieldGEP);
+      keyVal = mlir::LLVM::PtrToIntOp::create(builder, uloc, i64Type, loaded);
     } else {
-      keyVal = builder.create<mlir::arith::ExtUIOp>(uloc, i64Type, msgType);
+      keyVal = mlir::arith::ExtUIOp::create(builder, uloc, i64Type, msgType);
     }
-    builder.create<mlir::scf::YieldOp>(uloc, keyVal);
+    mlir::scf::YieldOp::create(builder, uloc, keyVal);
 
     // Else: pass through previous result
     builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    builder.create<mlir::scf::YieldOp>(uloc, result);
+    mlir::scf::YieldOp::create(builder, uloc, result);
 
     builder.setInsertionPointAfter(ifOp);
     result = ifOp.getResult(0);
   }
 
-  builder.create<mlir::func::ReturnOp>(builder.getUnknownLoc(), result);
+  mlir::func::ReturnOp::create(builder, builder.getUnknownLoc(), result);
 
   builder.restoreInsertionPoint(savedIP);
 }
@@ -813,8 +815,8 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
     // a later pass (Pass 2) but the symbol reference resolves before
     // module verification.
     std::string initName = actorName + "_init";
-    auto call = builder.create<mlir::func::CallOp>(location, initName, mlir::TypeRange{ptrType},
-                                                   mlir::ValueRange{});
+    auto call = mlir::func::CallOp::create(builder, location, initName, mlir::TypeRange{ptrType},
+                                           mlir::ValueRange{});
     return call.getResult(0);
   }
 
@@ -841,15 +843,14 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
     for (size_t i = initArgVals.size(); i < numUserFields; ++i) {
       auto hewType = actorInfo.fieldHewTypes[i];
       if (auto vecType = mlir::dyn_cast<hew::VecType>(hewType)) {
-        initArgVals.push_back(builder.create<hew::VecNewOp>(location, vecType).getResult());
+        initArgVals.push_back(hew::VecNewOp::create(builder, location, vecType).getResult());
       } else if (auto hmType = mlir::dyn_cast<hew::HashMapType>(hewType)) {
-        initArgVals.push_back(builder.create<hew::HashMapNewOp>(location, hmType).getResult());
+        initArgVals.push_back(hew::HashMapNewOp::create(builder, location, hmType).getResult());
       } else if (mlir::isa<hew::StringRefType>(hewType)) {
         auto symName = getOrCreateGlobalString("");
-        initArgVals.push_back(builder
-                                  .create<hew::ConstantOp>(location,
-                                                           hew::StringRefType::get(&context),
-                                                           builder.getStringAttr(symName))
+        initArgVals.push_back(hew::ConstantOp::create(builder, location,
+                                                      hew::StringRefType::get(&context),
+                                                      builder.getStringAttr(symName))
                                   .getResult());
       } else {
         initArgVals.push_back(createDefaultValue(builder, location, toLLVMStorageType(hewType)));
@@ -867,7 +868,7 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
         ++genFrameCount;
     }
     for (size_t i = 0; i < genFrameCount; ++i)
-      initArgVals.push_back(builder.create<mlir::LLVM::ZeroOp>(location, ptrType));
+      initArgVals.push_back(mlir::LLVM::ZeroOp::create(builder, location, ptrType));
   }
 
   // Emit hew.actor_spawn — the lowering pass handles alloca, field stores,
@@ -898,8 +899,8 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
     coalesceFallbackAttr = builder.getI32IntegerAttr(fallback);
   }
 
-  auto spawnOp = builder.create<hew::ActorSpawnOp>(
-      location, hew::TypedActorRefType::get(&context, builder.getStringAttr(actorName)),
+  auto spawnOp = hew::ActorSpawnOp::create(
+      builder, location, hew::TypedActorRefType::get(&context, builder.getStringAttr(actorName)),
       builder.getStringAttr(actorName), mlir::SymbolRefAttr::get(&context, dispatchName),
       mlir::TypeAttr::get(actorInfo.stateType), initArgVals, mailboxCapAttr, overflowPolicyAttr,
       coalesceKeyFnAttr, coalesceFallbackAttr);
@@ -909,9 +910,9 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
   // Register with enclosing scope, if any.
   if (currentScopePtr) {
     auto i32Type = builder.getI32Type();
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                       mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
-                                       mlir::ValueRange{currentScopePtr, result});
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                               mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
+                               mlir::ValueRange{currentScopePtr, result});
   }
 
   return result;
@@ -1000,7 +1001,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToEnd(module.getBody());
-  auto recvFuncOp = builder.create<mlir::func::FuncOp>(location, receiveName, recvFuncType);
+  auto recvFuncOp = mlir::func::FuncOp::create(builder, location, receiveName, recvFuncType);
   auto *recvEntry = recvFuncOp.addEntryBlock();
   builder.setInsertionPointToStart(recvEntry);
 
@@ -1028,14 +1029,14 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     // Use declareMutableVariable to shadow any outer-scope mutable bindings
     // (which would otherwise reference memrefs from the spawning function).
     for (size_t i = 0; i < capturedVars.size(); ++i) {
-      auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, stateType, selfPtr,
-          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
+      auto fieldPtr =
+          mlir::LLVM::GEPOp::create(builder, location, ptrType, stateType, selfPtr,
+                                    llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
       auto llvmFieldType = toLLVMStorageType(capturedVars[i].value.getType());
-      mlir::Value loaded = builder.create<mlir::LLVM::LoadOp>(location, llvmFieldType, fieldPtr);
+      mlir::Value loaded = mlir::LLVM::LoadOp::create(builder, location, llvmFieldType, fieldPtr);
       auto hewType = capturedVars[i].value.getType();
       if (hewType != llvmFieldType)
-        loaded = builder.create<hew::BitcastOp>(location, hewType, loaded);
+        loaded = hew::BitcastOp::create(builder, location, hewType, loaded);
       declareMutableVariable(capturedVars[i].name, hewType, loaded);
     }
 
@@ -1044,7 +1045,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     }
 
     if (!hasRealTerminator(builder.getInsertionBlock()))
-      builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
@@ -1055,7 +1056,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   std::string dispatchName = actorName + "_dispatch";
   auto dispatchType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
   builder.setInsertionPointToEnd(module.getBody());
-  auto dispatchOp = builder.create<mlir::func::FuncOp>(location, dispatchName, dispatchType);
+  auto dispatchOp = mlir::func::FuncOp::create(builder, location, dispatchName, dispatchType);
   auto *dispEntry = dispatchOp.addEntryBlock();
   builder.setInsertionPointToStart(dispEntry);
 
@@ -1076,9 +1077,9 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     llvm::SmallVector<mlir::Attribute, 1> handlerRefs;
     handlerRefs.push_back(mlir::FlatSymbolRefAttr::get(&context, receiveName));
 
-    builder.create<hew::ReceiveOp>(location, stateArg, msgTypeArg, dataArg, dataSizeArg,
-                                   builder.getArrayAttr(handlerRefs));
-    builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{});
+    hew::ReceiveOp::create(builder, location, stateArg, msgTypeArg, dataArg, dataSizeArg,
+                           builder.getArrayAttr(handlerRefs));
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
   }
 
   builder.restoreInsertionPoint(savedIP);
@@ -1095,8 +1096,8 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   for (const auto &cv : capturedVars)
     initArgVals.push_back(cv.value);
 
-  auto spawnOp = builder.create<hew::ActorSpawnOp>(
-      location, hew::ActorRefType::get(&context), builder.getStringAttr(actorName),
+  auto spawnOp = hew::ActorSpawnOp::create(
+      builder, location, hew::ActorRefType::get(&context), builder.getStringAttr(actorName),
       mlir::SymbolRefAttr::get(&context, dispatchName), mlir::TypeAttr::get(stateType), initArgVals,
       /*mailbox_capacity=*/mlir::IntegerAttr{},
       /*overflow_policy=*/mlir::IntegerAttr{},
@@ -1108,9 +1109,9 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
 
   // Register with enclosing scope, if any.
   if (currentScopePtr) {
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{i32Type},
-                                       mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
-                                       mlir::ValueRange{currentScopePtr, result});
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                               mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
+                               mlir::ValueRange{currentScopePtr, result});
   }
 
   return result;
@@ -1131,7 +1132,7 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
     if (!currentActorName.empty()) {
       if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
         if (identExpr->name == "self") {
-          auto selfRef = builder.create<hew::ActorSelfOp>(location, ptrType).getResult();
+          auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType).getResult();
           argVals.push_back(selfRef);
           continue;
         }
@@ -1154,41 +1155,41 @@ void MLIRGen::emitGenNextResult(mlir::Value ctx, mlir::Value selfPtr,
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
   auto i64Type = builder.getI64Type();
 
-  auto one64 = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 1);
-  auto outSizeAlloca = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, i64Type, one64);
+  auto one64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
+  auto outSizeAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i64Type, one64);
   auto valuePtr =
-      builder.create<hew::GenNextOp>(location, ptrType, ctx, outSizeAlloca).getResult();
+      hew::GenNextOp::create(builder, location, ptrType, ctx, outSizeAlloca).getResult();
 
   // Check if value_ptr is null (done)
-  auto nullCmp = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-  auto isNull = builder.create<mlir::LLVM::ICmpOp>(location, mlir::LLVM::ICmpPredicate::eq,
-                                                    valuePtr, nullCmp);
+  auto nullCmp = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+  auto isNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq,
+                                           valuePtr, nullCmp);
 
   auto ifOp =
-      builder.create<mlir::scf::IfOp>(location, wrapperType, isNull, /*withElseRegion=*/true);
+      mlir::scf::IfOp::create(builder, location, wrapperType, isNull, /*withElseRegion=*/true);
 
   // Then block (null → done): free gen ctx, clear gen frame in state
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  auto doneWrap = builder.create<hew::GenWrapDoneOp>(location, wrapperType);
-  builder.create<hew::GenFreeOp>(location, ctx);
-  auto nullForClear = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-  auto genFrameGEP = builder.create<mlir::LLVM::GEPOp>(
-      location, ptrType, stateType, selfPtr,
+  auto doneWrap = hew::GenWrapDoneOp::create(builder, location, wrapperType);
+  hew::GenFreeOp::create(builder, location, ctx);
+  auto nullForClear = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+  auto genFrameGEP = mlir::LLVM::GEPOp::create(
+      builder, location, ptrType, stateType, selfPtr,
       llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(genFrameIdx)});
-  builder.create<mlir::LLVM::StoreOp>(location, nullForClear, genFrameGEP);
-  builder.create<mlir::scf::YieldOp>(location, doneWrap.getResult());
+  mlir::LLVM::StoreOp::create(builder, location, nullForClear, genFrameGEP);
+  mlir::scf::YieldOp::create(builder, location, doneWrap.getResult());
 
   // Else block (non-null → has value): load, free malloc'd buf
   builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-  auto loadedVal = builder.create<mlir::LLVM::LoadOp>(location, yieldType, valuePtr);
-  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                     mlir::SymbolRefAttr::get(&context, "free"),
-                                     mlir::ValueRange{valuePtr});
-  auto valWrap = builder.create<hew::GenWrapValueOp>(location, wrapperType, loadedVal);
-  builder.create<mlir::scf::YieldOp>(location, valWrap.getResult());
+  auto loadedVal = mlir::LLVM::LoadOp::create(builder, location, yieldType, valuePtr);
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, "free"),
+                             mlir::ValueRange{valuePtr});
+  auto valWrap = hew::GenWrapValueOp::create(builder, location, wrapperType, loadedVal);
+  mlir::scf::YieldOp::create(builder, location, valWrap.getResult());
 
   builder.setInsertionPointAfter(ifOp);
-  builder.create<mlir::func::ReturnOp>(location, ifOp.getResults());
+  mlir::func::ReturnOp::create(builder, location, ifOp.getResults());
 }
 
 // ============================================================================
@@ -1246,23 +1247,24 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
     // Call encode wrapper: Foo_encode_wrapper(struct) → HewVec* (bytes)
     auto encodeFuncType = builder.getFunctionType({recvFn.paramTypes[0]}, {ptrType});
     getOrCreateExternFunc(wireNames->encodeName, encodeFuncType);
-    auto bytesVec = builder.create<mlir::func::CallOp>(
-        location, wireNames->encodeName, mlir::TypeRange{ptrType}, *argVals).getResult(0);
+    auto bytesVec = mlir::func::CallOp::create(builder, location, wireNames->encodeName,
+                                               mlir::TypeRange{ptrType}, *argVals)
+                        .getResult(0);
 
     // Cast actor ref to !llvm.ptr for runtime call
-    auto actorPtrCast = builder.create<hew::BitcastOp>(location, ptrType, actorPtr).getResult();
+    auto actorPtrCast = hew::BitcastOp::create(builder, location, ptrType, actorPtr).getResult();
 
     // Call hew_actor_send_wire(actor, msg_type, bytes)
     auto sendWireFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
     getOrCreateExternFunc("hew_actor_send_wire", sendWireFuncType);
-    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(
-        location, i32Type, static_cast<int64_t>(msgIdx));
-    builder.create<mlir::func::CallOp>(location, "hew_actor_send_wire", mlir::TypeRange{},
-                                       mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
+                                                         static_cast<int64_t>(msgIdx));
+    mlir::func::CallOp::create(builder, location, "hew_actor_send_wire", mlir::TypeRange{},
+                               mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
   } else {
     // Standard path: hew.actor_send — the lowering pass handles arg packing
-    builder.create<hew::ActorSendOp>(
-        location, actorPtr, builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
+    hew::ActorSendOp::create(builder, location, actorPtr,
+                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
   }
 
   // Suppress sender-side Drop for moved (non-Copy) identifier arguments.
@@ -1313,10 +1315,10 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     return nullptr;
 
   // Emit hew.actor_ask — blocking request-response
-  auto askOp = builder.create<hew::ActorAskOp>(
-      location, *recvInfo->returnType, actorPtr,
-      builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
-      /*timeout_ms=*/mlir::IntegerAttr{});
+  auto askOp =
+      hew::ActorAskOp::create(builder, location, *recvInfo->returnType, actorPtr,
+                              builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
+                              /*timeout_ms=*/mlir::IntegerAttr{});
 
   return askOp.getResult();
 }
@@ -1353,23 +1355,23 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
     // Call encode wrapper: Foo_encode_wrapper(struct) → HewVec* (bytes)
     auto encodeFuncType = builder.getFunctionType({msgType}, {ptrType});
     getOrCreateExternFunc(wireNames->encodeName, encodeFuncType);
-    auto bytesVec = builder.create<mlir::func::CallOp>(
-        location, wireNames->encodeName, mlir::TypeRange{ptrType},
-        mlir::ValueRange{msgVal}).getResult(0);
+    auto bytesVec = mlir::func::CallOp::create(builder, location, wireNames->encodeName,
+                                               mlir::TypeRange{ptrType}, mlir::ValueRange{msgVal})
+                        .getResult(0);
 
     // Cast actor ref to !llvm.ptr for runtime call
-    auto actorPtrCast = builder.create<hew::BitcastOp>(location, ptrType, actorVal).getResult();
+    auto actorPtrCast = hew::BitcastOp::create(builder, location, ptrType, actorVal).getResult();
 
     // Call hew_actor_send_wire(actor, msg_type=0, bytes)
     auto sendWireFuncType = builder.getFunctionType({ptrType, i32Type, ptrType}, {});
     getOrCreateExternFunc("hew_actor_send_wire", sendWireFuncType);
-    auto msgTypeVal = builder.create<mlir::arith::ConstantIntOp>(location, i32Type, 0);
-    builder.create<mlir::func::CallOp>(location, "hew_actor_send_wire", mlir::TypeRange{},
-                                       mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 0);
+    mlir::func::CallOp::create(builder, location, "hew_actor_send_wire", mlir::TypeRange{},
+                               mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
   } else {
     // Standard path: hew.actor_send with msg_type = 0
-    builder.create<hew::ActorSendOp>(location, actorVal, builder.getI32IntegerAttr(0),
-                                     mlir::ValueRange{msgVal});
+    hew::ActorSendOp::create(builder, location, actorVal, builder.getI32IntegerAttr(0),
+                             mlir::ValueRange{msgVal});
   }
 
   // Suppress sender-side Drop for the moved message variable.

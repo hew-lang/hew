@@ -106,7 +106,7 @@ mlir::func::FuncOp getOrInsertFuncDecl(mlir::ModuleOp module, mlir::OpBuilder &b
   auto savedIP = builder.saveInsertionPoint();
   builder.setInsertionPointToStart(module.getBody());
 
-  auto funcOp = builder.create<mlir::func::FuncOp>(builder.getUnknownLoc(), name, funcType);
+  auto funcOp = mlir::func::FuncOp::create(builder, builder.getUnknownLoc(), name, funcType);
   funcOp.setVisibility(mlir::SymbolTable::Visibility::Private);
 
   builder.restoreInsertionPoint(savedIP);
@@ -134,9 +134,9 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     // Use zero-extension for unsigned source types.
     if (inputType.isInteger(8) || inputType.isInteger(16)) {
       if (isUnsigned)
-        inputVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), inputVal);
+        inputVal = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), inputVal);
       else
-        inputVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), inputVal);
+        inputVal = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), inputVal);
       inputType = rewriter.getI32Type();
     }
 
@@ -160,7 +160,7 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     } else if (auto floatType = mlir::dyn_cast<mlir::FloatType>(inputType);
                floatType && floatType.getWidth() == 32) {
       // f32: Promote to f64 for printing
-      inputVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), inputVal);
+      inputVal = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), inputVal);
       funcName = newline ? "hew_println_f64" : "hew_print_f64";
       funcType = rewriter.getFunctionType({rewriter.getF64Type()}, {});
     } else if (inputType.isInteger(1)) {
@@ -175,8 +175,8 @@ struct PrintOpLowering : public mlir::OpConversionPattern<hew::PrintOp> {
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{inputVal});
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{inputVal});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -214,28 +214,28 @@ struct ConstantOpLowering : public mlir::OpConversionPattern<hew::ConstantOp> {
           auto i8Type = rewriter.getIntegerType(8);
           auto arrayType =
               mlir::LLVM::LLVMArrayType::get(i8Type, strValue.size() + 1); // +1 for null terminator
-          rewriter.create<mlir::LLVM::GlobalOp>(
-              loc, arrayType, /*isConstant=*/true, mlir::LLVM::Linkage::Internal, symName,
-              rewriter.getStringAttr(std::string(strValue) + '\0'));
+          mlir::LLVM::GlobalOp::create(rewriter, loc, arrayType, /*isConstant=*/true,
+                                       mlir::LLVM::Linkage::Internal, symName,
+                                       rewriter.getStringAttr(std::string(strValue) + '\0'));
           rewriter.restoreInsertionPoint(savedIP);
         }
       }
 
-      auto addrOp = rewriter.create<mlir::LLVM::AddressOfOp>(loc, ptrType, symName);
+      auto addrOp = mlir::LLVM::AddressOfOp::create(rewriter, loc, ptrType, symName);
       rewriter.replaceOp(op, addrOp.getResult());
       return mlir::success();
     }
 
     // Integer constant
     if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(value)) {
-      auto newOp = rewriter.create<mlir::arith::ConstantOp>(loc, intAttr);
+      auto newOp = mlir::arith::ConstantOp::create(rewriter, loc, intAttr);
       rewriter.replaceOp(op, newOp.getResult());
       return mlir::success();
     }
 
     // Float constant
     if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(value)) {
-      auto newOp = rewriter.create<mlir::arith::ConstantOp>(loc, floatAttr);
+      auto newOp = mlir::arith::ConstantOp::create(rewriter, loc, floatAttr);
       rewriter.replaceOp(op, newOp.getResult());
       return mlir::success();
     }
@@ -243,7 +243,7 @@ struct ConstantOpLowering : public mlir::OpConversionPattern<hew::ConstantOp> {
     // Bool constant (stored as IntegerAttr with i1 type)
     if (auto boolAttr = mlir::dyn_cast<mlir::BoolAttr>(value)) {
       auto intAttr = rewriter.getIntegerAttr(rewriter.getI1Type(), boolAttr.getValue() ? 1 : 0);
-      auto newOp = rewriter.create<mlir::arith::ConstantOp>(loc, intAttr);
+      auto newOp = mlir::arith::ConstantOp::create(rewriter, loc, intAttr);
       rewriter.replaceOp(op, newOp.getResult());
       return mlir::success();
     }
@@ -360,12 +360,13 @@ struct StructInitOpLowering : public mlir::OpConversionPattern<hew::StructInitOp
     auto structType = op.getResult().getType();
 
     // Start with an undef struct value
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, structType);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, structType);
 
     // Insert each field value
     auto fields = adaptor.getFields();
     for (auto [idx, fieldVal] : llvm::enumerate(fields)) {
-      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, fieldVal, idx);
+      result = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, result, fieldVal, llvm::ArrayRef<int64_t>{static_cast<int64_t>(idx)});
     }
 
     rewriter.replaceOp(op, result);
@@ -382,8 +383,9 @@ struct FieldGetOpLowering : public mlir::OpConversionPattern<hew::FieldGetOp> {
     auto loc = op.getLoc();
     auto fieldIndex = op.getFieldIndex();
 
-    auto result =
-        rewriter.create<mlir::LLVM::ExtractValueOp>(loc, adaptor.getStructVal(), fieldIndex);
+    auto result = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getStructVal(),
+        llvm::ArrayRef<int64_t>{static_cast<int64_t>(fieldIndex)});
 
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
@@ -399,8 +401,9 @@ struct FieldSetOpLowering : public mlir::OpConversionPattern<hew::FieldSetOp> {
     auto loc = op.getLoc();
     auto fieldIndex = op.getFieldIndex();
 
-    auto result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, adaptor.getStructVal(),
-                                                             adaptor.getValue(), fieldIndex);
+    auto result = mlir::LLVM::InsertValueOp::create(
+        rewriter, loc, adaptor.getStructVal(), adaptor.getValue(),
+        llvm::ArrayRef<int64_t>{static_cast<int64_t>(fieldIndex)});
 
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
@@ -419,10 +422,10 @@ static mlir::Value emitSizeOf(mlir::ConversionPatternRewriter &rewriter, mlir::L
   auto ptrType = mlir::LLVM::LLVMPointerType::get(ctx);
   auto module = rewriter.getInsertionBlock()->getParentOp()->getParentOfType<mlir::ModuleOp>();
   auto sizeType = getSizeType(ctx, module);
-  auto nullPtr = rewriter.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-  auto sizeGep = rewriter.create<mlir::LLVM::GEPOp>(loc, ptrType, structType, nullPtr,
-                                                    llvm::ArrayRef<mlir::LLVM::GEPArg>{1});
-  return rewriter.create<mlir::LLVM::PtrToIntOp>(loc, sizeType, sizeGep);
+  auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+  auto sizeGep = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, structType, nullPtr,
+                                           llvm::ArrayRef<mlir::LLVM::GEPArg>{1});
+  return mlir::LLVM::PtrToIntOp::create(rewriter, loc, sizeType, sizeGep);
 }
 
 /// Helper: allocate one element of `elemType` in the enclosing function entry
@@ -436,8 +439,8 @@ static mlir::Value emitEntryAlloca(mlir::ConversionPatternRewriter &rewriter, ml
                     : mlir::ModuleOp();
   auto sizeType = getSizeType(ctx, module);
   auto createAtCurrentIP = [&]() -> mlir::Value {
-    auto one = rewriter.create<mlir::arith::ConstantIntOp>(loc, sizeType, 1);
-    return rewriter.create<mlir::LLVM::AllocaOp>(loc, ptrType, elemType, one).getResult();
+    auto one = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 1);
+    return mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, elemType, one).getResult();
   };
 
   auto *insertionBlock = rewriter.getInsertionBlock();
@@ -470,20 +473,20 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
     if (mlir::isa<hew::StringRefType>(origType)) {
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "strdup", ft);
-      auto cloned = rewriter.create<mlir::func::CallOp>(loc, "strdup", mlir::TypeRange{ptrType},
-                                                        mlir::ValueRange{convArg});
+      auto cloned = mlir::func::CallOp::create(rewriter, loc, "strdup", mlir::TypeRange{ptrType},
+                                               mlir::ValueRange{convArg});
       result.push_back(cloned.getResult(0));
     } else if (mlir::isa<hew::VecType>(origType)) {
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_vec_clone", ft);
-      auto cloned = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_vec_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{convArg});
+      auto cloned = mlir::func::CallOp::create(rewriter, loc, "hew_vec_clone",
+                                               mlir::TypeRange{ptrType}, mlir::ValueRange{convArg});
       result.push_back(cloned.getResult(0));
     } else if (mlir::isa<hew::HashMapType>(origType)) {
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_clone_impl", ft);
-      auto cloned = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_clone_impl", mlir::TypeRange{ptrType}, mlir::ValueRange{convArg});
+      auto cloned = mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_clone_impl",
+                                               mlir::TypeRange{ptrType}, mlir::ValueRange{convArg});
       result.push_back(cloned.getResult(0));
     } else if (mlir::isa<hew::ClosureType>(origType)) {
       auto closureType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(convArg.getType());
@@ -491,15 +494,21 @@ deepCopyOwnedArgs(mlir::ConversionPatternRewriter &rewriter, mlir::Location loc,
         result.push_back(convArg);
         continue;
       }
-      auto fnPtr = rewriter.create<mlir::LLVM::ExtractValueOp>(loc, convArg, 0).getResult();
-      auto envPtr = rewriter.create<mlir::LLVM::ExtractValueOp>(loc, convArg, 1).getResult();
+      auto fnPtr = mlir::LLVM::ExtractValueOp::create(
+                       rewriter, loc, convArg, llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)})
+                       .getResult();
+      auto envPtr = mlir::LLVM::ExtractValueOp::create(
+                        rewriter, loc, convArg, llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)})
+                        .getResult();
       auto ft = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", ft);
-      auto clonedEnv = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
-      mlir::Value rebuilt = rewriter.create<mlir::LLVM::UndefOp>(loc, closureType);
-      rebuilt = rewriter.create<mlir::LLVM::InsertValueOp>(loc, rebuilt, fnPtr, 0);
-      rebuilt = rewriter.create<mlir::LLVM::InsertValueOp>(loc, rebuilt, clonedEnv.getResult(0), 1);
+      auto clonedEnv = mlir::func::CallOp::create(
+          rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType}, mlir::ValueRange{envPtr});
+      mlir::Value rebuilt = mlir::LLVM::UndefOp::create(rewriter, loc, closureType);
+      rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, fnPtr,
+                                                  llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+      rebuilt = mlir::LLVM::InsertValueOp::create(rewriter, loc, rebuilt, clonedEnv.getResult(0),
+                                                  llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
       result.push_back(rebuilt);
     } else {
       result.push_back(convArg);
@@ -518,15 +527,15 @@ static std::pair<mlir::Value, mlir::Value> emitPackArgs(mlir::ConversionPatternR
   auto sizeType = getSizeType(ctx, module);
 
   if (args.empty()) {
-    auto nullPtr = rewriter.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    auto zero = rewriter.create<mlir::arith::ConstantIntOp>(loc, sizeType, 0);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+    auto zero = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
     return {nullPtr, zero};
   }
 
   if (args.size() == 1) {
     auto argType = args[0].getType();
     auto alloca = emitEntryAlloca(rewriter, loc, argType);
-    rewriter.create<mlir::LLVM::StoreOp>(loc, args[0], alloca);
+    mlir::LLVM::StoreOp::create(rewriter, loc, args[0], alloca);
     auto dataSize = emitSizeOf(rewriter, loc, argType);
     return {alloca, dataSize};
   }
@@ -540,10 +549,10 @@ static std::pair<mlir::Value, mlir::Value> emitPackArgs(mlir::ConversionPatternR
   auto alloca = emitEntryAlloca(rewriter, loc, packType);
 
   for (auto [idx, val] : llvm::enumerate(args)) {
-    auto fieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-        loc, ptrType, packType, alloca,
-        llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(idx)});
-    rewriter.create<mlir::LLVM::StoreOp>(loc, val, fieldPtr);
+    auto fieldPtr =
+        mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, packType, alloca,
+                                  llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(idx)});
+    mlir::LLVM::StoreOp::create(rewriter, loc, val, fieldPtr);
   }
   auto dataSize = emitSizeOf(rewriter, loc, packType);
   return {alloca, dataSize};
@@ -578,17 +587,17 @@ struct EnumConstructOpLowering : public mlir::OpConversionPattern<hew::EnumConst
 
     // Unit variant on bare i32 enum (no struct wrapper)
     if (mlir::isa<mlir::IntegerType>(resultType)) {
-      auto tagVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, resultType, variantIdx);
+      auto tagVal = mlir::arith::ConstantIntOp::create(rewriter, loc, resultType, variantIdx);
       rewriter.replaceOp(op, tagVal.getResult());
       return mlir::success();
     }
 
     // Struct-based enum: undef + insertvalue(tag at 0) + insertvalue(payloads)
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, resultType);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, resultType);
     auto i32Type = rewriter.getI32Type();
-    auto tagVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, i32Type, variantIdx);
-    result =
-        rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, tagVal, llvm::ArrayRef<int64_t>{0});
+    auto tagVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, variantIdx);
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, tagVal,
+                                               llvm::ArrayRef<int64_t>{0});
 
     auto payloads = adaptor.getPayloads();
     auto positions = op.getPayloadPositions();
@@ -601,8 +610,8 @@ struct EnumConstructOpLowering : public mlir::OpConversionPattern<hew::EnumConst
       } else {
         pos = static_cast<int64_t>(i) + 1;
       }
-      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, payload,
-                                                          llvm::ArrayRef<int64_t>{pos});
+      result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, payload,
+                                                 llvm::ArrayRef<int64_t>{pos});
     }
     rewriter.replaceOp(op, result);
     return mlir::success();
@@ -624,7 +633,7 @@ struct EnumExtractTagOpLowering : public mlir::OpConversionPattern<hew::EnumExtr
       rewriter.replaceOp(op, enumVal);
     } else {
       auto tag =
-          rewriter.create<mlir::LLVM::ExtractValueOp>(loc, enumVal, llvm::ArrayRef<int64_t>{0});
+          mlir::LLVM::ExtractValueOp::create(rewriter, loc, enumVal, llvm::ArrayRef<int64_t>{0});
       rewriter.replaceOp(op, tag.getResult());
     }
     return mlir::success();
@@ -639,8 +648,8 @@ struct EnumExtractPayloadOpLowering : public mlir::OpConversionPattern<hew::Enum
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto fieldIdx = static_cast<int64_t>(op.getFieldIndex());
-    auto val = rewriter.create<mlir::LLVM::ExtractValueOp>(loc, adaptor.getEnumVal(),
-                                                           llvm::ArrayRef<int64_t>{fieldIdx});
+    auto val = mlir::LLVM::ExtractValueOp::create(rewriter, loc, adaptor.getEnumVal(),
+                                                  llvm::ArrayRef<int64_t>{fieldIdx});
     rewriter.replaceOp(op, val.getResult());
     return mlir::success();
   }
@@ -737,10 +746,10 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
     auto origInitArgs = op.getInitArgs();
     auto clonedInitArgs = deepCopyOwnedArgs(rewriter, loc, module, origInitArgs, initArgs);
     for (auto [idx, argVal] : llvm::enumerate(clonedInitArgs)) {
-      auto fieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, stateType, stateAlloca,
+      auto fieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, stateType, stateAlloca,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(idx)});
-      rewriter.create<mlir::LLVM::StoreOp>(loc, argVal, fieldPtr);
+      mlir::LLVM::StoreOp::create(rewriter, loc, argVal, fieldPtr);
     }
 
     // 2b. Call ActorName_init(state) if it exists in the module
@@ -749,8 +758,8 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       if (module.lookupSymbol<mlir::func::FuncOp>(initName)) {
         auto initFuncType = rewriter.getFunctionType({ptrType}, {});
         getOrInsertFuncDecl(module, rewriter, initName, initFuncType);
-        rewriter.create<mlir::func::CallOp>(loc, initName, mlir::TypeRange{},
-                                            mlir::ValueRange{stateAlloca});
+        mlir::func::CallOp::create(rewriter, loc, initName, mlir::TypeRange{},
+                                   mlir::ValueRange{stateAlloca});
       }
     }
 
@@ -767,10 +776,11 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
     // function is a func.func at this stage (FuncToLLVM hasn't run yet), but
     // hew_actor_spawn expects an !llvm.ptr. ReconcileUnrealizedCasts removes
     // the cast after FuncToLLVM converts func.func → llvm.func.
-    auto funcRef = rewriter.create<mlir::func::ConstantOp>(
-        loc, dispatchFuncType, mlir::SymbolRefAttr::get(rewriter.getContext(), dispatchName));
+    auto funcRef = mlir::func::ConstantOp::create(
+        rewriter, loc, dispatchFuncType,
+        mlir::SymbolRefAttr::get(rewriter.getContext(), dispatchName));
     auto dispatchPtr =
-        rewriter.create<mlir::UnrealizedConversionCastOp>(loc, ptrType, funcRef.getResult())
+        mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, funcRef.getResult())
             .getResult(0);
 
     // 5. Call runtime spawn
@@ -787,10 +797,10 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
 
       // Store fields into opts struct
       auto storeField = [&](unsigned idx, mlir::Value val) {
-        auto gep = rewriter.create<mlir::LLVM::GEPOp>(
-            loc, ptrType, optsStructType, optsAlloca,
+        auto gep = mlir::LLVM::GEPOp::create(
+            rewriter, loc, ptrType, optsStructType, optsAlloca,
             llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(idx)});
-        rewriter.create<mlir::LLVM::StoreOp>(loc, val, gep);
+        mlir::LLVM::StoreOp::create(rewriter, loc, val, gep);
       };
 
       // init_state (ptr)
@@ -800,8 +810,8 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       // dispatch (fn ptr)
       storeField(2, dispatchPtr);
       // mailbox_capacity (i32)
-      auto capVal = rewriter.create<mlir::arith::ConstantIntOp>(
-          loc, i32Type,
+      auto capVal = mlir::arith::ConstantIntOp::create(
+          rewriter, loc, i32Type,
           op.getMailboxCapacity().has_value()
               ? static_cast<int64_t>(op.getMailboxCapacity().value())
               : -1LL);
@@ -809,16 +819,17 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       // overflow policy (i32) — map from spec encoding to runtime enum
       // Runtime: 0=DropNew, 1=DropOld, 2=Block, 3=Fail, 4=Coalesce
       int32_t runtimeOverflow = 4; // Coalesce (we only get here for coalesce)
-      auto overflowVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, i32Type, runtimeOverflow);
+      auto overflowVal =
+          mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, runtimeOverflow);
       storeField(4, overflowVal);
       // coalesce_key_fn (fn ptr)
       auto keyFnName = op.getCoalesceKeyFn().value();
       auto keyFnFuncType = rewriter.getFunctionType({i32Type, ptrType, sizeType}, {sizeType});
       getOrInsertFuncDecl(module, rewriter, keyFnName, keyFnFuncType);
-      auto keyFuncRef = rewriter.create<mlir::func::ConstantOp>(
-          loc, keyFnFuncType, mlir::SymbolRefAttr::get(rewriter.getContext(), keyFnName));
+      auto keyFuncRef = mlir::func::ConstantOp::create(
+          rewriter, loc, keyFnFuncType, mlir::SymbolRefAttr::get(rewriter.getContext(), keyFnName));
       auto keyFnPtr =
-          rewriter.create<mlir::UnrealizedConversionCastOp>(loc, ptrType, keyFuncRef.getResult())
+          mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, keyFuncRef.getResult())
               .getResult(0);
       storeField(5, keyFnPtr);
       // coalesce_fallback (i32)
@@ -849,33 +860,35 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
           break; // DropNew
         }
       }
-      auto fallbackVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, i32Type, runtimeFallback);
+      auto fallbackVal =
+          mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, runtimeFallback);
       storeField(6, fallbackVal);
       // budget (i32) — 0 = default
-      auto budgetVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, i32Type, 0);
+      auto budgetVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, 0);
       storeField(7, budgetVal);
 
       auto spawnOptsFuncType = rewriter.getFunctionType({ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_actor_spawn_opts", spawnOptsFuncType);
-      auto call = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_actor_spawn_opts", mlir::TypeRange{ptrType}, mlir::ValueRange{optsAlloca});
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, "hew_actor_spawn_opts",
+                                     mlir::TypeRange{ptrType}, mlir::ValueRange{optsAlloca});
       result = call.getResult(0);
     } else if (op.getMailboxCapacity().has_value()) {
       auto spawnFuncType =
           rewriter.getFunctionType({ptrType, sizeType, ptrType, i32Type}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_actor_spawn_bounded", spawnFuncType);
-      auto capVal = rewriter.create<mlir::arith::ConstantIntOp>(
-          loc, i32Type, static_cast<int64_t>(op.getMailboxCapacity().value()));
+      auto capVal = mlir::arith::ConstantIntOp::create(
+          rewriter, loc, i32Type, static_cast<int64_t>(op.getMailboxCapacity().value()));
       llvm::SmallVector<mlir::Value, 4> spawnArgs = {stateAlloca, stateSize, dispatchPtr, capVal};
-      auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_actor_spawn_bounded",
-                                                      mlir::TypeRange{ptrType}, spawnArgs);
+      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_actor_spawn_bounded",
+                                             mlir::TypeRange{ptrType}, spawnArgs);
       result = call.getResult(0);
     } else {
       auto spawnFuncType = rewriter.getFunctionType({ptrType, sizeType, ptrType}, {ptrType});
       getOrInsertFuncDecl(module, rewriter, "hew_actor_spawn", spawnFuncType);
       llvm::SmallVector<mlir::Value, 3> spawnArgs = {stateAlloca, stateSize, dispatchPtr};
-      auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_actor_spawn",
-                                                      mlir::TypeRange{ptrType}, spawnArgs);
+      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_actor_spawn",
+                                             mlir::TypeRange{ptrType}, spawnArgs);
       result = call.getResult(0);
     }
 
@@ -898,8 +911,8 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
     auto sizeType = getSizeType(ctx, module);
 
     auto targetVal = adaptor.getTarget();
-    auto msgTypeVal = rewriter.create<mlir::arith::ConstantIntOp>(
-        loc, i32Type, static_cast<int64_t>(op.getMsgType()));
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
+                                                         static_cast<int64_t>(op.getMsgType()));
 
     // Deep-copy owned values (strings, vecs) so the receiver gets
     // independent copies that survive the sender's scope-exit drops.
@@ -908,8 +921,8 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
 
     auto sendFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_send", sendFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_actor_send", mlir::TypeRange{},
-                                        mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_send", mlir::TypeRange{},
+                               mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -930,8 +943,8 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto sizeType = getSizeType(ctx, module);
 
     auto targetVal = adaptor.getTarget();
-    auto msgTypeVal = rewriter.create<mlir::arith::ConstantIntOp>(
-        loc, i32Type, static_cast<int64_t>(op.getMsgType()));
+    auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
+                                                         static_cast<int64_t>(op.getMsgType()));
 
     // Deep-copy owned values (strings, vecs) for the same reason as actor_send.
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
@@ -940,9 +953,9 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     // Phase 1: blocking ask — hew_actor_ask returns void*
     auto askFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_ask", askFuncType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_actor_ask", mlir::TypeRange{ptrType},
-        mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
     auto replyPtr = call.getResult(0);
 
     // Load the result from the reply pointer — always load as ptr since
@@ -950,26 +963,26 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto resultType = op.getResult().getType();
     mlir::Value resultVal;
     if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, replyPtr);
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
       resultVal = loaded.getResult();
     } else if (resultType == i32Type || resultType == rewriter.getI64Type() ||
                llvm::isa<mlir::IntegerType>(resultType) || llvm::isa<mlir::FloatType>(resultType) ||
                llvm::isa<mlir::LLVM::LLVMStructType>(resultType)) {
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, resultType, replyPtr);
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, replyPtr);
       resultVal = loaded.getResult();
     } else {
       // Custom types (e.g., !hew.string_ref): load as ptr, then cast
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, replyPtr);
-      resultVal = rewriter
-                      .create<mlir::UnrealizedConversionCastOp>(
-                          loc, resultType, mlir::ValueRange{loaded.getResult()})
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
+      resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, resultType,
+                                                           mlir::ValueRange{loaded.getResult()})
                       .getResult(0);
     }
 
     // Free the malloc'd reply buffer (allocated by hew_reply, returned by hew_actor_ask)
     auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "free", mlir::TypeRange{}, mlir::ValueRange{replyPtr});
+    mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                               mlir::ValueRange{replyPtr});
 
     rewriter.replaceOp(op, resultVal);
     return mlir::success();
@@ -988,8 +1001,8 @@ struct ActorStopOpLowering : public mlir::OpConversionPattern<hew::ActorStopOp> 
 
     auto stopFuncType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_stop", stopFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_actor_stop", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTarget()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_stop", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTarget()});
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -1008,8 +1021,8 @@ struct ActorCloseOpLowering : public mlir::OpConversionPattern<hew::ActorCloseOp
 
     auto closeFuncType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_close", closeFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_actor_close", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTarget()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_close", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTarget()});
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -1028,8 +1041,8 @@ struct ActorSelfOpLowering : public mlir::OpConversionPattern<hew::ActorSelfOp> 
 
     auto funcType = rewriter.getFunctionType({}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_self", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_actor_self", mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_actor_self",
+                                           mlir::TypeRange{ptrType}, mlir::ValueRange{});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -1047,9 +1060,8 @@ struct ActorLinkOpLowering : public mlir::OpConversionPattern<hew::ActorLinkOp> 
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_link", funcType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_actor_link", mlir::TypeRange{},
-        mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_link", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1067,9 +1079,8 @@ struct ActorUnlinkOpLowering : public mlir::OpConversionPattern<hew::ActorUnlink
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_unlink", funcType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_actor_unlink", mlir::TypeRange{},
-        mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_unlink", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1088,9 +1099,9 @@ struct ActorMonitorOpLowering : public mlir::OpConversionPattern<hew::ActorMonit
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i64Type});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_monitor", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_actor_monitor", mlir::TypeRange{i64Type},
-        mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_actor_monitor", mlir::TypeRange{i64Type},
+                                   mlir::ValueRange{adaptor.getSelfRef(), adaptor.getTarget()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -1108,8 +1119,8 @@ struct ActorDemonitorOpLowering : public mlir::OpConversionPattern<hew::ActorDem
 
     auto funcType = rewriter.getFunctionType({i64Type}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_demonitor", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_actor_demonitor", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getMonitorRef()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_demonitor", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getMonitorRef()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1126,8 +1137,8 @@ struct CooperateOpLowering : public mlir::OpConversionPattern<hew::CooperateOp> 
 
     auto funcType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_cooperate", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_actor_cooperate", mlir::TypeRange{},
-                                        mlir::ValueRange{});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_cooperate", mlir::TypeRange{},
+                               mlir::ValueRange{});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1149,14 +1160,14 @@ struct SleepOpLowering : public mlir::OpConversionPattern<hew::SleepOp> {
     mlir::Value msVal = adaptor.getDurationMs();
     if (msVal.getType().isInteger(64)) {
       auto i64Type = rewriter.getI64Type();
-      auto maxI32 = rewriter.create<mlir::arith::ConstantIntOp>(loc, i64Type, (int64_t)INT32_MAX);
-      auto cmp =
-          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::sgt, msVal, maxI32);
-      msVal = rewriter.create<mlir::arith::SelectOp>(loc, cmp, maxI32, msVal);
-      msVal = rewriter.create<mlir::arith::TruncIOp>(loc, i32Type, msVal);
+      auto maxI32 = mlir::arith::ConstantIntOp::create(rewriter, loc, i64Type, (int64_t)INT32_MAX);
+      auto cmp = mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::sgt, msVal,
+                                             maxI32);
+      msVal = mlir::arith::SelectOp::create(rewriter, loc, cmp, maxI32, msVal);
+      msVal = mlir::arith::TruncIOp::create(rewriter, loc, i32Type, msVal);
     }
-    rewriter.create<mlir::func::CallOp>(loc, "hew_sleep_ms", mlir::TypeRange{},
-                                        mlir::ValueRange{msVal});
+    mlir::func::CallOp::create(rewriter, loc, "hew_sleep_ms", mlir::TypeRange{},
+                               mlir::ValueRange{msVal});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1173,7 +1184,7 @@ struct PanicOpLowering : public mlir::OpConversionPattern<hew::PanicOp> {
 
     auto funcType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_panic", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
+    mlir::func::CallOp::create(rewriter, loc, "hew_panic", mlir::TypeRange{}, mlir::ValueRange{});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1195,18 +1206,18 @@ struct AssertOpLowering : public mlir::OpConversionPattern<hew::AssertOp> {
     mlir::Value cond = adaptor.getCondition();
     auto condType = cond.getType();
     if (condType.isInteger(1)) {
-      cond = rewriter.create<mlir::arith::ExtUIOp>(loc, i64Type, cond);
+      cond = mlir::arith::ExtUIOp::create(rewriter, loc, i64Type, cond);
     } else if (condType.isInteger(8) || condType.isInteger(16)) {
-      cond = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, cond);
+      cond = mlir::arith::ExtSIOp::create(rewriter, loc, i64Type, cond);
     } else if (condType.isInteger(32)) {
-      cond = rewriter.create<mlir::arith::ExtSIOp>(loc, i64Type, cond);
+      cond = mlir::arith::ExtSIOp::create(rewriter, loc, i64Type, cond);
     }
     // else: already i64 (or compatible), pass through
 
     auto funcType = rewriter.getFunctionType({i64Type}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_assert", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_assert", mlir::TypeRange{},
-                                        mlir::ValueRange{cond});
+    mlir::func::CallOp::create(rewriter, loc, "hew_assert", mlir::TypeRange{},
+                               mlir::ValueRange{cond});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1233,8 +1244,8 @@ struct AssertEqOpLowering : public mlir::OpConversionPattern<hew::AssertEqOp> {
       funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(1)) {
       funcName = "hew_assert_eq_bool";
-      left = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), left);
-      right = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), right);
+      left = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), left);
+      right = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI32Type(), rewriter.getI32Type()}, {});
     } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(leftType)) {
       // Covers both !hew.string_ref (already converted to !llvm.ptr)
@@ -1243,18 +1254,18 @@ struct AssertEqOpLowering : public mlir::OpConversionPattern<hew::AssertEqOp> {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
       funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
     } else if (leftType.isInteger(8) || leftType.isInteger(16)) {
-      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
-      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      left = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), left);
+      right = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
     } else if (leftType.isF32()) {
       funcName = "hew_assert_eq_f64";
-      left = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), left);
-      right = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), right);
+      left = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), left);
+      right = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(32)) {
       // Widen i32 to i64
-      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
-      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      left = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), left);
+      right = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
     } else if (leftType.isInteger(64) || mlir::isa<mlir::IndexType>(leftType)) {
       // i64 or index: pass through directly
@@ -1264,8 +1275,8 @@ struct AssertEqOpLowering : public mlir::OpConversionPattern<hew::AssertEqOp> {
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{left, right});
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{left, right});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1292,25 +1303,25 @@ struct AssertNeOpLowering : public mlir::OpConversionPattern<hew::AssertNeOp> {
       funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(1)) {
       funcName = "hew_assert_ne_bool";
-      left = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), left);
-      right = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), right);
+      left = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), left);
+      right = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI32Type(), rewriter.getI32Type()}, {});
     } else if (mlir::isa<mlir::LLVM::LLVMPointerType>(leftType)) {
       funcName = "hew_assert_ne_str";
       auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
       funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
     } else if (leftType.isInteger(8) || leftType.isInteger(16)) {
-      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
-      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      left = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), left);
+      right = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
     } else if (leftType.isF32()) {
       funcName = "hew_assert_ne_f64";
-      left = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), left);
-      right = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), right);
+      left = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), left);
+      right = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getF64Type(), rewriter.getF64Type()}, {});
     } else if (leftType.isInteger(32)) {
-      left = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), left);
-      right = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), right);
+      left = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), left);
+      right = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), right);
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
     } else if (leftType.isInteger(64) || mlir::isa<mlir::IndexType>(leftType)) {
       funcType = rewriter.getFunctionType({rewriter.getI64Type(), rewriter.getI64Type()}, {});
@@ -1319,8 +1330,8 @@ struct AssertNeOpLowering : public mlir::OpConversionPattern<hew::AssertNeOp> {
     }
 
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{left, right});
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{left, right});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1341,8 +1352,8 @@ struct SupervisorNewOpLowering : public mlir::OpConversionPattern<hew::Superviso
 
     auto funcType = rewriter.getFunctionType({i32Type, i32Type, i32Type}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_supervisor_new", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_supervisor_new", mlir::TypeRange{ptrType},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_supervisor_new", mlir::TypeRange{ptrType},
         mlir::ValueRange{adaptor.getStrategy(), adaptor.getMaxRestarts(), adaptor.getWindowSecs()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
@@ -1363,8 +1374,8 @@ struct SupervisorStartOpLowering : public mlir::OpConversionPattern<hew::Supervi
     auto funcType = rewriter.getFunctionType({ptrType}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_supervisor_start", funcType);
     auto call =
-        rewriter.create<mlir::func::CallOp>(loc, "hew_supervisor_start", mlir::TypeRange{i32Type},
-                                            mlir::ValueRange{adaptor.getSupervisor()});
+        mlir::func::CallOp::create(rewriter, loc, "hew_supervisor_start", mlir::TypeRange{i32Type},
+                                   mlir::ValueRange{adaptor.getSupervisor()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -1382,8 +1393,8 @@ struct SupervisorStopOpLowering : public mlir::OpConversionPattern<hew::Supervis
 
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_supervisor_stop", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_supervisor_stop", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getSupervisor()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_supervisor_stop", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getSupervisor()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -1402,8 +1413,8 @@ struct SupervisorAddChildOpLowering : public mlir::OpConversionPattern<hew::Supe
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_supervisor_add_child_spec", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_supervisor_add_child_spec", mlir::TypeRange{i32Type},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_supervisor_add_child_spec", mlir::TypeRange{i32Type},
         mlir::ValueRange{adaptor.getSupervisor(), adaptor.getSpec()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
@@ -1437,9 +1448,9 @@ struct ChildSpecCreateOpLowering : public mlir::OpConversionPattern<hew::ChildSp
                             adaptor.getRestartPolicy(), adaptor.getMailboxCapacity(),
                             adaptor.getOverflowPolicy()};
     for (int i = 0; i < 7; ++i) {
-      auto gep = rewriter.create<mlir::LLVM::GEPOp>(loc, ptrType, structType, alloca,
-                                                    llvm::ArrayRef<mlir::LLVM::GEPArg>{0, i});
-      rewriter.create<mlir::LLVM::StoreOp>(loc, fields[i], gep);
+      auto gep = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, structType, alloca,
+                                           llvm::ArrayRef<mlir::LLVM::GEPArg>{0, i});
+      mlir::LLVM::StoreOp::create(rewriter, loc, fields[i], gep);
     }
 
     rewriter.replaceOp(op, alloca);
@@ -1463,8 +1474,8 @@ struct SupervisorAddChildSupervisorOpLowering
     auto funcType = rewriter.getFunctionType({ptrType, ptrType, ptrType}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_supervisor_add_child_supervisor_with_init",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_supervisor_add_child_supervisor_with_init", mlir::TypeRange{i32Type},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_supervisor_add_child_supervisor_with_init", mlir::TypeRange{i32Type},
         mlir::ValueRange{adaptor.getParent(), adaptor.getChild(), adaptor.getInitFn()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
@@ -1506,11 +1517,11 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
 
       // Create condition: msg_type == idx
       auto msgIdx =
-          rewriter.create<mlir::arith::ConstantIntOp>(loc, i32Type, static_cast<int64_t>(idx));
-      auto cond = rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::eq,
-                                                       msgTypeVal, msgIdx);
+          mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type, static_cast<int64_t>(idx));
+      auto cond = mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::eq,
+                                              msgTypeVal, msgIdx);
 
-      auto ifOp = rewriter.create<mlir::scf::IfOp>(loc, cond, /*withElseRegion=*/false);
+      auto ifOp = mlir::scf::IfOp::create(rewriter, loc, cond, /*withElseRegion=*/false);
       rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
 
       // Build call args: first arg is state pointer
@@ -1528,7 +1539,7 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         if (numMsgParams == 1) {
           // Single param: data points directly to the value
           auto paramType = handlerType.getInput(1);
-          auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, paramType, dataVal);
+          auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, paramType, dataVal);
           callArgs.push_back(loaded);
         } else {
           // Multiple params: data points to a packed struct
@@ -1538,10 +1549,10 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
           }
           auto packType = mlir::LLVM::LLVMStructType::getLiteral(rewriter.getContext(), fieldTypes);
 
-          auto packed = rewriter.create<mlir::LLVM::LoadOp>(loc, packType, dataVal);
+          auto packed = mlir::LLVM::LoadOp::create(rewriter, loc, packType, dataVal);
           for (unsigned pi = 0; pi < fieldTypes.size(); ++pi) {
-            auto field = rewriter.create<mlir::LLVM::ExtractValueOp>(
-                loc, packed, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi)});
+            auto field = mlir::LLVM::ExtractValueOp::create(
+                rewriter, loc, packed, llvm::ArrayRef<int64_t>{static_cast<int64_t>(pi)});
             callArgs.push_back(field);
           }
         }
@@ -1553,15 +1564,15 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
       bool hasReturnType = handlerType.getNumResults() > 0;
       if (hasReturnType) {
         // Call handler and capture return value
-        auto callOp = rewriter.create<mlir::func::CallOp>(loc, handlerName,
-                                                          handlerType.getResults(), callArgs);
+        auto callOp = mlir::func::CallOp::create(rewriter, loc, handlerName,
+                                                 handlerType.getResults(), callArgs);
         auto resultVal = callOp.getResult(0);
         auto resultType = resultVal.getType();
 
         // Compute expected data size for the handler's parameters
         mlir::Value expectedSize;
         if (numHandlerArgs <= 1) {
-          expectedSize = rewriter.create<mlir::arith::ConstantIntOp>(loc, sizeType, 0);
+          expectedSize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
         } else {
           auto numMsgParams = numHandlerArgs - 1;
           if (numMsgParams == 1) {
@@ -1576,37 +1587,37 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
         }
 
         // Check if data_size > expectedSize → reply channel is present
-        auto hasReply = rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::ugt,
-                                                             dataSizeVal, expectedSize);
+        auto hasReply = mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::ugt,
+                                                    dataSizeVal, expectedSize);
 
-        auto replyIfOp = rewriter.create<mlir::scf::IfOp>(loc, hasReply, /*withElseRegion=*/false);
+        auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
         rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
 
         // Extract reply channel pointer from end of data:
         // offset = data_size - sizeof(ptr)
         auto ptrSizeVal = emitSizeOf(rewriter, loc, ptrType);
-        auto offset = rewriter.create<mlir::arith::SubIOp>(loc, dataSizeVal, ptrSizeVal);
+        auto offset = mlir::arith::SubIOp::create(rewriter, loc, dataSizeVal, ptrSizeVal);
         auto i8Type = rewriter.getI8Type();
-        auto replyChanAddr = rewriter.create<mlir::LLVM::GEPOp>(loc, ptrType, i8Type, dataVal,
-                                                                mlir::ValueRange{offset});
-        auto replyChan = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, replyChanAddr);
+        auto replyChanAddr = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, i8Type, dataVal,
+                                                       mlir::ValueRange{offset});
+        auto replyChan = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyChanAddr);
 
         // Store result value to a temp alloca so we can pass its address
-        auto one = rewriter.create<mlir::arith::ConstantIntOp>(loc, sizeType, 1);
-        auto resultAlloca = rewriter.create<mlir::LLVM::AllocaOp>(loc, ptrType, resultType, one);
-        rewriter.create<mlir::LLVM::StoreOp>(loc, resultVal, resultAlloca);
+        auto one = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 1);
+        auto resultAlloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, resultType, one);
+        mlir::LLVM::StoreOp::create(rewriter, loc, resultVal, resultAlloca);
 
         // Call hew_reply(ch, &result, sizeof(result))
         auto resultSize = emitSizeOf(rewriter, loc, resultType);
         auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
         getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
-        rewriter.create<mlir::func::CallOp>(loc, "hew_reply", mlir::TypeRange{},
-                                            mlir::ValueRange{replyChan, resultAlloca, resultSize});
+        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
+                                   mlir::ValueRange{replyChan, resultAlloca, resultSize});
 
         rewriter.setInsertionPointAfter(replyIfOp);
       } else {
         // Void handler — fire-and-forget (original behavior)
-        rewriter.create<mlir::func::CallOp>(loc, handlerName, mlir::TypeRange{}, callArgs);
+        mlir::func::CallOp::create(rewriter, loc, handlerName, mlir::TypeRange{}, callArgs);
       }
 
       rewriter.setInsertionPointAfter(ifOp);
@@ -1717,19 +1728,19 @@ struct VecNewOpLowering : public mlir::OpConversionPattern<hew::VecNewOp> {
       if (elemSize == 0)
         elemSize = 8;
       auto i64Type = rewriter.getI64Type();
-      auto sizeVal = rewriter.create<mlir::LLVM::ConstantOp>(
-          loc, i64Type, rewriter.getI64IntegerAttr(static_cast<int64_t>(elemSize)));
+      auto sizeVal = mlir::LLVM::ConstantOp::create(
+          rewriter, loc, i64Type, rewriter.getI64IntegerAttr(static_cast<int64_t>(elemSize)));
       auto funcType = rewriter.getFunctionType({i64Type}, {ptrType});
       getOrInsertFuncDecl(mod, rewriter, "hew_vec_new_with_elem_size", funcType);
-      auto call = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_vec_new_with_elem_size", mlir::TypeRange{ptrType}, mlir::ValueRange{sizeVal});
+      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_vec_new_with_elem_size",
+                                             mlir::TypeRange{ptrType}, mlir::ValueRange{sizeVal});
       rewriter.replaceOp(op, call.getResults());
     } else {
       std::string funcName = "hew_vec_new" + suffix;
       auto funcType = rewriter.getFunctionType({}, {ptrType});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-      auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{ptrType},
-                                                      mlir::ValueRange{});
+      auto call = mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{ptrType},
+                                             mlir::ValueRange{});
       rewriter.replaceOp(op, call.getResults());
     }
     return mlir::success();
@@ -1751,15 +1762,15 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
 
     if (suffix == "_generic") {
       // For struct elements: alloca + store + pass pointer to push_generic
-      auto one = rewriter.create<mlir::LLVM::ConstantOp>(loc, rewriter.getI64Type(),
-                                                         rewriter.getI64IntegerAttr(1));
-      auto alloca = rewriter.create<mlir::LLVM::AllocaOp>(loc, ptrType, valType, one);
-      rewriter.create<mlir::LLVM::StoreOp>(loc, adaptor.getValue(), alloca);
+      auto one = mlir::LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
+                                                rewriter.getI64IntegerAttr(1));
+      auto alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, valType, one);
+      mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getValue(), alloca);
       auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_push_generic",
                           funcType);
-      rewriter.create<mlir::func::CallOp>(loc, "hew_vec_push_generic", mlir::TypeRange{},
-                                          mlir::ValueRange{adaptor.getVec(), alloca});
+      mlir::func::CallOp::create(rewriter, loc, "hew_vec_push_generic", mlir::TypeRange{},
+                                 mlir::ValueRange{adaptor.getVec(), alloca});
     } else if ((suffix == "_i64" || suffix == "_i32" || suffix == "_f64") &&
                isNative64(op->getParentOfType<mlir::ModuleOp>())) {
       auto i64Type = rewriter.getI64Type();
@@ -1768,16 +1779,16 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
 
       // Promote f32 to f64 for Vec storage (runtime uses f64 slots)
       if (suffix == "_f64" && valType.isF32()) {
-        value = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), value);
+        value = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), value);
         valType = rewriter.getF64Type();
       }
 
       // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
       if (suffix == "_i32" && valType != rewriter.getI32Type()) {
         if (valType.isInteger(1) || valType.isInteger(8))
-          value = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), value);
+          value = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), value);
         else
-          value = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), value);
+          value = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), value);
         valType = rewriter.getI32Type();
       }
 
@@ -1785,49 +1796,49 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
 
       // Load len (field 1) and cap (field 2)
-      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto lenFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
-      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+      auto len = mlir::LLVM::LoadOp::create(rewriter, loc, i64Type, lenFieldPtr);
 
-      auto capFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto capFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(2)});
-      auto cap = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, capFieldPtr);
+      auto cap = mlir::LLVM::LoadOp::create(rewriter, loc, i64Type, capFieldPtr);
 
       // needs_grow = len >= cap
       auto needsGrow =
-          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, len, cap);
+          mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::uge, len, cap);
 
       // Declare the runtime push function for the slow path
       std::string funcName = "hew_vec_push" + suffix;
       auto funcType = rewriter.getFunctionType({ptrType, valType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
 
-      rewriter.create<mlir::scf::IfOp>(
-          loc, needsGrow,
+      mlir::scf::IfOp::create(
+          rewriter, loc, needsGrow,
           // Then: slow path — call runtime to grow and push
           [&](mlir::OpBuilder &b, mlir::Location l) {
-            b.create<mlir::func::CallOp>(l, funcName, mlir::TypeRange{},
-                                         mlir::ValueRange{vecPtr, value});
-            b.create<mlir::scf::YieldOp>(l);
+            mlir::func::CallOp::create(b, l, funcName, mlir::TypeRange{},
+                                       mlir::ValueRange{vecPtr, value});
+            mlir::scf::YieldOp::create(b, l);
           },
           // Else: fast path — store directly at data[len], bump len
           [&](mlir::OpBuilder &b, mlir::Location l) {
-            auto dataFieldPtr = b.create<mlir::LLVM::GEPOp>(
-                l, ptrType, vecStructType, vecPtr,
+            auto dataFieldPtr = mlir::LLVM::GEPOp::create(
+                b, l, ptrType, vecStructType, vecPtr,
                 llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
-            auto dataPtr = b.create<mlir::LLVM::LoadOp>(l, ptrType, dataFieldPtr);
+            auto dataPtr = mlir::LLVM::LoadOp::create(b, l, ptrType, dataFieldPtr);
 
-            auto elemPtr = b.create<mlir::LLVM::GEPOp>(
-                l, ptrType, valType, dataPtr,
+            auto elemPtr = mlir::LLVM::GEPOp::create(
+                b, l, ptrType, valType, dataPtr,
                 mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(len)});
-            b.create<mlir::LLVM::StoreOp>(l, value, elemPtr);
+            mlir::LLVM::StoreOp::create(b, l, value, elemPtr);
 
-            auto one = b.create<mlir::LLVM::ConstantOp>(l, i64Type, b.getI64IntegerAttr(1));
-            auto newLen = b.create<mlir::arith::AddIOp>(l, len, one);
-            b.create<mlir::LLVM::StoreOp>(l, newLen, lenFieldPtr);
-            b.create<mlir::scf::YieldOp>(l);
+            auto one = mlir::LLVM::ConstantOp::create(b, l, i64Type, b.getI64IntegerAttr(1));
+            auto newLen = mlir::arith::AddIOp::create(b, l, len, one);
+            mlir::LLVM::StoreOp::create(b, l, newLen, lenFieldPtr);
+            mlir::scf::YieldOp::create(b, l);
           });
     } else {
       std::string funcName = "hew_vec_push" + suffix;
@@ -1835,19 +1846,19 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
       auto pushType = valType;
       // Promote f32→f64 or widen narrow ints for runtime call
       if (suffix == "_f64" && valType.isF32()) {
-        pushVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), pushVal);
+        pushVal = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), pushVal);
         pushType = rewriter.getF64Type();
       } else if (suffix == "_i32" && !valType.isInteger(32)) {
         if (valType.isInteger(1) || valType.isInteger(8))
-          pushVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), pushVal);
+          pushVal = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), pushVal);
         else
-          pushVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), pushVal);
+          pushVal = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), pushVal);
         pushType = rewriter.getI32Type();
       }
       auto funcType = rewriter.getFunctionType({ptrType, pushType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-      rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                          mlir::ValueRange{adaptor.getVec(), pushVal});
+      mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                                 mlir::ValueRange{adaptor.getVec(), pushVal});
     }
     rewriter.eraseOp(op);
     return mlir::success();
@@ -1881,14 +1892,14 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
 
       // Load len field (struct field index 1)
-      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto lenFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
-      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+      auto len = mlir::LLVM::LoadOp::create(rewriter, loc, i64Type, lenFieldPtr);
 
       // Bounds check: if index >= len, call abort
       auto oob =
-          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index, len);
+          mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::uge, index, len);
 
       // Declare the OOB abort function
       auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
@@ -1896,20 +1907,20 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
                           abortFuncType);
 
       // Use scf.if for the bounds check (abort terminates; yield is for IR validity)
-      rewriter.create<mlir::scf::IfOp>(
-          loc, oob,
+      mlir::scf::IfOp::create(
+          rewriter, loc, oob,
           [&](mlir::OpBuilder &b, mlir::Location l) {
-            b.create<mlir::func::CallOp>(l, "hew_vec_abort_oob", mlir::TypeRange{},
-                                         mlir::ValueRange{index, len});
-            b.create<mlir::scf::YieldOp>(l);
+            mlir::func::CallOp::create(b, l, "hew_vec_abort_oob", mlir::TypeRange{},
+                                       mlir::ValueRange{index, len});
+            mlir::scf::YieldOp::create(b, l);
           },
           nullptr);
 
       // Load data pointer (struct field 0) and GEP to element
-      auto dataFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto dataFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
-      auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
+      auto dataPtr = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, dataFieldPtr);
 
       // GEP to element and load (use f64 stride for f32, i32 stride for narrow int types)
       mlir::Type elemStorageType = resultType;
@@ -1917,15 +1928,15 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
         elemStorageType = rewriter.getF64Type();
       else if (suffix == "_i32" && !resultType.isInteger(32))
         elemStorageType = rewriter.getI32Type();
-      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, elemStorageType, dataPtr,
-          mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, elemStorageType, elemPtr);
+      auto elemPtr =
+          mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, elemStorageType, dataPtr,
+                                    mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, elemStorageType, elemPtr);
       mlir::Value result = loaded.getResult();
       if (suffix == "_f64" && resultType.isF32())
-        result = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, result);
+        result = mlir::arith::TruncFOp::create(rewriter, loc, resultType, result);
       else if (elemStorageType != resultType)
-        result = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, result);
+        result = mlir::arith::TruncIOp::create(rewriter, loc, resultType, result);
       rewriter.replaceOp(op, result);
     } else if (suffix == "_generic") {
       // For struct elements: get returns a pointer, then load the struct
@@ -1933,10 +1944,10 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
       auto funcType = rewriter.getFunctionType({ptrType, idxType}, {ptrType});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_get_generic",
                           funcType);
-      auto call = rewriter.create<mlir::func::CallOp>(
-          loc, "hew_vec_get_generic", mlir::TypeRange{ptrType},
-          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, resultType, call.getResult(0));
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, "hew_vec_get_generic", mlir::TypeRange{ptrType},
+                                     mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, call.getResult(0));
       rewriter.replaceOp(op, loaded.getResult());
     } else {
       std::string funcName = "hew_vec_get" + suffix;
@@ -1948,15 +1959,15 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
         callResultType = rewriter.getI32Type();
       auto funcType = rewriter.getFunctionType({ptrType, idxType}, {callResultType});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-      auto call = rewriter.create<mlir::func::CallOp>(
-          loc, funcName, mlir::TypeRange{callResultType},
-          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{callResultType},
+                                     mlir::ValueRange{adaptor.getVec(), adaptor.getIndex()});
       mlir::Value getResult = call.getResult(0);
       if (callResultType != resultType) {
         if (callResultType.isF64() && resultType.isF32())
-          getResult = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, getResult);
+          getResult = mlir::arith::TruncFOp::create(rewriter, loc, resultType, getResult);
         else
-          getResult = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, getResult);
+          getResult = mlir::arith::TruncIOp::create(rewriter, loc, resultType, getResult);
       }
       rewriter.replaceOp(op, getResult);
     }
@@ -1987,16 +1998,16 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
 
       // Promote f32 to f64 for Vec storage (runtime uses f64 slots)
       if (suffix == "_f64" && valType.isF32()) {
-        value = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), value);
+        value = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), value);
         valType = rewriter.getF64Type();
       }
 
       // Widen narrow int types (i1/i8/i16) to i32 for correct GEP stride
       if (suffix == "_i32" && valType != rewriter.getI32Type()) {
         if (valType.isInteger(1) || valType.isInteger(8))
-          value = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), value);
+          value = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), value);
         else
-          value = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), value);
+          value = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), value);
         valType = rewriter.getI32Type();
       }
 
@@ -2004,71 +2015,69 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
 
       // Load len field (struct field 1)
-      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto lenFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
-      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+      auto len = mlir::LLVM::LoadOp::create(rewriter, loc, i64Type, lenFieldPtr);
 
       // Bounds check using scf.if (stays in structured control flow)
       auto oob =
-          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index, len);
+          mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::uge, index, len);
 
       auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_abort_oob",
                           abortFuncType);
 
-      rewriter.create<mlir::scf::IfOp>(
-          loc, oob,
+      mlir::scf::IfOp::create(
+          rewriter, loc, oob,
           [&](mlir::OpBuilder &b, mlir::Location l) {
-            b.create<mlir::func::CallOp>(l, "hew_vec_abort_oob", mlir::TypeRange{},
-                                         mlir::ValueRange{index, len});
-            b.create<mlir::scf::YieldOp>(l);
+            mlir::func::CallOp::create(b, l, "hew_vec_abort_oob", mlir::TypeRange{},
+                                       mlir::ValueRange{index, len});
+            mlir::scf::YieldOp::create(b, l);
           },
           nullptr);
 
       // Store value at element
-      auto dataFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, vecPtr,
+      auto dataFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, vecPtr,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(0)});
-      auto dataPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, dataFieldPtr);
+      auto dataPtr = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, dataFieldPtr);
 
-      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, valType, dataPtr,
-          mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
-      rewriter.create<mlir::LLVM::StoreOp>(loc, value, elemPtr);
+      auto elemPtr =
+          mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, valType, dataPtr,
+                                    mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index)});
+      mlir::LLVM::StoreOp::create(rewriter, loc, value, elemPtr);
     } else if (suffix == "_generic") {
       // For struct elements: alloca + store + pass pointer to set_generic
-      auto one = rewriter.create<mlir::LLVM::ConstantOp>(loc, rewriter.getI64Type(),
-                                                         rewriter.getI64IntegerAttr(1));
-      auto alloca = rewriter.create<mlir::LLVM::AllocaOp>(loc, ptrType, valType, one);
-      rewriter.create<mlir::LLVM::StoreOp>(loc, adaptor.getValue(), alloca);
+      auto one = mlir::LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
+                                                rewriter.getI64IntegerAttr(1));
+      auto alloca = mlir::LLVM::AllocaOp::create(rewriter, loc, ptrType, valType, one);
+      mlir::LLVM::StoreOp::create(rewriter, loc, adaptor.getValue(), alloca);
       auto idxType = adaptor.getIndex().getType();
       auto funcType = rewriter.getFunctionType({ptrType, idxType, ptrType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_set_generic",
                           funcType);
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_vec_set_generic", mlir::TypeRange{},
-          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), alloca});
+      mlir::func::CallOp::create(rewriter, loc, "hew_vec_set_generic", mlir::TypeRange{},
+                                 mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), alloca});
     } else {
       std::string funcName = "hew_vec_set" + suffix;
       auto idxType = adaptor.getIndex().getType();
       auto setVal = adaptor.getValue();
       auto setType = valType;
       if (suffix == "_f64" && valType.isF32()) {
-        setVal = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), setVal);
+        setVal = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), setVal);
         setType = rewriter.getF64Type();
       } else if (suffix == "_i32" && !valType.isInteger(32)) {
         if (valType.isInteger(1) || valType.isInteger(8))
-          setVal = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), setVal);
+          setVal = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), setVal);
         else
-          setVal = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), setVal);
+          setVal = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), setVal);
         setType = rewriter.getI32Type();
       }
       auto funcType = rewriter.getFunctionType({ptrType, idxType, setType}, {});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-      rewriter.create<mlir::func::CallOp>(
-          loc, funcName, mlir::TypeRange{},
-          mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), setVal});
+      mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                                 mlir::ValueRange{adaptor.getVec(), adaptor.getIndex(), setVal});
     }
     rewriter.eraseOp(op);
     return mlir::success();
@@ -2089,17 +2098,17 @@ struct VecLenOpLowering : public mlir::OpConversionPattern<hew::VecLenOp> {
       // HewVec layout (repr(C), 64-bit): { ptr, i64, i64, i64, i32 }
       auto vecStructType = mlir::LLVM::LLVMStructType::getLiteral(
           op.getContext(), {ptrType, i64Type, i64Type, i64Type, rewriter.getI32Type()});
-      auto lenFieldPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, vecStructType, adaptor.getVec(),
+      auto lenFieldPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, vecStructType, adaptor.getVec(),
           llvm::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(0), mlir::LLVM::GEPArg(1)});
-      auto len = rewriter.create<mlir::LLVM::LoadOp>(loc, i64Type, lenFieldPtr);
+      auto len = mlir::LLVM::LoadOp::create(rewriter, loc, i64Type, lenFieldPtr);
       rewriter.replaceOp(op, len.getResult());
     } else {
       // WASM: call runtime function (struct layout differs on 32-bit)
       auto funcType = rewriter.getFunctionType({ptrType}, {i64Type});
       getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_len", funcType);
-      auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_vec_len", mlir::TypeRange{i64Type},
-                                                      mlir::ValueRange{adaptor.getVec()});
+      auto call = mlir::func::CallOp::create(rewriter, loc, "hew_vec_len", mlir::TypeRange{i64Type},
+                                             mlir::ValueRange{adaptor.getVec()});
       rewriter.replaceOp(op, call.getResults());
     }
     return mlir::success();
@@ -2127,14 +2136,14 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
       callResultType = rewriter.getI32Type();
     auto funcType = rewriter.getFunctionType({ptrType}, {callResultType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{callResultType},
-                                                    mlir::ValueRange{adaptor.getVec()});
+    auto call = mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{callResultType},
+                                           mlir::ValueRange{adaptor.getVec()});
     mlir::Value popResult = call.getResult(0);
     if (callResultType != resultType) {
       if (callResultType.isF64() && resultType.isF32())
-        popResult = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, popResult);
+        popResult = mlir::arith::TruncFOp::create(rewriter, loc, resultType, popResult);
       else
-        popResult = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, popResult);
+        popResult = mlir::arith::TruncIOp::create(rewriter, loc, resultType, popResult);
     }
     rewriter.replaceOp(op, popResult);
     return mlir::success();
@@ -2162,22 +2171,22 @@ struct VecRemoveOpLowering : public mlir::OpConversionPattern<hew::VecRemoveOp> 
       if (w < 32) {
         callType = rewriter.getI32Type();
         if (w == 1 || w == 8)
-          val = rewriter.create<mlir::arith::ExtUIOp>(loc, callType, val);
+          val = mlir::arith::ExtUIOp::create(rewriter, loc, callType, val);
         else
-          val = rewriter.create<mlir::arith::ExtSIOp>(loc, callType, val);
+          val = mlir::arith::ExtSIOp::create(rewriter, loc, callType, val);
       }
     } else if (auto fTy = mlir::dyn_cast<mlir::FloatType>(valType)) {
       if (fTy.getWidth() == 32) {
         callType = rewriter.getF64Type();
-        val = rewriter.create<mlir::arith::ExtFOp>(loc, callType, val);
+        val = mlir::arith::ExtFOp::create(rewriter, loc, callType, val);
       }
     }
 
     std::string funcName = "hew_vec_remove" + suffix;
     auto funcType = rewriter.getFunctionType({ptrType, callType}, {});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-    rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getVec(), val});
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getVec(), val});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2194,8 +2203,9 @@ struct VecIsEmptyOpLowering : public mlir::OpConversionPattern<hew::VecIsEmptyOp
     auto funcType = rewriter.getFunctionType({ptrType}, {i1Type});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_is_empty",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_vec_is_empty", mlir::TypeRange{i1Type}, mlir::ValueRange{adaptor.getVec()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_vec_is_empty", mlir::TypeRange{i1Type},
+                                   mlir::ValueRange{adaptor.getVec()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2210,8 +2220,8 @@ struct VecClearOpLowering : public mlir::OpConversionPattern<hew::VecClearOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_clear", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_vec_clear", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getVec()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_vec_clear", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getVec()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2226,8 +2236,8 @@ struct VecFreeOpLowering : public mlir::OpConversionPattern<hew::VecFreeOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_vec_free", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_vec_free", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getVec()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_vec_free", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getVec()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2245,8 +2255,8 @@ struct HashMapNewOpLowering : public mlir::OpConversionPattern<hew::HashMapNewOp
     auto funcType = rewriter.getFunctionType({}, {ptrType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_new_impl",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_hashmap_new_impl",
-                                                    mlir::TypeRange{ptrType}, mlir::ValueRange{});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_new_impl",
+                                           mlir::TypeRange{ptrType}, mlir::ValueRange{});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2270,32 +2280,31 @@ struct HashMapInsertOpLowering : public mlir::OpConversionPattern<hew::HashMapIn
       // hew_hashmap_insert_i64(map, key, val)
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, i64Type}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_i64", funcType);
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_insert_i64", mlir::TypeRange{},
+      mlir::func::CallOp::create(
+          rewriter, loc, "hew_hashmap_insert_i64", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), adaptor.getValue()});
     } else if (valType == f64Type) {
       // hew_hashmap_insert_f64(map, key, val)
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, f64Type}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_f64", funcType);
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
+      mlir::func::CallOp::create(
+          rewriter, loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), adaptor.getValue()});
     } else if (auto fTy = mlir::dyn_cast<mlir::FloatType>(valType); fTy && fTy.getWidth() == 32) {
       // f32 → promote to f64, then insert_f64
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, f64Type}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_f64", funcType);
-      auto promoted = rewriter.create<mlir::arith::ExtFOp>(loc, f64Type, adaptor.getValue());
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
-          mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), promoted});
+      auto promoted = mlir::arith::ExtFOp::create(rewriter, loc, f64Type, adaptor.getValue());
+      mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_insert_f64", mlir::TypeRange{},
+                                 mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), promoted});
     } else if (valType == ptrType) {
       // String value: hew_hashmap_insert_impl(map, key, 0, val_str)
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, i32Type, ptrType}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_impl", funcType);
       auto zero =
-          rewriter.create<mlir::arith::ConstantOp>(loc, i32Type, rewriter.getI32IntegerAttr(0));
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
+          mlir::arith::ConstantOp::create(rewriter, loc, i32Type, rewriter.getI32IntegerAttr(0));
+      mlir::func::CallOp::create(
+          rewriter, loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), zero, adaptor.getValue()});
     } else {
       // Integer types (i32, i1, i8, i16): promote to i32 then use insert_impl
@@ -2303,16 +2312,16 @@ struct HashMapInsertOpLowering : public mlir::OpConversionPattern<hew::HashMapIn
       if (auto intTy = mlir::dyn_cast<mlir::IntegerType>(valType)) {
         if (intTy.getWidth() < 32) {
           if (intTy.getWidth() == 1 || intTy.getWidth() == 8)
-            val = rewriter.create<mlir::arith::ExtUIOp>(loc, i32Type, val);
+            val = mlir::arith::ExtUIOp::create(rewriter, loc, i32Type, val);
           else
-            val = rewriter.create<mlir::arith::ExtSIOp>(loc, i32Type, val);
+            val = mlir::arith::ExtSIOp::create(rewriter, loc, i32Type, val);
         }
       }
       auto funcType = rewriter.getFunctionType({ptrType, ptrType, i32Type, ptrType}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_hashmap_insert_impl", funcType);
-      auto nullStr = rewriter.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-      rewriter.create<mlir::func::CallOp>(
-          loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
+      auto nullStr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+      mlir::func::CallOp::create(
+          rewriter, loc, "hew_hashmap_insert_impl", mlir::TypeRange{},
           mlir::ValueRange{adaptor.getMap(), adaptor.getKey(), val, nullStr});
     }
 
@@ -2360,16 +2369,15 @@ struct HashMapGetOpLowering : public mlir::OpConversionPattern<hew::HashMapGetOp
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {callReturnType});
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    auto call =
-        rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{callReturnType},
-                                            mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
+    auto call = mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{callReturnType},
+                                           mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
 
     if (callReturnType != resultType) {
       mlir::Value result = call.getResult(0);
       if (mlir::isa<mlir::FloatType>(resultType)) {
-        result = rewriter.create<mlir::arith::TruncFOp>(loc, resultType, result);
+        result = mlir::arith::TruncFOp::create(rewriter, loc, resultType, result);
       } else {
-        result = rewriter.create<mlir::arith::TruncIOp>(loc, resultType, result);
+        result = mlir::arith::TruncIOp::create(rewriter, loc, resultType, result);
       }
       rewriter.replaceOp(op, result);
     } else {
@@ -2391,9 +2399,9 @@ struct HashMapContainsKeyOpLowering : public mlir::OpConversionPattern<hew::Hash
     auto funcType = rewriter.getFunctionType({ptrType, keyType}, {i1Type});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_contains_key",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_hashmap_contains_key", mlir::TypeRange{i1Type},
-        mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_contains_key",
+                                           mlir::TypeRange{i1Type},
+                                           mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -2411,8 +2419,8 @@ struct HashMapRemoveOpLowering : public mlir::OpConversionPattern<hew::HashMapRe
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i1Type});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_remove",
                         funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_hashmap_remove", mlir::TypeRange{i1Type},
-                                        mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_remove", mlir::TypeRange{i1Type},
+                               mlir::ValueRange{adaptor.getMap(), adaptor.getKey()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2429,8 +2437,9 @@ struct HashMapLenOpLowering : public mlir::OpConversionPattern<hew::HashMapLenOp
     auto funcType = rewriter.getFunctionType({ptrType}, {resultType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_len",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_hashmap_len", mlir::TypeRange{resultType}, mlir::ValueRange{adaptor.getMap()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_len", mlir::TypeRange{resultType},
+                                   mlir::ValueRange{adaptor.getMap()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2446,8 +2455,8 @@ struct HashMapFreeOpLowering : public mlir::OpConversionPattern<hew::HashMapFree
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_free_impl",
                         funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_hashmap_free_impl", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getMap()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_free_impl", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getMap()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2463,8 +2472,9 @@ struct HashMapKeysOpLowering : public mlir::OpConversionPattern<hew::HashMapKeys
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_hashmap_keys",
                         funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_hashmap_keys", mlir::TypeRange{ptrType}, mlir::ValueRange{adaptor.getMap()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_hashmap_keys", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getMap()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2485,8 +2495,8 @@ struct GenCtxCreateOpLowering : public mlir::OpConversionPattern<hew::GenCtxCrea
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_gen_ctx_create", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_gen_ctx_create", mlir::TypeRange{ptrType},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_gen_ctx_create", mlir::TypeRange{ptrType},
         mlir::ValueRange{adaptor.getBodyFn(), adaptor.getArgsPtr(), adaptor.getArgsSize()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
@@ -2505,9 +2515,9 @@ struct GenNextOpLowering : public mlir::OpConversionPattern<hew::GenNextOp> {
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_gen_next", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_gen_next", mlir::TypeRange{ptrType},
-        mlir::ValueRange{adaptor.getCtx(), adaptor.getOutSizePtr()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_gen_next", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getCtx(), adaptor.getOutSizePtr()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2527,8 +2537,8 @@ struct GenYieldOpLowering : public mlir::OpConversionPattern<hew::GenYieldOp> {
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {i1Type});
     getOrInsertFuncDecl(module, rewriter, "hew_gen_yield", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_gen_yield", mlir::TypeRange{i1Type},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_gen_yield", mlir::TypeRange{i1Type},
         mlir::ValueRange{adaptor.getCtx(), adaptor.getValuePtr(), adaptor.getValueSize()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
@@ -2547,8 +2557,8 @@ struct GenFreeOpLowering : public mlir::OpConversionPattern<hew::GenFreeOp> {
 
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_gen_free", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_gen_free", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getCtx()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_gen_free", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getCtx()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2564,12 +2574,12 @@ struct GenWrapValueOpLowering : public mlir::OpConversionPattern<hew::GenWrapVal
     auto wrapperType = op.getResult().getType();
     auto i8Type = rewriter.getI8Type();
 
-    auto undef = rewriter.create<mlir::LLVM::UndefOp>(loc, wrapperType);
-    auto oneI8 = rewriter.create<mlir::arith::ConstantIntOp>(loc, i8Type, 1);
+    auto undef = mlir::LLVM::UndefOp::create(rewriter, loc, wrapperType);
+    auto oneI8 = mlir::arith::ConstantIntOp::create(rewriter, loc, i8Type, 1);
     auto withTag =
-        rewriter.create<mlir::LLVM::InsertValueOp>(loc, undef, oneI8, llvm::ArrayRef<int64_t>{0});
-    auto withVal = rewriter.create<mlir::LLVM::InsertValueOp>(loc, withTag, adaptor.getValue(),
-                                                              llvm::ArrayRef<int64_t>{1});
+        mlir::LLVM::InsertValueOp::create(rewriter, loc, undef, oneI8, llvm::ArrayRef<int64_t>{0});
+    auto withVal = mlir::LLVM::InsertValueOp::create(rewriter, loc, withTag, adaptor.getValue(),
+                                                     llvm::ArrayRef<int64_t>{1});
     rewriter.replaceOp(op, withVal.getResult());
     return mlir::success();
   }
@@ -2591,25 +2601,25 @@ struct GenWrapDoneOpLowering : public mlir::OpConversionPattern<hew::GenWrapDone
       return mlir::failure();
     auto valueType = structType.getBody()[1];
 
-    auto undef = rewriter.create<mlir::LLVM::UndefOp>(loc, wrapperType);
-    auto zeroI8 = rewriter.create<mlir::arith::ConstantIntOp>(loc, i8Type, 0);
+    auto undef = mlir::LLVM::UndefOp::create(rewriter, loc, wrapperType);
+    auto zeroI8 = mlir::arith::ConstantIntOp::create(rewriter, loc, i8Type, 0);
     auto withTag =
-        rewriter.create<mlir::LLVM::InsertValueOp>(loc, undef, zeroI8, llvm::ArrayRef<int64_t>{0});
+        mlir::LLVM::InsertValueOp::create(rewriter, loc, undef, zeroI8, llvm::ArrayRef<int64_t>{0});
 
     // Create a zero/default value for the value slot
     mlir::Value defaultVal;
     if (mlir::isa<mlir::IntegerType>(valueType))
-      defaultVal = rewriter.create<mlir::arith::ConstantIntOp>(loc, valueType, 0);
+      defaultVal = mlir::arith::ConstantIntOp::create(rewriter, loc, valueType, 0);
     else if (mlir::isa<mlir::FloatType>(valueType))
       defaultVal =
-          rewriter.create<mlir::arith::ConstantOp>(loc, rewriter.getFloatAttr(valueType, 0.0));
+          mlir::arith::ConstantOp::create(rewriter, loc, rewriter.getFloatAttr(valueType, 0.0));
     else if (mlir::isa<mlir::LLVM::LLVMPointerType>(valueType))
-      defaultVal = rewriter.create<mlir::LLVM::ZeroOp>(loc, valueType);
+      defaultVal = mlir::LLVM::ZeroOp::create(rewriter, loc, valueType);
     else
-      defaultVal = rewriter.create<mlir::LLVM::UndefOp>(loc, valueType);
+      defaultVal = mlir::LLVM::UndefOp::create(rewriter, loc, valueType);
 
-    auto withVal = rewriter.create<mlir::LLVM::InsertValueOp>(loc, withTag, defaultVal,
-                                                              llvm::ArrayRef<int64_t>{1});
+    auto withVal = mlir::LLVM::InsertValueOp::create(rewriter, loc, withTag, defaultVal,
+                                                     llvm::ArrayRef<int64_t>{1});
     rewriter.replaceOp(op, withVal.getResult());
     return mlir::success();
   }
@@ -2627,8 +2637,8 @@ struct RegexNewOpLowering : public mlir::OpConversionPattern<hew::RegexNewOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_regex_new", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_regex_new", mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{adaptor.getPattern()});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_regex_new", mlir::TypeRange{ptrType},
+                                           mlir::ValueRange{adaptor.getPattern()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2645,9 +2655,9 @@ struct RegexIsMatchOpLowering : public mlir::OpConversionPattern<hew::RegexIsMat
     auto i1Type = rewriter.getI1Type();
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {i1Type});
     getOrInsertFuncDecl(module, rewriter, "hew_regex_is_match", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_regex_is_match", mlir::TypeRange{i1Type},
-        mlir::ValueRange{adaptor.getRegex(), adaptor.getText()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_regex_is_match", mlir::TypeRange{i1Type},
+                                   mlir::ValueRange{adaptor.getRegex(), adaptor.getText()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2663,9 +2673,9 @@ struct RegexFindOpLowering : public mlir::OpConversionPattern<hew::RegexFindOp> 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType, ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_regex_find", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_regex_find", mlir::TypeRange{ptrType},
-        mlir::ValueRange{adaptor.getRegex(), adaptor.getText()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_regex_find", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getRegex(), adaptor.getText()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2681,8 +2691,8 @@ struct RegexReplaceOpLowering : public mlir::OpConversionPattern<hew::RegexRepla
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType, ptrType, ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_regex_replace", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_regex_replace", mlir::TypeRange{ptrType},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_regex_replace", mlir::TypeRange{ptrType},
         mlir::ValueRange{adaptor.getRegex(), adaptor.getText(), adaptor.getReplacement()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
@@ -2699,8 +2709,8 @@ struct RegexFreeOpLowering : public mlir::OpConversionPattern<hew::RegexFreeOp> 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_regex_free", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_regex_free", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getRegex()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_regex_free", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getRegex()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2717,8 +2727,8 @@ struct SchedInitOpLowering : public mlir::OpConversionPattern<hew::SchedInitOp> 
     auto module = op->getParentOfType<mlir::ModuleOp>();
     auto funcType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_sched_init", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_sched_init", mlir::TypeRange{},
-                                        mlir::ValueRange{});
+    mlir::func::CallOp::create(rewriter, loc, "hew_sched_init", mlir::TypeRange{},
+                               mlir::ValueRange{});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2733,12 +2743,12 @@ struct SchedShutdownOpLowering : public mlir::OpConversionPattern<hew::SchedShut
     auto module = op->getParentOfType<mlir::ModuleOp>();
     auto funcType = rewriter.getFunctionType({}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_sched_shutdown", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_sched_shutdown", mlir::TypeRange{},
-                                        mlir::ValueRange{});
+    mlir::func::CallOp::create(rewriter, loc, "hew_sched_shutdown", mlir::TypeRange{},
+                               mlir::ValueRange{});
     // After scheduler shutdown (workers joined), clean up remaining actors.
     getOrInsertFuncDecl(module, rewriter, "hew_runtime_cleanup", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_runtime_cleanup", mlir::TypeRange{},
-                                        mlir::ValueRange{});
+    mlir::func::CallOp::create(rewriter, loc, "hew_runtime_cleanup", mlir::TypeRange{},
+                               mlir::ValueRange{});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2757,8 +2767,9 @@ struct ArenaMallocOpLowering : public mlir::OpConversionPattern<hew::ArenaMalloc
     auto sizeType = getSizeType(rewriter.getContext(), module);
     auto funcType = rewriter.getFunctionType({sizeType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_arena_malloc", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_arena_malloc", mlir::TypeRange{ptrType}, mlir::ValueRange{adaptor.getSize()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_arena_malloc", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getSize()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2777,8 +2788,8 @@ struct RcNewOpLowering : public mlir::OpConversionPattern<hew::RcNewOp> {
     auto sizeType = getSizeType(rewriter.getContext(), module);
     auto funcType = rewriter.getFunctionType({ptrType, sizeType, ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_rc_new", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_rc_new", mlir::TypeRange{ptrType},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_rc_new", mlir::TypeRange{ptrType},
         mlir::ValueRange{adaptor.getData(), adaptor.getSize(), adaptor.getDropFn()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
@@ -2795,8 +2806,8 @@ struct RcCloneOpLowering : public mlir::OpConversionPattern<hew::RcCloneOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_rc_clone", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_rc_clone", mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{adaptor.getPtr()});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_rc_clone", mlir::TypeRange{ptrType},
+                                           mlir::ValueRange{adaptor.getPtr()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -2812,8 +2823,8 @@ struct RcDropOpLowering : public mlir::OpConversionPattern<hew::RcDropOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_rc_drop", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_rc_drop", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getPtr()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_rc_drop", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getPtr()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2832,8 +2843,8 @@ struct DropOpLowering : public mlir::OpConversionPattern<hew::DropOp> {
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     auto funcName = op.getDropFn().str();
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getValue()});
+    mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getValue()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -2853,12 +2864,12 @@ struct ScopeCreateOpLowering : public mlir::OpConversionPattern<hew::ScopeCreate
 
     auto scopeFuncType = rewriter.getFunctionType({}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_scope_create", scopeFuncType);
-    auto actorScope = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_scope_create", mlir::TypeRange{ptrType}, mlir::ValueRange{});
+    auto actorScope = mlir::func::CallOp::create(rewriter, loc, "hew_scope_create",
+                                                 mlir::TypeRange{ptrType}, mlir::ValueRange{});
 
     getOrInsertFuncDecl(module, rewriter, "hew_task_scope_new", scopeFuncType);
-    auto taskScope = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_scope_new", mlir::TypeRange{ptrType}, mlir::ValueRange{});
+    auto taskScope = mlir::func::CallOp::create(rewriter, loc, "hew_task_scope_new",
+                                                mlir::TypeRange{ptrType}, mlir::ValueRange{});
 
     rewriter.replaceOp(op, {actorScope.getResult(0), taskScope.getResult(0)});
     return mlir::success();
@@ -2877,12 +2888,12 @@ struct ScopeJoinOpLowering : public mlir::OpConversionPattern<hew::ScopeJoinOp> 
 
     auto voidPtrFuncType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_scope_join_all", voidPtrFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_task_scope_join_all", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTaskScope()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_scope_join_all", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTaskScope()});
 
     getOrInsertFuncDecl(module, rewriter, "hew_scope_wait_all", voidPtrFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_scope_wait_all", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getActorScope()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_scope_wait_all", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getActorScope()});
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -2901,12 +2912,12 @@ struct ScopeDestroyOpLowering : public mlir::OpConversionPattern<hew::ScopeDestr
 
     auto voidPtrFuncType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_scope_destroy", voidPtrFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_task_scope_destroy", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTaskScope()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_scope_destroy", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTaskScope()});
 
     getOrInsertFuncDecl(module, rewriter, "hew_scope_free", voidPtrFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_scope_free", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getActorScope()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_scope_free", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getActorScope()});
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -2927,27 +2938,25 @@ struct ScopeLaunchOpLowering : public mlir::OpConversionPattern<hew::ScopeLaunch
     // hew_task_new() -> ptr
     auto taskNewFuncType = rewriter.getFunctionType({}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_task_new", taskNewFuncType);
-    auto taskPtr = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_new", mlir::TypeRange{ptrType}, mlir::ValueRange{});
+    auto taskPtr = mlir::func::CallOp::create(rewriter, loc, "hew_task_new",
+                                              mlir::TypeRange{ptrType}, mlir::ValueRange{});
 
     // hew_task_scope_spawn(scope, task) -> void
     auto spawnFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_scope_spawn", spawnFuncType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_scope_spawn", mlir::TypeRange{},
-        mlir::ValueRange{adaptor.getTaskScope(), taskPtr.getResult(0)});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_scope_spawn", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTaskScope(), taskPtr.getResult(0)});
 
     // hew_task_set_env(task, env_ptr) -> void
     auto setEnvFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_set_env", setEnvFuncType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_set_env", mlir::TypeRange{},
-        mlir::ValueRange{taskPtr.getResult(0), adaptor.getEnvPtr()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_set_env", mlir::TypeRange{},
+                               mlir::ValueRange{taskPtr.getResult(0), adaptor.getEnvPtr()});
 
     // hew_task_spawn_thread(task, fn_ptr) -> void
     getOrInsertFuncDecl(module, rewriter, "hew_task_spawn_thread", spawnFuncType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_task_spawn_thread", mlir::TypeRange{},
-                                        mlir::ValueRange{taskPtr.getResult(0), adaptor.getFnPtr()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_spawn_thread", mlir::TypeRange{},
+                               mlir::ValueRange{taskPtr.getResult(0), adaptor.getFnPtr()});
 
     rewriter.replaceOp(op, taskPtr.getResult(0));
     return mlir::success();
@@ -2966,9 +2975,9 @@ struct ScopeAwaitOpLowering : public mlir::OpConversionPattern<hew::ScopeAwaitOp
 
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_task_await_blocking", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_task_await_blocking",
-                                                    mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{adaptor.getTask()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_task_await_blocking",
+                                   mlir::TypeRange{ptrType}, mlir::ValueRange{adaptor.getTask()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -2986,8 +2995,8 @@ struct ScopeCancelOpLowering : public mlir::OpConversionPattern<hew::ScopeCancel
 
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_scope_cancel", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_task_scope_cancel", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTaskScope()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_scope_cancel", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTaskScope()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -3004,8 +3013,9 @@ struct TaskGetEnvOpLowering : public mlir::OpConversionPattern<hew::TaskGetEnvOp
 
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_task_get_env", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_get_env", mlir::TypeRange{ptrType}, mlir::ValueRange{adaptor.getTask()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_task_get_env", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getTask()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -3024,8 +3034,8 @@ struct TaskSetResultOpLowering : public mlir::OpConversionPattern<hew::TaskSetRe
 
     auto funcType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_set_result", funcType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_task_set_result", mlir::TypeRange{},
+    mlir::func::CallOp::create(
+        rewriter, loc, "hew_task_set_result", mlir::TypeRange{},
         mlir::ValueRange{adaptor.getTask(), adaptor.getResultPtr(), adaptor.getSize()});
     rewriter.eraseOp(op);
     return mlir::success();
@@ -3044,8 +3054,8 @@ struct TaskCompleteOpLowering : public mlir::OpConversionPattern<hew::TaskComple
 
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_task_complete_threaded", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_task_complete_threaded", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getTask()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_task_complete_threaded", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getTask()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -3065,8 +3075,8 @@ struct SelectCreateOpLowering : public mlir::OpConversionPattern<hew::SelectCrea
 
     auto funcType = rewriter.getFunctionType({}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_reply_channel_new", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_reply_channel_new",
-                                                    mlir::TypeRange{ptrType}, mlir::ValueRange{});
+    auto call = mlir::func::CallOp::create(rewriter, loc, "hew_reply_channel_new",
+                                           mlir::TypeRange{ptrType}, mlir::ValueRange{});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -3086,10 +3096,10 @@ struct SelectAddOpLowering : public mlir::OpConversionPattern<hew::SelectAddOp> 
 
     auto funcType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType, ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_ask_with_channel", funcType);
-    rewriter.create<mlir::func::CallOp>(
-        loc, "hew_actor_ask_with_channel", mlir::TypeRange{},
-        mlir::ValueRange{adaptor.getActor(), adaptor.getMsgType(), adaptor.getDataPtr(),
-                         adaptor.getDataSize(), adaptor.getChannel()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask_with_channel", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getActor(), adaptor.getMsgType(),
+                                                adaptor.getDataPtr(), adaptor.getDataSize(),
+                                                adaptor.getChannel()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -3108,8 +3118,8 @@ struct SelectFirstOpLowering : public mlir::OpConversionPattern<hew::SelectFirst
 
     auto funcType = rewriter.getFunctionType({ptrType, i32Type, i32Type}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_select_first", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(
-        loc, "hew_select_first", mlir::TypeRange{i32Type},
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_select_first", mlir::TypeRange{i32Type},
         mlir::ValueRange{adaptor.getChannels(), adaptor.getCount(), adaptor.getTimeoutMs()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
@@ -3128,8 +3138,8 @@ struct SelectDestroyOpLowering : public mlir::OpConversionPattern<hew::SelectDes
 
     auto funcType = rewriter.getFunctionType({ptrType}, {});
     getOrInsertFuncDecl(module, rewriter, "hew_reply_channel_free", funcType);
-    rewriter.create<mlir::func::CallOp>(loc, "hew_reply_channel_free", mlir::TypeRange{},
-                                        mlir::ValueRange{adaptor.getChannel()});
+    mlir::func::CallOp::create(rewriter, loc, "hew_reply_channel_free", mlir::TypeRange{},
+                               mlir::ValueRange{adaptor.getChannel()});
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -3147,8 +3157,9 @@ struct SelectWaitOpLowering : public mlir::OpConversionPattern<hew::SelectWaitOp
 
     auto funcType = rewriter.getFunctionType({ptrType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_reply_wait", funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, "hew_reply_wait", mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{adaptor.getChannel()});
+    auto call =
+        mlir::func::CallOp::create(rewriter, loc, "hew_reply_wait", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getChannel()});
     rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
@@ -3175,7 +3186,7 @@ struct RuntimeCallOpLowering : public mlir::OpConversionPattern<hew::RuntimeCall
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, callee.str(), funcType);
     auto call =
-        rewriter.create<mlir::func::CallOp>(loc, callee, resultTypes, adaptor.getOperands());
+        mlir::func::CallOp::create(rewriter, loc, callee, resultTypes, adaptor.getOperands());
 
     if (resultTypes.empty())
       rewriter.eraseOp(op);
@@ -3210,11 +3221,11 @@ struct TraitDispatchOpLowering : public mlir::OpConversionPattern<hew::TraitDisp
 
     // GEP into vtable to get function pointer at method_index
     auto i32Type = rewriter.getI32Type();
-    auto indexVal = rewriter.create<mlir::LLVM::ConstantOp>(
-        loc, i32Type, rewriter.getI32IntegerAttr(static_cast<int32_t>(methodIndex)));
-    auto funcPtrPtr = rewriter.create<mlir::LLVM::GEPOp>(loc, ptrType, ptrType, vtablePtr,
-                                                         mlir::ValueRange{indexVal});
-    auto funcPtr = rewriter.create<mlir::LLVM::LoadOp>(loc, ptrType, funcPtrPtr);
+    auto indexVal = mlir::LLVM::ConstantOp::create(
+        rewriter, loc, i32Type, rewriter.getI32IntegerAttr(static_cast<int32_t>(methodIndex)));
+    auto funcPtrPtr = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, ptrType, vtablePtr,
+                                                mlir::ValueRange{indexVal});
+    auto funcPtr = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, funcPtrPtr);
 
     // Build call args: data_ptr + extra args
     llvm::SmallVector<mlir::Value> callArgs = {dataPtr};
@@ -3231,11 +3242,11 @@ struct TraitDispatchOpLowering : public mlir::OpConversionPattern<hew::TraitDisp
 
     // Cast loaded function pointer to function type for func.call_indirect
     auto callable =
-        rewriter.create<mlir::UnrealizedConversionCastOp>(loc, callFuncType, funcPtr.getResult())
+        mlir::UnrealizedConversionCastOp::create(rewriter, loc, callFuncType, funcPtr.getResult())
             .getResult(0);
 
     // Indirect call through function pointer
-    auto call = rewriter.create<mlir::func::CallIndirectOp>(loc, callable, callArgs);
+    auto call = mlir::func::CallIndirectOp::create(rewriter, loc, callable, callArgs);
 
     if (hasResult) {
       rewriter.replaceOp(op, call.getResults());
@@ -3259,8 +3270,8 @@ struct StringConcatOpLowering : public mlir::OpConversionPattern<hew::StringConc
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, "hew_string_concat",
                         funcType);
     auto call =
-        rewriter.create<mlir::func::CallOp>(loc, "hew_string_concat", mlir::TypeRange{ptrType},
-                                            mlir::ValueRange{adaptor.getLhs(), adaptor.getRhs()});
+        mlir::func::CallOp::create(rewriter, loc, "hew_string_concat", mlir::TypeRange{ptrType},
+                                   mlir::ValueRange{adaptor.getLhs(), adaptor.getRhs()});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -3289,9 +3300,9 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
       // Note: char is i32 in MLIR and hits the i32 branch directly.
       funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
       if (isUnsigned)
-        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI32Type(), arg);
+        arg = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI32Type(), arg);
       else
-        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI32Type(), arg);
+        arg = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI32Type(), arg);
     } else if (origType.isInteger(32)) {
       funcName = isUnsigned ? "hew_uint_to_string" : "hew_int_to_string";
     } else if (origType.isInteger(64)) {
@@ -3299,14 +3310,14 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
     } else if (origType.isF64() || origType.isF32()) {
       funcName = "hew_float_to_string";
       if (origType.isF32())
-        arg = rewriter.create<mlir::arith::ExtFOp>(loc, rewriter.getF64Type(), arg);
+        arg = mlir::arith::ExtFOp::create(rewriter, loc, rewriter.getF64Type(), arg);
     } else if (mlir::isa<mlir::IntegerType>(origType)) {
       // Other int widths — extend to i64
       funcName = isUnsigned ? "hew_u64_to_string" : "hew_i64_to_string";
       if (isUnsigned)
-        arg = rewriter.create<mlir::arith::ExtUIOp>(loc, rewriter.getI64Type(), arg);
+        arg = mlir::arith::ExtUIOp::create(rewriter, loc, rewriter.getI64Type(), arg);
       else
-        arg = rewriter.create<mlir::arith::ExtSIOp>(loc, rewriter.getI64Type(), arg);
+        arg = mlir::arith::ExtSIOp::create(rewriter, loc, rewriter.getI64Type(), arg);
     } else {
       op.emitError() << "ToStringOp: cannot convert type to string: " << origType;
       return mlir::failure();
@@ -3314,8 +3325,8 @@ struct ToStringOpLowering : public mlir::OpConversionPattern<hew::ToStringOp> {
 
     auto funcType = rewriter.getFunctionType({arg.getType()}, {ptrType});
     getOrInsertFuncDecl(op->getParentOfType<mlir::ModuleOp>(), rewriter, funcName, funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, mlir::TypeRange{ptrType},
-                                                    mlir::ValueRange{arg});
+    auto call = mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{ptrType},
+                                           mlir::ValueRange{arg});
     rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
@@ -3346,37 +3357,37 @@ struct StringMethodOpLowering : public mlir::OpConversionPattern<hew::StringMeth
       // Use ExtUIOp (not ExtSIOp) to avoid misinterpreting large positive indices
       // (e.g., u32 >= 2^31) as negative values. Negative signed indices become
       // large unsigned values (e.g., -1 → 4294967295), which uge correctly catches.
-      auto index64 = rewriter.create<mlir::arith::ExtUIOp>(loc, i64Type, index);
+      auto index64 = mlir::arith::ExtUIOp::create(rewriter, loc, i64Type, index);
 
       // Call strlen to get byte length
       auto strlenType = rewriter.getFunctionType({ptrType}, {i64Type});
       getOrInsertFuncDecl(module, rewriter, "strlen", strlenType);
-      auto lenCall = rewriter.create<mlir::func::CallOp>(loc, "strlen", mlir::TypeRange{i64Type},
-                                                         mlir::ValueRange{strPtr});
+      auto lenCall = mlir::func::CallOp::create(rewriter, loc, "strlen", mlir::TypeRange{i64Type},
+                                                mlir::ValueRange{strPtr});
       auto len = lenCall.getResult(0);
 
       // Bounds check: if index >= len, abort (uge catches negative indices too)
       auto oob =
-          rewriter.create<mlir::arith::CmpIOp>(loc, mlir::arith::CmpIPredicate::uge, index64, len);
+          mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::uge, index64, len);
 
       auto abortFuncType = rewriter.getFunctionType({i64Type, i64Type}, {});
       getOrInsertFuncDecl(module, rewriter, "hew_string_abort_oob", abortFuncType);
 
-      rewriter.create<mlir::scf::IfOp>(
-          loc, oob,
+      mlir::scf::IfOp::create(
+          rewriter, loc, oob,
           [&](mlir::OpBuilder &b, mlir::Location l) {
-            b.create<mlir::func::CallOp>(l, "hew_string_abort_oob", mlir::TypeRange{},
-                                         mlir::ValueRange{index64, len});
-            b.create<mlir::scf::YieldOp>(l);
+            mlir::func::CallOp::create(b, l, "hew_string_abort_oob", mlir::TypeRange{},
+                                       mlir::ValueRange{index64, len});
+            mlir::scf::YieldOp::create(b, l);
           },
           nullptr);
 
       // GEP to byte at index, load i8, zero-extend to i32
-      auto elemPtr = rewriter.create<mlir::LLVM::GEPOp>(
-          loc, ptrType, i8Type, strPtr,
+      auto elemPtr = mlir::LLVM::GEPOp::create(
+          rewriter, loc, ptrType, i8Type, strPtr,
           mlir::ArrayRef<mlir::LLVM::GEPArg>{mlir::LLVM::GEPArg(index64)});
-      auto loaded = rewriter.create<mlir::LLVM::LoadOp>(loc, i8Type, elemPtr);
-      auto result = rewriter.create<mlir::arith::ExtUIOp>(loc, i32Type, loaded);
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, i8Type, elemPtr);
+      auto result = mlir::arith::ExtUIOp::create(rewriter, loc, i32Type, loaded);
       rewriter.replaceOp(op, result.getResult());
       return mlir::success();
     }
@@ -3400,7 +3411,7 @@ struct StringMethodOpLowering : public mlir::OpConversionPattern<hew::StringMeth
 
     auto funcType = rewriter.getFunctionType(argTypes, resultTypes);
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
-    auto call = rewriter.create<mlir::func::CallOp>(loc, funcName, resultTypes, args);
+    auto call = mlir::func::CallOp::create(rewriter, loc, funcName, resultTypes, args);
 
     if (hasResult)
       rewriter.replaceOp(op, call.getResults());
@@ -3419,9 +3430,10 @@ struct TupleCreateOpLowering : public mlir::OpConversionPattern<hew::TupleCreate
     auto loc = op.getLoc();
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
     auto structType = mlir::cast<mlir::LLVM::LLVMStructType>(resultType);
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, structType);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, structType);
     for (auto [idx, elem] : llvm::enumerate(adaptor.getElements())) {
-      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, elem, idx);
+      result = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, result, elem, llvm::ArrayRef<int64_t>{static_cast<int64_t>(idx)});
     }
     rewriter.replaceOp(op, result);
     return mlir::success();
@@ -3434,7 +3446,8 @@ struct TupleExtractOpLowering : public mlir::OpConversionPattern<hew::TupleExtra
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto idx = op.getIndex();
-    auto result = rewriter.create<mlir::LLVM::ExtractValueOp>(loc, adaptor.getTuple(), idx);
+    auto result = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getTuple(), llvm::ArrayRef<int64_t>{static_cast<int64_t>(idx)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3449,9 +3462,10 @@ struct ArrayCreateOpLowering : public mlir::OpConversionPattern<hew::ArrayCreate
     auto loc = op.getLoc();
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
     auto arrayType = mlir::cast<mlir::LLVM::LLVMArrayType>(resultType);
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, arrayType);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, arrayType);
     for (auto [idx, elem] : llvm::enumerate(adaptor.getElements())) {
-      result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, elem, idx);
+      result = mlir::LLVM::InsertValueOp::create(
+          rewriter, loc, result, elem, llvm::ArrayRef<int64_t>{static_cast<int64_t>(idx)});
     }
     rewriter.replaceOp(op, result);
     return mlir::success();
@@ -3464,7 +3478,8 @@ struct ArrayExtractOpLowering : public mlir::OpConversionPattern<hew::ArrayExtra
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto idx = op.getIndex();
-    auto result = rewriter.create<mlir::LLVM::ExtractValueOp>(loc, adaptor.getArray(), idx);
+    auto result = mlir::LLVM::ExtractValueOp::create(
+        rewriter, loc, adaptor.getArray(), llvm::ArrayRef<int64_t>{static_cast<int64_t>(idx)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3479,9 +3494,11 @@ struct TraitObjectCreateOpLowering : public mlir::OpConversionPattern<hew::Trait
     auto loc = op.getLoc();
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
     auto structType = mlir::cast<mlir::LLVM::LLVMStructType>(resultType);
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, structType);
-    result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, adaptor.getData(), 0);
-    result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, adaptor.getVtablePtr(), 1);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, structType);
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, adaptor.getData(),
+                                               llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, adaptor.getVtablePtr(),
+                                               llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
     rewriter.replaceOp(op, result);
     return mlir::success();
   }
@@ -3492,7 +3509,8 @@ struct TraitObjectDataOpLowering : public mlir::OpConversionPattern<hew::TraitOb
   mlir::LogicalResult matchAndRewrite(hew::TraitObjectDataOp op, OpAdaptor adaptor,
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto result =
-        rewriter.create<mlir::LLVM::ExtractValueOp>(op.getLoc(), adaptor.getTraitObject(), 0);
+        mlir::LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getTraitObject(),
+                                           llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3503,7 +3521,8 @@ struct TraitObjectTagOpLowering : public mlir::OpConversionPattern<hew::TraitObj
   mlir::LogicalResult matchAndRewrite(hew::TraitObjectTagOp op, OpAdaptor adaptor,
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto result =
-        rewriter.create<mlir::LLVM::ExtractValueOp>(op.getLoc(), adaptor.getTraitObject(), 1);
+        mlir::LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getTraitObject(),
+                                           llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3518,9 +3537,11 @@ struct ClosureCreateOpLowering : public mlir::OpConversionPattern<hew::ClosureCr
     auto loc = op.getLoc();
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
     auto structType = mlir::cast<mlir::LLVM::LLVMStructType>(resultType);
-    mlir::Value result = rewriter.create<mlir::LLVM::UndefOp>(loc, structType);
-    result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, adaptor.getFnPtr(), 0);
-    result = rewriter.create<mlir::LLVM::InsertValueOp>(loc, result, adaptor.getEnvPtr(), 1);
+    mlir::Value result = mlir::LLVM::UndefOp::create(rewriter, loc, structType);
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, adaptor.getFnPtr(),
+                                               llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
+    result = mlir::LLVM::InsertValueOp::create(rewriter, loc, result, adaptor.getEnvPtr(),
+                                               llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
     rewriter.replaceOp(op, result);
     return mlir::success();
   }
@@ -3530,7 +3551,9 @@ struct ClosureGetFnOpLowering : public mlir::OpConversionPattern<hew::ClosureGet
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult matchAndRewrite(hew::ClosureGetFnOp op, OpAdaptor adaptor,
                                       mlir::ConversionPatternRewriter &rewriter) const override {
-    auto result = rewriter.create<mlir::LLVM::ExtractValueOp>(op.getLoc(), adaptor.getClosure(), 0);
+    auto result =
+        mlir::LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getClosure(),
+                                           llvm::ArrayRef<int64_t>{static_cast<int64_t>(0)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3540,7 +3563,9 @@ struct ClosureGetEnvOpLowering : public mlir::OpConversionPattern<hew::ClosureGe
   using OpConversionPattern::OpConversionPattern;
   mlir::LogicalResult matchAndRewrite(hew::ClosureGetEnvOp op, OpAdaptor adaptor,
                                       mlir::ConversionPatternRewriter &rewriter) const override {
-    auto result = rewriter.create<mlir::LLVM::ExtractValueOp>(op.getLoc(), adaptor.getClosure(), 1);
+    auto result =
+        mlir::LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getClosure(),
+                                           llvm::ArrayRef<int64_t>{static_cast<int64_t>(1)});
     rewriter.replaceOp(op, result.getResult());
     return mlir::success();
   }
@@ -3575,13 +3600,14 @@ struct FuncPtrOpLowering : public mlir::OpConversionPattern<hew::FuncPtrOp> {
     // Create func.constant to get a typed function reference, then
     // use the type converter's materialization to bridge to !llvm.ptr.
     // FuncToLLVM + ReconcileUnrealizedCasts will resolve this cleanly.
-    auto funcRef = rewriter.create<mlir::func::ConstantOp>(
-        loc, funcOp.getFunctionType(), mlir::SymbolRefAttr::get(rewriter.getContext(), funcName));
+    auto funcRef =
+        mlir::func::ConstantOp::create(rewriter, loc, funcOp.getFunctionType(),
+                                       mlir::SymbolRefAttr::get(rewriter.getContext(), funcName));
     // Bridge func type -> !llvm.ptr via UnrealizedConversionCast.
     // This is the standard MLIR pattern: the FuncToLLVM pass + reconcile
     // pass will eliminate these casts.
     auto castOp =
-        rewriter.create<mlir::UnrealizedConversionCastOp>(loc, ptrType, funcRef.getResult());
+        mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType, funcRef.getResult());
     rewriter.replaceOp(op, castOp.getResult(0));
     return mlir::success();
   }
@@ -3615,8 +3641,8 @@ struct BitcastOpLowering : public mlir::OpConversionPattern<hew::BitcastOp> {
     // Types differ after conversion (e.g. !llvm.ptr vs FunctionType).
     // Emit an UnrealizedConversionCastOp to bridge between dialects.
     // FuncToLLVM + ReconcileUnrealizedCasts will resolve these.
-    auto castOp = rewriter.create<mlir::UnrealizedConversionCastOp>(op.getLoc(),
-                                                                    convertedResultType, inputVal);
+    auto castOp = mlir::UnrealizedConversionCastOp::create(rewriter, op.getLoc(),
+                                                           convertedResultType, inputVal);
     rewriter.replaceOp(op, castOp.getResult(0));
     return mlir::success();
   }
@@ -3863,7 +3889,7 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
     if (!canMaterializeBoundaryCast(resultType, input.getType()))
       return mlir::Value();
 
-    return builder.create<mlir::UnrealizedConversionCastOp>(loc, resultType, input).getResult(0);
+    return mlir::UnrealizedConversionCastOp::create(builder, loc, resultType, input).getResult(0);
   };
 
   typeConverter.addSourceMaterialization(materializeBoundaryCast);
@@ -4139,7 +4165,7 @@ struct DevirtualizeTraitDispatchPass
       if (op.getNumResults() > 0)
         resultTypes.push_back(op.getResult().getType());
 
-      auto call = builder.create<mlir::func::CallOp>(loc, funcName, resultTypes, callArgs);
+      auto call = mlir::func::CallOp::create(builder, loc, funcName, resultTypes, callArgs);
 
       if (op.getNumResults() > 0)
         op.replaceAllUsesWith(call.getResults());
@@ -4230,9 +4256,9 @@ struct StackPromoteDynCoercionPass
         continue;
       auto &entryBlock = parentFunc.getBody().front();
       mlir::OpBuilder allocBuilder(&entryBlock, entryBlock.begin());
-      auto one = allocBuilder.create<mlir::LLVM::ConstantOp>(loc, allocBuilder.getI64Type(),
-                                                             allocBuilder.getI64IntegerAttr(1));
-      auto alloca = allocBuilder.create<mlir::LLVM::AllocaOp>(loc, ptrType, measuredType, one);
+      auto one = mlir::LLVM::ConstantOp::create(allocBuilder, loc, allocBuilder.getI64Type(),
+                                                allocBuilder.getI64IntegerAttr(1));
+      auto alloca = mlir::LLVM::AllocaOp::create(allocBuilder, loc, ptrType, measuredType, one);
 
       op.getResult().replaceAllUsesWith(alloca.getResult());
       op.erase();
@@ -4279,25 +4305,26 @@ struct VtableGlobalPass
 
         mlir::OpBuilder moduleBuilder(ctx);
         moduleBuilder.setInsertionPointToStart(module.getBody());
-        auto globalOp = moduleBuilder.create<mlir::LLVM::GlobalOp>(
-            loc, arrayType, /*isConstant=*/true, mlir::LLVM::Linkage::Internal, vtableName.str(),
-            mlir::Attribute{});
+        auto globalOp = mlir::LLVM::GlobalOp::create(
+            moduleBuilder, loc, arrayType, /*isConstant=*/true, mlir::LLVM::Linkage::Internal,
+            vtableName.str(), mlir::Attribute{});
 
         auto *initBlock = moduleBuilder.createBlock(&globalOp.getInitializerRegion());
         moduleBuilder.setInsertionPointToStart(initBlock);
 
-        mlir::Value arr = moduleBuilder.create<mlir::LLVM::UndefOp>(loc, arrayType);
+        mlir::Value arr = mlir::LLVM::UndefOp::create(moduleBuilder, loc, arrayType);
         for (size_t i = 0; i < functions.size(); ++i) {
           auto funcName = mlir::cast<mlir::StringAttr>(functions[i]).getValue().str();
-          auto funcAddr = moduleBuilder.create<mlir::LLVM::AddressOfOp>(loc, ptrType, funcName);
-          arr = moduleBuilder.create<mlir::LLVM::InsertValueOp>(loc, arr, funcAddr, i);
+          auto funcAddr = mlir::LLVM::AddressOfOp::create(moduleBuilder, loc, ptrType, funcName);
+          arr = mlir::LLVM::InsertValueOp::create(moduleBuilder, loc, arr, funcAddr,
+                                                  llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
         }
-        moduleBuilder.create<mlir::LLVM::ReturnOp>(loc, arr);
+        mlir::LLVM::ReturnOp::create(moduleBuilder, loc, arr);
         createdVtables.insert(vtableName);
       }
 
       // Replace VtableRefOp with llvm.mlir.addressof
-      auto vtableAddr = builder.create<mlir::LLVM::AddressOfOp>(loc, ptrType, vtableName.str());
+      auto vtableAddr = mlir::LLVM::AddressOfOp::create(builder, loc, ptrType, vtableName.str());
       op.replaceAllUsesWith(vtableAddr.getResult());
       op.erase();
     });

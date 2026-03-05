@@ -46,33 +46,33 @@ mlir::Value MLIRGen::emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value l
                                          bool isFloat, bool isUnsigned, mlir::Location location) {
   switch (op) {
   case ast::CompoundAssignOp::Add:
-    return isFloat ? (mlir::Value)builder.create<mlir::arith::AddFOp>(location, lhs, rhs)
-                   : (mlir::Value)builder.create<mlir::arith::AddIOp>(location, lhs, rhs);
+    return isFloat ? (mlir::Value)mlir::arith::AddFOp::create(builder, location, lhs, rhs)
+                   : (mlir::Value)mlir::arith::AddIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Subtract:
-    return isFloat ? (mlir::Value)builder.create<mlir::arith::SubFOp>(location, lhs, rhs)
-                   : (mlir::Value)builder.create<mlir::arith::SubIOp>(location, lhs, rhs);
+    return isFloat ? (mlir::Value)mlir::arith::SubFOp::create(builder, location, lhs, rhs)
+                   : (mlir::Value)mlir::arith::SubIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Multiply:
-    return isFloat ? (mlir::Value)builder.create<mlir::arith::MulFOp>(location, lhs, rhs)
-                   : (mlir::Value)builder.create<mlir::arith::MulIOp>(location, lhs, rhs);
+    return isFloat ? (mlir::Value)mlir::arith::MulFOp::create(builder, location, lhs, rhs)
+                   : (mlir::Value)mlir::arith::MulIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Divide:
-    return isFloat      ? (mlir::Value)builder.create<mlir::arith::DivFOp>(location, lhs, rhs)
-           : isUnsigned ? (mlir::Value)builder.create<mlir::arith::DivUIOp>(location, lhs, rhs)
-                        : (mlir::Value)builder.create<mlir::arith::DivSIOp>(location, lhs, rhs);
+    return isFloat      ? (mlir::Value)mlir::arith::DivFOp::create(builder, location, lhs, rhs)
+           : isUnsigned ? (mlir::Value)mlir::arith::DivUIOp::create(builder, location, lhs, rhs)
+                        : (mlir::Value)mlir::arith::DivSIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Modulo:
-    return isFloat      ? (mlir::Value)builder.create<mlir::arith::RemFOp>(location, lhs, rhs)
-           : isUnsigned ? (mlir::Value)builder.create<mlir::arith::RemUIOp>(location, lhs, rhs)
-                        : (mlir::Value)builder.create<mlir::arith::RemSIOp>(location, lhs, rhs);
+    return isFloat      ? (mlir::Value)mlir::arith::RemFOp::create(builder, location, lhs, rhs)
+           : isUnsigned ? (mlir::Value)mlir::arith::RemUIOp::create(builder, location, lhs, rhs)
+                        : (mlir::Value)mlir::arith::RemSIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::BitAnd:
-    return builder.create<mlir::arith::AndIOp>(location, lhs, rhs);
+    return mlir::arith::AndIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::BitOr:
-    return builder.create<mlir::arith::OrIOp>(location, lhs, rhs);
+    return mlir::arith::OrIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::BitXor:
-    return builder.create<mlir::arith::XOrIOp>(location, lhs, rhs);
+    return mlir::arith::XOrIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Shl:
-    return builder.create<mlir::arith::ShLIOp>(location, lhs, rhs);
+    return mlir::arith::ShLIOp::create(builder, location, lhs, rhs);
   case ast::CompoundAssignOp::Shr:
-    return isUnsigned ? (mlir::Value)builder.create<mlir::arith::ShRUIOp>(location, lhs, rhs)
-                      : (mlir::Value)builder.create<mlir::arith::ShRSIOp>(location, lhs, rhs);
+    return isUnsigned ? (mlir::Value)mlir::arith::ShRUIOp::create(builder, location, lhs, rhs)
+                      : (mlir::Value)mlir::arith::ShRSIOp::create(builder, location, lhs, rhs);
   default:
     emitError(location, "unsupported compound assignment operator");
     return nullptr;
@@ -83,16 +83,16 @@ mlir::Value MLIRGen::andNotReturned(mlir::Value cond, mlir::Location location) {
   if (!returnFlag)
     return cond;
   auto i1Type = builder.getI1Type();
-  auto flagVal = builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+  auto flagVal = mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
   auto trueConst = createIntConstant(builder, location, i1Type, 1);
-  auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-  return builder.create<mlir::arith::AndIOp>(location, cond, notReturned);
+  auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+  return mlir::arith::AndIOp::create(builder, location, cond, notReturned);
 }
 
 void MLIRGen::ensureYieldTerminator(mlir::Location location) {
   auto *blk = builder.getInsertionBlock();
   if (blk->empty() || !blk->back().hasTrait<mlir::OpTrait::IsTerminator>())
-    builder.create<mlir::scf::YieldOp>(location);
+    mlir::scf::YieldOp::create(builder, location);
 }
 
 MLIRGen::LoopControl MLIRGen::pushLoopControl(const std::optional<std::string> &label,
@@ -102,11 +102,11 @@ MLIRGen::LoopControl MLIRGen::pushLoopControl(const std::optional<std::string> &
   auto trueVal = createIntConstant(builder, location, i1Type, 1);
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
 
-  auto activeFlag = builder.create<mlir::memref::AllocaOp>(location, memrefI1);
-  builder.create<mlir::memref::StoreOp>(location, trueVal, activeFlag);
+  auto activeFlag = mlir::memref::AllocaOp::create(builder, location, memrefI1);
+  mlir::memref::StoreOp::create(builder, location, trueVal, activeFlag);
 
-  auto continueFlag = builder.create<mlir::memref::AllocaOp>(location, memrefI1);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, continueFlag);
+  auto continueFlag = mlir::memref::AllocaOp::create(builder, location, memrefI1);
+  mlir::memref::StoreOp::create(builder, location, falseVal, continueFlag);
 
   loopActiveStack.push_back(activeFlag);
   loopDropScopeBase.push_back(dropScopes.size());
@@ -138,8 +138,8 @@ void MLIRGen::popLoopControl(const LoopControl &lc, mlir::Operation *whileOp) {
   builder.setInsertionPointAfter(whileOp);
 
   if (breakValueAlloca) {
-    lastBreakValue = builder.create<mlir::memref::LoadOp>(whileOp->getLoc(), breakValueAlloca,
-                                                          mlir::ValueRange{});
+    lastBreakValue = mlir::memref::LoadOp::create(builder, whileOp->getLoc(), breakValueAlloca,
+                                                  mlir::ValueRange{});
   } else {
     lastBreakValue = nullptr;
   }
@@ -162,11 +162,12 @@ void MLIRGen::generateStmtsWithReturnGuards(
 
     // If this statement might contain a return, guard subsequent statements.
     if (stmtMightContainReturn(stmts[i]->value)) {
-      auto flagVal = builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+      auto flagVal =
+          mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-      auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-      auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
-                                                   /*withElseRegion=*/false);
+      auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+      auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                           /*withElseRegion=*/false);
       builder.setInsertionPointToStart(&guard.getThenRegion().front());
 
       // Recursively generate remaining statements inside the guard.
@@ -184,9 +185,9 @@ void MLIRGen::generateStmtsWithReturnGuards(
     if (val && returnSlot) {
       auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
       val = coerceType(val, slotType, location);
-      builder.create<mlir::memref::StoreOp>(location, val, returnSlot);
+      mlir::memref::StoreOp::create(builder, location, val, returnSlot);
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-      builder.create<mlir::memref::StoreOp>(location, trueConst, returnFlag);
+      mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
     }
   }
 }
@@ -208,11 +209,11 @@ void MLIRGen::generateLoopBodyWithContinueGuards(
 
     // If this statement might contain a break or continue, guard remaining.
     if (stmtMightContainBreakOrContinue(stmts[i]->value)) {
-      auto flagVal = builder.create<mlir::memref::LoadOp>(location, contFlag, mlir::ValueRange{});
+      auto flagVal = mlir::memref::LoadOp::create(builder, location, contFlag, mlir::ValueRange{});
       auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-      auto notContinued = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-      auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notContinued,
-                                                   /*withElseRegion=*/false);
+      auto notContinued = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+      auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notContinued,
+                                           /*withElseRegion=*/false);
       builder.setInsertionPointToStart(&guard.getThenRegion().front());
 
       generateLoopBodyWithContinueGuards(stmts, i + 1, endIdx, contFlag, location);
@@ -304,18 +305,18 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         }
         // Guard the value-producing if-statement
         auto flagVal =
-            builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
         auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-        auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-        auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
-                                                     /*withElseRegion=*/false);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
         auto val = generateIfStmtAsExpr(*ifNode);
         if (val && returnSlot) {
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
           val = coerceType(val, slotType, location);
-          builder.create<mlir::memref::StoreOp>(location, val, returnSlot);
-          builder.create<mlir::memref::StoreOp>(location, trueConst, returnFlag);
+          mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+          mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
         }
         ensureYieldTerminator(location);
         builder.setInsertionPointAfter(guard);
@@ -327,11 +328,11 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
           generateStmtsWithReturnGuards(stmts, 0, stmtCount - 1, nullptr, location);
         }
         auto flagVal =
-            builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
         auto trueConst = createIntConstant(builder, location, builder.getI1Type(), 1);
-        auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-        auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
-                                                     /*withElseRegion=*/false);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
         auto scrutinee = generateExpression(matchNode->scrutinee.value);
         mlir::Type resultType;
@@ -346,8 +347,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         if (val && returnSlot) {
           auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
           val = coerceType(val, slotType, location);
-          builder.create<mlir::memref::StoreOp>(location, val, returnSlot);
-          builder.create<mlir::memref::StoreOp>(location, trueConst, returnFlag);
+          mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+          mlir::memref::StoreOp::create(builder, location, trueConst, returnFlag);
         }
         ensureYieldTerminator(location);
         builder.setInsertionPointAfter(guard);
@@ -712,8 +713,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       registerDroppable(varName, "hew_rc_drop");
       if (stmt.value && std::holds_alternative<ast::ExprIdentifier>(stmt.value->value.kind)) {
         auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-        auto envPtr = builder.create<hew::ClosureGetEnvOp>(location, ptrType, value);
-        builder.create<hew::RcCloneOp>(location, ptrType, envPtr);
+        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
+        hew::RcCloneOp::create(builder, location, ptrType, envPtr);
       }
     }
     // Track dyn Trait variable types
@@ -730,11 +731,11 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       if (auto *ei = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
         mlir::Value elemVal;
         if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(value.getType())) {
-          elemVal = builder.create<hew::TupleExtractOp>(location, hewTuple.getElementTypes()[i],
-                                                        value, static_cast<int64_t>(i));
+          elemVal = hew::TupleExtractOp::create(builder, location, hewTuple.getElementTypes()[i],
+                                                value, static_cast<int64_t>(i));
         } else {
-          elemVal = builder.create<mlir::LLVM::ExtractValueOp>(
-              location, value, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
+          elemVal = mlir::LLVM::ExtractValueOp::create(
+              builder, location, value, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
         }
         declareVariable(ei->name, elemVal);
       } else if (std::holds_alternative<ast::PatWildcard>(elem->value.kind)) {
@@ -860,12 +861,12 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         for (const auto &field : stInfo.fields) {
           if (field.name == fieldName) {
             auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-            auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
-                location, ptrType, structType, operandVal,
+            auto fieldPtr = mlir::LLVM::GEPOp::create(
+                builder, location, ptrType, structType, operandVal,
                 llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
             // Handle compound assignment
             if (stmt.op) {
-              auto current = builder.create<mlir::LLVM::LoadOp>(location, field.type, fieldPtr);
+              auto current = mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr);
               rhs = coerceType(rhs, field.type, location);
               bool isFloat = llvm::isa<mlir::FloatType>(field.type);
               bool isUnsigned = false;
@@ -877,7 +878,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
                 return;
             }
             rhs = coerceType(rhs, field.type, location);
-            builder.create<mlir::LLVM::StoreOp>(location, rhs, fieldPtr);
+            mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
             return;
           }
         }
@@ -923,11 +924,11 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     }
 
     // Reload the struct from the mutable variable slot
-    auto currentStruct = builder.create<mlir::memref::LoadOp>(location, varSlot);
+    auto currentStruct = mlir::memref::LoadOp::create(builder, location, varSlot);
     // Handle compound assignment
     if (stmt.op) {
-      auto currentFieldVal = builder.create<mlir::LLVM::ExtractValueOp>(
-          location, currentStruct,
+      auto currentFieldVal = mlir::LLVM::ExtractValueOp::create(
+          builder, location, currentStruct,
           llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
       rhs = coerceType(rhs, targetField->type, location);
       bool isFloat = llvm::isa<mlir::FloatType>(targetField->type);
@@ -940,10 +941,10 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         return;
     }
     rhs = coerceType(rhs, targetField->type, location);
-    auto updated = builder.create<mlir::LLVM::InsertValueOp>(
-        location, currentStruct, rhs,
+    auto updated = mlir::LLVM::InsertValueOp::create(
+        builder, location, currentStruct, rhs,
         llvm::ArrayRef<int64_t>{static_cast<int64_t>(targetField->index)});
-    builder.create<mlir::memref::StoreOp>(location, updated, varSlot);
+    mlir::memref::StoreOp::create(builder, location, updated, varSlot);
     return;
   }
 
@@ -958,13 +959,13 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto i64Type = builder.getI64Type();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     if (indexVal.getType() != i64Type)
-      indexVal = builder.create<mlir::arith::ExtSIOp>(location, i64Type, indexVal);
+      indexVal = mlir::arith::ExtSIOp::create(builder, location, i64Type, indexVal);
 
     if (auto vecType = mlir::dyn_cast<hew::VecType>(collectionVal.getType())) {
       rhsVal = coerceType(rhsVal, vecType.getElementType(), location);
       if (stmt.op) {
-        auto currentVal = builder.create<hew::VecGetOp>(location, vecType.getElementType(),
-                                                        collectionVal, indexVal);
+        auto currentVal = hew::VecGetOp::create(builder, location, vecType.getElementType(),
+                                                collectionVal, indexVal);
         bool isFloat = llvm::isa<mlir::FloatType>(vecType.getElementType());
         bool isUnsigned = false;
         if (mlir::isa<mlir::IntegerType>(vecType.getElementType()))
@@ -974,7 +975,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         if (!rhsVal)
           return;
       }
-      builder.create<hew::VecSetOp>(location, collectionVal, indexVal, rhsVal);
+      hew::VecSetOp::create(builder, location, collectionVal, indexVal, rhsVal);
       return;
     }
 
@@ -993,17 +994,17 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
       rhsVal = coerceType(rhsVal, hewArrayType.getElementType(), location);
       auto llvmArrayType =
           mlir::LLVM::LLVMArrayType::get(hewArrayType.getElementType(), hewArrayType.getSize());
-      auto llvmArray = builder.create<hew::BitcastOp>(location, llvmArrayType, collectionVal);
-      auto one = builder.create<mlir::arith::ConstantIntOp>(location, 1, 64);
+      auto llvmArray = hew::BitcastOp::create(builder, location, llvmArrayType, collectionVal);
+      auto one = mlir::arith::ConstantIntOp::create(builder, location, 1, 64);
       auto alloca =
-          builder.create<mlir::LLVM::AllocaOp>(location, ptrType, llvmArrayType, one.getResult());
-      builder.create<mlir::LLVM::StoreOp>(location, llvmArray, alloca);
-      auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
-      auto elemPtr = builder.create<mlir::LLVM::GEPOp>(
-          location, ptrType, llvmArrayType, alloca, mlir::ValueRange{zero.getResult(), indexVal});
+          mlir::LLVM::AllocaOp::create(builder, location, ptrType, llvmArrayType, one.getResult());
+      mlir::LLVM::StoreOp::create(builder, location, llvmArray, alloca);
+      auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 64);
+      auto elemPtr = mlir::LLVM::GEPOp::create(builder, location, ptrType, llvmArrayType, alloca,
+                                               mlir::ValueRange{zero.getResult(), indexVal});
       if (stmt.op) {
         auto currentVal =
-            builder.create<mlir::LLVM::LoadOp>(location, hewArrayType.getElementType(), elemPtr);
+            mlir::LLVM::LoadOp::create(builder, location, hewArrayType.getElementType(), elemPtr);
         bool isFloat = llvm::isa<mlir::FloatType>(hewArrayType.getElementType());
         bool isUnsigned = false;
         if (mlir::isa<mlir::IntegerType>(hewArrayType.getElementType()))
@@ -1013,10 +1014,10 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
         if (!rhsVal)
           return;
       }
-      builder.create<mlir::LLVM::StoreOp>(location, rhsVal, elemPtr);
-      auto updatedArray = builder.create<mlir::LLVM::LoadOp>(location, llvmArrayType, alloca);
+      mlir::LLVM::StoreOp::create(builder, location, rhsVal, elemPtr);
+      auto updatedArray = mlir::LLVM::LoadOp::create(builder, location, llvmArrayType, alloca);
       auto updatedHewArray =
-          builder.create<hew::BitcastOp>(location, hewArrayType, updatedArray.getResult());
+          hew::BitcastOp::create(builder, location, hewArrayType, updatedArray.getResult());
       storeVariable(ie->name, updatedHewArray);
       return;
     }
@@ -1079,13 +1080,13 @@ void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
   if (cond.getType() != builder.getI1Type()) {
     auto zero = createIntConstant(builder, location, cond.getType(), 0);
     cond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, cond, zero);
+        mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, cond, zero);
   }
 
   bool hasElse = stmt.else_block.has_value();
 
   auto ifOp =
-      builder.create<mlir::scf::IfOp>(location, /*resultTypes=*/mlir::TypeRange{}, cond, hasElse);
+      mlir::scf::IfOp::create(builder, location, /*resultTypes=*/mlir::TypeRange{}, cond, hasElse);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
   generateBlock(stmt.then_block);
@@ -1120,7 +1121,7 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (cond.getType() != builder.getI1Type()) {
     auto zero = createIntConstant(builder, location, cond.getType(), 0);
     cond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, cond, zero);
+        mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, cond, zero);
   }
 
   mlir::Type resultType;
@@ -1137,7 +1138,7 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
     return nullptr;
   }
 
-  auto ifOp = builder.create<mlir::scf::IfOp>(location, resultType, cond, /*withElseRegion=*/true);
+  auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
 
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
   mlir::Value thenVal = generateBlock(stmt.then_block);
@@ -1145,10 +1146,10 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (thenVal) {
       thenVal = coerceType(thenVal, resultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{thenVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
     }
   }
 
@@ -1165,10 +1166,10 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (elseBlk->empty() || !elseBlk->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
       elseVal = coerceType(elseVal, resultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{elseVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
     }
   }
 
@@ -1363,12 +1364,13 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   }
 
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
 
   mlir::Value cond = generateExpression(stmt.condition.value);
   if (!cond)
@@ -1377,18 +1379,18 @@ void MLIRGen::generateWhileStmt(const ast::StmtWhile &stmt) {
   if (cond.getType() != builder.getI1Type()) {
     auto zero = createIntConstant(builder, location, cond.getType(), 0);
     cond =
-        builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne, cond, zero);
+        mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne, cond, zero);
   }
 
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
   auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT bodyScope(symbolTable);
@@ -1431,10 +1433,10 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   // Hoist item-pointer alloca before the while op so both before/after regions
   // can access it.  The before-region stores the fetched pointer here; the
   // after-region loads it to bind the loop variable.
-  auto one64 = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 1);
-  auto itemPtrAlloca = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, ptrType, one64);
-  auto nullPtrVal = builder.create<mlir::LLVM::ZeroOp>(location, ptrType);
-  builder.create<mlir::LLVM::StoreOp>(location, nullPtrVal, itemPtrAlloca);
+  auto one64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
+  auto itemPtrAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, ptrType, one64);
+  auto nullPtrVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+  mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
 
   // Loop-control flags (break/continue/return support).
   auto lc = pushLoopControl(stmt.label, location);
@@ -1442,7 +1444,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
     labelName = *stmt.label;
 
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // ── Before region: fetch next item ──────────────────────────────
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
@@ -1450,35 +1452,35 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
 
   // hew_stream_next(stream_ptr) → malloc'd item buffer, or null on EOF
   auto nextAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next");
-  auto itemPtr = builder
-                     .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType}, nextAttr,
-                                                 mlir::ValueRange{streamPtr})
+  auto itemPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, nextAttr,
+                                            mlir::ValueRange{streamPtr})
                      .getResult();
 
   // Stash the item pointer so the after-region can load it.
-  builder.create<mlir::LLVM::StoreOp>(location, itemPtr, itemPtrAlloca);
+  mlir::LLVM::StoreOp::create(builder, location, itemPtr, itemPtrAlloca);
 
   // Condition: itemPtr != null && active && !returned
-  auto notNull = builder.create<mlir::LLVM::ICmpOp>(location, mlir::LLVM::ICmpPredicate::ne,
-                                                    itemPtr, nullPtrVal);
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, notNull, isActive);
+  auto notNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                            itemPtr, nullPtrVal);
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, notNull, isActive);
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // ── After region: bind loop variable, run body ──────────────────
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
   auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT bodyScope(symbolTable);
     MutableTableScopeT bodyMutScope(mutableVars);
 
     // Load the item pointer stashed by the before-region.
-    auto currentItemPtr = builder.create<mlir::LLVM::LoadOp>(location, ptrType, itemPtrAlloca);
+    auto currentItemPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
 
     std::string loopVarName = "_stream_item";
     if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
@@ -1489,11 +1491,12 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
     pushDropScope();
     registerDroppable(loopVarName, "hew_string_drop");
     if (returnFlag) {
-      auto flagVal = builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+      auto flagVal =
+          mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
       auto trueConst = createIntConstant(builder, location, i1Type, 1);
-      auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-      auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
-                                                   /*withElseRegion=*/false);
+      auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+      auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                           /*withElseRegion=*/false);
       builder.setInsertionPointToStart(&guard.getThenRegion().front());
       pushDropScope();
       generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
@@ -1516,15 +1519,15 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
 
   // Free the last fetched item if non-null (handles break case where
   // hew_stream_next returns one more item after break is signaled).
-  auto lastItem = builder.create<mlir::LLVM::LoadOp>(location, ptrType, itemPtrAlloca);
-  auto isNotNull = builder.create<mlir::LLVM::ICmpOp>(location, mlir::LLVM::ICmpPredicate::ne,
-                                                      lastItem, nullPtrVal);
-  auto cleanupIf = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, isNotNull,
-                                                   /*withElseRegion=*/false);
+  auto lastItem = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
+  auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                              lastItem, nullPtrVal);
+  auto cleanupIf = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
+                                           /*withElseRegion=*/false);
   builder.setInsertionPointToStart(&cleanupIf.getThenRegion().front());
   auto dropAttr = mlir::SymbolRefAttr::get(&context, "hew_string_drop");
-  builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, dropAttr,
-                                     mlir::ValueRange{lastItem});
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, dropAttr,
+                             mlir::ValueRange{lastItem});
   // scf.if auto-adds yield; set insertion after guard
   builder.setInsertionPointAfter(cleanupIf);
 
@@ -1533,8 +1536,8 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   bool isInlineStream = !std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind);
   if (isInlineStream) {
     auto closeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_close");
-    builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{}, closeAttr,
-                                       mlir::ValueRange{streamPtr});
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, closeAttr,
+                               mlir::ValueRange{streamPtr});
   }
 }
 
@@ -1666,7 +1669,7 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     return;
 
   auto actorRefType = hew::ActorRefType::get(&context);
-  auto actorRef = builder.create<hew::BitcastOp>(location, actorRefType, actorPtr);
+  auto actorRef = hew::BitcastOp::create(builder, location, actorRefType, actorPtr);
 
   // Generate argument values for init call
   llvm::SmallVector<mlir::Value, 4> initArgs;
@@ -1678,58 +1681,59 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   }
 
   // Call init: actor_ask(actor, init_msg_type, args) → { i8, YieldType }
-  auto initAsk = builder.create<hew::ActorAskOp>(
-      location, wrapperType, actorRef, builder.getI32IntegerAttr(static_cast<int32_t>(initIdx)),
-      initArgs, /*timeout_ms=*/mlir::IntegerAttr{});
+  auto initAsk = hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
+                                         builder.getI32IntegerAttr(static_cast<int32_t>(initIdx)),
+                                         initArgs, /*timeout_ms=*/mlir::IntegerAttr{});
   auto initResult = initAsk.getResult();
 
   // Store wrapper result in alloca for mutable updates across iterations
   auto i64Type = builder.getI64Type();
-  auto one = builder.create<mlir::arith::ConstantIntOp>(location, i64Type, 1);
-  auto resultAlloca = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, wrapperType, one);
-  builder.create<mlir::LLVM::StoreOp>(location, initResult, resultAlloca);
+  auto one = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
+  auto resultAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, wrapperType, one);
+  mlir::LLVM::StoreOp::create(builder, location, initResult, resultAlloca);
 
   // Loop control flags (break/continue support)
   auto lc = pushLoopControl(std::nullopt, location);
 
   // scf.while loop
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check has_value
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
 
-  auto currentResult = builder.create<mlir::LLVM::LoadOp>(location, wrapperType, resultAlloca);
-  auto hasValue = builder.create<mlir::LLVM::ExtractValueOp>(location, currentResult,
-                                                             llvm::ArrayRef<int64_t>{0});
+  auto currentResult = mlir::LLVM::LoadOp::create(builder, location, wrapperType, resultAlloca);
+  auto hasValue = mlir::LLVM::ExtractValueOp::create(builder, location, currentResult,
+                                                     llvm::ArrayRef<int64_t>{0});
   // has_value is i8, convert to i1
-  auto zeroI8 = builder.create<mlir::arith::ConstantIntOp>(location, i8Type, 0);
-  auto hasValueBool = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::ne,
-                                                          hasValue, zeroI8);
+  auto zeroI8 = mlir::arith::ConstantIntOp::create(builder, location, i8Type, 0);
+  auto hasValueBool = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                                  hasValue, zeroI8);
 
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, hasValueBool);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, hasValueBool);
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // After region: extract value, run body, call next
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
 
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT bodyScope(symbolTable);
     MutableTableScopeT bodyMutScope(mutableVars);
 
     // Load current wrapper and extract the value
-    auto wrapper = builder.create<mlir::LLVM::LoadOp>(location, wrapperType, resultAlloca);
+    auto wrapper = mlir::LLVM::LoadOp::create(builder, location, wrapperType, resultAlloca);
     auto value =
-        builder.create<mlir::LLVM::ExtractValueOp>(location, wrapper, llvm::ArrayRef<int64_t>{1});
+        mlir::LLVM::ExtractValueOp::create(builder, location, wrapper, llvm::ArrayRef<int64_t>{1});
 
     // Bind loop variable
     std::string loopVarName = "_await_var";
@@ -1747,17 +1751,17 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
 
   // Guard the __next call: only call if loop is still active (no break/return)
   auto stillActive =
-      builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
   mlir::Value nextGuard = andNotReturned(stillActive, location);
 
-  auto nextIfOp = builder.create<mlir::scf::IfOp>(location, nextGuard, /*withElseRegion=*/false);
+  auto nextIfOp = mlir::scf::IfOp::create(builder, location, nextGuard, /*withElseRegion=*/false);
   builder.setInsertionPointToStart(&nextIfOp.getThenRegion().front());
 
   // Call next: actor_ask(actor, next_msg_type) → { i8, YieldType }
-  auto nextAsk = builder.create<hew::ActorAskOp>(
-      location, wrapperType, actorRef, builder.getI32IntegerAttr(static_cast<int32_t>(nextIdx)),
-      mlir::ValueRange{}, /*timeout_ms=*/mlir::IntegerAttr{});
-  builder.create<mlir::LLVM::StoreOp>(location, nextAsk.getResult(), resultAlloca);
+  auto nextAsk = hew::ActorAskOp::create(builder, location, wrapperType, actorRef,
+                                         builder.getI32IntegerAttr(static_cast<int32_t>(nextIdx)),
+                                         mlir::ValueRange{}, /*timeout_ms=*/mlir::IntegerAttr{});
+  mlir::LLVM::StoreOp::create(builder, location, nextAsk.getResult(), resultAlloca);
 
   builder.setInsertionPointAfter(nextIfOp);
 
@@ -1799,16 +1803,16 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   // Convert lb/ub to index type first
   auto indexType = builder.getIndexType();
   if (lb.getType() != indexType) {
-    lb = builder.create<mlir::arith::IndexCastOp>(location, indexType, lb);
+    lb = mlir::arith::IndexCastOp::create(builder, location, indexType, lb);
   }
   if (ub.getType() != indexType) {
-    ub = builder.create<mlir::arith::IndexCastOp>(location, indexType, ub);
+    ub = mlir::arith::IndexCastOp::create(builder, location, indexType, ub);
   }
 
   // For inclusive range, add 1 to upper bound
   if (rangeExpr.op == ast::BinaryOp::RangeInclusive) {
-    auto one = builder.create<mlir::arith::ConstantIndexOp>(location, 1);
-    ub = builder.create<mlir::arith::AddIOp>(location, ub, one);
+    auto one = mlir::arith::ConstantIndexOp::create(builder, location, 1);
+    ub = mlir::arith::AddIOp::create(builder, location, ub, one);
   }
 
   // Get the loop variable name
@@ -1831,47 +1835,49 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
   auto i64Type = builder.getI64Type();
 
   // Cast lb/ub from index → i64 for alloca storage
-  auto lbI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, lb);
-  auto ubI64 = builder.create<mlir::arith::IndexCastOp>(location, i64Type, ub);
+  auto lbI64 = mlir::arith::IndexCastOp::create(builder, location, i64Type, lb);
+  auto ubI64 = mlir::arith::IndexCastOp::create(builder, location, i64Type, ub);
 
   // Index alloca initialized to lb
   auto memrefI64 = mlir::MemRefType::get({}, i64Type);
-  mlir::Value indexAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefI64);
-  builder.create<mlir::memref::StoreOp>(location, lbI64, indexAlloca);
+  mlir::Value indexAlloca = mlir::memref::AllocaOp::create(builder, location, memrefI64);
+  mlir::memref::StoreOp::create(builder, location, lbI64, indexAlloca);
 
   auto lc = pushLoopControl(stmt.label, location);
 
   // Build scf.while
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check index < ub && active && !returned
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
-  auto curIdx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-  auto cond = builder.create<mlir::arith::CmpIOp>(
-      location, rangeIsUnsigned ? mlir::arith::CmpIPredicate::ult : mlir::arith::CmpIPredicate::slt,
-      curIdx, ubI64);
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+  auto curIdx = mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
+  auto cond = mlir::arith::CmpIOp::create(builder, location,
+                                          rangeIsUnsigned ? mlir::arith::CmpIPredicate::ult
+                                                          : mlir::arith::CmpIPredicate::slt,
+                                          curIdx, ubI64);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
 
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // After region: loop body + index increment
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
   auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT loopScope(symbolTable);
     MutableTableScopeT loopMutScope(mutableVars);
 
     // Bind loop variable: load index as i64
-    auto idx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+    auto idx = mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
     declareVariable(loopVarName, idx);
 
     // Generate body with continue guards
@@ -1881,10 +1887,10 @@ void MLIRGen::generateForRange(const ast::StmtFor &stmt, const ast::ExprBinary &
     popDropScope();
 
     // Increment index
-    auto curI = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+    auto curI = mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
     auto one = createIntConstant(builder, location, i64Type, 1);
-    auto nextIdx = builder.create<mlir::arith::AddIOp>(location, curI, one);
-    builder.create<mlir::memref::StoreOp>(location, nextIdx, indexAlloca);
+    auto nextIdx = mlir::arith::AddIOp::create(builder, location, curI, one);
+    mlir::memref::StoreOp::create(builder, location, nextIdx, indexAlloca);
   }
 
   ensureYieldTerminator(location);
@@ -1920,32 +1926,33 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   auto lc = pushLoopControl(stmt.label, location);
 
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check !done && active
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
   auto doneCall =
-      builder.create<mlir::func::CallOp>(location, doneFuncOp, mlir::ValueRange{genPtr});
+      mlir::func::CallOp::create(builder, location, doneFuncOp, mlir::ValueRange{genPtr});
   auto isDone = doneCall.getResult(0);
   auto trueVal = createIntConstant(builder, location, i1Type, 1);
-  auto notDone = builder.create<mlir::arith::XOrIOp>(location, isDone, trueVal);
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, notDone);
+  auto notDone = mlir::arith::XOrIOp::create(builder, location, isDone, trueVal);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, notDone);
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // After region: call __next, bind loop var, run body
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
 
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   auto nextCall =
-      builder.create<mlir::func::CallOp>(location, nextFuncOp, mlir::ValueRange{genPtr});
+      mlir::func::CallOp::create(builder, location, nextFuncOp, mlir::ValueRange{genPtr});
   auto nextVal = nextCall.getResult(0);
 
   SymbolTableScopeT loopScope(symbolTable);
@@ -1953,11 +1960,11 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   declareVariable(loopVarName, nextVal);
 
   if (returnFlag) {
-    auto flagVal = builder.create<mlir::memref::LoadOp>(location, returnFlag, mlir::ValueRange{});
+    auto flagVal = mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
     auto trueConst = createIntConstant(builder, location, i1Type, 1);
-    auto notReturned = builder.create<mlir::arith::XOrIOp>(location, flagVal, trueConst);
-    auto guard = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, notReturned,
-                                                 /*withElseRegion=*/false);
+    auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+    auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                         /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&guard.getThenRegion().front());
     pushDropScope();
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
@@ -2047,8 +2054,8 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     auto elemType = tupleType.getElementTypes()[0];
 
     // Extract start/end from the range tuple
-    auto startVal = builder.create<hew::TupleExtractOp>(location, elemType, collection, 0);
-    auto endVal = builder.create<hew::TupleExtractOp>(location, elemType, collection, 1);
+    auto startVal = hew::TupleExtractOp::create(builder, location, elemType, collection, 0);
+    auto endVal = hew::TupleExtractOp::create(builder, location, elemType, collection, 1);
 
     std::string loopVarName;
     if (auto *patIdent = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
@@ -2063,47 +2070,47 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
     mlir::Value lbI64 = startVal;
     mlir::Value ubI64 = endVal;
     if (elemType != i64Type) {
-      lbI64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, startVal);
-      ubI64 = builder.create<mlir::arith::ExtSIOp>(location, i64Type, endVal);
+      lbI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, startVal);
+      ubI64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, endVal);
     }
 
     // Index alloca
     auto memrefI64 = mlir::MemRefType::get({}, i64Type);
-    mlir::Value indexAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefI64);
-    builder.create<mlir::memref::StoreOp>(location, lbI64, indexAlloca);
+    mlir::Value indexAlloca = mlir::memref::AllocaOp::create(builder, location, memrefI64);
+    mlir::memref::StoreOp::create(builder, location, lbI64, indexAlloca);
 
     auto lc = pushLoopControl(stmt.label, location);
 
     // scf.while
     auto whileOp =
-        builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+        mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
     // Before region: condition
     auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
     builder.setInsertionPointToStart(beforeBlock);
 
     auto isActive =
-        builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
-    auto curIdx = builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
-    auto cond = builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt,
-                                                    curIdx, ubI64);
-    mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+    auto curIdx = mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
+    auto cond = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+                                            curIdx, ubI64);
+    mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
     combinedCond = andNotReturned(combinedCond, location);
 
-    builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+    mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
     // After region: body + increment
     auto *afterBlock = builder.createBlock(&whileOp.getAfter());
     builder.setInsertionPointToStart(afterBlock);
 
     auto falseVal = createIntConstant(builder, location, i1Type, 0);
-    builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
     {
       SymbolTableScopeT loopScope(symbolTable);
       MutableTableScopeT loopMutScope(mutableVars);
       auto loopVal =
-          builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+          mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
       declareVariable(loopVarName, loopVal);
       pushDropScope();
       generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
@@ -2113,10 +2120,10 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
 
     // Increment index
     auto curForInc =
-        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+        mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
     auto one = createIntConstant(builder, location, i64Type, 1);
-    auto nextIndex = builder.create<mlir::arith::AddIOp>(location, curForInc, one);
-    builder.create<mlir::memref::StoreOp>(location, nextIndex, indexAlloca);
+    auto nextIndex = mlir::arith::AddIOp::create(builder, location, curForInc, one);
+    mlir::memref::StoreOp::create(builder, location, nextIndex, indexAlloca);
 
     ensureYieldTerminator(location);
 
@@ -2203,47 +2210,48 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   if (typedArrayType) {
     len = createIntConstant(builder, location, i64Type, typedArrayType.getSize());
     arrayStorageType = mlir::LLVM::LLVMArrayType::get(typedArrayElemType, typedArrayType.getSize());
-    auto llvmArray = builder.create<hew::BitcastOp>(location, arrayStorageType, collection);
-    auto one = builder.create<mlir::arith::ConstantIntOp>(location, 1, 64);
+    auto llvmArray = hew::BitcastOp::create(builder, location, arrayStorageType, collection);
+    auto one = mlir::arith::ConstantIntOp::create(builder, location, 1, 64);
     arrayAlloca =
-        builder.create<mlir::LLVM::AllocaOp>(location, ptrType, arrayStorageType, one.getResult());
-    builder.create<mlir::LLVM::StoreOp>(location, llvmArray, arrayAlloca);
+        mlir::LLVM::AllocaOp::create(builder, location, ptrType, arrayStorageType, one.getResult());
+    mlir::LLVM::StoreOp::create(builder, location, llvmArray, arrayAlloca);
   } else {
-    len = builder.create<hew::VecLenOp>(location, i64Type, collection);
+    len = hew::VecLenOp::create(builder, location, i64Type, collection);
   }
 
   // Create index alloca (i64), initialized to 0
   auto memrefI64 = mlir::MemRefType::get({}, i64Type);
-  mlir::Value indexAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefI64);
+  mlir::Value indexAlloca = mlir::memref::AllocaOp::create(builder, location, memrefI64);
   auto zero = createIntConstant(builder, location, i64Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, zero, indexAlloca);
+  mlir::memref::StoreOp::create(builder, location, zero, indexAlloca);
 
   auto lc = pushLoopControl(stmt.label, location);
 
   // scf.while loop
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check index < len && active && !returned
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
   mlir::Value curIdx =
-      builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+      mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
   auto cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt, curIdx, len);
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+      mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt, curIdx, len);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // After region: loop body
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
 
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT bodyScope(symbolTable);
@@ -2251,18 +2259,18 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
 
     // Load current index
     mlir::Value idx =
-        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+        mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
 
     // Get element from collection based on type
     mlir::Value elem;
     {
       mlir::Type elemType;
       if (typedArrayType) {
-        auto zero = builder.create<mlir::arith::ConstantIntOp>(location, 0, 64);
+        auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 64);
         auto elemPtr =
-            builder.create<mlir::LLVM::GEPOp>(location, ptrType, arrayStorageType, arrayAlloca,
-                                              mlir::ValueRange{zero.getResult(), idx});
-        elem = builder.create<mlir::LLVM::LoadOp>(location, typedArrayElemType, elemPtr);
+            mlir::LLVM::GEPOp::create(builder, location, ptrType, arrayStorageType, arrayAlloca,
+                                      mlir::ValueRange{zero.getResult(), idx});
+        elem = mlir::LLVM::LoadOp::create(builder, location, typedArrayElemType, elemPtr);
       } else {
         elemType = typedVecElemType ? typedVecElemType : stringVecElemType;
         if (!elemType) {
@@ -2270,7 +2278,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
                               << "'";
           return;
         }
-        elem = builder.create<hew::VecGetOp>(location, elemType, collection, idx);
+        elem = hew::VecGetOp::create(builder, location, elemType, collection, idx);
       }
     }
 
@@ -2297,10 +2305,10 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
 
     // Increment index
     mlir::Value curI =
-        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+        mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
     auto one = createIntConstant(builder, location, i64Type, 1);
-    auto nextIdx = builder.create<mlir::arith::AddIOp>(location, curI, one);
-    builder.create<mlir::memref::StoreOp>(location, nextIdx, indexAlloca);
+    auto nextIdx = mlir::arith::AddIOp::create(builder, location, curI, one);
+    mlir::memref::StoreOp::create(builder, location, nextIdx, indexAlloca);
   }
 
   // Ensure yield terminator
@@ -2363,44 +2371,45 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   if (hasTypedHashMap)
     keysResultType = hew::VecType::get(&context, hmKeyType);
   auto keysVec =
-      builder.create<hew::HashMapKeysOp>(location, keysResultType, collection).getResult();
+      hew::HashMapKeysOp::create(builder, location, keysResultType, collection).getResult();
 
   // Get number of keys
-  mlir::Value len = builder.create<hew::VecLenOp>(location, i64Type, keysVec);
+  mlir::Value len = hew::VecLenOp::create(builder, location, i64Type, keysVec);
 
   // Index alloca
   auto memrefI64 = mlir::MemRefType::get({}, i64Type);
-  mlir::Value indexAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefI64);
+  mlir::Value indexAlloca = mlir::memref::AllocaOp::create(builder, location, memrefI64);
   auto zero = createIntConstant(builder, location, i64Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, zero, indexAlloca);
+  mlir::memref::StoreOp::create(builder, location, zero, indexAlloca);
 
   auto lc = pushLoopControl(stmt.label, location);
 
   // scf.while loop
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check index < len && active && !returned
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  auto isActive = builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{});
+  auto isActive =
+      mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
   mlir::Value curIdx =
-      builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+      mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
   auto cond =
-      builder.create<mlir::arith::CmpIOp>(location, mlir::arith::CmpIPredicate::slt, curIdx, len);
-  mlir::Value combinedCond = builder.create<mlir::arith::AndIOp>(location, isActive, cond);
+      mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt, curIdx, len);
+  mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isActive, cond);
 
   combinedCond = andNotReturned(combinedCond, location);
 
-  builder.create<mlir::scf::ConditionOp>(location, combinedCond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
 
   // After region: loop body
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
   builder.setInsertionPointToStart(afterBlock);
 
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT bodyScope(symbolTable);
@@ -2408,12 +2417,12 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
 
     // Load current index
     mlir::Value idx =
-        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+        mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
 
     // Get key and value from hashmap
-    mlir::Value key = builder.create<hew::VecGetOp>(location, hmKeyType, keysVec, idx);
+    mlir::Value key = hew::VecGetOp::create(builder, location, hmKeyType, keysVec, idx);
     mlir::Value val =
-        builder.create<hew::HashMapGetOp>(location, hmValType, collection, key).getResult();
+        hew::HashMapGetOp::create(builder, location, hmValType, collection, key).getResult();
 
     // Bind variables from the pattern
     if (auto *tuplePat = std::get_if<ast::PatTuple>(&stmt.pattern.value.kind)) {
@@ -2439,10 +2448,10 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
 
     // Increment index
     mlir::Value curI =
-        builder.create<mlir::memref::LoadOp>(location, indexAlloca, mlir::ValueRange{});
+        mlir::memref::LoadOp::create(builder, location, indexAlloca, mlir::ValueRange{});
     auto one = createIntConstant(builder, location, i64Type, 1);
-    auto nextIdx = builder.create<mlir::arith::AddIOp>(location, curI, one);
-    builder.create<mlir::memref::StoreOp>(location, nextIdx, indexAlloca);
+    auto nextIdx = mlir::arith::AddIOp::create(builder, location, curI, one);
+    mlir::memref::StoreOp::create(builder, location, nextIdx, indexAlloca);
   }
 
   // Ensure yield terminator
@@ -2451,7 +2460,7 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   popLoopControl(lc, whileOp);
 
   // Free the temporary keys vec
-  builder.create<hew::VecFreeOp>(location, keysVec);
+  hew::VecFreeOp::create(builder, location, keysVec);
 }
 
 void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
@@ -2469,15 +2478,15 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
       if (val) {
         auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
         val = coerceType(val, slotType, location);
-        builder.create<mlir::memref::StoreOp>(location, val, returnSlot);
+        mlir::memref::StoreOp::create(builder, location, val, returnSlot);
       }
     }
     auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
-    builder.create<mlir::memref::StoreOp>(location, trueVal, returnFlag);
+    mlir::memref::StoreOp::create(builder, location, trueVal, returnFlag);
     // Also set the innermost continue flag so that remaining statements
     // in the current loop iteration are skipped.
     if (!loopContinueStack.empty()) {
-      builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack.back());
+      mlir::memref::StoreOp::create(builder, location, trueVal, loopContinueStack.back());
     }
   } else {
     // At function top level: emit defers then drops before return
@@ -2506,14 +2515,14 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
           emitDropsExcept(returnVarNames);
         else
           emitAllDrops();
-        builder.create<mlir::func::ReturnOp>(location, mlir::ValueRange{val});
+        mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{val});
       } else {
         emitAllDrops();
-        builder.create<mlir::func::ReturnOp>(location);
+        mlir::func::ReturnOp::create(builder, location);
       }
     } else {
       emitAllDrops();
-      builder.create<mlir::func::ReturnOp>(location);
+      mlir::func::ReturnOp::create(builder, location);
     }
   }
 }
@@ -2533,15 +2542,15 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
 
   // Build scf.while
   auto whileOp =
-      builder.create<mlir::scf::WhileOp>(location, mlir::TypeRange{}, mlir::ValueRange{});
+      mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
 
   // Before region: check active flag
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
-  auto cond =
-      builder.create<mlir::memref::LoadOp>(location, lc.activeFlag, mlir::ValueRange{}).getResult();
+  auto cond = mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{})
+                  .getResult();
   cond = andNotReturned(cond, location);
-  builder.create<mlir::scf::ConditionOp>(location, cond, mlir::ValueRange{});
+  mlir::scf::ConditionOp::create(builder, location, cond, mlir::ValueRange{});
 
   // After region: loop body
   auto *afterBlock = builder.createBlock(&whileOp.getAfter());
@@ -2549,7 +2558,7 @@ void MLIRGen::generateLoopStmt(const ast::StmtLoop &stmt) {
 
   // Reset continue flag at start of each iteration
   auto falseVal = createIntConstant(builder, location, builder.getI1Type(), 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, lc.continueFlag);
+  mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
 
   {
     SymbolTableScopeT loopScope(symbolTable);
@@ -2584,10 +2593,10 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
         auto &entryBlock = currentFunction.front();
         builder.setInsertionPointToStart(&entryBlock);
         auto memrefType = mlir::MemRefType::get({}, val.getType());
-        breakAlloca = builder.create<mlir::memref::AllocaOp>(location, memrefType);
+        breakAlloca = mlir::memref::AllocaOp::create(builder, location, memrefType);
         builder.restoreInsertionPoint(savedIP);
       }
-      builder.create<mlir::memref::StoreOp>(location, val, breakAlloca);
+      mlir::memref::StoreOp::create(builder, location, val, breakAlloca);
     }
   }
 
@@ -2635,12 +2644,12 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
   // Set the active flag to false (exit loop at condition check)
   auto i1Type = builder.getI1Type();
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
-  builder.create<mlir::memref::StoreOp>(location, falseVal, targetActive);
+  mlir::memref::StoreOp::create(builder, location, falseVal, targetActive);
 
   // Also set continue flag so remaining body statements are skipped
   if (targetContinue) {
     auto trueVal = createIntConstant(builder, location, i1Type, 1);
-    builder.create<mlir::memref::StoreOp>(location, trueVal, targetContinue);
+    mlir::memref::StoreOp::create(builder, location, trueVal, targetContinue);
   }
 
   // For labeled breaks, deactivate ALL intermediate loops (not just innermost)
@@ -2649,11 +2658,11 @@ void MLIRGen::generateBreakStmt(const ast::StmtBreak &stmt) {
     for (size_t i = loopActiveStack.size(); i > 0; --i) {
       if (loopActiveStack[i - 1] == targetActive)
         break;
-      builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack[i - 1]);
+      mlir::memref::StoreOp::create(builder, location, falseVal, loopActiveStack[i - 1]);
       // Also set continue flag for each intermediate loop so remaining
       // body statements in that iteration are skipped
       if (i - 1 < loopContinueStack.size()) {
-        builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack[i - 1]);
+        mlir::memref::StoreOp::create(builder, location, trueVal, loopContinueStack[i - 1]);
       }
     }
   }
@@ -2693,7 +2702,7 @@ void MLIRGen::generateContinueStmt(const ast::StmtContinue &stmt) {
       }
       // Deactivate all loops inner to the target
       for (size_t i = targetIdx + 1; i < loopActiveStack.size(); ++i) {
-        builder.create<mlir::memref::StoreOp>(location, falseVal, loopActiveStack[i]);
+        mlir::memref::StoreOp::create(builder, location, falseVal, loopActiveStack[i]);
       }
     }
   }
@@ -2723,9 +2732,9 @@ void MLIRGen::generateContinueStmt(const ast::StmtContinue &stmt) {
   // Set the continue flag to true
   auto i1Type = builder.getI1Type();
   auto trueVal = createIntConstant(builder, location, i1Type, 1);
-  builder.create<mlir::memref::StoreOp>(location, trueVal, targetContinue);
+  mlir::memref::StoreOp::create(builder, location, trueVal, targetContinue);
   // Also set inner continue flag to skip remaining body statements
   if (targetContinue != loopContinueStack.back()) {
-    builder.create<mlir::memref::StoreOp>(location, trueVal, loopContinueStack.back());
+    mlir::memref::StoreOp::create(builder, location, trueVal, loopContinueStack.back());
   }
 }

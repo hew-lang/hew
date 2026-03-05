@@ -64,7 +64,7 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
 
   // Create scf.if for the branch
   bool hasElse = stmt.else_body.has_value();
-  auto ifOp = builder.create<mlir::scf::IfOp>(location, mlir::TypeRange{}, cond, hasElse);
+  auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond, hasElse);
 
   // Then region: pattern matches
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -137,7 +137,7 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   mlir::Value cond = emitTagEqualCondition(scrutinee, variantIndex, location);
 
   // Create scf.if with result
-  auto ifOp = builder.create<mlir::scf::IfOp>(location, resultType, cond, /*withElseRegion=*/true);
+  auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
 
   // Then region: pattern matches
   builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
@@ -155,10 +155,10 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
     if (thenBlock->empty() || !thenBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
       if (thenVal) {
         thenVal = coerceType(thenVal, resultType, location);
-        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{thenVal});
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{thenVal});
       } else {
         auto defVal = createDefaultValue(builder, location, resultType);
-        builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+        mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
       }
     }
   }
@@ -176,10 +176,10 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   if (elseBlock->empty() || !elseBlock->back().hasTrait<mlir::OpTrait::IsTerminator>()) {
     if (elseVal) {
       elseVal = coerceType(elseVal, resultType, location);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{elseVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{elseVal});
     } else {
       auto defVal = createDefaultValue(builder, location, resultType);
-      builder.create<mlir::scf::YieldOp>(location, mlir::ValueRange{defVal});
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{defVal});
     }
   }
 

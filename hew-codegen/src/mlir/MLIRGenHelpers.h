@@ -169,7 +169,7 @@ inline mlir::Type toLLVMStorageType(mlir::Type type) {
 /// Create an integer constant with a given type.
 inline mlir::Value createIntConstant(mlir::OpBuilder &builder, mlir::Location loc, mlir::Type type,
                                      int64_t value) {
-  return builder.create<mlir::arith::ConstantIntOp>(loc, type, value);
+  return mlir::arith::ConstantIntOp::create(builder, loc, type, value);
 }
 
 /// Return the struct field index where an enum payload is stored.
@@ -186,57 +186,57 @@ inline int64_t enumPayloadFieldIndex(llvm::StringRef enumName, int32_t variantIn
 inline mlir::Value createDefaultValue(mlir::OpBuilder &builder, mlir::Location loc,
                                       mlir::Type type) {
   if (mlir::isa<mlir::IntegerType>(type))
-    return builder.create<mlir::arith::ConstantIntOp>(loc, type, 0);
+    return mlir::arith::ConstantIntOp::create(builder, loc, type, 0);
   if (mlir::isa<mlir::FloatType>(type))
-    return builder.create<mlir::arith::ConstantOp>(loc, builder.getFloatAttr(type, 0.0));
+    return mlir::arith::ConstantOp::create(builder, loc, builder.getFloatAttr(type, 0.0));
   if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
-    return builder.create<mlir::LLVM::ZeroOp>(loc, type);
+    return mlir::LLVM::ZeroOp::create(builder, loc, type);
   // Hew pointer-like types: create a null pointer then cast to the Hew type
   if (isPointerLikeType(type) && !mlir::isa<mlir::LLVM::LLVMPointerType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    auto zero = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    return builder.create<hew::BitcastOp>(loc, type, zero);
+    auto zero = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    return hew::BitcastOp::create(builder, loc, type, zero);
   }
   if (mlir::isa<mlir::LLVM::LLVMStructType>(type) || mlir::isa<mlir::LLVM::LLVMArrayType>(type))
-    return builder.create<mlir::LLVM::UndefOp>(loc, type);
+    return mlir::LLVM::UndefOp::create(builder, loc, type);
   // Hew tuple/array types: create via dialect ops with default elements
   if (auto tupleType = mlir::dyn_cast<hew::HewTupleType>(type)) {
     llvm::SmallVector<mlir::Value, 4> elements;
     for (auto elemType : tupleType.getElementTypes())
       elements.push_back(createDefaultValue(builder, loc, elemType));
-    return builder.create<hew::TupleCreateOp>(loc, tupleType, elements);
+    return hew::TupleCreateOp::create(builder, loc, tupleType, elements);
   }
   if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(type)) {
     llvm::SmallVector<mlir::Value, 8> elements;
     for (int64_t i = 0; i < arrayType.getSize(); ++i)
       elements.push_back(createDefaultValue(builder, loc, arrayType.getElementType()));
-    return builder.create<hew::ArrayCreateOp>(loc, arrayType, elements);
+    return hew::ArrayCreateOp::create(builder, loc, arrayType, elements);
   }
   if (mlir::isa<hew::HewTraitObjectType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    auto nullPtr = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    auto nullVtable = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    return builder.create<hew::TraitObjectCreateOp>(loc, type, nullPtr, nullVtable);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto nullVtable = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    return hew::TraitObjectCreateOp::create(builder, loc, type, nullPtr, nullVtable);
   }
   if (mlir::isa<hew::ClosureType>(type)) {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(type.getContext());
-    auto nullFn = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    auto nullEnv = builder.create<mlir::LLVM::ZeroOp>(loc, ptrType);
-    return builder.create<hew::ClosureCreateOp>(loc, type, nullFn, nullEnv);
+    auto nullFn = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto nullEnv = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    return hew::ClosureCreateOp::create(builder, loc, type, nullFn, nullEnv);
   }
   // Hew dialect enum types: produce a default-valued enum via hew.enum_construct
   if (auto opt = mlir::dyn_cast<hew::OptionEnumType>(type)) {
     // Default Option: None (variant 0, no payloads)
-    return builder.create<hew::EnumConstructOp>(loc, type, /*variant_index=*/0,
-                                                builder.getStringAttr("Option"), mlir::ValueRange{},
-                                                /*payload_positions=*/nullptr);
+    return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
+                                        builder.getStringAttr("Option"), mlir::ValueRange{},
+                                        /*payload_positions=*/nullptr);
   }
   if (auto res = mlir::dyn_cast<hew::ResultEnumType>(type)) {
     // Default Result: Ok(default_ok_value)
     auto okDefault = createDefaultValue(builder, loc, res.getOkType());
-    return builder.create<hew::EnumConstructOp>(
-        loc, type, /*variant_index=*/0, builder.getStringAttr("__Result"),
-        mlir::ValueRange{okDefault}, /*payload_positions=*/nullptr);
+    return hew::EnumConstructOp::create(builder, loc, type, static_cast<uint32_t>(0),
+                                        builder.getStringAttr("__Result"),
+                                        mlir::ValueRange{okDefault}, /*payload_positions=*/nullptr);
   }
   // No valid default — this indicates a type we haven't handled.
   llvm::errs() << "MLIRGen: no default value for type: " << type << "\n";

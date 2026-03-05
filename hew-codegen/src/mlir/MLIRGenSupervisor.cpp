@@ -94,7 +94,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
 
   // Call hew_supervisor_new(strategy, max_restarts, window_secs)
   auto supervisorPtr =
-      builder.create<hew::SupervisorNewOp>(location, ptrType, strategy, maxRestartsI32, windowVal)
+      hew::SupervisorNewOp::create(builder, location, ptrType, strategy, maxRestartsI32, windowVal)
           .getResult();
 
   // Iterate over children and add each to the supervisor
@@ -106,25 +106,21 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     if (supervisorChildren.count(actorTypeName)) {
       // Generate: child_sup = ChildSupervisorName_init()
       std::string childInitName = actorTypeName + "_init";
-      auto childSupPtr =
-          builder
-              .create<hew::RuntimeCallOp>(location, mlir::TypeRange{ptrType},
-                                          mlir::SymbolRefAttr::get(&context, childInitName),
-                                          mlir::ValueRange{})
-              .getResult();
+      auto childSupPtr = hew::RuntimeCallOp::create(
+                             builder, location, mlir::TypeRange{ptrType},
+                             mlir::SymbolRefAttr::get(&context, childInitName), mlir::ValueRange{})
+                             .getResult();
 
       // Ensure init function is declared for restart capability
       auto initFuncType = builder.getFunctionType({}, {ptrType});
       getOrCreateExternFunc(childInitName, initFuncType);
-      auto initFuncPtr =
-          builder
-              .create<hew::FuncPtrOp>(location, ptrType,
-                                      mlir::SymbolRefAttr::get(&context, childInitName))
-              .getResult();
+      auto initFuncPtr = hew::FuncPtrOp::create(builder, location, ptrType,
+                                                mlir::SymbolRefAttr::get(&context, childInitName))
+                             .getResult();
 
       // Call hew_supervisor_add_child_supervisor_with_init(parent, child, init_fn)
-      builder.create<hew::SupervisorAddChildSupervisorOp>(location, i32Type, supervisorPtr,
-                                                          childSupPtr, initFuncPtr);
+      hew::SupervisorAddChildSupervisorOp::create(builder, location, i32Type, supervisorPtr,
+                                                  childSupPtr, initFuncPtr);
       continue;
     }
 
@@ -133,7 +129,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
     if (actorIt == actorRegistry.end()) {
       emitError(location) << "supervisor '" << supervisorName << "': unknown child actor type '"
                           << actorTypeName << "'";
-      builder.create<mlir::func::ReturnOp>(location, supervisorPtr);
+      mlir::func::ReturnOp::create(builder, location, supervisorPtr);
       module.push_back(func);
       return;
     }
@@ -143,7 +139,7 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
 
     // 1. Allocate state struct on stack and store init args
     auto one = createIntConstant(builder, location, i64Type, 1);
-    auto stateAlloca = builder.create<mlir::LLVM::AllocaOp>(location, ptrType, stateType, one);
+    auto stateAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, stateType, one);
 
     // Generate and store init arg values from child spec args
     auto stateStructType = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(stateType);
@@ -152,23 +148,23 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
         auto argVal = generateExpression(child.args[fieldIdx].value);
         if (!argVal)
           continue;
-        auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
-            location, ptrType, stateType, stateAlloca,
+        auto fieldPtr = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, stateType, stateAlloca,
             llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
         // Coerce arg value to match the state field type
         if (stateStructType && fieldIdx < stateStructType.getBody().size())
           argVal = coerceType(argVal, stateStructType.getBody()[fieldIdx], location);
-        builder.create<mlir::LLVM::StoreOp>(location, argVal, fieldPtr);
+        mlir::LLVM::StoreOp::create(builder, location, argVal, fieldPtr);
       }
       // Zero-initialize remaining fields (hidden gen frame fields)
       if (stateStructType) {
         for (unsigned i = child.args.size(); i < stateStructType.getBody().size(); i++) {
           auto fieldType = stateStructType.getBody()[i];
-          auto fieldPtr = builder.create<mlir::LLVM::GEPOp>(
-              location, ptrType, stateType, stateAlloca,
+          auto fieldPtr = mlir::LLVM::GEPOp::create(
+              builder, location, ptrType, stateType, stateAlloca,
               llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(i)});
-          auto zero = builder.create<mlir::LLVM::ZeroOp>(location, fieldType);
-          builder.create<mlir::LLVM::StoreOp>(location, zero, fieldPtr);
+          auto zero = mlir::LLVM::ZeroOp::create(builder, location, fieldType);
+          mlir::LLVM::StoreOp::create(builder, location, zero, fieldPtr);
         }
       }
     }
@@ -178,32 +174,31 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
       std::string initName = actorTypeName + "_init";
       // Check if an init function was generated for this actor
       if (module.lookupSymbol<mlir::func::FuncOp>(initName)) {
-        builder.create<hew::RuntimeCallOp>(location, mlir::TypeRange{},
-                                           mlir::SymbolRefAttr::get(&context, initName),
-                                           mlir::ValueRange{stateAlloca});
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                   mlir::SymbolRefAttr::get(&context, initName),
+                                   mlir::ValueRange{stateAlloca});
       }
     }
 
     // 3. Compute sizeof(state)
     auto stateSize =
-        builder.create<hew::SizeOfOp>(location, sizeType(), mlir::TypeAttr::get(stateType));
+        hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(stateType));
 
     // 4. Get dispatch function pointer
     auto dispatchFuncType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
     getOrCreateExternFunc(dispatchName, dispatchFuncType);
-    auto dispatchPtr = builder
-                           .create<hew::FuncPtrOp>(location, ptrType,
-                                                   mlir::SymbolRefAttr::get(&context, dispatchName))
+    auto dispatchPtr = hew::FuncPtrOp::create(builder, location, ptrType,
+                                              mlir::SymbolRefAttr::get(&context, dispatchName))
                            .getResult();
 
     // 5. Create child name as a C string (global string constant)
     auto nameSym = getOrCreateGlobalString(childName);
     auto strRefType = hew::StringRefType::get(&context);
     auto nameStrRef =
-        builder.create<hew::ConstantOp>(location, strRefType, builder.getStringAttr(nameSym))
+        hew::ConstantOp::create(builder, location, strRefType, builder.getStringAttr(nameSym))
             .getResult();
     // Cast !hew.string_ref to !llvm.ptr for C struct compatibility
-    auto nameStr = builder.create<hew::BitcastOp>(location, ptrType, nameStrRef).getResult();
+    auto nameStr = hew::BitcastOp::create(builder, location, ptrType, nameStrRef).getResult();
 
     // 6. Determine restart policy
     // 0=Permanent, 1=Transient, 2=Temporary
@@ -231,19 +226,18 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
         createIntConstant(builder, location, i32Type, static_cast<int>(actorInfo.overflowPolicy));
 
     auto specPtr =
-        builder
-            .create<hew::ChildSpecCreateOp>(location, ptrType, nameStr, stateAlloca, stateSize,
-                                            dispatchPtr, restartVal, mbCapVal, overflowVal)
+        hew::ChildSpecCreateOp::create(builder, location, ptrType, nameStr, stateAlloca, stateSize,
+                                       dispatchPtr, restartVal, mbCapVal, overflowVal)
             .getResult();
 
     // 8. Call hew_supervisor_add_child_spec(supervisor, &spec)
-    builder.create<hew::SupervisorAddChildOp>(location, i32Type, supervisorPtr, specPtr);
+    hew::SupervisorAddChildOp::create(builder, location, i32Type, supervisorPtr, specPtr);
   }
 
   // Start the supervisor (begins watching for child crashes)
-  builder.create<hew::SupervisorStartOp>(location, i32Type, supervisorPtr);
+  hew::SupervisorStartOp::create(builder, location, i32Type, supervisorPtr);
 
-  builder.create<mlir::func::ReturnOp>(location, supervisorPtr);
+  mlir::func::ReturnOp::create(builder, location, supervisorPtr);
 
   module.push_back(func);
 }

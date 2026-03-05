@@ -22,6 +22,8 @@
 #   make codegen      — just hew-codegen (C++ MLIR)
 #   make runtime      — just libhew_runtime.a
 #   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
+#   make wasm         — build hew-wasm (browser WASM via wasm-pack)
+#   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — run all tests (Rust + codegen)
 #   make test-rust    — just Rust workspace tests
 #   make test-codegen — just hew-codegen ctest (native E2E + unit)
@@ -30,7 +32,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
-.PHONY: all hew adze codegen runtime stdlib wasm-runtime release
+.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall
 .PHONY: assemble assemble-release
@@ -98,6 +100,24 @@ stdlib:
 # Build the WASM runtime (requires wasm32-wasip1 target: rustup target add wasm32-wasip1)
 wasm-runtime:
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+
+# Build hew-wasm browser module (requires: cargo install wasm-pack)
+wasm:
+	wasm-pack build hew-wasm --target web --release
+
+# Downstream repo roots (sibling directories of hew/)
+HEW_SH  ?= $(CURDIR)/../hew.sh
+HEW_RUN ?= $(CURDIR)/../hew.run
+
+# Build hew-wasm and distribute to downstream repos
+wasm-dist: wasm
+	@echo "==> Distributing hew-wasm to hew.sh"
+	cp hew-wasm/pkg/hew_wasm.js      $(HEW_SH)/src/lib/wasm/hew_wasm.js
+	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_SH)/public/wasm/hew_wasm_bg.wasm
+	@echo "==> Distributing hew-wasm to hew.run"
+	cp hew-wasm/pkg/hew_wasm.js      $(HEW_RUN)/src/lib/wasm/hew_wasm.js
+	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
+	@echo "==> Done. Commit in hew.sh and hew.run."
 
 # ── C++ codegen target ──────────────────────────────────────────────────────
 

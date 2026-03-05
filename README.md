@@ -96,11 +96,11 @@ Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.s
 | Dependency    | Version                 | Purpose                                     |
 | ------------- | ----------------------- | ------------------------------------------- |
 | Rust          | stable (latest)         | Frontend compiler, runtime, package manager |
-| LLVM          | 21.1                    | MLIR code generation and LLVM backend       |
-| MLIR          | (bundled with LLVM 21)  | Hew dialect and lowering passes             |
+| LLVM          | 22.1                    | MLIR code generation and LLVM backend       |
+| MLIR          | (bundled with LLVM 22)  | Hew dialect and lowering passes             |
 | CMake         | >= 3.20                 | Builds hew-codegen (C++ MLIR backend)       |
 | Ninja         | any                     | CMake build generator                       |
-| clang/clang++ | any (LLVM 21 preferred) | C/C++ compilation of hew-codegen            |
+| clang/clang++ | any (LLVM 22 preferred) | C/C++ compilation of hew-codegen            |
 
 **Install on Ubuntu/Debian:**
 
@@ -108,15 +108,15 @@ Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.s
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# LLVM 21 + MLIR
+# LLVM 22 + MLIR
 sudo mkdir -p /etc/apt/keyrings
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
   | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
 sudo apt-get install -y cmake ninja-build \
-  llvm-21-dev libmlir-21-dev mlir-21-tools clang-21
+  llvm-22-dev libmlir-21-dev mlir-21-tools clang-22
 ```
 
 **Install on macOS:**
@@ -125,8 +125,8 @@ sudo apt-get install -y cmake ninja-build \
 # Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# LLVM 21 + MLIR
-brew install llvm@21 ninja cmake
+# LLVM 22 + MLIR
+brew install llvm@22 ninja cmake
 ```
 
 ### Build

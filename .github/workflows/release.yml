@@ -42,7 +42,7 @@ permissions:
   packages: write
 
 env:
-  LLVM_VERSION: "21"
+  LLVM_VERSION: "22"
   # Resolve tag from push event or manual dispatch input
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -124,15 +124,15 @@ jobs:
         id: cache-llvm-windows
         uses: actions/cache/restore@v4
         with:
-          path: C:\llvm-21
-          key: llvm-mlir-21.1.8-win64-msvc-v2
+          path: C:\llvm-22
+          key: llvm-mlir-22.1.0-win64-msvc-v1
 
       - name: Build LLVM+MLIR from source (Windows)
         if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           # Sparse clone only needed directories
-          git clone --depth 1 --branch llvmorg-21.1.8 `
+          git clone --depth 1 --branch llvmorg-22.1.0 `
             --filter=blob:none --sparse `
             https://github.com/llvm/llvm-project.git C:\llvm-src
           Push-Location C:\llvm-src
@@ -141,7 +141,7 @@ jobs:
 
           cmake -S C:\llvm-src\llvm -B C:\llvm-build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_INSTALL_PREFIX="C:\llvm-21" `
+            -DCMAKE_INSTALL_PREFIX="C:\llvm-22" `
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
             -DLLVM_ENABLE_PROJECTS="mlir" `
@@ -175,8 +175,8 @@ jobs:
         if: startsWith(matrix.target, 'windows') && steps.cache-llvm-windows.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: C:\llvm-21
-          key: llvm-mlir-21.1.8-win64-msvc-v2
+          path: C:\llvm-22
+          key: llvm-mlir-22.1.0-win64-msvc-v1
 
       # ── Rust toolchain ──────────────────────────────────────────────────
 
@@ -252,8 +252,8 @@ jobs:
             -DCMAKE_C_COMPILER=cl `
             -DCMAKE_CXX_COMPILER=cl `
             -DHEW_STATIC_LINK=ON `
-            -DLLVM_DIR="C:\llvm-21\lib\cmake\llvm" `
-            -DMLIR_DIR="C:\llvm-21\lib\cmake\mlir"
+            -DLLVM_DIR="C:\llvm-22\lib\cmake\llvm" `
+            -DMLIR_DIR="C:\llvm-22\lib\cmake\mlir"
         shell: pwsh
 
       - name: Build hew-codegen
@@ -544,7 +544,7 @@ jobs:
           mkdir -p /tmp/alpine-codegen-out
           # Use pre-built LLVM image from GHCR (~2 min vs ~30 min from source).
           # Falls back to alpine:edge + full LLVM build if image not available.
-          IMAGE="ghcr.io/hew-lang/llvm-alpine:21"
+          IMAGE="ghcr.io/hew-lang/llvm-alpine:22"
           if ! docker pull "${IMAGE}" 2>/dev/null; then
             echo "::warning::Pre-built LLVM image not found, building from source (~30 min)"
             IMAGE="alpine:edge"

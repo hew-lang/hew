@@ -6,16 +6,16 @@
 #
 # Build:
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     -t ghcr.io/hew-lang/llvm-alpine:21 \
+#     -t ghcr.io/hew-lang/llvm-alpine:22 \
 #     -f installers/alpine/Dockerfile.llvm .
 #
-# The image contains /opt/llvm-21 with static LLVM+MLIR libraries,
+# The image contains /opt/llvm-22 with static LLVM+MLIR libraries,
 # cmake configs, and tools (including mlir-tblgen).
 
 FROM alpine:edge AS builder
 
-ARG LLVM_VERSION=21.1.8
-ARG LLVM_MAJOR=21
+ARG LLVM_VERSION=22.1.0
+ARG LLVM_MAJOR=22
 
 RUN apk add --no-cache \
     cmake samurai build-base python3 clang \
@@ -68,7 +68,7 @@ RUN rm -rf /tmp/llvm-project
 # ── Final image: Alpine edge with LLVM installed + build tools ───────────────
 FROM alpine:edge
 
-ARG LLVM_MAJOR=21
+ARG LLVM_MAJOR=22
 
 COPY --from=builder /opt/llvm-${LLVM_MAJOR} /opt/llvm-${LLVM_MAJOR}
 

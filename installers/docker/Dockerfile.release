@@ -60,7 +60,7 @@ RUN strip -d /src/target/release/libhew_runtime.a \
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 2: hew-codegen with statically linked LLVM/MLIR
 # ═════════════════════════════════════════════════════════════════════════════
-FROM ghcr.io/hew-lang/llvm-alpine:21 AS codegen-builder
+FROM ghcr.io/hew-lang/llvm-alpine:22 AS codegen-builder
 
 COPY hew-codegen/ /src/hew-codegen/
 
@@ -70,8 +70,8 @@ RUN cmake -S /src/hew-codegen -B /tmp/build -G Ninja \
     -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_CXX_FLAGS="-fno-rtti" \
     -DHEW_STATIC_LINK=ON \
-    -DLLVM_DIR=/opt/llvm-21/lib/cmake/llvm \
-    -DMLIR_DIR=/opt/llvm-21/lib/cmake/mlir
+    -DLLVM_DIR=/opt/llvm-22/lib/cmake/llvm \
+    -DMLIR_DIR=/opt/llvm-22/lib/cmake/mlir
 
 RUN ninja -C /tmp/build -j$(nproc)
 RUN strip /tmp/build/src/hew-codegen

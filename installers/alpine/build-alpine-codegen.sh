@@ -15,7 +15,7 @@
 
 set -eu
 
-LLVM_VERSION="${LLVM_VERSION:-21.1.8}"
+LLVM_VERSION="${LLVM_VERSION:-22.1.0}"
 LLVM_MAJOR="${LLVM_VERSION%%.*}"
 SRC_DIR="${SRC_DIR:-/src}"
 BUILD_DIR="${BUILD_DIR:-/tmp/hew-alpine-build}"

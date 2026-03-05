@@ -14,7 +14,7 @@ on:
       llvm_version:
         description: "LLVM version to build"
         required: false
-        default: "21.1.8"
+        default: "22.1.0"
   push:
     branches: [main]
     paths:
@@ -68,9 +68,9 @@ jobs:
           push: true
           provenance: false
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:21-${{ steps.platform.outputs.slug }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-${{ steps.platform.outputs.slug }}
           build-args: |
-            LLVM_VERSION=${{ inputs.llvm_version || '21.1.8' }}
+            LLVM_VERSION=${{ inputs.llvm_version || '22.1.0' }}
           cache-from: type=gha,scope=llvm-alpine-${{ steps.platform.outputs.slug }}
           cache-to: type=gha,mode=max,scope=llvm-alpine-${{ steps.platform.outputs.slug }}
 
@@ -92,6 +92,6 @@ jobs:
       - name: Create multi-arch manifest
         run: |
           docker buildx imagetools create \
-            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:21 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:21-linux-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:21-linux-arm64
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-linux-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:22-linux-arm64

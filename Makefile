@@ -102,22 +102,22 @@ wasm-runtime:
 # ── C++ codegen target ──────────────────────────────────────────────────────
 
 # Build hew-codegen: configure with CMake if needed, then build with Ninja.
-# Requires LLVM 21 and MLIR to be installed.
+# Requires LLVM 22 and MLIR to be installed.
 #
 # Auto-detects LLVM/MLIR paths:
 #   Linux (apt.llvm.org):  /usr/lib/llvm-<ver>/lib/cmake/{llvm,mlir}
 #   macOS (Homebrew):      $(brew --prefix llvm@<ver>)/lib/cmake/{llvm,mlir}
 #
 # Override with: make codegen LLVM_DIR=/path/to/llvm MLIR_DIR=/path/to/mlir
-#            or: make codegen LLVM_PREFIX=/usr/lib/llvm-21
+#            or: make codegen LLVM_PREFIX=/usr/lib/llvm-22
 
 # Auto-detect LLVM prefix if not explicitly provided
 ifndef LLVM_PREFIX
-  # Try versioned apt.llvm.org paths (21, 20, 19...)
-  LLVM_PREFIX := $(firstword $(wildcard /usr/lib/llvm-21 /usr/lib/llvm-20 /usr/lib/llvm-19))
+  # Try versioned apt.llvm.org paths (22, 21, 20...)
+  LLVM_PREFIX := $(firstword $(wildcard /usr/lib/llvm-22 /usr/lib/llvm-21 /usr/lib/llvm-20))
   # Try Homebrew on macOS
   ifeq ($(LLVM_PREFIX),)
-    LLVM_PREFIX := $(shell brew --prefix llvm@21 2>/dev/null || brew --prefix llvm 2>/dev/null)
+    LLVM_PREFIX := $(shell brew --prefix llvm@22 2>/dev/null || brew --prefix llvm 2>/dev/null)
   endif
 endif
 
@@ -133,7 +133,7 @@ else ifneq ($(LLVM_PREFIX),)
   CMAKE_EXTRA_ARGS += -DMLIR_DIR=$(LLVM_PREFIX)/lib/cmake/mlir
 endif
 
-# macOS requires brew's clang (not Apple Clang) to handle LLVM 21 bitcode
+# macOS requires brew's clang (not Apple Clang) to handle LLVM 22 bitcode
 # in the statically linked MLIR objects, plus the Apple SDK sysroot to fix
 # header conflicts, and brew's libc++ path for ABI compatibility.
 # See docs/cross-platform-build-guide.md for details.

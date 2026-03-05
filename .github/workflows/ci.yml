@@ -13,7 +13,7 @@ permissions:
   security-events: write
 
 env:
-  LLVM_VERSION: "21"
+  LLVM_VERSION: "22"
   CARGO_TERM_COLOR: always
 
 jobs:

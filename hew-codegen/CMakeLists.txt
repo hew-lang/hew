@@ -15,7 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ── Find LLVM & MLIR ────────────────────────────────────────────────────────
 # Auto-detected via CMake's standard search paths.  Override with:
 #   cmake -DLLVM_DIR=/path/to/llvm/lib/cmake/llvm -DMLIR_DIR=/path/to/mlir/lib/cmake/mlir
-find_package(LLVM 21.1 REQUIRED CONFIG)
+find_package(LLVM 22.1 REQUIRED CONFIG)
 find_package(MLIR REQUIRED CONFIG)
 
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")

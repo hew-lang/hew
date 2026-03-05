@@ -1,7 +1,7 @@
 # Cross-Platform Build Guide
 
 Building hew-codegen (the C++ MLIR code generator) for release requires careful
-setup because it statically links against LLVM 21 and MLIR. This document
+setup because it statically links against LLVM 22 and MLIR. This document
 captures the platform-specific issues and their solutions.
 
 ## Overview
@@ -13,7 +13,7 @@ The release build produces three binary artifacts per platform:
 - `hew-codegen` — MLIR code generator (C++, statically linked against LLVM/MLIR)
 
 The Rust components build straightforwardly with `cargo build --release`. The
-C++ component requires LLVM 21 development libraries and a compatible compiler
+C++ component requires LLVM 22 development libraries and a compatible compiler
 toolchain, and this is where the platform-specific complexity lives.
 
 ## Linux x86_64
@@ -23,16 +23,16 @@ toolchain, and this is where the platform-specific complexity lives.
 ### Prerequisites
 
 ```bash
-# LLVM 21 from apt.llvm.org
+# LLVM 22 from apt.llvm.org
 sudo mkdir -p /etc/apt/keyrings
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
   | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
 echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] \
-  http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+  http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
   | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
 sudo apt-get update
 sudo apt-get install -y cmake ninja-build \
-  llvm-21-dev libmlir-21-dev mlir-21-tools clang-21
+  llvm-22-dev libmlir-21-dev mlir-21-tools clang-22
 ```
 
 ### Build
@@ -41,11 +41,11 @@ sudo apt-get install -y cmake ninja-build \
 cd hew-codegen
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang-21 \
-  -DCMAKE_CXX_COMPILER=clang++-21 \
+  -DCMAKE_C_COMPILER=clang-22 \
+  -DCMAKE_CXX_COMPILER=clang++-22 \
   -DHEW_STATIC_LINK=ON \
-  -DLLVM_DIR=/usr/lib/llvm-21/lib/cmake/llvm \
-  -DMLIR_DIR=/usr/lib/llvm-21/lib/cmake/mlir
+  -DLLVM_DIR=/usr/lib/llvm-22/lib/cmake/llvm \
+  -DMLIR_DIR=/usr/lib/llvm-22/lib/cmake/mlir
 cmake --build build --config Release
 ```
 
@@ -53,8 +53,8 @@ cmake --build build --config Release
 
 The `HandleLLVMOptions` CMake module (included from LLVM's cmake config)
 propagates Clang-specific warning flags like `-Wweak-vtables` to all consumers.
-GCC does not recognize these flags and will error. Always use `clang-21` /
-`clang++-21` as the C/C++ compiler, never `gcc`/`g++`.
+GCC does not recognize these flags and will error. Always use `clang-22` /
+`clang++-22` as the C/C++ compiler, never `gcc`/`g++`.
 
 ## Linux aarch64
 
@@ -74,7 +74,7 @@ apt.llvm.org repository URL:
 
 ```
 deb [signed-by=/etc/apt/keyrings/llvm.asc] \
-  http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main
+  http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-22 main
 ```
 
 ### Build
@@ -106,7 +106,7 @@ Similarly, when casting `libc::malloc` results or building C strings, use
 
 ## macOS (x86_64 and aarch64)
 
-**Tested on:** macOS x86_64 (Homebrew LLVM 21.1.8), GitHub Actions `macos-13`
+**Tested on:** macOS x86_64 (Homebrew LLVM 22.1.8), GitHub Actions `macos-13`
 (x86_64) and `macos-14` (aarch64)
 
 macOS is the most complex platform due to three interacting toolchain
@@ -115,14 +115,14 @@ components: the compiler, the linker, and the C++ standard library.
 ### Prerequisites
 
 ```bash
-brew install llvm@21 ninja cmake
+brew install llvm@22 ninja cmake
 ```
 
 Homebrew LLVM is keg-only (not symlinked into `/usr/local/bin`). You need the
 prefix path:
 
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm@21)"
+LLVM_PREFIX="$(brew --prefix llvm@22)"
 # x86_64: /usr/local/opt/llvm
 # aarch64: /opt/homebrew/opt/llvm
 ```
@@ -130,7 +130,7 @@ LLVM_PREFIX="$(brew --prefix llvm@21)"
 ### Build
 
 ```bash
-LLVM_PREFIX="$(brew --prefix llvm@21)"
+LLVM_PREFIX="$(brew --prefix llvm@22)"
 cd hew-codegen
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
@@ -153,14 +153,14 @@ what each solves:
 **1. `CMAKE_C/CXX_COMPILER` = brew's clang (not Apple Clang)**
 
 When `HEW_STATIC_LINK=ON`, CMake merges MLIR static library objects into our
-archive. These MLIR objects were compiled by Homebrew's LLVM 21 and contain
-LLVM 21 bitcode (from thin LTO). Apple's system linker uses its own LTO
+archive. These MLIR objects were compiled by Homebrew's LLVM 22 and contain
+LLVM 22 bitcode (from thin LTO). Apple's system linker uses its own LTO
 implementation (based on LLVM 15-17 depending on Xcode version) and cannot
-parse LLVM 21 bitcode:
+parse LLVM 22 bitcode:
 
 ```
 ld: could not parse bitcode object file:
-  'Unknown attribute kind (102) (Producer: 'LLVM21.1.8'
+  'Unknown attribute kind (102) (Producer: 'LLVM22.1.0'
    Reader: 'LLVM APPLE_1_1700.6.3.2_0')'
 ```
 
@@ -240,8 +240,8 @@ non-empty.
 
 | Platform      | Compiler                     | Sysroot                    | Linker flags                              | Extra apt packages       |
 | ------------- | ---------------------------- | -------------------------- | ----------------------------------------- | ------------------------ |
-| Linux x86_64  | `clang-21`                   | n/a                        | n/a                                       | (standard)               |
-| Linux aarch64 | `clang-21`                   | n/a                        | n/a                                       | `libzstd-dev zlib1g-dev` |
+| Linux x86_64  | `clang-22`                   | n/a                        | n/a                                       | (standard)               |
+| Linux aarch64 | `clang-22`                   | n/a                        | n/a                                       | `libzstd-dev zlib1g-dev` |
 | macOS x86_64  | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
 | macOS aarch64 | `${LLVM_PREFIX}/bin/clang++` | `$(xcrun --show-sdk-path)` | `-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,...` | n/a                      |
 | Windows       | N/A                          | N/A                        | N/A                                       | (not yet supported)      |

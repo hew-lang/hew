@@ -3,7 +3,9 @@
 //! Provides `hew_read_file`, `hew_sleep_ms`, `hew_now_ms`, duration helpers,
 //! and an epoll-based I/O poller (Linux only; stub on other platforms).
 
-use std::ffi::{c_char, c_int, c_void, CStr};
+#[cfg(target_os = "linux")]
+use std::ffi::c_void;
+use std::ffi::{c_char, c_int, CStr};
 
 // ---------------------------------------------------------------------------
 // Duration
@@ -145,17 +147,9 @@ pub const HEW_IO_ERROR: c_int = 0x04;
 /// I/O event interest flag: hang-up.
 pub const HEW_IO_HUP: c_int = 0x08;
 
-/// Opaque actor handle — the actor module is not yet implemented so we declare
-/// the send function as an external symbol.
-#[repr(C)]
-#[derive(Debug)]
-pub struct HewActor {
-    _opaque: [u8; 0],
-}
-
-extern "C" {
-    fn hew_actor_send(actor: *mut HewActor, msg_type: c_int, data: *mut c_void, data_size: usize);
-}
+#[cfg(target_os = "linux")]
+use crate::actor::hew_actor_send;
+use crate::actor::HewActor;
 
 // ---- Linux (epoll) --------------------------------------------------------
 

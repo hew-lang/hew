@@ -2,17 +2,19 @@
 // Exercises: Two actors exchanging messages
 actor Pinger {
     let count: int;
-    receive fn ping(n: int) {
+    receive fn ping(n: int) -> int {
         println(f"Ping {n}");
         self.count = self.count + 1;
+        self.count
     }
 }
 
 actor Ponger {
     let count: int;
-    receive fn pong(n: int) {
+    receive fn pong(n: int) -> int {
         println(f"Pong {n}");
         self.count = self.count + 1;
+        self.count
     }
 }
 
@@ -20,17 +22,12 @@ fn main() {
     println("=== Ping Pong ===");
     let pinger = spawn Pinger(count: 0);
     let ponger = spawn Ponger(count: 0);
-    pinger.ping(1);
-    sleep_ms(50);
-    ponger.pong(1);
-    sleep_ms(50);
-    pinger.ping(2);
-    sleep_ms(50);
-    ponger.pong(2);
-    sleep_ms(50);
-    pinger.ping(3);
-    sleep_ms(50);
-    ponger.pong(3);
-    sleep_ms(200);
+    // Use await for deterministic ordering (no sleeps needed)
+    await pinger.ping(1);
+    await ponger.pong(1);
+    await pinger.ping(2);
+    await ponger.pong(2);
+    await pinger.ping(3);
+    await ponger.pong(3);
     println("Done");
 }

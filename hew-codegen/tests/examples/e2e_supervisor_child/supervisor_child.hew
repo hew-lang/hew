@@ -7,10 +7,11 @@ actor Worker {
         print(self.id);
         println(" ready");
     }
-    receive fn ping() {
+    receive fn ping() -> int {
         print("Worker ");
         print(self.id);
         println(" ponged");
+        self.id
     }
 }
 
@@ -32,11 +33,9 @@ fn main() {
     let a = supervisor_child(pool, 0);
     let b = supervisor_child(pool, 1);
     let c = supervisor_child(pool, 2);
-    a.ping();
-    sleep_ms(10);
-    b.ping();
-    sleep_ms(10);
-    c.ping();
-    sleep_ms(50);
+    // Use await for deterministic ordering (no sleeps needed)
+    await a.ping();
+    await b.ping();
+    await c.ping();
     println("done");
 }

@@ -4,12 +4,13 @@
 actor Worker {
     let id: int;
     let value: int;
-    receive fn tick() {
+    receive fn tick() -> int {
         self.value = self.value + 1;
         print("worker ");
         print(self.id);
         print(" value=");
         println(self.value);
+        self.value
     }
     receive fn crash() {
         print("worker ");
@@ -46,16 +47,13 @@ fn main() {
     sleep_ms(50);
     let w1 = supervisor_child(inner, 0);
     let w2 = supervisor_child(inner, 1);
-    w1.tick();
-    sleep_ms(30);
-    w2.tick();
-    sleep_ms(50);
+    await w1.tick();
+    await w2.tick();
 
     // Crash w1 — inner supervisor restarts it
     w1.crash();
     sleep_ms(500);
     let w1b = supervisor_child(inner, 0);
-    w1b.tick();
-    sleep_ms(50);
+    await w1b.tick();
     println("nested supervision works");
 }

@@ -2,23 +2,25 @@
 // Exercises: Chain of actors transforming data
 actor Doubler {
     let id: int;
-    receive fn process(n: int) {
+    receive fn process(n: int) -> int {
         let result = n * 2;
         print("Doubler: ");
         print(n);
         println(f" -> {result}");
+        result
     }
 }
 
 actor Adder {
     let offset: int;
-    receive fn process(n: int) {
+    receive fn process(n: int) -> int {
         let result = n + self.offset;
         print("Adder(+");
         print(self.offset);
         print("): ");
         print(n);
         println(f" -> {result}");
+        result
     }
 }
 
@@ -26,18 +28,12 @@ fn main() {
     println("=== Actor Pipeline ===");
     let doubler = spawn Doubler(target: 1);
     let adder = spawn Adder(base: 10);
-    // Process values through the pipeline with sleeps for ordering
-    doubler.process(5);
-    sleep_ms(50);
-    adder.process(5);
-    sleep_ms(50);
-    doubler.process(10);
-    sleep_ms(50);
-    adder.process(10);
-    sleep_ms(50);
-    doubler.process(25);
-    sleep_ms(50);
-    adder.process(25);
-    sleep_ms(200);
+    // Use await for deterministic ordering (no sleeps needed)
+    await doubler.process(5);
+    await adder.process(5);
+    await doubler.process(10);
+    await adder.process(10);
+    await doubler.process(25);
+    await adder.process(25);
     println("Done");
 }

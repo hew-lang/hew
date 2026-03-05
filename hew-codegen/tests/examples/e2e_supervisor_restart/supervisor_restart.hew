@@ -2,10 +2,11 @@
 // After crash, the child gets fresh state (reset to init values).
 actor Counter {
     let value: int;
-    receive fn tick() {
+    receive fn tick() -> int {
         self.value = self.value + 1;
         print("tick ");
         println(self.value);
+        self.value
     }
     receive fn crash_now() {
         println("crashing");
@@ -25,16 +26,14 @@ fn main() {
     let sup = spawn CounterSup;
     sleep_ms(50);
     let c = supervisor_child(sup, 0);
-    c.tick();
-    sleep_ms(20);
+    await c.tick();
 
     // Crash the child actor
     c.crash_now();
-    sleep_ms(200);
+    sleep_ms(500);
 
     // After restart, state is fresh (value resets to 0)
     let c2 = supervisor_child(sup, 0);
-    c2.tick();
-    sleep_ms(20);
+    await c2.tick();
     println("done");
 }

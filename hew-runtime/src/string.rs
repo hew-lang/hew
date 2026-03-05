@@ -794,17 +794,31 @@ fn is_static_string(ptr: *const u8) -> bool {
         // Walk Mach-O load commands to find vmaddr range.
         let header = &raw const MH_HEADER;
         // mach_header_64: magic(4) + cpu(4) + cpusub(4) + filetype(4) + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4) = 32 bytes
+        // SAFETY: `header` points to our own Mach-O header; the load command
+        // fields at fixed offsets are guaranteed by the kernel loader.
         let ncmds = unsafe { *((header as usize + 16) as *const u32) };
         let mut cmd_ptr = header as usize + 32; // past mach_header_64
         let mut lo = usize::MAX;
         let mut hi = 0usize;
         for _ in 0..ncmds {
+            // SAFETY: cmd_ptr walks valid load commands within the Mach-O header.
             let cmd = unsafe { *(cmd_ptr as *const u32) };
+            // SAFETY: cmdsize is at offset +4 within the load command.
             let cmdsize = unsafe { *((cmd_ptr + 4) as *const u32) } as usize;
             // LC_SEGMENT_64 = 0x19
             if cmd == 0x19 {
                 // segment_command_64: cmd(4) + cmdsize(4) + segname(16) + vmaddr(8) + vmsize(8)
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "64-bit platform only; Mach-O is macOS-specific"
+                )]
+                // SAFETY: vmaddr is at offset +24 within a segment_command_64.
                 let vmaddr = unsafe { *((cmd_ptr + 24) as *const u64) } as usize;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "64-bit platform only; Mach-O is macOS-specific"
+                )]
+                // SAFETY: vmsize is at offset +32 within a segment_command_64.
                 let vmsize = unsafe { *((cmd_ptr + 32) as *const u64) } as usize;
                 if vmsize > 0 {
                     lo = lo.min(vmaddr);

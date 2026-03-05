@@ -572,6 +572,18 @@ add_e2e_file_test(stress_mass_spawn     e2e_stress stress_mass_spawn)
 add_e2e_file_test(stress_ring           e2e_stress stress_ring)
 add_e2e_file_test(stress_message_burst  e2e_stress stress_message_burst)
 
+# Stress tests spawn many worker threads and are sensitive to extreme CPU/memory
+# contention from parallel test execution.  Serialize them against each other and
+# reserve enough ctest job slots so the OS scheduler isn't overwhelmed.
+set_tests_properties(
+  e2e_stress_stress_mass_spawn
+  e2e_stress_stress_ring
+  e2e_stress_stress_message_burst
+  PROPERTIES
+    RESOURCE_LOCK actor_crash_tests
+    PROCESSORS   4
+)
+
 # ── Bytes stream tests (Stream<T> / Sink<T> first-class streams) ─────────────
 add_e2e_file_test(stream_file_count      e2e_bytes stream_file_count)
 add_e2e_file_test(stream_channel_count   e2e_bytes stream_channel_count)
@@ -603,6 +615,19 @@ add_e2e_file_test(supervisor_strategy   e2e_supervisor_strategy supervisor_strat
 add_e2e_file_test(supervisor_child      e2e_supervisor_child supervisor_child)
 add_e2e_file_test(supervisor_restart    e2e_supervisor_restart supervisor_restart)
 add_e2e_file_test(supervisor_nested     e2e_supervisor_nested supervisor_nested)
+
+# Supervisor tests intentionally crash and restart actors — sensitive to
+# CPU contention from parallel test execution.
+set_tests_properties(
+  e2e_supervisor_basic_supervisor_basic
+  e2e_supervisor_strategy_supervisor_strategy
+  e2e_supervisor_child_supervisor_child
+  e2e_supervisor_restart_supervisor_restart
+  e2e_supervisor_nested_supervisor_nested
+  PROPERTIES
+    RESOURCE_LOCK actor_crash_tests
+    PROCESSORS   2
+)
 
 # ── Defer tests ────────────────────────────────────────────────────────────
 add_e2e_file_test(defer                 e2e_defer defer)

@@ -454,6 +454,10 @@ fn activate_actor(actor: *mut HewActor) {
         _ => base_budget,
     };
     let mailbox = a.mailbox.cast::<HewMailbox>();
+    // Cache arena pointer before dispatch — the actor may be freed by a
+    // supervisor on another worker during crash recovery, making `a.arena`
+    // a dangling read.
+    let actor_arena = a.arena;
 
     ACTIVE_WORKERS.fetch_add(1, Ordering::Relaxed);
 
@@ -464,6 +468,7 @@ fn activate_actor(actor: *mut HewActor) {
     let prev_arena = crate::arena::set_current_arena(a.arena);
 
     let mut msgs_processed: u32 = 0;
+    let mut crashed = false;
 
     if !mailbox.is_null() {
         // Process up to `budget` messages.
@@ -517,6 +522,7 @@ fn activate_actor(actor: *mut HewActor) {
                         // SAFETY: `msg` is exclusively owned by this worker.
                         unsafe { hew_msg_node_free(msg) };
                         crate::crash::record_injected_crash(a.id);
+                        crashed = true;
                         break;
                     }
 
@@ -566,10 +572,13 @@ fn activate_actor(actor: *mut HewActor) {
 
                     // Restore arena and reset — crash discards all in-flight data.
                     crate::arena::set_current_arena(prev_arena);
-                    if !a.arena.is_null() {
+                    if !actor_arena.is_null() {
                         // SAFETY: Arena was created during spawn; crash discards
-                        // all in-flight data.
-                        unsafe { crate::arena::hew_arena_reset(a.arena) };
+                        // all in-flight data. We use the cached `actor_arena`
+                        // because `a` may be freed by a supervisor on another
+                        // worker after handle_crash_recovery sends the crash
+                        // notification.
+                        unsafe { crate::arena::hew_arena_reset(actor_arena) };
                     }
 
                     // Free the message node. The dispatch didn't complete,
@@ -581,6 +590,7 @@ fn activate_actor(actor: *mut HewActor) {
                     unsafe { hew_msg_node_free(msg) };
 
                     // Stop processing further messages for this actor.
+                    crashed = true;
                     break;
                 }
             } else {
@@ -604,13 +614,20 @@ fn activate_actor(actor: *mut HewActor) {
     // Restore previous CURRENT_ACTOR and arena.
     actor::set_current_actor(prev_actor);
     crate::arena::set_current_arena(prev_arena);
-    if !a.arena.is_null() {
+
+    if !crashed && !actor_arena.is_null() {
         // SAFETY: Arena was created during spawn; no references survive past activation.
-        unsafe { crate::arena::hew_arena_reset(a.arena) };
+        unsafe { crate::arena::hew_arena_reset(actor_arena) };
     }
 
     ACTIVE_WORKERS.fetch_sub(1, Ordering::Relaxed);
     TASKS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+
+    // After a crash, the actor may have been freed by a supervisor on
+    // another worker — do not access `a` or `mailbox` from here on.
+    if crashed {
+        return;
+    }
 
     // Check if actor transitioned to Stopping during dispatch (self-stop).
     let cur_state = a.actor_state.load(Ordering::Acquire);

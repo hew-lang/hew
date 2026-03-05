@@ -141,8 +141,8 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return generateIfExpr(*ifE, expr.span);
   if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
     // Empty block {} coerces to HashMap when pendingDeclaredType expects it
-    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr &&
-        pendingDeclaredType && mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
+    if (blockExpr->block.stmts.empty() && !blockExpr->block.trailing_expr && pendingDeclaredType &&
+        mlir::isa<hew::HashMapType>(*pendingDeclaredType)) {
       auto hmType = *pendingDeclaredType;
       pendingDeclaredType.reset();
       return builder.create<hew::HashMapNewOp>(currentLoc, hmType).getResult();
@@ -598,6 +598,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
 
       emitError(location) << "await requires an actor method call";
       return nullptr;
+    }
+    // Check for actor ref await (void await — close+await pattern)
+    if (auto *ie = std::get_if<ast::ExprIdentifier>(&awaitE->inner->value.kind)) {
+      if (actorVarTypes.count(ie->name)) {
+        auto operand = generateExpression(awaitE->inner->value);
+        if (!operand)
+          return nullptr;
+        auto awaitOp = builder.create<hew::ActorAwaitOp>(location, builder.getI32Type(), operand);
+        return awaitOp.getResult();
+      }
     }
     // Not a method call — operand might be a task handle.
     auto operand = generateExpression(awaitE->inner->value);
@@ -3409,7 +3419,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
 // ============================================================================
 
 mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
-                                             const ast::Span &exprSpan) {
+                                            const ast::Span &exprSpan) {
   auto location = currentLoc;
 
   // Determine HashMap type: prefer pendingDeclaredType (from let/var annotation),
@@ -3423,8 +3433,7 @@ mlir::Value MLIRGen::generateMapLiteralExpr(const ast::ExprMapLiteral &mapLit,
     if (mlir::isa<hew::HashMapType>(resolvedMlirType)) {
       hmType = resolvedMlirType;
     } else {
-      emitError(location)
-          << "map literal must produce a HashMap, got " << resolvedMlirType;
+      emitError(location) << "map literal must produce a HashMap, got " << resolvedMlirType;
       return nullptr;
     }
   } else {

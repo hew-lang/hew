@@ -1,0 +1,19 @@
+actor Printer {
+    receive fn say(msg: String) {
+        println(msg);
+    }
+}
+
+fn main() {
+    let a = spawn Printer;
+    let b = spawn Printer;
+    a.say("a1");
+    a.say("a2");
+    close(a);
+    await a;
+    b.say("b1");
+    b.say("b2");
+    close(b);
+    await b;
+    println("all done");
+}

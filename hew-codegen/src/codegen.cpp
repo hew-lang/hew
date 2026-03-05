@@ -23,12 +23,12 @@
 
 // MLIR conversion includes
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
-#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -1012,6 +1012,27 @@ struct ActorCloseOpLowering : public mlir::OpConversionPattern<hew::ActorCloseOp
                                         mlir::ValueRange{adaptor.getTarget()});
 
     rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
+/// Lower hew.actor_await -> func.call @hew_actor_await
+struct ActorAwaitOpLowering : public mlir::OpConversionPattern<hew::ActorAwaitOp> {
+  using OpConversionPattern<hew::ActorAwaitOp>::OpConversionPattern;
+
+  mlir::LogicalResult matchAndRewrite(hew::ActorAwaitOp op, OpAdaptor adaptor,
+                                      mlir::ConversionPatternRewriter &rewriter) const override {
+    auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto loc = op.getLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(rewriter.getContext());
+    auto i32Type = rewriter.getI32Type();
+
+    auto awaitFuncType = rewriter.getFunctionType({ptrType}, {i32Type});
+    getOrInsertFuncDecl(module, rewriter, "hew_actor_await", awaitFuncType);
+    auto call = rewriter.create<mlir::func::CallOp>(
+        loc, "hew_actor_await", mlir::TypeRange{i32Type}, mlir::ValueRange{adaptor.getTarget()});
+
+    rewriter.replaceOp(op, call.getResults());
     return mlir::success();
   }
 };
@@ -3915,6 +3936,7 @@ mlir::LogicalResult Codegen::lowerHewDialect(mlir::ModuleOp module) {
   patterns.add<ActorAskOpLowering>(typeConverter, &context);
   patterns.add<ActorStopOpLowering>(typeConverter, &context);
   patterns.add<ActorCloseOpLowering>(typeConverter, &context);
+  patterns.add<ActorAwaitOpLowering>(typeConverter, &context);
   patterns.add<ActorSelfOpLowering>(typeConverter, &context);
   patterns.add<ActorLinkOpLowering>(typeConverter, &context);
   patterns.add<ActorUnlinkOpLowering>(typeConverter, &context);

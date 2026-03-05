@@ -3619,6 +3619,7 @@ impl Checker {
                     Ty::Named { name, args } if name == "Task" && !args.is_empty() => {
                         args[0].clone()
                     }
+                    _ if inner_ty.as_actor_ref().is_some() => Ty::Unit,
                     _ => inner_ty,
                 }
             }
@@ -10069,6 +10070,30 @@ fn main() {
         assert!(
             !since_without_version,
             "should not warn about missing version"
+        );
+    }
+
+    #[test]
+    fn typecheck_await_actor_ref_returns_unit() {
+        let output = check_source(
+            r#"
+            actor Greeter {
+                receive fn greet(name: String) {
+                    println(name);
+                }
+            }
+            fn main() {
+                let g = spawn Greeter;
+                g.greet("hi");
+                close(g);
+                await g;
+            }
+            "#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "expected no errors, got: {:?}",
+            output.errors
         );
     }
 }

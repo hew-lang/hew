@@ -14,5 +14,6 @@ fn main() {
     doubler.process(5);
     doubler.process(21);
     doubler.process(100);
-    sleep_ms(200);
+    close(doubler);
+    await doubler;
 }

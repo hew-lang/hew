@@ -1,0 +1,14 @@
+actor Worker {
+    receive fn greet(label: String) {
+        println(label);
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    w.greet("hello");
+    w.greet("world");
+    close(w);
+    await w;
+    println("done");
+}

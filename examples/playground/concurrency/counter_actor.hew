@@ -16,5 +16,6 @@ fn main() {
     c.increment(5);
     c.increment(3);
     c.increment(12);
-    sleep_ms(200);
+    close(c);
+    await c;
 }

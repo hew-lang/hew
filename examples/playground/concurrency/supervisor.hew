@@ -16,15 +16,16 @@ supervisor WorkerPool {
     strategy: one_for_one,
     max_restarts: 5,
     window: 10,
-    child w: Worker
+    child w1: Worker(1),
+    child w2: Worker(2)
 }
 
 fn main() {
-    let w1 = spawn Worker;
-    let w2 = spawn Worker;
-
+    let pool = spawn WorkerPool;
+    let w1 = supervisor_child(pool, 0);
+    let w2 = supervisor_child(pool, 1);
     w1.work(10);
     w2.work(20);
     w1.work(30);
-    sleep_ms(200);
+    supervisor_stop(pool);
 }

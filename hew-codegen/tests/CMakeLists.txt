@@ -291,6 +291,8 @@ add_e2e_file_test(request_response    e2e_actors request_response)
 add_e2e_file_test(actor_ref_passing   e2e_actors actor_ref_passing)
 add_e2e_file_test(await_actor_ask     e2e_actors await_actor_ask)
 add_e2e_file_test(actor_orchestration e2e_actors actor_orchestration)
+add_e2e_file_test(close_await_actor  e2e_actors close_await_actor)
+add_e2e_file_test(close_await_multi  e2e_actors close_await_multi)
 
 # Concurrency (8 tests)
 add_e2e_file_test(supervision_basic   e2e_concurrency actor_supervision_basic)

@@ -514,6 +514,18 @@ def Hew_ActorCloseOp : Hew_Op<"actor_close"> {
 }
 
 //===----------------------------------------------------------------------===//
+// hew.actor_await — Block until an actor reaches a terminal state
+//===----------------------------------------------------------------------===//
+
+def Hew_ActorAwaitOp : Hew_Op<"actor_await"> {
+  let summary = "Block until an actor reaches a terminal state.";
+
+  let arguments = (ins AnyType:$target);
+  let results = (outs I32:$error_code);
+  let assemblyFormat = "$target attr-dict `:` type($target) `->` type($error_code)";
+}
+
+//===----------------------------------------------------------------------===//
 // hew.actor.self — Get the current actor's reference
 //===----------------------------------------------------------------------===//
 

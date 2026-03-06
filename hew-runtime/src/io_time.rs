@@ -1,9 +1,10 @@
 //! File I/O, sleep, clock, and I/O poller for the Hew runtime.
 //!
 //! Provides `hew_read_file`, `hew_sleep_ms`, `hew_now_ms`, duration helpers,
-//! and an epoll-based I/O poller (Linux only; stub on other platforms).
+//! and a platform I/O poller (epoll on Linux, kqueue on FreeBSD/macOS, stub
+//! elsewhere).
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use std::ffi::c_void;
 use std::ffi::{c_char, c_int, CStr};
 
@@ -135,7 +136,7 @@ pub unsafe extern "C" fn hew_now_ms() -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// I/O Poller (epoll on Linux, stub elsewhere)
+// I/O Poller (epoll on Linux, kqueue on FreeBSD/macOS, stub elsewhere)
 // ---------------------------------------------------------------------------
 
 /// I/O event interest flags.
@@ -147,7 +148,7 @@ pub const HEW_IO_ERROR: c_int = 0x04;
 /// I/O event interest flag: hang-up.
 pub const HEW_IO_HUP: c_int = 0x08;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
 use crate::actor::hew_actor_send;
 use crate::actor::HewActor;
 
@@ -387,13 +388,304 @@ mod platform {
     }
 }
 
-// ---- Non-Linux (stub) -----------------------------------------------------
+// ---- FreeBSD / macOS (kqueue) ----------------------------------------------
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+mod platform {
+    use super::{
+        c_int, c_void, hew_actor_send, HewActor, HEW_IO_ERROR, HEW_IO_HUP, HEW_IO_READ,
+        HEW_IO_WRITE,
+    };
+    use std::collections::HashMap;
+
+    /// Per-fd registration data.
+    struct FdEntry {
+        actor: *mut HewActor,
+        msg_type: c_int,
+    }
+
+    /// Kqueue-backed I/O poller.
+    pub struct HewIoPoller {
+        kq: c_int,
+        entries: HashMap<c_int, FdEntry>,
+    }
+
+    // SAFETY: The poller is only accessed through `extern "C"` functions which
+    // take `&mut` semantics via `*mut` — no concurrent access.
+    unsafe impl Send for HewIoPoller {}
+
+    impl HewIoPoller {
+        #[must_use]
+        pub fn new() -> Option<Self> {
+            // SAFETY: `kqueue()` is always valid.
+            let kq = unsafe { libc::kqueue() };
+            if kq < 0 {
+                return None;
+            }
+            Some(Self {
+                kq,
+                entries: HashMap::new(),
+            })
+        }
+    }
+
+    impl Drop for HewIoPoller {
+        fn drop(&mut self) {
+            if self.kq >= 0 {
+                // SAFETY: closing our own kqueue fd.
+                unsafe {
+                    libc::close(self.kq);
+                }
+            }
+        }
+    }
+
+    /// Maximum number of kqueue events to process per poll call.
+    const MAX_EVENTS: usize = 64;
+
+    /// Create a new I/O poller.
+    ///
+    /// # Safety
+    ///
+    /// No preconditions.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_new() -> *mut HewIoPoller {
+        match HewIoPoller::new() {
+            Some(p) => Box::into_raw(Box::new(p)),
+            None => std::ptr::null_mut(),
+        }
+    }
+
+    /// Register a file descriptor with the poller.
+    ///
+    /// Returns 0 on success, -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`]. `actor`
+    /// must remain valid for the lifetime of the registration.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_register(
+        p: *mut HewIoPoller,
+        fd: c_int,
+        actor: *mut HewActor,
+        msg_type: c_int,
+        events: c_int,
+    ) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        // SAFETY: caller guarantees `p` is valid.
+        let poller = unsafe { &mut *p };
+
+        // Build changelist for the requested filters.
+        let mut changelist: Vec<libc::kevent> = Vec::new();
+
+        if events & HEW_IO_READ != 0 {
+            changelist.push(libc::kevent {
+                ident: fd as usize,
+                filter: libc::EVFILT_READ,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            });
+        }
+        if events & HEW_IO_WRITE != 0 {
+            changelist.push(libc::kevent {
+                ident: fd as usize,
+                filter: libc::EVFILT_WRITE,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            });
+        }
+
+        if changelist.is_empty() {
+            return -1;
+        }
+
+        // SAFETY: kevent with valid kq, changelist, and no eventlist.
+        let rc = unsafe {
+            libc::kevent(
+                poller.kq,
+                changelist.as_ptr(),
+                changelist.len() as c_int,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if rc < 0 {
+            return -1;
+        }
+
+        poller.entries.insert(fd, FdEntry { actor, msg_type });
+        0
+    }
+
+    /// Unregister a file descriptor from the poller.
+    ///
+    /// Returns 0 on success, -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        // SAFETY: caller guarantees `p` is valid.
+        let poller = unsafe { &mut *p };
+
+        // Delete both read and write filters — ignore errors for filters that
+        // were not registered (kevent returns -1 with ENOENT, which is benign).
+        let changelist = [
+            libc::kevent {
+                ident: fd as usize,
+                filter: libc::EVFILT_READ,
+                flags: libc::EV_DELETE,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+            libc::kevent {
+                ident: fd as usize,
+                filter: libc::EVFILT_WRITE,
+                flags: libc::EV_DELETE,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+        ];
+
+        // SAFETY: kevent with valid kq and changelist.
+        unsafe {
+            libc::kevent(
+                poller.kq,
+                changelist.as_ptr(),
+                changelist.len() as c_int,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            );
+        }
+
+        poller.entries.remove(&fd);
+        0
+    }
+
+    /// Poll for I/O events, dispatching to registered actors.
+    ///
+    /// Returns the number of events dispatched, or -1 on error.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
+    /// All registered actor pointers must still be valid.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_poll(p: *mut HewIoPoller, timeout_ms: c_int) -> c_int {
+        if p.is_null() {
+            return -1;
+        }
+        // SAFETY: caller guarantees `p` is valid.
+        let poller = unsafe { &mut *p };
+
+        let mut kq_events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
+
+        // Build timeout: negative means block indefinitely (pass null).
+        let ts;
+        let timeout_ptr = if timeout_ms < 0 {
+            std::ptr::null()
+        } else {
+            ts = libc::timespec {
+                tv_sec: (timeout_ms / 1000) as libc::time_t,
+                tv_nsec: ((timeout_ms % 1000) as libc::c_long) * 1_000_000,
+            };
+            &ts as *const libc::timespec
+        };
+
+        // SAFETY: kevent with valid kq, no changelist, eventlist buffer.
+        let n = unsafe {
+            libc::kevent(
+                poller.kq,
+                std::ptr::null(),
+                0,
+                kq_events.as_mut_ptr(),
+                MAX_EVENTS as c_int,
+                timeout_ptr,
+            )
+        };
+        if n < 0 {
+            return -1;
+        }
+
+        #[expect(clippy::cast_sign_loss, reason = "n >= 0 checked above")]
+        let count = n as usize;
+        for ev in &kq_events[..count] {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "fd was stored as usize via ident; fits in c_int"
+            )]
+            let fd = ev.ident as c_int;
+            if let Some(entry) = poller.entries.get(&fd) {
+                let mut hew_ev: c_int = 0;
+
+                // Map kqueue filter to Hew event flags.
+                if ev.filter == libc::EVFILT_READ {
+                    hew_ev |= HEW_IO_READ;
+                }
+                if ev.filter == libc::EVFILT_WRITE {
+                    hew_ev |= HEW_IO_WRITE;
+                }
+                // Check for EOF and error conditions.
+                if ev.flags & libc::EV_EOF != 0 {
+                    hew_ev |= HEW_IO_HUP;
+                }
+                if ev.flags & libc::EV_ERROR != 0 {
+                    hew_ev |= HEW_IO_ERROR;
+                }
+
+                // SAFETY: actor pointer is valid per caller contract; sending
+                // the event int by reference.
+                unsafe {
+                    hew_actor_send(
+                        entry.actor,
+                        entry.msg_type,
+                        std::ptr::addr_of_mut!(hew_ev).cast::<c_void>(),
+                        std::mem::size_of::<c_int>(),
+                    );
+                }
+            }
+        }
+
+        n
+    }
+
+    /// Stop and destroy the poller.
+    ///
+    /// # Safety
+    ///
+    /// `p` must be a valid pointer returned by [`hew_io_poller_new`], and must
+    /// not be used after this call.
+    #[no_mangle]
+    pub unsafe extern "C" fn hew_io_poller_stop(p: *mut HewIoPoller) {
+        if !p.is_null() {
+            // SAFETY: caller guarantees `p` is valid and surrenders ownership.
+            let _ = unsafe { Box::from_raw(p) };
+        }
+    }
+}
+
+// ---- Stub (Windows, WASM, etc.) --------------------------------------------
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "macos")))]
 mod platform {
     use std::ffi::c_int;
 
-    /// Stub poller for non-Linux platforms.
+    /// Stub poller for unsupported platforms.
     #[derive(Debug)]
     pub struct HewIoPoller {
         _unused: u8,

@@ -129,15 +129,15 @@ wasm-dist: wasm
 #   macOS (Homebrew):      $(brew --prefix llvm@<ver>)/lib/cmake/{llvm,mlir}
 #
 # Override with: make codegen LLVM_DIR=/path/to/llvm MLIR_DIR=/path/to/mlir
-#            or: make codegen LLVM_PREFIX=/usr/lib/llvm-21
+#            or: make codegen LLVM_PREFIX=/usr/lib/llvm-22
 
 # Auto-detect LLVM prefix if not explicitly provided
 ifndef LLVM_PREFIX
-  # Try versioned apt.llvm.org paths (21, 20, 19...)
-  LLVM_PREFIX := $(firstword $(wildcard /usr/lib/llvm-21 /usr/lib/llvm-20 /usr/lib/llvm-19))
+  # Try versioned apt.llvm.org paths (22, 21, 20, 19...)
+  LLVM_PREFIX := $(firstword $(wildcard /usr/lib/llvm-22 /usr/lib/llvm-21 /usr/lib/llvm-20 /usr/lib/llvm-19))
   # Try Homebrew on macOS
   ifeq ($(LLVM_PREFIX),)
-    LLVM_PREFIX := $(shell brew --prefix llvm@21 2>/dev/null || brew --prefix llvm 2>/dev/null)
+    LLVM_PREFIX := $(shell brew --prefix llvm@22 2>/dev/null || brew --prefix llvm@21 2>/dev/null || brew --prefix llvm 2>/dev/null)
   endif
 endif
 

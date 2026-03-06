@@ -335,6 +335,9 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
                                              /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
         auto scrutinee = generateExpression(matchNode->scrutinee.value);
+        if (scrutinee)
+          scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
+                                                 &matchNode->arms);
         mlir::Type resultType;
         if (currentFunction && currentFunction.getResultTypes().size() == 1) {
           resultType = currentFunction.getResultTypes()[0];
@@ -392,6 +395,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       auto scrutinee = generateExpression(matchNode->scrutinee.value);
       if (!scrutinee)
         return nullptr;
+      scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, location,
+                                             &matchNode->arms);
       mlir::Type resultType;
       if (currentFunction && currentFunction.getResultTypes().size() == 1) {
         resultType = currentFunction.getResultTypes()[0];

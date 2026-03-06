@@ -908,6 +908,11 @@ impl<'src> Parser<'src> {
                         self.error("use 'type' instead of 'struct' to declare types".to_string());
                         return None;
                     }
+                    Some(Token::Indirect) => {
+                        let mut t = self.parse_indirect_enum(vis)?;
+                        t.doc_comment = doc_comment;
+                        Item::TypeDecl(t)
+                    }
                     Some(Token::Enum) => {
                         let mut t = self.parse_struct_or_enum(vis)?;
                         t.doc_comment = doc_comment;
@@ -987,6 +992,11 @@ impl<'src> Parser<'src> {
             Some(Token::Struct) => {
                 self.error("use 'type' instead of 'struct' to declare types".to_string());
                 return None;
+            }
+            Some(Token::Indirect) => {
+                let mut t = self.parse_indirect_enum(Visibility::Private)?;
+                t.doc_comment = doc_comment;
+                Item::TypeDecl(t)
             }
             Some(Token::Enum) => {
                 let mut t = self.parse_struct_or_enum(Visibility::Private)?;
@@ -1210,7 +1220,19 @@ impl<'src> Parser<'src> {
             body,
             doc_comment: None,
             wire: None,
+            is_indirect: false,
         })
+    }
+
+    fn parse_indirect_enum(&mut self, visibility: Visibility) -> Option<TypeDecl> {
+        self.expect(&Token::Indirect)?;
+        if self.peek() != Some(&Token::Enum) {
+            self.error("'indirect' can only be used with 'enum'".to_string());
+            return None;
+        }
+        let mut decl = self.parse_struct_or_enum(visibility)?;
+        decl.is_indirect = true;
+        Some(decl)
     }
 
     fn parse_type_body_item(&mut self, kind: TypeDeclKind) -> Option<TypeBodyItem> {
@@ -2363,6 +2385,7 @@ impl<'src> Parser<'src> {
                 version,
                 min_version,
             }),
+            is_indirect: false,
         })
     }
 

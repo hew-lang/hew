@@ -1,0 +1,16 @@
+indirect enum List {
+    Nil;
+    Cons(Int, List);
+}
+
+fn sum(l: List) -> Int {
+    match l {
+        Nil => 0,
+        Cons(head, tail) => head + sum(tail),
+    }
+}
+
+fn main() {
+    let l = Cons(1, Cons(2, Cons(3, Nil)));
+    println(sum(l));
+}

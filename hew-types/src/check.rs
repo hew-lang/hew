@@ -95,6 +95,7 @@ pub struct TypeDef {
     pub variants: HashMap<String, VariantDef>,
     pub methods: HashMap<String, FnSig>,
     pub doc_comment: Option<String>,
+    pub is_indirect: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -824,6 +825,7 @@ impl Checker {
             variants,
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
+            is_indirect: td.is_indirect,
         };
 
         // Register with trait registry for Send/Frozen derivation
@@ -1037,6 +1039,7 @@ impl Checker {
             variants,
             methods: HashMap::new(),
             doc_comment: None,
+            is_indirect: false,
         };
 
         // Register field types for Send/Frozen derivation
@@ -1074,6 +1077,7 @@ impl Checker {
             variants: event_variants,
             methods: HashMap::new(),
             doc_comment: None,
+            is_indirect: false,
         };
         self.type_defs
             .insert(event_type_name.clone(), event_type_def);
@@ -1292,6 +1296,7 @@ impl Checker {
             variants: HashMap::new(),
             methods: HashMap::new(),
             doc_comment: ad.doc_comment.clone(),
+            is_indirect: false,
         };
 
         // Actors are always Send
@@ -1356,6 +1361,7 @@ impl Checker {
             variants,
             methods: HashMap::new(),
             doc_comment: None,
+            is_indirect: false,
         };
 
         let field_types: Vec<_> = type_def.fields.values().cloned().collect();
@@ -9586,6 +9592,7 @@ fn main() {
             }],
             doc_comment: None,
             wire: None,
+            is_indirect: false,
         };
         let import = make_user_import(
             &["myapp", "config"],
@@ -9985,6 +9992,7 @@ fn main() {
             body: vec![],
             doc_comment: None,
             wire: None,
+            is_indirect: false,
         };
         let impl_decl = ImplDecl {
             type_params: None,
@@ -10071,6 +10079,7 @@ fn main() {
             body: vec![],
             doc_comment: None,
             wire: None,
+            is_indirect: false,
         });
 
         let resolved: Vec<Spanned<Item>> = vec![

@@ -111,6 +111,57 @@ mlir::Value MLIRGen::emitTagEqualCondition(mlir::Value scrutinee, int64_t varian
 }
 
 // ============================================================================
+// Indirect enum scrutinee dereferencing
+// ============================================================================
+
+/// Look up the indirect enum info for a given pointer-typed scrutinee.
+/// Tries the expression type map first; if that fails, inspects the first
+/// constructor pattern in the match arms to determine the enum type.
+const MLIRGen::EnumTypeInfo *
+MLIRGen::findIndirectEnumForScrutinee(mlir::Value scrutinee, const ast::Span &span,
+                                      const std::vector<ast::MatchArm> *arms) const {
+  // Only applies to pointer-typed scrutinees
+  if (!mlir::isa<mlir::LLVM::LLVMPointerType>(scrutinee.getType()))
+    return nullptr;
+
+  // Strategy 1: Look up the source type from the type checker's expression type map
+  if (auto *resolvedType = resolvedTypeOf(span)) {
+    if (auto *named = std::get_if<ast::TypeNamed>(&resolvedType->kind)) {
+      auto enumIt = enumTypes.find(named->name);
+      if (enumIt != enumTypes.end() && enumIt->second.isIndirect && enumIt->second.innerStructType)
+        return &enumIt->second;
+    }
+  }
+
+  // Strategy 2: Inspect match arm patterns to find a constructor name,
+  // then look it up to determine which indirect enum we're matching on.
+  if (arms) {
+    for (const auto &arm : *arms) {
+      auto *ctorPat = std::get_if<ast::PatConstructor>(&arm.pattern.value.kind);
+      if (!ctorPat)
+        continue;
+      auto variantIt = variantLookup.find(ctorPat->name);
+      if (variantIt == variantLookup.end())
+        continue;
+      auto enumIt = enumTypes.find(variantIt->second.first);
+      if (enumIt != enumTypes.end() && enumIt->second.isIndirect && enumIt->second.innerStructType)
+        return &enumIt->second;
+    }
+  }
+
+  return nullptr;
+}
+
+mlir::Value MLIRGen::derefIndirectEnumScrutinee(mlir::Value scrutinee, const ast::Span &span,
+                                                mlir::Location location,
+                                                const std::vector<ast::MatchArm> *arms) {
+  auto *info = findIndirectEnumForScrutinee(scrutinee, span, arms);
+  if (!info)
+    return scrutinee;
+  return mlir::LLVM::LoadOp::create(builder, location, info->innerStructType, scrutinee);
+}
+
+// ============================================================================
 // Match statement generation
 // ============================================================================
 
@@ -120,6 +171,9 @@ void MLIRGen::generateMatchStmt(const ast::StmtMatch &stmt) {
   auto scrutinee = generateExpression(stmt.scrutinee.value);
   if (!scrutinee)
     return;
+
+  // Indirect enum: dereference pointer to get the inner struct
+  scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.scrutinee.span, location, &stmt.arms);
 
   // Generate match as chain of if/else (no result needed)
   generateMatchImpl(scrutinee, stmt.arms, /*resultType=*/nullptr, location);
@@ -133,6 +187,9 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
   auto scrutinee = generateExpression(expr.scrutinee->value);
   if (!scrutinee)
     return nullptr;
+
+  // Indirect enum: dereference pointer to get the inner struct
+  scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.scrutinee->span, location, &expr.arms);
 
   // Use the type checker's resolved type for this match expression.
   // The frontend type-checks all arms, unifies their types, and records

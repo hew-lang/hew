@@ -156,6 +156,8 @@ pub enum Token<'src> {
     Super,
     #[token("struct")]
     Struct,
+    #[token("indirect")]
+    Indirect,
     #[token("enum")]
     Enum,
     #[token("trait")]
@@ -471,6 +473,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Package => f.write_str("`package`"),
             Token::Super => f.write_str("`super`"),
             Token::Struct => f.write_str("`struct`"),
+            Token::Indirect => f.write_str("`indirect`"),
             Token::Enum => f.write_str("`enum`"),
             Token::Trait => f.write_str("`trait`"),
             Token::Impl => f.write_str("`impl`"),
@@ -623,6 +626,7 @@ impl Token<'_> {
             Token::Package => Some("package"),
             Token::Super => Some("super"),
             Token::Struct => Some("struct"),
+            Token::Indirect => Some("indirect"),
             Token::Enum => Some("enum"),
             Token::Trait => Some("trait"),
             Token::Impl => Some("impl"),
@@ -797,6 +801,7 @@ pub const ALL_KEYWORDS: &[&str] = &[
     "package",
     "super",
     "struct",
+    "indirect",
     "enum",
     "trait",
     "impl",

@@ -51,6 +51,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Package
         | Token::Super
         | Token::Struct
+        | Token::Indirect
         | Token::Enum
         | Token::Trait
         | Token::Impl

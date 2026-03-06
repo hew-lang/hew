@@ -646,6 +646,9 @@ pub struct TypeDecl {
     /// Wire protocol metadata — present when the type has `#[wire]` attribute.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wire: Option<WireMetadata>,
+    /// When true, this enum is heap-allocated behind a pointer, enabling recursive types.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_indirect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -835,6 +838,7 @@ impl WireDecl {
                 version: None,
                 min_version: None,
             }),
+            is_indirect: false,
         }
     }
 }

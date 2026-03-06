@@ -1265,6 +1265,9 @@ static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   const auto *w = mapGet(obj, "wire");
   if (w && !isNil(*w))
     td.wire = parseWireMetadata(*w);
+  const auto *ind = mapGet(obj, "is_indirect");
+  if (ind && !isNil(*ind))
+    td.is_indirect = getBool(*ind);
   return td;
 }
 
@@ -1860,8 +1863,8 @@ static ast::Program parseProgram(const msgpack::object &obj) {
   // Line map: byte offset of each line start (optional)
   const auto *lm = mapGet(obj, "line_map");
   if (lm && !isNil(*lm))
-    prog.line_map =
-        parseVec<size_t>(*lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
+    prog.line_map = parseVec<size_t>(
+        *lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
 
   return prog;
 }

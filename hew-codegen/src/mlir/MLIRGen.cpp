@@ -374,6 +374,9 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
         typeParamSubstitutions = std::move(prevSubstitutions);
       }
     }
+    // Self-reference in indirect enum: return pointer (breaks infinite recursion)
+    if (pendingIndirectEnums.count(name))
+      return mlir::LLVM::LLVMPointerType::get(&context);
     // Check if it's a registered enum type
     auto enumIt = enumTypes.find(name);
     if (enumIt != enumTypes.end())
@@ -2135,6 +2138,12 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
     // Register enum type
     EnumTypeInfo info;
     info.name = declName;
+    info.isIndirect = decl.is_indirect;
+
+    // For indirect enums, mark as pending so self-references in variant
+    // field types resolve to pointer type instead of infinite recursion.
+    if (decl.is_indirect)
+      pendingIndirectEnums.insert(declName);
 
     unsigned idx = 0;
     for (const auto &bodyItem : decl.body) {
@@ -2156,6 +2165,9 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         info.variants.push_back(std::move(vi));
       }
     }
+
+    if (decl.is_indirect)
+      pendingIndirectEnums.erase(declName);
 
     // Register variant name → (enum, index) for quick lookup
     for (const auto &v : info.variants) {
@@ -2248,10 +2260,23 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         }
       }
 
-      info.mlirType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);
+      auto innerStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, structFields);
+
+      if (decl.is_indirect) {
+        // Indirect enum: value is a pointer to the heap-allocated struct
+        info.innerStructType = innerStructType;
+        info.mlirType = mlir::LLVM::LLVMPointerType::get(&context);
+      } else {
+        info.mlirType = innerStructType;
+      }
     }
 
     enumTypes[declName] = std::move(info);
+
+    // Generate drop function for indirect enums
+    if (decl.is_indirect)
+      generateIndirectEnumDropFunc(declName);
+
     return;
   }
 
@@ -2289,6 +2314,126 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
   }
 
   structTypes[declName] = std::move(info);
+}
+
+// ============================================================================
+// Indirect enum drop function generation
+// ============================================================================
+
+void MLIRGen::generateIndirectEnumDropFunc(const std::string &enumName) {
+  auto enumIt = enumTypes.find(enumName);
+  if (enumIt == enumTypes.end())
+    return;
+  const auto &info = enumIt->second;
+  if (!info.isIndirect || !info.innerStructType)
+    return;
+
+  auto location = builder.getUnknownLoc();
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto dropFuncName = "__hew_drop_" + enumName;
+
+  // Declare malloc/free if needed
+  auto freeFuncType = mlir::FunctionType::get(&context, {ptrType}, {});
+  getOrCreateExternFunc("free", freeFuncType);
+
+  // Create the drop function: void __hew_drop_EnumName(ptr)
+  auto funcType = mlir::FunctionType::get(&context, {ptrType}, {});
+
+  // Forward-declare the function first (it's recursive)
+  auto funcOp = module.lookupSymbol<mlir::func::FuncOp>(dropFuncName);
+  if (funcOp)
+    return; // Already generated (e.g. from a previous generic specialization)
+
+  auto savedIP = builder.saveInsertionPoint();
+  builder.setInsertionPointToEnd(module.getBody());
+  funcOp = mlir::func::FuncOp::create(builder, location, dropFuncName, funcType);
+  funcOp.setPrivate();
+
+  auto *entryBlock = funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+
+  auto argPtr = entryBlock->getArgument(0);
+
+  // if ptr == null: return
+  auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+  auto isNull =
+      mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::eq, argPtr, nullPtr);
+  // Use a simple null check: if null, return early
+  // We avoid scf.if here because it auto-generates yield terminators.
+  // Instead, use LLVM-style conditional branching with func blocks.
+  auto *nullBlock = funcOp.addBlock();
+  auto *dropBlock = funcOp.addBlock();
+
+  mlir::LLVM::CondBrOp::create(builder, location, isNull, nullBlock, dropBlock);
+
+  // Null block: just return
+  builder.setInsertionPointToStart(nullBlock);
+  mlir::func::ReturnOp::create(builder, location);
+
+  // Drop block: non-null, load struct and process
+  builder.setInsertionPointToStart(dropBlock);
+
+  // Load the struct from the pointer
+  auto structVal = mlir::LLVM::LoadOp::create(builder, location, info.innerStructType, argPtr);
+
+  // Extract tag
+  auto tag =
+      mlir::LLVM::ExtractValueOp::create(builder, location, structVal, llvm::ArrayRef<int64_t>{0});
+
+  // For each variant with self-referential payload fields, recursively drop them
+  for (const auto &variant : info.variants) {
+    bool hasDroppablePayloads = false;
+    for (const auto &payloadTy : variant.payloadTypes) {
+      if (mlir::isa<mlir::LLVM::LLVMPointerType>(payloadTy)) {
+        hasDroppablePayloads = true;
+        break;
+      }
+    }
+    if (!hasDroppablePayloads)
+      continue;
+
+    // Compare tag
+    auto tagVal = mlir::arith::ConstantIntOp::create(builder, location, builder.getI32Type(),
+                                                     static_cast<int64_t>(variant.index));
+    auto tagMatch =
+        mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq, tag, tagVal);
+    auto variantIfOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, tagMatch,
+                                               /*withElseRegion=*/false);
+
+    // Insert before the auto-generated yield in the then block
+    builder.setInsertionPoint(variantIfOp.getThenRegion().front().getTerminator());
+
+    // Drop each self-referential payload field
+    for (size_t i = 0; i < variant.payloadTypes.size(); ++i) {
+      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(variant.payloadTypes[i]))
+        continue;
+
+      int64_t fieldIdx;
+      if (i < variant.payloadPositions.size())
+        fieldIdx = variant.payloadPositions[i];
+      else
+        fieldIdx = static_cast<int64_t>(i) + 1;
+
+      auto fieldVal = mlir::LLVM::ExtractValueOp::create(builder, location, structVal,
+                                                         llvm::ArrayRef<int64_t>{fieldIdx});
+
+      // Recursively call this drop function on the child pointer
+      mlir::func::CallOp::create(builder, location, funcOp, mlir::ValueRange{fieldVal});
+    }
+
+    builder.setInsertionPointAfter(variantIfOp);
+  }
+
+  // Free the pointer
+  mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                             mlir::ValueRange{argPtr});
+
+  mlir::func::ReturnOp::create(builder, location);
+
+  builder.restoreInsertionPoint(savedIP);
+
+  // Register as a user drop function so variables of this type get auto-dropped
+  userDropFuncs[enumName] = dropFuncName;
 }
 
 // ============================================================================

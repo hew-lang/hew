@@ -1,0 +1,18 @@
+indirect enum MathExpr {
+    Lit(Int);
+    Add(MathExpr, MathExpr);
+    Neg(MathExpr);
+}
+
+fn eval(e: MathExpr) -> Int {
+    match e {
+        Lit(n) => n,
+        Add(l, r) => eval(l) + eval(r),
+        Neg(inner) => 0 - eval(inner),
+    }
+}
+
+fn main() {
+    let e = Add(Lit(1), Neg(Lit(2)));
+    println(eval(e));
+}

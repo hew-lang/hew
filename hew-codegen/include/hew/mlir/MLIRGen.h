@@ -78,6 +78,7 @@ private:
   // ── Top-level items ──────────────────────────────────────────────
   void generateItem(const ast::Item &item);
   void registerTypeDecl(const ast::TypeDecl &decl);
+  void generateIndirectEnumDropFunc(const std::string &enumName);
   void registerFunctionSignature(const ast::FnDecl &fn, const std::string &nameOverride = "");
   void generateImplDecl(const ast::ImplDecl &decl);
   void registerTraitDecl(const ast::TraitDecl &decl);
@@ -217,6 +218,8 @@ private:
   // ── Match ────────────────────────────────────────────────────────
   void generateMatchStmt(const ast::StmtMatch &stmt);
   mlir::Value generateMatchExpr(const ast::ExprMatch &expr, const ast::Span &exprSpan);
+  // findIndirectEnumForScrutinee and derefIndirectEnumScrutinee declared below
+  // (after EnumTypeInfo definition)
   mlir::Value generateMatchImpl(mlir::Value scrutinee, const std::vector<ast::MatchArm> &arms,
                                 mlir::Type resultType, mlir::Location location);
   mlir::Value generateMatchArmsChain(mlir::Value scrutinee, const std::vector<ast::MatchArm> &arms,
@@ -466,12 +469,24 @@ private:
   struct EnumTypeInfo {
     std::string name;
     std::vector<EnumVariantInfo> variants;
-    mlir::Type mlirType;      // i32 for unit-only enums, LLVMStructType for payload enums
-    bool hasPayloads = false; // true if any variant has a payload
+    mlir::Type mlirType;        // i32 for unit-only enums, LLVMStructType for payload enums
+    bool hasPayloads = false;   // true if any variant has a payload
+    bool isIndirect = false;    // true for `indirect enum` (heap-allocated, recursive)
+    mlir::Type innerStructType; // the actual struct layout (when isIndirect)
   };
   std::unordered_map<std::string, EnumTypeInfo> enumTypes;
   // Variant name → (enum name, variant index) for quick lookup
   std::unordered_map<std::string, std::pair<std::string, unsigned>> variantLookup;
+  // Names of indirect enums currently being registered (for self-reference detection)
+  std::unordered_set<std::string> pendingIndirectEnums;
+
+  // Indirect enum scrutinee dereferencing (declared here after EnumTypeInfo)
+  const EnumTypeInfo *
+  findIndirectEnumForScrutinee(mlir::Value scrutinee, const ast::Span &span,
+                               const std::vector<ast::MatchArm> *arms = nullptr) const;
+  mlir::Value derefIndirectEnumScrutinee(mlir::Value scrutinee, const ast::Span &span,
+                                         mlir::Location location,
+                                         const std::vector<ast::MatchArm> *arms = nullptr);
 
   // ── Module-level constants ─────────────────────────────────────────
   // Stored as AST expressions, generated inline when referenced.

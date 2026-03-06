@@ -268,6 +268,9 @@ impl<'a> Formatter<'a> {
             return;
         }
         self.write_indent();
+        if decl.is_indirect {
+            self.write("indirect ");
+        }
         match decl.kind {
             TypeDeclKind::Struct => self.write("type "),
             TypeDeclKind::Enum => self.write("enum "),

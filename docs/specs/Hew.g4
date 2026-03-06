@@ -135,7 +135,7 @@ constDecl
 
 typeDecl
     : 'type'   ident typeParams? whereClause? structBody
-    | 'enum'   ident typeParams? whereClause? enumBody
+    | 'indirect'? 'enum'   ident typeParams? whereClause? enumBody
     ;
 
 typeAliasDecl

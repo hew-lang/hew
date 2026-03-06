@@ -16,12 +16,16 @@ use std::ptr;
 #[derive(Debug)]
 #[repr(C)]
 pub struct WasmReplyChannel {
+    /// Manual reference count shared by the waiting side and the in-flight reply.
+    refs: usize,
     /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
     /// Whether a reply has been deposited.
     replied: bool,
+    /// Whether the waiter abandoned the channel.
+    cancelled: bool,
 }
 
 /// Create a new WASM reply channel.
@@ -32,10 +36,29 @@ pub struct WasmReplyChannel {
 #[no_mangle]
 pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
     Box::into_raw(Box::new(WasmReplyChannel {
+        refs: 1,
         value: ptr::null_mut(),
         value_size: 0,
         replied: false,
+        cancelled: false,
     }))
+}
+
+/// Retain an additional reference to a WASM reply channel.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees `ch` is valid while retaining a new reference.
+    unsafe {
+        (*ch).refs += 1;
+    }
 }
 
 /// Deposit a reply value (WASM version).
@@ -56,6 +79,10 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
+        if (*ch).cancelled {
+            hew_reply_channel_free(ch);
+            return;
+        }
         if size > 0 && !value.is_null() {
             let buf = libc::malloc(size);
             if !buf.is_null() {
@@ -65,6 +92,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void
             }
         }
         (*ch).replied = true;
+        hew_reply_channel_free(ch);
     }
 }
 
@@ -88,22 +116,46 @@ pub(crate) unsafe fn reply_take(ch: *mut WasmReplyChannel) -> *mut c_void {
     }
 }
 
-/// Free a WASM reply channel and any uncollected reply value.
+/// Release a WASM reply channel reference and free it when the count reaches zero.
 ///
 /// # Safety
 ///
 /// `ch` must have been returned by [`hew_reply_channel_new`] and must
-/// not be used after this call.
+/// not be used after the final release.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
     if ch.is_null() {
         return;
     }
-    // SAFETY: Caller guarantees `ch` was Box-allocated and is exclusively owned.
+
+    // SAFETY: Caller guarantees `ch` is a live reply channel reference.
     unsafe {
+        debug_assert!((*ch).refs > 0, "reply channel release on released channel");
+        (*ch).refs -= 1;
+        if (*ch).refs != 0 {
+            return;
+        }
         if !(*ch).value.is_null() {
             libc::free((*ch).value);
         }
         drop(Box::from_raw(ch));
+    }
+}
+
+/// Mark a WASM reply channel as abandoned.
+///
+/// # Safety
+///
+/// `ch` must have been returned by [`hew_reply_channel_new`] and must
+/// remain valid until its remaining references are released.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut WasmReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees `ch` is valid; WASM reply channels are single-threaded.
+    unsafe {
+        (*ch).cancelled = true;
     }
 }

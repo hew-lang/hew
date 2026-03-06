@@ -263,6 +263,13 @@ private:
   std::pair<mlir::Value, mlir::Value> packArgsForSend(llvm::ArrayRef<mlir::Value> args,
                                                       mlir::Location location);
 
+  /// Wait for a reply channel, load the typed result, and free the reply buffer.
+  mlir::Value waitOnReplyChannel(mlir::Value channel, mlir::Type resultType,
+                                 mlir::Location location);
+
+  /// Mark a reply channel as abandoned so late replies self-clean in the runtime.
+  void cancelReplyChannel(mlir::Value channel, mlir::Location location);
+
   // ── Helpers ──────────────────────────────────────────────────────
   /// Join currentModulePath into a "::" delimited key string.
   std::string currentModuleKey() const;

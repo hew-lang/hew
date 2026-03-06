@@ -1923,9 +1923,11 @@ def Hew_SelectFirstOp : Hew_Op<"select.first"> {
 }
 
 def Hew_SelectDestroyOp : Hew_Op<"select.destroy"> {
-  let summary = "Free a reply channel.";
+  let summary = "Release a reply channel reference.";
   let description = [{
-    Frees a reply channel that is no longer needed.
+    Releases a reply channel reference that is no longer needed. The runtime
+    frees the underlying channel when the final owner or sender reference is
+    released.
 
     Lowers to `hew_reply_channel_free(channel)`.
 

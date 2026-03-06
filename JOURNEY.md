@@ -741,3 +741,46 @@ coverage.
   typical use.
 
 **Test results**: 335/335 codegen e2e (100%, +2 new), 324/324 runtime, zero warnings.
+
+## 2026-03-06 — Audit remediation follow-ups
+
+### Example/test infra cleanup
+
+- `make grammar` now walks nested `examples/**.hew` trees, so algorithms, benchmarks,
+  playground examples, and other subdirectories stay under grammar validation.
+- `scripts/sync-syntax-downstream.sh --check` now regenerates downstream artifacts in
+  temp snapshots and fails on real output drift instead of only reporting working tree dirtiness.
+- Downstream repo paths are overridable with `HEW_SYNC_*` environment variables, which
+  keeps the sync check usable from isolated worktrees and local fixture repos.
+
+### Wire syntax remediation
+
+- Unified wire field modifier handling in `hew-parser` so both `#[wire] struct` and legacy
+  `wire type` preserve `since N` in wire metadata.
+- Updated the formatter to emit `since N` for normalized wire output and added
+  parser/formatter regressions covering positive and invalid-version cases.
+
+### Serializer contract hardening
+
+- Reworked `hew-serialize/src/enrich.rs` so `Ty` conversion either serializes the type
+  explicitly or returns a contextual `TypeExprConversionError`; expr-type entries are no
+  longer dropped by `filter_map`/`Option` fallthrough.
+- `Ty::Unit` now becomes `TypeExpr::Tuple([])`, `Range` stays serializable as a named
+  builtin, and unsupported inferred forms like `Generator`/`AsyncGenerator` are reported
+  explicitly instead of disappearing.
+- Added regression coverage for preserving unit entries and for rejecting nested unsupported
+  types (for example `Option<Ty::Var>`) with span-aware diagnostics.
+
+### Select cleanup remediation
+
+**Commit:** 67c071d
+
+- Fixed the select/join cleanup asymmetry in `hew-codegen/src/mlir/MLIRGenExpr.cpp` by
+  extracting shared reply-wait cleanup, preserving join's explicit destroy path, and
+  canceling every non-winning select channel (including timeout paths) via
+  `hew_reply_channel_cancel`.
+- Added MLIR regression coverage in `hew-codegen/tests/test_mlirgen.cpp` to catch missing
+  select channel cancellation and to ensure join keeps its explicit destroy-only cleanup.
+- Updated the reply-channel runtime (`reply_channel.rs` and `reply_channel_wasm.rs`) with
+  an explicit cancellation entry point plus sender/waiter refcounting so abandoned select
+  arms self-clean on late reply without use-after-free.

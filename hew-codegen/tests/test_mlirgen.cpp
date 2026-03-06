@@ -81,6 +81,15 @@ static mlir::func::FuncOp lookupFuncBySuffix(mlir::ModuleOp module, llvm::String
   return found;
 }
 
+static int countCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
+  int count = 0;
+  op->walk([&](mlir::func::CallOp call) {
+    if (call.getCallee() == callee)
+      count++;
+  });
+  return count;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: find hew CLI binary (used as frontend for parsing)
 // ---------------------------------------------------------------------------
@@ -1129,6 +1138,121 @@ fn main() -> int {
 }
 
 // ============================================================================
+// Test: Select cancels abandoned reply channels
+// ============================================================================
+static void test_select_cancels_abandoned_channels() {
+  TEST(select_cancels_abandoned_channels);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+actor Fast {
+    let value: int;
+    receive fn get() -> int {
+        self.value
+    }
+}
+
+actor Slow {
+    let value: int;
+    receive fn get() -> int {
+        sleep_ms(50);
+        self.value
+    }
+}
+
+fn main() -> int {
+    let fast = spawn Fast(value: 42);
+    let slow = spawn Slow(value: 999);
+    select {
+        x from await fast.get() => x,
+        y from await slow.get() => y,
+        after 10 => -1,
+    }
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("main function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int cancelCalls = countCallsByCallee(mainFn, "hew_reply_channel_cancel");
+  if (cancelCalls != 2) {
+    FAIL("select should emit cancellation calls for every arm");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
+// Test: Join keeps explicit wait/destroy cleanup and does not cancel channels
+// ============================================================================
+static void test_join_does_not_cancel_channels() {
+  TEST(join_does_not_cancel_channels);
+
+  mlir::MLIRContext ctx;
+  initContext(ctx);
+  auto module = generateMLIR(ctx, R"(
+actor Worker {
+    let id: int;
+    receive fn compute() -> int {
+        self.id * 10
+    }
+}
+
+fn main() -> int {
+    let w1 = spawn Worker(id: 1);
+    let w2 = spawn Worker(id: 2);
+    let results = join {
+        await w1.compute(),
+        await w2.compute(),
+    };
+    results.0 + results.1
+}
+  )");
+
+  if (!module) {
+    FAIL("MLIR generation failed");
+    return;
+  }
+
+  auto mainFn = module.lookupSymbol<mlir::func::FuncOp>("main");
+  if (!mainFn) {
+    FAIL("main function not found");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn, "hew_reply_channel_cancel") != 0) {
+    FAIL("join should not cancel reply channels");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  int destroyCount = 0;
+  mainFn.walk([&](hew::SelectDestroyOp) { destroyCount++; });
+  if (destroyCount != 2) {
+    FAIL("join should destroy every reply channel it creates");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  module.getOperation()->destroy();
+  PASS();
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1155,6 +1279,8 @@ int main() {
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_mixed_payload_match_positions();
   test_unresolved_generic_substitution_type_fails();
+  test_select_cancels_abandoned_channels();
+  test_join_does_not_cancel_channels();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

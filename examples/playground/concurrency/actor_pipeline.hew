@@ -2,18 +2,17 @@
 //! @description Actors processing messages independently
 
 actor Doubler {
-    receive fn process(n: i32) {
+    receive fn process(n: int) -> int {
         let result = n * 2;
         print("Result: ");
         println(result);
+        result
     }
 }
 
 fn main() {
     let doubler = spawn Doubler;
-    doubler.process(5);
-    doubler.process(21);
-    doubler.process(100);
-    close(doubler);
-    await doubler;
+    await doubler.process(5);
+    await doubler.process(21);
+    await doubler.process(100);
 }

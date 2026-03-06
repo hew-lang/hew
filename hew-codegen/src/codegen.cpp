@@ -60,7 +60,6 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
@@ -71,7 +70,6 @@
 #include "llvm/Transforms/Coroutines/CoroElide.h"
 #include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <climits>
-#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -4933,133 +4931,6 @@ int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
   return 0;
 }
 
-// ── Step 5: Link with runtime ─────────────────────────────────────────────
-
-int Codegen::linkExecutable(const std::string &objectPath, const std::string &outputPath,
-                            const std::string &runtimeLibDir, const std::string &targetTripleStr) {
-  llvm::Triple targetTriple(targetTripleStr.empty() ? llvm::sys::getDefaultTargetTriple()
-                                                    : targetTripleStr);
-  llvm::Triple hostTriple(llvm::sys::getDefaultTargetTriple());
-
-  // When cross-compiling, try <triple>-gcc as the linker
-#ifdef _WIN32
-  std::string linkerName = "clang";
-#else
-  std::string linkerName = "cc";
-#endif
-  bool crossCompiling = (targetTriple.str() != hostTriple.str());
-  if (crossCompiling) {
-    linkerName = targetTriple.str() + "-gcc";
-  }
-
-  auto ccOrErr = llvm::sys::findProgramByName(linkerName);
-  if (!ccOrErr) {
-    if (crossCompiling) {
-      llvm::errs() << "Error: cross-linker '" << linkerName << "' not found in PATH.\n"
-                   << "Hint: install a cross-compilation toolchain, or use "
-                   << "--emit-obj to produce an object file for manual linking.\n";
-    } else {
-#ifdef _WIN32
-      llvm::errs() << "Error: could not find 'clang' linker in PATH\n";
-#else
-      llvm::errs() << "Error: could not find 'cc' linker in PATH\n";
-#endif
-    }
-    return 1;
-  }
-  std::string ccPath = ccOrErr.get();
-
-  // Find the Rust runtime library
-  std::string rtLibPath;
-  if (!runtimeLibDir.empty()) {
-#ifdef _WIN32
-    auto candidate = std::filesystem::path(runtimeLibDir) / "hew_runtime.lib";
-#else
-    auto candidate = std::filesystem::path(runtimeLibDir) / "libhew_runtime.a";
-#endif
-    if (std::filesystem::exists(candidate))
-      rtLibPath = candidate.string();
-  }
-
-  // Build argument list
-  llvm::SmallVector<llvm::StringRef, 16> args;
-  args.push_back(ccPath);
-
-  // Use lld if available — significantly faster than GNU ld for large archives
-  std::string fuseLinker;
-  if (!crossCompiling) {
-#ifdef _WIN32
-    if (llvm::sys::findProgramByName("lld-link"))
-      fuseLinker = "-fuse-ld=lld-link";
-#else
-    if (llvm::sys::findProgramByName("ld.lld"))
-      fuseLinker = "-fuse-ld=lld";
-    else if (llvm::sys::findProgramByName("ld.mold"))
-      fuseLinker = "-fuse-ld=mold";
-#endif
-  }
-  if (!fuseLinker.empty())
-    args.push_back(fuseLinker);
-
-  args.push_back(objectPath);
-  if (!rtLibPath.empty()) {
-    args.push_back(rtLibPath);
-  }
-
-  // Dead-code elimination: discard unreferenced sections from the archive
-  if (targetTriple.isOSBinFormatELF()) {
-    args.push_back("-Wl,--gc-sections");
-    args.push_back("-Wl,--strip-all");
-  } else if (targetTriple.isOSDarwin()) {
-    args.push_back("-Wl,-dead_strip");
-    args.push_back("-Wl,-x");
-  } else if (targetTriple.isOSWindows()) {
-    args.push_back("-Wl,/OPT:REF");
-  }
-
-  // Add platform-specific system libraries
-  if (targetTriple.isOSLinux()) {
-    args.push_back("-lpthread");
-    args.push_back("-lm");
-    args.push_back("-ldl");
-    args.push_back("-lrt");
-  } else if (targetTriple.isOSDarwin()) {
-    args.push_back("-lpthread");
-    args.push_back("-lm");
-    args.push_back("-framework");
-    args.push_back("CoreFoundation");
-    args.push_back("-framework");
-    args.push_back("Security");
-  } else if (targetTriple.isOSWindows()) {
-    args.push_back("-lws2_32");
-    args.push_back("-luserenv");
-    args.push_back("-lbcrypt");
-    args.push_back("-lntdll");
-    args.push_back("-ladvapi32");
-  } else {
-    // Generic Unix-like fallback
-    args.push_back("-lpthread");
-    args.push_back("-lm");
-  }
-
-  args.push_back("-o");
-  args.push_back(outputPath);
-
-  std::string errMsg;
-  int ret = llvm::sys::ExecuteAndWait(ccPath, args, /*Env=*/std::nullopt,
-                                      /*Redirects=*/{}, /*SecondsToWait=*/0,
-                                      /*MemoryLimit=*/0, &errMsg);
-  if (ret != 0) {
-    llvm::errs() << "Error: linking failed";
-    if (!errMsg.empty())
-      llvm::errs() << ": " << errMsg;
-    llvm::errs() << "\n";
-    return 1;
-  }
-
-  return 0;
-}
-
 // ── Full pipeline ─────────────────────────────────────────────────────────
 
 int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
@@ -5148,29 +5019,8 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
   // Determine output path
   std::string outputPath = opts.output_path;
   if (outputPath.empty())
-    outputPath = "a.out";
+    outputPath = "output.o";
 
-  // When emitting only the object file, write directly to the output path.
-  // Otherwise, use a temporary .o alongside the final executable path.
-  std::string objectPath = opts.emit_object ? outputPath : outputPath + ".o";
-
-  // Emit object file
-  int ret = emitObjectFile(*llvmModule, objectPath, opts.target_triple);
-  if (ret != 0)
-    return ret;
-
-  if (opts.emit_object) {
-    // Just the object file, no linking
-    return 0;
-  }
-
-  // Link
-  ret = linkExecutable(objectPath, outputPath, opts.runtime_lib_dir, opts.target_triple);
-
-  // Clean up the object file (unless --emit-obj)
-  if (ret == 0 && !opts.emit_object) {
-    std::filesystem::remove(objectPath);
-  }
-
-  return ret;
+  // Emit object file — linking is handled by the Rust CLI (hew-cli/src/link.rs)
+  return emitObjectFile(*llvmModule, outputPath, opts.target_triple);
 }

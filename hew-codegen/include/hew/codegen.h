@@ -1,7 +1,7 @@
 //===- codegen.h - Hew MLIR-to-native codegen pipeline ----------*- C++ -*-===//
 //
-// Public API for lowering Hew MLIR modules to LLVM IR, emitting object files,
-// linking with libhew_rt, and optionally executing the result.
+// Public API for lowering Hew MLIR modules to LLVM IR and emitting object
+// files.  Linking is handled by the Rust CLI (hew-cli/src/link.rs).
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,24 +21,24 @@
 namespace hew {
 
 struct CodegenOptions {
-  bool emit_llvm_ir = false;   // --emit-llvm: dump LLVM IR to stdout
-  bool emit_object = false;    // --emit-obj: only compile to .o
-  bool debug_info = false;     // --debug: compile at -O0 for debugger use
-  std::string output_path;     // -o: output file path
-  std::string runtime_lib_dir; // directory containing libhew_rt.a
-  std::string target_triple;   // --target=<triple>: cross-compilation target
-  int opt_level = 0;           // -O0, -O1, -O2
+  bool emit_llvm_ir = false; // --emit-llvm: dump LLVM IR to stdout
+  bool emit_object = false;  // --emit-obj: only compile to .o
+  bool debug_info = false;   // --debug: compile at -O0 for debugger use
+  std::string output_path;   // -o: output file path
+  std::string target_triple; // --target=<triple>: cross-compilation target
+  int opt_level = 0;         // -O0, -O1, -O2
 
   // Debug info: source file path and line map for DWARF emission.
-  std::string source_path;           // original .hew source file path
-  std::vector<size_t> line_map;      // byte offset of each line start
+  std::string source_path;      // original .hew source file path
+  std::vector<size_t> line_map; // byte offset of each line start
 };
 
 class Codegen {
 public:
   explicit Codegen(mlir::MLIRContext &context);
 
-  /// Full pipeline: MLIR module -> executable (or object file).
+  /// Full pipeline: MLIR module -> object file (or LLVM IR dump).
+  /// Linking is handled by the Rust CLI (hew-cli/src/link.rs).
   /// Returns 0 on success, non-zero on error.
   int compile(mlir::ModuleOp module, const CodegenOptions &opts);
 
@@ -62,11 +62,6 @@ private:
   /// Returns 0 on success.
   int emitObjectFile(llvm::Module &module, const std::string &path,
                      const std::string &targetTriple);
-
-  /// Link the object file with libhew_rt to produce an executable.
-  /// Returns 0 on success.
-  int linkExecutable(const std::string &objectPath, const std::string &outputPath,
-                     const std::string &runtimeLibDir, const std::string &targetTriple);
 };
 
 } // namespace hew

@@ -430,6 +430,154 @@ jobs:
           path: target/${{ matrix.rust_target }}/release/hew-lsp.exe
 
   # ─────────────────────────────────────────────────────────────────────────
+  # FreeBSD build — x86_64 via QEMU VM (tier-2, continue-on-error)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-freebsd:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Compute archive name
+        id: archive
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          echo "name=hew-v${VERSION}-freebsd-x86_64" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore LLVM+MLIR cache (FreeBSD)
+        id: cache-llvm-freebsd
+        uses: actions/cache/restore@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          mem: 8192
+          prepare: |
+            pkg install -y rust cmake ninja git pkgconf libffi
+
+          run: |
+            set -eux
+
+            # ── LLVM/MLIR ──────────────────────────────────────────────────
+            LLVM_PREFIX=/usr/local/llvm22-src
+            if [ -f llvm-freebsd-install.tar.zst ]; then
+              echo "==> Restoring LLVM from cache"
+              zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
+              tar xf llvm-freebsd-install.tar -C /
+              rm -f llvm-freebsd-install.tar
+            else
+              echo "==> Building LLVM 22 from source (this will take ~40 min)"
+              git clone --depth 1 --branch llvmorg-22.1.0 \
+                --filter=blob:none --sparse \
+                https://github.com/llvm/llvm-project.git /tmp/llvm-src
+              cd /tmp/llvm-src
+              git sparse-checkout set llvm mlir cmake third-party
+              cd /
+
+              cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
+                -DLLVM_ENABLE_PROJECTS="mlir" \
+                -DLLVM_TARGETS_TO_BUILD="X86" \
+                -DLLVM_BUILD_TOOLS=ON \
+                -DLLVM_BUILD_UTILS=ON \
+                -DLLVM_INSTALL_UTILS=ON \
+                -DLLVM_INCLUDE_TESTS=OFF \
+                -DLLVM_INCLUDE_BENCHMARKS=OFF \
+                -DLLVM_INCLUDE_EXAMPLES=OFF \
+                -DLLVM_INCLUDE_DOCS=OFF \
+                -DLLVM_ENABLE_BINDINGS=OFF \
+                -DLLVM_ENABLE_ZLIB=ON \
+                -DLLVM_ENABLE_ZSTD=OFF \
+                -DLLVM_BUILD_LLVM_DYLIB=OFF \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
+                -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+
+              cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
+              cmake --install /tmp/llvm-build
+
+              # Create archive for caching
+              tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
+              zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
+              rm -f llvm-freebsd-install.tar
+
+              # Clean up build dirs
+              rm -rf /tmp/llvm-src /tmp/llvm-build
+            fi
+
+            # ── Rust builds (release) ──────────────────────────────────────
+            cargo build -p hew-runtime --release
+            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+
+            # ── hew-codegen (statically linked) ────────────────────────────
+            cd hew-codegen
+            cmake -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DHEW_STATIC_LINK=ON \
+              -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+              -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+            cmake --build build -j$(sysctl -n hw.ncpu)
+            cd ..
+
+            # ── Package archive ────────────────────────────────────────────
+            ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
+
+            mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
+                     "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
+
+            # Binaries
+            cp target/release/hew           "${ARCHIVE_NAME}/bin/"
+            cp target/release/adze          "${ARCHIVE_NAME}/bin/"
+            cp hew-codegen/build/src/hew-codegen "${ARCHIVE_NAME}/bin/"
+            cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
+            chmod +x "${ARCHIVE_NAME}/bin/"*
+
+            # Runtime library
+            cp target/release/libhew_runtime.a "${ARCHIVE_NAME}/lib/"
+
+            # Standard library sources
+            cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+
+            # Shell completions
+            cp completions/hew.bash completions/hew.zsh completions/hew.fish \
+               completions/adze.bash completions/adze.zsh completions/adze.fish \
+               "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
+
+            # Licenses and docs
+            cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+
+            # Strip binaries
+            for b in hew adze hew-codegen hew-lsp; do
+              strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
+            done
+
+            tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
+
+      - name: Save LLVM+MLIR cache (FreeBSD)
+        if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.name }}.tar.gz
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Linux packages — build .deb, .rpm, .pkg.tar.zst from glibc tarballs
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
@@ -605,7 +753,7 @@ jobs:
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, linux-packages, alpine-package]
+    needs: [build, build-freebsd, linux-packages, alpine-package]
     runs-on: ubuntu-24.04
     # Run as long as build didn't hard-fail — linux-packages and continue-on-error
     # targets (Windows, macOS x86_64) are allowed to fail without blocking release

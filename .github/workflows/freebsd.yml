@@ -1,0 +1,152 @@
+# FreeBSD CI — nightly regression testing on FreeBSD 15.0
+#
+# FreeBSD is a tier-2 platform. LLVM 22 is not available via FreeBSD `pkg`
+# (max is 21), so it must be built from source (~40 min first run, then cached).
+# Uses vmactions/freebsd-vm@v1 to run FreeBSD in QEMU on an Ubuntu host.
+
+name: FreeBSD CI
+
+on:
+  schedule:
+    # Run daily at 07:00 UTC (after nightly-sanitizers at 06:00)
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "22"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build & test (FreeBSD x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Restore LLVM+MLIR cache (FreeBSD)
+        id: cache-llvm-freebsd
+        uses: actions/cache/restore@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: llvm-mlir-22.1.0-freebsd15-amd64-v1
+
+      - name: Build and test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          mem: 8192
+          prepare: |
+            pkg install -y rust cmake ninja git pkgconf libffi
+
+          run: |
+            set -eux
+
+            # ── LLVM/MLIR ──────────────────────────────────────────────────
+            LLVM_PREFIX=/usr/local/llvm22-src
+            if [ -f llvm-freebsd-install.tar.zst ]; then
+              echo "==> Restoring LLVM from cache"
+              zstd -d llvm-freebsd-install.tar.zst -o llvm-freebsd-install.tar
+              tar xf llvm-freebsd-install.tar -C /
+              rm -f llvm-freebsd-install.tar
+            else
+              echo "==> Building LLVM 22 from source (this will take ~40 min)"
+              git clone --depth 1 --branch llvmorg-22.1.0 \
+                --filter=blob:none --sparse \
+                https://github.com/llvm/llvm-project.git /tmp/llvm-src
+              cd /tmp/llvm-src
+              git sparse-checkout set llvm mlir cmake third-party
+              cd /
+
+              cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${LLVM_PREFIX}" \
+                -DLLVM_ENABLE_PROJECTS="mlir" \
+                -DLLVM_TARGETS_TO_BUILD="X86" \
+                -DLLVM_BUILD_TOOLS=ON \
+                -DLLVM_BUILD_UTILS=ON \
+                -DLLVM_INSTALL_UTILS=ON \
+                -DLLVM_INCLUDE_TESTS=OFF \
+                -DLLVM_INCLUDE_BENCHMARKS=OFF \
+                -DLLVM_INCLUDE_EXAMPLES=OFF \
+                -DLLVM_INCLUDE_DOCS=OFF \
+                -DLLVM_ENABLE_BINDINGS=OFF \
+                -DLLVM_ENABLE_ZLIB=ON \
+                -DLLVM_ENABLE_ZSTD=OFF \
+                -DLLVM_BUILD_LLVM_DYLIB=OFF \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DMLIR_BUILD_MLIR_C_DYLIB=OFF \
+                -DMLIR_ENABLE_BINDINGS_PYTHON=OFF
+
+              cmake --build /tmp/llvm-build -j$(sysctl -n hw.ncpu)
+              cmake --install /tmp/llvm-build
+
+              # Create archive for caching
+              tar cf llvm-freebsd-install.tar "${LLVM_PREFIX}"
+              zstd -T0 llvm-freebsd-install.tar -o llvm-freebsd-install.tar.zst
+              rm -f llvm-freebsd-install.tar
+
+              # Clean up build dirs
+              rm -rf /tmp/llvm-src /tmp/llvm-build
+            fi
+
+            # ── Rust builds ────────────────────────────────────────────────
+
+            # Build runtime (release + debug for E2E tests)
+            cargo build -p hew-runtime --release
+            cargo build -p hew-runtime
+
+            # Build frontend and tools (release)
+            cargo build -p hew-cli -p hew-serialize --release
+
+            # Build frontend (debug — needed by some tests)
+            cargo build -p hew-cli
+
+            # Build standard library packages
+            cargo build --release \
+              -p hew-std-encoding-base64 -p hew-std-encoding-compress \
+              -p hew-std-encoding-csv -p hew-std-encoding-json \
+              -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
+              -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
+              -p hew-std-encoding-yaml \
+              -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
+              -p hew-std-crypto-password \
+              -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-smtp \
+              -p hew-std-net-url -p hew-std-net-websocket \
+              -p hew-std-time-cron -p hew-std-time-datetime \
+              -p hew-std-text-regex -p hew-std-text-semver \
+              -p hew-std-misc-uuid -p hew-std-misc-log
+
+            # ── hew-codegen (CMake + MLIR) ─────────────────────────────────
+            cd hew-codegen
+            cmake -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DHEW_STATIC_LINK=ON \
+              -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+              -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+            cmake --build build -j$(sysctl -n hw.ncpu)
+            cd ..
+
+            # ── Tests ──────────────────────────────────────────────────────
+
+            # Rust workspace tests (skip WASM and hew-cabi)
+            cargo test --workspace --exclude hew-wasm --exclude hew-cabi
+
+            # Codegen unit tests
+            cd hew-codegen/build
+            ctest --output-on-failure -R "^(mlir_dialect|translate)$"
+
+            # Codegen E2E tests (native only, no WASM)
+            ctest --output-on-failure -j$(sysctl -n hw.ncpu) -LE wasm -E "^(mlir_dialect|translate)$"
+
+      - name: Save LLVM+MLIR cache (FreeBSD)
+        if: steps.cache-llvm-freebsd.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llvm-freebsd-install.tar.zst
+          key: llvm-mlir-22.1.0-freebsd15-amd64-v1

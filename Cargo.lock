@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "adze-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "base64",
  "clap",
@@ -1408,7 +1408,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-astgen"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1417,14 +1417,14 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-cli"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "hew-export-macro"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-export-types",
  "proc-macro2",
@@ -1451,11 +1451,11 @@ dependencies = [
 
 [[package]]
 name = "hew-export-types"
-version = "0.1.7"
+version = "0.1.8"
 
 [[package]]
 name = "hew-lexer"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "logos",
  "serde_json",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "dashmap 6.1.0",
  "hew-lexer",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "clap",
  "crossterm",
@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-lexer",
  "serde",
@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
@@ -1515,7 +1515,7 @@ dependencies = [
 
 [[package]]
 name = "hew-serialize"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1527,7 +1527,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-crypto"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-jwt"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-crypto-password"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "argon2",
  "hew-cabi",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-base64"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "base64",
  "hew-cabi",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-compress"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "flate2",
  "hew-cabi",
@@ -1578,7 +1578,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-csv"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "csv",
  "hew-cabi",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-json"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1599,7 +1599,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-markdown"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-export-macro",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-msgpack"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1622,14 +1622,14 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-protobuf"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-std-encoding-toml"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1639,7 +1639,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-encoding-yaml"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-misc-log"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-export-macro",
  "hew-export-types",
@@ -1657,7 +1657,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-misc-uuid"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-export-macro",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-http"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-ipnet"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1690,11 +1690,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-mime"
-version = "0.1.7"
+version = "0.1.8"
 
 [[package]]
 name = "hew-std-net-smtp"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1704,7 +1704,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-url"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1714,7 +1714,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-net-websocket"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "libc",
  "tungstenite",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-regex"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-semver"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-cabi",
  "hew-runtime",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-time-cron"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "cron",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std-time-datetime"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "hew-cabi",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "hew-stdlib-gen"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-export-types",
  "hew-runtime",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-parser",
  "stacker",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -3118,9 +3118,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.44"
+version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
+checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
@@ -3872,12 +3872,12 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
+checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4267,9 +4267,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.0.3+spec-1.1.0"
+version = "1.0.4+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7614eaf19ad818347db24addfa201729cf2a9b6fdfd9eb0ab870fcacc606c0c"
+checksum = "c94c3321114413476740df133f0d8862c61d87c8d26f04c6841e033c8c80db47"
 dependencies = [
  "indexmap",
  "serde_core",
@@ -4277,7 +4277,7 @@ dependencies = [
  "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow 0.7.14",
+ "winnow 0.7.15",
 ]
 
 [[package]]
@@ -4295,7 +4295,7 @@ version = "1.0.9+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
 dependencies = [
- "winnow 0.7.14",
+ "winnow 0.7.15",
 ]
 
 [[package]]
@@ -4591,9 +4591,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.21.0"
+version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
+checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
 dependencies = [
  "atomic",
  "getrandom 0.4.2",
@@ -5205,9 +5205,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 
 [[package]]
 name = "wit-bindgen"

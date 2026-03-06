@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-03-06
+
 ### Added
 
+- Numeric literal type coercion: integer and float literals automatically coerce to the expected type with range validation (e.g., `var t: i32 = 4` works without explicit cast)
+- Untyped const coercion: `const N: Int = 10` can be used as i32, u8, etc.
 - `indirect enum` for recursive data types (expression trees, linked lists, etc.) with automatic heap allocation and RAII cleanup
 - Named supervisor child access via field syntax (`sup.child_name` resolves to `supervisor_child(sup, idx)` at compile time)
 - WASM platform capability documentation
@@ -143,6 +147,7 @@
 - Codegen: msgpack char deserializer decodes multi-byte UTF-8 sequences
 - Codegen: var reassignment now drops old owned value (prevents memory leak for String/Vec/HashMap)
 - Codegen: function argument coercion now passes isUnsigned flag (u32→u64 uses extui not extsi)
+- Codegen: `generateLiteral()` now emits literals at correct MLIR width from resolved type (was always i64/f64)
 - All 338 codegen e2e tests pass (100%, up from 263/335 = 79%)
 
 ### Changed

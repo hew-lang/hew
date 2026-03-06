@@ -1,0 +1,15 @@
+gen fn countdown(n: int) -> int {
+    var i = n;
+    while i > 0 {
+        yield i;
+        i -= 1;
+    }
+}
+
+fn main() {
+    let g = countdown(5);
+    for _i in 0..5 {
+        let val = g.next();
+        println(val);
+    }
+}

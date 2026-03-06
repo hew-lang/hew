@@ -32,6 +32,7 @@
 - `Vec<T>.map((x) => expr)` method: transform each element, returns new `Vec<U>`
 - `Vec<T>.filter((x) => expr)` method: keep elements where closure returns true, returns new `Vec<T>`
 - `Vec<T>.fold(init, (acc, x) => expr)` method: reduce to a single value
+- LLVM coroutine-based `gen fn` codegen: `yield` inside `while`/`for`/`loop` now works correctly (loop variables preserved across yields)
 - `HashMap.keys()` method: return `Vec<K>` of all keys (type checker; codegen already existed)
 - `join` is now a contextual keyword, usable as a method name in dot-call position
 

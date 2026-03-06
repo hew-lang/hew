@@ -483,6 +483,8 @@ add_e2e_file_test(string_concat_identity  e2e_canonicalize string_concat_identit
 # ── Generator tests ──────────────────────────────────────────────────────────
 add_e2e_file_test(simple_generator      e2e_generators simple_generator)
 add_e2e_file_test(for_over_generator    e2e_generators for_over_generator)
+add_e2e_file_test(gen_loop              e2e_generators gen_loop)
+add_e2e_file_test(gen_fib               e2e_generators gen_fib)
 
 # ── Async generator tests ────────────────────────────────────────────────────
 add_e2e_file_test(async_gen             e2e_async_gen  async_gen)

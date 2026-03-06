@@ -207,9 +207,11 @@ target_include_directories(hew-codegen PRIVATE
 
 if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
   if(NOT MSVC AND NOT APPLE)
-    # Statically link libstdc++ and libgcc for maximum portability.
-    # Only libc, libm, libz, libzstd remain as dynamic deps (available everywhere).
-    target_link_options(hew-codegen PRIVATE -s -static-libgcc -static-libstdc++)
+    target_link_options(hew-codegen PRIVATE -s)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      # Statically link libstdc++ and libgcc for maximum portability on GCC/Linux.
+      target_link_options(hew-codegen PRIVATE -static-libgcc -static-libstdc++)
+    endif()
   endif()
   if(APPLE)
     add_custom_command(TARGET hew-codegen POST_BUILD

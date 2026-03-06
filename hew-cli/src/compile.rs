@@ -426,13 +426,14 @@ pub fn compile(
         .and_then(|s| s.to_str())
         .unwrap_or("a.out")
         .to_string();
-    // Windows executables need .exe when compiling for native host
-    #[cfg(target_os = "windows")]
-    let default_output = if options.target.is_none() && !default_output.ends_with(".exe") {
-        format!("{default_output}.exe")
-    } else {
-        default_output
-    };
+    // Append platform exe suffix when compiling for native host
+    let suffix = super::platform::exe_suffix();
+    let default_output =
+        if !suffix.is_empty() && options.target.is_none() && !default_output.ends_with(suffix) {
+            format!("{default_output}{suffix}")
+        } else {
+            default_output
+        };
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
@@ -464,14 +465,10 @@ pub(crate) fn find_codegen_binary() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
 
-    let codegen_name = if cfg!(target_os = "windows") {
-        "hew-codegen.exe"
-    } else {
-        "hew-codegen"
-    };
+    let codegen_name = format!("hew-codegen{}", super::platform::exe_suffix());
     let candidates = [
         // Same directory as the hew binary (installed layout)
-        exe_dir.join(codegen_name),
+        exe_dir.join(&codegen_name),
         // Installed layout: <prefix>/lib/hew-codegen
         exe_dir.join(format!("../lib/{codegen_name}")),
         // Dev layout from target/debug/ or target/release/

@@ -25,6 +25,7 @@ mod eval;
 mod link;
 mod machine;
 mod manifest;
+mod platform;
 mod test_runner;
 mod watch;
 mod wire;
@@ -120,14 +121,9 @@ fn cmd_run(args: &[String]) {
     }
 
     // Compile to a temporary binary
-    let exe_suffix = if cfg!(target_os = "windows") {
-        ".exe"
-    } else {
-        ""
-    };
     let tmp_path = tempfile::Builder::new()
         .prefix("hew_run_")
-        .suffix(exe_suffix)
+        .suffix(platform::exe_suffix())
         .tempfile()
         .unwrap_or_else(|e| {
             eprintln!("Error: cannot create temp file: {e}");
@@ -202,11 +198,7 @@ fn cmd_debug(args: &[String]) {
         eprintln!("Error: cannot create temp dir: {e}");
         std::process::exit(1);
     });
-    let debug_bin_name = if cfg!(target_os = "windows") {
-        "hew_debug_bin.exe"
-    } else {
-        "hew_debug_bin"
-    };
+    let debug_bin_name = format!("hew_debug_bin{}", platform::exe_suffix());
     let tmp_bin = tmp_dir.path().join(debug_bin_name);
     let tmp_bin_str = tmp_bin.display().to_string();
 

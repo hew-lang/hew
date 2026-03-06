@@ -63,6 +63,18 @@ endif()
 # space-separated, not semicolon-separated, causing malformed -D flags
 # and duplicate macro redefinition warnings.
 
+# Match LLVM's RTTI setting.  HandleLLVMOptions' llvm_replace_compiler_option
+# only replaces an existing -frtti flag; if neither -frtti nor -fno-rtti is in
+# CMAKE_CXX_FLAGS it does nothing.  Source-built LLVM defaults to RTTI=OFF,
+# while distro packages (apt, Homebrew) usually enable it.
+if(NOT LLVM_ENABLE_RTTI)
+  if(MSVC)
+    string(APPEND CMAKE_CXX_FLAGS " /GR-")
+  else()
+    string(APPEND CMAKE_CXX_FLAGS " -fno-rtti")
+  endif()
+endif()
+
 # ── msgpack-cxx (header-only, for msgpack AST deserialization) ───────────────
 include(FetchContent)
 FetchContent_Declare(

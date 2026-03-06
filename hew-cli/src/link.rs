@@ -76,7 +76,7 @@ pub fn link_executable(
 
     // Dead-code elimination: discard unreferenced sections from the archive.
     // Skip stripping when building for debug so symbols are preserved.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         cmd.arg("-Wl,--gc-sections");
         if !debug {
@@ -97,23 +97,12 @@ pub fn link_executable(
         if !debug {
             cmd.arg("-Wl,-x");
         }
-        // Same rationale as the Linux `--allow-multiple-definition` above:
+        // Same rationale as the ELF `--allow-multiple-definition` above:
         // Cargo staticlibs embed shared dependencies, producing duplicate
         // symbols when linked together. `-Wl,-multiply_defined,suppress`
         // tells ld64 to silently pick one definition.
         if !extra_libs.is_empty() {
             cmd.arg("-Wl,-multiply_defined,suppress");
-        }
-    }
-
-    #[cfg(target_os = "freebsd")]
-    {
-        cmd.arg("-Wl,--gc-sections");
-        if !debug {
-            cmd.arg("-Wl,--strip-all");
-        }
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,--allow-multiple-definition");
         }
     }
 

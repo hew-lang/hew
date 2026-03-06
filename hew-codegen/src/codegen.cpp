@@ -53,6 +53,8 @@
 #include "mlir/Target/LLVMIR/Export.h"
 
 // LLVM support
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -64,6 +66,10 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroElide.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <climits>
 #include <filesystem>
 #include <iostream>
@@ -4400,6 +4406,354 @@ mlir::LogicalResult Codegen::lowerToLLVMDialect(mlir::ModuleOp module) {
   return mlir::success();
 }
 
+// ── Coroutine generator transformation ────────────────────────────────────
+//
+// Transforms __coro body functions and their init/next/done stubs into proper
+// LLVM coroutine-based generators.  This runs after MLIR → LLVM IR translation
+// and before the LLVM optimization pipeline (which includes CoroSplit).
+//
+// For each generator function `foo`:
+//   foo__coro(params..., ptr promise) → void  — body with suspend markers
+//   foo(params...)                    → ptr   — init stub (returns null)
+//   foo__next(ptr)                    → T     — next stub (returns default)
+//   foo__done(ptr)                    → i1    — done stub (returns false)
+//
+// After transformation:
+//   foo__coro — proper coroutine with presplitcoroutine attribute
+//   foo       — ramp: calls foo__coro to create coroutine handle
+//   foo__next — resume coroutine, read promise
+//   foo__done — call coro.done
+//
+static void transformCoroutineGenerators(llvm::Module &M) {
+  // Find all __coro body functions
+  llvm::SmallVector<llvm::Function *, 4> coroFunctions;
+  for (auto &F : M) {
+    if (F.getName().ends_with("__coro") && !F.isDeclaration())
+      coroFunctions.push_back(&F);
+  }
+
+  if (coroFunctions.empty())
+    return;
+
+  auto &Ctx = M.getContext();
+  auto *PtrTy = llvm::PointerType::get(Ctx, 0);
+  auto *I8Ty = llvm::Type::getInt8Ty(Ctx);
+  auto *I32Ty = llvm::Type::getInt32Ty(Ctx);
+  auto *I64Ty = llvm::Type::getInt64Ty(Ctx);
+  auto *I1Ty = llvm::Type::getInt1Ty(Ctx);
+  auto *VoidTy = llvm::Type::getVoidTy(Ctx);
+  // Declare coroutine intrinsics
+  auto *CoroIdFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_id);
+  auto *CoroAllocFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_alloc);
+  auto *CoroSizeI64Fn =
+      llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_size, {I64Ty});
+  auto *CoroBeginFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_begin);
+  auto *CoroSuspendFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_suspend);
+  auto *CoroEndFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_end);
+  auto *CoroFreeFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_free);
+  auto *CoroResumeFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_resume);
+  auto *CoroDoneFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_done);
+  auto *CoroPromiseFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_promise);
+
+  // Ensure malloc and free are declared
+  auto *MallocFn = M.getFunction("malloc");
+  if (!MallocFn) {
+    auto *MallocTy = llvm::FunctionType::get(PtrTy, {I64Ty}, false);
+    MallocFn = llvm::Function::Create(MallocTy, llvm::Function::ExternalLinkage, "malloc", &M);
+  }
+  auto *FreeFn = M.getFunction("free");
+  if (!FreeFn) {
+    auto *FreeTy = llvm::FunctionType::get(VoidTy, {PtrTy}, false);
+    FreeFn = llvm::Function::Create(FreeTy, llvm::Function::ExternalLinkage, "free", &M);
+  }
+
+  // Remove the marker function declaration
+  if (auto *marker = M.getFunction("__hew_coro_suspend"))
+    marker->setLinkage(llvm::Function::InternalLinkage);
+
+  for (auto *CoroBodyFn : coroFunctions) {
+    std::string coroName = CoroBodyFn->getName().str();
+    // Extract base name: "foo__coro" → "foo"
+    std::string baseName = coroName.substr(0, coroName.size() - 6); // strip "__coro"
+
+    auto *InitFn = M.getFunction(baseName);
+    auto *NextFn = M.getFunction(baseName + "__next");
+    auto *DoneFn = M.getFunction(baseName + "__done");
+
+    if (!InitFn || !NextFn || !DoneFn) {
+      llvm::errs() << "Warning: missing generator stubs for " << baseName << "\n";
+      continue;
+    }
+
+    // Determine the yield type from the __next function's return type
+    auto *YieldTy = NextFn->getReturnType();
+
+    // Create a promise struct type: { YieldTy }
+    auto *PromiseStructTy = llvm::StructType::get(Ctx, llvm::ArrayRef<llvm::Type *>{YieldTy});
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Transform the __coro body function into a proper LLVM coroutine.
+    //
+    // The body was generated with:
+    //   - An alloca for promise (the last argument is the promise ptr)
+    //   - Calls to __hew_coro_suspend at yield points
+    //
+    // We need to:
+    //   1. Create the coroutine entry (coro.id, coro.alloc, coro.begin)
+    //   2. Replace __hew_coro_suspend calls with coro.suspend + switch
+    //   3. Add final suspend and cleanup blocks
+    //   4. Mark with presplitcoroutine attribute
+    //
+    // Instead of modifying the existing function in-place (which is very
+    // complex due to CFG manipulation), we build a NEW coroutine function
+    // that calls the body inline.  But that's also complex...
+    //
+    // SIMPLEST APPROACH: Build the entire coroutine from scratch at the
+    // LLVM IR level, replacing the stub functions.
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // Step 1: Collect the suspend marker calls in the coro body
+    llvm::SmallVector<llvm::CallInst *, 8> suspendCalls;
+    for (auto &BB : *CoroBodyFn) {
+      for (auto &I : BB) {
+        if (auto *CI = llvm::dyn_cast<llvm::CallInst>(&I)) {
+          auto *Callee = CI->getCalledFunction();
+          if (Callee && Callee->getName() == "__hew_coro_suspend")
+            suspendCalls.push_back(CI);
+        }
+      }
+    }
+
+    // Step 2: Transform the __coro function into a proper coroutine
+    // We do this by:
+    // a) Creating a new entry block with coro preamble
+    // b) Splitting at each suspend call to insert coro.suspend
+    // c) Adding cleanup and suspend blocks
+
+    // Rename the old entry block
+    auto &OldEntry = CoroBodyFn->getEntryBlock();
+
+    // Create new blocks
+    auto *NewEntry = llvm::BasicBlock::Create(Ctx, "coro.entry", CoroBodyFn, &OldEntry);
+    auto *DynAlloc = llvm::BasicBlock::Create(Ctx, "coro.dyn.alloc", CoroBodyFn, &OldEntry);
+    auto *Begin = llvm::BasicBlock::Create(Ctx, "coro.begin", CoroBodyFn, &OldEntry);
+    auto *Cleanup = llvm::BasicBlock::Create(Ctx, "coro.cleanup", CoroBodyFn);
+    auto *Suspend = llvm::BasicBlock::Create(Ctx, "coro.suspend", CoroBodyFn);
+    auto *FinalSuspend = llvm::BasicBlock::Create(Ctx, "coro.final", CoroBodyFn);
+
+    // The promise is an alloca in the new entry block
+    llvm::IRBuilder<> IRB(NewEntry);
+    auto *PromiseAlloca = IRB.CreateAlloca(PromiseStructTy, nullptr, "promise");
+    PromiseAlloca->setAlignment(llvm::Align(8));
+
+    // Get the promise value ptr (field 0)
+    auto *PromiseValPtr = IRB.CreateStructGEP(PromiseStructTy, PromiseAlloca, 0, "promise.val.ptr");
+
+    // coro.id
+    auto *NullPtr = llvm::ConstantPointerNull::get(PtrTy);
+    auto *CoroId = IRB.CreateCall(
+        CoroIdFn, {llvm::ConstantInt::get(I32Ty, 0), PromiseAlloca, NullPtr, NullPtr}, "coro.id");
+
+    // coro.alloc
+    auto *NeedAlloc = IRB.CreateCall(CoroAllocFn, {CoroId}, "need.alloc");
+    IRB.CreateCondBr(NeedAlloc, DynAlloc, Begin);
+
+    // dyn.alloc block
+    IRB.SetInsertPoint(DynAlloc);
+    auto *CoroSize = IRB.CreateCall(CoroSizeI64Fn, {}, "coro.size");
+    auto *Alloc = IRB.CreateCall(MallocFn, {CoroSize}, "coro.alloc");
+    IRB.CreateBr(Begin);
+
+    // begin block
+    IRB.SetInsertPoint(Begin);
+    auto *PhiMem = IRB.CreatePHI(PtrTy, 2, "phi.mem");
+    PhiMem->addIncoming(NullPtr, NewEntry);
+    PhiMem->addIncoming(Alloc, DynAlloc);
+    auto *Hdl = IRB.CreateCall(CoroBeginFn, {CoroId, PhiMem}, "coro.hdl");
+
+    // Replace the promise ptr argument with our actual promise value ptr.
+    // The last argument of the coro function was the promise pointer.
+    auto *PromiseArg = CoroBodyFn->getArg(CoroBodyFn->arg_size() - 1);
+    PromiseArg->replaceAllUsesWith(PromiseValPtr);
+
+    // NO initial suspend — the ramp function runs the body until the first
+    // yield, storing the first value in the promise.  __next() reads the
+    // promise (getting the current value) THEN resumes (advancing to the
+    // next yield or to the end of the function).
+    IRB.CreateBr(&OldEntry);
+
+    // Replace all return instructions in the body with branches to the
+    // final suspend block
+    llvm::SmallVector<llvm::ReturnInst *, 4> returns;
+    for (auto &BB : *CoroBodyFn) {
+      if (&BB == Cleanup || &BB == Suspend || &BB == FinalSuspend)
+        continue;
+      if (auto *RI = llvm::dyn_cast<llvm::ReturnInst>(BB.getTerminator()))
+        returns.push_back(RI);
+    }
+    for (auto *RI : returns) {
+      IRB.SetInsertPoint(RI);
+      IRB.CreateBr(FinalSuspend);
+      RI->eraseFromParent();
+    }
+
+    // Replace each __hew_coro_suspend call with coro.suspend + switch
+    for (auto *CI : suspendCalls) {
+      auto *ParentBB = CI->getParent();
+
+      // Split the block after the suspend call.  Everything after the call
+      // goes into the "resume" block.
+      auto *ResumeBlock = ParentBB->splitBasicBlock(CI->getNextNode(), "coro.resume");
+
+      // Remove the unconditional branch that splitBasicBlock created
+      ParentBB->getTerminator()->eraseFromParent();
+
+      // Insert coro.suspend at the end of ParentBB
+      IRB.SetInsertPoint(ParentBB);
+      auto *SuspResult = IRB.CreateCall(
+          CoroSuspendFn, {llvm::ConstantTokenNone::get(Ctx), llvm::ConstantInt::get(I1Ty, 0)},
+          "susp");
+      auto *SW = IRB.CreateSwitch(SuspResult, Suspend, 2);
+      SW->addCase(llvm::ConstantInt::get(I8Ty, 0), ResumeBlock);
+      SW->addCase(llvm::ConstantInt::get(I8Ty, 1), Cleanup);
+
+      // Remove the original marker call
+      CI->eraseFromParent();
+    }
+
+    // Final suspend block
+    IRB.SetInsertPoint(FinalSuspend);
+    auto *FinalResult = IRB.CreateCall(
+        CoroSuspendFn, {llvm::ConstantTokenNone::get(Ctx), llvm::ConstantInt::get(I1Ty, 1)},
+        "final.susp");
+    auto *FinalSW = IRB.CreateSwitch(FinalResult, Suspend, 2);
+    FinalSW->addCase(llvm::ConstantInt::get(I8Ty, 0), Suspend); // final resume → suspend
+    FinalSW->addCase(llvm::ConstantInt::get(I8Ty, 1), Cleanup);
+
+    // Cleanup block
+    IRB.SetInsertPoint(Cleanup);
+    auto *FreeMem = IRB.CreateCall(CoroFreeFn, {CoroId, Hdl}, "coro.free.mem");
+    IRB.CreateCall(FreeFn, {FreeMem});
+    IRB.CreateBr(Suspend);
+
+    // Suspend block (final)
+    IRB.SetInsertPoint(Suspend);
+    IRB.CreateCall(CoroEndFn,
+                   {Hdl, llvm::ConstantInt::get(I1Ty, 0), llvm::ConstantTokenNone::get(Ctx)});
+    IRB.CreateRet(Hdl);
+
+    // Change the return type of the coro function to ptr (it returns the handle)
+    // We need to create a new function with the right return type
+    // Actually, we can change the return type by creating a new function.
+    // But modifying in-place is tricky... Let's use a workaround:
+    // Change the function type to return ptr instead of void.
+
+    // Actually, the LLVM coroutine framework expects the ramp function to
+    // return ptr (the handle).  But the __coro function returns void in
+    // MLIR.  We've already replaced the returns with branches to final
+    // suspend, and the suspend block now returns the handle.
+    // BUT the function signature still says void return.  We need to fix that.
+
+    // Create a new function with the correct type
+    llvm::SmallVector<llvm::Type *, 4> CoroParamTys;
+    for (auto &Arg : CoroBodyFn->args())
+      CoroParamTys.push_back(Arg.getType());
+    auto *NewCoroTy = llvm::FunctionType::get(PtrTy, CoroParamTys, false);
+    auto *NewCoroFn =
+        llvm::Function::Create(NewCoroTy, CoroBodyFn->getLinkage(), coroName + ".tmp", &M);
+    NewCoroFn->setPresplitCoroutine();
+
+    // Splice all blocks from old to new
+    NewCoroFn->splice(NewCoroFn->begin(), CoroBodyFn);
+
+    // Update argument references
+    for (auto [OldArg, NewArg] : llvm::zip(CoroBodyFn->args(), NewCoroFn->args())) {
+      OldArg.replaceAllUsesWith(&NewArg);
+      NewArg.setName(OldArg.getName());
+    }
+
+    // Remove old function, rename new one
+    std::string origCoroName = CoroBodyFn->getName().str();
+    CoroBodyFn->replaceAllUsesWith(NewCoroFn);
+    CoroBodyFn->eraseFromParent();
+    NewCoroFn->setName(origCoroName);
+
+    auto *CoroFn = NewCoroFn;
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Rewrite the init function: call the coroutine ramp, return handle
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {
+      // Delete the stub body
+      InitFn->deleteBody();
+      auto *Entry = llvm::BasicBlock::Create(Ctx, "entry", InitFn);
+      IRB.SetInsertPoint(Entry);
+
+      // Call the coroutine ramp function (which is the __coro function)
+      // Pass through the init function's parameters + a dummy promise ptr
+      // (the coroutine creates its own promise via alloca)
+      llvm::SmallVector<llvm::Value *, 4> Args;
+      for (auto &Arg : InitFn->args())
+        Args.push_back(&Arg);
+      // The last argument is the promise ptr — pass null since the coro
+      // function creates its own alloca for the promise
+      Args.push_back(llvm::ConstantPointerNull::get(PtrTy));
+
+      auto *Handle = IRB.CreateCall(CoroFn, Args, "gen.hdl");
+      IRB.CreateRet(Handle);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Rewrite __next: read promise value, then resume
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //
+    // The coroutine stores the yielded value in the promise BEFORE
+    // suspending.  __next reads the current value, then resumes the
+    // coroutine to advance to the next yield (or to final suspend if
+    // the generator is exhausted).
+    {
+      NextFn->deleteBody();
+      auto *Entry = llvm::BasicBlock::Create(Ctx, "entry", NextFn);
+      IRB.SetInsertPoint(Entry);
+
+      auto *Handle = NextFn->getArg(0);
+
+      // Read the promise value (stored before the current suspend)
+      // coro.promise returns a ptr to the promise alloca
+      // Use 8-byte alignment (standard for 64-bit types like i64, f64, ptr)
+      auto *Promise = IRB.CreateCall(
+          CoroPromiseFn,
+          {Handle, llvm::ConstantInt::get(I32Ty, 8), llvm::ConstantInt::get(I1Ty, 0)},
+          "promise.ptr");
+      auto *Val = IRB.CreateLoad(YieldTy, Promise, "yield.val");
+
+      // Resume the coroutine to advance to the next yield
+      IRB.CreateCall(CoroResumeFn, {Handle});
+
+      IRB.CreateRet(Val);
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // Rewrite __done: call coro.done
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    {
+      DoneFn->deleteBody();
+      auto *Entry = llvm::BasicBlock::Create(Ctx, "entry", DoneFn);
+      IRB.SetInsertPoint(Entry);
+
+      auto *Handle = DoneFn->getArg(0);
+      auto *Done = IRB.CreateCall(CoroDoneFn, {Handle}, "done");
+      IRB.CreateRet(Done);
+    }
+  }
+
+  // Remove the suspend marker function if it exists
+  if (auto *marker = M.getFunction("__hew_coro_suspend")) {
+    if (marker->use_empty())
+      marker->eraseFromParent();
+  }
+}
+
 // ── Step 3 & 4: Translate to LLVM IR ──────────────────────────────────────
 
 std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
@@ -4467,6 +4821,47 @@ std::unique_ptr<llvm::Module> Codegen::lowerToLLVMIR(mlir::ModuleOp module,
   if (!llvmModule) {
     llvm::errs() << "Error: MLIR to LLVM IR translation failed\n";
     return nullptr;
+  }
+
+  // Transform coroutine-based generators: replace marker calls with actual
+  // LLVM coroutine intrinsics.  This must run BEFORE the LLVM optimization
+  // pipeline because CoroSplit (part of the default O3 pipeline) expects
+  // the presplitcoroutine attribute and proper coro.suspend calls.
+  transformCoroutineGenerators(*llvmModule);
+
+  // Run coroutine passes unconditionally when generators are present.
+  // These must run even in debug mode (skipOptimization) because LLVM
+  // cannot select coroutine intrinsics without lowering them first.
+  {
+    bool hasCoroutines = false;
+    for (auto &F : *llvmModule) {
+      if (F.isPresplitCoroutine()) {
+        hasCoroutines = true;
+        break;
+      }
+    }
+    if (hasCoroutines) {
+      llvm::LoopAnalysisManager LAM;
+      llvm::FunctionAnalysisManager FAM;
+      llvm::CGSCCAnalysisManager CGAM;
+      llvm::ModuleAnalysisManager MAM;
+
+      llvm::PassBuilder PB;
+      PB.registerModuleAnalyses(MAM);
+      PB.registerCGSCCAnalyses(CGAM);
+      PB.registerFunctionAnalyses(FAM);
+      PB.registerLoopAnalyses(LAM);
+      PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+      llvm::ModulePassManager MPM;
+      MPM.addPass(llvm::CoroEarlyPass());
+      llvm::CGSCCPassManager CGPM;
+      CGPM.addPass(llvm::CoroSplitPass());
+      MPM.addPass(llvm::createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPM)));
+      MPM.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::CoroElidePass()));
+      MPM.addPass(llvm::CoroCleanupPass());
+      MPM.run(*llvmModule, MAM);
+    }
   }
 
   // Run LLVM optimization passes (skip when debug_info is set for debugger use).

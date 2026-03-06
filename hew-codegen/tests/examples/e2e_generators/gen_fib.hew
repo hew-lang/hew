@@ -1,0 +1,18 @@
+gen fn fibonacci() -> int {
+    var a = 0;
+    var b = 1;
+    loop {
+        yield a;
+        let temp = a + b;
+        a = b;
+        b = temp;
+    }
+}
+
+fn main() {
+    let g = fibonacci();
+    for _i in 0..10 {
+        let val = g.next();
+        println(val);
+    }
+}

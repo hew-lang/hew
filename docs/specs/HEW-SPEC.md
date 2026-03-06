@@ -2803,7 +2803,7 @@ where e: Task<T>, d: Duration
 
 ### 4.12 Generators
 
-A **generator** is a function that produces a sequence of values lazily, suspending after each `yield` and resuming when the consumer requests the next value. Generators compile to state machines — each `yield` becomes a suspend point, and the generator's local state is preserved in a heap-allocated frame.
+A **generator** is a function that produces a sequence of values lazily, suspending after each `yield` and resuming when the consumer requests the next value. Generators compile using LLVM coroutines — each `yield` becomes a suspend point, and the generator's entire local state (including loop variables) is automatically preserved in a heap-allocated coroutine frame. This means `yield` works correctly inside `while`, `for`, and `loop` constructs.
 
 #### 4.12.1 Generator Functions
 

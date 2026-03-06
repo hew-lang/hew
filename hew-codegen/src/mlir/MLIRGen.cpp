@@ -3258,142 +3258,153 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 }
 
 // ============================================================================
-// Generator function codegen (state machine transformation)
+// Generator function codegen (LLVM coroutine-based)
 // ============================================================================
-
-// Forward declaration for mutual recursion.
-static void collectYieldsFromExpr(const ast::Expr &expr, std::vector<const ast::Expr *> &yields);
-
-// Helper: recursively collect yield expressions from statements and blocks.
-static void collectYields(const ast::Block &block, std::vector<const ast::Expr *> &yields) {
-  for (const auto &stmtPtr : block.stmts) {
-    const auto &stmt = stmtPtr->value;
-    // Recurse into nested statement bodies
-    if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt.kind)) {
-      collectYields(ifStmt->then_block, yields);
-      if (ifStmt->else_block) {
-        if (ifStmt->else_block->is_if && ifStmt->else_block->if_stmt) {
-          // else-if: recurse via the if_stmt
-          if (auto *nestedIf = std::get_if<ast::StmtIf>(&ifStmt->else_block->if_stmt->value.kind)) {
-            collectYields(nestedIf->then_block, yields);
-          }
-        }
-        if (ifStmt->else_block->block)
-          collectYields(*ifStmt->else_block->block, yields);
-      }
-    } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt.kind)) {
-      collectYields(forStmt->body, yields);
-    } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt.kind)) {
-      collectYields(whileStmt->body, yields);
-    } else if (auto *loopStmt = std::get_if<ast::StmtLoop>(&stmt.kind)) {
-      collectYields(loopStmt->body, yields);
-    } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt.kind)) {
-      for (const auto &arm : matchStmt->arms) {
-        if (arm.body)
-          collectYieldsFromExpr(arm.body->value, yields);
-      }
-    } else if (auto *exprStmt = std::get_if<ast::StmtExpression>(&stmt.kind)) {
-      collectYieldsFromExpr(exprStmt->expr.value, yields);
-    }
-  }
-  // Also check trailing expression
-  if (block.trailing_expr)
-    collectYieldsFromExpr(block.trailing_expr->value, yields);
-}
-
-// Recursively collect yield expressions from an expression tree.
-static void collectYieldsFromExpr(const ast::Expr &expr, std::vector<const ast::Expr *> &yields) {
-  if (std::holds_alternative<ast::ExprYield>(expr.kind)) {
-    yields.push_back(&expr);
-    return;
-  }
-  // Recurse into sub-expressions that may contain blocks
-  if (auto *blockExpr = std::get_if<ast::ExprBlock>(&expr.kind)) {
-    collectYields(blockExpr->block, yields);
-  }
-  if (auto *ifExpr = std::get_if<ast::ExprIf>(&expr.kind)) {
-    if (ifExpr->then_block)
-      collectYieldsFromExpr(ifExpr->then_block->value, yields);
-    if (ifExpr->else_block && *ifExpr->else_block)
-      collectYieldsFromExpr((*ifExpr->else_block)->value, yields);
-  }
-  if (auto *matchExpr = std::get_if<ast::ExprMatch>(&expr.kind)) {
-    for (const auto &arm : matchExpr->arms) {
-      if (arm.body)
-        collectYieldsFromExpr(arm.body->value, yields);
-    }
-  }
-}
+//
+// Generates a coroutine body function `fnName__coro` that uses natural control
+// flow (loops, conditionals, etc.) and suspend markers at yield points.  The
+// init, __next, and __done functions are generated as stubs at the MLIR level
+// and then rewritten at the LLVM IR level to use LLVM coroutine intrinsics.
+//
+// This approach preserves loop variables across yields because LLVM's
+// CoroSplit pass automatically handles frame spilling of all live values.
+// ============================================================================
 
 void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
   auto location = currentLoc;
   auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
 
   // Determine the yield value type from the return type annotation
-  mlir::Type yieldType = i32Type; // default
+  mlir::Type yieldType = i64Type; // default to i64 (Hew int)
   if (fn.return_type) {
     auto retTy = convertType(fn.return_type->value);
     if (!llvm::isa<mlir::NoneType>(retTy))
       yieldType = retTy;
   }
 
-  // Collect all yield expressions from the function body
-  std::vector<const ast::Expr *> yields;
-  collectYields(fn.body, yields);
-
-  if (yields.empty()) {
-    emitWarning(location) << "generator function has no yield expressions";
-    return;
-  }
-
   const std::string &fnName = fn.name;
 
-  // Register as generator function
+  // Register as generator function and record its yield type
   generatorFunctions.insert(fnName);
+  generatorYieldTypes[fnName] = yieldType;
 
-  // Generator state struct: { i32 __state, <yieldType> __value }
-  auto stateStructType = mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, yieldType});
+  // Collect function parameter types
+  llvm::SmallVector<mlir::Type, 4> fnParamTypes;
+  for (const auto &param : fn.params) {
+    fnParamTypes.push_back(convertType(param.ty.value));
+  }
 
-  // ── Generate init function: <name>() -> !llvm.ptr ──────────────────
+  // ── Generate coroutine body: <name>__coro(params..., !llvm.ptr promise) -> void
+  // The promise pointer points to a single yieldType-sized slot where yield
+  // values are stored.  The function body is generated naturally (with loops,
+  // conditionals, etc.) and yield expressions store to the promise and call
+  // the suspend marker.
   {
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
 
-    auto initFuncType = builder.getFunctionType({}, {ptrType});
+    std::string coroName = fnName + "__coro";
+
+    // Parameters: original fn params + promise ptr
+    llvm::SmallVector<mlir::Type, 4> coroParamTypes(fnParamTypes);
+    coroParamTypes.push_back(ptrType); // promise ptr (last param)
+
+    auto coroFuncType = builder.getFunctionType(coroParamTypes, {});
+    auto coroFunc = mlir::func::FuncOp::create(builder, location, coroName, coroFuncType);
+    coroFunc.setVisibility(mlir::SymbolTable::Visibility::Private);
+    auto *entryBlock = coroFunc.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    // Set up function context
+    SymbolTableScopeT varScope(symbolTable);
+    MutableTableScopeT mutScope(mutableVars);
+    auto prevFunction = currentFunction;
+    currentFunction = coroFunc;
+
+    auto prevReturnFlag = returnFlag;
+    auto prevReturnSlot = returnSlot;
+    auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    auto prevFnDefers = std::move(currentFnDefers);
+    returnFlag = nullptr;
+    returnSlot = nullptr;
+    funcLevelDropExcludeVars.clear();
+    currentFnDefers.clear();
+
+    // Bind function parameters
+    uint32_t paramIdx = 0;
+    for (const auto &param : fn.params) {
+      declareVariable(param.name, entryBlock->getArgument(paramIdx));
+      ++paramIdx;
+    }
+
+    // The last parameter is the promise pointer
+    auto prevCoroPromisePtr = currentCoroPromisePtr;
+    currentCoroPromisePtr = entryBlock->getArgument(paramIdx);
+
+    // Declare the suspend marker function if needed
+    // __hew_coro_suspend(ptr promise) -> void
+    auto suspendMarker = module.lookupSymbol<mlir::func::FuncOp>("__hew_coro_suspend");
+    if (!suspendMarker) {
+      auto savedIP2 = builder.saveInsertionPoint();
+      builder.setInsertionPointToStart(module.getBody());
+      auto suspendType = builder.getFunctionType({ptrType}, {});
+      suspendMarker =
+          mlir::func::FuncOp::create(builder, location, "__hew_coro_suspend", suspendType);
+      suspendMarker.setPrivate();
+      builder.restoreInsertionPoint(savedIP2);
+    }
+
+    // Generate the function body naturally — loops, conditionals all work
+    generateBlock(fn.body);
+
+    // Ensure terminator
+    auto *currentBlock = builder.getInsertionBlock();
+    if (currentBlock &&
+        (currentBlock->empty() || !currentBlock->back().hasTrait<mlir::OpTrait::IsTerminator>())) {
+      mlir::func::ReturnOp::create(builder, location);
+    }
+
+    // Restore state
+    currentCoroPromisePtr = prevCoroPromisePtr;
+    returnFlag = prevReturnFlag;
+    returnSlot = prevReturnSlot;
+    funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+    currentFnDefers = std::move(prevFnDefers);
+    currentFunction = prevFunction;
+    builder.restoreInsertionPoint(savedIP);
+  }
+
+  // ── Generate init function: <name>(params...) -> !llvm.ptr ─────────
+  // This is a stub that will be replaced at LLVM IR level with the
+  // coroutine ramp function.  For now, it calls malloc and the coro body.
+  {
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+
+    auto initFuncType = builder.getFunctionType(fnParamTypes, {ptrType});
+
+    // Erase any forward declaration
+    if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(fnName)) {
+      if (existing.isDeclaration())
+        existing.erase();
+    }
+
     auto initFunc = mlir::func::FuncOp::create(builder, location, fnName, initFuncType);
     auto *entryBlock = initFunc.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
-    // Allocate state struct on HEAP via malloc (must outlive init function)
-    // First declare malloc if not already declared
-    auto mallocFunc = module.lookupSymbol<mlir::func::FuncOp>("malloc");
-    if (!mallocFunc) {
-      auto mallocType = builder.getFunctionType({sizeType()}, {ptrType});
-      auto savedIP2 = builder.saveInsertionPoint();
-      builder.setInsertionPointToStart(module.getBody());
-      mallocFunc = mlir::func::FuncOp::create(builder, location, "malloc", mallocType);
-      mallocFunc.setPrivate();
-      builder.restoreInsertionPoint(savedIP2);
-    }
-    // Calculate size
-    auto sizeVal =
-        hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(stateStructType));
-    auto mallocCall =
-        mlir::func::CallOp::create(builder, location, mallocFunc, mlir::ValueRange{sizeVal});
-    auto allocPtr = mallocCall.getResult(0);
+    // The init function is a placeholder — at LLVM IR level it becomes the
+    // coroutine ramp.  For now we just return a null pointer; the LLVM IR
+    // transformation will replace this entire function body.
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{nullPtr});
 
-    // Set state = 0
-    auto statePtr = mlir::LLVM::GEPOp::create(builder, location, ptrType, stateStructType, allocPtr,
-                                              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-    auto zero = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 0);
-    mlir::LLVM::StoreOp::create(builder, location, zero, statePtr);
-
-    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{allocPtr});
     builder.restoreInsertionPoint(savedIP);
   }
 
   // ── Generate next function: <name>__next(!llvm.ptr) -> <yieldType> ─
+  // Stub — replaced at LLVM IR level with coro.resume + promise read.
   {
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
@@ -3404,20 +3415,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto *entryBlock = nextFunc.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
-    auto genPtr = entryBlock->getArgument(0);
-
-    // State pointer (field 0 of struct)
-    auto statePtr = mlir::LLVM::GEPOp::create(builder, location, ptrType, stateStructType, genPtr,
-                                              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-
-    // Value pointer (field 1 of struct)
-    auto valuePtr = mlir::LLVM::GEPOp::create(builder, location, ptrType, stateStructType, genPtr,
-                                              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 1});
-
-    // Generate switch on state: each yield becomes a case
-    // Default block returns a zero/default value (generator exhausted)
-    auto *defaultBlock = nextFunc.addBlock();
-    builder.setInsertionPointToStart(defaultBlock);
+    // Stub return — will be replaced at LLVM IR level
     mlir::Value defaultVal;
     if (llvm::isa<mlir::IntegerType>(yieldType)) {
       defaultVal = mlir::arith::ConstantIntOp::create(builder, location, yieldType, 0);
@@ -3429,79 +3427,11 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     }
     mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{defaultVal});
 
-    // Create case blocks for each yield
-    llvm::SmallVector<int32_t> caseValues;
-    llvm::SmallVector<mlir::Block *> caseBlocks;
-    for (size_t i = 0; i < yields.size(); ++i) {
-      caseValues.push_back(static_cast<int32_t>(i));
-      auto *caseBlock = nextFunc.addBlock();
-      caseBlocks.push_back(caseBlock);
-    }
-
-    // Generate the switch in the entry block
-    builder.setInsertionPointToEnd(entryBlock);
-
-    // Load current state for the switch
-    auto stateVal = mlir::LLVM::LoadOp::create(builder, location, i32Type, statePtr);
-
-    // Use cf.switch for multi-way branch
-    llvm::SmallVector<mlir::ValueRange> caseOperands(yields.size(), mlir::ValueRange{});
-    llvm::SmallVector<int32_t> caseValuesForSwitch;
-    llvm::SmallVector<mlir::Block *> caseDests;
-    for (size_t i = 0; i < yields.size(); ++i) {
-      caseValuesForSwitch.push_back(static_cast<int32_t>(i));
-      caseDests.push_back(caseBlocks[i]);
-    }
-
-    mlir::cf::SwitchOp::create(builder, location, stateVal, defaultBlock, mlir::ValueRange{},
-                               caseValuesForSwitch, caseDests, caseOperands);
-
-    // Generate each case block: store yield value, bump state, return value
-    for (size_t i = 0; i < yields.size(); ++i) {
-      builder.setInsertionPointToStart(caseBlocks[i]);
-
-      // Generate the yield value expression
-      // We need a fresh symbol table scope for expression generation
-      SymbolTableScopeT varScope(symbolTable);
-      MutableTableScopeT mutScope(mutableVars);
-
-      auto prevFunction = currentFunction;
-      currentFunction = nextFunc;
-
-      mlir::Value yieldVal = nullptr;
-      const auto *yieldExpr = std::get_if<ast::ExprYield>(&yields[i]->kind);
-      if (yieldExpr && yieldExpr->value && *yieldExpr->value) {
-        yieldVal = generateExpression((*yieldExpr->value)->value);
-      }
-      if (!yieldVal) {
-        if (llvm::isa<mlir::IntegerType>(yieldType)) {
-          yieldVal = mlir::arith::ConstantIntOp::create(builder, location, yieldType, 0);
-        } else {
-          yieldVal = mlir::LLVM::ZeroOp::create(builder, location, yieldType);
-        }
-      }
-
-      currentFunction = prevFunction;
-
-      // Store value
-      mlir::LLVM::StoreOp::create(builder, location, yieldVal, valuePtr);
-
-      // Bump state to next
-      auto nextState = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
-                                                          static_cast<int64_t>(i + 1));
-      // Need a fresh statePtr since we're in a different block
-      auto sp = mlir::LLVM::GEPOp::create(builder, location, ptrType, stateStructType, genPtr,
-                                          llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-      mlir::LLVM::StoreOp::create(builder, location, nextState, sp);
-
-      // Return the yielded value
-      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{yieldVal});
-    }
-
     builder.restoreInsertionPoint(savedIP);
   }
 
-  // ── Generate done function: <name>__done(!llvm.ptr) -> i1 ───────────
+  // ── Generate done function: <name>__done(!llvm.ptr) -> i1 ──────────
+  // Stub — replaced at LLVM IR level with coro.done.
   {
     auto savedIP = builder.saveInsertionPoint();
     builder.setInsertionPointToEnd(module.getBody());
@@ -3513,15 +3443,9 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto *entryBlock = doneFunc.addEntryBlock();
     builder.setInsertionPointToStart(entryBlock);
 
-    auto genPtr = entryBlock->getArgument(0);
-    auto statePtr = mlir::LLVM::GEPOp::create(builder, location, ptrType, stateStructType, genPtr,
-                                              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, 0});
-    auto stateVal = mlir::LLVM::LoadOp::create(builder, location, i32Type, statePtr);
-    auto numYields = mlir::arith::ConstantIntOp::create(builder, location, i32Type,
-                                                        static_cast<int64_t>(yields.size()));
-    auto isDone = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::sge,
-                                              stateVal, numYields);
-    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{isDone});
+    // Stub return false — will be replaced at LLVM IR level
+    auto falseVal = mlir::arith::ConstantIntOp::create(builder, location, i1Type, 0);
+    mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{falseVal});
 
     builder.restoreInsertionPoint(savedIP);
   }

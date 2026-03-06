@@ -217,6 +217,29 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   }
 
   if (auto *yield = std::get_if<ast::ExprYield>(&expr.kind)) {
+    if (currentCoroPromisePtr) {
+      // Coroutine-based generator: store value to promise ptr and call suspend marker
+      if (yield->value.has_value() && *yield->value) {
+        auto yieldVal = generateExpression((*yield->value)->value);
+        if (yieldVal) {
+          auto yieldLocation = currentLoc;
+          auto ptrTy = mlir::LLVM::LLVMPointerType::get(&context);
+
+          // Store the yielded value into the promise slot
+          mlir::LLVM::StoreOp::create(builder, yieldLocation, yieldVal, currentCoroPromisePtr);
+
+          // Call the suspend marker: __hew_coro_suspend(promise_ptr)
+          auto suspendMarker = module.lookupSymbol<mlir::func::FuncOp>("__hew_coro_suspend");
+          if (suspendMarker) {
+            mlir::func::CallOp::create(builder, yieldLocation, suspendMarker,
+                                       mlir::ValueRange{currentCoroPromisePtr});
+          }
+
+          return yieldVal; // Return the yielded value (unused by caller)
+        }
+      }
+      return nullptr;
+    }
     if (currentGenCtx) {
       // Thread-based generator: call hew_gen_yield(ctx, &val, sizeof(val))
       if (yield->value.has_value() && *yield->value) {
@@ -247,7 +270,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     }
     // Yield expressions outside generator context are handled at the
     // statement level during static generator codegen.
-    if (!currentGenCtx) {
+    if (!currentGenCtx && !currentCoroPromisePtr) {
       emitWarning(currentLoc) << "yield expression outside generator function";
     }
     return nullptr;

@@ -568,6 +568,10 @@ private:
   std::unordered_map<std::string, std::string> generatorVarTypes;
   // Set of generator function names (to identify generator call results)
   std::set<std::string> generatorFunctions;
+  // Track yield type per generator function (for coroutine codegen)
+  std::unordered_map<std::string, mlir::Type> generatorYieldTypes;
+  // When non-null, yield expressions store to this promise ptr and call suspend marker
+  mlir::Value currentCoroPromisePtr; // ptr to yield value slot, nullptr outside coro gen body
 
   // ── Receive generator (streaming) tracking ─────────────────────────
   // Track which variables hold actor streams: varName → {actorType, nextMsgType}

@@ -1114,7 +1114,50 @@ impl Drop for FileHandle {
 | `Rc<T>` refcount reaches zero | `drop()` called on inner `T` |
 | Actor terminates | All owned values dropped, then heap freed |
 
-#### 3.7.4 Reference Counting (Rc and Arc)
+#### 3.7.4 Indirect Enums (Recursive Data Types)
+
+Enum types cannot normally reference themselves because inline storage would require infinite size. The `indirect` modifier enables recursive data types by heap-allocating enum values behind a pointer.
+
+```hew
+indirect enum Expr {
+    Lit(Int);
+    Add(Expr, Expr);
+    Neg(Expr);
+}
+```
+
+**Semantics:**
+
+- `indirect` applies to the entire enum declaration (not individual variants)
+- All variant payloads are heap-allocated; the enum value itself is a pointer
+- Construction and pattern matching syntax are identical to regular enums
+- Memory is automatically freed when the value goes out of scope (RAII)
+- The compiler generates a recursive drop function that walks the data structure
+
+**Construction** works identically to regular enums:
+
+```hew
+let e = Expr::Add(Expr::Lit(1), Expr::Neg(Expr::Lit(2)));
+```
+
+**Pattern matching** works identically to regular enums:
+
+```hew
+fn eval(e: Expr) -> Int {
+    match e {
+        Lit(n) => n,
+        Add(l, r) => eval(l) + eval(r),
+        Neg(inner) => 0 - eval(inner),
+    }
+}
+```
+
+**Restrictions:**
+
+- `indirect` can only be used with `enum` declarations, not `type` (struct)
+- Only enums that contain self-referential variants benefit from `indirect`
+
+#### 3.7.5 Reference Counting (Rc and Arc)
 
 **`Rc<T>` — single-actor reference counting:**
 
@@ -1154,7 +1197,7 @@ worker2.configure(config.clone());  // Both workers share same Config
 | `Rc<T>` | No | Non-atomic | Shared within actor |
 | `Arc<T>` | Yes (if `T: Frozen`) | Atomic | Large immutable shared data |
 
-#### 3.7.5 Allocator Interface
+#### 3.7.6 Allocator Interface
 
 Hew provides an explicit allocator interface for fine-grained memory control:
 
@@ -1180,7 +1223,7 @@ let items = Vec::new();              // uses default allocator
 let temp = Vec::new_in(arena);       // uses provided arena
 ```
 
-#### 3.7.6 Compiler Optimizations (Implementation Details)
+#### 3.7.7 Compiler Optimizations (Implementation Details)
 
 The compiler may apply memory optimizations that are **invisible to user semantics**. Users always see RAII behavior; optimizations affect only performance.
 
@@ -1202,7 +1245,7 @@ The compiler may stack-allocate values that do not escape their scope, avoiding 
 
 **Important:** These optimizations do not change program behavior. A correct program produces identical results with or without optimizations.
 
-#### 3.7.7 Memory Safety Guarantees
+#### 3.7.8 Memory Safety Guarantees
 
 | Guarantee         | How Hew ensures it                                             |
 | ----------------- | -------------------------------------------------------------- |

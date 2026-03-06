@@ -770,6 +770,11 @@ add_e2e_file_test(golden_option_result       e2e_golden golden_option_result)
 add_e2e_file_test(golden_string              e2e_golden golden_string)
 add_e2e_file_test(golden_generator           e2e_golden golden_generator)
 
+# ── Indirect enum tests ────────────────────────────────────────────────────
+add_e2e_file_test(indirect_expr              e2e_indirect_enum indirect_expr)
+add_e2e_file_test(indirect_list              e2e_indirect_enum indirect_list)
+add_e2e_file_test(indirect_option_tree       e2e_indirect_enum indirect_option_tree)
+
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).
 # These compile raw .ll files with coroutine intrinsics and verify output.

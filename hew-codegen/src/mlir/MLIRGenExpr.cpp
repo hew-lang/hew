@@ -100,6 +100,26 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         if (enumInfo.hasPayloads) {
           // Unit variant of a payload enum: build struct { tag, undef... }
           auto location = currentLoc;
+
+          if (enumInfo.isIndirect) {
+            // Indirect enum: allocate on heap
+            auto innerType = enumInfo.innerStructType;
+            mlir::Value structVal = hew::EnumConstructOp::create(
+                builder, location, innerType, static_cast<uint32_t>(variantIndex),
+                llvm::StringRef(enumName), mlir::ValueRange{},
+                /*payload_positions=*/mlir::ArrayAttr{});
+            auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+            auto mallocFuncType = mlir::FunctionType::get(&context, {sizeType()}, {ptrType});
+            getOrCreateExternFunc("malloc", mallocFuncType);
+            auto sizeVal = hew::SizeOfOp::create(builder, location, sizeType(),
+                                                 mlir::TypeAttr::get(innerType));
+            auto mallocCall = mlir::func::CallOp::create(
+                builder, location, "malloc", mlir::TypeRange{ptrType}, mlir::ValueRange{sizeVal});
+            auto allocPtr = mallocCall.getResult(0);
+            mlir::LLVM::StoreOp::create(builder, location, structVal, allocPtr);
+            return allocPtr;
+          }
+
           mlir::Value result = hew::EnumConstructOp::create(
               builder, location, enumInfo.mlirType, static_cast<uint32_t>(variantIndex),
               llvm::StringRef(enumName), mlir::ValueRange{},
@@ -1456,6 +1476,32 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
               argVal = coerceType(argVal, vi->payloadTypes[i], location);
             payloads.push_back(argVal);
           }
+
+          if (enumInfo.isIndirect) {
+            // Indirect enum: build struct, malloc, store, return pointer
+            auto innerType = enumInfo.innerStructType;
+            auto payloadPositionsAttr =
+                vi ? buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size())
+                   : nullptr;
+            mlir::Value structVal = hew::EnumConstructOp::create(
+                builder, location, innerType, static_cast<uint32_t>(variantIndex),
+                llvm::StringRef(enumName), payloads, payloadPositionsAttr);
+
+            // malloc(sizeof(innerType))
+            auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+            auto mallocFuncType = mlir::FunctionType::get(&context, {sizeType()}, {ptrType});
+            getOrCreateExternFunc("malloc", mallocFuncType);
+            auto sizeVal = hew::SizeOfOp::create(builder, location, sizeType(),
+                                                 mlir::TypeAttr::get(innerType));
+            auto mallocCall = mlir::func::CallOp::create(
+                builder, location, "malloc", mlir::TypeRange{ptrType}, mlir::ValueRange{sizeVal});
+            auto allocPtr = mallocCall.getResult(0);
+
+            // Store struct into malloc'd memory
+            mlir::LLVM::StoreOp::create(builder, location, structVal, allocPtr);
+            return allocPtr;
+          }
+
           auto payloadPositionsAttr =
               vi ? buildPayloadPositionsAttr(builder, vi->payloadPositions, payloads.size())
                  : nullptr;
@@ -1463,6 +1509,25 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
               builder, location, enumInfo.mlirType, static_cast<uint32_t>(variantIndex),
               llvm::StringRef(enumName), payloads, payloadPositionsAttr);
           return result;
+        }
+        // Unit variant of indirect enum: still needs heap allocation
+        if (enumInfo.isIndirect && enumInfo.innerStructType) {
+          auto innerType = enumInfo.innerStructType;
+          mlir::Value structVal = hew::EnumConstructOp::create(
+              builder, location, innerType, static_cast<uint32_t>(variantIndex),
+              llvm::StringRef(enumName), mlir::ValueRange{},
+              /*payload_positions=*/mlir::ArrayAttr{});
+
+          auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+          auto mallocFuncType = mlir::FunctionType::get(&context, {sizeType()}, {ptrType});
+          getOrCreateExternFunc("malloc", mallocFuncType);
+          auto sizeVal =
+              hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(innerType));
+          auto mallocCall = mlir::func::CallOp::create(
+              builder, location, "malloc", mlir::TypeRange{ptrType}, mlir::ValueRange{sizeVal});
+          auto allocPtr = mallocCall.getResult(0);
+          mlir::LLVM::StoreOp::create(builder, location, structVal, allocPtr);
+          return allocPtr;
         }
         return createIntConstant(builder, location, builder.getI32Type(), variantIndex);
       }

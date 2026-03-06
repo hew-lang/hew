@@ -698,6 +698,7 @@ struct TypeDecl {
   // Storage for TypeBodyMethod FnDecl pointers
   std::vector<std::unique_ptr<FnDecl>> method_storage;
   std::optional<WireMetadata> wire;
+  bool is_indirect = false;
 };
 
 struct TypeAliasDecl {

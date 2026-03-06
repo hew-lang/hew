@@ -208,6 +208,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                is_indirect: false,
             },
         )
     }
@@ -223,6 +224,7 @@ mod tests {
                 variants: HashMap::new(),
                 methods: HashMap::new(),
                 doc_comment: None,
+                is_indirect: false,
             },
         )
     }

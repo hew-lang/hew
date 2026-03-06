@@ -1,0 +1,16 @@
+indirect enum Tree {
+    Leaf(Int);
+    Node(Tree, Int, Tree);
+}
+
+fn tree_sum(t: Tree) -> Int {
+    match t {
+        Leaf(v) => v,
+        Node(l, v, r) => tree_sum(l) + v + tree_sum(r),
+    }
+}
+
+fn main() {
+    let t = Node(Leaf(1), 2, Leaf(3));
+    println(tree_sum(t));
+}

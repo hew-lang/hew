@@ -59,7 +59,7 @@ ImportSpec     = Ident
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 
-TypeDecl       = ("type" | "enum") Ident TypeParams? WhereClause? TypeBody ;
+TypeDecl       = "indirect"? ("type" | "enum") Ident TypeParams? WhereClause? TypeBody ;
 (* Struct-level naming: #[json(camelCase)] / #[yaml(snake_case)] before wire decl *)
 (* Valid naming conventions: camelCase, PascalCase, snake_case, SCREAMING_SNAKE, kebab-case *)
 WireDecl       = "wire" ("type" | "enum") Ident WireBody ;

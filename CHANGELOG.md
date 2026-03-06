@@ -4,6 +4,7 @@
 
 ### Added
 
+- `indirect enum` for recursive data types (expression trees, linked lists, etc.) with automatic heap allocation and RAII cleanup
 - Named supervisor child access via field syntax (`sup.child_name` resolves to `supervisor_child(sup, idx)` at compile time)
 - WASM platform capability documentation
 - `s.spawn {}` parallel task syntax for structured concurrency

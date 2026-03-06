@@ -303,6 +303,7 @@ fn test_pub_type_accessible_qualified() {
         body: vec![],
         doc_comment: None,
         wire: None,
+        is_indirect: false,
     };
     let import = make_user_import(
         &["myapp", "config"],

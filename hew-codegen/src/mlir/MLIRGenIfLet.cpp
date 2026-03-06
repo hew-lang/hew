@@ -43,6 +43,9 @@ void MLIRGen::generateIfLetStmt(const ast::StmtIfLet &stmt) {
   if (!scrutinee)
     return;
 
+  // Indirect enum: dereference pointer to get the inner struct
+  scrutinee = derefIndirectEnumScrutinee(scrutinee, stmt.expr->span, location);
+
   const auto &pattern = stmt.pattern.value;
 
   // Check if this is a constructor pattern (e.g., Some(x))
@@ -105,6 +108,9 @@ mlir::Value MLIRGen::generateIfLetExpr(const ast::ExprIfLet &expr, const ast::Sp
   auto scrutinee = generateExpression(expr.expr->value);
   if (!scrutinee)
     return nullptr;
+
+  // Indirect enum: dereference pointer to get the inner struct
+  scrutinee = derefIndirectEnumScrutinee(scrutinee, expr.expr->span, location);
 
   // Use the type checker's resolved type for this if-let expression
   mlir::Type resultType = nullptr;

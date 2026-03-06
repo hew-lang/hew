@@ -20,16 +20,219 @@
 //! Active on Unix-like platforms (Linux, macOS). Other platforms
 //! (Windows, WASM) get no-op stubs.
 
+// ── Shared recovery logic ────────────────────────────────────────────────
+//
+// The shared module contains platform-independent recovery state and helper
+// functions used by both the Unix and Windows implementations. This avoids
+// duplicating the identical crash recovery logic in each platform module.
+
+#[cfg(any(unix, windows))]
+mod shared {
+    use std::ffi::c_void;
+    use std::ptr;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+    use crate::actor::HewActor;
+
+    /// Platform-independent recovery state.
+    ///
+    /// Contains all per-worker crash recovery fields except the `jmp_buf`
+    /// (which differs between Unix `sigjmp_buf` and Windows custom layout).
+    /// Each platform's `WorkerRecoveryCtx` embeds this struct alongside its
+    /// platform-specific `SigJmpBuf`.
+    ///
+    /// # Layout
+    ///
+    /// All fields are written by the normal code path and read by the
+    /// signal handler (same thread, so no cross-thread races).
+    #[repr(C)]
+    pub(super) struct RecoveryState {
+        /// Whether `jmp_buf` contains a valid recovery point.
+        pub(super) jmp_buf_valid: AtomicBool,
+        /// Pointer to the actor currently being dispatched.
+        pub(super) current_actor: *mut HewActor,
+        /// Pointer to the current message node (for cleanup).
+        pub(super) current_msg: *mut c_void,
+        /// Signal number that caused the crash (set by handler).
+        pub(super) crash_signal: AtomicI32,
+        /// Fault address from `siginfo_t` (set by handler).
+        pub(super) fault_addr: usize,
+        /// Re-entrancy guard — prevents nested signal recovery.
+        pub(super) in_recovery: AtomicBool,
+        /// Worker thread ID for crash reporting.
+        pub(super) worker_id: u32,
+        /// Message type being processed when crash occurred.
+        pub(super) msg_type: AtomicI32,
+    }
+
+    impl RecoveryState {
+        /// Create a new recovery state with all fields zeroed/null.
+        pub(super) fn new(worker_id: u32) -> Self {
+            Self {
+                jmp_buf_valid: AtomicBool::new(false),
+                current_actor: ptr::null_mut(),
+                current_msg: ptr::null_mut(),
+                crash_signal: AtomicI32::new(0),
+                fault_addr: 0,
+                in_recovery: AtomicBool::new(false),
+                worker_id,
+                msg_type: AtomicI32::new(0),
+            }
+        }
+    }
+
+    /// Map a signal number to a human-readable name.
+    ///
+    /// Uses Unix signal names since they are the canonical representation
+    /// across all platforms. Windows exception codes are mapped to their
+    /// Unix equivalents before reaching this function.
+    pub(super) fn signal_name(signal: i32) -> &'static str {
+        match signal {
+            11 => "SIGSEGV",
+            7 => "SIGBUS",
+            8 => "SIGFPE",
+            4 => "SIGILL",
+            _ => "UNKNOWN",
+        }
+    }
+
+    /// Store dispatch metadata in the recovery state.
+    ///
+    /// Called at the start of each dispatch to record the actor and message
+    /// being processed, so crash recovery can clean up appropriately.
+    ///
+    /// # Safety
+    ///
+    /// `actor` must be a valid pointer to a live `HewActor`. `msg` must be
+    /// a valid `*mut HewMsgNode` or null.
+    pub(super) unsafe fn prepare_dispatch_impl(
+        state: &mut RecoveryState,
+        actor: *mut HewActor,
+        msg: *mut c_void,
+    ) {
+        state.current_actor = actor;
+        state.current_msg = msg;
+        state.crash_signal.store(0, Ordering::Relaxed);
+        state.fault_addr = 0;
+        state.in_recovery.store(false, Ordering::Release);
+
+        // Extract message type from HewMsgNode for crash reporting.
+        let msg_type = if msg.is_null() {
+            0
+        } else {
+            // SAFETY: msg is valid HewMsgNode from hew_mailbox_try_recv.
+            // We cast c_void back to HewMsgNode to read msg_type.
+            unsafe { (*(msg.cast::<crate::mailbox::HewMsgNode>())).msg_type }
+        };
+        state.msg_type.store(msg_type, Ordering::Relaxed);
+    }
+
+    /// Mark the `jmp_buf` as valid after `sigsetjmp` returns 0 (normal path).
+    pub(super) fn mark_recovery_active_impl(state: &mut RecoveryState) {
+        state.jmp_buf_valid.store(true, Ordering::Release);
+    }
+
+    /// Handle crash recovery after sigsetjmp returned non-zero (crash path).
+    ///
+    /// Marks the actor as Crashed, builds and pushes a crash report, logs
+    /// the crash, and clears the recovery context. Returns `(signal, fault_addr)`.
+    ///
+    /// # Safety
+    ///
+    /// Must only be called immediately after sigsetjmp returned non-zero,
+    /// on the same thread.
+    pub(super) unsafe fn handle_crash_recovery_impl(state: &mut RecoveryState) -> (i32, usize) {
+        let signal = state.crash_signal.load(Ordering::Acquire);
+        let fault_addr = state.fault_addr;
+        let actor = state.current_actor;
+        let msg_type = state.msg_type.load(Ordering::Acquire);
+        let worker_id = state.worker_id;
+
+        // Notify supervisor by marking actor as Crashed.
+        if !actor.is_null() {
+            // SAFETY: actor pointer was stored in prepare_dispatch_recovery
+            // and the actor is still alive (it's Running — only the current
+            // worker thread can transition it, and we haven't freed it).
+            unsafe { crate::actor::hew_actor_trap(actor, signal) };
+        }
+
+        // Build detailed crash report for forensics.
+        // SAFETY: actor pointer is valid (checked above).
+        let report = unsafe {
+            crate::crash::build_crash_report(
+                actor, signal,
+                0, // signal_code - not available from siginfo_t in current handler
+                fault_addr, msg_type, worker_id,
+            )
+        };
+
+        // Push to global crash log.
+        crate::crash::push_crash_report(report);
+
+        // Enhanced crash logging with more details.
+        let name = signal_name(signal);
+        if !actor.is_null() {
+            // SAFETY: actor pointer is valid (checked above).
+            let (id, pid) = unsafe { ((*actor).id, (*actor).pid) };
+            eprintln!(
+                "hew: actor {id} (pid={pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+            );
+        }
+
+        // Clear recovery context.
+        state.current_actor = ptr::null_mut();
+        state.current_msg = ptr::null_mut();
+        state.in_recovery.store(false, Ordering::Release);
+
+        (signal, fault_addr)
+    }
+
+    /// Clear the dispatch recovery context after a successful dispatch.
+    ///
+    /// Invalidates the jump buffer so stale signals can't jump to a
+    /// dead recovery point.
+    pub(super) fn clear_dispatch_recovery_impl(state: &mut RecoveryState) {
+        state.jmp_buf_valid.store(false, Ordering::Release);
+        state.current_actor = ptr::null_mut();
+        state.current_msg = ptr::null_mut();
+        state.msg_type.store(0, Ordering::Relaxed);
+    }
+
+    /// Perform pre-longjmp checks for intentional panic recovery.
+    ///
+    /// Validates the recovery context, checks re-entrancy, and records
+    /// crash metadata. Returns `true` if the caller should proceed with
+    /// the platform-specific longjmp call.
+    ///
+    /// The SIGSEGV signal number (11) is used as the canonical "intentional
+    /// panic" marker across all platforms.
+    pub(super) fn try_direct_longjmp_preamble(state: &mut RecoveryState) -> bool {
+        if !state.jmp_buf_valid.load(Ordering::Acquire) {
+            return false;
+        }
+        if state.in_recovery.swap(true, Ordering::Acquire) {
+            return false;
+        }
+        // Record intentional panic as SIGSEGV equivalent.
+        state.crash_signal.store(11, Ordering::Release); // SIGSEGV
+        state.fault_addr = 0;
+        state.jmp_buf_valid.store(false, Ordering::Release);
+        true
+    }
+}
+
 // ── Unix implementation (Linux + macOS) ─────────────────────────────────
 
 #[cfg(unix)]
 mod platform {
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::OnceLock;
 
     use crate::actor::HewActor;
+
+    use super::shared::RecoveryState;
 
     // ── Constants ───────────────────────────────────────────────────────
 
@@ -110,45 +313,19 @@ mod platform {
     ///
     /// Stored via `pthread_setspecific` (async-signal-safe) rather than
     /// Rust's `thread_local!` (not async-signal-safe).
-    ///
-    /// # Layout
-    ///
-    /// All fields are written by the normal code path and read by the
-    /// signal handler (same thread, so no cross-thread races).
     #[repr(C)]
     struct WorkerRecoveryCtx {
         /// `sigsetjmp` save buffer.
         jmp_buf: SigJmpBuf,
-        /// Whether `jmp_buf` contains a valid recovery point.
-        jmp_buf_valid: AtomicBool,
-        /// Pointer to the actor currently being dispatched.
-        current_actor: *mut HewActor,
-        /// Pointer to the current message node (for cleanup).
-        current_msg: *mut c_void,
-        /// Signal number that caused the crash (set by handler).
-        crash_signal: AtomicI32,
-        /// Fault address from `siginfo_t` (set by handler).
-        fault_addr: usize,
-        /// Re-entrancy guard — prevents nested signal recovery.
-        in_recovery: AtomicBool,
-        /// Worker thread ID for crash reporting.
-        worker_id: u32,
-        /// Message type being processed when crash occurred.
-        msg_type: AtomicI32,
+        /// Platform-independent recovery state.
+        state: RecoveryState,
     }
 
     impl WorkerRecoveryCtx {
         fn new_boxed(worker_id: u32) -> Box<Self> {
             Box::new(Self {
                 jmp_buf: SigJmpBuf::zeroed(),
-                jmp_buf_valid: AtomicBool::new(false),
-                current_actor: ptr::null_mut(),
-                current_msg: ptr::null_mut(),
-                crash_signal: AtomicI32::new(0),
-                fault_addr: 0,
-                in_recovery: AtomicBool::new(false),
-                worker_id,
-                msg_type: AtomicI32::new(0),
+                state: RecoveryState::new(worker_id),
             })
         }
     }
@@ -217,20 +394,20 @@ mod platform {
 
         // Re-entrancy check: if we're already recovering from a signal,
         // a second crash means the recovery path itself is broken.
-        if ctx.in_recovery.swap(true, Ordering::Acquire) {
+        if ctx.state.in_recovery.swap(true, Ordering::Acquire) {
             // SAFETY: _exit is async-signal-safe.
             unsafe { libc::_exit(128 + sig) };
         }
 
         // Check that we have a valid recovery point.
-        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
-            ctx.in_recovery.store(false, Ordering::Release);
+        if !ctx.state.jmp_buf_valid.load(Ordering::Acquire) {
+            ctx.state.in_recovery.store(false, Ordering::Release);
             // SAFETY: _exit is async-signal-safe.
             unsafe { libc::_exit(128 + sig) };
         }
 
         // Record crash metadata.
-        ctx.crash_signal.store(sig, Ordering::Release);
+        ctx.state.crash_signal.store(sig, Ordering::Release);
         if !info.is_null() {
             // SAFETY: info is valid in signal context. si_addr accesses
             // the siginfo_t field (async-signal-safe read).
@@ -239,17 +416,17 @@ mod platform {
             {
                 // SAFETY: `info` was validated non-null above; si_addr() is an
                 // async-signal-safe read from the kernel-provided siginfo_t.
-                ctx.fault_addr = unsafe { (*info).si_addr() } as usize;
+                ctx.state.fault_addr = unsafe { (*info).si_addr() } as usize;
             }
             #[cfg(not(target_os = "linux"))]
             {
                 // SAFETY: `info` is a valid siginfo_t provided by the kernel.
-                ctx.fault_addr = unsafe { (*info).si_addr } as usize;
+                ctx.state.fault_addr = unsafe { (*info).si_addr } as usize;
             }
         }
 
         // Invalidate the jump buffer to prevent re-use.
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
+        ctx.state.jmp_buf_valid.store(false, Ordering::Release);
 
         // Jump back to the scheduler's recovery point.
         //
@@ -391,22 +568,9 @@ mod platform {
         // SAFETY: ctx is valid (same thread that created it).
         let ctx = unsafe { &mut *ctx };
 
-        // Store dispatch metadata for crash cleanup.
-        ctx.current_actor = actor;
-        ctx.current_msg = msg;
-        ctx.crash_signal.store(0, Ordering::Relaxed);
-        ctx.fault_addr = 0;
-        ctx.in_recovery.store(false, Ordering::Release);
-
-        // Extract message type from HewMsgNode for crash reporting.
-        let msg_type = if msg.is_null() {
-            0
-        } else {
-            // SAFETY: msg is valid HewMsgNode from hew_mailbox_try_recv.
-            // We cast c_void back to HewMsgNode to read msg_type.
-            unsafe { (*(msg.cast::<crate::mailbox::HewMsgNode>())).msg_type }
-        };
-        ctx.msg_type.store(msg_type, Ordering::Relaxed);
+        // Store dispatch metadata via shared helper.
+        // SAFETY: actor and msg validity guaranteed by caller.
+        unsafe { super::shared::prepare_dispatch_impl(&mut ctx.state, actor, msg) };
 
         &raw mut ctx.jmp_buf
     }
@@ -420,7 +584,7 @@ mod platform {
         }
         // SAFETY: ctx is valid (same thread).
         let ctx = unsafe { &mut *ctx };
-        ctx.jmp_buf_valid.store(true, Ordering::Release);
+        super::shared::mark_recovery_active_impl(&mut ctx.state);
     }
 
     /// Handle crash recovery after sigsetjmp returned non-zero (crash path).
@@ -442,58 +606,8 @@ mod platform {
         // SAFETY: ctx is valid (same thread).
         let ctx = unsafe { &mut *ctx };
 
-        let signal = ctx.crash_signal.load(Ordering::Acquire);
-        let fault_addr = ctx.fault_addr;
-        let actor = ctx.current_actor;
-        let msg_type = ctx.msg_type.load(Ordering::Acquire);
-        let worker_id = ctx.worker_id;
-
-        // Notify supervisor by marking actor as Crashed.
-        if !actor.is_null() {
-            // SAFETY: actor pointer was stored in prepare_dispatch_recovery
-            // and the actor is still alive (it's Running — only the current
-            // worker thread can transition it, and we haven't freed it).
-            unsafe { crate::actor::hew_actor_trap(actor, signal) };
-        }
-
-        // Build detailed crash report for forensics.
-        // SAFETY: actor pointer is valid (checked above).
-        let report = unsafe {
-            crate::crash::build_crash_report(
-                actor, signal,
-                0, // signal_code - not available from siginfo_t in current handler
-                fault_addr, msg_type, worker_id,
-            )
-        };
-
-        // Push to global crash log.
-        crate::crash::push_crash_report(report);
-
-        // Enhanced crash logging with more details.
-        let signal_name = match signal {
-            libc::SIGSEGV => "SIGSEGV",
-            libc::SIGBUS => "SIGBUS",
-            libc::SIGFPE => "SIGFPE",
-            libc::SIGILL => "SIGILL",
-            _ => "UNKNOWN",
-        };
-        if !actor.is_null() {
-            // SAFETY: actor is valid (see above).
-            {
-                // SAFETY: actor pointer is valid (checked above).
-                let (id, pid) = unsafe { ((*actor).id, (*actor).pid) };
-                eprintln!(
-                    "hew: actor {id} (pid={pid}) crashed with {signal_name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
-                );
-            }
-        }
-
-        // Clear recovery context.
-        ctx.current_actor = ptr::null_mut();
-        ctx.current_msg = ptr::null_mut();
-        ctx.in_recovery.store(false, Ordering::Release);
-
-        (signal, fault_addr)
+        // SAFETY: called immediately after sigsetjmp returned non-zero.
+        unsafe { super::shared::handle_crash_recovery_impl(&mut ctx.state) }
     }
 
     /// Clear the dispatch recovery context after a successful dispatch.
@@ -508,10 +622,7 @@ mod platform {
         }
         // SAFETY: ctx is valid (same thread).
         let ctx = unsafe { &mut *ctx };
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
-        ctx.current_actor = ptr::null_mut();
-        ctx.current_msg = ptr::null_mut();
-        ctx.msg_type.store(0, Ordering::Relaxed);
+        super::shared::clear_dispatch_recovery_impl(&mut ctx.state);
     }
 
     /// Attempt direct longjmp recovery from an intentional panic.
@@ -532,16 +643,9 @@ mod platform {
         }
         // SAFETY: ctx is non-null and exclusively owned by this thread.
         let ctx = unsafe { &mut *ctx };
-        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
+        if !super::shared::try_direct_longjmp_preamble(&mut ctx.state) {
             return;
         }
-        if ctx.in_recovery.swap(true, Ordering::Acquire) {
-            return;
-        }
-        // Record intentional panic as SIGSEGV equivalent.
-        ctx.crash_signal.store(libc::SIGSEGV, Ordering::Release);
-        ctx.fault_addr = 0;
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
         // SAFETY: jmp_buf was set by sigsetjmp in activate_actor on this
         // thread. The stack frame that called sigsetjmp is still live.
         unsafe {
@@ -556,10 +660,12 @@ mod platform {
 mod platform {
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::OnceLock;
 
     use crate::actor::HewActor;
+
+    use super::shared::RecoveryState;
 
     // ── Windows exception codes ─────────────────────────────────────────
     const EXCEPTION_ACCESS_VIOLATION: u32 = 0xC0000005;
@@ -705,28 +811,15 @@ mod platform {
     #[repr(C)]
     struct WorkerRecoveryCtx {
         jmp_buf: SigJmpBuf,
-        jmp_buf_valid: AtomicBool,
-        current_actor: *mut HewActor,
-        current_msg: *mut c_void,
-        crash_signal: AtomicI32,
-        fault_addr: usize,
-        in_recovery: AtomicBool,
-        worker_id: u32,
-        msg_type: AtomicI32,
+        /// Platform-independent recovery state.
+        state: RecoveryState,
     }
 
     impl WorkerRecoveryCtx {
         fn new_boxed(worker_id: u32) -> Box<Self> {
             Box::new(Self {
                 jmp_buf: SigJmpBuf::zeroed(),
-                jmp_buf_valid: AtomicBool::new(false),
-                current_actor: ptr::null_mut(),
-                current_msg: ptr::null_mut(),
-                crash_signal: AtomicI32::new(0),
-                fault_addr: 0,
-                in_recovery: AtomicBool::new(false),
-                worker_id,
-                msg_type: AtomicI32::new(0),
+                state: RecoveryState::new(worker_id),
             })
         }
     }
@@ -767,20 +860,21 @@ mod platform {
         let ctx = unsafe { &mut *ctx };
 
         // Re-entrancy guard.
-        if ctx.in_recovery.swap(true, Ordering::Acquire) {
+        if ctx.state.in_recovery.swap(true, Ordering::Acquire) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
-        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
-            ctx.in_recovery.store(false, Ordering::Release);
+        if !ctx.state.jmp_buf_valid.load(Ordering::Acquire) {
+            ctx.state.in_recovery.store(false, Ordering::Release);
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
         // Record crash metadata.
-        ctx.crash_signal
+        ctx.state
+            .crash_signal
             .store(exception_to_signal(code), Ordering::Release);
-        ctx.fault_addr = record.exception_address as usize;
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
+        ctx.state.fault_addr = record.exception_address as usize;
+        ctx.state.jmp_buf_valid.store(false, Ordering::Release);
 
         // NOTE: We intentionally do NOT call longjmp here.
         // On Windows x64, longjmp from a VEH handler corrupts the SEH
@@ -788,7 +882,7 @@ mod platform {
         // Intentional panics go through try_direct_longjmp() in
         // hew_panic() before the null dereference, so they never reach
         // this handler. Real crashes (actual bugs) propagate normally.
-        ctx.in_recovery.store(false, Ordering::Release);
+        ctx.state.in_recovery.store(false, Ordering::Release);
         EXCEPTION_CONTINUE_SEARCH
     }
 
@@ -828,18 +922,10 @@ mod platform {
         }
 
         let ctx = unsafe { &mut *ctx };
-        ctx.current_actor = actor;
-        ctx.current_msg = msg;
-        ctx.crash_signal.store(0, Ordering::Relaxed);
-        ctx.fault_addr = 0;
-        ctx.in_recovery.store(false, Ordering::Release);
 
-        let msg_type = if msg.is_null() {
-            0
-        } else {
-            unsafe { (*(msg.cast::<crate::mailbox::HewMsgNode>())).msg_type }
-        };
-        ctx.msg_type.store(msg_type, Ordering::Relaxed);
+        // Store dispatch metadata via shared helper.
+        // SAFETY: actor and msg validity guaranteed by caller.
+        unsafe { super::shared::prepare_dispatch_impl(&mut ctx.state, actor, msg) };
 
         &raw mut ctx.jmp_buf
     }
@@ -850,7 +936,7 @@ mod platform {
             return;
         }
         let ctx = unsafe { &mut *ctx };
-        ctx.jmp_buf_valid.store(true, Ordering::Release);
+        super::shared::mark_recovery_active_impl(&mut ctx.state);
     }
 
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
@@ -861,39 +947,8 @@ mod platform {
 
         let ctx = unsafe { &mut *ctx };
 
-        let signal = ctx.crash_signal.load(Ordering::Acquire);
-        let fault_addr = ctx.fault_addr;
-        let actor = ctx.current_actor;
-        let msg_type = ctx.msg_type.load(Ordering::Acquire);
-        let worker_id = ctx.worker_id;
-
-        if !actor.is_null() {
-            unsafe { crate::actor::hew_actor_trap(actor, signal) };
-        }
-
-        let report = unsafe {
-            crate::crash::build_crash_report(actor, signal, 0, fault_addr, msg_type, worker_id)
-        };
-        crate::crash::push_crash_report(report);
-
-        let signal_name = match signal {
-            11 => "ACCESS_VIOLATION",
-            8 => "INT_DIVIDE_BY_ZERO",
-            4 => "ILLEGAL_INSTRUCTION",
-            _ => "UNKNOWN",
-        };
-        if !actor.is_null() {
-            let (id, pid) = unsafe { ((*actor).id, (*actor).pid) };
-            eprintln!(
-                "hew: actor {id} (pid={pid}) crashed with {signal_name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
-            );
-        }
-
-        ctx.current_actor = ptr::null_mut();
-        ctx.current_msg = ptr::null_mut();
-        ctx.in_recovery.store(false, Ordering::Release);
-
-        (signal, fault_addr)
+        // SAFETY: called immediately after sigsetjmp returned non-zero.
+        unsafe { super::shared::handle_crash_recovery_impl(&mut ctx.state) }
     }
 
     pub(crate) fn clear_dispatch_recovery() {
@@ -902,10 +957,7 @@ mod platform {
             return;
         }
         let ctx = unsafe { &mut *ctx };
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
-        ctx.current_actor = ptr::null_mut();
-        ctx.current_msg = ptr::null_mut();
-        ctx.msg_type.store(0, Ordering::Relaxed);
+        super::shared::clear_dispatch_recovery_impl(&mut ctx.state);
     }
 
     /// Attempt direct longjmp recovery from an intentional panic.
@@ -926,16 +978,9 @@ mod platform {
             return;
         }
         let ctx = unsafe { &mut *ctx };
-        if !ctx.jmp_buf_valid.load(Ordering::Acquire) {
+        if !super::shared::try_direct_longjmp_preamble(&mut ctx.state) {
             return;
         }
-        if ctx.in_recovery.swap(true, Ordering::Acquire) {
-            return;
-        }
-        // Record intentional panic as SIGSEGV equivalent.
-        ctx.crash_signal.store(11, Ordering::Release);
-        ctx.fault_addr = 0;
-        ctx.jmp_buf_valid.store(false, Ordering::Release);
         unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
     }
 }

@@ -106,6 +106,17 @@ pub fn link_executable(
         }
     }
 
+    #[cfg(target_os = "freebsd")]
+    {
+        cmd.arg("-Wl,--gc-sections");
+        if !debug {
+            cmd.arg("-Wl,--strip-all");
+        }
+        if !extra_libs.is_empty() {
+            cmd.arg("-Wl,--allow-multiple-definition");
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         // Clang defaults to the static CRT (libcmt) but the Rust-compiled
@@ -122,6 +133,10 @@ pub fn link_executable(
     // Platform-specific libraries
     #[cfg(target_os = "linux")]
     cmd.args(["-lpthread", "-lm", "-ldl", "-lrt"]);
+
+    // FreeBSD: dlopen/clock_gettime are in libc — no -ldl or -lrt needed.
+    #[cfg(target_os = "freebsd")]
+    cmd.args(["-lpthread", "-lm"]);
 
     #[cfg(target_os = "macos")]
     cmd.args([
@@ -470,9 +485,17 @@ fn find_wasm_ld() -> Result<String, String> {
         }
     }
 
-    // Try LLVM installation directories
-    for version in &["21", "19", "18", "17"] {
+    // Try LLVM installation directories (Linux apt.llvm.org)
+    for version in &["22", "21", "19", "18", "17"] {
         let path = format!("/usr/lib/llvm-{version}/bin/wasm-ld");
+        if std::path::Path::new(&path).exists() {
+            return Ok(path);
+        }
+    }
+
+    // Try FreeBSD pkg paths
+    for version in &["22", "21", "20", "19"] {
+        let path = format!("/usr/local/llvm{version}/bin/wasm-ld");
         if std::path::Path::new(&path).exists() {
             return Ok(path);
         }

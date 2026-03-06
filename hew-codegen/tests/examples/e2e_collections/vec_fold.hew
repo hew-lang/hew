@@ -1,0 +1,15 @@
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2, 3, 4, 5];
+    let sum = v.fold(0, (acc, x) => acc + x);
+    println(sum);
+
+    let product = v.fold(1, (acc, x) => acc * x);
+    println(product);
+
+    // Verify
+    if sum == 15 && product == 120 {
+        0
+    } else {
+        1
+    }
+}

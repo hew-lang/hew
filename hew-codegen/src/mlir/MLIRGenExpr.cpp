@@ -2290,6 +2290,189 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                       .getResult();
       return true;
     }
+    if (method == "map") {
+      // Generate the closure argument
+      auto closureVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!closureVal) {
+        resultOut = nullptr;
+        return true;
+      }
+      auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
+      if (!closureType) {
+        emitError(location) << "Vec::map argument must be a closure";
+        resultOut = nullptr;
+        return true;
+      }
+
+      // Determine the return element type from the closure
+      auto retElemType = closureType.getResultType();
+
+      // Extract function pointer and environment pointer from closure
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
+      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
+
+      // Build the indirect function type: (ptr env, elemType) -> retElemType
+      llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
+      indirectParamTypes.push_back(ptrType);  // env pointer
+      indirectParamTypes.push_back(elemType); // element
+      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {retElemType});
+      auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
+
+      // Create result vec
+      auto resultVecType = hew::VecType::get(&context, retElemType);
+      auto resultVec = hew::VecNewOp::create(builder, location, resultVecType).getResult();
+
+      // Loop from 0 to len
+      auto len = hew::VecLenOp::create(builder, location, i64Type, vecValue).getResult();
+      auto zero = createIntConstant(builder, location, i64Type, 0);
+      auto one = createIntConstant(builder, location, i64Type, 1);
+      auto loop = mlir::scf::ForOp::create(builder, location, zero, len, one);
+      auto *body = loop.getBody();
+      auto iv = loop.getInductionVar();
+      builder.setInsertionPoint(body->getTerminator());
+
+      // Get element, call closure, push result
+      auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
+                                                           mlir::ValueRange{envPtr, elem});
+      hew::VecPushOp::create(builder, location, resultVec, callResult.getResult(0));
+
+      builder.setInsertionPointAfter(loop);
+
+      // Drop closure env after use
+      hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+
+      resultOut = resultVec;
+      return true;
+    }
+    if (method == "filter") {
+      // Generate the closure argument
+      auto closureVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!closureVal) {
+        resultOut = nullptr;
+        return true;
+      }
+      auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
+      if (!closureType) {
+        emitError(location) << "Vec::filter argument must be a closure";
+        resultOut = nullptr;
+        return true;
+      }
+
+      // Extract function pointer and environment pointer
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
+      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
+
+      // Build indirect function type: (ptr env, elemType) -> i1
+      llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
+      indirectParamTypes.push_back(ptrType);
+      indirectParamTypes.push_back(elemType);
+      auto indirectFuncType =
+          mlir::FunctionType::get(&context, indirectParamTypes, {builder.getI1Type()});
+      auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
+
+      // Create result vec (same type as source)
+      auto resultVecType = hew::VecType::get(&context, elemType);
+      auto resultVec = hew::VecNewOp::create(builder, location, resultVecType).getResult();
+
+      // Loop from 0 to len
+      auto len = hew::VecLenOp::create(builder, location, i64Type, vecValue).getResult();
+      auto zero = createIntConstant(builder, location, i64Type, 0);
+      auto one = createIntConstant(builder, location, i64Type, 1);
+      auto loop = mlir::scf::ForOp::create(builder, location, zero, len, one);
+      auto *body = loop.getBody();
+      auto iv = loop.getInductionVar();
+      builder.setInsertionPoint(body->getTerminator());
+
+      // Get element, call closure to check predicate
+      auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
+                                                           mlir::ValueRange{envPtr, elem});
+      auto cond = callResult.getResult(0);
+
+      // If true, push element to result vec
+      auto ifOp = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, cond,
+                                          /*withElseRegion=*/false);
+      // IfOp without results auto-creates a yield terminator in the then block
+      builder.setInsertionPoint(ifOp.getThenRegion().front().getTerminator());
+      hew::VecPushOp::create(builder, location, resultVec, elem);
+      builder.setInsertionPointAfter(ifOp);
+
+      builder.setInsertionPointAfter(loop);
+
+      // Drop closure env after use
+      hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+
+      resultOut = resultVec;
+      return true;
+    }
+    if (method == "fold") {
+      // First argument: initial accumulator value
+      auto initAcc = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!initAcc) {
+        resultOut = nullptr;
+        return true;
+      }
+      auto accType = initAcc.getType();
+
+      // Second argument: closure (acc, elem) -> acc
+      auto closureVal = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!closureVal) {
+        resultOut = nullptr;
+        return true;
+      }
+      auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
+      if (!closureType) {
+        emitError(location) << "Vec::fold second argument must be a closure";
+        resultOut = nullptr;
+        return true;
+      }
+
+      // Extract function pointer and environment pointer
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
+      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
+
+      // Build indirect function type: (ptr env, accType, elemType) -> accType
+      llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
+      indirectParamTypes.push_back(ptrType);
+      indirectParamTypes.push_back(accType);
+      indirectParamTypes.push_back(elemType);
+      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {accType});
+      auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
+
+      // Loop from 0 to len with iter_args for accumulator
+      auto len = hew::VecLenOp::create(builder, location, i64Type, vecValue).getResult();
+      auto zero = createIntConstant(builder, location, i64Type, 0);
+      auto one = createIntConstant(builder, location, i64Type, 1);
+      auto loop =
+          mlir::scf::ForOp::create(builder, location, zero, len, one, mlir::ValueRange{initAcc});
+      auto *body = loop.getBody();
+      auto iv = loop.getInductionVar();
+      // The accumulator is the first region iter arg (after induction var)
+      auto accArg = loop.getRegionIterArgs()[0];
+      // No implicit terminator when iter_args present — insert at end of body
+      builder.setInsertionPointToEnd(body);
+
+      // Get element, call closure with (acc, elem), yield new acc
+      auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
+                                                           mlir::ValueRange{envPtr, accArg, elem});
+      auto newAcc = callResult.getResult(0);
+
+      // Yield the new accumulator value back to the loop
+      mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{newAcc});
+
+      builder.setInsertionPointAfter(loop);
+
+      // Drop closure env after use
+      hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+
+      resultOut = loop.getResult(0);
+      return true;
+    }
     return false;
   };
 

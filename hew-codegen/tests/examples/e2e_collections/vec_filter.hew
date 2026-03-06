@@ -1,0 +1,14 @@
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2, 3, 4, 5, 6];
+    let evens = v.filter((x) => x % 2 == 0);
+    for i in 0..evens.len() {
+        println(evens[i]);
+    }
+
+    // Verify
+    if evens.len() == 3 && evens[0] == 2 && evens[1] == 4 && evens[2] == 6 {
+        0
+    } else {
+        1
+    }
+}

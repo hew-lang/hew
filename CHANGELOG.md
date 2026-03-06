@@ -28,6 +28,9 @@
 - String predicate methods: `.is_digit()`, `.is_alpha()`, `.is_alphanumeric()`, `.is_empty()`
 - `String.lines()` method: split string on newlines (strips `\r`) returning `Vec<String>`
 - `Vec<String>.join(sep)` method: join elements with separator string
+- `Vec<T>.map((x) => expr)` method: transform each element, returns new `Vec<U>`
+- `Vec<T>.filter((x) => expr)` method: keep elements where closure returns true, returns new `Vec<T>`
+- `Vec<T>.fold(init, (acc, x) => expr)` method: reduce to a single value
 - `HashMap.keys()` method: return `Vec<K>` of all keys (type checker; codegen already existed)
 - `join` is now a contextual keyword, usable as a method name in dot-call position
 

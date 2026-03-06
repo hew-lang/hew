@@ -1,0 +1,14 @@
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2, 3, 4, 5];
+    let doubled = v.map((x) => x * 2);
+    for i in 0..doubled.len() {
+        println(doubled[i]);
+    }
+
+    // Verify
+    if doubled.len() == 5 && doubled[0] == 2 && doubled[4] == 10 {
+        0
+    } else {
+        1
+    }
+}

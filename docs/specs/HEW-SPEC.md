@@ -1992,6 +1992,9 @@ impl<T> Vec<T> {
     fn swap(self, a: usize, b: usize);
     fn sort(self) where T: Ord;
     fn join(self, sep: string) -> string where T: string;  // Join Vec<String> with separator
+    fn map<U>(self, f: fn(T) -> U) -> Vec<U>;              // Transform each element
+    fn filter(self, f: fn(T) -> bool) -> Vec<T>;           // Keep elements where f returns true
+    fn fold<U>(self, init: U, f: fn(U, T) -> U) -> U;     // Reduce to a single value
 }
 ```
 

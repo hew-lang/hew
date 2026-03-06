@@ -4911,6 +4911,84 @@ impl Checker {
                         }
                         Ty::String
                     }
+                    "map" => {
+                        if args.len() != 1 {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`Vec::map` takes 1 argument but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        // The closure takes one element and returns a new type
+                        let ret_ty = Ty::Var(TypeVar::fresh());
+                        let expected_fn = Ty::Function {
+                            params: vec![elem_ty.clone()],
+                            ret: Box::new(ret_ty.clone()),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        let resolved_ret = self.subst.resolve(&ret_ty);
+                        Ty::Named {
+                            name: "Vec".to_string(),
+                            args: vec![resolved_ret],
+                        }
+                    }
+                    "filter" => {
+                        if args.len() != 1 {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`Vec::filter` takes 1 argument but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        // The closure takes one element and returns Bool
+                        let expected_fn = Ty::Function {
+                            params: vec![elem_ty.clone()],
+                            ret: Box::new(Ty::Bool),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        resolved.clone()
+                    }
+                    "fold" => {
+                        if args.len() != 2 {
+                            self.report_error(
+                                TypeErrorKind::ArityMismatch,
+                                span,
+                                format!(
+                                    "`Vec::fold` takes 2 arguments but {} were supplied",
+                                    args.len()
+                                ),
+                            );
+                        }
+                        // First arg is the initial accumulator value
+                        let acc_ty = if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp)
+                        } else {
+                            Ty::Var(TypeVar::fresh())
+                        };
+                        // Second arg is a closure (acc, elem) -> acc
+                        let expected_fn = Ty::Function {
+                            params: vec![acc_ty.clone(), elem_ty.clone()],
+                            ret: Box::new(acc_ty.clone()),
+                        };
+                        if let Some(arg) = args.get(1) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        self.subst.resolve(&acc_ty)
+                    }
                     _ => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,

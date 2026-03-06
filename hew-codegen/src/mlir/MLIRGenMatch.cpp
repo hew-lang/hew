@@ -221,7 +221,8 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
 mlir::Value MLIRGen::generateOrPatternCondition(mlir::Value scrutinee, const ast::Pattern &pattern,
                                                 mlir::Location location) {
   if (auto *litPat = std::get_if<ast::PatLiteral>(&pattern.kind)) {
-    auto litVal = generateLiteral(litPat->lit);
+    ast::Span noSpan{0, 0};
+    auto litVal = generateLiteral(litPat->lit, noSpan);
     if (!litVal)
       return nullptr;
     auto scrType = scrutinee.getType();
@@ -477,7 +478,8 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
 
   // Literal pattern: compare scrutinee with literal value
   if (isLiteral) {
-    auto litVal = generateLiteral(litPatPtr->lit);
+    ast::Span noSpan{0, 0};
+    auto litVal = generateLiteral(litPatPtr->lit, noSpan);
     if (!litVal)
       return nullptr;
 

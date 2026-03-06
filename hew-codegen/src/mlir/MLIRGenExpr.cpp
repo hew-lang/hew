@@ -54,7 +54,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return hoistIt->second;
 
   if (auto *lit = std::get_if<ast::ExprLiteral>(&expr.kind))
-    return generateLiteral(lit->lit);
+    return generateLiteral(lit->lit, expr.span);
 
   if (auto *ident = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
     auto name = ident->name;
@@ -880,15 +880,32 @@ mlir::Value MLIRGen::generateRegexLiteral(const ast::ExprRegexLiteral &regex) {
 // Literal generation
 // ============================================================================
 
-mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit) {
+mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit, const ast::Span &span) {
   auto location = currentLoc;
 
   if (auto *intLit = std::get_if<ast::LitInteger>(&lit)) {
+    // Use the type checker's resolved type if available (for literal coercion)
     auto type = defaultIntType();
+    if (auto *resolved = resolvedTypeOf(span)) {
+      auto converted = convertType(*resolved);
+      if (converted &&
+          (llvm::isa<mlir::IntegerType>(converted) || llvm::isa<mlir::FloatType>(converted)))
+        type = converted;
+    }
+    if (llvm::isa<mlir::FloatType>(type)) {
+      return mlir::arith::ConstantOp::create(
+          builder, location, builder.getFloatAttr(type, static_cast<double>(intLit->value)));
+    }
     return createIntConstant(builder, location, type, intLit->value);
   }
   if (auto *floatLit = std::get_if<ast::LitFloat>(&lit)) {
+    // Use the type checker's resolved type if available (for literal coercion)
     auto type = defaultFloatType();
+    if (auto *resolved = resolvedTypeOf(span)) {
+      auto converted = convertType(*resolved);
+      if (converted && llvm::isa<mlir::FloatType>(converted))
+        type = converted;
+    }
     return mlir::arith::ConstantOp::create(builder, location,
                                            builder.getFloatAttr(type, floatLit->value));
   }

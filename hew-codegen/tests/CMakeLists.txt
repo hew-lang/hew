@@ -253,6 +253,9 @@ add_e2e_file_test(type_aliases         e2e_type_aliases type_aliases)
 add_e2e_file_test(type_coverage        e2e_types type_coverage)
 add_e2e_file_test(type_dispatch_narrow e2e_types type_dispatch_narrow)
 
+# Literal type coercion (1 test)
+add_e2e_file_test(literal_coercion     e2e_literal_coercion literal_coercion)
+
 # Bitwise operators (1 test)
 add_e2e_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
 

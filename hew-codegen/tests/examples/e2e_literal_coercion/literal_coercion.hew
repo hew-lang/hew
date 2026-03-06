@@ -1,0 +1,141 @@
+// Test: numeric literal coercion to various types
+
+const N: Int = 10;
+
+fn get_i32_value() -> i32 {
+    return 100;
+}
+
+fn ret_i16() -> i16 {
+    return 42;
+}
+
+fn ret_f32() -> f32 {
+    return 2.5;
+}
+
+fn test_i32_basics() {
+    let x: i32 = 42;
+    println(x);
+
+    // Binary op: literal coerces to i32
+    let y: i32 = x + 8;
+    println(y);
+
+    // Return type coercion
+    println(get_i32_value());
+
+    // Arithmetic with literals
+    let t: i32 = 4;
+    println(t + 6);
+
+    // Negative literal to i32
+    let n: i32 = -10;
+    println(n);
+}
+
+fn test_i16() {
+    let a: i16 = 1000;
+    let b: i16 = a + 5;
+    println(b);
+
+    println(ret_i16());
+}
+
+fn test_i8() {
+    let a: i8 = 100;
+    let b: i8 = a + 27;
+    println(b);
+}
+
+fn test_u8() {
+    let a: u8 = 200;
+    let b: u8 = a + 55;
+    println(b);
+}
+
+fn test_u16() {
+    let a: u16 = 50000;
+    let b: u16 = a + 100;
+    println(b);
+}
+
+fn test_u32() {
+    let a: u32 = 1000000;
+    let b: u32 = a + 1;
+    println(b);
+}
+
+fn test_u64() {
+    let a: u64 = 1000000000;
+    let b: u64 = a + 1;
+    println(b);
+}
+
+fn test_f32() {
+    let x: f32 = 3.14;
+    println(x);
+
+    // Integer literal coerces to f32
+    let y: f32 = 42;
+    println(y);
+
+    println(ret_f32());
+}
+
+fn test_const_coercion() {
+    // Same const used with different target types
+    let a: i32 = N;
+    println(a);
+
+    let b: i64 = N;
+    println(b);
+
+    let c: u8 = N;
+    println(c);
+
+    let d: u16 = N;
+    println(d);
+
+    let e: u32 = N;
+    println(e);
+
+    // Const in binary operation
+    let f: i32 = 5;
+    println(f + N);
+}
+
+fn test_comparison_coercion() {
+    let x: i32 = 10;
+    if x > 5 {
+        println("greater");
+    }
+    if x == 10 {
+        println("equal");
+    }
+}
+
+fn test_let_coercion() {
+    let a: i32 = 42;
+    println(a);
+
+    let b: u8 = 255;
+    println(b);
+
+    let c: f32 = 1.5;
+    println(c);
+}
+
+fn main() {
+    test_i32_basics();
+    test_i16();
+    test_i8();
+    test_u8();
+    test_u16();
+    test_u32();
+    test_u64();
+    test_f32();
+    test_const_coercion();
+    test_comparison_coercion();
+    test_let_coercion();
+}

@@ -16,6 +16,7 @@ FROM alpine:edge AS builder
 
 ARG LLVM_VERSION=22.1.0
 ARG LLVM_MAJOR=22
+ARG NINJA_JOBS=2
 
 RUN apk add --no-cache \
     cmake samurai build-base python3 clang \
@@ -30,8 +31,11 @@ RUN git clone --depth 1 --branch "llvmorg-${LLVM_VERSION}" \
     && git sparse-checkout set llvm mlir cmake third-party
 
 # Build LLVM + MLIR (static, minimal targets)
+# Use clang — GCC rejects Clang-specific warning flags propagated by HandleLLVMOptions.
 RUN cd /tmp/llvm-project && cmake -S llvm -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=clang \
+    -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_INSTALL_PREFIX="/opt/llvm-${LLVM_MAJOR}" \
     -DLLVM_ENABLE_PROJECTS="mlir" \
     -DLLVM_TARGETS_TO_BUILD="X86;AArch64" \
@@ -51,8 +55,13 @@ RUN cd /tmp/llvm-project && cmake -S llvm -B build -G Ninja \
     -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
     -DBUILD_SHARED_LIBS=OFF
 
-RUN cd /tmp/llvm-project && ninja -C build -j4
-RUN cd /tmp/llvm-project && ninja -C build install
+# LLVM 22 has a missing cmake dependency: MLIR's OptUtils.cpp needs
+# TargetLibraryInfo.inc (tablegen-generated) but ninja on arm64 schedules
+# the compilation before the tablegen step. Build LLVMAnalysis first.
+RUN cd /tmp/llvm-project \
+    && ninja -C build -j${NINJA_JOBS} LLVMAnalysis \
+    && ninja -C build -j${NINJA_JOBS} \
+    && ninja -C build install
 
 # Copy built tools (mlir-tblgen etc.) that aren't installed with BUILD_TOOLS=OFF
 RUN mkdir -p "/opt/llvm-${LLVM_MAJOR}/bin" \

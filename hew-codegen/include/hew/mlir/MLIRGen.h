@@ -179,7 +179,7 @@ private:
 
   // ── Expressions ──────────────────────────────────────────────────
   mlir::Value generateExpression(const ast::Expr &expr);
-  mlir::Value generateLiteral(const ast::Literal &lit);
+  mlir::Value generateLiteral(const ast::Literal &lit, const ast::Span &span);
   mlir::Value generateBinaryExpr(const ast::ExprBinary &expr);
   mlir::Value generateUnaryExpr(const ast::ExprUnary &expr);
   mlir::Value generateCallExpr(const ast::ExprCall &expr);

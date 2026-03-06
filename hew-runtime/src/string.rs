@@ -159,7 +159,7 @@ pub unsafe extern "C" fn hew_string_is_digit(s: *const c_char) -> bool {
     cabi_guard!(s.is_null(), false);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_digit())
+    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_digit)
 }
 
 /// Check if all bytes in `s` are ASCII alphabetic. Returns `false` for empty strings.
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn hew_string_is_alpha(s: *const c_char) -> bool {
     cabi_guard!(s.is_null(), false);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_alphabetic())
+    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_alphabetic)
 }
 
 /// Check if all bytes in `s` are ASCII alphanumeric. Returns `false` for empty strings.
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn hew_string_is_alphanumeric(s: *const c_char) -> bool {
     cabi_guard!(s.is_null(), false);
     // SAFETY: s is a valid NUL-terminated C string per caller contract.
     let bytes = unsafe { CStr::from_ptr(s) }.to_bytes();
-    !bytes.is_empty() && bytes.iter().all(|b| b.is_ascii_alphanumeric())
+    !bytes.is_empty() && bytes.iter().all(u8::is_ascii_alphanumeric)
 }
 
 /// Check if a string is empty (zero length).
@@ -730,8 +730,12 @@ pub unsafe extern "C" fn hew_vec_join_str(
         if i < len - 1 {
             // SAFETY: offset + sep_bytes.len() <= total.
             unsafe {
-                core::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), buf.add(offset), sep_bytes.len())
-            };
+                core::ptr::copy_nonoverlapping(
+                    sep_bytes.as_ptr(),
+                    buf.add(offset),
+                    sep_bytes.len(),
+                );
+            }
             offset += sep_bytes.len();
         }
     }

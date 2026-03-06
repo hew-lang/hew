@@ -227,6 +227,8 @@ pub struct Checker {
     wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     current_machine_transition: Option<(String, String, String)>,
+    /// Compile-time known values for untyped constants (for literal coercion).
+    const_values: HashMap<String, ConstValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +285,106 @@ fn is_integer_literal(expr: &Expr) -> bool {
         } => matches!(operand.0, Expr::Literal(Literal::Integer { .. })),
         _ => false,
     }
+}
+
+/// Check if an expression is a float literal (including negated float literals).
+fn is_float_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(Literal::Float(_)) => true,
+        Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } => matches!(operand.0, Expr::Literal(Literal::Float(_))),
+        _ => false,
+    }
+}
+
+/// Extract the value from an integer literal expression (including negated).
+fn extract_integer_literal_value(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
+        Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } => {
+            if let Expr::Literal(Literal::Integer { value, .. }) = &operand.0 {
+                Some(-value)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract the value from a float literal expression (including negated).
+fn extract_float_literal_value(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Literal(Literal::Float(v)) => Some(*v),
+        Expr::Unary {
+            op: UnaryOp::Negate,
+            operand,
+        } => {
+            if let Expr::Literal(Literal::Float(v)) = &operand.0 {
+                Some(-v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check if an integer value fits in a specific integer type.
+fn integer_fits_type(value: i64, ty: &Ty) -> bool {
+    match ty {
+        Ty::I8 => i8::try_from(value).is_ok(),
+        Ty::I16 => i16::try_from(value).is_ok(),
+        Ty::I32 => i32::try_from(value).is_ok(),
+        Ty::I64 => true,
+        Ty::U8 => u8::try_from(value).is_ok(),
+        Ty::U16 => u16::try_from(value).is_ok(),
+        Ty::U32 => u32::try_from(value).is_ok(),
+        Ty::U64 => u64::try_from(value).is_ok(),
+        _ => false,
+    }
+}
+
+/// Check if a float value fits in a specific float type (f32 range check).
+fn float_fits_type(value: f64, ty: &Ty) -> bool {
+    match ty {
+        Ty::F32 => {
+            if value.is_infinite() || value.is_nan() {
+                return true; // special values are representable
+            }
+            let abs = value.abs();
+            abs == 0.0 || (abs >= f64::from(f32::MIN_POSITIVE) && abs <= f64::from(f32::MAX))
+        }
+        Ty::F64 => true,
+        _ => false,
+    }
+}
+
+/// Get the min/max range description for an integer type (for error messages).
+fn integer_type_range(ty: &Ty) -> Option<(i128, i128)> {
+    match ty {
+        Ty::I8 => Some((i128::from(i8::MIN), i128::from(i8::MAX))),
+        Ty::I16 => Some((i128::from(i16::MIN), i128::from(i16::MAX))),
+        Ty::I32 => Some((i128::from(i32::MIN), i128::from(i32::MAX))),
+        Ty::I64 => Some((i128::from(i64::MIN), i128::from(i64::MAX))),
+        Ty::U8 => Some((0, i128::from(u8::MAX))),
+        Ty::U16 => Some((0, i128::from(u16::MAX))),
+        Ty::U32 => Some((0, i128::from(u32::MAX))),
+        Ty::U64 => Some((0, i128::from(u64::MAX))),
+        _ => None,
+    }
+}
+
+/// Known compile-time constant value (for untyped const coercion).
+#[derive(Debug, Clone)]
+enum ConstValue {
+    Integer(i64),
+    Float(f64),
 }
 
 fn can_implicitly_coerce_integer(actual: &Ty, expected: &Ty) -> bool {
@@ -369,6 +471,7 @@ impl Checker {
             wasm_target: false,
             wasm_warning_spans: HashSet::new(),
             current_machine_transition: None,
+            const_values: HashMap::new(),
         }
     }
 
@@ -2752,6 +2855,23 @@ impl Checker {
     fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
         let expected = self.resolve_type_expr(&cd.ty.0);
         let actual = self.check_against(&cd.value.0, &cd.value.1, &expected);
+        // Store compile-time value for untyped consts (declared as Int/Float default)
+        // so they can be coerced to other numeric types at use sites.
+        let is_default_int = matches!(actual, Ty::I64)
+            && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Int" || name == "int" || name == "i64");
+        let is_default_float = matches!(actual, Ty::F64)
+            && matches!(&cd.ty.0, TypeExpr::Named { name, .. } if name == "Float" || name == "float" || name == "f64");
+        if is_default_int {
+            if let Some(v) = extract_integer_literal_value(&cd.value.0) {
+                self.const_values
+                    .insert(cd.name.clone(), ConstValue::Integer(v));
+            }
+        } else if is_default_float {
+            if let Some(v) = extract_float_literal_value(&cd.value.0) {
+                self.const_values
+                    .insert(cd.name.clone(), ConstValue::Float(v));
+            }
+        }
         self.env.define(cd.name.clone(), actual, false);
     }
 
@@ -3947,6 +4067,10 @@ impl Checker {
     }
 
     /// Check: verify expression against expected type (top-down).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "literal coercion requires many match arms with range checks"
+    )]
     fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
         match (expr, expected) {
             // Lambda with expected function type — propagate param types!
@@ -3971,44 +4095,53 @@ impl Checker {
                 span,
             ),
 
-            // Integer literal can coerce to any integer type
-            (Expr::Literal(Literal::Integer { .. }), ty) if ty.is_integer() => {
+            // Integer literal can coerce to any integer type (with range check)
+            (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
+                if let Some(value) = extract_integer_literal_value(expr) {
+                    if value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "negative literal `{value}` cannot be assigned to unsigned type `{expected}`"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    if !integer_fits_type(value, expected) {
+                        let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!(
+                                "integer literal `{value}` does not fit in `{expected}` (range {lo}..={hi})"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                }
                 self.record_type(span, expected);
                 expected.clone()
             }
 
-            // Negated integer literal can coerce to any signed integer type
-            (
-                Expr::Unary {
-                    op: UnaryOp::Negate,
-                    operand,
-                },
-                ty,
-            ) if matches!(operand.0, Expr::Literal(Literal::Integer { .. })) && ty.is_integer() => {
+            // Integer literal can coerce to float types (with range check)
+            (expr, ty) if is_integer_literal(expr) && ty.is_float() => {
                 self.record_type(span, expected);
                 expected.clone()
             }
 
-            // Integer literal can coerce to float types
-            (Expr::Literal(Literal::Integer { .. }), ty) if ty.is_float() => {
-                self.record_type(span, expected);
-                expected.clone()
-            }
-
-            // Negated integer literal can coerce to float types
-            (
-                Expr::Unary {
-                    op: UnaryOp::Negate,
-                    operand,
-                },
-                ty,
-            ) if matches!(operand.0, Expr::Literal(Literal::Integer { .. })) && ty.is_float() => {
-                self.record_type(span, expected);
-                expected.clone()
-            }
-
-            // Float literal can coerce to any float type
-            (Expr::Literal(Literal::Float(_)), ty) if ty.is_float() => {
+            // Float literal can coerce to any float type (with range check)
+            (expr, ty) if is_float_literal(expr) && ty.is_float() => {
+                if let Some(value) = extract_float_literal_value(expr) {
+                    if !float_fits_type(value, expected) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!("float literal `{value}` does not fit in `{expected}`"),
+                        );
+                        return Ty::Error;
+                    }
+                }
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -4044,6 +4177,67 @@ impl Checker {
                 expected.clone()
             }
 
+            // Untyped const identifier can coerce to compatible numeric types
+            (Expr::Identifier(name), ty) if ty.is_numeric() => {
+                if let Some(cv) = self.const_values.get(name).cloned() {
+                    match (&cv, expected) {
+                        (ConstValue::Integer(value), ty) if ty.is_integer() => {
+                            if *value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed)
+                            {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "constant `{name}` (value {value}) cannot be assigned to unsigned type `{expected}`"
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            if !integer_fits_type(*value, expected) {
+                                let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "constant `{name}` (value {value}) does not fit in `{expected}` (range {lo}..={hi})"
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            // Mark the identifier as used
+                            let _ = self.env.lookup(name);
+                            self.record_type(span, expected);
+                            return expected.clone();
+                        }
+                        (ConstValue::Integer(_), ty) if ty.is_float() => {
+                            let _ = self.env.lookup(name);
+                            self.record_type(span, expected);
+                            return expected.clone();
+                        }
+                        (ConstValue::Float(value), ty) if ty.is_float() => {
+                            if !float_fits_type(*value, expected) {
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    span,
+                                    format!(
+                                        "constant `{name}` (value {value}) does not fit in `{expected}`"
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            let _ = self.env.lookup(name);
+                            self.record_type(span, expected);
+                            return expected.clone();
+                        }
+                        _ => {} // fall through to default
+                    }
+                }
+                // Not a coercible const — fall through to default behavior
+                let actual = self.synthesize(expr, span);
+                self.expect_type(expected, &actual, span);
+                actual
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -4053,31 +4247,39 @@ impl Checker {
         }
     }
 
+    /// Check if an expression is a numeric literal or a reference to an untyped const
+    /// with a known compile-time value (eligible for coercion).
+    fn is_coercible_numeric(&self, expr: &Expr) -> bool {
+        is_integer_literal(expr)
+            || is_float_literal(expr)
+            || matches!(expr, Expr::Identifier(name) if self.const_values.contains_key(name))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "builtin method resolution requires many cases"
     )]
     fn check_binary_op(&mut self, left: &Spanned<Expr>, op: BinaryOp, right: &Spanned<Expr>) -> Ty {
-        let left_is_int_lit = is_integer_literal(&left.0);
-        let right_is_int_lit = is_integer_literal(&right.0);
+        let left_is_coercible = self.is_coercible_numeric(&left.0);
+        let right_is_coercible = self.is_coercible_numeric(&right.0);
 
-        // When one side is an integer literal and the other is a concrete
-        // integer type, use check_against so the literal adopts the
-        // non-literal's type instead of defaulting to i64.
-        let (left_ty, right_ty) = if left_is_int_lit && !right_is_int_lit {
+        // When one side is a numeric literal (or untyped const) and the other
+        // is a concrete numeric type, use check_against so the literal adopts
+        // the non-literal's type instead of defaulting to i64/f64.
+        let (left_ty, right_ty) = if left_is_coercible && !right_is_coercible {
             let rt = self.synthesize(&right.0, &right.1);
             let rt_resolved = self.subst.resolve(&rt);
-            if rt_resolved.is_integer() {
+            if rt_resolved.is_numeric() {
                 let lt = self.check_against(&left.0, &left.1, &rt_resolved);
                 (lt, rt)
             } else {
                 let lt = self.synthesize(&left.0, &left.1);
                 (lt, rt)
             }
-        } else if right_is_int_lit && !left_is_int_lit {
+        } else if right_is_coercible && !left_is_coercible {
             let lt = self.synthesize(&left.0, &left.1);
             let lt_resolved = self.subst.resolve(&lt);
-            if lt_resolved.is_integer() {
+            if lt_resolved.is_numeric() {
                 let rt = self.check_against(&right.0, &right.1, &lt_resolved);
                 (lt, rt)
             } else {
@@ -4211,7 +4413,7 @@ impl Checker {
                         // inferred from context (e.g. how the loop variable is
                         // used).  If nothing constrains it, it stays as-is
                         // and defaults to the literal type (i64).
-                        if left_is_int_lit && right_is_int_lit {
+                        if left_is_coercible && right_is_coercible {
                             Ty::range(Ty::Var(TypeVar::fresh()))
                         } else {
                             Ty::range(common_ty)
@@ -10461,5 +10663,147 @@ fn main() {
             "should reject invalid cast: {:?}",
             output.errors
         );
+    }
+
+    // ── Literal coercion tests ────────────────────────────────────────
+
+    #[test]
+    fn literal_coercion_integer_to_i32() {
+        let mut checker = Checker::new();
+        let lit = make_int_literal(42, 0..2);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
+        assert_eq!(ty, Ty::I32);
+    }
+
+    #[test]
+    fn literal_coercion_integer_to_u8() {
+        let mut checker = Checker::new();
+        let lit = make_int_literal(255, 0..3);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
+        assert_eq!(ty, Ty::U8);
+    }
+
+    #[test]
+    fn literal_coercion_integer_to_u8_overflow() {
+        let mut checker = Checker::new();
+        let lit = make_int_literal(256, 0..3);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
+        assert_eq!(ty, Ty::Error);
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "expected range error: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn literal_coercion_negative_to_unsigned() {
+        let mut checker = Checker::new();
+        let lit = (
+            Expr::Unary {
+                op: UnaryOp::Negate,
+                operand: Box::new(make_int_literal(1, 1..2)),
+            },
+            0..2,
+        );
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::U32);
+        assert_eq!(ty, Ty::Error);
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("negative literal")),
+            "expected negative-to-unsigned error: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn literal_coercion_i32_overflow() {
+        let mut checker = Checker::new();
+        // 2^31 = 2147483648, which exceeds i32 max (2147483647)
+        let lit = make_int_literal(2_147_483_648, 0..10);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
+        assert_eq!(ty, Ty::Error);
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "expected range error: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn literal_coercion_integer_to_f32() {
+        let mut checker = Checker::new();
+        let lit = make_int_literal(42, 0..2);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
+        assert_eq!(ty, Ty::F32);
+    }
+
+    #[test]
+    fn literal_coercion_float_to_f32() {
+        let mut checker = Checker::new();
+        let lit = (Expr::Literal(Literal::Float(3.14)), 0..4);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
+        assert_eq!(ty, Ty::F32);
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_i8() {
+        assert!(integer_fits_type(127, &Ty::I8));
+        assert!(integer_fits_type(-128, &Ty::I8));
+        assert!(!integer_fits_type(128, &Ty::I8));
+        assert!(!integer_fits_type(-129, &Ty::I8));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_u8() {
+        assert!(integer_fits_type(0, &Ty::U8));
+        assert!(integer_fits_type(255, &Ty::U8));
+        assert!(!integer_fits_type(256, &Ty::U8));
+        assert!(!integer_fits_type(-1, &Ty::U8));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_i16() {
+        assert!(integer_fits_type(32767, &Ty::I16));
+        assert!(integer_fits_type(-32768, &Ty::I16));
+        assert!(!integer_fits_type(32768, &Ty::I16));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_u16() {
+        assert!(integer_fits_type(65535, &Ty::U16));
+        assert!(!integer_fits_type(65536, &Ty::U16));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_i32() {
+        assert!(integer_fits_type(2_147_483_647, &Ty::I32));
+        assert!(integer_fits_type(-2_147_483_648, &Ty::I32));
+        assert!(!integer_fits_type(2_147_483_648, &Ty::I32));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_u32() {
+        assert!(integer_fits_type(4_294_967_295, &Ty::U32));
+        assert!(!integer_fits_type(4_294_967_296, &Ty::U32));
+        assert!(!integer_fits_type(-1, &Ty::U32));
+    }
+
+    #[test]
+    fn literal_coercion_integer_fits_u64() {
+        // i64 max fits in u64
+        assert!(integer_fits_type(i64::MAX, &Ty::U64));
+        // 0 fits
+        assert!(integer_fits_type(0, &Ty::U64));
+        // Negative doesn't fit
+        assert!(!integer_fits_type(-1, &Ty::U64));
     }
 }

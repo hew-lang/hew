@@ -182,8 +182,8 @@ pub struct Checker {
     trait_super: HashMap<String, Vec<String>>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     trait_impls_set: HashSet<(String, String)>,
-    /// Maps supervisor name → list of child actor type names (for `supervisor_child`)
-    supervisor_children: HashMap<String, Vec<String>>,
+    /// Maps supervisor name to `(child_name, actor_type)` pairs for `supervisor_child`
+    supervisor_children: HashMap<String, Vec<(String, String)>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     lambda_capture_depth: Option<usize>,
@@ -706,8 +706,11 @@ impl Checker {
                 }
                 Item::Supervisor(sd) => {
                     self.warn_wasm_limitation(span, WasmUnsupportedFeature::SupervisionTrees);
-                    let children: Vec<String> =
-                        sd.children.iter().map(|c| c.actor_type.clone()).collect();
+                    let children: Vec<(String, String)> = sd
+                        .children
+                        .iter()
+                        .map(|c| (c.name.clone(), c.actor_type.clone()))
+                        .collect();
                     self.supervisor_children.insert(sd.name.clone(), children);
                 }
                 Item::Machine(md) => {
@@ -4510,7 +4513,7 @@ impl Checker {
                             )]
                             let i = *idx as usize;
                             if i < children.len() {
-                                let child_type = &children[i];
+                                let child_type = &children[i].1;
                                 return Ty::actor_ref(Ty::Named {
                                     name: child_type.clone(),
                                     args: vec![],
@@ -5819,11 +5822,28 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "field access handles many type variants"
+    )]
     fn check_field_access(&mut self, object: &Spanned<Expr>, field: &str, span: &Span) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
         let resolved = self.subst.resolve(&obj_ty);
         match &resolved {
             Ty::Named { name, args } => {
+                // Named supervisor child access: sup.child_name → ActorRef<ChildType>
+                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_ref() {
+                    if let Some(children) = self.supervisor_children.get(sup_name) {
+                        if let Some((_child_name, child_type)) =
+                            children.iter().find(|(cn, _)| cn == field)
+                        {
+                            return Ty::actor_ref(Ty::Named {
+                                name: child_type.clone(),
+                                args: vec![],
+                            });
+                        }
+                    }
+                }
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(field_ty) = td.fields.get(field) {
                         // Substitute generic type params with concrete args

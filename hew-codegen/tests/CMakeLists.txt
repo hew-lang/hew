@@ -627,6 +627,7 @@ add_e2e_file_test(supervisor_strategy   e2e_supervisor_strategy supervisor_strat
 add_e2e_file_test(supervisor_child      e2e_supervisor_child supervisor_child)
 add_e2e_file_test(supervisor_restart    e2e_supervisor_restart supervisor_restart)
 add_e2e_file_test(supervisor_nested     e2e_supervisor_nested supervisor_nested)
+add_e2e_file_test(supervisor_named_child e2e_supervisor_named_child supervisor_named_child)
 
 # Supervisor tests intentionally crash and restart actors — sensitive to
 # CPU contention from parallel test execution.
@@ -636,6 +637,7 @@ set_tests_properties(
   e2e_supervisor_child_supervisor_child
   e2e_supervisor_restart_supervisor_restart
   e2e_supervisor_nested_supervisor_nested
+  e2e_supervisor_named_child_supervisor_named_child
   PROPERTIES
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   2

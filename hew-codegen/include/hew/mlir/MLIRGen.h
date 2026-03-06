@@ -52,10 +52,8 @@ struct StructTypeInfo {
 /// dialects (func, arith, scf, memref) plus the Hew dialect.
 class MLIRGen {
 public:
-  explicit MLIRGen(mlir::MLIRContext &context,
-                   const std::string &targetTriple = "",
-                   const std::string &sourcePath = "",
-                   const std::vector<size_t> &lineMap = {});
+  explicit MLIRGen(mlir::MLIRContext &context, const std::string &targetTriple = "",
+                   const std::string &sourcePath = "", const std::vector<size_t> &lineMap = {});
 
   /// Main entry point: lower a complete Hew Program AST to an MLIR module.
   /// Returns nullptr on failure.
@@ -495,6 +493,9 @@ private:
   // ── Supervisor names → child actor types ─────────────────────
   // Maps supervisor name → ordered list of child actor type names
   std::unordered_map<std::string, std::vector<std::string>> supervisorChildren;
+  // Maps supervisor name → ordered list of (child_name, child_actor_type)
+  std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>>
+      supervisorChildNames;
 
   // Track which variables hold actors and their type name
   std::unordered_map<std::string, std::string> actorVarTypes;

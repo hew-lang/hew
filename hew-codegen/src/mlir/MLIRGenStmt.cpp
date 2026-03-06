@@ -573,6 +573,26 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
+    // Track named supervisor child access: let w = sup.child_name
+    if (stmt.value) {
+      if (auto *fa = std::get_if<ast::ExprFieldAccess>(&stmt.value->value.kind)) {
+        if (auto *objIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+          auto avIt = actorVarTypes.find(objIdent->name);
+          if (avIt != actorVarTypes.end()) {
+            auto scnIt = supervisorChildNames.find(avIt->second);
+            if (scnIt != supervisorChildNames.end()) {
+              for (const auto &[childName, childType] : scnIt->second) {
+                if (childName == fa->field) {
+                  actorVarTypes[varName] = childType;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Track scope.launch / scope.spawn task result types for await
     if (stmt.value &&
         (std::holds_alternative<ast::ExprScopeLaunch>(stmt.value->value.kind) ||

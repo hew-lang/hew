@@ -33,12 +33,15 @@ void MLIRGen::generateSupervisorDecl(const ast::SupervisorDecl &decl) {
   auto location = currentLoc;
   const auto &supervisorName = decl.name;
 
-  // Register this supervisor with its child types
+  // Register this supervisor with its child types and names
   std::vector<std::string> childTypes;
+  std::vector<std::pair<std::string, std::string>> childNameTypes;
   for (const auto &child : decl.children) {
     childTypes.push_back(child.actor_type);
+    childNameTypes.emplace_back(child.name, child.actor_type);
   }
   supervisorChildren[supervisorName] = std::move(childTypes);
+  supervisorChildNames[supervisorName] = std::move(childNameTypes);
 
   // Create a function that initializes and returns the supervisor.
   // Signature: supervisor_init() -> !llvm.ptr (returns supervisor pointer)

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Named supervisor child access via field syntax (`sup.child_name` resolves to `supervisor_child(sup, idx)` at compile time)
 - WASM platform capability documentation
 - `s.spawn {}` parallel task syntax for structured concurrency
 - Custom type indexing via `get()` method (`obj[key]` desugars to `obj.get(key)`)

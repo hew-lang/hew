@@ -291,6 +291,41 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         }
       }
 
+      // Named supervisor child access: sup.child_name → supervisor_child(sup, idx)
+      if (auto *objIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
+        auto avIt = actorVarTypes.find(objIdent->name);
+        if (avIt != actorVarTypes.end()) {
+          auto scnIt = supervisorChildNames.find(avIt->second);
+          if (scnIt != supervisorChildNames.end()) {
+            const auto &childNameTypes = scnIt->second;
+            for (size_t i = 0; i < childNameTypes.size(); ++i) {
+              if (childNameTypes[i].first == fieldName) {
+                auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+                auto i32Type = builder.getI32Type();
+                auto idxVal =
+                    createIntConstant(builder, location, i32Type, static_cast<int64_t>(i));
+
+                // Check if the child is itself a supervisor
+                bool childIsSupervisor = supervisorChildren.count(childNameTypes[i].second) > 0;
+                if (childIsSupervisor) {
+                  return hew::RuntimeCallOp::create(
+                             builder, location, mlir::TypeRange{ptrType},
+                             mlir::SymbolRefAttr::get(&context,
+                                                      "hew_supervisor_get_child_supervisor"),
+                             mlir::ValueRange{operandVal, idxVal})
+                      .getResult();
+                }
+                return hew::RuntimeCallOp::create(
+                           builder, location, mlir::TypeRange{ptrType},
+                           mlir::SymbolRefAttr::get(&context, "hew_supervisor_get_child"),
+                           mlir::ValueRange{operandVal, idxVal})
+                    .getResult();
+              }
+            }
+          }
+        }
+      }
+
       // When accessing self.field, use currentActorName for precise lookup
       std::string targetStructName;
       if (!currentActorName.empty()) {
@@ -4322,6 +4357,14 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
       }
     }
     if (!baseName.empty()) {
+      // Check supervisor child names first
+      auto scnIt = supervisorChildNames.find(baseName);
+      if (scnIt != supervisorChildNames.end()) {
+        for (const auto &[childName, childType] : scnIt->second) {
+          if (childName == fa->field)
+            return childType;
+        }
+      }
       auto key = baseName + "." + fa->field;
       auto aft = actorFieldTypes.find(key);
       if (aft != actorFieldTypes.end() && actorRegistry.count(aft->second))

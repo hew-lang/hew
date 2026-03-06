@@ -1840,10 +1840,13 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     const auto &item = spannedItem.value;
     if (auto *sd = std::get_if<ast::SupervisorDecl>(&item.kind)) {
       std::vector<std::string> childTypes;
+      std::vector<std::pair<std::string, std::string>> childNameTypes;
       for (const auto &child : sd->children) {
         childTypes.push_back(child.actor_type);
+        childNameTypes.emplace_back(child.name, child.actor_type);
       }
       supervisorChildren[sd->name] = std::move(childTypes);
+      supervisorChildNames[sd->name] = std::move(childNameTypes);
     }
   });
 

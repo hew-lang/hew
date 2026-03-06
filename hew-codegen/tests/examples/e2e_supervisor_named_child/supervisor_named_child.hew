@@ -1,0 +1,39 @@
+// E2E test: named supervisor child access via field syntax (sup.child_name)
+actor Worker {
+    let id: i32;
+    init() {
+        print("Worker ");
+        print(self.id);
+        println(" started");
+    }
+    receive fn ping() -> int {
+        print("Worker ");
+        print(self.id);
+        println(" ponged");
+        self.id
+    }
+}
+
+supervisor Pool {
+    strategy: one_for_one;
+    max_restarts: 3;
+    window: 60;
+
+    child w1: Worker(10);
+    child w2: Worker(20);
+    child w3: Worker(30);
+}
+
+fn main() {
+    let pool = spawn Pool;
+    sleep_ms(50);
+
+    // Access children by name instead of index
+    let a = pool.w1;
+    let b = pool.w2;
+    let c = pool.w3;
+    await a.ping();
+    await b.ping();
+    await c.ping();
+    println("done");
+}

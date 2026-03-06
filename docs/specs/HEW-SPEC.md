@@ -3245,14 +3245,20 @@ fn main() {
     let pool = spawn MyPool;
     sleep_ms(50);
 
-    let w = supervisor_child(pool, 0);  // Typed: compiler knows w is a Worker
+    // Access children by declared name (preferred)
+    let w = pool.worker1;              // Typed: compiler knows w is a Worker
     w.tick();
+
+    // Or access by index (legacy)
+    let w2 = supervisor_child(pool, 1);
+    w2.tick();
 
     supervisor_stop(pool);              // Graceful shutdown
 }
 ```
 
 - `spawn SupervisorName` — creates and starts the supervisor with all declared children
+- `sup.child_name` — named child access via field syntax. The compiler resolves the child name to its index at compile time and returns a fully typed `ActorRef` for the child's actor type. The child name must match one of the `child` declarations in the supervisor definition.
 - `supervisor_child(sup, index)` — compiler intrinsic that returns a typed reference to the child at the given index. The compiler resolves the child's actor type from the supervisor declaration, so the returned reference is fully typed without a cast.
 - `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
 

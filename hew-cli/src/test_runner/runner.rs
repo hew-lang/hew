@@ -135,14 +135,10 @@ fn find_hew_binary() -> Result<PathBuf, String> {
 
     // Otherwise, search relative to the current binary.
     let exe_dir = exe.parent().expect("exe should have a parent directory");
-    let hew_name = if cfg!(target_os = "windows") {
-        "hew.exe"
-    } else {
-        "hew"
-    };
+    let hew_name = format!("hew{}", crate::platform::exe_suffix());
     let candidates = [
         exe_dir.join(format!("../{hew_name}")), // target/debug/deps/../hew
-        exe_dir.join(hew_name),                 // same dir
+        exe_dir.join(&hew_name),                // same dir
         exe_dir.join(format!("../../debug/{hew_name}")), // fallback
     ];
 
@@ -189,14 +185,9 @@ fn compile_test(
     std::fs::write(tmp_source.path(), &synthetic)
         .map_err(|e| format!("cannot write temp file: {e}"))?;
 
-    let exe_suffix = if cfg!(target_os = "windows") {
-        ".exe"
-    } else {
-        ""
-    };
     let tmp_binary = tempfile::Builder::new()
         .prefix("hew_test_bin_")
-        .suffix(exe_suffix)
+        .suffix(crate::platform::exe_suffix())
         .tempfile_in(test_dir)
         .map_err(|e| format!("cannot create temp binary: {e}"))?
         .into_temp_path();
@@ -393,11 +384,10 @@ mod tests {
         let dir = std::env::temp_dir();
         let pid = std::process::id();
         let src = dir.join(format!("hew_codegen_check_{pid}.hew"));
-        let bin = dir.join(if cfg!(target_os = "windows") {
-            format!("hew_codegen_check_{pid}.exe")
-        } else {
-            format!("hew_codegen_check_{pid}")
-        });
+        let bin = dir.join(format!(
+            "hew_codegen_check_{pid}{}",
+            crate::platform::exe_suffix()
+        ));
         if std::fs::write(&src, "fn main() {}\n").is_err() {
             return false;
         }

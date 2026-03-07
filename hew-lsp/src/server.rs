@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use dashmap::DashMap;
-use hew_lexer::Token;
 use hew_parser::ast::{
     ActorDecl, Attribute, Block, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
     TypeDeclKind,
@@ -374,7 +373,8 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let tokens = build_semantic_tokens(&doc.source, &doc.line_offsets, &doc.parse_result);
+        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(&doc.source);
+        let tokens = analysis_tokens_to_lsp(&doc.source, &doc.line_offsets, &analysis_tokens);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
@@ -1391,84 +1391,27 @@ fn offset_span_to_range(source: &str, lo: &[usize], span: hew_analysis::OffsetSp
 
 // ── Semantic tokens ──────────────────────────────────────────────────
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "TOKEN_TYPES has 8 entries, well within u32"
-)]
-fn token_type_index(tt: &SemanticTokenType) -> u32 {
-    TOKEN_TYPES.iter().position(|t| t == tt).unwrap_or(0) as u32
-}
-
-fn classify_token(token: &Token<'_>) -> Option<SemanticTokenType> {
-    if token.is_keyword() {
-        return Some(SemanticTokenType::KEYWORD);
-    }
-    if token.is_operator() {
-        return Some(SemanticTokenType::OPERATOR);
-    }
-    match token {
-        // Literals
-        Token::Integer(_) | Token::Float(_) | Token::Duration(_) => Some(SemanticTokenType::NUMBER),
-        Token::StringLit(_)
-        | Token::RawString(_)
-        | Token::InterpolatedString(_)
-        | Token::RegexLiteral(_) => Some(SemanticTokenType::STRING),
-
-        // Identifiers
-        Token::Identifier(_) | Token::Label(_) => Some(SemanticTokenType::VARIABLE),
-
-        // Comments (doc comments are emitted as tokens, unlike regular comments)
-        Token::DocComment(_) | Token::InnerDocComment(_) => Some(SemanticTokenType::COMMENT),
-
-        // Skip delimiters, punctuation, errors, block comments
-        _ => None,
-    }
-}
-
-/// Keywords that introduce a named declaration — the identifier immediately
-/// following one of these tokens is a declaration site.
-fn is_function_decl_context(prev: Option<&Token<'_>>) -> bool {
-    matches!(prev, Some(Token::Fn | Token::Receive))
-}
-
-fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
-    prev.is_some_and(Token::is_type_decl_keyword)
-}
-
+/// Convert analysis semantic tokens (absolute byte offsets) to LSP
+/// delta-encoded tokens (line/col deltas, UTF-16 lengths).
 #[expect(
     clippy::cast_possible_truncation,
     reason = "token delta values in source files will not exceed u32"
 )]
-fn build_semantic_tokens(
+fn analysis_tokens_to_lsp(
     source: &str,
     lo: &[usize],
-    _parse_result: &ParseResult,
+    tokens: &[hew_analysis::SemanticToken],
 ) -> Vec<SemanticToken> {
-    let lexer_tokens = hew_lexer::lex(source);
     let mut result = Vec::new();
     let mut prev_line: u32 = 0;
     let mut prev_start: u32 = 0;
 
-    for (i, (token, span)) in lexer_tokens.iter().enumerate() {
-        let Some(mut sem_type) = classify_token(token) else {
-            continue;
-        };
-        if matches!(token, Token::Identifier(_)) {
-            let prev = i
-                .checked_sub(1)
-                .and_then(|idx| lexer_tokens.get(idx).map(|(prev, _)| prev));
-            if is_function_decl_context(prev) {
-                sem_type = SemanticTokenType::FUNCTION;
-            } else if is_type_decl_context(prev) {
-                sem_type = SemanticTokenType::TYPE;
-            }
-        }
-
-        let (line, col) = offset_to_line_col(source, lo, span.start);
+    for tok in tokens {
+        let (line, col) = offset_to_line_col(source, lo, tok.start);
         let line = line as u32;
         let col = col as u32;
-        // Length in UTF-16 code units for the token text
-        let length: u32 = source[span.start..span.end]
+        // UTF-16 length for the LSP protocol
+        let length: u32 = source[tok.start..tok.start + tok.length]
             .chars()
             .map(|c| c.len_utf16() as u32)
             .sum();
@@ -1480,31 +1423,24 @@ fn build_semantic_tokens(
             col
         };
 
-        // Compute modifier bitset from lexer context.
-        let mut modifiers: u32 = 0;
-
-        // Mark identifiers after declaration keywords as DECLARATION.
-        if matches!(token, Token::Identifier(_)) {
-            if i > 0 && lexer_tokens[i - 1].0.is_decl_keyword() {
-                modifiers |= modifier_bit(&SemanticTokenModifier::DECLARATION);
-            }
-            // Identifiers after `const` are also READONLY.
-            if i > 0 && matches!(lexer_tokens[i - 1].0, Token::Const) {
-                modifiers |= modifier_bit(&SemanticTokenModifier::READONLY);
-            }
+        // Map analysis modifier bitmasks to LSP modifier bitmasks.
+        let mut lsp_modifiers: u32 = 0;
+        if tok.modifiers & hew_analysis::token_modifiers::DECLARATION != 0 {
+            lsp_modifiers |= modifier_bit(&SemanticTokenModifier::DECLARATION);
         }
-
-        // Mark `async` keyword with ASYNC modifier.
-        if matches!(token, Token::Async) {
-            modifiers |= modifier_bit(&SemanticTokenModifier::ASYNC);
+        if tok.modifiers & hew_analysis::token_modifiers::READONLY != 0 {
+            lsp_modifiers |= modifier_bit(&SemanticTokenModifier::READONLY);
+        }
+        if tok.modifiers & hew_analysis::token_modifiers::ASYNC != 0 {
+            lsp_modifiers |= modifier_bit(&SemanticTokenModifier::ASYNC);
         }
 
         result.push(SemanticToken {
             delta_line,
             delta_start,
             length,
-            token_type: token_type_index(&sem_type),
-            token_modifiers_bitset: modifiers,
+            token_type: tok.token_type,
+            token_modifiers_bitset: lsp_modifiers,
         });
 
         prev_line = line;
@@ -3229,20 +3165,14 @@ mod tests {
     #[test]
     fn semantic_tokens_for_let() {
         let source = "let x = 42;";
-        let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let tokens = build_semantic_tokens(source, &lo, &parse_result);
+        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
         assert!(!tokens.is_empty());
         // First token should be `let` keyword
-        assert_eq!(
-            tokens[0].token_type,
-            token_type_index(&SemanticTokenType::KEYWORD)
-        );
+        assert_eq!(tokens[0].token_type, hew_analysis::token_types::KEYWORD);
         // Second token is `x` identifier — should have DECLARATION modifier (bit 0)
-        assert_eq!(
-            tokens[1].token_type,
-            token_type_index(&SemanticTokenType::VARIABLE)
-        );
+        assert_eq!(tokens[1].token_type, hew_analysis::token_types::VARIABLE);
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         assert_eq!(
             tokens[1].token_modifiers_bitset & decl,
@@ -3254,23 +3184,17 @@ mod tests {
     #[test]
     fn semantic_token_modifiers_async_and_const() {
         let source = "const Y = 1; async fn foo() {}";
-        let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let tokens = build_semantic_tokens(source, &lo, &parse_result);
+        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         let readonly = modifier_bit(&SemanticTokenModifier::READONLY);
         let async_mod = modifier_bit(&SemanticTokenModifier::ASYNC);
         // Find the `const` keyword and the identifier after it.
         let const_tok = &tokens[0]; // `const`
-        assert_eq!(
-            const_tok.token_type,
-            token_type_index(&SemanticTokenType::KEYWORD)
-        );
+        assert_eq!(const_tok.token_type, hew_analysis::token_types::KEYWORD);
         let y_tok = &tokens[1]; // `Y`
-        assert_eq!(
-            y_tok.token_type,
-            token_type_index(&SemanticTokenType::VARIABLE)
-        );
+        assert_eq!(y_tok.token_type, hew_analysis::token_types::VARIABLE);
         assert_eq!(
             y_tok.token_modifiers_bitset & decl,
             decl,
@@ -3284,7 +3208,7 @@ mod tests {
 
         // Find `async` keyword — should have ASYNC modifier.
         let async_tok = tokens.iter().find(|t| {
-            t.token_type == token_type_index(&SemanticTokenType::KEYWORD)
+            t.token_type == hew_analysis::token_types::KEYWORD
                 && t.token_modifiers_bitset & async_mod == async_mod
         });
         assert!(
@@ -3296,10 +3220,10 @@ mod tests {
     #[test]
     fn semantic_tokens_include_bitwise_and_shift_operators() {
         let source = "fn main() { let a = 1; let b = 2; let x = ~a << b >> 1 & a | b ^ a; x <<= 1; x >>= 1; x &= 1; x |= 1; x ^= 1; }";
-        let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let tokens = build_semantic_tokens(source, &lo, &parse_result);
-        let operator_token_type = token_type_index(&SemanticTokenType::OPERATOR);
+        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
+        let operator_token_type = hew_analysis::token_types::OPERATOR;
         let token_data = semantic_token_data(source, &tokens);
         let operator_texts: Vec<String> = token_data
             .into_iter()
@@ -3320,12 +3244,12 @@ mod tests {
     fn semantic_tokens_mark_function_and_type_declarations() {
         let source =
             "type Point { x: i32 }\ntrait Stream { type Item; fn next() -> i32; }\nfn calc(v: i32) -> i32 { v }";
-        let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let tokens = build_semantic_tokens(source, &lo, &parse_result);
+        let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
+        let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens);
         let token_data = semantic_token_data(source, &tokens);
-        let function_token_type = token_type_index(&SemanticTokenType::FUNCTION);
-        let type_token_type = token_type_index(&SemanticTokenType::TYPE);
+        let function_token_type = hew_analysis::token_types::FUNCTION;
+        let type_token_type = hew_analysis::token_types::TYPE;
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
 
         assert!(

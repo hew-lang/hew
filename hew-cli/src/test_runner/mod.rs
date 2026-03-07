@@ -2,7 +2,7 @@
 //!
 //! Discovers `#[test]` functions in `.hew` source files, compiles each as an
 //! isolated program via the native compilation pipeline, and reports results
-//! with colored output.
+//! with coloured output.
 
 pub mod discovery;
 pub mod output;

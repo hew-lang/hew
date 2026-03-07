@@ -7,7 +7,7 @@ use libfuzzer_sys::fuzz_target;
 struct HewProgram {
     imports: Vec<ImportChoice>,
     items: Vec<HewItem>,
-    flavor: u8,
+    flavour: u8,
 }
 
 #[derive(Debug, Clone, Copy, Arbitrary)]
@@ -151,7 +151,7 @@ fn main() -> Result<int, int> {
     }
 
     fn core_function(&self) -> String {
-        let loop_limit = i32::from(self.flavor % 4) + 2;
+        let loop_limit = i32::from(self.flavour % 4) + 2;
         format!(
             r#"
 fn core_div(a: int, b: int) -> Result<int, int> {{

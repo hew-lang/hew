@@ -9,9 +9,9 @@ GITHUB_REPO="hew"
 GITHUB_API="https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}"
 
 # ---------------------------------------------------------------------------
-# Color helpers (disabled when stdout is not a tty)
+# Colour helpers (disabled when stdout is not a tty)
 # ---------------------------------------------------------------------------
-setup_colors() {
+setup_colours() {
     if [ -t 1 ] && [ -t 2 ]; then
         BOLD='\033[1m'
         DIM='\033[2m'
@@ -198,7 +198,7 @@ step_skip() { printf " ${DIM}skipped${RESET}\n"; }
 # Main
 # ---------------------------------------------------------------------------
 main() {
-    setup_colors
+    setup_colours
     parse_args "$@"
     detect_platform
 

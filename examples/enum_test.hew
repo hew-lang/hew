@@ -1,4 +1,4 @@
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -9,7 +9,7 @@ enum Shape {
     Rectangle(i32);
 }
 
-fn describe_color(tag: i32) -> i32 {
+fn describe_colour(tag: i32) -> i32 {
     match tag {
         0 => {
             println("Red");
@@ -32,8 +32,8 @@ fn describe_color(tag: i32) -> i32 {
 
 fn main() {
     println("=== Enum Test ===");
-    describe_color(0);
-    describe_color(1);
-    describe_color(2);
-    describe_color(99);
+    describe_colour(0);
+    describe_colour(1);
+    describe_colour(2);
+    describe_colour(99);
 }

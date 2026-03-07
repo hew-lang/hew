@@ -1,11 +1,11 @@
 // Enum and Option/Result type test
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
 }
 
-fn color_name(c: Color) -> i32 {
+fn colour_name(c: Colour) -> i32 {
     match c {
         Red => {
             println("red");

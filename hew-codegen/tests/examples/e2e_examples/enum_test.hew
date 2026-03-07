@@ -1,4 +1,4 @@
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -9,7 +9,7 @@ enum Shape {
     Rectangle(int);
 }
 
-fn describe_color(tag: int) -> int {
+fn describe_colour(tag: int) -> int {
     match tag {
         0 => {
             println("Red");
@@ -32,8 +32,8 @@ fn describe_color(tag: int) -> int {
 
 fn main() {
     println("=== Enum Test ===");
-    let _ = describe_color(0);
-    let _ = describe_color(1);
-    let _ = describe_color(2);
-    let _ = describe_color(99);
+    let _ = describe_colour(0);
+    let _ = describe_colour(1);
+    let _ = describe_colour(2);
+    let _ = describe_colour(99);
 }

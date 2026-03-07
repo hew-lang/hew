@@ -20,14 +20,14 @@
 //!
 //! # Output
 //!
-//! Default: colored text to stderr
+//! Default: coloured text to stderr
 //! ```
 //! 12:34:56.789 INFO  server starting  port=8080
 //! ```
 
 // ── Format constants ─────────────────────────────────────────────────
 
-/// Colored text output format (default).
+/// Coloured text output format (default).
 pub const TEXT: i32 = 0;
 
 /// Single-line JSON (NDJSON) output format.
@@ -65,7 +65,7 @@ pub fn get_level() -> i32 {
 
 /// Set the log output format.
 ///
-/// Use `log.TEXT` (0) for colored text or `log.JSON` (1) for NDJSON.
+/// Use `log.TEXT` (0) for coloured text or `log.JSON` (1) for NDJSON.
 ///
 /// # Examples
 ///

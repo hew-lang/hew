@@ -235,7 +235,7 @@ pub unsafe fn install_shutdown_signal_handlers() {
 ///
 /// Handles CTRL_C_EVENT, CTRL_BREAK_EVENT, and CTRL_CLOSE_EVENT by
 /// transitioning the runtime to the QUIESCE phase, mirroring the Unix
-/// SIGTERM/SIGINT handler behavior.
+/// SIGTERM/SIGINT handler behaviour.
 #[cfg(windows)]
 pub unsafe fn install_shutdown_signal_handlers() {
     #[link(name = "kernel32")]

@@ -141,8 +141,8 @@ fn tarjan_scc<'a>(
         state.stack.push(v);
         state.on_stack.insert(v);
 
-        if let Some(neighbors) = adj.get(v) {
-            for &w in neighbors {
+        if let Some(neighbours) = adj.get(v) {
+            for &w in neighbours {
                 if !state.index.contains_key(w) {
                     strongconnect(w, adj, state);
                     let w_low = state.lowlink[w];

@@ -48,7 +48,7 @@ static GLOBAL_SEED: AtomicU64 = AtomicU64::new(0);
 /// Set a deterministic PRNG seed for all worker threads.
 ///
 /// Workers derive their per-thread PRNG as `seed + worker_id`. Setting
-/// `seed = 0` reverts to the default behavior (`worker_id + 1`).
+/// `seed = 0` reverts to the default behaviour (`worker_id + 1`).
 ///
 /// **Must be called before `hew_sched_init`** for the seed to take
 /// effect on all workers from their first scheduling decision.

@@ -13,7 +13,7 @@ enum TestResult {
     Skip;
 }
 
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -142,8 +142,8 @@ fn test_while_loops() -> i32 {
 
 // === Test 5: Match Expressions ===
 fn test_match() -> i32 {
-    let color_tag = 1; // Green
-    let result = match color_tag {
+    let colour_tag = 1; // Green
+    let result = match colour_tag {
         0 => 10,
         1 => 20,
         2 => 30,

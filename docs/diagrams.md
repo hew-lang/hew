@@ -417,7 +417,7 @@ stateDiagram-v2
 
 **Restart policies** (`HewChildSpec.restart_policy`):
 
-| Policy              | Value | Behavior                                |
+| Policy              | Value | Behaviour                               |
 | ------------------- | ----- | --------------------------------------- |
 | `RESTART_PERMANENT` | 0     | Always restart                          |
 | `RESTART_TRANSIENT` | 1     | Restart only on crash (not normal stop) |

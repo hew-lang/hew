@@ -4543,7 +4543,7 @@ impl<'src> Parser<'src> {
                 if name == "_" {
                     Pattern::Wildcard
                 } else {
-                    // Handle qualified names like Color::Red
+                    // Handle qualified names like Colour::Red
                     while self.eat(&Token::DoubleColon) {
                         if let Some(segment) = self.expect_ident() {
                             name = format!("{name}::{segment}");

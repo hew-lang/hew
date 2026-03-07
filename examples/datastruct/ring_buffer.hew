@@ -183,7 +183,7 @@ fn main() {
         failed = failed + 1;
     }
 
-    // Test 8: Wraparound behavior
+    // Test 8: Wraparound behaviour
     // head and tail have wrapped around; write more to verify correctness
     rb_write(rb, 100);
     rb_write(rb, 200);

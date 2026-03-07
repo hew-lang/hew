@@ -1641,7 +1641,7 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
 
         rewriter.setInsertionPointAfter(replyIfOp);
       } else {
-        // Void handler — fire-and-forget (original behavior)
+        // Void handler — fire-and-forget (original behaviour)
         mlir::func::CallOp::create(rewriter, loc, handlerName, mlir::TypeRange{}, callArgs);
       }
 

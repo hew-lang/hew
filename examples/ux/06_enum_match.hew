@@ -1,12 +1,12 @@
 // Enum with pattern matching
 
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
 }
 
-fn color_name(c: Color) {
+fn colour_name(c: Colour) {
     match c {
         Red => println("Red"),
         Green => println("Green"),
@@ -19,7 +19,7 @@ fn main() {
     let c2 = Green;
     let c3 = Blue;
 
-    color_name(c1);
-    color_name(c2);
-    color_name(c3);
+    colour_name(c1);
+    colour_name(c2);
+    colour_name(c3);
 }

@@ -225,7 +225,7 @@ A cell `(State, Event)` is **covered** if any of the following apply:
 
 Wildcard transitions act as defaults — they fill uncovered cells for a given event. An explicit transition always takes priority over a wildcard.
 
-### §4.3 Compiler behavior
+### §4.3 Compiler behaviour
 
 - **Error**: If any `(State, Event)` cell is uncovered (no explicit transition and no wildcard for that event), the compiler MUST emit an error listing the uncovered pairs.
 - **Error**: If two explicit (non-wildcard) transitions cover the same `(State, Event)` cell, the compiler MUST emit a duplicate-transition error.

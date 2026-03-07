@@ -1,19 +1,19 @@
 //! Output formatting for test results.
 //!
-//! Supports colored text (default) and `JUnit` XML for CI integration.
+//! Supports coloured text (default) and `JUnit` XML for CI integration.
 
 use super::runner::{TestOutcome, TestSummary};
 
 /// Output format for test results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
-    /// Human-readable colored text (default).
+    /// Human-readable coloured text (default).
     Text,
     /// `JUnit` XML for CI systems.
     Junit,
 }
 
-/// ANSI color codes.
+/// ANSI colour codes.
 struct Colors {
     green: &'static str,
     red: &'static str,
@@ -46,7 +46,7 @@ pub fn output_results(summary: &TestSummary, use_color: bool, format: OutputForm
     }
 }
 
-/// Format and print test results as colored text.
+/// Format and print test results as coloured text.
 pub fn print_results(summary: &TestSummary, use_color: bool) {
     let c = if use_color { &COLORS } else { &NO_COLORS };
     let total = summary.passed + summary.failed + summary.ignored;

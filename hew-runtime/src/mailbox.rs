@@ -566,7 +566,7 @@ unsafe fn replace_node_payload(
     true
 }
 
-/// Configure coalescing behavior for a mailbox.
+/// Configure coalescing behaviour for a mailbox.
 ///
 /// # Safety
 ///

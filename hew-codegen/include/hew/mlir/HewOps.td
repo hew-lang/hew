@@ -280,7 +280,7 @@ def Hew_EnumConstructOp : Hew_Op<"enum_construct", [Pure]> {
 
     Example:
     ```mlir
-    %r = hew.enum_construct variant 0 of "Color"(%x)
+    %r = hew.enum_construct variant 0 of "Colour"(%x)
            : (i32) -> !llvm.struct<(i32, i32)>
     ```
   }];

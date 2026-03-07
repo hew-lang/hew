@@ -1,6 +1,6 @@
 // Test 7: Enums and pattern matching
 // Testing enum definitions and match expressions
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -12,7 +12,7 @@ enum Status {
     Pending;
 }
 
-fn color_to_int(c: Color) -> i32 {
+fn colour_to_int(c: Colour) -> i32 {
     match c {
         Red => 1,
         Green => 2,
@@ -32,9 +32,9 @@ fn main() {
     let c1 = Red;
     let c2 = Green;
     let c3 = Blue;
-    println(color_to_int(c1));
-    println(color_to_int(c2));
-    println(color_to_int(c3));
+    println(colour_to_int(c1));
+    println(colour_to_int(c2));
+    println(colour_to_int(c3));
     let s1 = Active;
     println(status_to_int(s1));
 }

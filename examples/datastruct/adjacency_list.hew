@@ -1,5 +1,5 @@
 // Adjacency List - Compressed adjacency list from edge list
-// adj_nodes: all neighbors flattened
+// adj_nodes: all neighbours flattened
 // adj_offsets: start index for each node (length = num_nodes + 1)
 
 fn get_degree(adj_offsets: Vec<int>, node: int) -> int {

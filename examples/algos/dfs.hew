@@ -45,7 +45,7 @@ fn main() {
         if visited.get(u) == 0 {
             visited.set(u, 1);
             order.push(u);
-            // Push neighbors in reverse so lower-numbered visited first
+            // Push neighbours in reverse so lower-numbered visited first
             let start = adj_offsets.get(u);
             let end = adj_offsets.get(u + 1);
             var idx = end - 1;

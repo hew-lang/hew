@@ -47,8 +47,8 @@ ONLY=""
 # ── Tracking ─────────────────────────────────────────────────────────────────
 RESULTS=() # entries: "ok|skip|fail:FORMAT:MESSAGE"
 
-# ── Colors ────────────────────────────────────────────────────────────────────
-_setup_colors() {
+# ── Colours ────────────────────────────────────────────────────────────────────
+_setup_colours() {
     if [ -t 1 ]; then
         BOLD='\033[1m' GREEN='\033[0;32m' CYAN='\033[0;36m'
         YELLOW='\033[0;33m' RED='\033[0;31m' DIM='\033[2m' RESET='\033[0m'
@@ -714,7 +714,7 @@ print_summary() {
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
-    _setup_colors
+    _setup_colours
     _parse_args "$@"
     _resolve_version
 

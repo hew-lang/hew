@@ -2186,7 +2186,7 @@ actor Counter {
     #[test]
     fn enum_declaration() {
         let src = "\
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -2325,7 +2325,7 @@ fn main() {
     #[test]
     fn enum_all_variants_semicolon() {
         let src = "\
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;

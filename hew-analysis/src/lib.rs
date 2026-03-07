@@ -107,6 +107,8 @@ pub enum SymbolKind {
     Event,
     Enum,
     Variant,
+    Module,
+    Constructor,
 }
 
 // ── Semantic tokens ──────────────────────────────────────────────────

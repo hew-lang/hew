@@ -356,7 +356,12 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let symbols = build_document_symbols(&doc.source, &doc.line_offsets, &doc.parse_result);
+        let analysis_symbols =
+            hew_analysis::symbols::build_document_symbols(&doc.source, &doc.parse_result);
+        let symbols: Vec<DocumentSymbol> = analysis_symbols
+            .into_iter()
+            .map(|s| symbol_info_to_doc_symbol(&doc.source, &doc.line_offsets, s))
+            .collect();
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
@@ -1316,128 +1321,71 @@ fn to_lsp_completion(item: hew_analysis::CompletionItem) -> CompletionItem {
 
 // ── Document symbols ─────────────────────────────────────────────────
 
-fn build_document_symbols(
-    source: &str,
-    lo: &[usize],
-    parse_result: &ParseResult,
-) -> Vec<DocumentSymbol> {
-    let mut symbols = Vec::new();
-
-    for (item, span) in &parse_result.program.items {
-        let range = span_to_range(source, lo, span);
-        let sym = match item {
-            Item::Function(f) => make_symbol(&f.name, SymbolKind::FUNCTION, range),
-            Item::Actor(a) => {
-                let mut sym = make_symbol(&a.name, SymbolKind::CLASS, range);
-                let mut children = Vec::new();
-                if a.init.is_some() {
-                    children.push(make_symbol("init", SymbolKind::CONSTRUCTOR, range));
-                }
-                for recv in &a.receive_fns {
-                    let recv_range = if recv.span.is_empty() {
-                        range
-                    } else {
-                        span_to_range(source, lo, &recv.span)
-                    };
-                    children.push(make_symbol(&recv.name, SymbolKind::METHOD, recv_range));
-                }
-                for method in &a.methods {
-                    children.push(make_symbol(&method.name, SymbolKind::METHOD, range));
-                }
-                sym.children = non_empty(children);
-                sym
-            }
-            Item::Supervisor(s) => make_symbol(&s.name, SymbolKind::CLASS, range),
-            Item::Trait(t) => {
-                let mut sym = make_symbol(&t.name, SymbolKind::INTERFACE, range);
-                let children: Vec<DocumentSymbol> = t
-                    .items
-                    .iter()
-                    .map(|item| match item {
-                        TraitItem::Method(m) => make_symbol(&m.name, SymbolKind::METHOD, range),
-                        TraitItem::AssociatedType { name, .. } => {
-                            make_symbol(name, SymbolKind::TYPE_PARAMETER, range)
-                        }
-                    })
-                    .collect();
-                sym.children = non_empty(children);
-                sym
-            }
-            Item::Impl(i) => {
-                let name = match &i.trait_bound {
-                    Some(tb) => format!("impl {} for ...", tb.name),
-                    None => "impl".to_string(),
-                };
-                let mut sym = make_symbol(&name, SymbolKind::NAMESPACE, range);
-                let children: Vec<DocumentSymbol> = i
-                    .methods
-                    .iter()
-                    .map(|m| make_symbol(&m.name, SymbolKind::METHOD, range))
-                    .collect();
-                sym.children = non_empty(children);
-                sym
-            }
-            Item::Const(c) => make_symbol(&c.name, SymbolKind::CONSTANT, range),
-            Item::TypeDecl(td) => {
-                let kind = match td.kind {
-                    TypeDeclKind::Struct => SymbolKind::STRUCT,
-                    TypeDeclKind::Enum => SymbolKind::ENUM,
-                };
-                let mut sym = make_symbol(&td.name, kind, range);
-                let children: Vec<DocumentSymbol> = td
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        TypeBodyItem::Variant(v) => {
-                            Some(make_symbol(&v.name, SymbolKind::ENUM_MEMBER, range))
-                        }
-                        TypeBodyItem::Method(m) => {
-                            Some(make_symbol(&m.name, SymbolKind::METHOD, range))
-                        }
-                        TypeBodyItem::Field { .. } => None,
-                    })
-                    .collect();
-                sym.children = non_empty(children);
-                sym
-            }
-            Item::Wire(w) => make_symbol(&w.name, SymbolKind::STRUCT, range),
-            Item::Machine(m) => make_symbol(&m.name, SymbolKind::ENUM, range),
-            Item::TypeAlias(ta) => make_symbol(&ta.name, SymbolKind::TYPE_PARAMETER, range),
-            Item::ExternBlock(eb) => {
-                let mut sym =
-                    make_symbol(&format!("extern \"{}\"", eb.abi), SymbolKind::MODULE, range);
-                let children: Vec<DocumentSymbol> = eb
-                    .functions
-                    .iter()
-                    .map(|f| make_symbol(&f.name, SymbolKind::FUNCTION, range))
-                    .collect();
-                sym.children = non_empty(children);
-                sym
-            }
-            Item::Import(i) => {
-                let name = i.path.join("::");
-                make_symbol(&name, SymbolKind::MODULE, range)
-            }
-        };
-        symbols.push(sym);
+/// Convert an `hew_analysis::SymbolKind` to an LSP `SymbolKind`.
+fn analysis_symbol_kind_to_lsp(kind: hew_analysis::SymbolKind) -> SymbolKind {
+    match kind {
+        hew_analysis::SymbolKind::Function => SymbolKind::FUNCTION,
+        hew_analysis::SymbolKind::Actor => SymbolKind::CLASS,
+        hew_analysis::SymbolKind::Supervisor => SymbolKind::CLASS,
+        hew_analysis::SymbolKind::Machine => SymbolKind::ENUM,
+        hew_analysis::SymbolKind::Trait => SymbolKind::INTERFACE,
+        hew_analysis::SymbolKind::Type => SymbolKind::STRUCT,
+        hew_analysis::SymbolKind::Constant => SymbolKind::CONSTANT,
+        hew_analysis::SymbolKind::Wire => SymbolKind::STRUCT,
+        hew_analysis::SymbolKind::TypeAlias => SymbolKind::TYPE_PARAMETER,
+        hew_analysis::SymbolKind::Impl => SymbolKind::NAMESPACE,
+        hew_analysis::SymbolKind::Field => SymbolKind::FIELD,
+        hew_analysis::SymbolKind::Method => SymbolKind::METHOD,
+        hew_analysis::SymbolKind::State => SymbolKind::ENUM_MEMBER,
+        hew_analysis::SymbolKind::Event => SymbolKind::EVENT,
+        hew_analysis::SymbolKind::Enum => SymbolKind::ENUM,
+        hew_analysis::SymbolKind::Variant => SymbolKind::ENUM_MEMBER,
+        hew_analysis::SymbolKind::Module => SymbolKind::MODULE,
+        hew_analysis::SymbolKind::Constructor => SymbolKind::CONSTRUCTOR,
     }
-    symbols
 }
 
+/// Convert an `hew_analysis::SymbolInfo` to an LSP `DocumentSymbol`.
 #[expect(
     deprecated,
     reason = "DocumentSymbol::deprecated is required by the LSP type"
 )]
-fn make_symbol(name: &str, kind: SymbolKind, range: Range) -> DocumentSymbol {
+fn symbol_info_to_doc_symbol(
+    source: &str,
+    lo: &[usize],
+    info: hew_analysis::SymbolInfo,
+) -> DocumentSymbol {
+    let range = offset_span_to_range(source, lo, info.span);
+    let selection_range = offset_span_to_range(source, lo, info.selection_span);
+    let children = if info.children.is_empty() {
+        None
+    } else {
+        Some(
+            info.children
+                .into_iter()
+                .map(|c| symbol_info_to_doc_symbol(source, lo, c))
+                .collect(),
+        )
+    };
     DocumentSymbol {
-        name: name.to_string(),
+        name: info.name,
         detail: None,
-        kind,
+        kind: analysis_symbol_kind_to_lsp(info.kind),
         tags: None,
         deprecated: None,
         range,
-        selection_range: range,
-        children: None,
+        selection_range,
+        children,
+    }
+}
+
+/// Convert an `OffsetSpan` to an LSP `Range`.
+fn offset_span_to_range(source: &str, lo: &[usize], span: hew_analysis::OffsetSpan) -> Range {
+    let (sl, sc, el, ec) =
+        hew_analysis::util::span_to_line_col_range(source, lo, span.start, span.end);
+    Range {
+        start: Position::new(sl, sc),
+        end: Position::new(el, ec),
     }
 }
 
@@ -3268,7 +3216,11 @@ mod tests {
         let source = "fn foo() -> i32 { 42 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
-        let symbols = build_document_symbols(source, &lo, &parse_result);
+        let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
+        let symbols: Vec<DocumentSymbol> = analysis_symbols
+            .into_iter()
+            .map(|s| symbol_info_to_doc_symbol(source, &lo, s))
+            .collect();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "foo");
         assert_eq!(symbols[0].kind, SymbolKind::FUNCTION);

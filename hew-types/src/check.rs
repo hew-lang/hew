@@ -3425,7 +3425,8 @@ impl Checker {
             }
             Expr::Literal(Literal::Bool(_)) => Ty::Bool,
             Expr::Literal(Literal::Char(_)) => Ty::Char,
-            Expr::Literal(Literal::Integer { .. } | Literal::Duration(_)) => Ty::I64,
+            Expr::Literal(Literal::Integer { .. }) => Ty::I64,
+            Expr::Literal(Literal::Duration(_)) => Ty::Duration,
 
             // Identifier lookup
             Expr::Identifier(name) => {

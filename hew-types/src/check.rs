@@ -5485,6 +5485,56 @@ impl Checker {
                     Ty::Error
                 }
             },
+            // Duration methods
+            (Ty::Duration, _) => match method {
+                "nanos" | "micros" | "millis" | "secs" | "mins" | "hours" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::{method}` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::I64
+                }
+                "abs" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::abs` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::Duration
+                }
+                "is_zero" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::is_zero` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::Bool
+                }
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!("no method `{method}` on `duration`"),
+                    );
+                    Ty::Error
+                }
+            },
             // Numeric type conversion methods (§10.1 intrinsics)
             // .to_i8(), .to_i16(), .to_i32(), .to_i64(), .to_u8(), .to_u16(),
             // .to_u32(), .to_u64(), .to_f32(), .to_f64(), .to_isize(), .to_usize()

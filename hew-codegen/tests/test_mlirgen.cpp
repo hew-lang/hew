@@ -1187,7 +1187,7 @@ fn main() -> int {
     select {
         x from await fast.get() => x,
         y from await slow.get() => y,
-        after 10 => -1,
+        after 10ms => -1,
     }
 }
   )");

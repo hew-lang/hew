@@ -261,6 +261,7 @@ YieldExpr      = "yield" Expr? ;
 
 (* Types *)
 (* Type aliases: "int" = i64, "uint" = u64, "byte" = u8, "float" = f64 *)
+(* Primitive types: i8..i64, u8..u64, f32, f64, bool, string, duration *)
 (* Integer literals default to int (i64), float literals default to float (f64) *)
 Type           = Ident TypeArgs?
                | "Task" "<" Type ">"              (* Task type: Task<T> *)

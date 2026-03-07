@@ -186,6 +186,10 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
             name: "bytes".into(),
             type_args: None,
         },
+        Ty::Duration => TypeExpr::Named {
+            name: "duration".into(),
+            type_args: None,
+        },
         Ty::Unit => TypeExpr::Tuple(Vec::new()),
         Ty::Never => TypeExpr::Named {
             name: "!".into(),

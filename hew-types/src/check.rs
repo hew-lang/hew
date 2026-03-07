@@ -681,6 +681,7 @@ impl Checker {
             },
         );
         self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
+        self.register_builtin_fn("duration::from_nanos", vec![Ty::I64], Ty::Duration);
 
         // More print variants
         self.register_builtin_fn("println_f64", vec![Ty::F64], Ty::Unit);
@@ -3425,7 +3426,8 @@ impl Checker {
             }
             Expr::Literal(Literal::Bool(_)) => Ty::Bool,
             Expr::Literal(Literal::Char(_)) => Ty::Char,
-            Expr::Literal(Literal::Integer { .. } | Literal::Duration(_)) => Ty::I64,
+            Expr::Literal(Literal::Integer { .. }) => Ty::I64,
+            Expr::Literal(Literal::Duration(_)) => Ty::Duration,
 
             // Identifier lookup
             Expr::Identifier(name) => {
@@ -3563,6 +3565,7 @@ impl Checker {
                     let ty = self.synthesize(&operand.0, &operand.1);
                     let resolved = self.subst.resolve(&ty);
                     if !resolved.is_numeric()
+                        && !resolved.is_duration()
                         && !matches!(resolved, Ty::Var(_))
                         && resolved != Ty::Error
                     {
@@ -4028,7 +4031,7 @@ impl Checker {
                             self.env.pop_scope();
                         }
                         if let Some(tc) = timeout {
-                            self.synthesize(&tc.duration.0, &tc.duration.1);
+                            self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
                             let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
                             if let Some(expected) = &result_ty {
                                 self.expect_type(expected, &timeout_ty, &tc.body.1);
@@ -4053,7 +4056,7 @@ impl Checker {
                         duration,
                     } => {
                         let inner_ty = self.synthesize(&inner.0, &inner.1);
-                        self.check_against(&duration.0, &duration.1, &Ty::I64);
+                        self.check_against(&duration.0, &duration.1, &Ty::Duration);
                         Ty::option(inner_ty)
                     }
 
@@ -4303,6 +4306,14 @@ impl Checker {
             | BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Modulo => {
+                if left_resolved.is_duration() || right_resolved.is_duration() {
+                    return self.check_duration_arithmetic(
+                        op,
+                        &left_resolved,
+                        &right_resolved,
+                        &left.1,
+                    );
+                }
                 if left_resolved.is_numeric() && right_resolved.is_numeric() {
                     if let Some(common_ty) = common_numeric_type(&left_resolved, &right_resolved) {
                         common_ty
@@ -4453,6 +4464,37 @@ impl Checker {
                     );
                 }
                 Ty::Bool
+            }
+        }
+    }
+
+    /// Type-check an arithmetic operation where at least one operand is `duration`.
+    fn check_duration_arithmetic(
+        &mut self,
+        op: BinaryOp,
+        left: &Ty,
+        right: &Ty,
+        span: &Span,
+    ) -> Ty {
+        match (left, right, op) {
+            // duration +/- duration → duration, duration % duration → duration
+            (Ty::Duration, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Modulo) => {
+                Ty::Duration
+            }
+            // duration * int → duration, int * duration → duration
+            (Ty::Duration, r, BinaryOp::Multiply) if r.is_integer() => Ty::Duration,
+            (l, Ty::Duration, BinaryOp::Multiply) if l.is_integer() => Ty::Duration,
+            // duration / int → duration
+            (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
+            // duration / duration → i64 (ratio)
+            (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("cannot apply `{op:?}` to `{left}` and `{right}`"),
+                );
+                Ty::Error
             }
         }
     }
@@ -5438,6 +5480,56 @@ impl Checker {
                         TypeErrorKind::UndefinedMethod,
                         span,
                         format!("no method `{method}` on `bytes`"),
+                    );
+                    Ty::Error
+                }
+            },
+            // Duration methods
+            (Ty::Duration, _) => match method {
+                "nanos" | "micros" | "millis" | "secs" | "mins" | "hours" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::{method}` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::I64
+                }
+                "abs" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::abs` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::Duration
+                }
+                "is_zero" => {
+                    if !args.is_empty() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`duration::is_zero` takes 0 arguments but {} were supplied",
+                                args.len()
+                            ),
+                        );
+                    }
+                    Ty::Bool
+                }
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!("no method `{method}` on `duration`"),
                     );
                     Ty::Error
                 }
@@ -7179,6 +7271,7 @@ impl Checker {
                     "char" | "Char" => Ty::Char,
                     "string" | "String" | "str" => Ty::String,
                     "bytes" | "Bytes" => Ty::Bytes,
+                    "duration" | "Duration" => Ty::Duration,
                     "()" => Ty::Unit,
                     _ => {
                         let args = type_args.as_ref().map_or(vec![], |ta| {

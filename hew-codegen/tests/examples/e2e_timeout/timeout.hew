@@ -19,7 +19,7 @@ fn main() {
     let slow = spawn Slow(value: 999);
     let result = select {
         x from await slow.get() => x,
-        after 100 => -1,
+        after 100ms => -1,
     };
     println(result);
 
@@ -27,7 +27,7 @@ fn main() {
     let fast = spawn Fast(value: 42);
     let result2 = select {
         x from await fast.get() => x,
-        after 2000 => -1,
+        after 2s => -1,
     };
     println(result2);
     sleep_ms(100);

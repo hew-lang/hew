@@ -251,6 +251,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     }
     if (name == "char")
       return builder.getI32Type();
+    if (name == "duration")
+      return builder.getI64Type();
     if (name == "String" || name == "string" || name == "str")
       return hew::StringRefType::get(&context);
     // bytes = mutable byte buffer; stored as Vec<i32> to reuse existing runtime
@@ -1151,6 +1153,21 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
                                       mlir::SymbolRefAttr::get(&context, "hew_hashset_new"),
                                       mlir::ValueRange{})
         .getResult();
+  }
+
+  // duration::from_nanos(x) -> i64: identity passthrough (duration is i64 nanos)
+  if (name == "duration::from_nanos") {
+    if (args.empty()) {
+      emitError(location) << name << " requires 1 argument";
+      return nullptr;
+    }
+    auto val = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!val)
+      return nullptr;
+    auto i64Type = builder.getI64Type();
+    if (val.getType() != i64Type)
+      val = coerceType(val, i64Type, location);
+    return val;
   }
 
   // stop(actor) -> void: stop an actor

@@ -1417,7 +1417,8 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                                    "HashMap::new",
                                                    "HashSet::new",
                                                    "bytes::new",
-                                                   "bytes::from"};
+                                                   "bytes::from",
+                                                   "duration::from_nanos"};
     if (builtinNames.contains(calleeName))
       return generateBuiltinCall(calleeName, call.args, location);
   }
@@ -2985,6 +2986,62 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                                        builder.getStringAttr("index_of"), receiver,
                                        mlir::ValueRange{sub, startIdx})
         .getResult();
+  }
+
+  // --- Duration methods (inline arith ops on i64 nanosecond values) ---
+  // Duration maps to i64 at the MLIR level; use resolvedTypeOf to distinguish
+  // from plain i64 integer methods.
+  {
+    bool isDuration = false;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span)) {
+      if (auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind))
+        isDuration = (named->name == "duration");
+    }
+    if (isDuration && receiverType.isInteger(64)) {
+      if (method == "nanos") {
+        return receiver;
+      }
+      if (method == "micros") {
+        auto divisor = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(1000LL));
+        return mlir::arith::DivSIOp::create(builder, location, receiver, divisor).getResult();
+      }
+      if (method == "millis") {
+        auto divisor = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(1000000LL));
+        return mlir::arith::DivSIOp::create(builder, location, receiver, divisor).getResult();
+      }
+      if (method == "secs") {
+        auto divisor = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(1000000000LL));
+        return mlir::arith::DivSIOp::create(builder, location, receiver, divisor).getResult();
+      }
+      if (method == "mins") {
+        auto divisor = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(60000000000LL));
+        return mlir::arith::DivSIOp::create(builder, location, receiver, divisor).getResult();
+      }
+      if (method == "hours") {
+        auto divisor = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(3600000000000LL));
+        return mlir::arith::DivSIOp::create(builder, location, receiver, divisor).getResult();
+      }
+      if (method == "abs") {
+        auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                    builder.getI64IntegerAttr(0));
+        auto isNeg = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::slt,
+                                                 receiver, zero);
+        auto neg = mlir::arith::SubIOp::create(builder, location, zero, receiver);
+        return mlir::arith::SelectOp::create(builder, location, isNeg, neg, receiver).getResult();
+      }
+      if (method == "is_zero") {
+        auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                    builder.getI64IntegerAttr(0));
+        return mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::eq,
+                                           receiver, zero)
+            .getResult();
+      }
+    }
   }
 
   // --- Numeric type conversion methods (.to_i8, .to_i16, .to_i32, .to_i64,
@@ -4821,7 +4878,8 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto timeoutVal = generateExpression((*sel.timeout)->duration->value);
     if (timeoutVal) {
       if (auto constOp = timeoutVal.getDefiningOp<mlir::arith::ConstantIntOp>()) {
-        timeoutMs = constOp.value();
+        // Duration values are i64 nanoseconds; runtime expects milliseconds.
+        timeoutMs = constOp.value() / 1'000'000;
       }
     }
   }

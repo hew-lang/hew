@@ -159,6 +159,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 "bool" => Ty::Bool,
                 "char" => Ty::Char,
                 "bytes" => Ty::Bytes,
+                "duration" => Ty::Duration,
                 // Qualified handle type like "json.Value"
                 n if n.contains('.') => Ty::Named {
                     name: n.to_string(),

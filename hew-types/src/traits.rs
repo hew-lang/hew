@@ -184,6 +184,7 @@ impl TraitRegistry {
             | Ty::U64
             | Ty::Bool
             | Ty::Char
+            | Ty::Duration
             | Ty::Unit
             | Ty::Error
             | Ty::Never => true,

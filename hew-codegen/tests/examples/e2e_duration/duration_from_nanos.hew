@@ -1,0 +1,22 @@
+// Test: duration::from_nanos constructor
+fn main() {
+    // Create from nanoseconds
+    let d1 = duration::from_nanos(1000000000);
+    println(d1.secs());
+
+    // Create from large value (2 hours)
+    let d2 = duration::from_nanos(7200000000000);
+    println(d2.hours());
+
+    // from_nanos result supports methods
+    let d3 = duration::from_nanos(2500000000);
+    println(d3.millis());
+
+    // from_nanos result supports arithmetic
+    let d4 = duration::from_nanos(1000000000) + 500ms;
+    println(d4.millis());
+
+    // zero duration via from_nanos
+    let d5 = duration::from_nanos(0);
+    println(d5.is_zero());
+}

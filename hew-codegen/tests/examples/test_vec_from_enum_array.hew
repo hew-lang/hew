@@ -1,0 +1,28 @@
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn colour_to_int(c: Colour) -> int {
+    match c {
+        Red => 1,
+        Green => 2,
+        Blue => 3,
+        _ => 0,
+    }
+}
+
+fn main() {
+    // Array literal coercion to Vec with enum variant elements
+    let colours: Vec<Colour> = [Red, Green, Blue];
+    println(colours.len());
+    for i in 0..colours.len() {
+        println(colour_to_int(colours[i]));
+    }
+
+    // Primitive array-to-Vec coercion still works
+    let nums: Vec<int> = [10, 20, 30];
+    println(nums.len());
+    println(nums[0] + nums[1] + nums[2]);
+}

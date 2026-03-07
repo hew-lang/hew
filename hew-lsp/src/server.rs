@@ -2188,93 +2188,15 @@ fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> 
 
 // ── Go-to-definition ─────────────────────────────────────────────────
 
-/// Search for a definition matching `word` in the AST, including nested items.
+/// Search for a definition matching `word` in the AST, returning an LSP `Range`.
 fn find_definition_in_ast(
     source: &str,
     lo: &[usize],
     parse_result: &ParseResult,
     word: &str,
 ) -> Option<Range> {
-    for (item, span) in &parse_result.program.items {
-        // Top-level name matching.
-        let name = match item {
-            Item::Function(f) => Some(&f.name),
-            Item::Actor(a) => Some(&a.name),
-            Item::Supervisor(s) => Some(&s.name),
-            Item::Trait(t) => Some(&t.name),
-            Item::Const(c) => Some(&c.name),
-            Item::TypeDecl(td) => Some(&td.name),
-            Item::Wire(w) => Some(&w.name),
-            Item::TypeAlias(ta) => Some(&ta.name),
-            _ => None,
-        };
-        if name.is_some_and(|n| n == word) {
-            return Some(span_to_range(source, lo, span));
-        }
-
-        // Search inside actors for receive methods and methods.
-        if let Item::Actor(a) = item {
-            for recv in &a.receive_fns {
-                if recv.name == word {
-                    return Some(span_to_range(source, lo, span));
-                }
-            }
-            for method in &a.methods {
-                if method.name == word {
-                    return Some(span_to_range(source, lo, span));
-                }
-            }
-        }
-
-        // Search inside TypeDecl for variants and methods.
-        if let Item::TypeDecl(td) = item {
-            for body_item in &td.body {
-                match body_item {
-                    TypeBodyItem::Variant(v) if v.name == word => {
-                        return Some(span_to_range(source, lo, span));
-                    }
-                    TypeBodyItem::Method(m) if m.name == word => {
-                        return Some(span_to_range(source, lo, span));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Search inside Trait for method and associated type definitions.
-        if let Item::Trait(t) = item {
-            for trait_item in &t.items {
-                match trait_item {
-                    TraitItem::Method(m) if m.name == word => {
-                        return Some(span_to_range(source, lo, span));
-                    }
-                    TraitItem::AssociatedType { name, .. } if name == word => {
-                        return Some(span_to_range(source, lo, span));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Search inside Impl for methods.
-        if let Item::Impl(i) = item {
-            for method in &i.methods {
-                if method.name == word {
-                    return Some(span_to_range(source, lo, span));
-                }
-            }
-        }
-
-        // Search inside extern blocks for function declarations.
-        if let Item::ExternBlock(extern_block) = item {
-            for function in &extern_block.functions {
-                if function.name == word {
-                    return Some(span_to_range(source, lo, span));
-                }
-            }
-        }
-    }
-    None
+    let span = hew_analysis::definition::find_definition(source, parse_result, word)?;
+    Some(offset_range_to_lsp(source, lo, span.start, span.end))
 }
 
 // ── Find all references ──────────────────────────────────────────────

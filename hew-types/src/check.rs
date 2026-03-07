@@ -3564,6 +3564,7 @@ impl Checker {
                     let ty = self.synthesize(&operand.0, &operand.1);
                     let resolved = self.subst.resolve(&ty);
                     if !resolved.is_numeric()
+                        && !resolved.is_duration()
                         && !matches!(resolved, Ty::Var(_))
                         && resolved != Ty::Error
                     {
@@ -4304,6 +4305,14 @@ impl Checker {
             | BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Modulo => {
+                if left_resolved.is_duration() || right_resolved.is_duration() {
+                    return self.check_duration_arithmetic(
+                        op,
+                        &left_resolved,
+                        &right_resolved,
+                        &left.1,
+                    );
+                }
                 if left_resolved.is_numeric() && right_resolved.is_numeric() {
                     if let Some(common_ty) = common_numeric_type(&left_resolved, &right_resolved) {
                         common_ty
@@ -4454,6 +4463,39 @@ impl Checker {
                     );
                 }
                 Ty::Bool
+            }
+        }
+    }
+
+    /// Type-check an arithmetic operation where at least one operand is `duration`.
+    fn check_duration_arithmetic(
+        &mut self,
+        op: BinaryOp,
+        left: &Ty,
+        right: &Ty,
+        span: &Span,
+    ) -> Ty {
+        match (left, right, op) {
+            // duration + duration → duration
+            // duration - duration → duration
+            (Ty::Duration, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract) => Ty::Duration,
+            // duration * int → duration
+            (Ty::Duration, r, BinaryOp::Multiply) if r.is_integer() => Ty::Duration,
+            // int * duration → duration
+            (l, Ty::Duration, BinaryOp::Multiply) if l.is_integer() => Ty::Duration,
+            // duration / int → duration
+            (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
+            // duration / duration → i64
+            (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
+            // duration % duration → duration
+            (Ty::Duration, Ty::Duration, BinaryOp::Modulo) => Ty::Duration,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("cannot apply `{op:?}` to `{left}` and `{right}`"),
+                );
+                Ty::Error
             }
         }
     }

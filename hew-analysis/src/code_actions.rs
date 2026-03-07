@@ -6,7 +6,7 @@ use crate::{CodeAction, OffsetSpan, RenameEdit};
 ///
 /// This is a protocol-independent representation of a diagnostic that
 /// carries just enough information to compute code actions.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DiagnosticInfo {
     pub kind: Option<String>,
     pub message: String,

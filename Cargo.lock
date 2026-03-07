@@ -1795,6 +1795,7 @@ dependencies = [
 name = "hew-wasm"
 version = "0.1.9"
 dependencies = [
+ "hew-analysis",
  "hew-lexer",
  "hew-parser",
  "hew-types",

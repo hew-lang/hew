@@ -4477,19 +4477,17 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         match (left, right, op) {
-            // duration + duration → duration
-            // duration - duration → duration
-            (Ty::Duration, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract) => Ty::Duration,
-            // duration * int → duration
+            // duration +/- duration → duration, duration % duration → duration
+            (Ty::Duration, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Modulo) => {
+                Ty::Duration
+            }
+            // duration * int → duration, int * duration → duration
             (Ty::Duration, r, BinaryOp::Multiply) if r.is_integer() => Ty::Duration,
-            // int * duration → duration
             (l, Ty::Duration, BinaryOp::Multiply) if l.is_integer() => Ty::Duration,
             // duration / int → duration
             (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
-            // duration / duration → i64
+            // duration / duration → i64 (ratio)
             (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
-            // duration % duration → duration
-            (Ty::Duration, Ty::Duration, BinaryOp::Modulo) => Ty::Duration,
             _ => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

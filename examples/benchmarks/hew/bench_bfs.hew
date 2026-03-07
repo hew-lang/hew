@@ -7,8 +7,8 @@ fn build_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
         let start = adj_offsets.get(src);
         var count = 0;
         for dst in 1..6 {
-            let neighbor = (src + dst) % n;
-            adj_nodes.push(neighbor);
+            let neighbour = (src + dst) % n;
+            adj_nodes.push(neighbour);
             count = count + 1;
         }
         let extra1 = (src * 7 + 3) % n;
@@ -38,10 +38,10 @@ fn bfs(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int, start_node: int) -> i
 
         var e = adj_offsets.get(node);
         while e < adj_offsets.get(node + 1) {
-            let neighbor = adj_nodes.get(e);
-            if visited.get(neighbor) == 0 {
-                visited.set(neighbor, 1);
-                queue.push(neighbor);
+            let neighbour = adj_nodes.get(e);
+            if visited.get(neighbour) == 0 {
+                visited.set(neighbour, 1);
+                queue.push(neighbour);
             }
             e = e + 1;
         }

@@ -7,7 +7,7 @@ type Point {
     y: int;
 }
 
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -129,8 +129,8 @@ fn test_while_loops() -> int {
 
 // === Test 5: Match Expressions ===
 fn test_match() -> int {
-    let color_tag = 1; // Green
-    let result = match color_tag {
+    let colour_tag = 1; // Green
+    let result = match colour_tag {
         0 => 10,
         1 => 20,
         2 => 30,

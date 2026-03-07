@@ -1,10 +1,10 @@
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
 }
 
-fn color_to_int(c: Color) -> int {
+fn colour_to_int(c: Colour) -> int {
     match c {
         Red => 1,
         Green => 2,
@@ -17,7 +17,7 @@ fn main() {
     let r = Red;
     let g = Green;
     let b = Blue;
-    println(color_to_int(r));
-    println(color_to_int(g));
-    println(color_to_int(b));
+    println(colour_to_int(r));
+    println(colour_to_int(g));
+    println(colour_to_int(b));
 }

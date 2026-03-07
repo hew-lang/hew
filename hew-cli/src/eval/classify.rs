@@ -106,7 +106,7 @@ mod tests {
     fn classify_items() {
         assert_eq!(classify("fn foo() {}"), InputKind::Item);
         assert_eq!(classify("struct Point { x: i32; }"), InputKind::Item);
-        assert_eq!(classify("enum Color { Red, Green }"), InputKind::Item);
+        assert_eq!(classify("enum Colour { Red, Green }"), InputKind::Item);
         assert_eq!(classify("actor Counter { }"), InputKind::Item);
         assert_eq!(classify("trait Printable { }"), InputKind::Item);
         assert_eq!(classify("impl Printable for Point { }"), InputKind::Item);

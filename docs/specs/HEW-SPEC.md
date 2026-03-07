@@ -296,7 +296,7 @@ let worker = spawn WorkerActor();
 
 > **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor spawn, which uses `spawn (params) => body` syntax.
 
-Actor behaviors can also be defined via traits:
+Actor behaviours can also be defined via traits:
 
 ```hew
 trait Pingable {
@@ -878,7 +878,7 @@ Predicate functions (`fs.exists`, `regex.is_match`, `os.has_env`, `mime.is_text`
 
 ### 3.6 Trait System
 
-Traits define shared behavior that types can implement. Hew has built-in marker traits and supports user-defined traits.
+Traits define shared behaviour that types can implement. Hew has built-in marker traits and supports user-defined traits.
 
 **Trait declaration:**
 
@@ -1107,7 +1107,7 @@ impl Drop for FileHandle {
 - Nested drops: outer struct drops, then each field drops
 
 **When drop runs:**
-| Situation | Drop behavior |
+| Situation | Drop behaviour |
 |-----------|---------------|
 | Variable goes out of scope | `drop()` called immediately |
 | Value is moved | No drop at original location |
@@ -1225,7 +1225,7 @@ let temp = Vec::new_in(arena);       // uses provided arena
 
 #### 3.7.7 Compiler Optimizations (Implementation Details)
 
-The compiler may apply memory optimizations that are **invisible to user semantics**. Users always see RAII behavior; optimizations affect only performance.
+The compiler may apply memory optimizations that are **invisible to user semantics**. Users always see RAII behaviour; optimizations affect only performance.
 
 **Arena optimization for message handlers:**
 The compiler may allocate message handler temporaries in an arena and bulk-free them when the handler returns. This is an optimization, not a semantic change:
@@ -1243,7 +1243,7 @@ When sending messages, the compiler may optimize away copies in cases where the 
 **Escape analysis:**
 The compiler may stack-allocate values that do not escape their scope, avoiding heap allocation entirely.
 
-**Important:** These optimizations do not change program behavior. A correct program produces identical results with or without optimizations.
+**Important:** These optimizations do not change program behaviour. A correct program produces identical results with or without optimizations.
 
 #### 3.7.8 Memory Safety Guarantees
 
@@ -2412,7 +2412,7 @@ let result = await task;
 
 **Semantics (normative):**
 
-| Awaited Task State | `await` Behavior                                            |
+| Awaited Task State | `await` Behaviour                                           |
 | ------------------ | ----------------------------------------------------------- |
 | Completed          | Returns `Ok(value)` immediately                             |
 | Running/Pending    | Suspends current task until completion, returns `Ok(value)` |
@@ -2986,7 +2986,7 @@ Parameters and local variables are stored in the generator's coroutine frame. Th
 
 An **async generator** can both `yield` values and `await` asynchronous operations. This enables streaming from I/O sources, network calls, or other actors.
 
-> **Note:** The `async` keyword is ONLY valid as a modifier on `gen fn`. Standalone `async fn` declarations have no specified semantics in the actor model (actors are inherently concurrent via message passing) and are not part of the Hew grammar. Use `async gen fn` to create async generators, or use actors and `receive fn` for async behavior.
+> **Note:** The `async` keyword is ONLY valid as a modifier on `gen fn`. Standalone `async fn` declarations have no specified semantics in the actor model (actors are inherently concurrent via message passing) and are not part of the Hew grammar. Use `async gen fn` to create async generators, or use actors and `receive fn` for async behaviour.
 
 ```hew
 async gen fn fetch_pages(base_url: String) -> Page {
@@ -3265,7 +3265,7 @@ Then:
 
 ### 5.3 Restart Strategies
 
-| Strategy       | Behavior                                                            |
+| Strategy       | Behaviour                                                           |
 | -------------- | ------------------------------------------------------------------- |
 | `one_for_one`  | Only the crashed child is restarted.                                |
 | `one_for_all`  | All children are stopped and restarted.                             |
@@ -3343,7 +3343,7 @@ The `panic()` builtin triggers a controlled crash for testing.
 
 ## 6. Backpressure and bounded queues
 
-Every actor mailbox has a bounded capacity and an overflow policy that determines behavior when the mailbox is full.
+Every actor mailbox has a bounded capacity and an overflow policy that determines behaviour when the mailbox is full.
 
 ### 6.1 Mailbox Declaration
 
@@ -3358,7 +3358,7 @@ actor MyActor {
 
 ### 6.2 Overflow Policies
 
-| Policy               | Behavior when mailbox is full                                        |
+| Policy               | Behaviour when mailbox is full                                       |
 | -------------------- | -------------------------------------------------------------------- |
 | `block`              | Sender suspends until space is available (cancellable). **Default.** |
 | `drop_new`           | New message is silently discarded.                                   |
@@ -3424,7 +3424,7 @@ When the mailbox is full and a new message arrives:
 
 When the mailbox is full, no coalesce match exists, and the fallback must be applied:
 
-| Fallback             | Behavior                                             |
+| Fallback             | Behaviour                                            |
 | -------------------- | ---------------------------------------------------- |
 | `drop_new` (default) | Incoming message is discarded                        |
 | `drop_old`           | Oldest message is evicted; incoming message enqueued |
@@ -4270,7 +4270,7 @@ Events:
 - `Recv()`
 - `Close()`
 
-Behavior:
+Behaviour:
 
 - In `Full`, overflow policy decides:
   - `block`: sender waits (cancellable)
@@ -4414,7 +4414,7 @@ let err3 = d * d;          // COMPILE ERROR: duration * duration
 | `.millis()`  | `fn millis() -> i64`   | Total milliseconds (truncates) |
 | `.secs()`    | `fn secs() -> i64`     | Total seconds (truncates)      |
 | `.mins()`    | `fn mins() -> i64`     | Total minutes (truncates)      |
-| `.hours()`   | `fn hours() -> i64`    | Total hours (truncates)         |
+| `.hours()`   | `fn hours() -> i64`    | Total hours (truncates)        |
 | `.abs()`     | `fn abs() -> duration` | Absolute value                 |
 | `.is_zero()` | `fn is_zero() -> bool` | True if zero nanoseconds       |
 

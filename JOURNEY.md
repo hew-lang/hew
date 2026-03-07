@@ -540,7 +540,7 @@ implementation agents and a pragmatic code reviewer:
   for enum unit variants. Final fix checks `variantLookup` to distinguish
   variable bindings (always-true) from enum variants (tag comparison).
 - **Vec strdup NULL checks**: Five strdup call sites in vec.rs now abort on
-  NULL, matching hashmap.rs behavior.
+  NULL, matching hashmap.rs behaviour.
 - **ExprRange fixes**: Inclusive range widened from `i64|index` to all integer
   types. Type mismatch between start and end now coerced instead of silently
   producing a broken tuple.

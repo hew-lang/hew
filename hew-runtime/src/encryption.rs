@@ -76,7 +76,7 @@ static ALLOWLIST_OPS_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(())
 ///
 /// The allowlist is intentionally process-global for C ABI simplicity; replacing or
 /// freeing it affects every encrypted transport instance. `ALLOWLIST_STRICT_REQUIRED`
-/// preserves fail-closed behavior after strict mode is enabled so a dropped list
+/// preserves fail-closed behaviour after strict mode is enabled so a dropped list
 /// cannot silently disable peer filtering.
 static ACTIVE_ALLOWLIST: LazyLock<RwLock<Option<ActiveAllowlist>>> =
     LazyLock::new(|| RwLock::new(None));

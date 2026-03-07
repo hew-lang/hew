@@ -1,5 +1,5 @@
 // Weighted Graph - Compressed adjacency list with weights
-// adj_nodes: neighbor node IDs, adj_weights: edge weights (parallel), adj_offsets: per-node start
+// adj_nodes: neighbour node IDs, adj_weights: edge weights (parallel), adj_offsets: per-node start
 
 fn get_degree(adj_offsets: Vec<int>, node: int) -> int {
     adj_offsets.get(node + 1) - adj_offsets.get(node)
@@ -18,7 +18,7 @@ fn get_weight(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>,
     0 - 1
 }
 
-fn min_weight_neighbor(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
+fn min_weight_neighbour(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
     let start = adj_offsets.get(node);
     let end = adj_offsets.get(node + 1);
     if start == end {
@@ -36,7 +36,7 @@ fn min_weight_neighbor(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: 
     best
 }
 
-fn max_weight_neighbor(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
+fn max_weight_neighbour(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, node: int) -> int {
     let start = adj_offsets.get(node);
     let end = adj_offsets.get(node + 1);
     if start == end {
@@ -157,7 +157,7 @@ fn main() {
     }
 
     // Test 5: Min weight from node 2 = 2 (edge to 0)
-    let minw = min_weight_neighbor(adj_nodes, adj_weights, adj_offsets, 2);
+    let minw = min_weight_neighbour(adj_nodes, adj_weights, adj_offsets, 2);
     if minw == 2 {
         println("PASS: min weight from node 2 = 2");
         passed = passed + 1;
@@ -167,7 +167,7 @@ fn main() {
     }
 
     // Test 6: Max weight from node 2 = 8 (edge to 4)
-    let maxw = max_weight_neighbor(adj_nodes, adj_weights, adj_offsets, 2);
+    let maxw = max_weight_neighbour(adj_nodes, adj_weights, adj_offsets, 2);
     if maxw == 8 {
         println("PASS: max weight from node 2 = 8");
         passed = passed + 1;

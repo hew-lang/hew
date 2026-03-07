@@ -227,7 +227,7 @@ to parse with "expected `;`, found `::`" errors.
 ### 29. Cross-enum variant fallback is a type-safety hole
 
 When match pattern resolution can't find a variant in the scrutinee's type, falling
-back to a global search across all types is dangerous. It means `match color { Shape::Circle => }`
+back to a global search across all types is dangerous. It means `match colour { Shape::Circle => }`
 silently type-checks. The fix is simple: when the scrutinee type is known, only search
 that type's variants.
 
@@ -500,7 +500,7 @@ the corresponding continue flag at each level.
 
 ### 65. Warnings for unhandled codegen cases should be errors
 
-Silent warnings that skip match arms or fall through to default behavior
+Silent warnings that skip match arms or fall through to default behaviour
 cause miscompilation that's invisible at compile time and produces wrong
 results at runtime. Use emitError + return failure, not emitWarning + skip.
 

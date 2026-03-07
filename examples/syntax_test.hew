@@ -21,7 +21,7 @@ type Point {
     y: i32;
 }
 
-enum Color {
+enum Colour {
     Red;
     Green;
     Blue;
@@ -95,12 +95,12 @@ fn factorial(n: i32) -> i32 {
 }
 
 // === Pattern Matching ===
-fn describe(c: Color) -> i32 {
+fn describe(c: Colour) -> i32 {
     match c {
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Blue => 3,
-        Color::Custom(r, g, b) => r + g + b,
+        Colour::Red => 1,
+        Colour::Green => 2,
+        Colour::Blue => 3,
+        Colour::Custom(r, g, b) => r + g + b,
         _ => 0,
     }
 }

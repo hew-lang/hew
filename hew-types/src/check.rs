@@ -4235,7 +4235,7 @@ impl Checker {
                         _ => {} // fall through to default
                     }
                 }
-                // Not a coercible const — fall through to default behavior
+                // Not a coercible const — fall through to default behaviour
                 let actual = self.synthesize(expr, span);
                 self.expect_type(expected, &actual, span);
                 actual
@@ -6815,7 +6815,7 @@ impl Checker {
                 _ => None,
             };
         }
-        // Strip enum prefix from qualified names (e.g., "Color::Custom" -> "Custom")
+        // Strip enum prefix from qualified names (e.g., "Colour::Custom" -> "Custom")
         let short_name = variant_name.rsplit("::").next().unwrap_or(variant_name);
         // Extract the type name from Named or Machine types
         let type_name_opt = match enum_ty {
@@ -8748,11 +8748,11 @@ mod tests {
 
     #[test]
     fn typecheck_match_wrong_enum_variant_errors() {
-        // Matching a Color scrutinee with a Shape variant should be an error.
+        // Matching a Colour scrutinee with a Shape variant should be an error.
         let (errors, _) = parse_and_check(concat!(
-            "enum Color { Red; Green; Blue; }\n",
+            "enum Colour { Red; Green; Blue; }\n",
             "enum Shape { Circle(i32); Rectangle(i32); }\n",
-            "fn describe(c: Color) -> i32 {\n",
+            "fn describe(c: Colour) -> i32 {\n",
             "    match c {\n",
             "        Circle(r) => r,\n",
             "        _ => 0,\n",

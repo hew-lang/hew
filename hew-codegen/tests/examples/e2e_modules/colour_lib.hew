@@ -1,10 +1,10 @@
-pub enum Color {
+pub enum Colour {
     Red;
     Green;
     Blue;
 }
 
-pub fn color_name(c: Color) -> String {
+pub fn colour_name(c: Colour) -> String {
     match c {
         Red => "red",
         Green => "green",

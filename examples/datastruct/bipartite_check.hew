@@ -1,37 +1,37 @@
-// Bipartite Check - 2-coloring BFS
-// Color 0 = unvisited, 1 = color A, 2 = color B
+// Bipartite Check - 2-colouring BFS
+// Colour 0 = unvisited, 1 = colour A, 2 = colour B
 
 fn is_bipartite(adj_nodes: Vec<int>, adj_offsets: Vec<int>, num_nodes: int) -> bool {
-    let color: Vec<int> = Vec::new();
+    let colour: Vec<int> = Vec::new();
     for i in 0..num_nodes {
-        color.push(0);
+        colour.push(0);
     }
     // BFS from each unvisited node (handles disconnected graphs)
     for start in 0..num_nodes {
-        if color.get(start) != 0 {
-            // already colored
+        if colour.get(start) != 0 {
+            // already coloured
         } else {
-            color.set(start, 1);
+            colour.set(start, 1);
             let queue: Vec<int> = Vec::new();
             queue.push(start);
             var head = 0;
             while head < queue.len() {
                 let node = queue.get(head);
                 head = head + 1;
-                let my_color = color.get(node);
-                var next_color = 1;
-                if my_color == 1 {
-                    next_color = 2;
+                let my_colour = colour.get(node);
+                var next_colour = 1;
+                if my_colour == 1 {
+                    next_colour = 2;
                 }
                 let s = adj_offsets.get(node);
                 let e = adj_offsets.get(node + 1);
                 var j = s;
                 while j < e {
                     let nb = adj_nodes.get(j);
-                    if color.get(nb) == 0 {
-                        color.set(nb, next_color);
+                    if colour.get(nb) == 0 {
+                        colour.set(nb, next_colour);
                         queue.push(nb);
-                    } else if color.get(nb) == my_color {
+                    } else if colour.get(nb) == my_colour {
                         return false;
                     }
                     j = j + 1;

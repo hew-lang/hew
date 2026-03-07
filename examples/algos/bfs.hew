@@ -10,27 +10,27 @@ fn main() {
     let adj_nodes: Vec<i32> = Vec::new();
     let adj_offsets: Vec<i32> = Vec::new();
 
-    // Node 0: neighbors 1, 2
+    // Node 0: neighbours 1, 2
     adj_offsets.push(0);
     adj_nodes.push(1);
     adj_nodes.push(2);
-    // Node 1: neighbors 0, 3
+    // Node 1: neighbours 0, 3
     adj_offsets.push(2);
     adj_nodes.push(0);
     adj_nodes.push(3);
-    // Node 2: neighbors 0, 4
+    // Node 2: neighbours 0, 4
     adj_offsets.push(4);
     adj_nodes.push(0);
     adj_nodes.push(4);
-    // Node 3: neighbors 1, 5
+    // Node 3: neighbours 1, 5
     adj_offsets.push(6);
     adj_nodes.push(1);
     adj_nodes.push(5);
-    // Node 4: neighbors 2, 5
+    // Node 4: neighbours 2, 5
     adj_offsets.push(8);
     adj_nodes.push(2);
     adj_nodes.push(5);
-    // Node 5: neighbors 3, 4
+    // Node 5: neighbours 3, 4
     adj_offsets.push(10);
     adj_nodes.push(3);
     adj_nodes.push(4);

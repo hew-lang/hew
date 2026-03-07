@@ -7,8 +7,8 @@ fn build_directed_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> i
         let start = adj_offsets.get(src);
         var count = 0;
         for dst in 1..4 {
-            let neighbor = (src + dst) % n;
-            adj_nodes.push(neighbor);
+            let neighbour = (src + dst) % n;
+            adj_nodes.push(neighbour);
             count = count + 1;
         }
         let extra = (src * 7 + 13) % n;
@@ -20,16 +20,16 @@ fn build_directed_graph(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> i
 }
 
 fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
-    let color: Vec<int> = Vec::new();
+    let colour: Vec<int> = Vec::new();
     let stack: Vec<int> = Vec::new();
     let stack_phase: Vec<int> = Vec::new();
     for i in 0..n {
-        color.push(0);
+        colour.push(0);
     }
 
     var has_cycle = 0;
     for start in 0..n {
-        if color.get(start) == 0 {
+        if colour.get(start) == 0 {
             stack.push(start);
             stack_phase.push(0);
 
@@ -39,22 +39,22 @@ fn detect_cycle(adj_nodes: Vec<int>, adj_offsets: Vec<int>, n: int) -> int {
                 let phase = stack_phase.get(top);
 
                 if phase == 0 {
-                    color.set(node, 1);
+                    colour.set(node, 1);
                     stack_phase.set(top, 1);
                     let edge_start = adj_offsets.get(node);
                     let edge_end = adj_offsets.get(node + 1);
                     for e in edge_start..edge_end {
-                        let neighbor = adj_nodes.get(e);
-                        if color.get(neighbor) == 1 {
+                        let neighbour = adj_nodes.get(e);
+                        if colour.get(neighbour) == 1 {
                             has_cycle = 1;
                         }
-                        if color.get(neighbor) == 0 {
-                            stack.push(neighbor);
+                        if colour.get(neighbour) == 0 {
+                            stack.push(neighbour);
                             stack_phase.push(0);
                         }
                     }
                 } else {
-                    color.set(node, 2);
+                    colour.set(node, 2);
                     let _ = stack.pop();
                     let _ = stack_phase.pop();
                 }

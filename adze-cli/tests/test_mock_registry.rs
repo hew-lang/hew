@@ -13,7 +13,7 @@ use adze_cli::index::IndexEntry;
 
 // ── Mock registry server ────────────────────────────────────────────────────
 
-/// Behavior for a specific endpoint: return a canned response or an error.
+/// Behaviour for a specific endpoint: return a canned response or an error.
 #[derive(Clone, Debug)]
 #[allow(
     dead_code,
@@ -654,7 +654,7 @@ fn get_namespace_returns_info() {
     assert_eq!(info.source, "github");
 }
 
-// ── Fallback behavior tests ────────────────────────────────────────────────
+// ── Fallback behaviour tests ────────────────────────────────────────────────
 
 #[test]
 fn fallback_on_primary_500() {

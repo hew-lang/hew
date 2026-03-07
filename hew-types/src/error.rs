@@ -459,7 +459,7 @@ mod tests {
         // Let's just verify the function doesn't crash and returns reasonable results
         // The threshold is max(1, len/3) = max(1, 5/3) = max(1,1) = 1
         // Only distance-1 matches: none of these are distance 1 from "count"
-        // This tests the boundary behavior
+        // This tests the boundary behaviour
         assert!(similar.len() <= 3, "should return at most 3 matches");
     }
 

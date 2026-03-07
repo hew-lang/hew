@@ -1,11 +1,11 @@
-//! Pretty error rendering with source spans and ANSI colors.
+//! Pretty error rendering with source spans and ANSI colours.
 //!
 //! Produces Rust/Elm-style diagnostics with `^^^` underlines pointing at the
 //! relevant source location.
 
 use std::ops::Range;
 
-// ANSI color helpers
+// ANSI colour helpers
 const RED: &str = "\x1b[1;31m";
 const YELLOW: &str = "\x1b[1;33m";
 const BLUE: &str = "\x1b[1;34m";

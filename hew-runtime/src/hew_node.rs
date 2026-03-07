@@ -29,7 +29,7 @@ const _: () = assert!(
 /// Global reference to the active node for remote message routing.
 ///
 /// Only one `HewNode` may be active per process. Starting a second node
-/// while one is running is undefined behavior.
+/// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
 
 /// Route a message to a remote actor via the current node.
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) ->
 
 /// Start the node runtime: transport listen, accept loop, and cluster init.
 /// Only one `HewNode` may be active per process. Starting a second node
-/// while one is running is undefined behavior.
+/// while one is running is undefined behaviour.
 ///
 /// # Safety
 ///

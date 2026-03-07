@@ -7,9 +7,9 @@ fn build_weighted_graph(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets:
         let start = adj_offsets.get(src);
         var count = 0;
         for dst in 1..6 {
-            let neighbor = (src + dst) % n;
+            let neighbour = (src + dst) % n;
             let weight = (src + dst) % 10 + 1;
-            adj_nodes.push(neighbor);
+            adj_nodes.push(neighbour);
             adj_weights.push(weight);
             count = count + 1;
         }
@@ -52,11 +52,11 @@ fn dijkstra(adj_nodes: Vec<int>, adj_weights: Vec<int>, adj_offsets: Vec<int>, n
             used.set(u, 1);
 
             for e in adj_offsets.get(u)..adj_offsets.get(u + 1) {
-                let neighbor = adj_nodes.get(e);
+                let neighbour = adj_nodes.get(e);
                 let w = adj_weights.get(e);
                 let new_dist = dist.get(u) + w;
-                if new_dist < dist.get(neighbor) {
-                    dist.set(neighbor, new_dist);
+                if new_dist < dist.get(neighbour) {
+                    dist.set(neighbour, new_dist);
                 }
             }
             iter = iter + 1;

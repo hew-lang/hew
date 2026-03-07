@@ -93,10 +93,10 @@ fn main() {
     for src in 0..n {
         var dst = 1;
         while dst <= 3 {
-            let neighbor = (src + dst) % n;
+            let neighbour = (src + dst) % n;
             let weight = (src + dst) % 10 + 1;
             edge_src.push(src);
-            edge_dst.push(neighbor);
+            edge_dst.push(neighbour);
             edge_wt.push(weight);
             dst = dst + 1;
         }

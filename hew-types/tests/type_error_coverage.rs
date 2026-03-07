@@ -16,8 +16,8 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
 fn test_non_exhaustive_match() {
     let output = typecheck(
         r"
-        enum Color { Red; Green; Blue; }
-        fn check(c: Color) -> int {
+        enum Colour { Red; Green; Blue; }
+        fn check(c: Colour) -> int {
             match c {
                 Red => 1,
                 Green => 2,
@@ -38,10 +38,10 @@ fn test_non_exhaustive_match() {
 fn test_non_exhaustive_match_stmt() {
     let output = typecheck(
         r"
-        enum Color { Red; Green; Blue; }
+        enum Colour { Red; Green; Blue; }
         fn main() {
-            let color: Color = Red;
-            match color {
+            let colour: Colour = Red;
+            match colour {
                 Red => {},
                 Green => {},
             }
@@ -118,8 +118,8 @@ fn test_exhaustive_or_result_match() {
 fn test_exhaustive_or_enum_match() {
     let output = typecheck(
         r"
-        enum Color { Red; Green; Blue; }
-        fn check(c: Color) -> int {
+        enum Colour { Red; Green; Blue; }
+        fn check(c: Colour) -> int {
             match c {
                 Red | Green | Blue => 1,
             }

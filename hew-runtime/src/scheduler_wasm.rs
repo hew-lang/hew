@@ -543,7 +543,7 @@ mod tests {
     /// Serialize all tests in this module since they share `static mut`
     /// global state. Rust's test harness runs tests in parallel by
     /// default; without this lock, concurrent mutation of the globals
-    /// causes undefined behavior.
+    /// causes undefined behaviour.
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// Build a minimal `HewActor` with sensible defaults.

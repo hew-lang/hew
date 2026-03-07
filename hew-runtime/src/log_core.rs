@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 /// Default: −1 (uninitialized — all output suppressed until `setup` is called).
 static LOG_LEVEL: AtomicI32 = AtomicI32::new(-1);
 
-/// Global log output format. 0=TEXT (colored), 1=JSON (single-line).
+/// Global log output format. 0=TEXT (coloured), 1=JSON (single-line).
 /// Default: TEXT (0).
 static LOG_FORMAT: AtomicI32 = AtomicI32::new(0);
 
@@ -33,7 +33,7 @@ pub extern "C" fn hew_log_set_level(level: i32) {
 
 /// Get the current log output format.
 ///
-/// Returns 0 for TEXT (colored), 1 for JSON (single-line).
+/// Returns 0 for TEXT (coloured), 1 for JSON (single-line).
 #[no_mangle]
 pub extern "C" fn hew_log_get_format() -> i32 {
     LOG_FORMAT.load(Ordering::Relaxed)
@@ -41,7 +41,7 @@ pub extern "C" fn hew_log_get_format() -> i32 {
 
 /// Set the log output format.
 ///
-/// Format mapping: 0=TEXT (colored), 1=JSON (single-line NDJSON).
+/// Format mapping: 0=TEXT (coloured), 1=JSON (single-line NDJSON).
 /// Values outside 0..=1 are clamped.
 #[no_mangle]
 pub extern "C" fn hew_log_set_format(format: i32) {
@@ -50,7 +50,7 @@ pub extern "C" fn hew_log_set_format(format: i32) {
 
 /// Emit a log line if the message level passes the global filter.
 ///
-/// If the global format is TEXT (0), outputs colored text to stderr.
+/// If the global format is TEXT (0), outputs coloured text to stderr.
 /// If the global format is JSON (1), outputs single-line NDJSON to stderr.
 ///
 /// # Safety
@@ -76,7 +76,7 @@ pub unsafe extern "C" fn hew_log_emit(level: i32, msg: *const c_char) {
     }
 }
 
-/// Emit a colored text log line to stderr.
+/// Emit a coloured text log line to stderr.
 fn emit_text(level: i32, text: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -87,7 +87,7 @@ fn emit_text(level: i32, text: &str) {
     let seconds = secs % 60;
     let millis = now.subsec_millis();
 
-    let (level_str, color_code) = match level {
+    let (level_str, colour_code) = match level {
         0 => ("ERROR", "\x1b[31m"),
         1 => ("WARN ", "\x1b[33m"),
         3 => ("DEBUG", "\x1b[34m"),
@@ -98,7 +98,7 @@ fn emit_text(level: i32, text: &str) {
     let reset = "\x1b[0m";
     let dim = "\x1b[2m";
     eprintln!(
-        "{dim}{hours:02}:{minutes:02}:{seconds:02}.{millis:03}{reset} {color_code}{level_str}{reset} {text}"
+        "{dim}{hours:02}:{minutes:02}:{seconds:02}.{millis:03}{reset} {colour_code}{level_str}{reset} {text}"
     );
 }
 

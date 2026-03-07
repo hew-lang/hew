@@ -267,7 +267,7 @@ pub fn highlight_code(source: &str) -> String {
         // Emit the token
         let text = &source[span.start..span.end];
         let color = token_color(tok);
-        // Check if the next identifier after `fn` should be colored as a function name
+        // Check if the next identifier after `fn` should be coloured as a function name
         emit_styled(&mut out, text, color);
 
         pos = span.end;

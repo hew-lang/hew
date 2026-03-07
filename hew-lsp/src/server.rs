@@ -721,13 +721,58 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
 
-        let actions = build_code_actions(
-            uri,
-            &doc.source,
-            &doc.line_offsets,
-            &params.context.diagnostics,
-        );
-        Ok(non_empty(actions))
+        let mut lsp_actions = Vec::new();
+        for diag in &params.context.diagnostics {
+            let kind = diag
+                .data
+                .as_ref()
+                .and_then(|d| d.get("kind"))
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            let suggestions = diag
+                .data
+                .as_ref()
+                .and_then(|d| d.get("suggestions"))
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default();
+            let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
+            let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
+            let info = hew_analysis::code_actions::DiagnosticInfo {
+                kind,
+                message: diag.message.clone(),
+                span: hew_analysis::OffsetSpan { start, end },
+                suggestions,
+            };
+            let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
+            for action in actions {
+                let text_edits: Vec<TextEdit> = action
+                    .edits
+                    .iter()
+                    .map(|e| TextEdit {
+                        range: offset_range_to_lsp(
+                            &doc.source,
+                            &doc.line_offsets,
+                            e.span.start,
+                            e.span.end,
+                        ),
+                        new_text: e.new_text.clone(),
+                    })
+                    .collect();
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), text_edits);
+                lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: action.title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+        }
+        Ok(non_empty(lsp_actions))
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
@@ -877,166 +922,7 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
     })
 }
 
-// ── Code Actions ─────────────────────────────────────────────────────
-
-/// Build code actions from LSP diagnostics by inspecting their `.data` field.
-fn build_code_actions(
-    uri: &Url,
-    source: &str,
-    lo: &[usize],
-    diagnostics: &[Diagnostic],
-) -> Vec<CodeActionOrCommand> {
-    let mut actions = Vec::new();
-    for diag in diagnostics {
-        let Some(data) = diag.data.as_ref() else {
-            continue;
-        };
-        let kind_str = data.get("kind").and_then(serde_json::Value::as_str);
-        let suggestions: Vec<String> = data
-            .get("suggestions")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        match kind_str {
-            Some("UndefinedVariable" | "UndefinedFunction") => {
-                for suggestion in &suggestions {
-                    let name = extract_suggestion_name(suggestion);
-                    actions.push(CodeActionOrCommand::CodeAction(make_replace_action(
-                        uri,
-                        diag,
-                        &format!("Replace with `{name}`"),
-                        diag.range,
-                        name,
-                    )));
-                }
-            }
-            Some("MutabilityError") => {
-                // Extract the variable name from "cannot assign to immutable variable `name`"
-                let var_name = diag.message.split('`').nth(1);
-                if let Some(let_range) = find_let_keyword(source, lo, diag.range, var_name) {
-                    actions.push(CodeActionOrCommand::CodeAction(make_replace_action(
-                        uri,
-                        diag,
-                        "Change `let` to `var`",
-                        let_range,
-                        "var".to_string(),
-                    )));
-                }
-            }
-            Some("UnusedVariable") => {
-                // Extract the variable name from the message (format: "unused variable: `name`")
-                if let Some(name) = diag.message.split('`').nth(1) {
-                    if !name.starts_with('_') {
-                        let prefixed = format!("_{name}");
-                        // Find the exact position of the variable name near the diagnostic start
-                        let start_offset = position_to_offset(source, lo, diag.range.start);
-                        let end_offset = position_to_offset(source, lo, diag.range.end);
-                        let region = &source[start_offset..end_offset];
-                        if let Some(rel) = region.find(name) {
-                            let abs_start = start_offset + rel;
-                            let abs_end = abs_start + name.len();
-                            let (sl, sc) = offset_to_line_col(source, lo, abs_start);
-                            let (el, ec) = offset_to_line_col(source, lo, abs_end);
-                            #[expect(
-                                clippy::cast_possible_truncation,
-                                reason = "line/col values fit u32"
-                            )]
-                            let name_range = Range {
-                                start: Position::new(sl as u32, sc as u32),
-                                end: Position::new(el as u32, ec as u32),
-                            };
-                            actions.push(CodeActionOrCommand::CodeAction(make_replace_action(
-                                uri,
-                                diag,
-                                "Prefix with `_`",
-                                name_range,
-                                prefixed,
-                            )));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    actions
-}
-
-/// Extract a suggested name from ``Did you mean \`foo\`?`` style strings.
-fn extract_suggestion_name(suggestion: &str) -> String {
-    if let Some(start) = suggestion.find('`') {
-        if let Some(end) = suggestion[start + 1..].find('`') {
-            return suggestion[start + 1..start + 1 + end].to_string();
-        }
-    }
-    suggestion.to_string()
-}
-
-/// Create a quickfix `CodeAction` that replaces text at `edit_range` with `new_text`.
-fn make_replace_action(
-    uri: &Url,
-    diagnostic: &Diagnostic,
-    title: &str,
-    edit_range: Range,
-    new_text: String,
-) -> CodeAction {
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
-    CodeAction {
-        title: title.to_string(),
-        kind: Some(CodeActionKind::QUICKFIX),
-        diagnostics: Some(vec![diagnostic.clone()]),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-/// Find the `let` keyword range for a binding near the diagnostic range.
-///
-/// When `var_name` is provided, verifies the found `let` is followed by that
-/// variable name to avoid matching an unrelated declaration.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "line/column values will not exceed u32"
-)]
-fn find_let_keyword(
-    source: &str,
-    lo: &[usize],
-    diag_range: Range,
-    var_name: Option<&str>,
-) -> Option<Range> {
-    let diag_start = position_to_offset(source, lo, diag_range.start);
-    let search_start = diag_start.saturating_sub(200);
-    let search_region = &source[search_start..diag_start];
-    // Search backwards for all `let ` occurrences, closest first
-    for (rel_pos, _) in search_region.rmatch_indices("let ") {
-        let abs_pos = search_start + rel_pos;
-        // Verify this `let` declares the expected variable
-        if let Some(name) = var_name {
-            let after_let = &source[abs_pos + 4..];
-            let trimmed = after_let.trim_start();
-            if !trimmed.starts_with(name) {
-                continue;
-            }
-        }
-        let (sl, sc) = offset_to_line_col(source, lo, abs_pos);
-        let (el, ec) = offset_to_line_col(source, lo, abs_pos + 3);
-        return Some(Range {
-            start: Position::new(sl as u32, sc as u32),
-            end: Position::new(el as u32, ec as u32),
-        });
-    }
-    None
-}
+// (Code actions logic moved to hew_analysis::code_actions)
 
 // ── Folding Ranges ───────────────────────────────────────────────────
 

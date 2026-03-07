@@ -1,6 +1,6 @@
 (* ============================================================
    Hew Programming Language — Formal Grammar (EBNF)
-   Version: 0.7.0
+   Version: 0.9.0
    
    This is the authoritative grammar specification for the Hew
    programming language. It is extracted from and kept in sync
@@ -32,15 +32,17 @@ Item           = Attribute* Visibility? ( Import
                              | ImplDecl
                              | WireDecl
                              | FnDecl
+                             | AsyncFnDecl
                              | GenFnDecl
                              | AsyncGenFnDecl
                              | ExternBlock
                              | ActorDecl
-                             | SupervisorDecl ) ;
+                             | SupervisorDecl
+                             | MachineDecl ) ;
 
 TypeAlias      = "type" Ident "=" Type ";" ;
 
-Visibility     = "pub" ;
+Visibility     = "pub" ( "(" ( "package" | "super" ) ")" )? ;
 
 (* Attributes *)
 Attribute      = "#[" AttrContent "]" ;
@@ -59,7 +61,8 @@ ImportSpec     = Ident
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 
-TypeDecl       = "indirect"? ("type" | "enum") Ident TypeParams? WhereClause? TypeBody ;
+TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
+               | "indirect"? "enum" Ident TypeParams? WhereClause? TypeBody ;
 (* Struct-level naming: #[json(camelCase)] / #[yaml(snake_case)] before wire decl *)
 (* Valid naming conventions: camelCase, PascalCase, snake_case, SCREAMING_SNAKE, kebab-case *)
 WireDecl       = "wire" ("type" | "enum") Ident WireBody ;
@@ -78,7 +81,7 @@ WireBody       = "{" { WireFieldDecl | VariantDecl } "}" ;
 
 StructFieldDecl = Ident ":" Type ";" ;
 ActorFieldDecl  = ("let" | "var") Ident ":" Type ("=" Expr)? ";" ;
-WireFieldDecl  = Ident ":" Type "@" IntLit WireAttr* ";" ;
+WireFieldDecl  = Ident ":" Type ( ("@" | "=") IntLit )? WireAttr* ";" ;
 WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
                | "json" "(" StringLit ")"   (* per-field JSON key override *)
@@ -127,6 +130,15 @@ SupervisorStrategy = "one_for_one" | "one_for_all" | "rest_for_one" ;
 ChildSpec      = "child" Ident ":" Ident ( "(" Args ")" )? RestartPolicy? ;
 RestartPolicy  = "permanent" | "transient" | "temporary" ;
 
+(* State Machines *)
+MachineDecl    = "machine" Ident "{" { MachineItem } "}" ;
+MachineItem    = MachineState | MachineEvent | MachineTransition | MachineDefault ;
+MachineState   = "state" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineEvent   = "event" Ident ( "{" { Ident ":" Type (";" | ",") } "}" )? ";"? ;
+MachineTransition = "on" Ident ":" StatePattern "->" StatePattern ("when" Expr)? (Block | "{" FieldInitList "}" | ";") ;
+MachineDefault = "default" (Block | ";") ;
+StatePattern   = Ident | "_" ;
+
 (* FFI / Extern declarations *)
 ExternBlock    = "extern" StringLit? "{" { ExternFnDecl } "}" ;
 ExternFnDecl   = "fn" Ident "(" ExternParams? ")" RetType? Variadic? ";" ;
@@ -136,6 +148,7 @@ Variadic       = ".." ;
 
 (* Functions *)
 FnDecl         = "pure"? "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+AsyncFnDecl    = "pure"? "async" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
 GenFnDecl      = "pure"? "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 AsyncGenFnDecl = "pure"? "async" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 Params         = Param { "," Param } ;
@@ -215,13 +228,13 @@ FieldInit      = Ident ":" Expr ;
 IfExpr         = "if" Expr Block ( "else" (IfExpr | Block) )? ;
 MatchExpr      = "match" Expr "{" { MatchArm } "}" ;
 
-Literal        = IntLit | FloatLit | DurationLit | StringLit | RegexLiteral | "true" | "false" ;
+Literal        = IntLit | FloatLit | DurationLit | StringLit | ByteStringLit | CharLit | RegexLiteral | "true" | "false" ;
 ExprList       = Expr { "," Expr } ;
 Args           = Arg { "," Arg } ;
 Arg            = ( Ident ":" )? Expr ;
 
 (* Closures — arrow syntax only (v0.6.0: pipe syntax |x| removed) *)
-Lambda         = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+Lambda         = "move"? TypeParams? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
 LambdaParams   = LambdaParam { "," LambdaParam } ;
 LambdaParam    = Ident ( ":" Type )? ;
 
@@ -244,7 +257,7 @@ Scope          = "scope" ( "|" Ident "|" )? Block ;
    s.cancel()             — request cancellation of all tasks
    s.is_cancelled()       — check cancellation state *)
 CooperateExpr  = "cooperate" ;
-YieldExpr      = "yield" Expr ;
+YieldExpr      = "yield" Expr? ;
 
 (* Types *)
 (* Type aliases: "int" = i64, "uint" = u64, "byte" = u8, "float" = f64 *)
@@ -291,7 +304,7 @@ Pattern        = "_"
                | "(" PatternList ")"                   (* Tuple pattern *)
                | Pattern "|" Pattern ;                 (* Or-pattern *)
 
-LiteralPattern = IntLit | FloatLit | StringLit | "true" | "false" ;
+LiteralPattern = IntLit | StringLit | CharLit | "true" | "false" ;
 PatternList    = Pattern { "," Pattern } ;
 PatternFieldList = PatternField { "," PatternField } ;
 PatternField   = Ident ( ":" Pattern )? ;
@@ -308,7 +321,9 @@ StringLit      = '"' { Char | EscapeSeq } '"'
 InterpolatedStr = 'f"' { InterpPart } '"' ;     (* f-string with expression support *)
 InterpPart      = Char | EscapeSeq | "{" Expr "}" ;
 (* Template literals removed — use f-strings: f"hello {expr}" *)
-RegexLiteral   = 're"' { RegexChar } '"' ;      (* Regex literal: re"pattern" *)
+ByteStringLit  = 'b"' { Char | EscapeSeq } '"' ;  (* Byte string literal *)
+CharLit        = "'" ( Char | EscapeSeq ) "'" ;   (* Character literal *)
+RegexLiteral   = 're"' { RegexChar } '"' ;         (* Regex literal: re"pattern" *)
 RegexChar      = (* any char except unescaped " *) | '\\"' | '\\' AnyChar ;
 
 Ident          = Letter { Letter | Digit | "_" } ;

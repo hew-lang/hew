@@ -1,6 +1,6 @@
 // ============================================================
 //   Hew Programming Language — Formal Grammar (ANTLR4)
-//   Version: 0.7.0
+//   Version: 0.9.0
 //
 //   Converted from ISO 14977 EBNF (docs/specs/grammar.ebnf) and
 //   validated against all examples/ programs.
@@ -34,8 +34,8 @@ grammar Hew;
 ident
     : IDENT
     // Primitive type names (lex as Identifier in the real lexer)
-    | 'i8' | 'i16' | 'i32' | 'i64'
-    | 'u8' | 'u16' | 'u32' | 'u64'
+    | 'i8' | 'i16' | 'i32' | 'i64' | 'isize'
+    | 'u8' | 'u16' | 'u32' | 'u64' | 'usize'
     | 'f32' | 'f64'
     | 'bool' | 'string' | 'bytes'
     // Contextual keywords — lexer keywords accepted as identifiers by the parser
@@ -44,6 +44,7 @@ ident
     | 'permanent' | 'transient' | 'temporary'
     | 'one_for_one' | 'one_for_all' | 'rest_for_one'
     | 'wire' | 'optional' | 'deprecated' | 'reserved'
+    | 'state' | 'event' | 'on' | 'when' | 'join'
     // Domain keywords that are NOT lexer keywords (always lex as Identifier)
     | 'mailbox' | 'overflow'
     | 'block' | 'fail' | 'coalesce' | 'fallback'
@@ -73,6 +74,7 @@ item
       | actorDecl
       | supervisorDecl
       | wireDecl
+      | machineDecl
       )
     | attribute*
       ( importDecl
@@ -82,7 +84,7 @@ item
     ;
 
 visibility
-    : 'pub'
+    : 'pub' ( '(' ( 'package' | 'super' ) ')' )?
     ;
 
 // ----------------------------------------------------------------
@@ -334,11 +336,11 @@ coalesceFallback
     ;
 
 receiveFnDecl
-    : 'receive' 'fn' ident '(' params? ')' retType? block
+    : 'pure'? 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 receiveGenFnDecl
-    : 'receive' 'gen' 'fn' ident '(' params? ')' '->' type_ block
+    : 'pure'? 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 // ----------------------------------------------------------------
@@ -376,6 +378,42 @@ restartSpec
     ;
 
 // ----------------------------------------------------------------
+//  State Machines
+// ----------------------------------------------------------------
+
+machineDecl
+    : 'machine' ident '{' machineItem* '}'
+    ;
+
+machineItem
+    : machineState
+    | machineEvent
+    | machineTransition
+    | machineDefault
+    ;
+
+machineState
+    : 'state' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+    ;
+
+machineEvent
+    : 'event' ident ( '{' ( ident ':' type_ ( ';' | ',' )? )* '}' )? ';'?
+    ;
+
+machineTransition
+    : 'on' ident ':' statePattern '->' statePattern ( 'when' expr )? ( block | '{' fieldInitList '}' | ';' )
+    ;
+
+machineDefault
+    : 'default' ( block | ';' )
+    ;
+
+statePattern
+    : ident
+    | '_'
+    ;
+
+// ----------------------------------------------------------------
 //  FFI / Extern declarations
 // ----------------------------------------------------------------
 
@@ -400,19 +438,19 @@ externParam
 // ----------------------------------------------------------------
 
 fnDecl
-    : 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'pure'? 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 asyncFnDecl
-    : 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : 'pure'? 'async' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 genFnDecl
-    : 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'pure'? 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 asyncGenFnDecl
-    : 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : 'pure'? 'async' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 params
@@ -645,6 +683,8 @@ literal
     | FLOAT_LIT
     | DURATION_LIT
     | STRING_LIT
+    | BYTE_STRING_LIT
+    | CHAR_LIT
     | REGEX_LIT
     | 'true'
     | 'false'
@@ -667,7 +707,7 @@ arg
 // ----------------------------------------------------------------
 
 lambda
-    : 'move'? '(' lambdaParams? ')' retType? '=>' ( expr | block )
+    : 'move'? typeParams? '(' lambdaParams? ')' retType? '=>' ( expr | block )
     ;
 
 lambdaParams
@@ -729,7 +769,7 @@ cooperateExpr
     ;
 
 yieldExpr
-    : 'yield' expr?
+    : 'yield' expr?                             // yield with optional value
     ;
 
 // ----------------------------------------------------------------
@@ -760,10 +800,10 @@ type_
 // string literals (from wireType etc.) into keyword tokens that
 // no longer match IDENT.
 primitiveType
-    : 'i8'  | 'i16' | 'i32' | 'i64'
-    | 'u8'  | 'u16' | 'u32' | 'u64'
+    : 'i8'  | 'i16' | 'i32' | 'i64' | 'isize'
+    | 'u8'  | 'u16' | 'u32' | 'u64' | 'usize'
     | 'f32' | 'f64'
-    | 'bool' | 'string'
+    | 'bool' | 'string' | 'bytes'
     ;
 
 typeArgs
@@ -804,6 +844,7 @@ pattern
 literalPattern
     : INT_LIT
     | STRING_LIT
+    | CHAR_LIT
     | 'true'
     | 'false'
     ;
@@ -901,6 +942,14 @@ REGEX_LIT
 
 INTERPOLATED_STRING
     : 'f"' ( ESC_SEQ | INTERP_BRACE | ~[\\"{] )* '"'
+    ;
+
+BYTE_STRING_LIT
+    : 'b"' ( ESC_SEQ | ~[\\"] )* '"'          // Byte string
+    ;
+
+CHAR_LIT
+    : '\'' ( ESC_SEQ | ~['\\] ) '\''           // Character literal
     ;
 
 STRING_LIT

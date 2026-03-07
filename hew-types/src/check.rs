@@ -7179,6 +7179,7 @@ impl Checker {
                     "char" | "Char" => Ty::Char,
                     "string" | "String" | "str" => Ty::String,
                     "bytes" | "Bytes" => Ty::Bytes,
+                    "duration" | "Duration" => Ty::Duration,
                     "()" => Ty::Unit,
                     _ => {
                         let args = type_args.as_ref().map_or(vec![], |ta| {

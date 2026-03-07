@@ -418,6 +418,7 @@ fn type_expr_to_code(texpr: &TypeExpr, module_short: &str) -> String {
             "bool" => "Ty::Bool".to_string(),
             "char" => "Ty::Char".to_string(),
             "bytes" => "Ty::Bytes".to_string(),
+            "duration" => "Ty::Duration".to_string(),
             n if n.contains('.') => {
                 let args_code = type_args_to_code(type_args, module_short);
                 format!("Ty::Named {{ name: \"{n}\".to_string(), args: {args_code} }}")

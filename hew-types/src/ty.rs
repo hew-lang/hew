@@ -75,6 +75,8 @@ pub enum Ty {
     String,
     /// Ref-counted byte buffer
     Bytes,
+    /// Duration in nanoseconds (distinct from i64)
+    Duration,
     /// Unit type (void)
     Unit,
     /// Never type (diverging, `!`)
@@ -379,6 +381,12 @@ impl Ty {
         matches!(self, Ty::Bytes)
     }
 
+    /// Check if this is the duration type.
+    #[must_use]
+    pub fn is_duration(&self) -> bool {
+        matches!(self, Ty::Duration)
+    }
+
     /// Check if this is an integer type.
     #[must_use]
     pub fn is_integer(&self) -> bool {
@@ -397,7 +405,9 @@ impl Ty {
     /// Check if this is a primitive type.
     #[must_use]
     pub fn is_primitive(&self) -> bool {
-        self.is_integer() || self.is_float() || matches!(self, Ty::Bool | Ty::Char | Ty::Unit)
+        self.is_integer()
+            || self.is_float()
+            || matches!(self, Ty::Bool | Ty::Char | Ty::Unit | Ty::Duration)
     }
 
     /// Check if this type is implicitly copied (value semantics).
@@ -531,6 +541,7 @@ impl fmt::Display for Ty {
             Ty::Char => write!(f, "char"),
             Ty::String => write!(f, "String"),
             Ty::Bytes => write!(f, "bytes"),
+            Ty::Duration => write!(f, "duration"),
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
             Ty::Var(v) => write!(f, "{v}"),

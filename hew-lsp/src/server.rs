@@ -272,76 +272,23 @@ impl LanguageServer for HewLanguageServer {
 
         let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
 
-        // Find the word under the cursor for function/type lookup.
-        let word = word_at_offset(&doc.source, offset);
+        let result = hew_analysis::hover::hover(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            offset,
+        );
 
-        let Some(type_output) = &doc.type_output else {
-            return Ok(None);
-        };
-
-        // Check if the word is a known function — show its full signature.
-        if let Some(word) = &word {
-            if let Some(sig) = type_output.fn_sigs.get(word.as_str()) {
-                let hover_text = format_fn_signature(word, sig);
-                return Ok(Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: hover_text,
-                    }),
-                    range: None,
-                }));
-            }
-
-            // Check if the word is a known type definition.
-            if let Some(type_def) = type_output.type_defs.get(word.as_str()) {
-                let hover_text = format_type_def_hover(type_def);
-                return Ok(Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: hover_text,
-                    }),
-                    range: None,
-                }));
-            }
-        }
-
-        // Fall back to narrowest expression type that covers this offset.
-        let mut best: Option<(&SpanKey, &Ty)> = None;
-        for (span_key, ty) in &type_output.expr_types {
-            if span_key.start <= offset && offset <= span_key.end {
-                match best {
-                    Some((prev, _))
-                        if (span_key.end - span_key.start) < (prev.end - prev.start) =>
-                    {
-                        best = Some((span_key, ty));
-                    }
-                    None => {
-                        best = Some((span_key, ty));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(best.map(|(span_key, ty)| {
-            let range =
-                offset_range_to_lsp(&doc.source, &doc.line_offsets, span_key.start, span_key.end);
-            let snippet = &doc.source[span_key.start..span_key.end];
-            let value = if let Ty::Function { params, ret } = ty {
-                let param_list: Vec<String> = params.iter().map(ToString::to_string).collect();
-                format!(
-                    "```hew\nfn {snippet}({}) -> {ret}\n```",
-                    param_list.join(", ")
-                )
-            } else {
-                format!("```hew\n{snippet}: {ty}\n```")
-            };
+        Ok(result.map(|hr| {
+            let range = hr
+                .span
+                .map(|s| offset_range_to_lsp(&doc.source, &doc.line_offsets, s.start, s.end));
             Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
-                    value,
+                    value: hr.contents,
                 }),
-                range: Some(range),
+                range,
             }
         }))
     }
@@ -2223,95 +2170,6 @@ fn word_at_offset(source: &str, offset: usize) -> Option<String> {
     hew_analysis::util::word_at_offset(source, offset)
 }
 
-/// Format a function signature for hover display.
-/// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
-fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
-    let pure_prefix = if sig.is_pure { "pure " } else { "" };
-    let async_prefix = if sig.is_async { "async " } else { "" };
-    let ret = if sig.return_type == Ty::Unit {
-        String::new()
-    } else {
-        format!(" -> {}", sig.return_type)
-    };
-    format!(
-        "{pure_prefix}{async_prefix}fn {name}({}){ret}",
-        params.join(", ")
-    )
-}
-
-fn format_fn_signature(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
-    let code = format!("```hew\n{}\n```", format_fn_sig_line(name, &params, sig));
-    if let Some(doc) = &sig.doc_comment {
-        format!("{doc}\n\n---\n\n{code}")
-    } else {
-        code
-    }
-}
-
-/// Format a function signature as a single inline line (for embedding in type hover).
-fn format_fn_signature_inline(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig.params.iter().map(ToString::to_string).collect();
-    format_fn_sig_line(name, &params, sig)
-}
-
-/// Format a type definition for hover display.
-fn format_type_def_hover(type_def: &hew_types::check::TypeDef) -> String {
-    use hew_types::check::TypeDefKind;
-    use std::fmt::Write;
-    let kind_str = match type_def.kind {
-        TypeDefKind::Struct => "type",
-        TypeDefKind::Enum => "enum",
-        TypeDefKind::Actor => "actor",
-        TypeDefKind::Machine => "machine",
-    };
-    let type_params = if type_def.type_params.is_empty() {
-        String::new()
-    } else {
-        format!("<{}>", type_def.type_params.join(", "))
-    };
-    let mut parts = format!("```hew\n{kind_str} {}{type_params}", type_def.name);
-    let has_body = !type_def.fields.is_empty()
-        || !type_def.variants.is_empty()
-        || !type_def.methods.is_empty();
-    if has_body {
-        parts.push_str(" {\n");
-        for (field_name, field_ty) in &type_def.fields {
-            let _ = writeln!(parts, "    {field_name}: {field_ty},");
-        }
-        for (variant_name, payload) in &type_def.variants {
-            match payload {
-                hew_types::VariantDef::Unit => {
-                    let _ = writeln!(parts, "    {variant_name},");
-                }
-                hew_types::VariantDef::Tuple(types) => {
-                    let types: Vec<String> = types.iter().map(ToString::to_string).collect();
-                    let _ = writeln!(parts, "    {variant_name}({}),", types.join(", "));
-                }
-                hew_types::VariantDef::Struct(fields) => {
-                    let fields: Vec<String> =
-                        fields.iter().map(|(n, t)| format!("{n}: {t}")).collect();
-                    let _ = writeln!(parts, "    {variant_name} {{ {} }},", fields.join(", "));
-                }
-            }
-        }
-        for (method_name, sig) in &type_def.methods {
-            let _ = writeln!(
-                parts,
-                "    {}",
-                format_fn_signature_inline(method_name, sig)
-            );
-        }
-        parts.push('}');
-    }
-    parts.push_str("\n```");
-    if let Some(doc) = &type_def.doc_comment {
-        format!("{doc}\n\n---\n\n{parts}")
-    } else {
-        parts
-    }
-}
-
 // ── Document links ──────────────────────────────────────────────────
 
 fn build_document_links(
@@ -3765,7 +3623,7 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
         .rsplit(['.', ':'])
         .find(|s| !s.is_empty())
         .unwrap_or(name);
-    format_fn_sig_line(display_name, &params, sig)
+    hew_analysis::hover::format_fn_sig_line(display_name, &params, sig)
 }
 
 #[cfg(test)]

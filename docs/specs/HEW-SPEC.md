@@ -4388,9 +4388,45 @@ let precise = 500us;     // i64: 500_000 nanoseconds
 | `m`    | minutes      | value × 60_000_000_000    |
 | `h`    | hours        | value × 3_600_000_000_000 |
 
-> **Implementation note:** Duration literals currently compile to `i64` (nanoseconds) without a distinct type. The type-safe `duration` type with arithmetic overloads and methods (`.nanos()`, `.millis()`, `.secs()`) described in earlier spec drafts is not yet implemented. Duration values are interchangeable with integers at the type level.
+**Type safety:**
 
-Duration literals are used with timeout expressions (`| after`), supervisor restart budgets, and any API accepting a duration:
+`duration` is a distinct type — it does not implicitly convert to or from integers:
+
+```hew
+let d = 5s;
+let x = d + 100ms;        // OK: duration + duration → duration
+let y = d - 1s;            // OK: duration - duration → duration
+let z = d * 3;             // OK: duration * int → duration
+let w = d / 2;             // OK: duration / int → duration
+let r = d / 500ms;         // OK: duration / duration → i64 (ratio)
+let n = -d;                // OK: negation → duration
+let err1 = d + 42;         // COMPILE ERROR: duration + int
+let err2 = d * 1.5;        // COMPILE ERROR: duration * float
+let err3 = d * d;          // COMPILE ERROR: duration * duration
+```
+
+**Methods:**
+
+| Method       | Signature              | Description                    |
+| ------------ | ---------------------- | ------------------------------ |
+| `.nanos()`   | `fn nanos() -> i64`    | Total nanoseconds              |
+| `.micros()`  | `fn micros() -> i64`   | Total microseconds (truncates) |
+| `.millis()`  | `fn millis() -> i64`   | Total milliseconds (truncates) |
+| `.secs()`    | `fn secs() -> i64`     | Total seconds (truncates)      |
+| `.mins()`    | `fn mins() -> i64`     | Total minutes (truncates)      |
+| `.hours()`   | `fn hours() -> i64`    | Total hours (truncates)         |
+| `.abs()`     | `fn abs() -> duration` | Absolute value                 |
+| `.is_zero()` | `fn is_zero() -> bool` | True if zero nanoseconds       |
+
+**Constructor:**
+
+```hew
+let d = duration::from_nanos(1_000_000);   // 1ms from raw nanoseconds
+```
+
+**Timeouts:**
+
+Duration values are required for timeout expressions (`| after`) and `select` timeouts:
 
 ```hew
 let result = await task | after 5s;        // Timeout after 5 seconds

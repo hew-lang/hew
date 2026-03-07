@@ -960,10 +960,6 @@ fn diagnostic_data(kind: &TypeErrorKind, suggestions: &[String]) -> serde_json::
     })
 }
 
-// (Code actions logic moved to hew_analysis::code_actions)
-
-// (Folding ranges logic moved to hew_analysis::folding)
-
 // ── Completion ───────────────────────────────────────────────────────
 
 /// Convert an `hew_analysis::CompletionItem` to an `lsp_types::CompletionItem`.
@@ -1183,10 +1179,7 @@ fn find_definition_in_ast(
     Some(offset_range_to_lsp(source, lo, span.start, span.end))
 }
 
-// ── Find all references ──────────────────────────────────────────────
-
-/// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
-// ── Hover / go-to-definition helpers ─────────────────────────────────
+// ── Helpers (delegated to hew-analysis) ──────────────────────────────
 
 /// Extract the word (identifier) at a byte offset in the source.
 /// Also tries `offset - 1` when the cursor is right after an identifier.

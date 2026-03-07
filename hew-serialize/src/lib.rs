@@ -5,6 +5,6 @@ pub mod msgpack;
 
 pub use enrich::{
     build_expr_type_map, enrich_program, normalize_items_types, rewrite_builtin_calls,
-    ExprTypeMapBuild, TypeExprConversionError,
+    EnrichProgramDiagnostics, ExprTypeMapBuild, TypeExprConversionError,
 };
 pub use msgpack::{serialize_to_json, serialize_to_msgpack, ExprTypeEntry};

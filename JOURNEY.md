@@ -770,6 +770,14 @@ coverage.
   explicitly instead of disappearing.
 - Added regression coverage for preserving unit entries and for rejecting nested unsupported
   types (for example `Option<Ty::Var>`) with span-aware diagnostics.
+- Followed up by removing the last `lookup_type()` silent-`None` path: best-effort inferred
+  binding/return enrichment now carries span-tagged diagnostics back to the CLI instead of
+  quietly dropping unsupported conversions.
+- Updated `hew-cli` to render one structured warning per unsupported inferred type and to
+  deduplicate overlap between enrichment and expression-type-map passes, so generator-heavy
+  builds stay working without hiding serializer gaps.
+- Added regression coverage for unsupported inferred `let`/return paths plus a compile-side
+  dedupe test that guards against double-reporting the same span.
 
 ### Select cleanup remediation
 

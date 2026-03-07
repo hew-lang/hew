@@ -22,6 +22,7 @@ pub struct TypeExprConversionError {
     ty: Ty,
     detail: &'static str,
     contexts: Vec<String>,
+    span: Option<Span>,
 }
 
 impl TypeExprConversionError {
@@ -30,12 +31,23 @@ impl TypeExprConversionError {
             ty: ty.clone(),
             detail,
             contexts: Vec::new(),
+            span: None,
         }
     }
 
     fn with_context(mut self, context: impl Into<String>) -> Self {
         self.contexts.push(context.into());
         self
+    }
+
+    fn with_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
+    }
+
+    #[must_use]
+    pub fn span(&self) -> Option<&Span> {
+        self.span.as_ref()
     }
 }
 
@@ -50,41 +62,53 @@ impl fmt::Display for TypeExprConversionError {
 
 impl std::error::Error for TypeExprConversionError {}
 
-#[derive(Debug)]
-enum TypeExprConversion {
-    Converted(Spanned<TypeExpr>),
-    Omitted(TypeExprConversionError),
-}
-
 /// Result of serializing inferred expression types for codegen.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ExprTypeMapBuild {
     pub entries: Vec<ExprTypeEntry>,
-    pub diagnostics: Vec<TypeExprConversionError>,
+    diagnostics: Vec<TypeExprConversionError>,
+}
+
+impl ExprTypeMapBuild {
+    #[must_use]
+    pub fn diagnostics(&self) -> &[TypeExprConversionError] {
+        &self.diagnostics
+    }
+}
+
+/// Collected diagnostics from best-effort inferred-type enrichment.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnrichProgramDiagnostics {
+    diagnostics: Vec<TypeExprConversionError>,
+}
+
+impl EnrichProgramDiagnostics {
+    #[must_use]
+    pub fn diagnostics(&self) -> &[TypeExprConversionError] {
+        &self.diagnostics
+    }
 }
 
 /// Build the expression type map from [`TypeCheckOutput`].
 ///
 /// Converts every entry in `tco.expr_types` (span → [`Ty`]) into an
 /// [`ExprTypeEntry`] (start, end, [`TypeExpr`]) that can be serialized
-/// alongside the AST. Unsupported entries are returned in `diagnostics`
-/// instead of disappearing via `filter_map`.
+/// alongside the AST. Unsupported entries now fail closed with explicit
+/// diagnostics instead of being silently omitted.
 #[must_use]
 pub fn build_expr_type_map(tco: &TypeCheckOutput) -> ExprTypeMapBuild {
     let mut build = ExprTypeMapBuild::default();
 
     for (key, ty) in &tco.expr_types {
-        let context = format!("expr type at {}..{}", key.start, key.end);
         match ty_to_type_expr(ty) {
-            Ok(TypeExprConversion::Converted(ty)) => build.entries.push(ExprTypeEntry {
+            Ok(ty) => build.entries.push(ExprTypeEntry {
                 start: key.start,
                 end: key.end,
                 ty,
             }),
-            Ok(TypeExprConversion::Omitted(diagnostic)) => {
-                build.diagnostics.push(diagnostic.with_context(context));
-            }
-            Err(diagnostic) => build.diagnostics.push(diagnostic.with_context(context)),
+            Err(diagnostic) => build
+                .diagnostics
+                .push(diagnostic.with_span(key.start..key.end)),
         }
     }
 
@@ -96,19 +120,14 @@ fn require_converted(
     context: impl Into<String>,
 ) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
     let context = context.into();
-    match ty_to_type_expr(ty) {
-        Ok(TypeExprConversion::Converted(ty)) => Ok(ty),
-        Ok(TypeExprConversion::Omitted(diagnostic)) | Err(diagnostic) => {
-            Err(diagnostic.with_context(context))
-        }
-    }
+    ty_to_type_expr(ty).map_err(|diagnostic| diagnostic.with_context(context))
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers many Ty variants"
 )]
-fn ty_to_type_expr(ty: &Ty) -> Result<TypeExprConversion, TypeExprConversionError> {
+fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
     let span: Span = 0..0; // synthetic span for inferred types
     let te = match ty {
         Ty::I8 => TypeExpr::Named {
@@ -187,19 +206,15 @@ fn ty_to_type_expr(ty: &Ty) -> Result<TypeExprConversion, TypeExprConversionErro
                 }
             }
             ("Generator", _) => {
-                return Ok(TypeExprConversion::Omitted(
-                    TypeExprConversionError::unsupported(
-                        ty,
-                        "generator type is not representable in serialized TypeExpr",
-                    ),
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "generator type is not representable in serialized TypeExpr",
                 ));
             }
             ("AsyncGenerator", _) => {
-                return Ok(TypeExprConversion::Omitted(
-                    TypeExprConversionError::unsupported(
-                        ty,
-                        "async generator type is not representable in serialized TypeExpr",
-                    ),
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "async generator type is not representable in serialized TypeExpr",
                 ));
             }
             _ => {
@@ -317,19 +332,15 @@ fn ty_to_type_expr(ty: &Ty) -> Result<TypeExprConversion, TypeExprConversionErro
             TypeExpr::TraitObject(bounds)
         }
         Ty::Var(_) => {
-            return Ok(TypeExprConversion::Omitted(
-                TypeExprConversionError::unsupported(
-                    ty,
-                    "unresolved type variable reached serializer",
-                ),
+            return Err(TypeExprConversionError::unsupported(
+                ty,
+                "unresolved type variable reached serializer",
             ));
         }
         Ty::Error => {
-            return Ok(TypeExprConversion::Omitted(
-                TypeExprConversionError::unsupported(
-                    ty,
-                    "type-checker error sentinel reached serializer",
-                ),
+            return Err(TypeExprConversionError::unsupported(
+                ty,
+                "type-checker error sentinel reached serializer",
             ));
         }
 
@@ -340,39 +351,46 @@ fn ty_to_type_expr(ty: &Ty) -> Result<TypeExprConversion, TypeExprConversionErro
         },
     };
 
-    Ok(TypeExprConversion::Converted((te, span)))
+    Ok((te, span))
 }
 
 /// Look up the inferred type for a span in the `TypeCheckOutput`.
-fn lookup_type(tco: &TypeCheckOutput, span: &Span) -> Option<Spanned<TypeExpr>> {
+fn lookup_inferred_type(
+    tco: &TypeCheckOutput,
+    span: &Span,
+    context: impl Into<String>,
+) -> Result<Option<Spanned<TypeExpr>>, TypeExprConversionError> {
     let key = SpanKey {
         start: span.start,
         end: span.end,
     };
-    let ty = tco.expr_types.get(&key)?;
+    let Some(ty) = tco.expr_types.get(&key) else {
+        return Ok(None);
+    };
 
-    match ty_to_type_expr(ty) {
-        Ok(TypeExprConversion::Converted(ty)) => Some(ty),
-        Ok(TypeExprConversion::Omitted(_)) | Err(_) => None,
-    }
+    ty_to_type_expr(ty)
+        .map(Some)
+        .map_err(|diagnostic| diagnostic.with_context(context).with_span(span.clone()))
 }
 
 /// Enrich a program's AST with inferred types from the type checker.
 ///
 /// # Errors
 ///
-/// Returns an error when an inferred type cannot be converted into the
-/// serialized `TypeExpr` contract shared with codegen.
+/// Returns an error when a required serialized `TypeExpr` contract cannot be
+/// produced. Best-effort inferred-type insertions are reported via returned
+/// diagnostics instead of silently disappearing.
 pub fn enrich_program(
     program: &mut Program,
     tco: &TypeCheckOutput,
-) -> Result<(), TypeExprConversionError> {
+) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
+    let mut diagnostics = Vec::new();
     for (item, _span) in &mut program.items {
-        enrich_item(item, tco)?;
+        enrich_item_with_diagnostics(item, tco, &mut diagnostics)?;
     }
     normalize_all_types(program);
     synthesize_stdlib_externs(program)?;
-    Ok(())
+    Ok(EnrichProgramDiagnostics { diagnostics })
 }
 
 /// Normalize `TypeExpr::Named("Result", [T, E])` → `TypeExpr::Result { ok, err }`
@@ -1212,84 +1230,131 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
     }
 }
 
-fn enrich_item(item: &mut Item, tco: &TypeCheckOutput) -> Result<(), TypeExprConversionError> {
+fn enrich_item_with_diagnostics(
+    item: &mut Item,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+) -> Result<(), TypeExprConversionError> {
     match item {
-        Item::Function(fn_decl) => enrich_fn_decl(fn_decl, tco)?,
-        Item::Actor(actor) => enrich_actor(actor, tco)?,
+        Item::Function(fn_decl) => enrich_fn_decl_with_diagnostics(fn_decl, tco, diagnostics)?,
+        Item::Actor(actor) => enrich_actor_with_diagnostics(actor, tco, diagnostics)?,
         Item::Machine(machine) => {
             for transition in &mut machine.transitions {
-                enrich_expr(&mut transition.body, tco)?;
+                enrich_expr_with_diagnostics(&mut transition.body, tco, diagnostics)?;
             }
         }
         Item::Impl(impl_decl) => {
             for method in &mut impl_decl.methods {
-                enrich_fn_decl(method, tco)?;
+                enrich_fn_decl_with_diagnostics(method, tco, diagnostics)?;
             }
         }
         Item::Const(const_decl) => {
-            enrich_expr(&mut const_decl.value, tco)?;
+            enrich_expr_with_diagnostics(&mut const_decl.value, tco, diagnostics)?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn enrich_fn_decl(
+fn enrich_fn_decl_with_diagnostics(
     fn_decl: &mut FnDecl,
     tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
 ) -> Result<(), TypeExprConversionError> {
-    enrich_block(&mut fn_decl.body, tco)?;
+    enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics)?;
 
     let needs_infer =
         fn_decl.return_type.is_none() || matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _)));
     if needs_infer {
         if let Some(ref expr) = fn_decl.body.trailing_expr {
-            if let Some(inferred) = lookup_type(tco, &expr.1) {
-                fn_decl.return_type = Some(inferred);
+            match lookup_inferred_type(
+                tco,
+                &expr.1,
+                format!(
+                    "function `{}` return type inferred from trailing expression",
+                    fn_decl.name
+                ),
+            ) {
+                Ok(Some(inferred)) => fn_decl.return_type = Some(inferred),
+                Ok(None) => {}
+                Err(diagnostic) => diagnostics.push(diagnostic),
             }
         }
     }
     Ok(())
 }
 
-fn enrich_actor(
+fn enrich_actor_with_diagnostics(
     actor: &mut ActorDecl,
     tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut init) = actor.init {
-        enrich_block(&mut init.body, tco)?;
+        enrich_block_with_diagnostics(&mut init.body, tco, diagnostics)?;
     }
     for recv in &mut actor.receive_fns {
-        enrich_block(&mut recv.body, tco)?;
+        enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics)?;
     }
     for method in &mut actor.methods {
-        enrich_fn_decl(method, tco)?;
+        enrich_fn_decl_with_diagnostics(method, tco, diagnostics)?;
     }
     Ok(())
 }
 
-fn enrich_block(block: &mut Block, tco: &TypeCheckOutput) -> Result<(), TypeExprConversionError> {
+fn enrich_block_with_diagnostics(
+    block: &mut Block,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+) -> Result<(), TypeExprConversionError> {
     for (stmt, _span) in &mut block.stmts {
-        enrich_stmt(stmt, tco)?;
+        enrich_stmt_with_diagnostics(stmt, tco, diagnostics)?;
     }
     if let Some(ref mut expr) = block.trailing_expr {
-        enrich_expr(expr, tco)?;
+        enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
     }
     Ok(())
 }
 
-fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) -> Result<(), TypeExprConversionError> {
+fn enrich_stmt_with_diagnostics(
+    stmt: &mut Stmt,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+) -> Result<(), TypeExprConversionError> {
     match stmt {
-        Stmt::Let { ty, value, .. } | Stmt::Var { ty, value, .. } => {
+        Stmt::Let { ty, value, .. } => {
             if ty.is_none() {
                 if let Some(ref val) = *value {
-                    if let Some(inferred) = lookup_type(tco, &val.1) {
-                        *ty = Some(inferred);
+                    match lookup_inferred_type(
+                        tco,
+                        &val.1,
+                        "let binding type inferred from initializer",
+                    ) {
+                        Ok(Some(inferred)) => *ty = Some(inferred),
+                        Ok(None) => {}
+                        Err(diagnostic) => diagnostics.push(diagnostic),
                     }
                 }
             }
             if let Some(ref mut val) = value {
-                enrich_expr(val, tco)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
+            }
+        }
+        Stmt::Var { name, ty, value } => {
+            if ty.is_none() {
+                if let Some(ref val) = *value {
+                    match lookup_inferred_type(
+                        tco,
+                        &val.1,
+                        format!("var `{name}` type inferred from initializer"),
+                    ) {
+                        Ok(Some(inferred)) => *ty = Some(inferred),
+                        Ok(None) => {}
+                        Err(diagnostic) => diagnostics.push(diagnostic),
+                    }
+                }
+            }
+            if let Some(ref mut val) = value {
+                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
             }
         }
         Stmt::If {
@@ -1297,10 +1362,10 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) -> Result<(), TypeExprCon
             then_block,
             else_block,
         } => {
-            enrich_expr(condition, tco)?;
-            enrich_block(then_block, tco)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
+            enrich_block_with_diagnostics(then_block, tco, diagnostics)?;
             if let Some(ref mut else_b) = else_block {
-                enrich_else_block(else_b, tco)?;
+                enrich_else_block_with_diagnostics(else_b, tco, diagnostics)?;
             }
         }
         Stmt::IfLet {
@@ -1309,33 +1374,33 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) -> Result<(), TypeExprCon
             else_body,
             ..
         } => {
-            enrich_expr(expr, tco)?;
-            enrich_block(body, tco)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics)?;
             if let Some(block) = else_body {
-                enrich_block(block, tco)?;
+                enrich_block_with_diagnostics(block, tco, diagnostics)?;
             }
         }
         Stmt::Match { scrutinee, arms } => {
-            enrich_expr(scrutinee, tco)?;
+            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics)?;
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    enrich_expr(guard, tco)?;
+                    enrich_expr_with_diagnostics(guard, tco, diagnostics)?;
                 }
-                enrich_expr(&mut arm.body, tco)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
             }
         }
         Stmt::For { body, iterable, .. } => {
-            enrich_expr(iterable, tco)?;
-            enrich_block(body, tco)?;
+            enrich_expr_with_diagnostics(iterable, tco, diagnostics)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics)?;
         }
         Stmt::While {
             condition, body, ..
         } => {
-            enrich_expr(condition, tco)?;
-            enrich_block(body, tco)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics)?;
         }
         Stmt::Loop { body, .. } => {
-            enrich_block(body, tco)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics)?;
         }
         Stmt::Expression(ref mut expr)
         | Stmt::Return(Some(ref mut expr))
@@ -1343,29 +1408,30 @@ fn enrich_stmt(stmt: &mut Stmt, tco: &TypeCheckOutput) -> Result<(), TypeExprCon
             value: Some(ref mut expr),
             ..
         } => {
-            enrich_expr(expr, tco)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
         }
         Stmt::Defer(ref mut expr) => {
-            enrich_expr(expr, tco)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
         }
         Stmt::Assign { target, value, .. } => {
-            enrich_expr(target, tco)?;
-            enrich_expr(value, tco)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(value, tco, diagnostics)?;
         }
         _ => {}
     }
     Ok(())
 }
 
-fn enrich_else_block(
+fn enrich_else_block_with_diagnostics(
     else_block: &mut ElseBlock,
     tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut block) = else_block.block {
-        enrich_block(block, tco)?;
+        enrich_block_with_diagnostics(block, tco, diagnostics)?;
     }
     if let Some(ref mut if_stmt) = else_block.if_stmt {
-        enrich_stmt(&mut if_stmt.0, tco)?;
+        enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics)?;
     }
     Ok(())
 }
@@ -1374,22 +1440,23 @@ fn enrich_else_block(
     clippy::too_many_lines,
     reason = "pattern enrichment covers all pattern variants"
 )]
-fn enrich_expr(
+fn enrich_expr_with_diagnostics(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
 ) -> Result<(), TypeExprConversionError> {
     match &mut expr.0 {
-        Expr::Block(block) => enrich_block(block, tco)?,
+        Expr::Block(block) => enrich_block_with_diagnostics(block, tco, diagnostics)?,
         Expr::If {
             condition,
             then_block,
             else_block,
             ..
         } => {
-            enrich_expr(condition, tco)?;
-            enrich_expr(then_block, tco)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(then_block, tco, diagnostics)?;
             if let Some(ref mut e) = else_block {
-                enrich_expr(e, tco)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
             }
         }
         Expr::IfLet {
@@ -1398,43 +1465,43 @@ fn enrich_expr(
             else_body,
             ..
         } => {
-            enrich_expr(expr, tco)?;
-            enrich_block(body, tco)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics)?;
             if let Some(block) = else_body {
-                enrich_block(block, tco)?;
+                enrich_block_with_diagnostics(block, tco, diagnostics)?;
             }
         }
         Expr::Match { scrutinee, arms } => {
-            enrich_expr(scrutinee, tco)?;
+            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics)?;
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    enrich_expr(guard, tco)?;
+                    enrich_expr_with_diagnostics(guard, tco, diagnostics)?;
                 }
-                enrich_expr(&mut arm.body, tco)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
             }
         }
         Expr::Array(elements) | Expr::Tuple(elements) => {
             for e in elements.iter_mut() {
-                enrich_expr(e, tco)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
             }
         }
         Expr::MapLiteral { entries } => {
             for (k, v) in entries {
-                enrich_expr(k, tco)?;
-                enrich_expr(v, tco)?;
+                enrich_expr_with_diagnostics(k, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(v, tco, diagnostics)?;
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            enrich_expr(body, tco)?;
+            enrich_expr_with_diagnostics(body, tco, diagnostics)?;
         }
         Expr::MethodCall {
             receiver,
             method,
             args,
         } => {
-            enrich_expr(receiver, tco)?;
+            enrich_expr_with_diagnostics(receiver, tco, diagnostics)?;
             for arg in args.iter_mut() {
-                enrich_expr(arg.expr_mut(), tco)?;
+                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics)?;
             }
             // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
             // This happens during AST enrichment, before serialization.
@@ -1518,9 +1585,9 @@ fn enrich_expr(
             }
         }
         Expr::Call { function, args, .. } => {
-            enrich_expr(function, tco)?;
+            enrich_expr_with_diagnostics(function, tco, diagnostics)?;
             for arg in args.iter_mut() {
-                enrich_expr(arg.expr_mut(), tco)?;
+                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics)?;
             }
             // Rewrite len(x) → x.len() method call so the C++ codegen
             // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
@@ -1539,84 +1606,93 @@ fn enrich_expr(
             }
         }
         Expr::Binary { left, right, .. } => {
-            enrich_expr(left, tco)?;
-            enrich_expr(right, tco)?;
+            enrich_expr_with_diagnostics(left, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(right, tco, diagnostics)?;
         }
         Expr::Unary { operand: inner, .. }
         | Expr::Cast { expr: inner, .. }
         | Expr::Await(inner)
         | Expr::PostfixTry(inner)
         | Expr::Yield(Some(inner)) => {
-            enrich_expr(inner, tco)?;
+            enrich_expr_with_diagnostics(inner, tco, diagnostics)?;
         }
         Expr::FieldAccess { object, .. } => {
-            enrich_expr(object, tco)?;
+            enrich_expr_with_diagnostics(object, tco, diagnostics)?;
         }
         Expr::Index { object, index } => {
-            enrich_expr(object, tco)?;
-            enrich_expr(index, tco)?;
+            enrich_expr_with_diagnostics(object, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(index, tco, diagnostics)?;
         }
         Expr::StructInit { fields, .. } => {
             for (_name, val) in fields.iter_mut() {
-                enrich_expr(val, tco)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
             }
         }
         Expr::Spawn { target, args } => {
-            enrich_expr(target, tco)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
             for (_name, val) in args.iter_mut() {
-                enrich_expr(val, tco)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
             }
         }
         Expr::Send { target, message } => {
-            enrich_expr(target, tco)?;
-            enrich_expr(message, tco)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(message, tco, diagnostics)?;
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
-                enrich_expr(s, tco)?;
+                enrich_expr_with_diagnostics(s, tco, diagnostics)?;
             }
             if let Some(e) = end {
-                enrich_expr(e, tco)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
             }
         }
         Expr::Scope { body: block, .. }
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {
-            enrich_block(block, tco)?;
+            enrich_block_with_diagnostics(block, tco, diagnostics)?;
         }
         Expr::Timeout {
             expr: inner,
             duration,
         } => {
-            enrich_expr(inner, tco)?;
-            enrich_expr(duration, tco)?;
+            enrich_expr_with_diagnostics(inner, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(duration, tco, diagnostics)?;
         }
         Expr::Join(exprs) => {
             for e in exprs.iter_mut() {
-                enrich_expr(e, tco)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
             }
         }
         Expr::InterpolatedString(parts) => {
             for part in parts.iter_mut() {
                 if let hew_parser::ast::StringPart::Expr(e) = part {
-                    enrich_expr(e, tco)?;
+                    enrich_expr_with_diagnostics(e, tco, diagnostics)?;
                 }
             }
         }
         Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
-                enrich_expr(&mut arm.source, tco)?;
-                enrich_expr(&mut arm.body, tco)?;
+                enrich_expr_with_diagnostics(&mut arm.source, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
             }
             if let Some(ref mut t) = timeout {
-                enrich_expr(&mut t.duration, tco)?;
-                enrich_expr(&mut t.body, tco)?;
+                enrich_expr_with_diagnostics(&mut t.duration, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut t.body, tco, diagnostics)?;
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn enrich_expr(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+) -> Result<(), TypeExprConversionError> {
+    let mut diagnostics = Vec::new();
+    enrich_expr_with_diagnostics(expr, tco, &mut diagnostics)
 }
 
 #[cfg(test)]
@@ -1908,6 +1984,7 @@ mod tests {
                     spec: None,
                     file_path: None,
                     resolved_items: None,
+                    resolved_item_source_paths: Vec::new(),
                     resolved_source_paths: Vec::new(),
                 }),
                 0..0,
@@ -1936,6 +2013,7 @@ mod tests {
                     spec: None,
                     file_path: None,
                     resolved_items: None,
+                    resolved_item_source_paths: Vec::new(),
                     resolved_source_paths: Vec::new(),
                 }),
                 0..0,
@@ -1998,6 +2076,7 @@ mod tests {
                         spec: None,
                         file_path: None,
                         resolved_items: None,
+                        resolved_item_source_paths: Vec::new(),
                         resolved_source_paths: Vec::new(),
                     }),
                     0..0,
@@ -2008,6 +2087,7 @@ mod tests {
                         spec: None,
                         file_path: None,
                         resolved_items: None,
+                        resolved_item_source_paths: Vec::new(),
                         resolved_source_paths: Vec::new(),
                     }),
                     0..0,
@@ -2033,25 +2113,15 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn unwrap_converted(
-        result: Result<TypeExprConversion, TypeExprConversionError>,
+        result: Result<Spanned<TypeExpr>, TypeExprConversionError>,
     ) -> Spanned<TypeExpr> {
-        match result.unwrap() {
-            TypeExprConversion::Converted(ty) => ty,
-            TypeExprConversion::Omitted(diagnostic) => {
-                panic!("expected converted type, got omission: {diagnostic}")
-            }
-        }
+        result.unwrap()
     }
 
-    fn unwrap_omitted(
-        result: Result<TypeExprConversion, TypeExprConversionError>,
+    fn unwrap_err(
+        result: Result<Spanned<TypeExpr>, TypeExprConversionError>,
     ) -> TypeExprConversionError {
-        match result.unwrap() {
-            TypeExprConversion::Omitted(diagnostic) => diagnostic,
-            TypeExprConversion::Converted(ty) => {
-                panic!("expected omitted type, got conversion: {ty:?}")
-            }
-        }
+        result.unwrap_err()
     }
 
     #[test]
@@ -2084,8 +2154,8 @@ mod tests {
     }
 
     #[test]
-    fn test_ty_to_type_expr_error_returns_explicit_omission() {
-        let err = unwrap_omitted(ty_to_type_expr(&Ty::Error));
+    fn test_ty_to_type_expr_error_returns_explicit_error() {
+        let err = unwrap_err(ty_to_type_expr(&Ty::Error));
         assert!(
             err.to_string()
                 .contains("type-checker error sentinel reached serializer"),
@@ -2212,7 +2282,7 @@ mod tests {
     #[test]
     fn test_ty_to_type_expr_generator() {
         let ty = Ty::generator(Ty::I32, Ty::String);
-        let err = unwrap_omitted(ty_to_type_expr(&ty));
+        let err = unwrap_err(ty_to_type_expr(&ty));
         assert!(
             err.to_string()
                 .contains("generator type is not representable in serialized TypeExpr"),
@@ -2223,7 +2293,7 @@ mod tests {
     #[test]
     fn test_ty_to_type_expr_async_generator() {
         let ty = Ty::async_generator(Ty::I32);
-        let err = unwrap_omitted(ty_to_type_expr(&ty));
+        let err = unwrap_err(ty_to_type_expr(&ty));
         assert!(
             err.to_string()
                 .contains("async generator type is not representable in serialized TypeExpr"),
@@ -2244,9 +2314,9 @@ mod tests {
     }
 
     #[test]
-    fn test_ty_to_type_expr_var_returns_explicit_omission() {
+    fn test_ty_to_type_expr_var_returns_explicit_error() {
         use hew_types::ty::TypeVar;
-        let err = unwrap_omitted(ty_to_type_expr(&Ty::Var(TypeVar(123))));
+        let err = unwrap_err(ty_to_type_expr(&Ty::Var(TypeVar(123))));
         assert!(
             err.to_string()
                 .contains("unresolved type variable reached serializer"),
@@ -2261,7 +2331,7 @@ mod tests {
             .insert(SpanKey { start: 1, end: 2 }, Ty::Unit);
 
         let expr_types = build_expr_type_map(&tco);
-        assert_eq!(expr_types.diagnostics.len(), 0);
+        assert_eq!(expr_types.diagnostics().len(), 0);
         assert_eq!(expr_types.entries.len(), 1);
         assert!(matches!(
             expr_types.entries[0].ty.0,
@@ -2281,17 +2351,145 @@ mod tests {
 
         let result = build_expr_type_map(&tco);
         assert!(result.entries.is_empty());
-        assert_eq!(result.diagnostics.len(), 1);
-        let message = result.diagnostics[0].to_string();
-        assert!(
-            message.contains("expr type at 3..9"),
-            "unexpected error: {message}"
-        );
+        assert_eq!(result.diagnostics().len(), 1);
+        let diagnostic = &result.diagnostics()[0];
+        assert_eq!(diagnostic.span(), Some(&(3..9)));
+        let message = diagnostic.to_string();
         assert!(
             message.contains("Option inner type"),
             "unexpected error: {message}"
         );
         assert!(message.contains("?T7"), "unexpected error: {message}");
+    }
+
+    #[test]
+    fn test_enrich_program_reports_unsupported_inferred_binding_type() {
+        use hew_parser::ast::Pattern;
+        use hew_types::ty::TypeVar;
+
+        let expr_span = 10..18;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
+                                ty: None,
+                                value: Some((Expr::Identifier("input".into()), expr_span.clone())),
+                            },
+                            expr_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::Var(TypeVar(7)),
+        );
+
+        let diagnostics = enrich_program(&mut program, &tco).unwrap();
+        assert_eq!(diagnostics.diagnostics().len(), 1);
+        let diagnostic = &diagnostics.diagnostics()[0];
+        assert_eq!(diagnostic.span(), Some(&expr_span));
+        let message = diagnostic.to_string();
+        assert!(
+            message.contains("let binding type inferred from initializer"),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains("?T7"), "unexpected error: {message}");
+        if let Item::Function(function) = &program.items[0].0 {
+            match &function.body.stmts[0].0 {
+                Stmt::Let { ty, .. } => {
+                    assert!(ty.is_none(), "unsupported type should stay implicit")
+                }
+                other => panic!("expected let statement, got {other:?}"),
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_enrich_program_reports_unsupported_inferred_return_type() {
+        let expr_span = 21..29;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: Some(Box::new((
+                            Expr::Identifier("stream".into()),
+                            expr_span.clone(),
+                        ))),
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::generator(Ty::I32, Ty::String),
+        );
+
+        let diagnostics = enrich_program(&mut program, &tco).unwrap();
+        assert_eq!(diagnostics.diagnostics().len(), 1);
+        let diagnostic = &diagnostics.diagnostics()[0];
+        assert_eq!(diagnostic.span(), Some(&expr_span));
+        let message = diagnostic.to_string();
+        assert!(
+            message.contains("function `foo` return type inferred from trailing expression"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("generator type is not representable in serialized TypeExpr"),
+            "unexpected error: {message}"
+        );
+        if let Item::Function(function) = &program.items[0].0 {
+            assert!(
+                function.return_type.is_none(),
+                "unsupported return type should stay implicit"
+            );
+        } else {
+            panic!("expected function");
+        }
     }
 
     // -----------------------------------------------------------------------

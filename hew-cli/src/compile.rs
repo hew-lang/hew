@@ -56,6 +56,110 @@ fn line_map_from_source(source: &str) -> Vec<usize> {
     map
 }
 
+fn render_inferred_type_serialization_diagnostic(
+    source: &str,
+    filename: &str,
+    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
+    error: &hew_serialize::TypeExprConversionError,
+) {
+    if let Some(span) = error.span() {
+        let detail = error.to_string();
+        let notes = [super::diagnostic::DiagnosticNote {
+            span,
+            message: detail.as_str(),
+        }];
+        let suggestions = [String::from(
+            "extend the Ty -> TypeExpr conversion in hew-serialize/src/enrich.rs instead of silently dropping this inferred type",
+        )];
+        match diagnostic_source_hint(span, imported_item_sources) {
+            DiagnosticSourceHint::Imported(path) => match std::fs::read_to_string(&path) {
+                Ok(imported_source) => super::diagnostic::render_warning(
+                    &imported_source,
+                    &path.display().to_string(),
+                    span,
+                    "cannot serialize inferred type for code generation; omitting inferred serializer data",
+                    &notes,
+                    &suggestions,
+                ),
+                Err(_) => eprintln!(
+                    "warning: cannot serialize inferred type for code generation in {} at {}..{}: {error}",
+                    path.display(),
+                    span.start,
+                    span.end
+                ),
+            },
+            DiagnosticSourceHint::UnknownImported => eprintln!(
+                "warning: cannot serialize inferred type for code generation in an imported module at {}..{}: {error}",
+                span.start,
+                span.end
+            ),
+            DiagnosticSourceHint::Root => super::diagnostic::render_warning(
+                source,
+                filename,
+                span,
+                "cannot serialize inferred type for code generation; omitting inferred serializer data",
+                &notes,
+                &suggestions,
+            ),
+        }
+    } else {
+        eprintln!("warning: cannot serialize inferred type for code generation: {error}");
+    }
+}
+
+enum DiagnosticSourceHint {
+    Root,
+    Imported(PathBuf),
+    UnknownImported,
+}
+
+fn diagnostic_source_hint(
+    span: &hew_parser::ast::Span,
+    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
+) -> DiagnosticSourceHint {
+    match imported_item_sources
+        .iter()
+        .filter(|(item_span, _)| item_span.start <= span.start && item_span.end >= span.end)
+        .min_by_key(|(item_span, _)| item_span.end.saturating_sub(item_span.start))
+    {
+        Some((_, Some(path))) => DiagnosticSourceHint::Imported(path.clone()),
+        Some((_, None)) => DiagnosticSourceHint::UnknownImported,
+        None => DiagnosticSourceHint::Root,
+    }
+}
+
+fn diagnostic_span_key(
+    error: &hew_serialize::TypeExprConversionError,
+    root_filename: &str,
+    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
+) -> Option<(String, usize, usize)> {
+    let span = error.span()?;
+    match diagnostic_source_hint(span, imported_item_sources) {
+        DiagnosticSourceHint::Imported(path) => {
+            Some((path.display().to_string(), span.start, span.end))
+        }
+        DiagnosticSourceHint::UnknownImported => None,
+        DiagnosticSourceHint::Root => Some((root_filename.to_string(), span.start, span.end)),
+    }
+}
+
+fn collect_new_inferred_type_diagnostics<'a>(
+    diagnostics: &'a [hew_serialize::TypeExprConversionError],
+    root_filename: &str,
+    imported_item_sources: &[(hew_parser::ast::Span, Option<PathBuf>)],
+    seen_spans: &mut HashSet<(String, usize, usize)>,
+) -> Vec<&'a hew_serialize::TypeExprConversionError> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            match diagnostic_span_key(diagnostic, root_filename, imported_item_sources) {
+                Some(key) => seen_spans.insert(key),
+                None => true,
+            }
+        })
+        .collect()
+}
+
 /// Run the full compilation pipeline for a `.hew` source file.
 ///
 /// When `check_only` is `true` the pipeline stops after type-checking and no
@@ -258,11 +362,25 @@ pub fn compile(
     // then enrich AST with inferred types and serialize to MessagePack.
     // Flattening must happen before enrichment so that normalize_all_types
     // and enrich_fn_decl process the imported functions too.
-    flatten_import_items(&mut program);
+    let imported_item_sources = flatten_import_items(&mut program);
 
     let expr_type_map = if let Some(tco) = &tco {
-        hew_serialize::enrich_program(&mut program, tco)
+        let mut seen_inferred_type_diagnostics = HashSet::new();
+        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, tco)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
+        for diagnostic in collect_new_inferred_type_diagnostics(
+            enrich_diagnostics.diagnostics(),
+            input,
+            &imported_item_sources,
+            &mut seen_inferred_type_diagnostics,
+        ) {
+            render_inferred_type_serialization_diagnostic(
+                &source,
+                input,
+                &imported_item_sources,
+                diagnostic,
+            );
+        }
         // Sync enriched items back to module graph root so C++ codegen uses
         // enriched (type-annotated) items rather than the pre-enrichment clone.
         if let Some(ref mut mg) = program.module_graph {
@@ -280,8 +398,18 @@ pub fn compile(
             }
         }
         let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
-        for diagnostic in &expr_type_map_build.diagnostics {
-            eprintln!("warning: omitted inferred expression type: {diagnostic}");
+        for diagnostic in collect_new_inferred_type_diagnostics(
+            expr_type_map_build.diagnostics(),
+            input,
+            &imported_item_sources,
+            &mut seen_inferred_type_diagnostics,
+        ) {
+            render_inferred_type_serialization_diagnostic(
+                &source,
+                input,
+                &imported_item_sources,
+                diagnostic,
+            );
         }
         expr_type_map_build.entries
     } else {
@@ -743,15 +871,22 @@ fn extract_module_info(
 /// promote them to top-level program items. This makes imported pure-Hew
 /// module functions visible to the C++ codegen (which only sees serialized
 /// top-level items, since `resolved_items` is `#[serde(skip)]`).
-fn flatten_import_items(program: &mut hew_parser::ast::Program) {
+fn flatten_import_items(
+    program: &mut hew_parser::ast::Program,
+) -> Vec<(hew_parser::ast::Span, Option<PathBuf>)> {
     let mut extra: Vec<Spanned<Item>> = Vec::new();
+    let mut imported_item_sources = Vec::new();
     for (item, _span) in &mut program.items {
         if let Item::Import(decl) = item {
             if let Some(resolved) = decl.resolved_items.take() {
+                let mut item_source_paths =
+                    std::mem::take(&mut decl.resolved_item_source_paths).into_iter();
                 for resolved_item in resolved {
+                    let source_path = item_source_paths.next();
                     // Extract all non-import items so the C++ codegen sees them.
                     // Import items from the resolved file are not re-exported.
                     if !matches!(&resolved_item.0, Item::Import(_)) {
+                        imported_item_sources.push((resolved_item.1.clone(), source_path));
                         extra.push(resolved_item);
                     }
                 }
@@ -759,6 +894,7 @@ fn flatten_import_items(program: &mut hew_parser::ast::Program) {
         }
     }
     program.items.extend(extra);
+    imported_item_sources
 }
 
 /// Recursively resolve `import "file.hew"` and module-path import declarations.
@@ -960,6 +1096,7 @@ fn resolve_file_imports(
             package_name,
             project_dir,
         );
+        let mut import_item_source_paths = vec![canonical.clone(); import_items.len()];
 
         // Parse and merge peer files for directory modules.
         for peer in &peer_files {
@@ -978,6 +1115,10 @@ fn resolve_file_imports(
                 package_name,
                 project_dir,
             );
+            import_item_source_paths.extend(std::iter::repeat_n(
+                peer_canonical.clone(),
+                peer_items.len(),
+            ));
             import_items.append(&mut peer_items);
         }
 
@@ -998,6 +1139,7 @@ fn resolve_file_imports(
         // boundaries so the type checker can register items under the module's namespace.
         if let Item::Import(decl) = &mut items[*idx].0 {
             decl.resolved_items = Some(import_items);
+            decl.resolved_item_source_paths = import_item_source_paths;
             let mut source_paths = vec![canonical.clone()];
             for peer in &peer_files {
                 source_paths.push(peer.canonicalize().unwrap_or_else(|_| peer.clone()));
@@ -1157,6 +1299,7 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
                     spec: None,
                     file_path: None,
                     resolved_items: None,
+                    resolved_item_source_paths: Vec::new(),
                     resolved_source_paths: Vec::new(),
                 }),
                 0..0,
@@ -1168,6 +1311,9 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hew_parser::ast::{Block, Expr, FnDecl, Pattern, Program, Stmt, Visibility};
+    use hew_types::{check::TypeCheckOutput, Ty};
+    use std::collections::HashMap;
 
     fn make_module_import(path: &[&str]) -> Spanned<Item> {
         let decl = hew_parser::ast::ImportDecl {
@@ -1175,6 +1321,7 @@ mod tests {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
@@ -1186,9 +1333,22 @@ mod tests {
             spec: None,
             file_path: Some(file.to_string()),
             resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         };
         (Item::Import(decl), 0..0)
+    }
+
+    fn empty_tco() -> TypeCheckOutput {
+        TypeCheckOutput {
+            expr_types: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        }
     }
 
     #[test]
@@ -1276,5 +1436,73 @@ mod tests {
     fn test_line_map_empty() {
         let map = line_map_from_source("");
         assert_eq!(map, vec![0]);
+    }
+
+    #[test]
+    fn inferred_type_diagnostics_deduplicate_same_span_across_passes() {
+        let expr_span = 10..18;
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "foo".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Let {
+                                pattern: (Pattern::Identifier("value".into()), expr_span.clone()),
+                                ty: None,
+                                value: Some((
+                                    Expr::Identifier("count_up".into()),
+                                    expr_span.clone(),
+                                )),
+                            },
+                            expr_span.clone(),
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey {
+                start: expr_span.start,
+                end: expr_span.end,
+            },
+            Ty::generator(Ty::I32, Ty::Unit),
+        );
+
+        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, &tco).unwrap();
+        let expr_type_map_build = hew_serialize::build_expr_type_map(&tco);
+        let mut seen = HashSet::new();
+        let imported_item_sources = Vec::new();
+
+        let first = collect_new_inferred_type_diagnostics(
+            enrich_diagnostics.diagnostics(),
+            "main.hew",
+            &imported_item_sources,
+            &mut seen,
+        );
+        let second = collect_new_inferred_type_diagnostics(
+            expr_type_map_build.diagnostics(),
+            "main.hew",
+            &imported_item_sources,
+            &mut seen,
+        );
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 0);
     }
 }

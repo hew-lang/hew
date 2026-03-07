@@ -588,3 +588,10 @@ explicit send status is safer than trying to infer failure later from reply payl
 `0..N` already own live channels; panicking without canceling and destroying that prefix
 still leaves leaked waiters and late-reply hazards. Clean up the full prefix first, then
 panic.
+
+### 78. Best-effort serializer omissions still need structured, deduplicated diagnostics
+
+Some inferred `Ty` shapes (notably generator forms) are intentionally left implicit because
+codegen tracks them through other mechanisms, but that does not justify a silent `None`
+fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
+by span in the CLI so developers see the unsupported conversion exactly once.

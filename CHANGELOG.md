@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-03-07
+
+### Added
+
+- FreeBSD platform support (x86_64-freebsd compilation target)
+- FreeBSD CI and release pipelines
+- kqueue-based I/O poller for FreeBSD and macOS (replaces epoll on those platforms)
+
+### Fixed
+
+- WASM runtime: fix HewError import path
+- Runtime: handle ask send failures explicitly (prevents hangs on failed sends)
+- Serializer: report unsupported inferred types instead of silently dropping them
+- Serializer: harden type conversion diagnostics in enrich pass
+
+### Changed
+
+- Refactor: consolidate Linux/FreeBSD ELF linker flags into shared path
+- Refactor: extract shared `exe_suffix()` helper across CLI
+- Refactor: extract shared signal recovery logic
+- Refactor: remove dead `linkExecutable` from hew-codegen
+
 ## [0.1.8] - 2026-03-06
 
 ### Added

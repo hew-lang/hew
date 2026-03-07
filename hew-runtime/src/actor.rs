@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::internal::types::HewActorState;
+use crate::internal::types::HewError;
 use crate::internal::types::HewOverflowPolicy;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
@@ -1199,12 +1200,16 @@ pub unsafe extern "C" fn hew_actor_ask(
         ptr::write_unaligned(ch_slot, ch.cast());
     }
 
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
     let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
 
     if !sent {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
@@ -1265,12 +1270,16 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
         ptr::write_unaligned(ch_slot, ch.cast());
     }
 
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
     let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
 
     if !sent {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return std::ptr::null_mut();
@@ -1281,12 +1290,13 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 
     if result.is_null() {
         // Timeout: mark the channel as cancelled so the late replier
-        // handles cleanup instead of us freeing it (which would be UAF).
-        // SAFETY: ch is valid; the actor holding the channel pointer will
-        // SAFETY: check this flag in hew_reply and free the channel at that point.
-        unsafe { (*ch).cancelled.store(true, Ordering::Release) };
+        // handles cleanup via its retained sender-side reference.
+        // SAFETY: ch is still live while the caller-side reference is released.
+        unsafe { reply_channel::hew_reply_channel_cancel(ch) };
+        // SAFETY: release the caller-side reference after recording cancellation.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
     } else {
-        // Got a reply — we own the channel and can free it.
+        // Got a reply — release the caller-side reference.
         // SAFETY: ch was created by hew_reply_channel_new.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
     }
@@ -1338,10 +1348,17 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
         ptr::write_unaligned(ch_slot, ch.cast());
     }
 
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
-    unsafe { actor_send_internal(actor, msg_type, packed, total) };
+    let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
+
+    if !sent {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+    }
 }
 
 // ── Trap / Error ────────────────────────────────────────────────────────
@@ -1898,13 +1915,23 @@ pub unsafe extern "C" fn hew_actor_ask(
         ptr::write_unaligned(ch_slot, ch.cast());
     }
 
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { reply_channel_wasm::hew_reply_channel_retain(ch) };
     // Send the packed message.
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     // SAFETY: a.mailbox is a valid mailbox pointer.
-    unsafe { hew_mailbox_send(a.mailbox, msg_type, packed, total) };
+    let send_result = unsafe { hew_mailbox_send(a.mailbox, msg_type, packed, total) };
     // SAFETY: packed buffer ownership transferred to mailbox (deep-copied).
     unsafe { libc::free(packed) };
+
+    if send_result != HewError::Ok as i32 {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        // SAFETY: release the caller-side reference before returning failure.
+        unsafe { reply_channel_wasm::hew_reply_channel_free(ch) };
+        return ptr::null_mut();
+    }
 
     // Transition IDLE → RUNNABLE and enqueue.
     if a.actor_state.load(Ordering::Relaxed) == HewActorState::Idle as i32 {

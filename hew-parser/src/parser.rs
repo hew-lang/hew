@@ -299,6 +299,16 @@ struct SavedPos {
     angle_mutation_count: usize,
 }
 
+#[derive(Debug, Default)]
+struct WireFieldModifiers {
+    is_optional: bool,
+    is_deprecated: bool,
+    is_repeated: bool,
+    json_name: Option<String>,
+    yaml_name: Option<String>,
+    since: Option<u32>,
+}
+
 /// Parser state wrapping a token stream.
 #[derive(Debug)]
 pub struct Parser<'src> {
@@ -660,6 +670,84 @@ impl<'src> Parser<'src> {
             let (idx, tok) = self.angle_mutations.pop().unwrap();
             self.tokens[idx] = tok;
         }
+    }
+
+    fn parse_wire_since_modifier(&mut self) -> Option<u32> {
+        if let Some(Token::Integer(n_str)) = self.peek() {
+            let version = parse_int_literal(n_str)
+                .ok()
+                .and_then(|(v, _)| u32::try_from(v).ok());
+            if version.is_none() {
+                self.error("invalid version number after 'since'".to_string());
+            }
+            self.advance();
+            version
+        } else {
+            self.error("expected version number after 'since'".to_string());
+            None
+        }
+    }
+
+    fn parse_wire_field_modifiers(&mut self) -> WireFieldModifiers {
+        let mut modifiers = WireFieldModifiers::default();
+
+        loop {
+            match self.peek() {
+                Some(Token::Optional) => {
+                    self.advance();
+                    modifiers.is_optional = true;
+                }
+                Some(Token::Deprecated) => {
+                    self.advance();
+                    modifiers.is_deprecated = true;
+                }
+                Some(tok) if Self::is_ident_token(tok) => {
+                    let saved = self.save_pos();
+                    let ident = self.expect_ident().unwrap_or_default();
+                    match ident.as_str() {
+                        "repeated" => {
+                            modifiers.is_repeated = true;
+                        }
+                        "since" => {
+                            modifiers.since = self.parse_wire_since_modifier();
+                        }
+                        "json" => {
+                            if self.eat(&Token::LeftParen) {
+                                if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek()
+                                {
+                                    modifiers.json_name = Some(unquote_str(s).to_string());
+                                    self.advance();
+                                }
+                                let _ = self.expect(&Token::RightParen);
+                            } else {
+                                self.restore_pos(saved);
+                                break;
+                            }
+                        }
+                        "yaml" => {
+                            if self.eat(&Token::LeftParen) {
+                                if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek()
+                                {
+                                    modifiers.yaml_name = Some(unquote_str(s).to_string());
+                                    self.advance();
+                                }
+                                let _ = self.expect(&Token::RightParen);
+                            } else {
+                                self.restore_pos(saved);
+                                break;
+                            }
+                        }
+                        _ => {
+                            self.restore_pos(saved);
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        modifiers
     }
 
     /// Collect consecutive doc comment tokens with the given prefix and return
@@ -2224,59 +2312,7 @@ impl<'src> Parser<'src> {
                 None
             };
 
-            // Parse wire field modifiers
-            let mut is_optional = false;
-            let mut is_deprecated = false;
-            let mut is_repeated = false;
-            let mut json_name: Option<String> = None;
-            let mut yaml_name: Option<String> = None;
-            let mut since: Option<u32> = None;
-
-            loop {
-                match self.peek() {
-                    Some(Token::Optional) => {
-                        self.advance();
-                        is_optional = true;
-                    }
-                    Some(Token::Deprecated) => {
-                        self.advance();
-                        is_deprecated = true;
-                    }
-                    Some(tok) if Self::is_ident_token(tok) => {
-                        let saved = self.save_pos();
-                        let ident = self.expect_ident().unwrap_or_default();
-                        if ident == "repeated" {
-                            is_repeated = true;
-                        } else if ident == "since" {
-                            // `since N` — schema version that introduced this field
-                            if let Some(Token::Integer(n_str)) = self.peek() {
-                                since = parse_int_literal(n_str)
-                                    .ok()
-                                    .and_then(|(v, _)| u32::try_from(v).ok());
-                                self.advance();
-                            } else {
-                                self.error("expected version number after 'since'".to_string());
-                            }
-                        } else if ident == "json" && self.eat(&Token::LeftParen) {
-                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
-                                json_name = Some(unquote_str(s).to_string());
-                                self.advance();
-                            }
-                            let _ = self.expect(&Token::RightParen);
-                        } else if ident == "yaml" && self.eat(&Token::LeftParen) {
-                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
-                                yaml_name = Some(unquote_str(s).to_string());
-                                self.advance();
-                            }
-                            let _ = self.expect(&Token::RightParen);
-                        } else {
-                            self.restore_pos(saved);
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
+            let modifiers = self.parse_wire_field_modifiers();
 
             fields.push(TypeBodyItem::Field {
                 name: field_name.clone(),
@@ -2285,12 +2321,12 @@ impl<'src> Parser<'src> {
             field_meta.push((
                 field_name,
                 explicit_num,
-                is_optional,
-                is_deprecated,
-                is_repeated,
-                json_name,
-                yaml_name,
-                since,
+                modifiers.is_optional,
+                modifiers.is_deprecated,
+                modifiers.is_repeated,
+                modifiers.json_name,
+                modifiers.yaml_name,
+                modifiers.since,
             ));
 
             // Accept comma or semicolon as separator
@@ -2471,65 +2507,19 @@ impl<'src> Parser<'src> {
                         }
                     };
 
-                    // Parse optional modifiers: optional, deprecated, repeated, json("name"), yaml("name")
-                    let mut is_optional = false;
-                    let mut is_deprecated = false;
-                    let mut is_repeated = false;
-                    let mut json_name: Option<String> = None;
-                    let mut yaml_name: Option<String> = None;
-                    loop {
-                        match self.peek() {
-                            Some(Token::Optional) => {
-                                is_optional = true;
-                                self.advance();
-                            }
-                            Some(Token::Deprecated) => {
-                                is_deprecated = true;
-                                self.advance();
-                            }
-                            Some(Token::Identifier(s)) if *s == "repeated" => {
-                                is_repeated = true;
-                                self.advance();
-                            }
-                            Some(Token::Identifier(s)) if *s == "json" => {
-                                self.advance();
-                                if self.eat(&Token::LeftParen) {
-                                    if let Some(Token::StringLit(s) | Token::RawString(s)) =
-                                        self.peek()
-                                    {
-                                        json_name = Some(unquote_str(s).to_string());
-                                        self.advance();
-                                    }
-                                    let _ = self.expect(&Token::RightParen);
-                                }
-                            }
-                            Some(Token::Identifier(s)) if *s == "yaml" => {
-                                self.advance();
-                                if self.eat(&Token::LeftParen) {
-                                    if let Some(Token::StringLit(s) | Token::RawString(s)) =
-                                        self.peek()
-                                    {
-                                        yaml_name = Some(unquote_str(s).to_string());
-                                        self.advance();
-                                    }
-                                    let _ = self.expect(&Token::RightParen);
-                                }
-                            }
-                            _ => break,
-                        }
-                    }
+                    let modifiers = self.parse_wire_field_modifiers();
 
                     fields.push(WireFieldDecl {
                         name: field_name,
                         ty,
                         field_number,
-                        is_optional,
-                        is_repeated,
+                        is_optional: modifiers.is_optional,
+                        is_repeated: modifiers.is_repeated,
                         is_reserved: false,
-                        is_deprecated,
-                        json_name,
-                        yaml_name,
-                        since: None,
+                        is_deprecated: modifiers.is_deprecated,
+                        json_name: modifiers.json_name,
+                        yaml_name: modifiers.yaml_name,
+                        since: modifiers.since,
                     });
 
                     if !self.eat(&Token::Semicolon) {
@@ -5863,6 +5853,73 @@ mod tests {
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
+
+    #[test]
+    fn parse_wire_struct_preserves_since_modifier() {
+        let source = "\
+#[wire]
+struct Msg {
+    added: String @2 optional since 2 json(\"added\"),
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        let meta = &wire.field_meta[0];
+        assert_eq!(meta.field_number, 2);
+        assert!(meta.is_optional);
+        assert_eq!(meta.json_name.as_deref(), Some("added"));
+        assert_eq!(meta.since, Some(2));
+    }
+
+    #[test]
+    fn parse_legacy_wire_type_preserves_since_modifier() {
+        let source = "\
+wire type Msg {
+    added: String @2 repeated since 3 yaml(\"added\");
+}
+";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        let meta = &wire.field_meta[0];
+        assert!(meta.is_repeated);
+        assert_eq!(meta.yaml_name.as_deref(), Some("added"));
+        assert_eq!(meta.since, Some(3));
+    }
+
+    #[test]
+    fn parse_wire_since_reports_invalid_version() {
+        let source = "\
+wire type Msg {
+    added: String @2 since 4294967296;
+}
+";
+        let result = parse(source);
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.message.contains("invalid version number after 'since'")),
+            "expected invalid since error, got {:?}",
+            result.errors
+        );
+
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected type declaration");
+        };
+        let wire = decl.wire.as_ref().expect("expected wire metadata");
+        assert_eq!(wire.field_meta[0].since, None);
+    }
+
     /// Helper: parse `fn main() { let x = <source>; }` and return the expression.
     fn parse_let_expr(source: &str) -> Expr {
         let full = format!("fn main() {{ let x = {source}; }}");

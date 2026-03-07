@@ -1,5 +1,28 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-06 remediation passes
+
+### 1. Validation targets must follow the real repo layout
+
+If grammar validation only watches `examples/*.hew`, nested tutorial, benchmark, and
+playground trees quietly fall out of coverage. Infra checks need to recurse over the
+actual repository layout, not the layout that existed when the target was first added.
+
+### 2. Generated-file drift checks must regenerate
+
+`git diff --quiet` only answers whether a checkout is dirty; it does not answer whether
+re-running the generator would change the output. A reliable `--check` path needs an
+isolated snapshot, regeneration, and a real file comparison.
+
+### 3. Serializer boundaries must fail closed
+
+At the Rust→C++ msgpack boundary, `Ty` conversion must never fail open. If a type is
+representable, serialize it explicitly (for example `()` as `TypeExpr::Tuple([])` and
+supported builtin named forms like `Range` as `TypeExpr::Named`); if it is not
+representable (`Ty::Var`, `Ty::Error`, generator shapes, or a nested unsupported path),
+fail with context that identifies the span and nested conversion step instead of silently
+omitting data.
+
 ## From the audit phase
 
 ### 1. Multi-model consensus produces higher-quality analysis
@@ -526,7 +549,7 @@ as Pattern::Wildcard, since both are catch-all patterns for non-enum types.
 
 ### 72. Vec push overflow requires checked arithmetic
 
-All hew*vec_push** functions compute len + 1 for the new length. If len
+All hew*vec_push\*\* functions compute len + 1 for the new length. If len
 is usize::MAX, this silently wraps to 0, causing ensure_cap to not grow
 and subsequent writes to corrupt memory. Use checked_add and abort on
 overflow. Store old len for slot calculation before updating (*v).len.
@@ -537,3 +560,18 @@ hew_vec_append blindly memcpys src data into dst without checking that
 elem_size and elem_kind match. Appending a Vec<f64> into a Vec<i32>
 would silently corrupt the destination. Validate both fields match before
 the copy, aborting if they differ.
+
+### 74. Shared wire modifier logic prevents syntax drift
+
+`#[wire] struct` and legacy `wire type` had duplicated field-modifier handling, which let
+`since N` survive in one parser path but disappear in the other and in formatting. A tiny
+shared parser helper plus shared formatter emission is cheaper than chasing AST drift after
+downstream tools start depending on wire metadata.
+
+### 75. Select losers need cancellation, not join-style destruction
+
+`join` owns every reply channel all the way through `hew_reply_wait`, so it can destroy
+each channel immediately. `select` only consumes one reply; destroying the losing channels
+eagerly would risk use-after-free when a late actor reply arrives. The safe remediation is
+to cancel non-winning channels explicitly (including timeout paths), then release only the
+waiter-side reference and let the runtime's late-reply cleanup handle the final free.

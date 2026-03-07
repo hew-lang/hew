@@ -7,7 +7,7 @@
 
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,8 @@ use std::time::{Duration, Instant};
 /// exactly one thread calls [`hew_reply_wait`] (or the timeout variant).
 #[repr(C)]
 pub struct HewReplyChannel {
+    /// Manual reference count shared by the waiting side and the in-flight reply.
+    refs: AtomicUsize,
     /// Set to `true` once the reply value has been deposited.
     ready: AtomicBool,
     /// Set to `true` if the waiter has cancelled.
@@ -59,6 +61,7 @@ impl std::fmt::Debug for HewReplyChannel {
 #[no_mangle]
 pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
     Box::into_raw(Box::new(HewReplyChannel {
+        refs: AtomicUsize::new(1),
         ready: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
         value: ptr::null_mut(),
@@ -66,6 +69,24 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         lock: Mutex::new(()),
         cond: Condvar::new(),
     }))
+}
+
+/// Retain an additional reference to a reply channel.
+///
+/// # Safety
+///
+/// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees `ch` is valid while retaining a new reference.
+    unsafe {
+        let prev = (*ch).refs.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(prev > 0, "reply channel retain on released channel");
+    }
 }
 
 // ── Reply (sender side) ─────────────────────────────────────────────────
@@ -93,7 +114,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
             if size > 0 && !value.is_null() {
                 // Value was never deposited; nothing to free.
             }
-            // The channel is orphaned — free it now.
+            // The channel is orphaned — release the sender's reference.
             hew_reply_channel_free(ch);
             return;
         }
@@ -112,11 +133,13 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
         (*ch).ready.store(true, Ordering::Release);
 
         // Wake the condvar waiter.
-        let _guard = match (*ch).lock.lock() {
+        let guard = match (*ch).lock.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
         (*ch).cond.notify_one();
+        drop(guard);
+        hew_reply_channel_free(ch);
     }
 }
 
@@ -220,23 +243,50 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
 
 // ── Cleanup ─────────────────────────────────────────────────────────────
 
-/// Free a reply channel and any uncollected reply value.
+/// Release a reply channel reference and free the channel when it reaches zero.
 ///
 /// # Safety
 ///
 /// `ch` must have been returned by [`hew_reply_channel_new`] and must
-/// not be used after this call.
+/// not be used after the final release.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
     if ch.is_null() {
         return;
     }
-    // SAFETY: Caller guarantees `ch` was Box-allocated and is exclusively owned.
+
+    // SAFETY: Caller guarantees `ch` is a live reply channel reference.
     unsafe {
+        let prev = (*ch).refs.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(prev > 0, "reply channel release on released channel");
+        if prev != 1 {
+            return;
+        }
         if !(*ch).value.is_null() {
             libc::free((*ch).value);
         }
         drop(Box::from_raw(ch));
+    }
+}
+
+/// Mark a reply channel as abandoned.
+///
+/// Late repliers observe the cancelled flag and free the channel themselves,
+/// avoiding use-after-free when a select times out or chooses another arm.
+///
+/// # Safety
+///
+/// `ch` must have been returned by [`hew_reply_channel_new`] and must
+/// remain valid until its remaining references are released.
+#[no_mangle]
+pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
+    if ch.is_null() {
+        return;
+    }
+
+    // SAFETY: Caller guarantees `ch` is valid while cancellation is recorded.
+    unsafe {
+        (*ch).cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -281,17 +331,6 @@ pub unsafe extern "C" fn hew_select_first(
             }
             // SAFETY: ch is valid per caller contract.
             if unsafe { (*ch).ready.load(Ordering::Acquire) } {
-                // Cancel all other channels.
-                for j in 0..n {
-                    if j != i {
-                        // SAFETY: same array validity guarantee.
-                        let other = unsafe { *channels.add(j) };
-                        if !other.is_null() {
-                            // SAFETY: other is valid per contract.
-                            unsafe { (*other).cancelled.store(true, Ordering::Release) };
-                        }
-                    }
-                }
                 #[expect(clippy::cast_possible_truncation, reason = "index fits in i32")]
                 return i as i32;
             }
@@ -302,5 +341,54 @@ pub unsafe extern "C" fn hew_select_first(
             }
         }
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_then_owner_release_leaves_sender_reference_for_late_reply() {
+        let ch = hew_reply_channel_new();
+
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply_channel_cancel(ch);
+
+            assert_eq!((*ch).refs.load(Ordering::Acquire), 2);
+
+            hew_reply_channel_free(ch);
+            assert_eq!((*ch).refs.load(Ordering::Acquire), 1);
+
+            hew_reply(ch, ptr::null_mut(), 0);
+        }
+    }
+
+    #[test]
+    fn reply_then_cancel_preserves_ready_value_until_owner_releases() {
+        let ch = hew_reply_channel_new();
+        let value = 42_i32;
+
+        unsafe {
+            hew_reply_channel_retain(ch);
+            hew_reply(
+                ch,
+                (&value as *const i32).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            );
+
+            assert_eq!((*ch).refs.load(Ordering::Acquire), 1);
+            assert!((*ch).ready.load(Ordering::Acquire));
+
+            hew_reply_channel_cancel(ch);
+
+            let reply = hew_reply_wait(ch).cast::<i32>();
+            assert!(!reply.is_null());
+            assert_eq!(*reply, 42);
+            libc::free(reply.cast());
+
+            hew_reply_channel_free(ch);
+        }
     }
 }

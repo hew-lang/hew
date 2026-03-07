@@ -285,7 +285,8 @@ JAVA        := $(JAVA_HOME)/bin/java
 JAVAC       := $(JAVA_HOME)/bin/javac
 GRAMMAR     := docs/specs/Hew.g4
 GRAMMAR_OUT := .tmp/hew-grammar-test
-HEW_FILES   := $(wildcard examples/*.hew)
+rwildcard   = $(filter $(subst *,%,$2),$(wildcard $1$2)) $(foreach d,$(wildcard $1*/),$(call rwildcard,$d,$2))
+HEW_FILES   := $(sort $(call rwildcard,examples/,*.hew))
 
 grammar: $(GRAMMAR) $(HEW_FILES)
 	@echo "==> Generating ANTLR4 parser"

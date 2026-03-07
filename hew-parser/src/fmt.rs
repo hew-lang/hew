@@ -323,25 +323,14 @@ impl<'a> Formatter<'a> {
                 if let Some(meta) = wire.field_meta.get(i) {
                     self.write(" @");
                     self.write(&meta.field_number.to_string());
-                    if meta.is_optional {
-                        self.write(" optional");
-                    }
-                    if meta.is_deprecated {
-                        self.write(" deprecated");
-                    }
-                    if meta.is_repeated {
-                        self.write(" repeated");
-                    }
-                    if let Some(name) = &meta.json_name {
-                        self.write(" json(\"");
-                        self.write(name);
-                        self.write("\")");
-                    }
-                    if let Some(name) = &meta.yaml_name {
-                        self.write(" yaml(\"");
-                        self.write(name);
-                        self.write("\")");
-                    }
+                    self.format_wire_field_modifiers(
+                        meta.is_optional,
+                        meta.is_deprecated,
+                        meta.is_repeated,
+                        meta.since,
+                        meta.json_name.as_deref(),
+                        meta.yaml_name.as_deref(),
+                    );
                 }
                 self.write(",");
                 self.newline();
@@ -380,6 +369,40 @@ impl<'a> Formatter<'a> {
                 self.write("\"");
             }
             self.write(")]\n");
+        }
+    }
+
+    fn format_wire_field_modifiers(
+        &mut self,
+        is_optional: bool,
+        is_deprecated: bool,
+        is_repeated: bool,
+        since: Option<u32>,
+        json_name: Option<&str>,
+        yaml_name: Option<&str>,
+    ) {
+        if is_optional {
+            self.write(" optional");
+        }
+        if is_deprecated {
+            self.write(" deprecated");
+        }
+        if is_repeated {
+            self.write(" repeated");
+        }
+        if let Some(version) = since {
+            self.write(" since ");
+            self.write(&version.to_string());
+        }
+        if let Some(name) = json_name {
+            self.write(" json(\"");
+            self.write(name);
+            self.write("\")");
+        }
+        if let Some(name) = yaml_name {
+            self.write(" yaml(\"");
+            self.write(name);
+            self.write("\")");
         }
     }
 
@@ -579,26 +602,14 @@ impl<'a> Formatter<'a> {
         self.write(&f.ty);
         self.write(" @");
         self.write(&f.field_number.to_string());
-        // Modifiers go after the tag (parser expects: name: type @N optional;)
-        if f.is_optional {
-            self.write(" optional");
-        }
-        if f.is_deprecated {
-            self.write(" deprecated");
-        }
-        if f.is_repeated {
-            self.write(" repeated");
-        }
-        if let Some(name) = &f.json_name {
-            self.write(" json(\"");
-            self.write(name);
-            self.write("\")");
-        }
-        if let Some(name) = &f.yaml_name {
-            self.write(" yaml(\"");
-            self.write(name);
-            self.write("\")");
-        }
+        self.format_wire_field_modifiers(
+            f.is_optional,
+            f.is_deprecated,
+            f.is_repeated,
+            f.since,
+            f.json_name.as_deref(),
+            f.yaml_name.as_deref(),
+        );
         self.write(";\n");
     }
 
@@ -2318,6 +2329,33 @@ enum Color {
     Red;
     Green;
     Blue;
+}
+";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn wire_type_since_normalizes_with_since_metadata() {
+        let src = "\
+wire type Msg {
+    added: String @2 optional since 2 json(\"added\");
+}
+";
+        let expected = "\
+#[wire]
+struct Msg {
+    added: String @2 optional since 2 json(\"added\"),
+}
+";
+        assert_eq!(roundtrip(src), expected);
+    }
+
+    #[test]
+    fn wire_struct_since_roundtrips() {
+        let src = "\
+#[wire]
+struct Msg {
+    added: String @2 repeated since 3 yaml(\"added\"),
 }
 ";
         assert_eq!(roundtrip(src), src);

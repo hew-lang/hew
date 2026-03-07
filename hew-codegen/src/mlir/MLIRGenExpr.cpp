@@ -4675,6 +4675,27 @@ std::pair<mlir::Value, mlir::Value> MLIRGen::packArgsForSend(llvm::ArrayRef<mlir
   return {packOp.getDataPtr(), packOp.getDataSize()};
 }
 
+mlir::Value MLIRGen::waitOnReplyChannel(mlir::Value channel, mlir::Type resultType,
+                                        mlir::Location location) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channel);
+  auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultType, replyPtr);
+
+  getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
+  mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
+                             mlir::ValueRange{replyPtr});
+
+  return resultVal;
+}
+
+void MLIRGen::cancelReplyChannel(mlir::Value channel, mlir::Location location) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  getOrCreateExternFunc("hew_reply_channel_cancel",
+                        mlir::FunctionType::get(&context, {ptrType}, {}));
+  mlir::func::CallOp::create(builder, location, "hew_reply_channel_cancel", mlir::TypeRange{},
+                             mlir::ValueRange{channel});
+}
+
 // ============================================================================
 // Select expression codegen
 // ============================================================================
@@ -4789,6 +4810,21 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
   auto winnerIdx =
       hew::SelectFirstOp::create(builder, location, i32Type, channelArray, countVal, timeoutVal);
 
+  // Select consumes only one reply. Mark every other channel as abandoned so late
+  // replies can self-clean in the runtime, including the timeout path where no arm wins.
+  for (size_t i = 0; i < armCount; ++i) {
+    auto armIdxVal =
+        mlir::arith::ConstantIntOp::create(builder, location, i32Type, static_cast<int64_t>(i));
+    auto shouldCancel = mlir::arith::CmpIOp::create(
+        builder, location, mlir::arith::CmpIPredicate::ne, winnerIdx, armIdxVal);
+    auto cancelIf = mlir::scf::IfOp::create(builder, location, shouldCancel,
+                                            /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&cancelIf.getThenRegion().front());
+    cancelReplyChannel(channels[i], location);
+    hew::SelectDestroyOp::create(builder, location, channels[i]);
+    builder.setInsertionPointAfter(cancelIf);
+  }
+
   mlir::Type selectResultType = resultTypes[0];
 
   bool hasTimeoutBody = sel.timeout.has_value() && *sel.timeout && (*sel.timeout)->body;
@@ -4812,12 +4848,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       MutableTableScopeT mutScope(mutableVars);
       const auto &arm = arms[armIdx];
 
-      auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[armIdx]);
-      auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[armIdx], replyPtr);
-      // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
-      getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-      mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
-                                 mlir::ValueRange{replyPtr});
+      auto resultVal = waitOnReplyChannel(channels[armIdx], resultTypes[armIdx], location);
 
       if (auto *ip = std::get_if<ast::PatIdentifier>(&arm.binding.value.kind))
         declareVariable(ip->name, resultVal);
@@ -4843,12 +4874,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
       MutableTableScopeT mutScope(mutableVars);
       const auto &arm = arms[armIdx];
 
-      auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[armIdx]);
-      auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[armIdx], replyPtr);
-      // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
-      getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-      mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
-                                 mlir::ValueRange{replyPtr});
+      auto resultVal = waitOnReplyChannel(channels[armIdx], resultTypes[armIdx], location);
 
       if (auto *ip = std::get_if<ast::PatIdentifier>(&arm.binding.value.kind))
         declareVariable(ip->name, resultVal);
@@ -4964,13 +4990,8 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
 
   llvm::SmallVector<mlir::Value, 4> results;
   for (size_t i = 0; i < exprCount; ++i) {
-    auto replyPtr = hew::SelectWaitOp::create(builder, location, ptrType, channels[i]);
-    auto resultVal = mlir::LLVM::LoadOp::create(builder, location, resultTypes[i], replyPtr);
+    auto resultVal = waitOnReplyChannel(channels[i], resultTypes[i], location);
     results.push_back(resultVal);
-    // Free the reply buffer (malloc'd by hew_reply, returned by hew_reply_wait)
-    getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
-    mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
-                               mlir::ValueRange{replyPtr});
     hew::SelectDestroyOp::create(builder, location, channels[i]);
   }
 

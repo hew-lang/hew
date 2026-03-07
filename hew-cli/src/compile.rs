@@ -261,7 +261,8 @@ pub fn compile(
     flatten_import_items(&mut program);
 
     let expr_type_map = if let Some(tco) = &tco {
-        hew_serialize::enrich_program(&mut program, tco);
+        hew_serialize::enrich_program(&mut program, tco)
+            .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
         // Sync enriched items back to module graph root so C++ codegen uses
         // enriched (type-annotated) items rather than the pre-enrichment clone.
         if let Some(ref mut mg) = program.module_graph {
@@ -278,7 +279,11 @@ pub fn compile(
                 }
             }
         }
-        hew_serialize::build_expr_type_map(tco)
+        let expr_type_map_build = hew_serialize::build_expr_type_map(tco);
+        for diagnostic in &expr_type_map_build.diagnostics {
+            eprintln!("warning: omitted inferred expression type: {diagnostic}");
+        }
+        expr_type_map_build.entries
     } else {
         Vec::new()
     };

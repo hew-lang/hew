@@ -2143,94 +2143,42 @@ fn build_semantic_tokens(
 
 /// Return `None` for an empty vec, `Some(v)` otherwise.
 fn non_empty<T>(v: Vec<T>) -> Option<Vec<T>> {
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
+    hew_analysis::util::non_empty(v)
 }
 
 /// Compute byte offsets of each line start.
 fn compute_line_offsets(source: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for (i, ch) in source.bytes().enumerate() {
-        if ch == b'\n' {
-            offsets.push(i + 1);
-        }
-    }
-    offsets
+    hew_analysis::util::compute_line_offsets(source)
 }
 
 /// Convert byte offset to (line, character) — both 0-based, character in UTF-16 code units.
 fn offset_to_line_col(source: &str, line_offsets: &[usize], offset: usize) -> (usize, usize) {
-    let line = line_offsets
-        .partition_point(|&o| o <= offset)
-        .saturating_sub(1);
-    let line_start = line_offsets[line];
-    let byte_col = offset - line_start;
-    // Count UTF-16 code units from line start to offset
-    let col_utf16 = source[line_start..line_start + byte_col]
-        .chars()
-        .map(char::len_utf16)
-        .sum();
-    (line, col_utf16)
+    hew_analysis::util::offset_to_line_col(source, line_offsets, offset)
 }
 
 /// Convert a parser `Span` (byte-offset `Range<usize>`) to an LSP `Range`,
 /// using pre-computed line offsets.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "line/column values in source files will not exceed u32"
-)]
 fn span_to_range(source: &str, lo: &[usize], span: &Span) -> Range {
-    let (start_line, start_col) = offset_to_line_col(source, lo, span.start);
-    let (end_line, end_col) = offset_to_line_col(source, lo, span.end);
+    let (sl, sc, el, ec) =
+        hew_analysis::util::span_to_line_col_range(source, lo, span.start, span.end);
     Range {
-        start: Position::new(start_line as u32, start_col as u32),
-        end: Position::new(end_line as u32, end_col as u32),
+        start: Position::new(sl, sc),
+        end: Position::new(el, ec),
     }
 }
 
 /// Convert an LSP `Position` (UTF-16 character offset) to a byte offset in source,
 /// using pre-computed line offsets.
 fn position_to_offset(source: &str, lo: &[usize], position: Position) -> usize {
-    let line = position.line as usize;
-    if line < lo.len() {
-        let line_start = lo[line];
-        let line_end = lo.get(line + 1).copied().unwrap_or(source.len());
-        let line_text = &source[line_start..line_end];
-        let mut utf16_count = 0u32;
-        let target = position.character;
-        for (byte_idx, ch) in line_text.char_indices() {
-            if utf16_count >= target {
-                return line_start + byte_idx;
-            }
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "len_utf16() returns 1 or 2, always fits in u32"
-            )]
-            {
-                utf16_count += ch.len_utf16() as u32;
-            }
-        }
-        // If we've consumed all chars, return end of line text
-        line_end
-    } else {
-        source.len()
-    }
+    hew_analysis::util::position_to_offset(source, lo, position.line, position.character)
 }
 
 /// Convert byte offset range to LSP `Range`, using pre-computed line offsets.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "line/column values in source files will not exceed u32"
-)]
 fn offset_range_to_lsp(source: &str, lo: &[usize], start: usize, end: usize) -> Range {
-    let (sl, sc) = offset_to_line_col(source, lo, start);
-    let (el, ec) = offset_to_line_col(source, lo, end);
+    let (sl, sc, el, ec) = hew_analysis::util::span_to_line_col_range(source, lo, start, end);
     Range {
-        start: Position::new(sl as u32, sc as u32),
-        end: Position::new(el as u32, ec as u32),
+        start: Position::new(sl, sc),
+        end: Position::new(el, ec),
     }
 }
 
@@ -2328,40 +2276,17 @@ fn find_definition_in_ast(
 // ── Find all references ──────────────────────────────────────────────
 
 /// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
-fn simple_word_at_offset(source: &str, offset: usize) -> Option<(String, Span)> {
-    if offset >= source.len() {
-        return None;
-    }
-    let bytes = source.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-
-    let probe = if is_ident(bytes[offset]) {
-        offset
-    } else if offset > 0 && is_ident(bytes[offset - 1]) {
-        offset - 1
-    } else {
-        return None;
-    };
-
-    let start = probe
-        - source[..probe]
-            .bytes()
-            .rev()
-            .take_while(|b| is_ident(*b))
-            .count();
-    let end = probe + source[probe..].bytes().take_while(|b| is_ident(*b)).count();
-    let word = &source[start..end];
-    if word.is_empty() {
-        None
-    } else {
-        Some((word.to_string(), start..end))
-    }
+fn simple_word_at_offset(
+    source: &str,
+    offset: usize,
+) -> Option<(String, hew_analysis::OffsetSpan)> {
+    hew_analysis::util::simple_word_at_offset(source, offset)
 }
 
 /// Return the LSP range of the simple identifier at `offset`.
 fn word_range_at_offset(source: &str, lo: &[usize], offset: usize) -> Option<Range> {
-    let (_word, span) = simple_word_at_offset(source, offset)?;
-    Some(span_to_range(source, lo, &span))
+    let (_word, os) = simple_word_at_offset(source, offset)?;
+    Some(offset_range_to_lsp(source, lo, os.start, os.end))
 }
 
 /// Check if a name matches a top-level item definition (function, actor, type, etc.).
@@ -2829,72 +2754,7 @@ fn collect_refs_in_pattern(pattern: &Pattern, span: &Span, name: &str, spans: &m
 /// Extract the word (identifier) at a byte offset in the source.
 /// Also tries `offset - 1` when the cursor is right after an identifier.
 fn word_at_offset(source: &str, offset: usize) -> Option<String> {
-    if let Some(w) = word_at_offset_exact(source, offset) {
-        return Some(w);
-    }
-    // Cursor may be right after the identifier end — try one position back.
-    if offset > 0 {
-        return word_at_offset_exact(source, offset - 1);
-    }
-    None
-}
-
-/// Extract the identifier at exactly `offset`, or try to extend it with a
-/// preceding dot-separated qualifier (e.g. `http.listen` → `"http.listen"`).
-fn word_at_offset_exact(source: &str, offset: usize) -> Option<String> {
-    if offset >= source.len() {
-        return None;
-    }
-    let bytes = source.as_bytes();
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if !is_ident(bytes[offset]) {
-        return None;
-    }
-    let start = source[..offset]
-        .bytes()
-        .rev()
-        .take_while(|b| is_ident(*b))
-        .count();
-    let end = source[offset..]
-        .bytes()
-        .take_while(|b| is_ident(*b))
-        .count();
-    let word_start = offset - start;
-    let word_end = offset + end;
-    let word = &source[word_start..word_end];
-    if word.is_empty() {
-        return None;
-    }
-
-    // Check for double-colon-qualified prefix (e.g. `Counter::increment`).
-    if word_start >= 3 && bytes[word_start - 1] == b':' && bytes[word_start - 2] == b':' {
-        let prefix_end = word_start - 2;
-        let prefix_len = source[..prefix_end]
-            .bytes()
-            .rev()
-            .take_while(|b| is_ident(*b))
-            .count();
-        if prefix_len > 0 {
-            let qualified = &source[prefix_end - prefix_len..word_end];
-            return Some(qualified.to_string());
-        }
-    }
-
-    // Check for dot-qualified prefix (e.g. `http.listen`).
-    if word_start >= 2 && bytes[word_start - 1] == b'.' {
-        let prefix_end = word_start - 1;
-        let prefix_len = source[..prefix_end]
-            .bytes()
-            .rev()
-            .take_while(|b| is_ident(*b))
-            .count();
-        if prefix_len > 0 {
-            let qualified = &source[prefix_end - prefix_len..word_end];
-            return Some(qualified.to_string());
-        }
-    }
-
-    Some(word.to_string())
+    hew_analysis::util::word_at_offset(source, offset)
 }
 
 /// Format a function signature for hover display.

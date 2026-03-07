@@ -737,6 +737,10 @@ add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_l
 add_e2e_file_test(match_nested_pattern  e2e_match match_nested_pattern)
 add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
 add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
+add_e2e_file_test(duration_methods     e2e_duration duration_methods)
+add_e2e_file_test(duration_arithmetic  e2e_duration duration_arithmetic)
+add_e2e_file_test(duration_from_nanos  e2e_duration duration_from_nanos)
+add_e2e_file_test(duration_suffixes    e2e_duration duration_suffixes)
 
 # ── Coverage tests (ops with zero prior E2E coverage) ────────────────────────
 add_e2e_file_test(coverage_assert_ops         e2e_coverage assert_ops)
@@ -848,6 +852,10 @@ add_wasm_file_test(hex_literals         e2e_hex_literals hex_literals)
 add_wasm_file_test(array_repeat         e2e_array array_repeat)
 add_wasm_file_test(dynamic_index        e2e_array dynamic_index)
 add_wasm_file_test(duration             e2e_duration duration)
+add_wasm_file_test(duration_methods    e2e_duration duration_methods)
+add_wasm_file_test(duration_arithmetic e2e_duration duration_arithmetic)
+add_wasm_file_test(duration_from_nanos e2e_duration duration_from_nanos)
+add_wasm_file_test(duration_suffixes   e2e_duration duration_suffixes)
 
 # Algorithms (all pure computation — ideal WASM tests)
 add_wasm_file_test(binary_search        e2e_algorithms binary_search)

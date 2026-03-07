@@ -1,0 +1,25 @@
+// Test: duration methods — unit conversions, abs, is_zero
+fn main() {
+    // Unit conversion methods
+    let d = 3600000000000ns;  // 1 hour in nanoseconds
+    println(d.nanos());
+    println(d.micros());
+    println(d.millis());
+    println(d.secs());
+    println(d.mins());
+    println(d.hours());
+
+    // abs on positive duration
+    let pos = 5s;
+    println(pos.abs().secs());
+
+    // abs on negative duration
+    let neg = -5s;
+    println(neg.abs().secs());
+
+    // is_zero
+    let zero = 0s;
+    println(zero.is_zero());
+    let nonzero = 1ms;
+    println(nonzero.is_zero());
+}

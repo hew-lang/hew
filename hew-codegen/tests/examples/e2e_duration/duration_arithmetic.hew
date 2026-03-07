@@ -1,0 +1,38 @@
+// Test: duration arithmetic — add, subtract, multiply, divide, modulo, negate
+fn main() {
+    // duration + duration
+    let sum = 1s + 500ms;
+    println(sum.millis());
+
+    // duration - duration
+    let diff = 2s - 750ms;
+    println(diff.millis());
+
+    // duration * int
+    let scaled = 2s * 3;
+    println(scaled.secs());
+
+    // int * duration
+    let scaled2 = 4 * 250ms;
+    println(scaled2.millis());
+
+    // duration / int
+    let halved = 10s / 2;
+    println(halved.secs());
+
+    // duration / duration → i64 ratio
+    let ratio = 10s / 2s;
+    println(ratio);
+
+    // duration % duration
+    let remainder = 7s % 3s;
+    println(remainder.secs());
+
+    // unary negation
+    let neg = -1s;
+    println(neg.millis());
+
+    // chained arithmetic
+    let chain = 1s + 2s + 3s;
+    println(chain.secs());
+}

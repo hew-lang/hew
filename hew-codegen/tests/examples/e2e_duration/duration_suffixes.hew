@@ -1,0 +1,31 @@
+// Test: all duration literal suffixes (ns, us, ms, s, m, h)
+fn main() {
+    // nanoseconds
+    let a = 1000ns;
+    println(a.nanos());
+    println(a.micros());
+
+    // microseconds
+    let b = 1000us;
+    println(b.micros());
+    println(b.millis());
+
+    // milliseconds
+    let c = 1500ms;
+    println(c.millis());
+
+    // seconds
+    let d = 90s;
+    println(d.secs());
+    println(d.mins());
+
+    // minutes
+    let e = 120m;
+    println(e.mins());
+    println(e.hours());
+
+    // hours
+    let f = 3h;
+    println(f.hours());
+    println(f.mins());
+}

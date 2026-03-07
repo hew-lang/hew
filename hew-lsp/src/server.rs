@@ -8,7 +8,7 @@ use hew_parser::ast::{
     TypeDeclKind,
 };
 use hew_parser::ParseResult;
-use hew_types::check::{FnSig, SpanKey};
+use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::jsonrpc::Result;
@@ -683,7 +683,36 @@ impl LanguageServer for HewLanguageServer {
             return Ok(None);
         };
         let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        Ok(build_signature_help(&doc.source, tc, offset))
+        let Some(result) =
+            hew_analysis::signature_help::build_signature_help(&doc.source, tc, offset)
+        else {
+            return Ok(None);
+        };
+        let signatures: Vec<SignatureInformation> = result
+            .signatures
+            .into_iter()
+            .map(|sig| {
+                let params = sig
+                    .parameters
+                    .into_iter()
+                    .map(|p| ParameterInformation {
+                        label: ParameterLabel::LabelOffsets([p.label_start, p.label_end]),
+                        documentation: None,
+                    })
+                    .collect();
+                SignatureInformation {
+                    label: sig.label,
+                    documentation: None,
+                    parameters: Some(params),
+                    active_parameter: result.active_parameter,
+                }
+            })
+            .collect();
+        Ok(Some(SignatureHelp {
+            signatures,
+            active_signature: result.active_signature,
+            active_parameter: None,
+        }))
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
@@ -2801,149 +2830,6 @@ fn find_var_name_end(source: &str, value_span: &Span, name: &str) -> usize {
         }
     }
     value_span.start.saturating_sub(3)
-}
-
-// ── Signature help ──────────────────────────────────────────────────
-
-/// Build signature help at the given offset.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "active parameter index fits in u32"
-)]
-fn build_signature_help(
-    source: &str,
-    tc: &TypeCheckOutput,
-    offset: usize,
-) -> Option<SignatureHelp> {
-    let (fn_name, active_param) = find_call_context(source, offset)?;
-    let sig = find_fn_sig(&fn_name, tc)?;
-
-    let label = format_sig_label(&fn_name, sig);
-    let params: Vec<ParameterInformation> = sig
-        .param_names
-        .iter()
-        .zip(&sig.params)
-        .map(|(name, ty)| ParameterInformation {
-            label: ParameterLabel::Simple(format!("{name}: {ty}")),
-            documentation: None,
-        })
-        .collect();
-
-    Some(SignatureHelp {
-        signatures: vec![SignatureInformation {
-            label,
-            documentation: None,
-            parameters: Some(params),
-            active_parameter: Some(active_param as u32),
-        }],
-        active_signature: Some(0),
-        active_parameter: None,
-    })
-}
-
-/// Find the function name and active parameter index at the cursor offset.
-fn find_call_context(source: &str, offset: usize) -> Option<(String, usize)> {
-    let bytes = &source.as_bytes()[..offset];
-    let mut depth: i32 = 0;
-    let mut comma_count: usize = 0;
-    let mut i = bytes.len();
-
-    while i > 0 {
-        i -= 1;
-        match bytes[i] {
-            b')' | b']' | b'}' => depth += 1,
-            b'(' => {
-                if depth == 0 {
-                    let fn_name = extract_fn_name_before(source, i)?;
-                    return Some((fn_name, comma_count));
-                }
-                depth -= 1;
-            }
-            b'[' | b'{' => {
-                if depth == 0 {
-                    return None;
-                }
-                depth -= 1;
-            }
-            b',' if depth == 0 => comma_count += 1,
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Extract the function/method name immediately before the `(` at `paren_pos`.
-fn extract_fn_name_before(source: &str, paren_pos: usize) -> Option<String> {
-    let before = source[..paren_pos].trim_end();
-    if before.is_empty() {
-        return None;
-    }
-    let bytes = before.as_bytes();
-    let end = bytes.len();
-    let mut start = end;
-
-    while start > 0 {
-        let ch = bytes[start - 1];
-        if ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'.' || ch == b':' {
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-
-    if start == end {
-        return None;
-    }
-
-    Some(before[start..end].to_string())
-}
-
-/// Find a function signature by name, checking `fn_sigs`, `type_defs` methods, and qualified names.
-fn find_fn_sig<'a>(name: &str, tc: &'a TypeCheckOutput) -> Option<&'a FnSig> {
-    if let Some(sig) = tc.fn_sigs.get(name) {
-        return Some(sig);
-    }
-
-    // For method calls like `receiver.method`, try the method part.
-    if let Some(method) = name.rsplit('.').next() {
-        if method != name {
-            for type_def in tc.type_defs.values() {
-                if let Some(sig) = type_def.methods.get(method) {
-                    return Some(sig);
-                }
-            }
-            for (sig_name, sig) in &tc.fn_sigs {
-                if sig_name.ends_with(&format!("::{method}")) {
-                    return Some(sig);
-                }
-            }
-        }
-    }
-
-    // Try just the last component as a plain function name.
-    let last = name.rsplit(['.', ':']).find(|s| !s.is_empty())?;
-    if last != name {
-        if let Some(sig) = tc.fn_sigs.get(last) {
-            return Some(sig);
-        }
-    }
-
-    None
-}
-
-/// Format signature label like `fn name(param1: Type, param2: Type) -> RetType`.
-fn format_sig_label(name: &str, sig: &FnSig) -> String {
-    let params: Vec<String> = sig
-        .param_names
-        .iter()
-        .zip(&sig.params)
-        .map(|(n, t)| format!("{n}: {t}"))
-        .collect();
-    let display_name = name
-        .rsplit(['.', ':'])
-        .find(|s| !s.is_empty())
-        .unwrap_or(name);
-    hew_analysis::hover::format_fn_sig_line(display_name, &params, sig)
 }
 
 #[cfg(test)]

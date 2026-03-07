@@ -3783,6 +3783,25 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
     return nullptr;
   }
 
+  // Non-empty array with Vec target: build Vec directly, coercing each
+  // element to the Vec's element type.  This avoids creating an intermediate
+  // [T; N] array whose element type is inferred from the first value — which
+  // fails for enum variants that may have different MLIR representations.
+  if (pendingDeclaredType && mlir::isa<hew::VecType>(*pendingDeclaredType)) {
+    auto vecType = mlir::cast<hew::VecType>(*pendingDeclaredType);
+    pendingDeclaredType.reset();
+    auto targetElemType = vecType.getElementType();
+    auto vec = hew::VecNewOp::create(builder, location, vecType).getResult();
+    for (const auto &elem : arr.elements) {
+      auto val = generateExpression(elem->value);
+      if (!val)
+        return nullptr;
+      val = coerceType(val, targetElemType, location);
+      hew::VecPushOp::create(builder, location, vec, val);
+    }
+    return vec;
+  }
+
   llvm::SmallVector<mlir::Value, 8> values;
   for (const auto &elem : arr.elements) {
     auto val = generateExpression(elem->value);

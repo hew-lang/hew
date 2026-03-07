@@ -126,6 +126,7 @@ add_e2e_test(break_with_value test_break_with_value.hew "7\n")
 add_e2e_test(break_in_for_vec test_break_in_for_vec.hew "42\n3\n")
 add_e2e_test(break_in_for_hashmap test_break_in_for_hashmap.hew "1\n2\n")
 add_e2e_test(cooperate test_cooperate.hew "before cooperate\nafter cooperate\n")
+add_e2e_test(vec_from_enum_array test_vec_from_enum_array.hew "3\n1\n2\n3\n3\n60\n")
 
 # ── Migrated E2E tests (compile + run, compare against .expected file) ───────
 # Helper: compile a .hew file and check output matches .expected file

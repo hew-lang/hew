@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::internal::types::HewActorState;
+use crate::internal::types::HewError;
 use crate::internal::types::HewOverflowPolicy;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};

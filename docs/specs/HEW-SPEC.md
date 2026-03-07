@@ -20,7 +20,7 @@ _Task model unification, actor lifecycle fix, RAII streams, duration type, synta
 - §6.5.3: Streams/sinks auto-close via RAII (Drop); explicit `.close()` optional
 - §9.0: Documented 3-level preemption hierarchy (message budget, reduction budget, coroutine yield)
 - §9.1: Actor lifecycle reduced from 8 states to 6 (removed Init and Blocked)
-- §10.3: `duration` is now a distinct primitive type (i64 nanoseconds, type-safe arithmetic)
+- §10.3: Duration literals documented (compile to `i64` nanoseconds; distinct `duration` type planned but not yet implemented)
 - Removed `isolated` keyword (all actors are isolated by definition)
 - Removed template literal syntax (f-strings are the sole interpolation form)
 - Removed `and`/`or` keyword operators (`&&`/`||` only)
@@ -32,7 +32,7 @@ _Spec accuracy — documented implemented features, removed stale aliases, clari
 
 - §3.5: Clarified module alias pattern — `import std::net::http;` makes the module available as `http` (short name)
 - §4.12.1: Clarified that `gen fn` and `async gen fn` return types (`Generator<Y>`, `AsyncGenerator<Y>`) are compiler-inferred from the yield type annotation, not written explicitly
-- §4.12.4: Clarified that `async` is only valid as a modifier on `gen fn`; standalone `async fn` has no specified semantics
+- §4.12.4: `async fn` is supported by the parser (in addition to `async gen fn`)
 - §10: Removed `ActorStream<Y>` from the `Type` production (no prior release, no backward compatibility needed)
 - §10.3: Added Duration literals section documenting `100ms`, `5s`, `1m`, `1h` syntax
 - Changelog: Added v0.8.0 entry
@@ -117,7 +117,7 @@ Syntax consolidations:
 
 Simplifications:
 
-- Removed `async fn` from grammar (no specified semantics in actor model) (P-1)
+- Removed `async fn` from grammar (P-1) — later re-added; `async fn` is supported as of v0.8.0
 - Removed top-level `let`/`var` from Item production (contradicts no-global-mutable-state) (P-2)
 - Renamed cooperative yield to `cooperate`; reserved `yield` for generators (P-5)
 
@@ -528,32 +528,32 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ### 3.3.2 The `bytes` Type
 
-`bytes` is a standard library type (not a language primitive): a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name and u8-typed API:
+`bytes` is a standard library type (not a language primitive): a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
 let buf: bytes = bytes::new();
-buf.push(0x48);    // push a byte value (0–255)
+buf.push(0x48);    // push a byte value (i32)
 buf.push(72);      // same as 'H' in ASCII
-let n = buf.len(); // i32
-let b = buf.get(0); // u8 — first byte
+let n = buf.len(); // i64
+let b = buf.get(0); // i32 — first byte
 buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // u8 — removes and returns last byte
+let last = buf.pop(); // i32 — removes and returns last byte
 println(buf.is_empty()); // bool
 println(buf.contains(72)); // bool — linear scan
 ```
 
 **Methods on `bytes`:**
 
-| Method         | Signature         | Description                     |
-| -------------- | ----------------- | ------------------------------- |
-| `bytes::new()` | `() -> bytes`     | Create an empty byte buffer     |
-| `.push(b)`     | `(u8) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> u8`        | Remove and return the last byte |
-| `.get(i)`      | `(i32) -> u8`     | Get the byte at index `i`       |
-| `.set(i, b)`   | `(i32, u8) -> ()` | Overwrite the byte at index `i` |
-| `.len()`       | `() -> i32`       | Number of bytes                 |
-| `.is_empty()`  | `() -> bool`      | True if len is 0                |
-| `.contains(b)` | `(u8) -> bool`    | True if the buffer contains `b` |
+| Method         | Signature          | Description                     |
+| -------------- | ------------------ | ------------------------------- |
+| `bytes::new()` | `() -> bytes`      | Create an empty byte buffer     |
+| `.push(b)`     | `(i32) -> ()`      | Append a byte                   |
+| `.pop()`       | `() -> i32`        | Remove and return the last byte |
+| `.get(i)`      | `(i64) -> i32`     | Get the byte at index `i`       |
+| `.set(i, b)`   | `(i64, i32) -> ()` | Overwrite the byte at index `i` |
+| `.len()`       | `() -> i64`        | Number of bytes                 |
+| `.is_empty()`  | `() -> bool`       | True if len is 0                |
+| `.contains(b)` | `(i32) -> bool`    | True if the buffer contains `b` |
 
 `bytes` is an owned heap type and follows the same ownership rules as `Vec<T>` — it is automatically freed when it goes out of scope. It satisfies `Send` (deep-copied across actor boundaries).
 
@@ -1952,7 +1952,7 @@ type String {
 impl String {
     fn new() -> String;
     fn from(s: str) -> String;
-    fn len(self) -> usize;
+    fn len(self) -> i64;
     fn push(self, c: char);
     fn push_str(self, s: str);
     fn as_str(self) -> str;
@@ -1967,12 +1967,13 @@ fn to_lower(self) -> string;
 fn to_upper(self) -> string;
 fn replace(self, old: string, new: string) -> string;
 fn split(self, sep: string) -> Vec<string>;
-fn find(self, sub: string) -> i32;          // Returns index or -1
-fn slice(self, start: i32, end: i32) -> string;
-fn len(self) -> i32;
-fn repeat(self, n: i32) -> string;
-fn char_at(self, i: i32) -> string;
-fn index_of(self, sub: string) -> i32;      // Returns index or -1
+fn find(self, sub: string) -> i64;          // Returns index or -1
+fn slice(self, start: i64, end: i64) -> string;
+fn len(self) -> i64;
+fn repeat(self, n: i64) -> string;
+fn char_at(self, i: i64) -> i64;            // Returns character code
+fn chars(self) -> Vec<char>;                // Split into individual characters
+fn index_of(self, sub: string) -> i64;      // Returns index or -1
 fn lines(self) -> Vec<string>;              // Split on newlines (strips \r)
 fn is_digit(self) -> bool;                  // All chars are ASCII digits
 fn is_alpha(self) -> bool;                  // All chars are ASCII alphabetic
@@ -1980,8 +1981,8 @@ fn is_alphanumeric(self) -> bool;           // All chars are ASCII alphanumeric
 fn is_empty(self) -> bool;                  // Zero-length string
 
 // Built-in string functions (available in std::prelude)
-fn string_length(s: String) -> i32;
-fn string_char_at(s: String, index: i32) -> i32;  // Returns character code
+fn string_length(s: String) -> i64;
+fn string_char_at(s: String, index: i64) -> char;  // Returns character
 fn string_equals(a: String, b: String) -> bool;
 fn string_concat(a: String, b: String) -> String;
 ```
@@ -2025,14 +2026,14 @@ type Vec<T> {
 
 impl<T> Vec<T> {
     fn new() -> Vec<T>;
-    fn with_capacity(cap: usize) -> Vec<T>;
+    fn with_capacity(cap: i64) -> Vec<T>;
     fn push(self, item: T);
     fn pop(self) -> Option<T>;
-    fn len(self) -> usize;
-    fn get(self, index: usize) -> Option<T>;
-    fn truncate(self, len: usize);
+    fn len(self) -> i64;
+    fn get(self, index: i64) -> Option<T>;
+    fn truncate(self, len: i64);
     fn clone(self) -> Vec<T>;
-    fn swap(self, a: usize, b: usize);
+    fn swap(self, a: i64, b: i64);
     fn sort(self) where T: Ord;
     fn join(self, sep: string) -> string where T: string;  // Join Vec<String> with separator
     fn map<U>(self, f: fn(T) -> U) -> Vec<U>;              // Transform each element
@@ -2056,8 +2057,26 @@ impl<K: Hash + Eq, V> HashMap<K, V> {
     fn contains_key(self, key: K) -> bool;
     fn keys(self) -> Vec<K>;
     fn values(self) -> Vec<V>;
-    fn len(self) -> usize;
+    fn len(self) -> i64;
     fn is_empty(self) -> bool;
+}
+```
+
+**HashSet:**
+
+```hew
+type HashSet<T: Hash + Eq> {
+    // Internal: hash-based set
+}
+
+impl<T: Hash + Eq> HashSet<T> {
+    fn new() -> HashSet<T>;
+    fn insert(self, elem: T) -> bool;
+    fn contains(self, elem: T) -> bool;
+    fn remove(self, elem: T) -> bool;
+    fn len(self) -> i64;
+    fn is_empty(self) -> bool;
+    fn clear(self);
 }
 ```
 
@@ -2115,8 +2134,8 @@ fn write_file(path: String, content: String) -> Result<(), IoError>;  // Write s
 **String operations:**
 
 ```hew
-fn string_length(s: String) -> i32;              // Get string length
-fn string_char_at(s: String, index: i32) -> i32; // Get char code at index
+fn string_length(s: String) -> i64;              // Get string length
+fn string_char_at(s: String, index: i64) -> char; // Get character at index
 fn string_equals(a: String, b: String) -> bool;  // Compare strings
 fn string_concat(a: String, b: String) -> String; // Concatenate strings
 fn string_from_char(code: i32) -> String;            // Create 1-char string from char code
@@ -4349,13 +4368,13 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 
 ### 10.3 Duration Literals
 
-Duration literals provide a concise syntax for time values. They produce values of the `duration` type — a distinct primitive type representing time as `i64` nanoseconds:
+Duration literals provide a concise syntax for time values. They compile to `i64` values representing nanoseconds:
 
 ```hew
-let timeout = 100ms;     // duration: 100_000_000 nanoseconds
-let interval = 5s;       // duration: 5_000_000_000 nanoseconds
-let period = 1m;         // duration: 60_000_000_000 nanoseconds
-let precise = 500us;     // duration: 500_000 nanoseconds (no truncation)
+let timeout = 100ms;     // i64: 100_000_000 nanoseconds
+let interval = 5s;       // i64: 5_000_000_000 nanoseconds
+let period = 1m;         // i64: 60_000_000_000 nanoseconds
+let precise = 500us;     // i64: 500_000 nanoseconds
 ```
 
 **Supported suffixes:**
@@ -4369,26 +4388,7 @@ let precise = 500us;     // duration: 500_000 nanoseconds (no truncation)
 | `m`    | minutes      | value × 60_000_000_000    |
 | `h`    | hours        | value × 3_600_000_000_000 |
 
-**Type safety:**
-
-`duration` is a distinct type — it does not implicitly convert to or from integers:
-
-```hew
-let d = 5s;
-let x = d + 100ms;        // OK: duration + duration → duration
-let y = d * 3;             // OK: duration * int → duration
-let z = d / 2;             // OK: duration / int → duration
-let r = d / 500ms;         // OK: duration / duration → int
-let err = d + 42;          // COMPILE ERROR: duration + int is not allowed
-```
-
-**Methods:**
-
-| Method      | Signature            | Description                     |
-| ----------- | -------------------- | ------------------------------- |
-| `.nanos()`  | `fn nanos() -> i64`  | Total nanoseconds               |
-| `.millis()` | `fn millis() -> i64` | Total milliseconds (truncates)  |
-| `.secs()`   | `fn secs() -> f64`   | Total seconds as floating-point |
+> **Implementation note:** Duration literals currently compile to `i64` (nanoseconds) without a distinct type. The type-safe `duration` type with arithmetic overloads and methods (`.nanos()`, `.millis()`, `.secs()`) described in earlier spec drafts is not yet implemented. Duration values are interchangeable with integers at the type level.
 
 Duration literals are used with timeout expressions (`| after`), supervisor restart budgets, and any API accepting a duration:
 
@@ -4611,7 +4611,7 @@ If you want this to be directly executable as an engineering project, the next m
 - **Added:** Cooperative task model. `s.launch` spawns micro-coroutines on actor thread; `s.spawn` for parallel OS threads.
 - **Added:** `await actorRef`, `await all()` for event-driven actor synchronization.
 - **Added:** RAII auto-close for streams/sinks via Drop.
-- **Added:** `duration` as a proper type (i64 nanoseconds, type-safe arithmetic).
+- **Added:** Duration literal suffixes (i64 nanoseconds); distinct `duration` type planned but not yet implemented.
 - **Fixed:** Task model spec contradiction (§4.3/§4.7/§4.8 unified).
 - **Fixed:** Actor lifecycle states match runtime (6 states, not 8).
 - **Fixed:** Cooperate described as actor-level reduction-based preemption.
@@ -4624,7 +4624,7 @@ If you want this to be directly executable as an engineering project, the next m
 ### v0.8.0
 
 - **`isolated` actor modifier**: `isolated actor Foo { }` declares an actor with no shared state dependencies
-- **Duration literals section**: Documented `100ms`, `5s`, `1m`, `1h` syntax compiling to i64 milliseconds
+- **Duration literals section**: Documented `100ms`, `5s`, `1m`, `1h` syntax compiling to i64 nanoseconds
 - **Removed `ActorStream<Y>`**: Removed the deprecated alias; use `Stream<Y>` instead
 - **Generator type inference**: Clarified that `Generator<Y>` and `AsyncGenerator<Y>` wrappers are compiler-inferred, not annotated
 - **`async` keyword**: Clarified `async` is only valid as modifier on `gen fn`; standalone `async fn` is not part of the grammar

@@ -57,6 +57,7 @@ fn make_user_import(
         spec,
         file_path: None,
         resolved_items: Some(items),
+        resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
 }

@@ -4684,7 +4684,6 @@ mlir::Value MLIRGen::waitOnReplyChannel(mlir::Value channel, mlir::Type resultTy
   getOrCreateExternFunc("free", mlir::FunctionType::get(&context, {ptrType}, {}));
   mlir::func::CallOp::create(builder, location, "free", mlir::TypeRange{},
                              mlir::ValueRange{replyPtr});
-
   return resultVal;
 }
 
@@ -4694,6 +4693,26 @@ void MLIRGen::cancelReplyChannel(mlir::Value channel, mlir::Location location) {
                         mlir::FunctionType::get(&context, {ptrType}, {}));
   mlir::func::CallOp::create(builder, location, "hew_reply_channel_cancel", mlir::TypeRange{},
                              mlir::ValueRange{channel});
+}
+
+void MLIRGen::abandonReplyChannel(mlir::Value channel, mlir::Location location) {
+  cancelReplyChannel(channel, location);
+  hew::SelectDestroyOp::create(builder, location, channel);
+}
+
+void MLIRGen::panicOnReplySendFailure(mlir::Value sendStatus,
+                                      llvm::ArrayRef<mlir::Value> pendingChannels,
+                                      mlir::Location location) {
+  auto i32Type = builder.getI32Type();
+  auto okStatus = mlir::arith::ConstantIntOp::create(builder, location, i32Type, 0);
+  auto sendFailed = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                                sendStatus, okStatus);
+  auto failIf = mlir::scf::IfOp::create(builder, location, sendFailed, /*withElseRegion=*/false);
+  builder.setInsertionPointToStart(&failIf.getThenRegion().front());
+  for (auto channel : pendingChannels)
+    abandonReplyChannel(channel, location);
+  hew::PanicOp::create(builder, location);
+  builder.setInsertionPointAfter(failIf);
 }
 
 // ============================================================================
@@ -4780,7 +4799,10 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto [dataPtr, dataSize] = packArgsForSend(argVals, location);
 
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, msgIdx);
-    hew::SelectAddOp::create(builder, location, receiver, msgTypeVal, dataPtr, dataSize, ch);
+    auto sendStatus = hew::SelectAddOp::create(builder, location, i32Type, receiver, msgTypeVal,
+                                               dataPtr, dataSize, ch)
+                          .getResult();
+    panicOnReplySendFailure(sendStatus, channels, location);
   }
 
   auto armCountVal = mlir::arith::ConstantIntOp::create(builder, location, i64Type, armCount);
@@ -4820,8 +4842,7 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto cancelIf = mlir::scf::IfOp::create(builder, location, shouldCancel,
                                             /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&cancelIf.getThenRegion().front());
-    cancelReplyChannel(channels[i], location);
-    hew::SelectDestroyOp::create(builder, location, channels[i]);
+    abandonReplyChannel(channels[i], location);
     builder.setInsertionPointAfter(cancelIf);
   }
 
@@ -4985,7 +5006,10 @@ mlir::Value MLIRGen::generateJoinExpr(const ast::ExprJoin &join) {
     auto [dataPtr, dataSize] = packArgsForSend(argVals, location);
 
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(builder, location, i32Type, msgIdx);
-    hew::SelectAddOp::create(builder, location, receiver, msgTypeVal, dataPtr, dataSize, ch);
+    auto sendStatus = hew::SelectAddOp::create(builder, location, i32Type, receiver, msgTypeVal,
+                                               dataPtr, dataSize, ch)
+                          .getResult();
+    panicOnReplySendFailure(sendStatus, channels, location);
   }
 
   llvm::SmallVector<mlir::Value, 4> results;

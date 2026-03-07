@@ -9461,6 +9461,7 @@ fn main() {
             spec,
             file_path: None,
             resolved_items: Some(items),
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         }
     }
@@ -9846,6 +9847,7 @@ fn main() {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         };
         let output = check_items(vec![(Item::Import(import), 0..0)]);
@@ -9961,6 +9963,7 @@ fn main() {
             spec: None,
             file_path: None,
             resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         };
         let output = check_items(vec![(Item::Import(import), 0..0)]);
@@ -10295,6 +10298,7 @@ fn main() {
             spec: None,
             file_path: Some("private_lib.hew".to_string()),
             resolved_items: Some(resolved),
+            resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         };
 

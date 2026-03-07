@@ -3119,13 +3119,14 @@ struct SelectAddOpLowering : public mlir::OpConversionPattern<hew::SelectAddOp> 
     auto i32Type = rewriter.getI32Type();
     auto sizeType = getSizeType(rewriter.getContext(), module);
 
-    auto funcType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType, ptrType}, {});
+    auto funcType =
+        rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType, ptrType}, {i32Type});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_ask_with_channel", funcType);
-    mlir::func::CallOp::create(rewriter, loc, "hew_actor_ask_with_channel", mlir::TypeRange{},
-                               mlir::ValueRange{adaptor.getActor(), adaptor.getMsgType(),
-                                                adaptor.getDataPtr(), adaptor.getDataSize(),
-                                                adaptor.getChannel()});
-    rewriter.eraseOp(op);
+    auto call = mlir::func::CallOp::create(
+        rewriter, loc, "hew_actor_ask_with_channel", mlir::TypeRange{i32Type},
+        mlir::ValueRange{adaptor.getActor(), adaptor.getMsgType(), adaptor.getDataPtr(),
+                         adaptor.getDataSize(), adaptor.getChannel()});
+    rewriter.replaceOp(op, call.getResult(0));
     return mlir::success();
   }
 };

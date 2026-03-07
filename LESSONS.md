@@ -575,3 +575,23 @@ each channel immediately. `select` only consumes one reply; destroying the losin
 eagerly would risk use-after-free when a late actor reply arrives. The safe remediation is
 to cancel non-winning channels explicitly (including timeout paths), then release only the
 waiter-side reference and let the runtime's late-reply cleanup handle the final free.
+
+### 76. Ask send failures need an explicit submit status
+
+If an ask never makes it into a mailbox, `join`/`select` must learn that from the send
+operation itself; otherwise they can wait forever on a reply that can never exist. An
+explicit send status is safer than trying to infer failure later from reply payload shape.
+
+### 77. Partial select/join setup needs prefix cleanup before panic
+
+`select` and `join` build reply channels incrementally. When arm N fails to submit, arms
+`0..N` already own live channels; panicking without canceling and destroying that prefix
+still leaves leaked waiters and late-reply hazards. Clean up the full prefix first, then
+panic.
+
+### 78. Best-effort serializer omissions still need structured, deduplicated diagnostics
+
+Some inferred `Ty` shapes (notably generator forms) are intentionally left implicit because
+codegen tracks them through other mechanisms, but that does not justify a silent `None`
+fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
+by span in the CLI so developers see the unsupported conversion exactly once.

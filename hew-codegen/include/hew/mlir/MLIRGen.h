@@ -270,6 +270,13 @@ private:
   /// Mark a reply channel as abandoned so late replies self-clean in the runtime.
   void cancelReplyChannel(mlir::Value channel, mlir::Location location);
 
+  /// Cancel and release a reply channel that will no longer be awaited.
+  void abandonReplyChannel(mlir::Value channel, mlir::Location location);
+
+  /// Panic after cleaning up all reply channels created before a failed send.
+  void panicOnReplySendFailure(mlir::Value sendStatus, llvm::ArrayRef<mlir::Value> pendingChannels,
+                               mlir::Location location);
+
   // ── Helpers ──────────────────────────────────────────────────────
   /// Join currentModulePath into a "::" delimited key string.
   std::string currentModuleKey() const;

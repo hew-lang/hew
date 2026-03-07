@@ -8,6 +8,6 @@ actor Worker {
 
 fn main() {
     let w = spawn Worker(value: 42);
-    let result = await w.get() | after 5000;
+    let result = await w.get() | after 5s;
     println(result);
 }

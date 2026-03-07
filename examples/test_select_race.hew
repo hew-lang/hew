@@ -17,7 +17,7 @@ fn main() {
     let result = select {
         r from fast.compute(5) => r,
         r from slow.compute(5) => r,
-        after 2000 => -1,
+        after 2s => -1,
     };
     println("select result:");
     println(result);

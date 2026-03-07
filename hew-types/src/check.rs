@@ -681,6 +681,7 @@ impl Checker {
             },
         );
         self.register_builtin_fn("bytes::new", vec![], Ty::Bytes);
+        self.register_builtin_fn("duration::from_nanos", vec![Ty::I64], Ty::Duration);
 
         // More print variants
         self.register_builtin_fn("println_f64", vec![Ty::F64], Ty::Unit);
@@ -4030,7 +4031,7 @@ impl Checker {
                             self.env.pop_scope();
                         }
                         if let Some(tc) = timeout {
-                            self.synthesize(&tc.duration.0, &tc.duration.1);
+                            self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
                             let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
                             if let Some(expected) = &result_ty {
                                 self.expect_type(expected, &timeout_ty, &tc.body.1);
@@ -4055,7 +4056,7 @@ impl Checker {
                         duration,
                     } => {
                         let inner_ty = self.synthesize(&inner.0, &inner.1);
-                        self.check_against(&duration.0, &duration.1, &Ty::I64);
+                        self.check_against(&duration.0, &duration.1, &Ty::Duration);
                         Ty::option(inner_ty)
                     }
 

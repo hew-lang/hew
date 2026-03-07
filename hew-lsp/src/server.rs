@@ -8,7 +8,6 @@ use hew_parser::ast::{
     TypeDeclKind,
 };
 use hew_parser::ParseResult;
-use hew_types::check::SpanKey;
 use hew_types::error::TypeErrorKind;
 use hew_types::{Checker, TypeCheckOutput};
 use tower_lsp::jsonrpc::Result;
@@ -661,6 +660,10 @@ impl LanguageServer for HewLanguageServer {
         Ok(non_empty(symbols))
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "line/col values in source files will not exceed u32"
+    )]
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let Some(doc) = self.documents.get(uri) else {
@@ -669,8 +672,28 @@ impl LanguageServer for HewLanguageServer {
         let Some(tc) = &doc.type_output else {
             return Ok(None);
         };
-        let hints = build_inlay_hints(&doc.source, &doc.line_offsets, &doc.parse_result, tc);
-        Ok(non_empty(hints))
+        let analysis_hints =
+            hew_analysis::inlay_hints::build_inlay_hints(&doc.source, &doc.parse_result, tc);
+        let lsp_hints: Vec<InlayHint> = analysis_hints
+            .into_iter()
+            .map(|h| {
+                let (line, col) = offset_to_line_col(&doc.source, &doc.line_offsets, h.offset);
+                InlayHint {
+                    position: Position::new(line as u32, col as u32),
+                    label: InlayHintLabel::String(h.label),
+                    kind: Some(match h.kind {
+                        hew_analysis::InlayHintKind::Type => InlayHintKind::TYPE,
+                        hew_analysis::InlayHintKind::Parameter => InlayHintKind::PARAMETER,
+                    }),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: if h.padding_left { Some(true) } else { None },
+                    padding_right: None,
+                    data: None,
+                }
+            })
+            .collect();
+        Ok(non_empty(lsp_hints))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -2461,261 +2484,6 @@ fn collect_workspace_symbols(
         }
     }
     symbols
-}
-
-// ── Inlay hints ─────────────────────────────────────────────────────
-
-/// Build inlay hints for unannotated bindings and closures.
-fn build_inlay_hints(
-    source: &str,
-    lo: &[usize],
-    parse_result: &ParseResult,
-    tc: &TypeCheckOutput,
-) -> Vec<InlayHint> {
-    let mut hints = Vec::new();
-    for (item, _span) in &parse_result.program.items {
-        collect_inlay_hints_from_item(source, lo, item, tc, &mut hints);
-    }
-    hints
-}
-
-fn collect_inlay_hints_from_item(
-    source: &str,
-    lo: &[usize],
-    item: &Item,
-    tc: &TypeCheckOutput,
-    hints: &mut Vec<InlayHint>,
-) {
-    match item {
-        Item::Function(f) => collect_inlay_hints_from_block(source, lo, &f.body, tc, hints),
-        Item::Actor(a) => {
-            for recv in &a.receive_fns {
-                collect_inlay_hints_from_block(source, lo, &recv.body, tc, hints);
-            }
-            for method in &a.methods {
-                collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
-                }
-            }
-        }
-        Item::Impl(i) => {
-            for method in &i.methods {
-                collect_inlay_hints_from_block(source, lo, &method.body, tc, hints);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_inlay_hints_from_block(
-    source: &str,
-    lo: &[usize],
-    block: &Block,
-    tc: &TypeCheckOutput,
-    hints: &mut Vec<InlayHint>,
-) {
-    for (stmt, _span) in &block.stmts {
-        collect_inlay_hints_from_stmt(source, lo, stmt, tc, hints);
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "line/col values in source files will not exceed u32"
-)]
-fn collect_inlay_hints_from_stmt(
-    source: &str,
-    lo: &[usize],
-    stmt: &Stmt,
-    tc: &TypeCheckOutput,
-    hints: &mut Vec<InlayHint>,
-) {
-    match stmt {
-        Stmt::Let { pattern, ty, value } => {
-            if ty.is_none() {
-                if let Some(value_expr) = value {
-                    let span_key = SpanKey {
-                        start: value_expr.1.start,
-                        end: value_expr.1.end,
-                    };
-                    if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
-                        let name_end = pattern.1.end;
-                        let (line, col) = offset_to_line_col(source, lo, name_end);
-                        hints.push(InlayHint {
-                            position: Position::new(line as u32, col as u32),
-                            label: InlayHintLabel::String(format!(": {inferred_ty}")),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: None,
-                            padding_right: None,
-                            data: None,
-                        });
-                    }
-                }
-            }
-            if let Some(value_expr) = value {
-                collect_inlay_hints_from_expr(source, lo, &value_expr.0, tc, hints);
-            }
-        }
-        Stmt::Var {
-            ty, value, name, ..
-        } => {
-            if ty.is_none() {
-                if let Some(value_expr) = value {
-                    let span_key = SpanKey {
-                        start: value_expr.1.start,
-                        end: value_expr.1.end,
-                    };
-                    if let Some(inferred_ty) = tc.expr_types.get(&span_key) {
-                        let name_end = find_var_name_end(source, &value_expr.1, name);
-                        let (line, col) = offset_to_line_col(source, lo, name_end);
-                        hints.push(InlayHint {
-                            position: Position::new(line as u32, col as u32),
-                            label: InlayHintLabel::String(format!(": {inferred_ty}")),
-                            kind: Some(InlayHintKind::TYPE),
-                            text_edits: None,
-                            tooltip: None,
-                            padding_left: None,
-                            padding_right: None,
-                            data: None,
-                        });
-                    }
-                }
-            }
-            if let Some(value_expr) = value {
-                collect_inlay_hints_from_expr(source, lo, &value_expr.0, tc, hints);
-            }
-        }
-        Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-            collect_inlay_hints_from_block(source, lo, body, tc, hints);
-        }
-        Stmt::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_inlay_hints_from_block(source, lo, then_block, tc, hints);
-            if let Some(eb) = else_block {
-                if let Some(if_stmt) = &eb.if_stmt {
-                    collect_inlay_hints_from_stmt(source, lo, &if_stmt.0, tc, hints);
-                }
-                if let Some(block) = &eb.block {
-                    collect_inlay_hints_from_block(source, lo, block, tc, hints);
-                }
-            }
-        }
-        Stmt::IfLet {
-            body, else_body, ..
-        } => {
-            collect_inlay_hints_from_block(source, lo, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, lo, block, tc, hints);
-            }
-        }
-        Stmt::Match { arms, .. } => {
-            for arm in arms {
-                collect_inlay_hints_from_expr(source, lo, &arm.body.0, tc, hints);
-            }
-        }
-        Stmt::Expression(expr) => {
-            collect_inlay_hints_from_expr(source, lo, &expr.0, tc, hints);
-        }
-        _ => {}
-    }
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "line/col values in source files will not exceed u32"
-)]
-fn collect_inlay_hints_from_expr(
-    source: &str,
-    lo: &[usize],
-    expr: &Expr,
-    tc: &TypeCheckOutput,
-    hints: &mut Vec<InlayHint>,
-) {
-    match expr {
-        Expr::Lambda {
-            return_type, body, ..
-        } => {
-            if return_type.is_none() {
-                let span_key = SpanKey {
-                    start: body.1.start,
-                    end: body.1.end,
-                };
-                if let Some(body_ty) = tc.expr_types.get(&span_key) {
-                    let hint_pos = body.1.start;
-                    let (line, col) = offset_to_line_col(source, lo, hint_pos);
-                    hints.push(InlayHint {
-                        position: Position::new(line as u32, col as u32),
-                        label: InlayHintLabel::String(format!("-> {body_ty} ")),
-                        kind: Some(InlayHintKind::TYPE),
-                        text_edits: None,
-                        tooltip: None,
-                        padding_left: Some(true),
-                        padding_right: None,
-                        data: None,
-                    });
-                }
-            }
-            collect_inlay_hints_from_expr(source, lo, &body.0, tc, hints);
-        }
-        Expr::Block(block)
-        | Expr::Unsafe(block)
-        | Expr::ScopeLaunch(block)
-        | Expr::ScopeSpawn(block) => {
-            collect_inlay_hints_from_block(source, lo, block, tc, hints);
-        }
-        Expr::Scope { body, .. } => {
-            collect_inlay_hints_from_block(source, lo, body, tc, hints);
-        }
-        Expr::If {
-            then_block,
-            else_block,
-            ..
-        } => {
-            collect_inlay_hints_from_expr(source, lo, &then_block.0, tc, hints);
-            if let Some(else_expr) = else_block {
-                collect_inlay_hints_from_expr(source, lo, &else_expr.0, tc, hints);
-            }
-        }
-        Expr::IfLet {
-            body, else_body, ..
-        } => {
-            collect_inlay_hints_from_block(source, lo, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, lo, block, tc, hints);
-            }
-        }
-        Expr::Match { arms, .. } => {
-            for arm in arms {
-                collect_inlay_hints_from_expr(source, lo, &arm.body.0, tc, hints);
-            }
-        }
-        Expr::Cast { expr: inner, .. } => {
-            collect_inlay_hints_from_expr(source, lo, &inner.0, tc, hints);
-        }
-        _ => {}
-    }
-}
-
-/// Find the end offset of the variable name in a `var name = ...` statement.
-fn find_var_name_end(source: &str, value_span: &Span, name: &str) -> usize {
-    let before_eq = &source[..value_span.start];
-    if let Some(eq_pos) = before_eq.rfind('=') {
-        let trimmed = source[..eq_pos].trim_end();
-        if trimmed.ends_with(name) {
-            return trimmed.len();
-        }
-    }
-    value_span.start.saturating_sub(3)
 }
 
 #[cfg(test)]

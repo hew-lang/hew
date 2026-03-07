@@ -188,6 +188,7 @@ pub struct InlayHint {
     pub offset: usize,
     pub label: String,
     pub kind: InlayHintKind,
+    pub padding_left: bool,
 }
 
 /// The kind of an inlay hint.

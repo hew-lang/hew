@@ -90,6 +90,26 @@ static int countCallsByCallee(mlir::Operation *op, llvm::StringRef callee) {
   return count;
 }
 
+static int countPanicOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](hew::PanicOp) { count++; });
+  return count;
+}
+
+static int countSelectAddOps(mlir::Operation *op) {
+  int count = 0;
+  op->walk([&](hew::SelectAddOp) { count++; });
+  return count;
+}
+
+static bool allSelectAddsReturnI32(mlir::Operation *op) {
+  bool ok = true;
+  op->walk([&](hew::SelectAddOp add) {
+    ok = ok && add->getNumResults() == 1 && add->getResult(0).getType().isInteger(32);
+  });
+  return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: find hew CLI binary (used as frontend for parsing)
 // ---------------------------------------------------------------------------
@@ -1138,10 +1158,10 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Select cancels abandoned reply channels
+// Test: Select emits explicit send-failure cleanup and panic paths
 // ============================================================================
-static void test_select_cancels_abandoned_channels() {
-  TEST(select_cancels_abandoned_channels);
+static void test_select_emits_send_failure_cleanup() {
+  TEST(select_emits_send_failure_cleanup);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -1184,9 +1204,21 @@ fn main() -> int {
     return;
   }
 
+  if (countSelectAddOps(mainFn) != 2 || !allSelectAddsReturnI32(mainFn)) {
+    FAIL("select.add should return an i32 status for every arm");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countPanicOps(mainFn) != 2) {
+    FAIL("select should panic on failed sends");
+    module.getOperation()->destroy();
+    return;
+  }
+
   int cancelCalls = countCallsByCallee(mainFn, "hew_reply_channel_cancel");
-  if (cancelCalls != 2) {
-    FAIL("select should emit cancellation calls for every arm");
+  if (cancelCalls != 5) {
+    FAIL("select should clean up non-winners and every send-failure prefix");
     module.getOperation()->destroy();
     return;
   }
@@ -1196,10 +1228,10 @@ fn main() -> int {
 }
 
 // ============================================================================
-// Test: Join keeps explicit wait/destroy cleanup and does not cancel channels
+// Test: Join emits explicit send-failure cleanup and preserves destroy paths
 // ============================================================================
-static void test_join_does_not_cancel_channels() {
-  TEST(join_does_not_cancel_channels);
+static void test_join_emits_send_failure_cleanup() {
+  TEST(join_emits_send_failure_cleanup);
 
   mlir::MLIRContext ctx;
   initContext(ctx);
@@ -1234,16 +1266,28 @@ fn main() -> int {
     return;
   }
 
-  if (countCallsByCallee(mainFn, "hew_reply_channel_cancel") != 0) {
-    FAIL("join should not cancel reply channels");
+  if (countSelectAddOps(mainFn) != 2 || !allSelectAddsReturnI32(mainFn)) {
+    FAIL("join select.add should return an i32 status for every expression");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countPanicOps(mainFn) != 2) {
+    FAIL("join should panic on failed sends");
+    module.getOperation()->destroy();
+    return;
+  }
+
+  if (countCallsByCallee(mainFn, "hew_reply_channel_cancel") != 3) {
+    FAIL("join should cancel every already-created channel on send failure");
     module.getOperation()->destroy();
     return;
   }
 
   int destroyCount = 0;
   mainFn.walk([&](hew::SelectDestroyOp) { destroyCount++; });
-  if (destroyCount != 2) {
-    FAIL("join should destroy every reply channel it creates");
+  if (destroyCount != 5) {
+    FAIL("join should destroy wait paths and every send-failure prefix");
     module.getOperation()->destroy();
     return;
   }
@@ -1279,8 +1323,8 @@ int main() {
   test_wire_enum_mixed_payload_layout();
   test_wire_enum_mixed_payload_match_positions();
   test_unresolved_generic_substitution_type_fails();
-  test_select_cancels_abandoned_channels();
-  test_join_does_not_cancel_channels();
+  test_select_emits_send_failure_cleanup();
+  test_join_emits_send_failure_cleanup();
 
   printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
   return (tests_passed == tests_run) ? 0 : 1;

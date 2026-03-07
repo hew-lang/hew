@@ -1873,13 +1873,15 @@ def Hew_SelectAddOp : Hew_Op<"select.add"> {
   let summary = "Send an async ask to an actor with a reply channel.";
   let description = [{
     Sends a message to an actor with a reply channel attached. The actor
-    will send its response to the channel. This is non-blocking.
+    will send its response to the channel. This is non-blocking and returns
+    a runtime status code so send failures can be handled explicitly before
+    waiting on the channel.
 
     Lowers to `hew_actor_ask_with_channel(actor, msg_type, data, size, channel)`.
 
     Example:
     ```mlir
-    hew.select.add %actor, %msg_type, %data, %size, %channel
+    %status = hew.select.add %actor, %msg_type, %data, %size, %channel
         : (!llvm.ptr, i32, !llvm.ptr, i64, !llvm.ptr)
     ```
   }];
@@ -1891,6 +1893,7 @@ def Hew_SelectAddOp : Hew_Op<"select.add"> {
     AnySignlessInteger:$data_size,
     AnyType:$channel
   );
+  let results = (outs I32:$status);
 
   let assemblyFormat = [{
     $actor `,` $msg_type `,` $data_ptr `,` $data_size `,` $channel attr-dict

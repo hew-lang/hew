@@ -12,9 +12,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use crate::internal::types::HewActorState;
-use crate::internal::types::HewError;
-use crate::internal::types::HewOverflowPolicy;
+use crate::internal::types::{HewActorState, HewError, HewOverflowPolicy};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::mailbox::{self, HewMailbox};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1098,25 +1096,25 @@ pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int
 
 // ── Internal send helper ────────────────────────────────────────────────
 
-/// Send a message, returning `true` on success.
+/// Send a message, returning a runtime error code.
 ///
 /// # Safety
 ///
 /// Same requirements as [`hew_actor_send`].
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn actor_send_internal(
+unsafe fn actor_send_result_internal(
     actor: *mut HewActor,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
-) -> bool {
+) -> i32 {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
     // Check for injected drop fault (testing only). Silently discard
     // the message without enqueuing it.
     if crate::deterministic::check_drop_fault(a.id) {
-        return true; // Pretend success.
+        return HewError::Ok as i32; // Pretend success.
     }
 
     let mb = a.mailbox.cast::<HewMailbox>();
@@ -1124,7 +1122,7 @@ unsafe fn actor_send_internal(
     // SAFETY: Mailbox is valid for the actor's lifetime.
     let result = unsafe { mailbox::hew_mailbox_send(mb, msg_type, data, size) };
     if result != 0 {
-        return false;
+        return result;
     }
 
     // CAS IDLE → RUNNABLE; on success, schedule the actor.
@@ -1143,7 +1141,24 @@ unsafe fn actor_send_internal(
         scheduler::sched_enqueue(actor);
     }
 
-    true
+    HewError::Ok as i32
+}
+
+/// Send a message, returning `true` on success.
+///
+/// # Safety
+///
+/// Same requirements as [`hew_actor_send`].
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn actor_send_internal(
+    actor: *mut HewActor,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> bool {
+    // SAFETY: same preconditions as actor_send_result_internal; we only
+    // translate its error code into a boolean success/failure result.
+    unsafe { actor_send_result_internal(actor, msg_type, data, size) == HewError::Ok as i32 }
 }
 
 // ── Ask (request-response) ──────────────────────────────────────────────
@@ -1203,11 +1218,11 @@ pub unsafe extern "C" fn hew_actor_ask(
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
-    let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
+    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
 
-    if !sent {
+    if send_result != HewError::Ok as i32 {
         // SAFETY: release the sender-side reference retained for the failed send.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new.
@@ -1273,11 +1288,11 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
-    let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
+    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
 
-    if !sent {
+    if send_result != HewError::Ok as i32 {
         // SAFETY: release the sender-side reference retained for the failed send.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         // SAFETY: ch was created by hew_reply_channel_new.
@@ -1315,6 +1330,10 @@ pub unsafe extern "C" fn hew_actor_ask_timeout(
 /// - `data` must point to at least `size` readable bytes, or be null.
 /// - `ch` must be a valid reply channel pointer.
 ///
+/// Returns `0` ([`HewError::Ok`]) on success, or a negative [`HewError`] code
+/// if the ask could not be submitted. Callers must handle failures explicitly
+/// instead of waiting on `ch`, because no reply will ever arrive in that case.
+///
 #[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::cast_ptr_alignment,
@@ -1327,16 +1346,16 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     data: *mut c_void,
     size: usize,
     ch: *mut HewReplyChannel,
-) {
+) -> i32 {
     let ptr_size = std::mem::size_of::<*mut c_void>();
     let Some(total) = size.checked_add(ptr_size) else {
-        return;
+        return HewError::ErrOom as i32;
     };
 
     // SAFETY: malloc for packed buffer.
     let packed = unsafe { libc::malloc(total) };
     if packed.is_null() {
-        return;
+        return HewError::ErrOom as i32;
     }
     // SAFETY: copying data into packed buffer; reply channel pointer slot may be
     // SAFETY: unaligned, so write_unaligned is required.
@@ -1351,14 +1370,16 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     // SAFETY: the actor now holds the sender-side reference until it replies.
     unsafe { reply_channel::hew_reply_channel_retain(ch) };
     // SAFETY: actor is valid, packed data is valid.
-    let sent = unsafe { actor_send_internal(actor, msg_type, packed, total) };
+    let send_result = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
     // SAFETY: packed was malloc'd above.
     unsafe { libc::free(packed) };
 
-    if !sent {
+    if send_result != HewError::Ok as i32 {
         // SAFETY: release the sender-side reference retained for the failed send.
         unsafe { reply_channel::hew_reply_channel_free(ch) };
     }
+
+    send_result
 }
 
 // ── Trap / Error ────────────────────────────────────────────────────────
@@ -2021,4 +2042,37 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
     0
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::ptr;
+
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+    ) {
+    }
+
+    #[test]
+    fn ask_with_channel_send_failure_returns_error() {
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        unsafe {
+            hew_actor_close(actor);
+        }
+
+        let ch = reply_channel::hew_reply_channel_new();
+        let rc = unsafe { hew_actor_ask_with_channel(actor, 0, ptr::null_mut(), 0, ch) };
+        assert_eq!(rc, HewError::ErrActorStopped as i32);
+
+        unsafe {
+            reply_channel::hew_reply_channel_free(ch);
+            assert_eq!(hew_actor_free(actor), 0);
+        }
+    }
 }

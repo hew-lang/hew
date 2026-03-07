@@ -784,3 +784,14 @@ coverage.
 - Updated the reply-channel runtime (`reply_channel.rs` and `reply_channel_wasm.rs`) with
   an explicit cancellation entry point plus sender/waiter refcounting so abandoned select
   arms self-clean on late reply without use-after-free.
+
+### Ask send-failure remediation
+
+- Changed `hew_actor_ask_with_channel` to return an explicit `HewError` status and to
+  make submit failures explicit so select/join can fail fast instead of waiting on a
+  request that never entered a mailbox.
+- Updated MLIR select/join lowering to capture `hew.select.add` status, cancel/destroy
+  every already-created reply channel on send failure, and panic explicitly on failed
+  submission before any wait path can hang.
+- Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
+  submission plus send-failure cleanup paths in both `select` and `join`.

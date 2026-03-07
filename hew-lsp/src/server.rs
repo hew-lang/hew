@@ -513,81 +513,54 @@ impl LanguageServer for HewLanguageServer {
         params: tower_lsp::lsp_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let position = params.position;
 
         let Some(doc) = self.documents.get(uri) else {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some(word) = word_at_offset(&doc.source, offset) else {
+        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
+        let Some(span) =
+            hew_analysis::rename::prepare_rename(&doc.source, &doc.parse_result, offset)
+        else {
             return Ok(None);
         };
-
-        if word.contains('.') || word.contains("::") {
-            return Ok(None);
-        }
-
-        if hew_analysis::references::find_all_references(&doc.source, &doc.parse_result, offset)
-            .is_none()
-        {
-            return Ok(None);
-        }
-
-        let range = word_range_at_offset(&doc.source, &doc.line_offsets, offset);
-        Ok(range.map(PrepareRenameResponse::Range))
+        let range = offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end);
+        Ok(Some(PrepareRenameResponse::Range(range)))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
-        let position = params.text_document_position.position;
-        let new_name = &params.new_name;
 
         let Some(doc) = self.documents.get(uri) else {
             return Ok(None);
         };
 
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, position);
-        let Some((name, spans)) =
-            hew_analysis::references::find_all_references(&doc.source, &doc.parse_result, offset)
+        let offset = position_to_offset(
+            &doc.source,
+            &doc.line_offsets,
+            params.text_document_position.position,
+        );
+        let Some(edits) =
+            hew_analysis::rename::rename(&doc.source, &doc.parse_result, offset, &params.new_name)
         else {
             return Ok(None);
         };
 
-        let mut edits: Vec<TextEdit> = spans
+        let text_edits: Vec<TextEdit> = edits
             .iter()
-            .map(|span| TextEdit {
-                range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
-                new_text: new_name.clone(),
+            .map(|e| TextEdit {
+                range: offset_range_to_lsp(
+                    &doc.source,
+                    &doc.line_offsets,
+                    e.span.start,
+                    e.span.end,
+                ),
+                new_text: e.new_text.clone(),
             })
             .collect();
 
-        if let Some(def_range) =
-            find_definition_in_ast(&doc.source, &doc.line_offsets, &doc.parse_result, &name)
-        {
-            if !edits.iter().any(|e| e.range == def_range) {
-                edits.push(TextEdit {
-                    range: def_range,
-                    new_text: new_name.clone(),
-                });
-            }
-        }
-
-        if edits.is_empty() {
-            return Ok(None);
-        }
-
-        edits.sort_by(|a, b| {
-            a.range
-                .start
-                .line
-                .cmp(&b.range.start.line)
-                .then(a.range.start.character.cmp(&b.range.start.character))
-        });
-        edits.dedup_by(|a, b| a.range == b.range);
-
         let mut changes = HashMap::new();
-        changes.insert(uri.clone(), edits);
+        changes.insert(uri.clone(), text_edits);
         Ok(Some(WorkspaceEdit {
             changes: Some(changes),
             ..Default::default()
@@ -1509,19 +1482,6 @@ fn find_definition_in_ast(
 // ── Find all references ──────────────────────────────────────────────
 
 /// Find the simple identifier name at the given byte offset (no `dot/::` qualifiers).
-fn simple_word_at_offset(
-    source: &str,
-    offset: usize,
-) -> Option<(String, hew_analysis::OffsetSpan)> {
-    hew_analysis::util::simple_word_at_offset(source, offset)
-}
-
-/// Return the LSP range of the simple identifier at `offset`.
-fn word_range_at_offset(source: &str, lo: &[usize], offset: usize) -> Option<Range> {
-    let (_word, os) = simple_word_at_offset(source, offset)?;
-    Some(offset_range_to_lsp(source, lo, os.start, os.end))
-}
-
 // ── Hover / go-to-definition helpers ─────────────────────────────────
 
 /// Extract the word (identifier) at a byte offset in the source.

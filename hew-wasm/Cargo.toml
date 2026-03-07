@@ -19,6 +19,7 @@ workspace = true
 wasm-opt = false
 
 [dependencies]
+hew-analysis = { path = "../hew-analysis" }
 hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }

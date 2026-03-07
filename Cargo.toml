@@ -38,6 +38,7 @@ members = [
   "hew-types",
   "hew-observe",
   "hew-wasm",
+  "hew-analysis",
   "hew-astgen",
 ]
 exclude = ["hew-parser/fuzz"]

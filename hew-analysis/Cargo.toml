@@ -1,0 +1,16 @@
+[package]
+name = "hew-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared analysis library for Hew language tooling"
+repository = "https://github.com/hew-lang/hew"
+
+[lints]
+workspace = true
+
+[dependencies]
+hew-lexer = { path = "../hew-lexer" }
+hew-parser = { path = "../hew-parser" }
+hew-types = { path = "../hew-types" }
+serde = { version = "1", features = ["derive"] }

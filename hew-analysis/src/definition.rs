@@ -9,6 +9,7 @@ use crate::OffsetSpan;
 ///
 /// Returns the byte-offset span of the item that defines the given name, or
 /// `None` if no matching definition is found.
+#[must_use]
 pub fn find_definition(
     _source: &str,
     parse_result: &ParseResult,

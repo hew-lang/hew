@@ -9,6 +9,7 @@ use crate::{HoverResult, OffsetSpan};
 ///
 /// Returns a `HoverResult` with markdown contents and an optional span, or
 /// `None` if there is nothing meaningful to display at this position.
+#[must_use]
 pub fn hover(
     source: &str,
     _parse_result: &hew_parser::ParseResult,
@@ -78,6 +79,7 @@ pub fn hover(
 }
 
 /// Format a bare function signature line: `[pure] [async] fn name(params)[-> ret]`.
+#[must_use]
 pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
     let pure_prefix = if sig.is_pure { "pure " } else { "" };
     let async_prefix = if sig.is_async { "async " } else { "" };

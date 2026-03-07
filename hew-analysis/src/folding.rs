@@ -9,6 +9,7 @@ use crate::{FoldingKind, FoldingRange};
 ///
 /// Line offsets are computed internally from `source`. Returns a list of
 /// `FoldingRange` values with 0-based line numbers.
+#[must_use]
 pub fn build_folding_ranges(source: &str, parse_result: &ParseResult) -> Vec<FoldingRange> {
     let lo = crate::util::compute_line_offsets(source);
     let mut ranges = Vec::new();

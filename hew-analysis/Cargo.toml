@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "Shared analysis library for Hew language tooling"
 repository = "https://github.com/hew-lang/hew"
+readme = "README.md"
+keywords = ["hew", "programming-language", "analysis"]
+categories = ["compilers", "development-tools"]
 
 [lints]
 workspace = true

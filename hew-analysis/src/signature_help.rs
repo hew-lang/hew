@@ -13,6 +13,7 @@ use crate::{ParameterInfo, SignatureHelpResult, SignatureInfo};
     clippy::cast_possible_truncation,
     reason = "active parameter index and label offsets fit in u32"
 )]
+#[must_use]
 pub fn build_signature_help(
     source: &str,
     tc: &TypeCheckOutput,

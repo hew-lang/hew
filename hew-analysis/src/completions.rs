@@ -14,6 +14,7 @@ use crate::{CompletionItem, CompletionKind};
 const KEYWORDS: &[&str] = hew_lexer::ALL_KEYWORDS;
 
 /// Build completion items at the given byte offset.
+#[must_use]
 pub fn complete(
     source: &str,
     parse_result: &hew_parser::ParseResult,
@@ -470,6 +471,7 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 }
 
 /// Snippet completions for common language constructs.
+#[must_use]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
@@ -581,8 +583,7 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
         Item::Const(c) => Some((c.name.clone(), CompletionKind::Constant)),
         Item::TypeDecl(td) => {
             let kind = match td.kind {
-                TypeDeclKind::Struct => CompletionKind::Type,
-                TypeDeclKind::Enum => CompletionKind::Type,
+                TypeDeclKind::Struct | TypeDeclKind::Enum => CompletionKind::Type,
             };
             Some((td.name.clone(), kind))
         }

@@ -16,6 +16,7 @@ use crate::OffsetSpan;
 /// cursor position.
 ///
 /// Returns `None` if no identifier is found at `offset` or no references exist.
+#[must_use]
 pub fn find_all_references(
     source: &str,
     parse_result: &ParseResult,
@@ -33,6 +34,7 @@ pub fn find_all_references(
 }
 
 /// Check if a name matches a top-level item definition (function, actor, type, etc.).
+#[must_use]
 pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
     parse_result.program.items.iter().any(|(item, _)| {
         // Check item-level names (functions, actors, types, etc.)

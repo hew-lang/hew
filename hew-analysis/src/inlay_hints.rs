@@ -11,6 +11,7 @@ use hew_types::TypeCheckOutput;
 use crate::{InlayHint, InlayHintKind};
 
 /// Build inlay hints for the entire document.
+#[must_use]
 pub fn build_inlay_hints(
     source: &str,
     parse_result: &ParseResult,

@@ -15,6 +15,7 @@ pub struct DiagnosticInfo {
 }
 
 /// Build code actions from a set of diagnostics.
+#[must_use]
 pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<CodeAction> {
     let mut actions = Vec::new();
     for diag in diagnostics {

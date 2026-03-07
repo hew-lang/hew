@@ -51,6 +51,7 @@ fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
 /// (`start` is a byte offset into `source`, `length` is in bytes).  The token
 /// type and modifier fields use the constants from [`crate::token_types`] and
 /// [`crate::token_modifiers`].
+#[must_use]
 pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
     let lexer_tokens = hew_lexer::lex(source);
     let mut result = Vec::new();

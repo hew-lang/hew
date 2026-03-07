@@ -72,9 +72,8 @@ pub fn complete(source: &str, offset: usize) -> String {
 #[wasm_bindgen]
 pub fn goto_definition(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
-    let word = match hew_analysis::util::word_at_offset(source, offset) {
-        Some(w) => w,
-        None => return String::new(),
+    let Some(word) = hew_analysis::util::word_at_offset(source, offset) else {
+        return String::new();
     };
     match hew_analysis::definition::find_definition(source, &parse_result, &word) {
         Some(span) => serde_json::to_string(&span).unwrap_or_default(),

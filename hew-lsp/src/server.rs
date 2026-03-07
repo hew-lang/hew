@@ -998,21 +998,19 @@ fn to_lsp_completion(item: hew_analysis::CompletionItem) -> CompletionItem {
 fn analysis_symbol_kind_to_lsp(kind: hew_analysis::SymbolKind) -> SymbolKind {
     match kind {
         hew_analysis::SymbolKind::Function => SymbolKind::FUNCTION,
-        hew_analysis::SymbolKind::Actor => SymbolKind::CLASS,
-        hew_analysis::SymbolKind::Supervisor => SymbolKind::CLASS,
-        hew_analysis::SymbolKind::Machine => SymbolKind::ENUM,
+        hew_analysis::SymbolKind::Actor | hew_analysis::SymbolKind::Supervisor => SymbolKind::CLASS,
+        hew_analysis::SymbolKind::Machine | hew_analysis::SymbolKind::Enum => SymbolKind::ENUM,
         hew_analysis::SymbolKind::Trait => SymbolKind::INTERFACE,
-        hew_analysis::SymbolKind::Type => SymbolKind::STRUCT,
+        hew_analysis::SymbolKind::Type | hew_analysis::SymbolKind::Wire => SymbolKind::STRUCT,
         hew_analysis::SymbolKind::Constant => SymbolKind::CONSTANT,
-        hew_analysis::SymbolKind::Wire => SymbolKind::STRUCT,
         hew_analysis::SymbolKind::TypeAlias => SymbolKind::TYPE_PARAMETER,
         hew_analysis::SymbolKind::Impl => SymbolKind::NAMESPACE,
         hew_analysis::SymbolKind::Field => SymbolKind::FIELD,
         hew_analysis::SymbolKind::Method => SymbolKind::METHOD,
-        hew_analysis::SymbolKind::State => SymbolKind::ENUM_MEMBER,
+        hew_analysis::SymbolKind::State | hew_analysis::SymbolKind::Variant => {
+            SymbolKind::ENUM_MEMBER
+        }
         hew_analysis::SymbolKind::Event => SymbolKind::EVENT,
-        hew_analysis::SymbolKind::Enum => SymbolKind::ENUM,
-        hew_analysis::SymbolKind::Variant => SymbolKind::ENUM_MEMBER,
         hew_analysis::SymbolKind::Module => SymbolKind::MODULE,
         hew_analysis::SymbolKind::Constructor => SymbolKind::CONSTRUCTOR,
     }

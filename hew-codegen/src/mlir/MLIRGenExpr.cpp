@@ -4878,7 +4878,8 @@ mlir::Value MLIRGen::generateSelectExpr(const ast::ExprSelect &sel) {
     auto timeoutVal = generateExpression((*sel.timeout)->duration->value);
     if (timeoutVal) {
       if (auto constOp = timeoutVal.getDefiningOp<mlir::arith::ConstantIntOp>()) {
-        timeoutMs = constOp.value();
+        // Duration values are i64 nanoseconds; runtime expects milliseconds.
+        timeoutMs = constOp.value() / 1'000'000;
       }
     }
   }

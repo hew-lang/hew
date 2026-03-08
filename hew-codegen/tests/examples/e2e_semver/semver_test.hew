@@ -1,0 +1,55 @@
+// Test: pure-Hew semver parsing, comparison, and requirement matching.
+import std::text::semver;
+
+fn main() {
+    // ── Basic parsing ────────────────────────────────────────────
+    let v = semver.parse("1.2.3");
+    println(v.major());
+    println(v.minor());
+    println(v.patch());
+    println(v.to_string());
+
+    // Pre-release field access (separate parse to avoid UAF —
+    // compiler drops string fields after extraction)
+    let v1b = semver.parse("1.2.3");
+    println(v1b.pre());
+
+    // ── Pre-release parsing ──────────────────────────────────────
+    let v2 = semver.parse("2.0.0-beta.1");
+    println(v2.major());
+    println(v2.to_string());
+
+    let v2b = semver.parse("2.0.0-beta.1");
+    println(v2b.pre());
+
+    // ── Build metadata ───────────────────────────────────────────
+    let v3 = semver.parse("1.0.0+build.123");
+    println(v3.to_string());
+
+    // ── Comparison ───────────────────────────────────────────────
+    let a = semver.parse("1.0.0");
+    let b = semver.parse("2.0.0");
+    let c = semver.parse("1.0.0");
+    println(a.compare(b));   // -1
+    println(b.compare(a));   // 1
+    println(a.compare(c));   // 0
+
+    // Pre-release precedence: 1.0.0-alpha < 1.0.0
+    let pre = semver.parse("1.0.0-alpha");
+    let rel = semver.parse("1.0.0");
+    println(pre.compare(rel));  // -1
+    println(rel.compare(pre));  // 1
+
+    // ── Requirement matching ─────────────────────────────────────
+    let v4 = semver.parse("1.5.0");
+    println(v4.matches(">=1.0.0, <2.0.0"));  // true
+    println(v4.matches(">=2.0.0"));           // false
+    println(v4.matches("^1.0.0"));            // true (same major)
+    println(v4.matches("~1.5.0"));            // true (same minor)
+    println(v4.matches("~1.4.0"));            // false (1.5 != 1.4 minor)
+
+    // ── free is a no-op ──────────────────────────────────────────
+    v4.free();
+
+    println("=== Done ===");
+}

@@ -1,0 +1,42 @@
+// Test: pure-Hew CSV parsing with headers, quoted fields, and column lookup.
+import std::encoding::csv;
+
+fn main() {
+    // ── Basic parsing with headers ─────────────────────────────
+    let t = csv.parse("name,age,city\nAlice,30,London\nBob,25,Paris");
+    println(t.rows());
+    println(t.cols());
+    println(t.header(0));
+    println(t.header(1));
+    println(t.header(2));
+    println(t.get(0, 0));
+    println(t.get(0, 1));
+    println(t.get(1, 0));
+    println(t.get(1, 2));
+
+    // ── Lookup by column name ──────────────────────────────────
+    let t2 = csv.parse("colour,value\nred,1\nblue,2\ngreen,3");
+    println(t2.get_by_name(0, "colour"));
+    println(t2.get_by_name(1, "value"));
+    println(t2.get_by_name(2, "colour"));
+
+    // ── Quoted fields ──────────────────────────────────────────
+    let t3 = csv.parse("a,b\n\"hello, world\",42\n\"she said \"\"hi\"\"\",99");
+    println(t3.get(0, 0));
+    println(t3.get(0, 1));
+    println(t3.get(1, 0));
+
+    // ── Out-of-bounds returns empty ────────────────────────────
+    let t4 = csv.parse("x\n1");
+    println(t4.get(5, 0));
+    println(t4.get(0, 5));
+
+    // ── Empty input ────────────────────────────────────────────
+    let t5 = csv.parse("");
+    println(t5.rows());
+
+    // ── free is a no-op ────────────────────────────────────────
+    t.free();
+
+    println("=== Done ===");
+}

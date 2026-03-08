@@ -1,4 +1,4 @@
-//! Base64 encoding and decoding.
+//! Base64 encoding and decoding — pure Hew implementation.
 //!
 //! Encode binary data to Base64 strings and decode Base64 strings back
 //! to binary data. Supports both standard and URL-safe alphabets.
@@ -21,25 +21,145 @@
 
 /// Encode binary data to a standard Base64 string.
 pub fn encode(data: bytes) -> String {
-    hew_base64_encode_hew(data)
+    encode_impl(data, false)
 }
 
-/// Encode binary data to a URL-safe Base64 string (no padding).
+/// Encode binary data to a URL-safe Base64 string.
 pub fn encode_url(data: bytes) -> String {
-    hew_base64_encode_url_hew(data)
+    encode_impl(data, true)
 }
 
 /// Decode a Base64 string to binary data.
 ///
 /// Returns an empty `bytes` buffer if the input is not valid Base64.
 pub fn decode(s: String) -> bytes {
-    hew_base64_decode_hew(s)
+    let slen = s.len();
+    let out: bytes = bytes::new();
+    if slen == 0 {
+        return out;
+    }
+
+    // Strip trailing '=' padding
+    var data_len = slen;
+    if data_len > 0 && s.slice(data_len - 1, data_len) == "=" {
+        data_len = data_len - 1;
+    }
+    if data_len > 0 && s.slice(data_len - 1, data_len) == "=" {
+        data_len = data_len - 1;
+    }
+
+    // Collect 6-bit values
+    let vals: bytes = bytes::new();
+    for i in 0..data_len {
+        let ch = s.slice(i, i + 1);
+        let v = decode_char(ch);
+        if v < 0 {
+            return bytes::new();
+        }
+        vals.push(v);
+    }
+
+    // Process groups of 4 values → 3 bytes
+    let nvals = vals.len();
+    var i = 0;
+    while i + 4 <= nvals {
+        let a = vals.get(i);
+        let b = vals.get(i + 1);
+        let c = vals.get(i + 2);
+        let d = vals.get(i + 3);
+        out.push((a << 2) | (b >> 4));
+        out.push(((b & 15) << 4) | (c >> 2));
+        out.push(((c & 3) << 6) | d);
+        i = i + 4;
+    }
+
+    // Handle remaining values (from stripped padding)
+    let remaining = nvals - i;
+    if remaining == 2 {
+        let a = vals.get(i);
+        let b = vals.get(i + 1);
+        out.push((a << 2) | (b >> 4));
+    } else if remaining == 3 {
+        let a = vals.get(i);
+        let b = vals.get(i + 1);
+        let c = vals.get(i + 2);
+        out.push((a << 2) | (b >> 4));
+        out.push(((b & 15) << 4) | (c >> 2));
+    }
+
+    out
 }
 
-// ── FFI bindings ──────────────────────────────────────────────────────
+// ── Internal helpers ─────────────────────────────────────────────────
 
-extern "C" {
-    fn hew_base64_encode_hew(data: bytes) -> String;
-    fn hew_base64_encode_url_hew(data: bytes) -> String;
-    fn hew_base64_decode_hew(s: String) -> bytes;
+/// Map a 6-bit index (0–63) to its Base64 ASCII code.
+fn b64_char(idx: i32, url_safe: bool) -> i32 {
+    if idx < 26 { return 65 + idx; }        // A-Z
+    if idx < 52 { return 97 + idx - 26; }   // a-z
+    if idx < 62 { return 48 + idx - 52; }   // 0-9
+    if idx == 62 {
+        if url_safe { return 45; }  // '-'
+        return 43;                  // '+'
+    }
+    if url_safe { return 95; }  // '_'
+    47                          // '/'
+}
+
+fn encode_impl(data: bytes, url_safe: bool) -> String {
+    let dlen = data.len();
+    let out: bytes = bytes::new();
+    var i = 0;
+
+    // Process complete 3-byte groups
+    while i + 3 <= dlen {
+        let a = data.get(i);
+        let b = data.get(i + 1);
+        let c = data.get(i + 2);
+        out.push(b64_char(a >> 2, url_safe));
+        out.push(b64_char(((a & 3) << 4) | (b >> 4), url_safe));
+        out.push(b64_char(((b & 15) << 2) | (c >> 6), url_safe));
+        out.push(b64_char(c & 63, url_safe));
+        i = i + 3;
+    }
+
+    // Handle remaining bytes (always pad with '=')
+    let remaining = dlen - i;
+    if remaining == 1 {
+        let a = data.get(i);
+        out.push(b64_char(a >> 2, url_safe));
+        out.push(b64_char((a & 3) << 4, url_safe));
+        out.push(61); // '='
+        out.push(61);
+    } else if remaining == 2 {
+        let a = data.get(i);
+        let b = data.get(i + 1);
+        out.push(b64_char(a >> 2, url_safe));
+        out.push(b64_char(((a & 3) << 4) | (b >> 4), url_safe));
+        out.push(b64_char((b & 15) << 2, url_safe));
+        out.push(61); // '='
+    }
+
+    out.to_string()
+}
+
+/// Map a single-character string to its 6-bit Base64 value.
+/// Returns -1 for invalid characters.
+fn decode_char(ch: String) -> i32 {
+    match ch {
+        "A" => 0,  "B" => 1,  "C" => 2,  "D" => 3,  "E" => 4,  "F" => 5,
+        "G" => 6,  "H" => 7,  "I" => 8,  "J" => 9,  "K" => 10, "L" => 11,
+        "M" => 12, "N" => 13, "O" => 14, "P" => 15, "Q" => 16, "R" => 17,
+        "S" => 18, "T" => 19, "U" => 20, "V" => 21, "W" => 22, "X" => 23,
+        "Y" => 24, "Z" => 25,
+        "a" => 26, "b" => 27, "c" => 28, "d" => 29, "e" => 30, "f" => 31,
+        "g" => 32, "h" => 33, "i" => 34, "j" => 35, "k" => 36, "l" => 37,
+        "m" => 38, "n" => 39, "o" => 40, "p" => 41, "q" => 42, "r" => 43,
+        "s" => 44, "t" => 45, "u" => 46, "v" => 47, "w" => 48, "x" => 49,
+        "y" => 50, "z" => 51,
+        "0" => 52, "1" => 53, "2" => 54, "3" => 55, "4" => 56, "5" => 57,
+        "6" => 58, "7" => 59, "8" => 60, "9" => 61,
+        "+" | "-" => 62,
+        "/" | "_" => 63,
+        _ => -1,
+    }
 }

@@ -14,4 +14,11 @@ false
 false
 PASS: unwrap_or matches
 PASS: is_ok matches
+true
+true
+success
+failure
+fallback
+true
+false
 === Done ===

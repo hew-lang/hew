@@ -603,7 +603,24 @@ fn rewrite_builtin_calls_in_item(item: &mut Item) {
                 }
             }
         }
-        _ => {}
+        Item::Const(const_decl) => {
+            rewrite_builtin_calls_in_expr(&mut const_decl.value);
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &mut td.body {
+                if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
+                    rewrite_builtin_calls_in_block(&mut m.body);
+                }
+            }
+        }
+        Item::Supervisor(sup) => {
+            for child in &mut sup.children {
+                for arg in &mut child.args {
+                    rewrite_builtin_calls_in_expr(arg);
+                }
+            }
+        }
+        Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
     }
 }
 
@@ -623,7 +640,12 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
                 rewrite_builtin_calls_in_expr(expr);
             }
         }
-        Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {
+        Stmt::Expression(ref mut expr)
+        | Stmt::Return(Some(ref mut expr))
+        | Stmt::Break {
+            value: Some(ref mut expr),
+            ..
+        } => {
             rewrite_builtin_calls_in_expr(expr);
         }
         Stmt::Defer(expr) => {
@@ -681,7 +703,7 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
             }
         }
         Stmt::Loop { body, .. } => rewrite_builtin_calls_in_block(body),
-        _ => {}
+        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
 }
 
@@ -832,7 +854,14 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
             rewrite_builtin_calls_in_block(block);
         }
         Expr::SpawnLambdaActor { body, .. } => rewrite_builtin_calls_in_expr(body),
-        _ => {}
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::Cooperate
+        | Expr::ScopeCancel
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
+        | Expr::Yield(None) => {}
     }
 }
 
@@ -947,7 +976,14 @@ fn normalize_item_types(item: &mut Item) {
                 normalize_expr_types(&mut transition.body);
             }
         }
-        _ => {}
+        Item::Supervisor(sup) => {
+            for child in &mut sup.children {
+                for arg in &mut child.args {
+                    normalize_expr_types(arg);
+                }
+            }
+        }
+        Item::Import(_) | Item::Wire(_) => {}
     }
 }
 
@@ -1045,7 +1081,7 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
         Stmt::Defer(ref mut expr) => {
             normalize_expr_types(expr);
         }
-        _ => {}
+        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
 }
 
@@ -1230,7 +1266,14 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
                 normalize_expr_types(e);
             }
         }
-        _ => {}
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::Cooperate
+        | Expr::ScopeCancel
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
+        | Expr::Yield(None) => {}
     }
 }
 
@@ -1255,7 +1298,30 @@ fn enrich_item_with_diagnostics(
         Item::Const(const_decl) => {
             enrich_expr_with_diagnostics(&mut const_decl.value, tco, diagnostics)?;
         }
-        _ => {}
+        Item::Trait(trait_decl) => {
+            for trait_item in &mut trait_decl.items {
+                if let hew_parser::ast::TraitItem::Method(m) = trait_item {
+                    if let Some(ref mut body) = m.body {
+                        enrich_block_with_diagnostics(body, tco, diagnostics)?;
+                    }
+                }
+            }
+        }
+        Item::TypeDecl(td) => {
+            for body_item in &mut td.body {
+                if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
+                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics)?;
+                }
+            }
+        }
+        Item::Supervisor(sup) => {
+            for child in &mut sup.children {
+                for arg in &mut child.args {
+                    enrich_expr_with_diagnostics(arg, tco, diagnostics)?;
+                }
+            }
+        }
+        Item::Import(_) | Item::TypeAlias(_) | Item::Wire(_) | Item::ExternBlock(_) => {}
     }
     Ok(())
 }
@@ -1319,6 +1385,10 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "enrichment covers all statement variants"
+)]
 fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,
@@ -1421,7 +1491,7 @@ fn enrich_stmt_with_diagnostics(
             enrich_expr_with_diagnostics(target, tco, diagnostics)?;
             enrich_expr_with_diagnostics(value, tco, diagnostics)?;
         }
-        _ => {}
+        Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
     Ok(())
 }
@@ -1685,7 +1755,18 @@ fn enrich_expr_with_diagnostics(
                 enrich_expr_with_diagnostics(&mut t.body, tco, diagnostics)?;
             }
         }
-        _ => {}
+        Expr::ArrayRepeat { value, count } => {
+            enrich_expr_with_diagnostics(value, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(count, tco, diagnostics)?;
+        }
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::Cooperate
+        | Expr::ScopeCancel
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_)
+        | Expr::Yield(None) => {}
     }
     Ok(())
 }

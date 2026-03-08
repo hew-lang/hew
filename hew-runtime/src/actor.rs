@@ -1009,9 +1009,7 @@ pub unsafe extern "C" fn hew_actor_get_reductions(actor: *const HewActor) -> u32
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_hibernation(actor: *mut HewActor, threshold: c_int) {
-    if actor.is_null() {
-        return;
-    }
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     a.hibernation_threshold
@@ -1028,9 +1026,7 @@ pub unsafe extern "C" fn hew_actor_set_hibernation(actor: *mut HewActor, thresho
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_is_hibernating(actor: *const HewActor) -> c_int {
-    if actor.is_null() {
-        return 0;
-    }
+    cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     a.hibernating.load(Ordering::Relaxed)
@@ -1046,9 +1042,7 @@ pub unsafe extern "C" fn hew_actor_is_hibernating(actor: *const HewActor) -> c_i
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_wake(actor: *mut HewActor) {
-    if actor.is_null() {
-        return;
-    }
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     a.idle_count.store(0, Ordering::Relaxed);
@@ -1068,9 +1062,7 @@ pub unsafe extern "C" fn hew_actor_wake(actor: *mut HewActor) {
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_set_priority(actor: *mut HewActor, priority: c_int) {
-    if actor.is_null() {
-        return;
-    }
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     let clamped = priority.clamp(HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW);
@@ -1086,9 +1078,7 @@ pub unsafe extern "C" fn hew_actor_set_priority(actor: *mut HewActor, priority: 
 /// `actor` must be a valid pointer returned by a spawn function.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_get_priority(actor: *const HewActor) -> c_int {
-    if actor.is_null() {
-        return HEW_PRIORITY_NORMAL;
-    }
+    cabi_guard!(actor.is_null(), HEW_PRIORITY_NORMAL);
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
     a.priority.load(Ordering::Relaxed)
@@ -1393,9 +1383,7 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
-    if actor.is_null() {
-        return;
-    }
+    cabi_guard!(actor.is_null());
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
@@ -1468,9 +1456,7 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
 /// `actor` must be a valid pointer to a [`HewActor`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_get_error(actor: *const HewActor) -> i32 {
-    if actor.is_null() {
-        return 0;
-    }
+    cabi_guard!(actor.is_null(), 0);
     // SAFETY: Caller guarantees `actor` is valid.
     unsafe { &*actor }.error_code.load(Ordering::Acquire)
 }

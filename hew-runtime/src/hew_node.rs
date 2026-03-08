@@ -245,9 +245,7 @@ fn registry_ptr_to_actor_id(actor_ptr: *mut c_void) -> u64 {
 /// `bind_addr` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_new(node_id: u16, bind_addr: *const c_char) -> *mut HewNode {
-    if bind_addr.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(bind_addr.is_null(), ptr::null_mut());
 
     // SAFETY: caller guarantees bind_addr points to a valid C string.
     let bind_copy = unsafe { libc::strdup(bind_addr) };
@@ -527,9 +525,7 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
 /// `node` must be a valid pointer returned by [`hew_node_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
-    if node.is_null() {
-        return;
-    }
+    cabi_guard!(node.is_null());
 
     // SAFETY: same pointer validity contract as this function.
     let _ = unsafe { hew_node_stop(node) };
@@ -562,9 +558,7 @@ pub unsafe extern "C" fn hew_node_register(
     name: *const c_char,
     actor: u64,
 ) -> c_int {
-    if node.is_null() || name.is_null() {
-        return -1;
-    }
+    cabi_guard!(node.is_null() || name.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &mut *node };
     if node.registry.is_null() {
@@ -602,9 +596,7 @@ pub unsafe extern "C" fn hew_node_register(
 /// - `name` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_char) -> c_int {
-    if node.is_null() || name.is_null() {
-        return -1;
-    }
+    cabi_guard!(node.is_null() || name.is_null(), -1);
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &mut *node };
     if node.registry.is_null() {
@@ -637,9 +629,7 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
 /// - `name` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char) -> u64 {
-    if node.is_null() || name.is_null() {
-        return 0;
-    }
+    cabi_guard!(node.is_null() || name.is_null(), 0);
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &*node };
 

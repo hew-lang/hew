@@ -68,9 +68,7 @@ fn output_to_result(output: std::process::Output) -> *mut HewProcessResult {
 /// `cmd` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_run(cmd: *const c_char) -> *mut HewProcessResult {
-    if cmd.is_null() {
-        return std::ptr::null_mut();
-    }
+    cabi_guard!(cmd.is_null(), std::ptr::null_mut());
     // SAFETY: cmd is a valid NUL-terminated C string per caller contract.
     let Ok(cmd_str) = unsafe { CStr::from_ptr(cmd) }.to_str() else {
         return std::ptr::null_mut();
@@ -148,9 +146,7 @@ pub unsafe extern "C" fn hew_process_run_args(
 /// `cmd` must be a valid NUL-terminated C string, or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProcess {
-    if cmd.is_null() {
-        return std::ptr::null_mut();
-    }
+    cabi_guard!(cmd.is_null(), std::ptr::null_mut());
     // SAFETY: cmd is a valid NUL-terminated C string per caller contract.
     let Ok(cmd_str) = unsafe { CStr::from_ptr(cmd) }.to_str() else {
         return std::ptr::null_mut();
@@ -170,9 +166,7 @@ pub unsafe extern "C" fn hew_process_spawn(cmd: *const c_char) -> *mut HewProces
 /// `proc` must be a valid pointer to a [`HewProcess`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
-    if proc.is_null() {
-        return -1;
-    }
+    cabi_guard!(proc.is_null(), -1);
     // SAFETY: proc is a valid HewProcess pointer per caller contract.
     let p = unsafe { &mut *proc };
     match p.inner.wait() {
@@ -190,9 +184,7 @@ pub unsafe extern "C" fn hew_process_wait(proc: *mut HewProcess) -> i32 {
 /// `proc` must be a valid pointer to a [`HewProcess`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_kill(proc: *mut HewProcess) -> i32 {
-    if proc.is_null() {
-        return -1;
-    }
+    cabi_guard!(proc.is_null(), -1);
     // SAFETY: proc is a valid HewProcess pointer per caller contract.
     let p = unsafe { &mut *proc };
     match p.inner.kill() {
@@ -211,9 +203,7 @@ pub unsafe extern "C" fn hew_process_kill(proc: *mut HewProcess) -> i32 {
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
-    if r.is_null() {
-        return;
-    }
+    cabi_guard!(r.is_null());
     // SAFETY: r was allocated with Box::into_raw and has not been freed.
     let result = unsafe { Box::from_raw(r) };
     if !result.stdout.is_null() {
@@ -234,9 +224,7 @@ pub unsafe extern "C" fn hew_process_result_free(r: *mut HewProcessResult) {
 /// and must not have been freed already. Null is accepted (no-op).
 #[no_mangle]
 pub unsafe extern "C" fn hew_process_free(p: *mut HewProcess) {
-    if p.is_null() {
-        return;
-    }
+    cabi_guard!(p.is_null());
     // SAFETY: p was allocated with Box::into_raw and has not been freed.
     drop(unsafe { Box::from_raw(p) });
 }

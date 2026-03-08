@@ -227,9 +227,7 @@ pub unsafe extern "C" fn hew_gen_yield(
     value: *mut c_void,
     size: usize,
 ) -> bool {
-    if ctx.is_null() {
-        return false;
-    }
+    cabi_guard!(ctx.is_null(), false);
 
     // Deep-copy the yielded value.
     let data = if size > 0 && !value.is_null() {
@@ -295,9 +293,7 @@ pub unsafe extern "C" fn hew_gen_yield(
 /// - Must only be called from the consumer thread.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize) -> *mut c_void {
-    if ctx.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(ctx.is_null(), ptr::null_mut());
 
     // SAFETY: ctx is valid per caller contract.  Only the consumer
     // thread accesses resume_tx and yield_rx.
@@ -370,9 +366,7 @@ pub unsafe extern "C" fn hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize)
 /// be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gen_free(ctx: *mut HewGenCtx) {
-    if ctx.is_null() {
-        return;
-    }
+    cabi_guard!(ctx.is_null());
 
     // SAFETY: ctx was Box-allocated and is exclusively owned by caller.
     unsafe {

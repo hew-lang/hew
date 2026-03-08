@@ -823,9 +823,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     sup: *mut HewSupervisor,
     spec: *const HewChildSpec,
 ) -> c_int {
-    if sup.is_null() || spec.is_null() {
-        return -1;
-    }
+    cabi_guard!(sup.is_null() || spec.is_null(), -1);
     // SAFETY: caller guarantees both pointers are valid.
     let s = unsafe { &mut *sup };
     // SAFETY: caller guarantees `spec` is a valid, aligned, initialized `HewChildSpec` pointer.
@@ -947,9 +945,7 @@ pub unsafe extern "C" fn hew_supervisor_notify_child_event(
     child_id: u64,
     exit_state: c_int,
 ) {
-    if sup.is_null() {
-        return;
-    }
+    cabi_guard!(sup.is_null());
     // SAFETY: caller guarantees sup is valid.
     let s = unsafe { &*sup };
     if s.self_actor.is_null() {
@@ -1136,9 +1132,7 @@ pub unsafe extern "C" fn hew_supervisor_handle_crash(
     sup: *mut HewSupervisor,
     child: *mut HewActor,
 ) {
-    if sup.is_null() || child.is_null() {
-        return;
-    }
+    cabi_guard!(sup.is_null() || child.is_null());
     // SAFETY: caller guarantees both pointers are valid.
     let s = unsafe { &*sup };
     // SAFETY: caller guarantees `child` is a valid HewActor pointer.
@@ -1410,9 +1404,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     sup: *mut HewSupervisor,
     spec: *const HewChildSpec,
 ) -> c_int {
-    if sup.is_null() || spec.is_null() {
-        return -1;
-    }
+    cabi_guard!(sup.is_null() || spec.is_null(), -1);
     // SAFETY: caller guarantees both pointers are valid.
     let s = unsafe { &mut *sup };
     // SAFETY: caller guarantees `spec` is valid.
@@ -1592,9 +1584,7 @@ pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_set_restart_notify(sup: *mut HewSupervisor) {
-    if sup.is_null() {
-        return;
-    }
+    cabi_guard!(sup.is_null());
     // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
     let s = unsafe { &mut *sup };
     s.restart_notify = Some(Arc::new((Mutex::new(0), Condvar::new())));
@@ -1620,9 +1610,7 @@ pub unsafe extern "C" fn hew_supervisor_wait_restart(
     target: usize,
     timeout_ms: u64,
 ) -> usize {
-    if sup.is_null() {
-        return 0;
-    }
+    cabi_guard!(sup.is_null(), 0);
     // SAFETY: caller guarantees `sup` is a valid pointer from `hew_supervisor_new`.
     let s = unsafe { &*sup };
     let pair = match s.restart_notify {

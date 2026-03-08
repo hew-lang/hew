@@ -146,9 +146,7 @@ pub unsafe extern "C" fn hew_task_new() -> *mut HewTask {
 /// used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
-    if task.is_null() {
-        return;
-    }
+    cabi_guard!(task.is_null());
     // SAFETY: Caller guarantees `task` was Box-allocated.
     let t = unsafe { Box::from_raw(task) };
     if !t.result.is_null() {
@@ -169,9 +167,7 @@ pub unsafe extern "C" fn hew_task_free(task: *mut HewTask) {
 /// either be null or an Rc-allocated pointer returned by `hew_rc_new`.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_set_env(task: *mut HewTask, env: *mut c_void) {
-    if task.is_null() {
-        return;
-    }
+    cabi_guard!(task.is_null());
     // SAFETY: caller guarantees `task` is a valid, non-null pointer.
     let t = unsafe { &mut *task };
     t.env_ptr = env;
@@ -184,9 +180,7 @@ pub unsafe extern "C" fn hew_task_set_env(task: *mut HewTask, env: *mut c_void) 
 /// `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_get_env(task: *mut HewTask) -> *mut c_void {
-    if task.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(task.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `task` is a valid, non-null pointer.
     unsafe { (*task).env_ptr }
 }
@@ -198,9 +192,7 @@ pub unsafe extern "C" fn hew_task_get_env(task: *mut HewTask) -> *mut c_void {
 /// `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_get_result(task: *mut HewTask) -> *mut c_void {
-    if task.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(task.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &*task };
     if t.state != HewTaskState::Done {
@@ -222,9 +214,7 @@ pub unsafe extern "C" fn hew_task_get_result(task: *mut HewTask) -> *mut c_void 
 ///   when `size` is 0.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_set_result(task: *mut HewTask, result: *mut c_void, size: usize) {
-    if task.is_null() {
-        return;
-    }
+    cabi_guard!(task.is_null());
     // SAFETY: Caller guarantees `task` is valid.
     // SAFETY: caller guarantees task is valid.
     let t = unsafe { &mut *task };
@@ -246,9 +236,7 @@ pub unsafe extern "C" fn hew_task_set_result(task: *mut HewTask, result: *mut c_
 /// `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_get_error(task: *mut HewTask) -> i32 {
-    if task.is_null() {
-        return HewTaskError::None as i32;
-    }
+    cabi_guard!(task.is_null(), HewTaskError::None as i32);
     // SAFETY: Caller guarantees `task` is valid.
     unsafe { (*task).error as i32 }
 }
@@ -262,9 +250,7 @@ pub unsafe extern "C" fn hew_task_get_error(task: *mut HewTask) -> i32 {
 /// `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_is_cancelled(task: *mut HewTask) -> i32 {
-    if task.is_null() {
-        return 0;
-    }
+    cabi_guard!(task.is_null(), 0);
     // SAFETY: Caller guarantees `task` is valid.
     i32::from(unsafe { (*task).error } == HewTaskError::Cancelled)
 }
@@ -291,9 +277,7 @@ pub type TaskFn = unsafe extern "C" fn(*mut HewTask);
 /// - `task_fn` must be a valid function pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) {
-    if task.is_null() {
-        return;
-    }
+    cabi_guard!(task.is_null());
 
     // Set up the done signal for cross-thread notification.
     let signal = Arc::new(TaskDoneSignal::new());
@@ -336,9 +320,7 @@ pub unsafe extern "C" fn hew_task_spawn_thread(task: *mut HewTask, task_fn: Task
 /// - Must not be called from the same thread that is running the task.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_await_blocking(task: *mut HewTask) -> *mut c_void {
-    if task.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(task.is_null(), ptr::null_mut());
 
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &*task };
@@ -369,9 +351,7 @@ pub unsafe extern "C" fn hew_task_await_blocking(task: *mut HewTask) -> *mut c_v
 /// - `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_complete_threaded(task: *mut HewTask) {
-    if task.is_null() {
-        return;
-    }
+    cabi_guard!(task.is_null());
     // SAFETY: Caller guarantees `task` is valid.
     let t = unsafe { &mut *task };
     t.state = HewTaskState::Done;
@@ -387,9 +367,7 @@ pub unsafe extern "C" fn hew_task_complete_threaded(task: *mut HewTask) {
 /// - `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
-    if scope.is_null() {
-        return;
-    }
+    cabi_guard!(scope.is_null());
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &mut *scope };
     let mut cur = s.tasks;
@@ -425,9 +403,7 @@ pub unsafe extern "C" fn hew_task_scope_join_all(scope: *mut HewTaskScope) {
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_is_cancelled(scope: *mut HewTaskScope) -> i32 {
-    if scope.is_null() {
-        return 0;
-    }
+    cabi_guard!(scope.is_null(), 0);
     // SAFETY: Caller guarantees `scope` is valid.
     i32::from(unsafe { (*scope).cancelled.load(Ordering::Acquire) })
 }
@@ -483,9 +459,7 @@ pub unsafe extern "C" fn hew_task_scope_new() -> *mut HewTaskScope {
 /// - `task` must be a valid pointer returned by [`hew_task_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_spawn(scope: *mut HewTaskScope, task: *mut HewTask) {
-    if scope.is_null() || task.is_null() {
-        return;
-    }
+    cabi_guard!(scope.is_null() || task.is_null());
     // SAFETY: Caller guarantees both pointers are valid.
     let s = unsafe { &mut *scope };
     // SAFETY: caller guarantees task is valid.
@@ -507,9 +481,7 @@ pub unsafe extern "C" fn hew_task_scope_spawn(scope: *mut HewTaskScope, task: *m
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_poll(scope: *mut HewTaskScope) -> *mut HewTask {
-    if scope.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(scope.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &*scope };
     let mut cur = s.tasks;
@@ -533,9 +505,7 @@ pub unsafe extern "C" fn hew_task_scope_poll(scope: *mut HewTaskScope) -> *mut H
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_is_done(scope: *mut HewTaskScope) -> i32 {
-    if scope.is_null() {
-        return 1;
-    }
+    cabi_guard!(scope.is_null(), 1);
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &*scope };
     i32::from(s.completed_count >= s.task_count)
@@ -551,9 +521,7 @@ pub unsafe extern "C" fn hew_task_scope_is_done(scope: *mut HewTaskScope) -> i32
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_cancel(scope: *mut HewTaskScope) {
-    if scope.is_null() {
-        return;
-    }
+    cabi_guard!(scope.is_null());
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &mut *scope };
     s.cancelled.store(true, Ordering::Release);
@@ -582,9 +550,7 @@ pub unsafe extern "C" fn hew_task_scope_complete_task(
     scope: *mut HewTaskScope,
     task: *mut HewTask,
 ) {
-    if scope.is_null() || task.is_null() {
-        return;
-    }
+    cabi_guard!(scope.is_null() || task.is_null());
     // SAFETY: Caller guarantees both pointers are valid.
     let s = unsafe { &mut *scope };
     // SAFETY: caller guarantees task is valid.
@@ -614,9 +580,7 @@ pub unsafe extern "C" fn hew_task_scope_get_task(
     scope: *mut HewTaskScope,
     index: i32,
 ) -> *mut HewTask {
-    if scope.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(scope.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &*scope };
     assert!(
@@ -645,9 +609,7 @@ pub unsafe extern "C" fn hew_task_scope_get_task(
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_wait_first(scope: *mut HewTaskScope) -> *mut HewTask {
-    if scope.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(scope.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &*scope };
     let mut cur = s.tasks;
@@ -671,9 +633,7 @@ pub unsafe extern "C" fn hew_task_scope_wait_first(scope: *mut HewTaskScope) -> 
 /// `scope` must be a valid pointer returned by [`hew_task_scope_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_has_active_tasks(scope: *mut HewTaskScope) -> i32 {
-    if scope.is_null() {
-        return 0;
-    }
+    cabi_guard!(scope.is_null(), 0);
     // SAFETY: Caller guarantees `scope` is valid.
     let s = unsafe { &*scope };
     let mut cur = s.tasks;
@@ -700,9 +660,7 @@ pub unsafe extern "C" fn hew_task_scope_has_active_tasks(scope: *mut HewTaskScop
 /// not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_task_scope_destroy(scope: *mut HewTaskScope) {
-    if scope.is_null() {
-        return;
-    }
+    cabi_guard!(scope.is_null());
     // Join all worker threads before freeing tasks to avoid UAF.
     // SAFETY: Caller guarantees `scope` is valid.
     unsafe { hew_task_scope_join_all(scope) };

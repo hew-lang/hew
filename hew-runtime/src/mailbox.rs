@@ -101,9 +101,7 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
 /// this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
-    if node.is_null() {
-        return;
-    }
+    cabi_guard!(node.is_null());
     // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
     unsafe {
         libc::free((*node).data);
@@ -1252,9 +1250,7 @@ pub unsafe extern "C" fn hew_mailbox_capacity(mb: *const HewMailbox) -> usize {
 /// [`hew_mailbox_new_bounded`] and must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
-    if mb.is_null() {
-        return;
-    }
+    cabi_guard!(mb.is_null());
 
     // SAFETY: Caller guarantees `mb` was Box-allocated and is exclusively owned.
     let mailbox = unsafe { Box::from_raw(mb) };

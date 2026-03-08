@@ -924,9 +924,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
     routing_table: *mut HewRoutingTable,
     cluster: *mut HewCluster,
 ) -> *mut HewConnMgr {
-    if transport.is_null() {
-        return std::ptr::null_mut();
-    }
+    cabi_guard!(transport.is_null(), std::ptr::null_mut());
     let mgr = Box::new(HewConnMgr {
         connections: Mutex::new(Vec::with_capacity(16)),
         transport,
@@ -1369,9 +1367,7 @@ pub unsafe extern "C" fn hew_connmgr_send(
     data: *mut u8,
     size: usize,
 ) -> c_int {
-    if mgr.is_null() {
-        return -1;
-    }
+    cabi_guard!(mgr.is_null(), -1);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
 
@@ -1504,9 +1500,7 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
     data: *mut u8,
     size: usize,
 ) -> c_int {
-    if mgr.is_null() {
-        return 0;
-    }
+    cabi_guard!(mgr.is_null(), 0);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr_ref = unsafe { &*mgr };
 
@@ -1546,9 +1540,7 @@ pub unsafe extern "C" fn hew_connmgr_broadcast(
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_last_activity(mgr: *mut HewConnMgr, conn_id: c_int) -> u64 {
-    if mgr.is_null() {
-        return 0;
-    }
+    cabi_guard!(mgr.is_null(), 0);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
     let Ok(conns) = mgr.connections.lock() else {
@@ -1572,9 +1564,7 @@ pub unsafe extern "C" fn hew_connmgr_last_activity(mgr: *mut HewConnMgr, conn_id
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_connmgr_conn_state(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
-    if mgr.is_null() {
-        return CONN_STATE_CLOSED;
-    }
+    cabi_guard!(mgr.is_null(), CONN_STATE_CLOSED);
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
     let Ok(conns) = mgr.connections.lock() else {

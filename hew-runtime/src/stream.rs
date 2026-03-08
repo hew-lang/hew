@@ -396,9 +396,7 @@ pub unsafe extern "C" fn hew_stream_channel(capacity: i64) -> *mut HewStreamPair
 /// `hew_stream_from_tcp`. The sink must not be extracted more than once.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut HewSink {
-    if pair.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(pair.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees pair is valid.
     // Null-out to transfer ownership (Drop won't double-free).
     unsafe {
@@ -416,9 +414,7 @@ pub unsafe extern "C" fn hew_stream_pair_sink(pair: *mut HewStreamPair) -> *mut 
 /// `hew_stream_from_tcp`. The stream must not be extracted more than once.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_pair_stream(pair: *mut HewStreamPair) -> *mut HewStream {
-    if pair.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(pair.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees pair is valid.
     // Null-out to transfer ownership (Drop won't double-free).
     unsafe {
@@ -452,9 +448,7 @@ pub unsafe extern "C" fn hew_stream_pair_free(pair: *mut HewStreamPair) {
 /// `path` must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut HewStream {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(path.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees path is a valid null-terminated C string.
     let s = unsafe { CStr::from_ptr(path) };
     let Ok(path_str) = s.to_str() else {
@@ -482,9 +476,7 @@ pub unsafe extern "C" fn hew_stream_from_file_read(path: *const c_char) -> *mut 
 /// `path` must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_from_file_write(path: *const c_char) -> *mut HewSink {
-    if path.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(path.is_null(), ptr::null_mut());
     // SAFETY: Caller guarantees path is a valid null-terminated C string.
     let s = unsafe { CStr::from_ptr(path) };
     let Ok(path_str) = s.to_str() else {
@@ -538,9 +530,7 @@ pub unsafe extern "C" fn hew_stream_from_bytes(
 /// constructor functions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_next(stream: *mut HewStream) -> *mut c_void {
-    if stream.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(stream.is_null(), ptr::null_mut());
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
     match s.inner.next() {
@@ -579,9 +569,7 @@ pub unsafe extern "C" fn hew_stream_next_sized(
     stream: *mut HewStream,
     out_size: *mut usize,
 ) -> *mut c_void {
-    if stream.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(stream.is_null(), ptr::null_mut());
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &mut *stream };
     if let Some(item) = s.inner.next() {
@@ -682,9 +670,7 @@ pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
 /// Both `stream` and `sink` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewSink) {
-    if stream.is_null() || sink.is_null() {
-        return;
-    }
+    cabi_guard!(stream.is_null() || sink.is_null());
     // SAFETY: Both pointers are valid per caller contract.
     let s = unsafe { &mut *stream };
     // SAFETY: sink is non-null (checked above) and valid per caller contract.
@@ -714,9 +700,7 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
 /// `stream` must be a valid stream pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStream {
-    if stream.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(stream.is_null(), ptr::null_mut());
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
     let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
@@ -742,9 +726,7 @@ pub unsafe extern "C" fn hew_stream_chunks(
     stream: *mut HewStream,
     chunk_size: i64,
 ) -> *mut HewStream {
-    if stream.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(stream.is_null(), ptr::null_mut());
     let size = usize::try_from(chunk_size.max(1)).unwrap_or(1);
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
@@ -770,9 +752,7 @@ pub unsafe extern "C" fn hew_stream_chunks(
 /// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *mut c_char {
-    if stream.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(stream.is_null(), ptr::null_mut());
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     let mut owned = unsafe { Box::from_raw(stream) };
@@ -806,9 +786,7 @@ pub unsafe extern "C" fn hew_stream_collect_string(stream: *mut HewStream) -> *m
 /// `stream` must be a valid `HewStream` pointer or null.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
-    if stream.is_null() {
-        return 0;
-    }
+    cabi_guard!(stream.is_null(), 0);
 
     // SAFETY: stream was allocated with Box::into_raw; we take ownership.
     let mut owned = unsafe { Box::from_raw(stream) };
@@ -827,9 +805,7 @@ pub unsafe extern "C" fn hew_stream_count(stream: *mut HewStream) -> i64 {
 /// `sink` must be a valid pointer. `data` must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const c_char) {
-    if sink.is_null() || data.is_null() {
-        return;
-    }
+    cabi_guard!(sink.is_null() || data.is_null());
 
     // SAFETY: data is a valid C string.
     let s = unsafe { CStr::from_ptr(data) };
@@ -849,9 +825,7 @@ pub unsafe extern "C" fn hew_sink_write_string(sink: *mut HewSink, data: *const 
 /// `stream` must be a valid stream pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
-    if stream.is_null() {
-        return 1;
-    }
+    cabi_guard!(stream.is_null(), 1);
 
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &*stream };

@@ -264,9 +264,7 @@ pub unsafe extern "C" fn hew_wire_buf_init_read(buf: *mut HewWireBuf, data: *con
 /// `buf` must point to a valid, writable [`HewWireBuf`] with malloc-backed data.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_encode_varint(buf: *mut HewWireBuf, value: u64) -> c_int {
-    if buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null(), -1);
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &mut *buf };
     let mut v = value;
@@ -297,9 +295,7 @@ pub unsafe extern "C" fn hew_wire_encode_varint(buf: *mut HewWireBuf, value: u64
 /// writable.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_varint(buf: *mut HewWireBuf, out: *mut u64) -> c_int {
-    if buf.is_null() || out.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || out.is_null(), -1);
     // SAFETY: caller guarantees both pointers are valid.
     let b = unsafe { &mut *buf };
     let mut result: u64 = 0;
@@ -400,9 +396,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_fixed32(
     if unsafe { hew_wire_encode_varint(buf, make_tag(field_num, HEW_WIRE_FIXED32)) } != 0 {
         return -1;
     }
-    if buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null(), -1);
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &mut *buf };
     let bytes = value.to_le_bytes();
@@ -428,9 +422,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_fixed64(
     if unsafe { hew_wire_encode_varint(buf, make_tag(field_num, HEW_WIRE_FIXED64)) } != 0 {
         return -1;
     }
-    if buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null(), -1);
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &mut *buf };
     let bytes = value.to_le_bytes();
@@ -465,9 +457,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_bytes(
     if len == 0 {
         return 0;
     }
-    if buf.is_null() || data.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || data.is_null(), -1);
     // SAFETY: caller guarantees `buf` and `data` are valid.
     let b = unsafe { &mut *buf };
     // SAFETY: `data` is valid for `len` bytes per caller contract.
@@ -489,9 +479,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_string(
     field_num: c_int,
     str_ptr: *const c_char,
 ) -> c_int {
-    if str_ptr.is_null() {
-        return -1;
-    }
+    cabi_guard!(str_ptr.is_null(), -1);
     // SAFETY: caller guarantees `str_ptr` is a valid C string.
     let len = unsafe { libc::strlen(str_ptr) };
     // SAFETY: forwarded.
@@ -509,9 +497,7 @@ pub unsafe extern "C" fn hew_wire_encode_field_string(
 /// `buf` and `out` must be valid, non-null pointers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_fixed32(buf: *mut HewWireBuf, out: *mut u32) -> c_int {
-    if buf.is_null() || out.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || out.is_null(), -1);
     // SAFETY: caller guarantees pointers are valid.
     let b = unsafe { &mut *buf };
     let Some(ptr) = b.peek(4) else { return -1 };
@@ -535,9 +521,7 @@ pub unsafe extern "C" fn hew_wire_decode_fixed32(buf: *mut HewWireBuf, out: *mut
 /// `buf` and `out` must be valid, non-null pointers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_fixed64(buf: *mut HewWireBuf, out: *mut u64) -> c_int {
-    if buf.is_null() || out.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || out.is_null(), -1);
     // SAFETY: caller guarantees pointers are valid.
     let b = unsafe { &mut *buf };
     let Some(ptr) = b.peek(8) else { return -1 };
@@ -568,9 +552,7 @@ pub unsafe extern "C" fn hew_wire_decode_bytes(
     out: *mut *const c_void,
     out_len: *mut usize,
 ) -> c_int {
-    if buf.is_null() || out.is_null() || out_len.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || out.is_null() || out_len.is_null(), -1);
     let mut length: u64 = 0;
     // SAFETY: forwarded; `length` is a valid local.
     if unsafe { hew_wire_decode_varint(buf, &raw mut length) } != 0 {
@@ -699,9 +681,7 @@ pub unsafe extern "C" fn hew_wire_write_hbf_header(
     flags: u8,
     payload_len: u32,
 ) -> c_int {
-    if buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null(), -1);
     // SAFETY: caller guarantees `buf` is valid.
     let b = unsafe { &mut *buf };
     // SAFETY: returns a malloc-allocated header pointer or null.
@@ -755,9 +735,7 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
     buf: *mut HewWireBuf,
     env: *const HewWireEnvelope,
 ) -> c_int {
-    if buf.is_null() || env.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || env.is_null(), -1);
     // SAFETY: caller guarantees `env` is valid.
     let e = unsafe { &*env };
     let msg_type = i64::from(e.msg_type);
@@ -809,9 +787,7 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
     buf: *mut HewWireBuf,
     env: *mut HewWireEnvelope,
 ) -> c_int {
-    if buf.is_null() || env.is_null() {
-        return -1;
-    }
+    cabi_guard!(buf.is_null() || env.is_null(), -1);
     // SAFETY: caller guarantees `env` is valid.
     let e = unsafe { &mut *env };
     e.target_actor_id = 0;
@@ -1158,9 +1134,7 @@ pub unsafe extern "C" fn hew_wire_validate_header_hew(v: *mut crate::vec::HewVec
 /// `buf` must be a valid, non-null pointer to a [`HewWireBuf`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_decode_string(buf: *mut HewWireBuf) -> *const c_char {
-    if buf.is_null() {
-        return std::ptr::null();
-    }
+    cabi_guard!(buf.is_null(), std::ptr::null());
     let mut length: u64 = 0;
     // SAFETY: `buf` was checked non-null above; `&raw mut length` is a valid out-pointer.
     if unsafe { hew_wire_decode_varint(buf, &raw mut length) } != 0 {
@@ -1208,10 +1182,8 @@ pub unsafe extern "C" fn hew_wire_decode_string(buf: *mut HewWireBuf) -> *const 
 /// After this call, `buf` is freed and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn hew_wire_buf_to_bytes(buf: *mut HewWireBuf) -> *mut crate::vec::HewVec {
-    if buf.is_null() {
-        // SAFETY: `hew_vec_new` allocates a fresh empty vec; always safe to call.
-        return unsafe { crate::vec::hew_vec_new() };
-    }
+    // SAFETY: `hew_vec_new` allocates a fresh empty vec; always safe to call.
+    cabi_guard!(buf.is_null(), unsafe { crate::vec::hew_vec_new() });
     // SAFETY: `buf` was checked non-null above and the caller guarantees it is valid.
     let b = unsafe { &*buf };
     let slice = if b.data.is_null() || b.len == 0 {
@@ -1241,9 +1213,7 @@ pub unsafe extern "C" fn hew_wire_bytes_to_buf(vec: *mut crate::vec::HewVec) -> 
     let bytes = unsafe { crate::vec::hwvec_to_u8(vec) };
     // SAFETY: `hew_wire_buf_new` allocates a fresh buffer; always safe to call.
     let buf = unsafe { hew_wire_buf_new() };
-    if buf.is_null() {
-        return buf;
-    }
+    cabi_guard!(buf.is_null(), std::ptr::null_mut());
     // SAFETY: `buf` was just allocated and checked non-null.
     let b = unsafe { &mut *buf };
     // SAFETY: `bytes` slice is valid (from `hwvec_to_u8`); `push_bytes` copies from the pointer.

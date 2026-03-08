@@ -82,7 +82,7 @@ fn test_match_option() -> i32 {
         Some(v) => v,
         None => -1,
     };
-    let none_val = None;
+    let none_val: Option<int> = None;
     let r2 = match none_val {
         Some(v) => v,
         None => -1,

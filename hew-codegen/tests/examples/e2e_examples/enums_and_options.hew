@@ -37,7 +37,7 @@ fn test_option_match() {
             println("FAIL: expected Some")
         },
     }
-    let empty = None;
+    let empty: Option<int> = None;
     match empty {
         Some(v) => {
             println("FAIL: expected None")

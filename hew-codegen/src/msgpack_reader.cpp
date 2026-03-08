@@ -87,7 +87,9 @@ static ast::Visibility parseVisibility(const msgpack::object &obj) {
     return ast::Visibility::PubPackage;
   if (s == "PubSuper")
     return ast::Visibility::PubSuper;
-  return ast::Visibility::Private;
+  if (s == "Private")
+    return ast::Visibility::Private;
+  fail("unknown Visibility variant: " + s);
 }
 
 /// Check if msgpack object is nil.

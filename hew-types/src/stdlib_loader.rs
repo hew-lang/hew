@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use hew_parser::ast::{Block, Expr, ExternFnDecl, ImplDecl, Item, Stmt, TypeExpr};
+use hew_parser::ast::{
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeExpr,
+};
 use hew_parser::parse;
 
 use crate::ty::Ty;
@@ -21,6 +23,10 @@ pub struct ModuleInfo {
     pub handle_types: Vec<String>,
     /// Handle method mappings: ((`type_name`, `method_name`), `c_symbol`).
     pub handle_methods: Vec<((String, String), String)>,
+    /// Wrapper `pub fn` signatures: (`method_name`, `param_types`, `return_type`).
+    pub wrapper_fns: Vec<(String, Vec<Ty>, Ty)>,
+    /// Types with `impl Drop` — move-only, not Copy.
+    pub drop_types: Vec<String>,
 }
 
 /// Load type information for a module from its `.hew` file.
@@ -95,6 +101,8 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         clean_names: Vec::new(),
         handle_types: Vec::new(),
         handle_methods: Vec::new(),
+        wrapper_fns: Vec::new(),
+        drop_types: Vec::new(),
     };
 
     for (item, _span) in &program.items {
@@ -105,16 +113,43 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     info.functions.push((func.name.clone(), params, ret));
                 }
             }
+            // Only types WITHOUT struct fields are opaque handles.
+            // Types with fields (e.g. Version { maj: i32; ... }) are real
+            // structs, not opaque pointers.
             Item::TypeDecl(td) => {
-                let qualified = format!("{module_short}.{}", td.name);
-                info.handle_types.push(qualified);
+                let has_fields = td
+                    .body
+                    .iter()
+                    .any(|b| matches!(b, TypeBodyItem::Field { .. }));
+                if !has_fields {
+                    let qualified = format!("{module_short}.{}", td.name);
+                    info.handle_types.push(qualified);
+                }
             }
             Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
+                // Extract wrapper function's own signature
+                let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
+                info.wrapper_fns.push((fn_decl.name.clone(), params, ret));
+
+                // Clean name mapping
                 if let Some(c_symbol) = extract_call_target(&fn_decl.body) {
                     info.clean_names.push((fn_decl.name.clone(), c_symbol));
                 }
             }
             Item::Impl(impl_decl) => {
+                // Detect `impl Drop for T` — collect as drop types
+                if let Some(ref tb) = impl_decl.trait_bound {
+                    if tb.name == "Drop" {
+                        if let TypeExpr::Named { ref name, .. } = impl_decl.target_type.0 {
+                            let qualified = if name.contains('.') {
+                                name.clone()
+                            } else {
+                                format!("{module_short}.{name}")
+                            };
+                            info.drop_types.push(qualified);
+                        }
+                    }
+                }
                 extract_handle_methods(impl_decl, module_short, &mut info);
             }
             _ => {}
@@ -126,6 +161,23 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
 
 /// Convert an extern function declaration to type checker types.
 fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
+    let params: Vec<Ty> = func
+        .params
+        .iter()
+        .map(|p| type_expr_to_ty(&p.ty.0, module_short))
+        .collect();
+
+    let ret = func
+        .return_type
+        .as_ref()
+        .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+
+    (params, ret)
+}
+
+/// Convert a wrapper `pub fn` declaration to type checker types.
+/// Mirrors `extern_fn_sig` but works on `FnDecl` params (`Param` not `ExternParam`).
+fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     let params: Vec<Ty> = func
         .params
         .iter()
@@ -402,12 +454,10 @@ mod tests {
             "std::path",
             "std::semaphore",
             "std::stream",
-            "std::encoding::base64",
             "std::crypto::crypto",
             "std::encoding::compress",
             "std::encoding::yaml",
             "std::encoding::toml",
-            "std::encoding::csv",
             "std::encoding::msgpack",
             "std::encoding::protobuf",
             "std::encoding::markdown",
@@ -419,7 +469,6 @@ mod tests {
             "std::net::smtp",
             "std::net::ipnet",
             "std::time::cron",
-            "std::text::semver",
             "std::text::regex",
         ];
 
@@ -439,6 +488,9 @@ mod tests {
             "std::encoding::hex",
             "std::encoding::wire",
             "std::net::mime",
+            "std::encoding::base64",
+            "std::encoding::csv",
+            "std::text::semver",
         ];
 
         for module in &pure_modules {
@@ -449,16 +501,74 @@ mod tests {
 
     #[test]
     fn type_mapping_primitives() {
-        let info = load_module("std::encoding::base64", &test_root()).unwrap();
+        let info = load_module("std::encoding::json", &test_root()).unwrap();
 
-        // base64 module should have functions with String params/returns
+        // json module should have functions with String params/returns
         let has_string_fn = info
             .functions
             .iter()
             .any(|(_, params, _)| params.contains(&Ty::String));
         assert!(
             has_string_fn,
-            "base64 module should have String-typed functions"
+            "json module should have String-typed functions"
+        );
+    }
+
+    #[test]
+    fn wrapper_fns_extracted() {
+        let info = load_module("std::misc::log", &test_root()).unwrap();
+
+        assert!(
+            !info.wrapper_fns.is_empty(),
+            "log module should have wrapper fns"
+        );
+
+        // `pub fn setup()` takes no params and returns Unit
+        let setup = info.wrapper_fns.iter().find(|(name, _, _)| name == "setup");
+        assert!(setup.is_some(), "log module should have 'setup' wrapper fn");
+        let (_, params, ret) = setup.unwrap();
+        assert!(params.is_empty(), "setup() takes no parameters");
+        assert_eq!(*ret, Ty::Unit, "setup() returns Unit");
+
+        // `pub fn setup_level(level: i32)` takes one i32 param
+        let setup_level = info
+            .wrapper_fns
+            .iter()
+            .find(|(name, _, _)| name == "setup_level");
+        assert!(
+            setup_level.is_some(),
+            "log module should have 'setup_level' wrapper fn"
+        );
+        let (_, params, _) = setup_level.unwrap();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], Ty::I32);
+    }
+
+    #[test]
+    fn drop_types_extracted() {
+        let info = load_module("std::net::http", &test_root()).unwrap();
+
+        assert!(
+            !info.drop_types.is_empty(),
+            "http module should have drop types"
+        );
+
+        assert!(
+            info.drop_types.contains(&"http.Request".to_string()),
+            "http.Request should be a drop type, got: {:?}",
+            info.drop_types
+        );
+    }
+
+    #[test]
+    fn struct_types_not_in_handle_types() {
+        // semver.Version has struct fields — it should NOT be a handle type
+        let info = load_module("std::text::semver", &test_root()).unwrap();
+
+        assert!(
+            !info.handle_types.contains(&"semver.Version".to_string()),
+            "Version with struct fields should not be a handle type, got: {:?}",
+            info.handle_types
         );
     }
 }

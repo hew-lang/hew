@@ -342,7 +342,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1) {
           resultType = currentFunction.getResultTypes()[0];
         } else {
-          emitWarning(location) << "match result type not resolved; defaulting to i32";
+          // Statement-position match: result is discarded, type is irrelevant.
+          // TODO: generate statement-position match without value-producing path.
           resultType = builder.getI32Type();
         }
         auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
@@ -401,7 +402,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       if (currentFunction && currentFunction.getResultTypes().size() == 1) {
         resultType = currentFunction.getResultTypes()[0];
       } else {
-        emitWarning(location) << "match result type not resolved; defaulting to i32";
+        // Statement-position match: result is discarded, type is irrelevant.
+        // TODO: generate statement-position match without value-producing path.
         resultType = builder.getI32Type();
       }
       return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
@@ -642,14 +644,6 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
-    // Track HashMap variable types from type annotation for erased-pointer fallback.
-    if (stmt.ty) {
-      auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-      auto collStr = typeExprToCollectionString(stmt.ty->value, resolveAlias);
-      if (collStr.rfind("HashMap<", 0) == 0)
-        collectionVarTypes[varName] = collStr;
-    }
-
     // Vec/HashMap string getters now return owned (strdup'd) copies
     bool isBorrowedGetString = false;
 
@@ -771,7 +765,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
   } else {
-    emitWarning(location) << "only simple identifier patterns supported for let in Phase 1";
+    emitError(location) << "only simple identifier patterns supported for let";
   }
 }
 
@@ -823,14 +817,6 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
     auto streamStr = typeExprStreamKind(stmt.ty->value);
     if (!streamStr.empty())
       streamHandleVarTypes[varNameStr] = streamStr;
-  }
-
-  // Track HashMap variable types from type annotation for erased-pointer fallback.
-  if (stmt.ty) {
-    auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-    auto collStr = typeExprToCollectionString(stmt.ty->value, resolveAlias);
-    if (collStr.rfind("HashMap<", 0) == 0)
-      collectionVarTypes[varNameStr] = collStr;
   }
 
   // Register drop functions for collections and strings declared with var.
@@ -1059,7 +1045,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   // Get the target variable name
   auto *targetIdent = std::get_if<ast::ExprIdentifier>(&stmt.target.value.kind);
   if (!targetIdent) {
-    emitWarning(location) << "only simple identifier targets supported for assignment";
+    emitError(location) << "only simple identifier targets supported for assignment";
     return;
   }
 
@@ -1158,7 +1144,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
-    emitWarning(location) << "if-statement result type not resolved; defaulting to i64";
+    // Statement-position if-else: result is discarded, type is irrelevant.
+    // TODO: generate statement-position if-else without value-producing path.
     resultType = defaultIntType();
   }
 
@@ -2049,14 +2036,6 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
     collType = typeExprToCollectionString(
         *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
-  // Fall back to identifier-based map lookup
-  if (collType.empty()) {
-    if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
-      auto cit = collectionVarTypes.find(identExpr->name);
-      if (cit != collectionVarTypes.end())
-        collType = cit->second;
-    }
-  }
   // Also check self.field access for actor collection fields
   if (collType.empty() && !currentActorName.empty()) {
     if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&stmt.iterable.value.kind)) {
@@ -2163,7 +2142,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   }
 
   // Check if this is a HashMap iteration
-  if (mlir::isa<hew::HashMapType>(collection.getType()) || collType.rfind("HashMap<", 0) == 0) {
+  if (mlir::isa<hew::HashMapType>(collection.getType())) {
     generateForHashMap(stmt, collection, collType);
     return;
   }
@@ -2195,43 +2174,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
   if (typedArrayType)
     typedArrayElemType = typedArrayType.getElementType();
 
-  auto resolveVecElemTypeFromString = [&]() -> mlir::Type {
-    if (collType == "bytes")
-      return i32Type;
-    if (collType.rfind("Vec<", 0) != 0)
-      return {};
-    auto inner = collType.substr(4);
-    if (!inner.empty() && inner.back() == '>')
-      inner.pop_back();
-    auto start = inner.find_first_not_of(' ');
-    if (start != std::string::npos)
-      inner = inner.substr(start);
-    auto end = inner.find_last_not_of(' ');
-    if (end != std::string::npos)
-      inner = inner.substr(0, end + 1);
-    if (inner == "i32" || inner == "I32")
-      return i32Type;
-    if (inner == "i64" || inner == "I64" || inner == "int" || inner == "Int")
-      return i64Type;
-    if (inner == "f64" || inner == "F64" || inner == "float" || inner == "Float")
-      return builder.getF64Type();
-    if (inner == "string" || inner == "String" || inner == "str")
-      return hew::StringRefType::get(&context);
-    if (inner == "bool")
-      return i1Type;
-    if (inner.find("ActorRef<") == 0 || inner.find("TypedActorRef<") == 0)
-      return ptrType;
-    auto stIt = structTypes.find(inner);
-    if (stIt != structTypes.end() && stIt->second.mlirType)
-      return stIt->second.mlirType;
-    return {};
-  };
-  mlir::Type stringVecElemType;
-  if (!typedVecElemType)
-    stringVecElemType = resolveVecElemTypeFromString();
-  bool isVecPtr = typedVecElemType ? mlir::isa<mlir::LLVM::LLVMPointerType>(typedVecElemType)
-                                   : (collType.find("Vec<ActorRef<") == 0 ||
-                                      collType.find("Vec<TypedActorRef<") == 0);
+  bool isVecPtr = typedVecElemType && mlir::isa<mlir::LLVM::LLVMPointerType>(typedVecElemType);
 
   // Get collection length
   mlir::Value len;
@@ -2302,7 +2245,7 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
                                       mlir::ValueRange{zero.getResult(), idx});
         elem = mlir::LLVM::LoadOp::create(builder, location, typedArrayElemType, elemPtr);
       } else {
-        elemType = typedVecElemType ? typedVecElemType : stringVecElemType;
+        elemType = typedVecElemType;
         if (!elemType) {
           emitError(location) << "unsupported for-loop Vec element type for iterable '" << collType
                               << "'";
@@ -2359,47 +2302,12 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
   auto i64Type = builder.getI64Type();
   auto i1Type = builder.getI1Type();
 
-  mlir::Type hmKeyType;
-  mlir::Type hmValType;
-  bool hasTypedHashMap = false;
-  if (auto hmType = llvm::dyn_cast<hew::HashMapType>(collection.getType())) {
-    hasTypedHashMap = true;
-    hmKeyType = hmType.getKeyType();
-    hmValType = hmType.getValueType();
-  } else {
-    hmKeyType = hew::StringRefType::get(&context);
-    std::string valType;
-    auto comma = collType.find(',');
-    if (comma != std::string::npos) {
-      auto rest = collType.substr(comma + 1);
-      auto start = rest.find_first_not_of(' ');
-      if (start != std::string::npos)
-        rest = rest.substr(start);
-      if (!rest.empty() && rest.back() == '>')
-        rest.pop_back();
-      valType = rest;
-    }
-    if (valType == "string" || valType == "String" || valType == "str") {
-      hmValType = hew::StringRefType::get(&context);
-    } else if (valType == "i64" || valType == "int" || valType == "Int") {
-      hmValType = i64Type;
-    } else if (valType == "f64" || valType == "float" || valType == "Float") {
-      hmValType = builder.getF64Type();
-    } else if (valType == "i32" || valType == "I32") {
-      hmValType = builder.getI32Type();
-    } else if (valType == "bool") {
-      hmValType = i1Type;
-    } else {
-      emitError(location)
-          << "cannot determine HashMap value type for iteration; add explicit type annotation";
-      return;
-    }
-  }
+  auto hmType = mlir::cast<hew::HashMapType>(collection.getType());
+  mlir::Type hmKeyType = hmType.getKeyType();
+  mlir::Type hmValType = hmType.getValueType();
 
   // Get keys as a Vec<K> via hew_hashmap_keys(map) -> !hew.vec<K>
-  mlir::Type keysResultType = ptrType;
-  if (hasTypedHashMap)
-    keysResultType = hew::VecType::get(&context, hmKeyType);
+  mlir::Type keysResultType = hew::VecType::get(&context, hmKeyType);
   auto keysVec =
       hew::HashMapKeysOp::create(builder, location, keysResultType, collection).getResult();
 

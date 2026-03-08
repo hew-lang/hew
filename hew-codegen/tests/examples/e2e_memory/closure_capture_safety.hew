@@ -1,12 +1,12 @@
 // Test: Closure Capture Safety
 // Exercises: Closures capturing variables with correct lifetime
 fn make_adder(x: int) -> int {
-    let add = (y) => x + y;
+    let add = (y: int) => x + y;
     add(10)
 }
 
 fn make_multiplier(x: int) -> int {
-    let mul = (y) => x * y;
+    let mul = (y: int) => x * y;
     mul(5)
 }
 

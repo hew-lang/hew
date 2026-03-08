@@ -708,9 +708,8 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   // rather than erroring, because the codegen has implicit coercion paths
   // (e.g., string→int hashing, value→Option wrapping) that are not yet
   // modelled as explicit coercions. These should be added over time.
-  // TODO: add explicit coercions for remaining cases and convert to emitError.
-  emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
-                        << targetType;
+  emitError(location) << "coerceType: no known conversion from " << value.getType() << " to "
+                      << targetType;
   return value;
 }
 
@@ -3400,10 +3399,6 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;
     {
-      auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-      auto collStr = typeExprToCollectionString(paramTy, resolveAlias);
-      if (collStr.rfind("HashMap<", 0) == 0)
-        collectionVarTypes[paramName] = collStr;
       auto handleStr = typeExprToHandleString(paramTy);
       if (!handleStr.empty())
         handleVarTypes[paramName] = handleStr;

@@ -9,7 +9,7 @@ fn apply(f: fn(int) -> int, x: int) -> int {
 fn main() {
     let result = apply(double, 21);
     println(result);
-    let add_one = (x) => x + 1;
+    let add_one = (x: int) => x + 1;
     let result2 = apply(add_one, 99);
     println(result2);
 }

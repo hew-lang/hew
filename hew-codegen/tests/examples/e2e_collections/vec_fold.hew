@@ -1,9 +1,9 @@
 fn main() -> Int {
     let v: Vec<Int> = [1, 2, 3, 4, 5];
-    let sum = v.fold(0, (acc, x) => acc + x);
+    let sum = v.fold(0, (acc: int, x: int) => acc + x);
     println(sum);
 
-    let product = v.fold(1, (acc, x) => acc * x);
+    let product = v.fold(1, (acc: int, x: int) => acc * x);
     println(product);
 
     // Verify

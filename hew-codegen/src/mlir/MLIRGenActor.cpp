@@ -462,13 +462,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           if (!actorName.empty())
             actorVarTypes[param.name] = actorName;
         }
-        // Register HashMap parameters for erased-pointer fallback dispatch.
-        {
-          auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-          auto collStr = typeExprToCollectionString(param.ty.value, resolveAlias);
-          if (collStr.rfind("HashMap<", 0) == 0)
-            collectionVarTypes[param.name] = collStr;
-        }
+        // HashMap dispatch now uses typed hew::HashMapType; no string tracking needed.
         ++pi;
       }
     }
@@ -993,10 +987,11 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   recvInfo.name = "receive";
   for (const auto &param : expr.params) {
     if (!param.ty) {
-      emitWarning(location) << "actor receive parameter '" << param.name
-                            << "' has no type annotation; defaulting to i64";
+      emitError(location) << "actor receive parameter '" << param.name
+                          << "' has no type annotation";
+      return nullptr;
     }
-    auto ty = param.ty ? convertType(param.ty->value) : builder.getI64Type();
+    auto ty = convertType(param.ty->value);
     recvParamTypes.push_back(ty);
     recvInfo.paramTypes.push_back(ty);
   }

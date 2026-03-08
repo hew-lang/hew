@@ -1,6 +1,6 @@
 fn main() -> Int {
     let v: Vec<Int> = [1, 2, 3, 4, 5];
-    let doubled = v.map((x) => x * 2);
+    let doubled = v.map((x: int) => x * 2);
     for i in 0..doubled.len() {
         println(doubled[i]);
     }

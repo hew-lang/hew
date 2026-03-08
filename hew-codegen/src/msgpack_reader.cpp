@@ -662,14 +662,15 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
         for (uint32_t i = 0; i < entriesArr.via.array.size; ++i) {
           auto &pairObj = entriesArr.via.array.ptr[i];
           // Each entry is a 2-element array: [key, value]
-          if (pairObj.type == msgpack::type::ARRAY && pairObj.via.array.size == 2) {
-            ast::ExprMapEntry entry;
-            entry.key = std::make_unique<ast::Spanned<ast::Expr>>(
-                parseSpanned<ast::Expr>(pairObj.via.array.ptr[0], parseExpr));
-            entry.value = std::make_unique<ast::Spanned<ast::Expr>>(
-                parseSpanned<ast::Expr>(pairObj.via.array.ptr[1], parseExpr));
-            e.entries.emplace_back(std::move(entry));
-          }
+          if (pairObj.type != msgpack::type::ARRAY || pairObj.via.array.size != 2)
+            fail("MapLiteral entry must be a 2-element array, got size " +
+                 std::to_string(pairObj.type == msgpack::type::ARRAY ? pairObj.via.array.size : 0));
+          ast::ExprMapEntry entry;
+          entry.key = std::make_unique<ast::Spanned<ast::Expr>>(
+              parseSpanned<ast::Expr>(pairObj.via.array.ptr[0], parseExpr));
+          entry.value = std::make_unique<ast::Spanned<ast::Expr>>(
+              parseSpanned<ast::Expr>(pairObj.via.array.ptr[1], parseExpr));
+          e.entries.emplace_back(std::move(entry));
         }
       }
     }
@@ -1105,6 +1106,8 @@ static ast::AttributeArg parseAttributeArg(const msgpack::object &obj) {
     kv.key = getString(mapReq(*payload, "key"));
     kv.value = getString(mapReq(*payload, "value"));
     arg.kind = kv;
+  } else {
+    fail("unknown AttributeArg variant: " + variant);
   }
   return arg;
 }
@@ -1233,7 +1236,12 @@ static ast::TypeDecl parseTypeDecl(const msgpack::object &obj) {
   if (vis && !isNil(*vis))
     td.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
-  td.kind = (kindStr == "Enum") ? ast::TypeDeclKind::Enum : ast::TypeDeclKind::Struct;
+  if (kindStr == "Enum")
+    td.kind = ast::TypeDeclKind::Enum;
+  else if (kindStr == "Struct")
+    td.kind = ast::TypeDeclKind::Struct;
+  else
+    fail("unknown TypeDeclKind: " + kindStr);
   td.name = getString(mapReq(obj, "name"));
   const auto *tp = mapGet(obj, "type_params");
   if (tp && !isNil(*tp))
@@ -1453,7 +1461,12 @@ static ast::WireDecl parseWireDecl(const msgpack::object &obj) {
   if (vis && !isNil(*vis))
     wd.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
-  wd.kind = (kindStr == "Enum") ? ast::WireDeclKind::Enum : ast::WireDeclKind::Struct;
+  if (kindStr == "Enum")
+    wd.kind = ast::WireDeclKind::Enum;
+  else if (kindStr == "Struct")
+    wd.kind = ast::WireDeclKind::Struct;
+  else
+    fail("unknown WireDeclKind: " + kindStr);
   wd.name = getString(mapReq(obj, "name"));
   wd.fields = parseVec<ast::WireFieldDecl>(mapReq(obj, "fields"), parseWireFieldDecl);
   wd.variants = parseVec<ast::VariantDecl>(mapReq(obj, "variants"), parseVariantDecl);
@@ -1546,6 +1559,8 @@ static ast::OverflowPolicy parseOverflowPolicy(const msgpack::object &obj) {
         c.fallback = ast::OverflowFallback::Block;
       else if (s == "Fail")
         c.fallback = ast::OverflowFallback::Fail;
+      else
+        fail("unknown OverflowFallback: " + s);
     }
     return c;
   }
@@ -1600,6 +1615,8 @@ static ast::ChildSpec parseChildSpec(const msgpack::object &obj) {
       cs.restart = ast::RestartPolicy::Transient;
     else if (s == "Temporary")
       cs.restart = ast::RestartPolicy::Temporary;
+    else
+      fail("unknown RestartPolicy: " + s);
   }
   return cs;
 }
@@ -1619,6 +1636,8 @@ static ast::SupervisorDecl parseSupervisorDecl(const msgpack::object &obj) {
       sd.strategy = ast::SupervisorStrategy::OneForAll;
     else if (s == "RestForOne")
       sd.strategy = ast::SupervisorStrategy::RestForOne;
+    else
+      fail("unknown SupervisorStrategy: " + s);
   }
   const auto *mr = mapGet(obj, "max_restarts");
   if (mr && !isNil(*mr))

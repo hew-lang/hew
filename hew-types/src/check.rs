@@ -1413,21 +1413,10 @@ impl Checker {
         // Wire types are similar to regular types but use string field types
         let mut fields = HashMap::new();
         for field in &wd.fields {
-            // Convert wire field type string to Ty (simplified mapping)
-            let ty = match field.ty.as_str() {
-                "i32" => Ty::I32,
-                "i64" | "int" | "Int" => Ty::I64,
-                "u8" | "byte" => Ty::U8,
-                "u64" | "uint" => Ty::U64,
-                "f32" => Ty::F32,
-                "f64" | "float" | "Float" => Ty::F64,
-                "string" | "String" => Ty::String,
-                "bool" => Ty::Bool,
-                _ => Ty::Named {
-                    name: field.ty.clone(),
-                    args: vec![],
-                },
-            };
+            let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
+                name: field.ty.clone(),
+                args: vec![],
+            });
             fields.insert(field.name.clone(), ty);
         }
 
@@ -7314,71 +7303,55 @@ impl Checker {
                     }
                 }
                 // Check for primitive types first
+                if let Some(prim) = Ty::from_name(name) {
+                    return prim;
+                }
+                // Non-primitive: resolve generics, aliases, special types
+                let args = type_args.as_ref().map_or(vec![], |ta| {
+                    ta.iter()
+                        .map(|(te, _)| self.resolve_type_expr(te))
+                        .collect()
+                });
+                // Check if it's a generic type parameter
+                for ctx in self.generic_ctx.iter().rev() {
+                    if let Some(ty) = ctx.get(name) {
+                        return ty.clone();
+                    }
+                }
+                // Check type aliases (transparent: Distance = int → Ty::I64)
+                if let Some(aliased) = self.type_aliases.get(name) {
+                    return aliased.clone();
+                }
+                // Handle special named types
                 match name.as_str() {
-                    "i8" => Ty::I8,
-                    "i16" => Ty::I16,
-                    "i32" => Ty::I32,
-                    "i64" | "int" | "Int" => Ty::I64,
-                    "u8" | "byte" => Ty::U8,
-                    "u16" => Ty::U16,
-                    "u32" => Ty::U32,
-                    "u64" | "uint" => Ty::U64,
-                    "f32" => Ty::F32,
-                    "f64" | "float" | "Float" => Ty::F64,
-                    "bool" | "Bool" => Ty::Bool,
-                    "char" | "Char" => Ty::Char,
-                    "string" | "String" | "str" => Ty::String,
-                    "bytes" | "Bytes" => Ty::Bytes,
-                    "duration" | "Duration" => Ty::Duration,
-                    "()" => Ty::Unit,
+                    // Deprecated alias: ActorStream<Y> is now Stream<Y>
+                    "ActorStream" if args.len() == 1 => Ty::stream(args[0].clone()),
                     _ => {
-                        let args = type_args.as_ref().map_or(vec![], |ta| {
-                            ta.iter()
-                                .map(|(te, _)| self.resolve_type_expr(te))
-                                .collect()
-                        });
-                        // Check if it's a generic type parameter
-                        for ctx in self.generic_ctx.iter().rev() {
-                            if let Some(ty) = ctx.get(name) {
-                                return ty.clone();
+                        // Qualify unqualified handle types only when imported and unambiguous.
+                        let handle_matches: Vec<&String> = self
+                            .known_types
+                            .iter()
+                            .filter(|qualified| {
+                                qualified
+                                    .rsplit_once('.')
+                                    .is_some_and(|(_, short)| short == name)
+                            })
+                            .collect();
+                        let resolved_name = if self.type_defs.contains_key(name) {
+                            name.clone()
+                        } else {
+                            match handle_matches.as_slice() {
+                                [qualified] => (*qualified).clone(),
+                                _ => name.clone(),
                             }
+                        };
+                        // Mark module as used when type name is module-qualified
+                        if let Some((module, _)) = resolved_name.split_once('.') {
+                            self.used_modules.borrow_mut().insert(module.to_string());
                         }
-                        // Check type aliases (transparent: Distance = int → Ty::I64)
-                        if let Some(aliased) = self.type_aliases.get(name) {
-                            return aliased.clone();
-                        }
-                        // Handle special named types
-                        match name.as_str() {
-                            // Deprecated alias: ActorStream<Y> is now Stream<Y>
-                            "ActorStream" if args.len() == 1 => Ty::stream(args[0].clone()),
-                            _ => {
-                                // Qualify unqualified handle types only when imported and unambiguous.
-                                let handle_matches: Vec<&String> = self
-                                    .known_types
-                                    .iter()
-                                    .filter(|qualified| {
-                                        qualified
-                                            .rsplit_once('.')
-                                            .is_some_and(|(_, short)| short == name)
-                                    })
-                                    .collect();
-                                let resolved_name = if self.type_defs.contains_key(name) {
-                                    name.clone()
-                                } else {
-                                    match handle_matches.as_slice() {
-                                        [qualified] => (*qualified).clone(),
-                                        _ => name.clone(),
-                                    }
-                                };
-                                // Mark module as used when type name is module-qualified
-                                if let Some((module, _)) = resolved_name.split_once('.') {
-                                    self.used_modules.borrow_mut().insert(module.to_string());
-                                }
-                                Ty::Named {
-                                    name: resolved_name,
-                                    args,
-                                }
-                            }
+                        Ty::Named {
+                            name: resolved_name,
+                            args,
                         }
                     }
                 }

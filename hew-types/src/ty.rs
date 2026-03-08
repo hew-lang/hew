@@ -196,6 +196,34 @@ impl Substitution {
 }
 
 impl Ty {
+    /// Canonical mapping from type-name strings (including user-facing aliases)
+    /// to primitive `Ty` variants.  Returns `None` for non-primitive names.
+    ///
+    /// This is the **single source of truth** — every call site that needs to
+    /// resolve a type name string to a `Ty` must go through this function.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Ty> {
+        Some(match name {
+            "i8" => Ty::I8,
+            "i16" => Ty::I16,
+            "i32" => Ty::I32,
+            "i64" | "int" | "Int" => Ty::I64,
+            "u8" | "byte" => Ty::U8,
+            "u16" => Ty::U16,
+            "u32" => Ty::U32,
+            "u64" | "uint" => Ty::U64,
+            "f32" => Ty::F32,
+            "f64" | "float" | "Float" => Ty::F64,
+            "bool" | "Bool" => Ty::Bool,
+            "char" | "Char" => Ty::Char,
+            "string" | "String" | "str" => Ty::String,
+            "bytes" | "Bytes" => Ty::Bytes,
+            "duration" | "Duration" => Ty::Duration,
+            "()" => Ty::Unit,
+            _ => return None,
+        })
+    }
+
     // -- Constructor helpers: all produce Ty::Named --
 
     /// Construct `Option<inner>`.

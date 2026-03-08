@@ -2964,6 +2964,9 @@ impl Checker {
 
     fn check_block(&mut self, block: &Block) -> Ty {
         self.env.push_scope();
+        // Snapshot const_values so let-bound literal entries added in this
+        // scope are cleaned up when the scope exits.
+        let const_values_snapshot: HashMap<String, ConstValue> = self.const_values.clone();
         let num_stmts = block.stmts.len();
         let mut terminated = false;
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
@@ -2984,6 +2987,7 @@ impl Checker {
                 for (s, sp) in &block.stmts[i..] {
                     self.check_stmt(s, sp);
                 }
+                self.const_values = const_values_snapshot;
                 self.emit_scope_warnings();
                 return Ty::Never;
             }
@@ -3010,6 +3014,7 @@ impl Checker {
                         Ty::Unit
                     }
                 };
+                self.const_values = const_values_snapshot;
                 self.emit_scope_warnings();
                 return ty;
             }
@@ -3053,6 +3058,7 @@ impl Checker {
         } else {
             Ty::Unit
         };
+        self.const_values = const_values_snapshot;
         self.emit_scope_warnings();
         ty
     }
@@ -3166,6 +3172,20 @@ impl Checker {
                     self.check_shadowing(name, &pattern.1);
                     self.env
                         .define_with_span(name.clone(), val_ty, false, pattern.1.clone());
+                    // Track let-bound literals for numeric coercion at use sites.
+                    // Only when there's no explicit type annotation (the value
+                    // defaulted to i64/f64 from synthesis), so the literal can
+                    // be coerced to other numeric types like const values.
+                    if ty.is_none() {
+                        if let Some((val, _)) = value {
+                            if let Some(v) = extract_integer_literal_value(val) {
+                                self.const_values
+                                    .insert(name.clone(), ConstValue::Integer(v));
+                            } else if let Some(v) = extract_float_literal_value(val) {
+                                self.const_values.insert(name.clone(), ConstValue::Float(v));
+                            }
+                        }
+                    }
                 } else {
                     self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
                 }
@@ -4075,6 +4095,10 @@ impl Checker {
         reason = "literal coercion requires many match arms with range checks"
     )]
     fn check_against(&mut self, expr: &Expr, span: &Span, expected: &Ty) -> Ty {
+        // Resolve type variables so that Ty::Var(v) unified with e.g. Ty::I32
+        // is seen as Ty::I32 by the coercion arms below.
+        let resolved = self.subst.resolve(expected);
+        let expected = &resolved;
         match (expr, expected) {
             // Lambda with expected function type — propagate param types!
             (
@@ -4176,6 +4200,24 @@ impl Checker {
             (Expr::Block(block), Ty::Named { name, .. })
                 if name == "HashMap" && block.stmts.is_empty() && block.trailing_expr.is_none() =>
             {
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // Array literal coercion to Array<T, N> type
+            (Expr::Array(elems), Ty::Array(elem_ty, _)) => {
+                for elem in elems {
+                    let (expr, sp) = (&elem.0, &elem.1);
+                    self.check_against(expr, sp, elem_ty);
+                }
+                self.record_type(span, expected);
+                expected.clone()
+            }
+
+            // Array repeat coercion to Array<T, N> type
+            (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, _)) => {
+                self.check_against(&value.0, &value.1, elem_ty);
+                self.check_against(&count.0, &count.1, &Ty::I64);
                 self.record_type(span, expected);
                 expected.clone()
             }
@@ -10902,5 +10944,114 @@ fn main() {
         assert!(integer_fits_type(0, &Ty::U64));
         // Negative doesn't fit
         assert!(!integer_fits_type(-1, &Ty::U64));
+    }
+
+    // ── Array literal → Array type coercion tests ────────────────────
+
+    #[test]
+    fn literal_coercion_array_to_i32_array() {
+        let mut checker = Checker::new();
+        let elems = vec![
+            make_int_literal(1, 1..2),
+            make_int_literal(2, 4..5),
+            make_int_literal(3, 7..8),
+        ];
+        let arr = (Expr::Array(elems), 0..9);
+        let expected = Ty::Array(Box::new(Ty::I32), 3);
+        let ty = checker.check_against(&arr.0, &arr.1, &expected);
+        assert_eq!(ty, expected);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn literal_coercion_array_repeat_to_i32() {
+        let mut checker = Checker::new();
+        let value = make_int_literal(0, 1..2);
+        let count = make_int_literal(5, 4..5);
+        let arr = (
+            Expr::ArrayRepeat {
+                value: Box::new(value),
+                count: Box::new(count),
+            },
+            0..6,
+        );
+        let expected = Ty::Array(Box::new(Ty::I32), 5);
+        let ty = checker.check_against(&arr.0, &arr.1, &expected);
+        assert_eq!(ty, expected);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── Type variable resolution in check_against ────────────────────
+
+    #[test]
+    fn literal_coercion_through_type_var() {
+        let mut checker = Checker::new();
+        // Create a type variable and unify it with i32
+        let tv = TypeVar::fresh();
+        checker.subst.insert(tv, Ty::I32);
+        // Now check an integer literal against the type variable
+        let lit = make_int_literal(42, 0..2);
+        let ty = checker.check_against(&lit.0, &lit.1, &Ty::Var(tv));
+        assert_eq!(ty, Ty::I32);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── Let-bound literal coercion tests ─────────────────────────────
+
+    #[test]
+    fn let_bound_literal_coercion() {
+        let mut checker = Checker::new();
+        // Simulate: let n = 5
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("n".to_string()), 4..5),
+            ty: None,
+            value: Some(make_int_literal(5, 8..9)),
+        };
+        checker.check_stmt(&let_stmt, &(0..10));
+        // Now check: let x: i32 = n
+        let ident = (Expr::Identifier("n".to_string()), 15..16);
+        let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
+        assert_eq!(ty, Ty::I32);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn let_bound_literal_overflow() {
+        let mut checker = Checker::new();
+        // Simulate: let n = 2147483648 (exceeds i32 max)
+        let let_stmt = Stmt::Let {
+            pattern: (Pattern::Identifier("n".to_string()), 4..5),
+            ty: None,
+            value: Some(make_int_literal(2_147_483_648, 8..18)),
+        };
+        checker.check_stmt(&let_stmt, &(0..19));
+        // Now check: let x: i32 = n — should fail with range error
+        let ident = (Expr::Identifier("n".to_string()), 24..25);
+        let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
+        assert_eq!(ty, Ty::Error);
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "expected range error: {:?}",
+            checker.errors
+        );
     }
 }

@@ -85,10 +85,7 @@ const keywordGroups = {
 
   'keyword.other.hew': [
     ...kw.other,
-    'isolated',
   ],
-
-  'keyword.operator.logical.hew': ['and', 'or'],
 
   'constant.language.boolean.hew': ['true', 'false'],
 

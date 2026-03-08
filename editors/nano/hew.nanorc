@@ -1,5 +1,6 @@
 ## Hew syntax highlighting for GNU nano
-## Keywords sourced from hew-lexer ALL_KEYWORDS (single source of truth).
+## Generated from syntax-data.json — do not edit by hand.
+## syntax-data.json version: 0.9.0
 
 syntax "hew" "\.hew$"
 
@@ -11,10 +12,10 @@ color cyan start="/\*" end="\*/"
 color yellow ""([^"\\]|\\.)*""
 color yellow "'([^'\\]|\\.)*'"
 # Raw strings
-color yellow "r\"([^"])*\""
+color yellow "r\"([^\"])*\""
 
 # Regex literals
-color yellow "re\"([^"])*\""
+color yellow "re\"([^\"])*\""
 
 # F-strings
 color yellow "f\"([^"\\]|\\.)*\""
@@ -35,16 +36,15 @@ color brightmagenta "\<[0-9][0-9_]*\>"
 color brightmagenta "\<(true|false|None)\>"
 
 # Control flow keywords
-color brightwhite "\<(if|else|match|loop|for|in|while|break|continue|return)\>"
-color brightwhite "\<(try|catch|select|join|yield|cooperate|after|from|await)\>"
-color brightwhite "\<(scope|race|defer)\>"
+color brightwhite "\<(if|else|match|loop|for|while|break|continue|return|in)\>"
+color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope)\>"
 
 # Declaration keywords
-color green "\<(let|var|const|fn|gen|type|struct|enum|trait|impl)\>"
-color green "\<(import|pub|where|dyn|move|unsafe)\>"
+color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
+color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct)\>"
 
 # Actor & concurrency
-color brightgreen "\<(actor|receive|init|spawn|async)\>"
+color brightgreen "\<(actor|receive|init|spawn|move)\>"
 
 # Supervisor
 color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
@@ -52,20 +52,26 @@ color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
 # Wire protocol
 color green "\<(wire|reserved|optional|deprecated|default)\>"
 
+# Machine keywords
+color green "\<(machine|state|event|on|when)\>"
+
 # Other keywords
-color green "\<(extern|package|super|pure|as)\>"
+color green "\<(dyn|unsafe|pure)\>"
 
 # Strategy & policy constants
 color brightmagenta "\<(one_for_one|one_for_all|rest_for_one)\>"
 color brightmagenta "\<(permanent|transient|temporary)\>"
 
+# Reserved keywords
+color green "\<(try|catch|race|foreign)\>"
+
 # Types — primitives
-color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|isize|usize)\>"
-color brightblue "\<(bool|char|string|bytes|void)\>"
+color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"
+color brightblue "\<(bool|char|string|bytes|void|never|duration)\>"
 
 # Types — generic / collection / concurrency
-color brightblue "\<(Result|Option|Vec|HashMap|HashSet|Box|Arc|Rc|Weak)\>"
-color brightblue "\\<(Actor|ActorRef|Task|Scope|Generator|AsyncGenerator|Stream|Sink)\\>"
+color brightblue "\<(Vec|HashMap|Option|Result|Ok|Err|Some|Box|Arc|Rc|Weak|Range|ActorStream)\>"
+color brightblue "\<(ActorRef|Stream|Sink|Task|Scope|Generator|AsyncGenerator)\>"
 
 # Traits
 color brightblue "\<(Send|Frozen|Copy|Drop|Clone|Eq|Ord|Hash|Display|Debug)\>"
@@ -82,7 +88,7 @@ color brightblue "\<[A-Z][a-zA-Z0-9_]*\>"
 color brightcyan "\<fn +[a-zA-Z_][a-zA-Z0-9_]*"
 
 # Operators
-color white "->|=>|<-|\.\.[=]?"
+color white "->|=>|<-|\.\.[ =]?"
 color white "==[^=]|!=|=~|!~|<=|>="
 color white "<<=|>>=|&=|\|=|\^=|\+=|-=|\*=|/=|%="
 color white "<<|>>"
@@ -95,4 +101,4 @@ color magenta "#\[[^\]]*\]"
 color red "@[a-zA-Z_][a-zA-Z0-9_]*"
 
 # TODO/FIXME in comments
-color brightyellow,cyan "\<(TODO|FIXME|XXX|NOTE|HACK)\>" 
+color brightyellow,cyan "\<(TODO|FIXME|XXX|NOTE|HACK)\>"

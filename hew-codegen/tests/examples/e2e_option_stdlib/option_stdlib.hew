@@ -20,8 +20,8 @@ fn main() {
     println(option.unwrap_or_int(none_val, -1));
 
     // ── map ─────────────────────────────────────────────────────
-    let doubled = option.map_int(some_val, (x) => x * 2);
-    let mapped_none = option.map_int(none_val, (x) => x * 2);
+    let doubled = option.map_int(some_val, (x: int) => x * 2);
+    let mapped_none = option.map_int(none_val, (x: int) => x * 2);
 
     // Verify mapped Some
     match doubled {

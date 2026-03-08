@@ -342,7 +342,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         if (currentFunction && currentFunction.getResultTypes().size() == 1) {
           resultType = currentFunction.getResultTypes()[0];
         } else {
-          emitWarning(location) << "match result type not resolved; defaulting to i32";
+          // Statement-position match: result is discarded, type is irrelevant.
+          // TODO: generate statement-position match without value-producing path.
           resultType = builder.getI32Type();
         }
         auto val = scrutinee ? generateMatchImpl(scrutinee, matchNode->arms, resultType, location)
@@ -401,7 +402,8 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
       if (currentFunction && currentFunction.getResultTypes().size() == 1) {
         resultType = currentFunction.getResultTypes()[0];
       } else {
-        emitWarning(location) << "match result type not resolved; defaulting to i32";
+        // Statement-position match: result is discarded, type is irrelevant.
+        // TODO: generate statement-position match without value-producing path.
         resultType = builder.getI32Type();
       }
       return generateMatchImpl(scrutinee, matchNode->arms, resultType, location);
@@ -771,7 +773,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
   } else {
-    emitWarning(location) << "only simple identifier patterns supported for let in Phase 1";
+    emitError(location) << "only simple identifier patterns supported for let";
   }
 }
 
@@ -1059,7 +1061,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   // Get the target variable name
   auto *targetIdent = std::get_if<ast::ExprIdentifier>(&stmt.target.value.kind);
   if (!targetIdent) {
-    emitWarning(location) << "only simple identifier targets supported for assignment";
+    emitError(location) << "only simple identifier targets supported for assignment";
     return;
   }
 
@@ -1158,7 +1160,8 @@ mlir::Value MLIRGen::generateIfStmtAsExpr(const ast::StmtIf &stmt) {
   if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
-    emitWarning(location) << "if-statement result type not resolved; defaulting to i64";
+    // Statement-position if-else: result is discarded, type is irrelevant.
+    // TODO: generate statement-position if-else without value-producing path.
     resultType = defaultIntType();
   }
 

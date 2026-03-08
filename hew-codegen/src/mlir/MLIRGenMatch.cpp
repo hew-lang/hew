@@ -199,10 +199,9 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
     resultType = convertType(*resolvedType);
   }
 
-  // Fallback: if the type checker didn't record a type (e.g. statement
-  // position or missing type info), use the scrutinee type to infer.
+  // If the type checker didn't record a type, infer from the scrutinee for
+  // Result/Option matches where the natural result is the inner type.
   if (!resultType) {
-    emitWarning(location) << "match expression type not resolved; inferring from scrutinee type";
     if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(scrutinee.getType()))
       resultType = rt.getOkType();
     else if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(scrutinee.getType()))

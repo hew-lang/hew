@@ -302,7 +302,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     // Yield expressions outside generator context are handled at the
     // statement level during static generator codegen.
     if (!currentGenCtx && !currentCoroPromisePtr) {
-      emitWarning(currentLoc) << "yield expression outside generator function";
+      emitError(currentLoc) << "yield expression outside generator function";
     }
     return nullptr;
   }
@@ -718,8 +718,10 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
           resolvedScopeAwaitType = true;
         }
       }
-      if (!resolvedScopeAwaitType)
-        emitWarning(location) << "cannot determine scope.await result type; defaulting to i32";
+      if (!resolvedScopeAwaitType) {
+        emitError(location) << "cannot determine scope.await result type";
+        return nullptr;
+      }
 
       auto loadedResult = mlir::LLVM::LoadOp::create(builder, location, resultType, resultPtr);
       return loadedResult;
@@ -761,7 +763,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                                       mlir::ValueRange{startVal, endVal});
   }
 
-  emitWarning(currentLoc) << "unsupported expression kind";
+  emitError(currentLoc) << "unsupported expression kind";
   return nullptr;
 }
 
@@ -805,7 +807,8 @@ mlir::Value MLIRGen::generateInterpolatedString(const ast::ExprInterpolatedStrin
           partValues.push_back(str);
           ownedTemps.push_back(str); // heap-allocated — we own this
         } else {
-          emitWarning(location) << "unsupported type in string interpolation";
+          emitError(location) << "unsupported type in string interpolation";
+          return nullptr;
         }
       }
     }
@@ -937,7 +940,7 @@ mlir::Value MLIRGen::generateLiteral(const ast::Literal &lit, const ast::Span &s
     auto type = defaultIntType();
     return createIntConstant(builder, location, type, durLit->value);
   }
-  emitWarning(location) << "unsupported literal kind";
+  emitError(location) << "unsupported literal kind";
   return nullptr;
 }
 
@@ -1245,7 +1248,7 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
     return nullptr;
 
   default:
-    emitWarning(location) << "unsupported binary operator";
+    emitError(location) << "unsupported binary operator";
     return nullptr;
   }
 }
@@ -1301,7 +1304,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   // Check if the callee is a simple identifier (direct call)
   auto *calleeIdentExpr = std::get_if<ast::ExprIdentifier>(&call.function->value.kind);
   if (!calleeIdentExpr) {
-    emitWarning(location) << "only direct function calls supported in Phase 1";
+    emitError(location) << "only direct function calls supported";
     return nullptr;
   }
 
@@ -1760,7 +1763,7 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   auto location = currentLoc;
 
   if (call.args.empty()) {
-    emitWarning(location) << "print/println requires at least one argument";
+    emitError(location) << "print/println requires at least one argument";
     return nullptr;
   }
 
@@ -1825,8 +1828,8 @@ mlir::Value MLIRGen::generateIfExpr(const ast::ExprIf &ifE, const ast::Span &exp
   } else if (currentFunction && currentFunction.getResultTypes().size() == 1) {
     resultType = currentFunction.getResultTypes()[0];
   } else {
-    emitWarning(location) << "if-expression result type not resolved; defaulting to i64";
-    resultType = defaultIntType();
+    emitError(location) << "if-expression result type not resolved";
+    return nullptr;
   }
 
   auto ifOp = mlir::scf::IfOp::create(builder, location, resultType, cond, /*withElseRegion=*/true);
@@ -3793,7 +3796,7 @@ mlir::Value MLIRGen::generateArrayExpr(const ast::ExprArray &arr) {
       pendingDeclaredType.reset();
       return hew::VecNewOp::create(builder, location, vecType).getResult();
     }
-    emitWarning(location) << "empty array literal";
+    emitError(location) << "empty array literal without type context";
     return nullptr;
   }
 
@@ -4277,8 +4280,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     } else if (expectedClosureType && i < expectedClosureType.getInputTypes().size()) {
       userParamTypes.push_back(expectedClosureType.getInputTypes()[i]);
     } else {
-      emitWarning(location) << "cannot infer type for lambda parameter; defaulting to i64";
-      userParamTypes.push_back(defaultIntType());
+      emitError(location) << "cannot infer type for lambda parameter '" << param.name << "'";
+      return nullptr;
     }
   }
 

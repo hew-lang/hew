@@ -708,9 +708,8 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   // rather than erroring, because the codegen has implicit coercion paths
   // (e.g., string→int hashing, value→Option wrapping) that are not yet
   // modelled as explicit coercions. These should be added over time.
-  // TODO: add explicit coercions for remaining cases and convert to emitError.
-  emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
-                        << targetType;
+  emitError(location) << "coerceType: no known conversion from " << value.getType() << " to "
+                      << targetType;
   return value;
 }
 

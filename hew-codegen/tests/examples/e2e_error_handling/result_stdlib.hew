@@ -20,8 +20,8 @@ fn main() {
     println(result.unwrap_err_int(err_val));
 
     // ── map ─────────────────────────────────────────────────────
-    let doubled = result.map_int(ok_val, (x) => x * 2);
-    let mapped_err = result.map_int(err_val, (x) => x * 2);
+    let doubled = result.map_int(ok_val, (x: int) => x * 2);
+    let mapped_err = result.map_int(err_val, (x: int) => x * 2);
 
     match doubled {
         Ok(v) => println(v),
@@ -33,7 +33,7 @@ fn main() {
     }
 
     // ── map_err ─────────────────────────────────────────────────
-    let mapped_e = result.map_err_int(err_val, (e) => e + 10);
+    let mapped_e = result.map_err_int(err_val, (e: int) => e + 10);
     match mapped_e {
         Ok(_) => println("FAIL"),
         Err(e) => println(e),

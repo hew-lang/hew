@@ -3929,7 +3929,7 @@ impl Checker {
                 } else if let Some(e) = end {
                     self.synthesize(&e.0, &e.1)
                 } else {
-                    Ty::I32
+                    Ty::I64
                 };
                 Ty::range(ty)
             }
@@ -4281,6 +4281,15 @@ impl Checker {
                 let actual = self.synthesize(expr, span);
                 self.expect_type(expected, &actual, span);
                 actual
+            }
+
+            // Tuple literal coercion: propagate expected element types
+            (Expr::Tuple(elems), Ty::Tuple(expected_tys)) if elems.len() == expected_tys.len() => {
+                for (elem, expected_ty) in elems.iter().zip(expected_tys.iter()) {
+                    self.check_against(&elem.0, &elem.1, expected_ty);
+                }
+                self.record_type(span, expected);
+                expected.clone()
             }
 
             // Default: synthesize and unify
@@ -5964,9 +5973,10 @@ impl Checker {
                     args: type_args,
                 },
                 "next",
-            ) if name == "Generator" || name == "AsyncGenerator" => {
-                type_args.first().cloned().unwrap_or(Ty::Error)
-            }
+            ) if name == "Generator" || name == "AsyncGenerator" => type_args
+                .first()
+                .cloned()
+                .unwrap_or(Ty::Var(TypeVar::fresh())),
             // Stream<T> methods
             (
                 Ty::Named {
@@ -5975,7 +5985,10 @@ impl Checker {
                 },
                 _,
             ) if name == "Stream" => {
-                let inner = type_args.first().cloned().unwrap_or(Ty::Error);
+                let inner = type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "next" => Ty::option(inner),
                     "close" => Ty::Unit,
@@ -6010,7 +6023,10 @@ impl Checker {
                 },
                 _,
             ) if name == "Sink" => {
-                let inner = type_args.first().cloned().unwrap_or(Ty::Error);
+                let inner = type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "write" => {
                         if let Some(arg) = args.first() {
@@ -10982,6 +10998,64 @@ fn main() {
         let expected = Ty::Array(Box::new(Ty::I32), 5);
         let ty = checker.check_against(&arr.0, &arr.1, &expected);
         assert_eq!(ty, expected);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── Tuple literal coercion tests ───────────────────────────────────
+
+    #[test]
+    fn tuple_literal_coercion_to_typed() {
+        let mut checker = Checker::new();
+        let elems = vec![
+            make_int_literal(42, 1..3),
+            (Expr::Literal(Literal::Float(3.14)), 5..9),
+        ];
+        let tuple = (Expr::Tuple(elems), 0..10);
+        let expected = Ty::Tuple(vec![Ty::I32, Ty::F32]);
+        let ty = checker.check_against(&tuple.0, &tuple.1, &expected);
+        assert_eq!(ty, expected);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn tuple_literal_coercion_overflow() {
+        let mut checker = Checker::new();
+        let elems = vec![make_int_literal(256, 1..4)];
+        let tuple = (Expr::Tuple(elems), 0..5);
+        let expected = Ty::Tuple(vec![Ty::U8]);
+        let _ty = checker.check_against(&tuple.0, &tuple.1, &expected);
+        // The tuple itself coerces, but the element should have reported an error
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "expected range error: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn range_default_type_is_i64() {
+        let mut checker = Checker::new();
+        let range = (
+            Expr::Range {
+                start: None,
+                end: None,
+                inclusive: false,
+            },
+            0..2,
+        );
+        let ty = checker.synthesize(&range.0, &range.1);
+        assert_eq!(ty, Ty::range(Ty::I64));
         assert!(
             checker.errors.is_empty(),
             "unexpected errors: {:?}",

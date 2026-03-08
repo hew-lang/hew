@@ -59,6 +59,7 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetSelect.h"
@@ -1670,7 +1671,7 @@ static std::string vecElemSuffix(mlir::Type elemType) {
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
   if (elemType.isF32())
-    return "_f64";
+    return "_f64"; // f32 promoted to f64 for Vec storage (runtime has no _f32 variant)
   // Bool (i1) and i32 both use the default no-suffix version (hew_vec_new)
   return "";
 }
@@ -1691,10 +1692,16 @@ static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
   if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
     return "_generic";
   if (elemType.isF32())
-    return "_f64";
+    return "_f64"; // f32 promoted to f64 for Vec storage (runtime has no _f32 variant)
   if (elemType.isInteger(32))
     return "_i32";
-  return "_i32"; // default fallback
+  if (elemType.isInteger(1))
+    return "_i32"; // bool (i1) stored as i32 in Vec
+  if (elemType.isInteger(8))
+    return "_i32"; // i8/u8/byte stored as i32 in Vec
+  if (elemType.isInteger(16))
+    return "_i32"; // i16/u16 stored as i32 in Vec
+  llvm_unreachable("vecElemSuffixWithPtr: unrecognized element type");
 }
 
 struct VecNewOpLowering : public mlir::OpConversionPattern<hew::VecNewOp> {

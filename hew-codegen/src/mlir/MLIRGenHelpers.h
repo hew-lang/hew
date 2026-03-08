@@ -24,6 +24,13 @@
 
 namespace hew {
 
+/// Returns true if the type is valid (non-null and not NoneType).
+/// convertType() returns NoneType on failure; callers should check this
+/// before using the result to prevent silent propagation of invalid types.
+inline bool isValidType(mlir::Type type) {
+  return type && !mlir::isa<mlir::NoneType>(type);
+}
+
 /// Normalize an AST element type name to the canonical form used in
 /// collectionVarTypes strings (e.g. "Vec<i64>").  The language aliases
 /// "int" → i64 and "float" → f64, so we must unify them.

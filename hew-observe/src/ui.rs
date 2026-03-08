@@ -1,16 +1,16 @@
 //! TUI rendering for the observer.
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Bar, BarChart, BarGroup, Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Tabs,
-    Wrap,
 };
 use ratatui::Frame;
 
 use crate::app::{App, SortColumn, Tab};
 use crate::client::ConnectionStatus;
+use crate::theme;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
@@ -67,23 +67,23 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
                 .title(" hew-observe "),
         )
         .select(tab_idx)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(theme::TEXT_PRIMARY))
         .highlight_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         );
     f.render_widget(tabs, chunks[0]);
 
     // Connection indicator
-    let (status_text, status_color) = match app.connection_status {
-        ConnectionStatus::Connected => ("● Connected", Color::Green),
-        ConnectionStatus::Disconnected => ("● Disconnected", Color::Red),
-        ConnectionStatus::Connecting => ("● Connecting…", Color::Yellow),
+    let (status_text, status_colour) = match app.connection_status {
+        ConnectionStatus::Connected => ("● Connected", theme::CONN_CONNECTED),
+        ConnectionStatus::Disconnected => ("● Disconnected", theme::CONN_DISCONNECTED),
+        ConnectionStatus::Connecting => ("● Connecting…", theme::CONN_CONNECTING),
     };
     let mode = if app.demo_mode { " [DEMO]" } else { "" };
     let conn = Paragraph::new(format!("{status_text}{mode}"))
-        .style(Style::default().fg(status_color))
+        .style(Style::default().fg(status_colour))
         .alignment(Alignment::Right)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(conn, chunks[1]);
@@ -114,16 +114,6 @@ fn draw_cluster(f: &mut Frame, app: &App, area: Rect) {
     draw_cluster_members(f, app, chunks[1]);
 }
 
-fn member_state_color(state: &str) -> Color {
-    match state {
-        "alive" => Color::Green,
-        "suspect" => Color::Yellow,
-        "dead" => Color::Red,
-        "left" => Color::DarkGray,
-        _ => Color::White,
-    }
-}
-
 fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -133,7 +123,7 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
 
     if app.cluster_members.is_empty() {
         let msg = Paragraph::new("No cluster data")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(theme::dim_style())
             .alignment(Alignment::Center);
         f.render_widget(msg, inner);
         return;
@@ -173,8 +163,8 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 format!(" node:{} ", m.node_id)
             };
 
-            let color = member_state_color(&m.state);
-            let state_bullet = Span::styled(format!("● {}", m.state), Style::default().fg(color));
+            let colour = theme::member_state_colour(&m.state);
+            let state_bullet = Span::styled(format!("● {}", m.state), Style::default().fg(colour));
 
             // Check if there is a connection to this node
             let conn_status = if is_self {
@@ -184,24 +174,24 @@ fn draw_cluster_topology(f: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .any(|c| c.peer_node_id == m.node_id)
             {
-                Span::styled(" ↔ connected", Style::default().fg(Color::Green))
+                Span::styled(" ↔ connected", Style::default().fg(theme::STATE_HEALTHY))
             } else {
-                Span::styled(" ✕ no conn", Style::default().fg(Color::DarkGray))
+                Span::styled(" ✕ no conn", theme::dim_style())
             };
 
             let lines = vec![
-                Line::from(Span::styled(&m.addr, Style::default().fg(Color::White))),
-                Line::from(vec![state_bullet, conn_status]),
                 Line::from(Span::styled(
-                    "msg/s: \u{2014}",
-                    Style::default().fg(Color::DarkGray),
+                    &m.addr,
+                    Style::default().fg(theme::TEXT_PRIMARY),
                 )),
+                Line::from(vec![state_bullet, conn_status]),
+                Line::from(Span::styled("msg/s: \u{2014}", theme::dim_style())),
             ];
 
             let node_block = Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .border_style(Style::default().fg(color));
+                .border_style(Style::default().fg(colour));
             let para = Paragraph::new(lines).block(node_block);
             f.render_widget(para, cols[col]);
         }
@@ -220,17 +210,13 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
         Cell::from("Address"),
         Cell::from("Last Seen"),
     ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    .style(theme::header_style());
 
     let rows: Vec<Row> = app
         .cluster_members
         .iter()
         .map(|m| {
-            let color = member_state_color(&m.state);
+            let colour = theme::member_state_colour(&m.state);
             let last_seen = if m.last_seen_ms == 0 {
                 "\u{2014}".to_owned() // em-dash
             } else if m.last_seen_ms >= 1000 {
@@ -240,7 +226,7 @@ fn draw_cluster_members(f: &mut Frame, app: &App, area: Rect) {
             };
             Row::new(vec![
                 Cell::from(format!("node:{}", m.node_id)),
-                Cell::from(m.state.as_str()).style(Style::default().fg(color)),
+                Cell::from(m.state.as_str()).style(Style::default().fg(colour)),
                 Cell::from(format!("{}", m.incarnation)),
                 Cell::from(m.addr.as_str()),
                 Cell::from(last_seen),
@@ -317,7 +303,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
 
     if events.is_empty() {
         let msg = Paragraph::new("No trace events. Enable tracing: HEW_TRACE=1")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(theme::dim_style())
             .alignment(Alignment::Center);
         f.render_widget(msg, inner);
         return;
@@ -331,7 +317,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     node_ids.sort_unstable();
     node_ids.dedup();
 
-    let lane_colors = [Color::Cyan, Color::Green, Color::Yellow, Color::Magenta];
+    let lane_colours = theme::LANE_COLOURS;
     let num_lanes = node_ids.len();
     if num_lanes == 0 || inner.width < 4 || inner.height < 3 {
         return;
@@ -365,22 +351,19 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     let mut header_spans = Vec::new();
     for (i, &nid) in node_ids.iter().enumerate() {
         let label = format!("node:{nid}");
-        let color = lane_colors[i % lane_colors.len()];
+        let colour = lane_colours[i % lane_colours.len()];
         let pad = lane_width as usize;
         let formatted = format!("{label:^pad$}");
         header_spans.push(Span::styled(
             formatted,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            Style::default().fg(colour).add_modifier(Modifier::BOLD),
         ));
     }
     lines.push(Line::from(header_spans));
 
     // Separator
     let sep = "\u{2500}".repeat(inner.width as usize);
-    lines.push(Line::from(Span::styled(
-        sep,
-        Style::default().fg(Color::DarkGray),
-    )));
+    lines.push(Line::from(Span::styled(sep, theme::dim_style())));
 
     // Get base timestamp for relative display
     let base_ns = events.first().map_or(0, |e| e.timestamp_ns);
@@ -389,7 +372,6 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
     for evt in visible_events {
         let node_id = (evt.actor_id >> 48) as u16;
         let lane_idx = node_ids.iter().position(|&n| n == node_id).unwrap_or(0);
-        let color = lane_colors[lane_idx % lane_colors.len()];
 
         // Build the row: show vertical bars at each lane, with event info at the source lane
         let relative_s = (evt.timestamp_ns.saturating_sub(base_ns)) as f64 / 1_000_000_000.0;
@@ -404,33 +386,39 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let mut row_spans = Vec::new();
-        row_spans.push(Span::styled(
-            format!("{time_str} "),
-            Style::default().fg(Color::DarkGray),
-        ));
+        row_spans.push(Span::styled(format!("{time_str} "), theme::dim_style()));
 
         let remaining_width = inner.width.saturating_sub(8) as usize;
         for (i, _) in node_ids.iter().enumerate() {
             let segment_width = remaining_width / num_lanes;
             if i == lane_idx {
-                let label_display = if event_label.len() > segment_width {
-                    event_label[..segment_width].to_owned()
+                let label_display = if event_label.len() > segment_width && segment_width > 1 {
+                    // Truncate with ellipsis when label exceeds segment width
+                    let trunc = segment_width - 1;
+                    format!(
+                        "{}\u{2026}",
+                        &event_label[..event_label.floor_char_boundary(trunc)]
+                    )
+                } else if event_label.len() > segment_width {
+                    // Segment too narrow for ellipsis; safe-truncate at char boundary
+                    event_label[..event_label.floor_char_boundary(segment_width)].to_owned()
                 } else {
                     format!("{event_label:<segment_width$}")
                 };
-                let event_color = match evt.event_type.as_str() {
-                    "spawn" => Color::Green,
-                    "crash" => Color::Red,
-                    "stop" => Color::DarkGray,
-                    _ => color,
+                let lane_colour = lane_colours[lane_idx % lane_colours.len()];
+                let event_colour = match evt.event_type.as_str() {
+                    "spawn" => theme::STATE_HEALTHY,
+                    "crash" => theme::STATE_ERROR,
+                    "stop" => theme::STATE_STOPPED,
+                    _ => lane_colour,
                 };
                 row_spans.push(Span::styled(
                     label_display,
-                    Style::default().fg(event_color),
+                    Style::default().fg(event_colour),
                 ));
             } else {
                 let bar = format!("{:\u{2502}^width$}", "", width = segment_width);
-                row_spans.push(Span::styled(bar, Style::default().fg(Color::DarkGray)));
+                row_spans.push(Span::styled(bar, theme::dim_style()));
             }
         }
         lines.push(Line::from(row_spans));
@@ -504,7 +492,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
 
     if node_ids.is_empty() || app.trace_events.is_empty() {
         let msg = Paragraph::new("No events in window")
-            .style(Style::default().fg(Color::DarkGray))
+            .style(theme::dim_style())
             .alignment(Alignment::Center);
         f.render_widget(msg, inner);
         return;
@@ -546,13 +534,13 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
             let t_s = t_ns / 1_000_000_000.0;
             let label = format!("{t_s:.1}s");
             let padded = format!("{label:<tick_spacing$}");
-            time_header_spans.push(Span::styled(padded, Style::default().fg(Color::DarkGray)));
+            time_header_spans.push(Span::styled(padded, theme::dim_style()));
         }
     }
     lines.push(Line::from(time_header_spans));
 
     // One row per node
-    let lane_colors = [Color::Cyan, Color::Green, Color::Yellow, Color::Magenta];
+    let lane_colours = theme::LANE_COLOURS;
 
     for (node_idx, &nid) in node_ids.iter().enumerate() {
         // Node label
@@ -560,7 +548,8 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
         let padded_label = format!("{label:>width$}", width = label_width as usize);
 
         // Build the chart row
-        let mut row_chars: Vec<(char, Color)> = vec![(' ', Color::DarkGray); chart_width];
+        let mut row_chars: Vec<(char, ratatui::style::Color)> =
+            vec![(' ', theme::TEXT_DIM); chart_width];
 
         // Place events
         let node_events: Vec<&crate::client::TraceEvent> = app
@@ -576,29 +565,25 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
             let x = ((evt.timestamp_ns - window_start) as f64 / window_ns as f64
                 * chart_width as f64) as usize;
             if x < chart_width {
-                let (glyph, color) = match evt.event_type.as_str() {
-                    "spawn" => ('\u{25C6}', Color::Green),   // ◆
-                    "crash" => ('\u{2715}', Color::Red),     // ✕
-                    "send" => ('\u{25CF}', Color::Cyan),     // ●
-                    "stop" => ('\u{25C7}', Color::DarkGray), // ◇
-                    _ => ('\u{00B7}', Color::White),         // ·
-                };
+                let (glyph, colour) = theme::timeline_event_glyph(&evt.event_type);
                 // If there's already something at this position (density), keep the higher-priority one
                 let existing = row_chars[x].0;
                 if existing == ' ' || existing == '\u{25CF}' {
-                    row_chars[x] = (glyph, color);
+                    row_chars[x] = (glyph, colour);
                 }
             }
         }
 
-        let node_color = lane_colors[node_idx % lane_colors.len()];
+        let node_colour = lane_colours[node_idx % lane_colours.len()];
         let mut spans = Vec::new();
         spans.push(Span::styled(
             padded_label,
-            Style::default().fg(node_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(node_colour)
+                .add_modifier(Modifier::BOLD),
         ));
-        for (ch, color) in &row_chars {
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(*color)));
+        for (ch, colour) in &row_chars {
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(*colour)));
         }
         lines.push(Line::from(spans));
 
@@ -610,10 +595,7 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
                 "\u{2500}".repeat(chart_width),
                 width = label_width as usize
             );
-            lines.push(Line::from(Span::styled(
-                sep,
-                Style::default().fg(Color::DarkGray),
-            )));
+            lines.push(Line::from(Span::styled(sep, theme::dim_style())));
         }
     }
 
@@ -623,18 +605,14 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_timeline_legend(f: &mut Frame, area: Rect) {
     let legend = Line::from(vec![
-        Span::styled(" \u{25C6} ", Style::default().fg(Color::Green)),
+        Span::styled(" \u{25C6} ", Style::default().fg(theme::STATE_HEALTHY)),
         Span::raw("spawn  "),
-        Span::styled("\u{2715} ", Style::default().fg(Color::Red)),
+        Span::styled("\u{2715} ", Style::default().fg(theme::STATE_ERROR)),
         Span::raw("crash  "),
-        Span::styled("\u{25CF} ", Style::default().fg(Color::Cyan)),
+        Span::styled("\u{25CF} ", Style::default().fg(theme::ACCENT)),
         Span::raw("message  "),
-        Span::styled("\u{25C7} ", Style::default().fg(Color::DarkGray)),
-        Span::raw("stop  "),
-        Span::styled("\u{25B2} ", Style::default().fg(Color::Yellow)),
-        Span::raw("suspect  "),
-        Span::styled("\u{2605} ", Style::default().fg(Color::Red)),
-        Span::raw("dead"),
+        Span::styled("\u{25C7} ", Style::default().fg(theme::STATE_STOPPED)),
+        Span::raw("stop"),
     ]);
     let para = Paragraph::new(legend).alignment(Alignment::Center);
     f.render_widget(para, area);
@@ -676,100 +654,100 @@ fn draw_overview_stats(f: &mut Frame, app: &App, area: Rect) {
     let m = &app.metrics;
     let stats_text = vec![
         Line::from(vec![
-            Span::styled("Actors Spawned: ", Style::default().fg(Color::Gray)),
+            Span::styled("Actors Spawned: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.tasks_spawned),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Completed: ", Style::default().fg(Color::Gray)),
+            Span::styled("Completed: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.tasks_completed),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Active: ", Style::default().fg(Color::Gray)),
+            Span::styled("Active: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.tasks_spawned.saturating_sub(m.tasks_completed)),
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(theme::STATE_HEALTHY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Messages Sent: ", Style::default().fg(Color::Gray)),
+            Span::styled("Messages Sent: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.messages_sent),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Received: ", Style::default().fg(Color::Gray)),
+            Span::styled("Received: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.messages_received),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Rate: ", Style::default().fg(Color::Gray)),
+            Span::styled("Rate: ", theme::muted_style()),
             Span::styled(
                 format!("{:.1} msg/s", app.msg_rate),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme::STATE_WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Workers: ", Style::default().fg(Color::Gray)),
+            Span::styled("Workers: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.active_workers),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Work Steals: ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{}", m.steals), Style::default().fg(Color::Cyan)),
+            Span::styled("Work Steals: ", theme::muted_style()),
+            Span::styled(format!("{}", m.steals), Style::default().fg(theme::ACCENT)),
         ]),
         Line::from(vec![
-            Span::styled("Memory Live: ", Style::default().fg(Color::Gray)),
+            Span::styled("Memory Live: ", theme::muted_style()),
             Span::styled(
                 format_bytes(m.bytes_live),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme::METRIC_MEMORY),
             ),
             Span::raw("    "),
-            Span::styled("Peak: ", Style::default().fg(Color::Gray)),
+            Span::styled("Peak: ", theme::muted_style()),
             Span::styled(
                 format_bytes(m.peak_bytes_live),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme::METRIC_MEMORY),
             ),
             Span::raw("    "),
-            Span::styled("Allocated: ", Style::default().fg(Color::Gray)),
+            Span::styled("Allocated: ", theme::muted_style()),
             Span::styled(
                 format_bytes(m.bytes_allocated),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Freed: ", Style::default().fg(Color::Gray)),
+            Span::styled("Freed: ", theme::muted_style()),
             Span::styled(
                 format_bytes(m.bytes_freed),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Allocs: ", Style::default().fg(Color::Gray)),
+            Span::styled("Allocs: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.alloc_count),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
             Span::raw("    "),
-            Span::styled("Deallocs: ", Style::default().fg(Color::Gray)),
+            Span::styled("Deallocs: ", theme::muted_style()),
             Span::styled(
                 format!("{}", m.dealloc_count),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Uptime: ", Style::default().fg(Color::Gray)),
+            Span::styled("Uptime: ", theme::muted_style()),
             Span::styled(
                 format_duration(m.timestamp_secs),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT_PRIMARY),
             ),
         ]),
     ];
@@ -798,7 +776,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Messages/sec "),
         )
         .data(&app.sparkline_msgs)
-        .style(Style::default().fg(Color::Cyan));
+        .style(Style::default().fg(theme::ACCENT));
     f.render_widget(msg_sparkline, spark_chunks[0]);
 
     let actor_sparkline = Sparkline::default()
@@ -808,7 +786,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Active Workers "),
         )
         .data(&app.sparkline_actors)
-        .style(Style::default().fg(Color::Green));
+        .style(Style::default().fg(theme::STATE_HEALTHY));
     f.render_widget(actor_sparkline, spark_chunks[1]);
 
     let mem_sparkline = Sparkline::default()
@@ -818,7 +796,7 @@ fn draw_overview_sparklines(f: &mut Frame, app: &App, area: Rect) {
                 .title(" Memory (live) "),
         )
         .data(&app.sparkline_memory)
-        .style(Style::default().fg(Color::Magenta));
+        .style(Style::default().fg(theme::METRIC_MEMORY));
     f.render_widget(mem_sparkline, spark_chunks[2]);
 }
 
@@ -833,7 +811,7 @@ fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
             Bar::default()
                 .label(Line::from(format!("actor:{}", a.id)))
                 .value(a.msgs)
-                .style(Style::default().fg(Color::Cyan))
+                .style(Style::default().fg(theme::ACCENT))
         })
         .collect();
 
@@ -846,7 +824,11 @@ fn draw_overview_top_actors(f: &mut Frame, app: &App, area: Rect) {
         .data(BarGroup::default().bars(&bars))
         .bar_width(12)
         .bar_gap(2)
-        .value_style(Style::default().fg(Color::White).bg(Color::Cyan));
+        .value_style(
+            Style::default()
+                .fg(theme::BAR_VALUE_FG)
+                .bg(theme::BAR_VALUE_BG),
+        );
     f.render_widget(chart, area);
 }
 
@@ -886,29 +868,23 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
         Cell::from("HWM"),
         Cell::from("CPU Time"),
     ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    .style(theme::header_style());
 
     let filtered = app.filtered_actors();
     let rows: Vec<Row> = filtered
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            let state_color = state_color(&a.state);
+            let state_colour = theme::actor_state_colour(&a.state);
             let style = if i == app.actor_selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
+                theme::selected_style()
             } else {
                 Style::default()
             };
             Row::new(vec![
                 Cell::from(format!("{}", a.id)),
                 Cell::from(format!("{}", a.pid)),
-                Cell::from(a.state_name()).style(Style::default().fg(state_color)),
+                Cell::from(a.state_name()).style(Style::default().fg(state_colour)),
                 Cell::from(format!("{}", a.msgs)),
                 #[expect(clippy::cast_precision_loss, reason = "Display-only, 1 decimal place")]
                 Cell::from(if a.msgs > 0 {
@@ -944,20 +920,12 @@ fn draw_actors(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
     if app.tree_rows.is_empty() && !app.demo_mode {
-        let msg = Paragraph::new(
-            "Supervision tree data is not yet available via the runtime HTTP endpoint.\n\n\
-             The runtime tracks supervisor trees internally but does not expose them\n\
-             over the profiler API. A future /api/supervisors endpoint is needed.\n\n\
-             Use --demo flag to see a sample supervision tree.",
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Supervision Tree "),
-        )
-        .style(Style::default().fg(Color::Yellow))
-        .wrap(Wrap { trim: false });
-        f.render_widget(msg, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Supervision Tree ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        draw_empty_state(f, inner, "No supervision data available");
         return;
     }
 
@@ -967,35 +935,27 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, row)| {
             let indent = "  ".repeat(row.depth as usize);
-            let color = match row.state {
-                "Running" | "Supervisor" => Color::Green,
-                "Idle" => Color::Gray,
-                "Crashed" => Color::Red,
-                _ => Color::Yellow,
+            let colour = match row.state {
+                "Running" | "Supervisor" => theme::STATE_HEALTHY,
+                "Idle" => theme::STATE_IDLE,
+                "Crashed" => theme::STATE_ERROR,
+                _ => theme::STATE_WARNING,
             };
             let style = if i == app.tree_selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
+                theme::selected_style()
             } else {
                 Style::default()
             };
             Row::new(vec![
-                Cell::from(format!("{indent}{}", row.label)).style(Style::default().fg(color)),
-                Cell::from(row.state).style(Style::default().fg(color)),
+                Cell::from(format!("{indent}{}", row.label)).style(Style::default().fg(colour)),
+                Cell::from(row.state).style(Style::default().fg(colour)),
             ])
             .style(style)
         })
         .collect();
 
     let table = Table::new(rows, [Constraint::Min(40), Constraint::Length(15)])
-        .header(
-            Row::new(vec!["Tree", "State"]).style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        )
+        .header(Row::new(vec!["Tree", "State"]).style(theme::header_style()))
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -1006,16 +966,10 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
     if app.crashes.is_empty() && !app.demo_mode {
-        let msg = Paragraph::new(
-            "Crash log data is not yet available via the runtime HTTP endpoint.\n\n\
-             The runtime maintains a 64-entry crash ring buffer internally but does\n\
-             not expose it over the profiler API. A future /api/crashes endpoint is needed.\n\n\
-             Use --demo flag to see sample crash data.",
-        )
-        .block(Block::default().borders(Borders::ALL).title(" Crash Log "))
-        .style(Style::default().fg(Color::Yellow))
-        .wrap(Wrap { trim: false });
-        f.render_widget(msg, area);
+        let block = Block::default().borders(Borders::ALL).title(" Crash Log ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        draw_empty_state(f, inner, "No crash data recorded");
         return;
     }
 
@@ -1026,11 +980,7 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
         Cell::from("Msg Type"),
         Cell::from("Fault Address"),
     ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    );
+    .style(theme::header_style());
 
     let rows: Vec<Row> = app
         .crashes
@@ -1038,9 +988,7 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, c)| {
             let style = if i == app.crash_selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
+                theme::selected_style()
             } else {
                 Style::default()
             };
@@ -1052,7 +1000,7 @@ fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {
             Row::new(vec![
                 Cell::from(format!("{:.1}s", c.time_s)),
                 Cell::from(format!("actor:{}", c.actor_id)),
-                Cell::from(sig_name).style(Style::default().fg(Color::Red)),
+                Cell::from(sig_name).style(Style::default().fg(theme::STATE_ERROR)),
                 Cell::from(format!("{}", c.msg_type)),
                 Cell::from(format!("{:#018x}", c.fault_addr)),
             ])
@@ -1090,92 +1038,98 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         " [{mode}] {} │ {node_count} node(s) │ Tab: switch │ ?: help │ r: refresh │ q: quit",
         app.base_url
     );
-    let bar = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let bar = Paragraph::new(text).style(
+        Style::default()
+            .bg(theme::STATUS_BAR_BG)
+            .fg(theme::STATUS_BAR_FG),
+    );
     f.render_widget(bar, area);
 }
 
 fn draw_help_popup(f: &mut Frame) {
     let area = f.area();
-    let popup_width = 55;
-    let popup_height = 23;
+
+    // Content dimensions (number of help lines + 2 for block border)
+    let content_width: u16 = 55;
+    let content_height: u16 = 23;
+
+    // Proportional sizing: 80% of terminal, capped at content size
+    let popup_width = (area.width * 4 / 5).min(content_width).min(area.width);
+    let popup_height = (area.height * 4 / 5).min(content_height).min(area.height);
+
     let x = area.width.saturating_sub(popup_width) / 2;
     let y = area.height.saturating_sub(popup_height) / 2;
-    let popup = Rect::new(
-        x,
-        y,
-        popup_width.min(area.width),
-        popup_height.min(area.height),
-    );
+    let popup = Rect::new(x, y, popup_width, popup_height);
 
     f.render_widget(Clear, popup);
 
     let help_text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Tab/Shift+Tab  ", style_key()),
+            Span::styled("  Tab/Shift+Tab  ", theme::key_style()),
             Span::raw("Switch tabs"),
         ]),
         Line::from(vec![
-            Span::styled("  q              ", style_key()),
+            Span::styled("  q              ", theme::key_style()),
             Span::raw("Quit"),
         ]),
         Line::from(vec![
-            Span::styled("  r              ", style_key()),
+            Span::styled("  r              ", theme::key_style()),
             Span::raw("Force refresh"),
         ]),
         Line::from(vec![
-            Span::styled("  ?              ", style_key()),
+            Span::styled("  ?              ", theme::key_style()),
             Span::raw("Toggle help"),
         ]),
         Line::from(vec![
-            Span::styled("  ↑/↓            ", style_key()),
+            Span::styled("  ↑/↓            ", theme::key_style()),
             Span::raw("Navigate lists"),
         ]),
         Line::from(vec![
-            Span::styled("  /              ", style_key()),
+            Span::styled("  /              ", theme::key_style()),
             Span::raw("Filter actors"),
         ]),
         Line::from(vec![
-            Span::styled("  s              ", style_key()),
+            Span::styled("  s              ", theme::key_style()),
             Span::raw("Cycle sort column"),
         ]),
         Line::from(vec![
-            Span::styled("  Esc            ", style_key()),
+            Span::styled("  Esc            ", theme::key_style()),
             Span::raw("Cancel filter"),
         ]),
         Line::from(vec![
-            Span::styled("  Ctrl+C         ", style_key()),
+            Span::styled("  Ctrl+C         ", theme::key_style()),
             Span::raw("Force quit"),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "  Distributed tabs:",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::HEADER_FG)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
-            Span::styled("  space/p        ", style_key()),
+            Span::styled("  space/p        ", theme::key_style()),
             Span::raw("Pause (Messages/Timeline)"),
         ]),
         Line::from(vec![
-            Span::styled("  ←/→            ", style_key()),
+            Span::styled("  ←/→            ", theme::key_style()),
             Span::raw("Scroll time (Timeline)"),
         ]),
         Line::from(vec![
-            Span::styled("  +/-            ", style_key()),
+            Span::styled("  +/-            ", theme::key_style()),
             Span::raw("Zoom in/out (Timeline)"),
         ]),
         Line::from(vec![
-            Span::styled("  n              ", style_key()),
+            Span::styled("  n              ", theme::key_style()),
             Span::raw("Snap to now (Timeline)"),
         ]),
         Line::from(vec![
-            Span::styled("  f              ", style_key()),
+            Span::styled("  f              ", theme::key_style()),
             Span::raw("Filter by selected actor (Messages)"),
         ]),
         Line::from(vec![
-            Span::styled("  c              ", style_key()),
+            Span::styled("  c              ", theme::key_style()),
             Span::raw("Clear filter (Messages)"),
         ]),
         Line::from(""),
@@ -1185,28 +1139,27 @@ fn draw_help_popup(f: &mut Frame) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Key Bindings ")
-            .style(Style::default().bg(Color::Black)),
+            .style(Style::default().bg(theme::HEADER_BG)),
     );
     f.render_widget(help, popup);
 }
 
-fn style_key() -> Style {
-    Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn state_color(state: &str) -> Color {
-    match state {
-        "idle" => Color::Gray,
-        "runnable" => Color::Yellow,
-        "running" => Color::Green,
-        "blocked" => Color::Blue,
-        "stopping" => Color::Magenta,
-        "crashed" => Color::Red,
-        "stopped" => Color::DarkGray,
-        _ => Color::White,
-    }
+/// Render a vertically centred, single-line muted empty-state message.
+///
+/// Uses a 40%/1-line/60% vertical split so the text sits slightly above center.
+fn draw_empty_state(f: &mut Frame, area: Rect, msg: &str) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(1),
+            Constraint::Percentage(60),
+        ])
+        .split(area);
+    let para = Paragraph::new(msg)
+        .style(theme::dim_style())
+        .alignment(Alignment::Center);
+    f.render_widget(para, chunks[1]);
 }
 
 #[expect(

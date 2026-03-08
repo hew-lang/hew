@@ -205,6 +205,36 @@ impl App {
         app
     }
 
+    /// Clamp all selection indices to valid ranges so they never exceed
+    /// the current list lengths (e.g. after a refresh shrinks a list or
+    /// a filter narrows the visible set).
+    pub fn clamp_selections(&mut self) {
+        let actor_len = self.filtered_actors().len();
+        if actor_len == 0 {
+            self.actor_selected = 0;
+        } else {
+            self.actor_selected = self.actor_selected.min(actor_len - 1);
+        }
+
+        if self.crashes.is_empty() {
+            self.crash_selected = 0;
+        } else {
+            self.crash_selected = self.crash_selected.min(self.crashes.len() - 1);
+        }
+
+        if self.tree_rows.is_empty() {
+            self.tree_selected = 0;
+        } else {
+            self.tree_selected = self.tree_selected.min(self.tree_rows.len() - 1);
+        }
+
+        if self.trace_events.is_empty() {
+            self.trace_scroll = 0;
+        } else {
+            self.trace_scroll = self.trace_scroll.min(self.trace_events.len() - 1);
+        }
+    }
+
     pub fn next_tab(&mut self) {
         let idx = TABS.iter().position(|t| *t == self.active_tab).unwrap_or(0);
         self.active_tab = TABS[(idx + 1) % TABS.len()];

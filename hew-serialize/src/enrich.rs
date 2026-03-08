@@ -990,7 +990,7 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
         Item::Supervisor(sup) => {
             for child in &mut sup.children {
                 for arg in &mut child.args {
-                    normalize_expr_types(arg);
+                    normalize_expr_types(arg, registry);
                 }
             }
         }
@@ -1327,7 +1327,7 @@ fn enrich_item_with_diagnostics(
             for trait_item in &mut trait_decl.items {
                 if let hew_parser::ast::TraitItem::Method(m) = trait_item {
                     if let Some(ref mut body) = m.body {
-                        enrich_block_with_diagnostics(body, tco, diagnostics)?;
+                        enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
                     }
                 }
             }
@@ -1335,14 +1335,14 @@ fn enrich_item_with_diagnostics(
         Item::TypeDecl(td) => {
             for body_item in &mut td.body {
                 if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
-                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics)?;
+                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics, registry)?;
                 }
             }
         }
         Item::Supervisor(sup) => {
             for child in &mut sup.children {
                 for arg in &mut child.args {
-                    enrich_expr_with_diagnostics(arg, tco, diagnostics)?;
+                    enrich_expr_with_diagnostics(arg, tco, diagnostics, registry)?;
                 }
             }
         }
@@ -1786,8 +1786,8 @@ fn enrich_expr_with_diagnostics(
             }
         }
         Expr::ArrayRepeat { value, count } => {
-            enrich_expr_with_diagnostics(value, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(count, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(value, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(count, tco, diagnostics, registry)?;
         }
         Expr::Literal(_)
         | Expr::Identifier(_)

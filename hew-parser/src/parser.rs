@@ -248,7 +248,14 @@ fn parse_string_parts(
             }
 
             let expr_text = &inner[expr_start_byte..expr_end_byte];
-            if !expr_text.is_empty() {
+            if expr_text.trim().is_empty() {
+                errors.push(ParseError {
+                    message: "empty interpolation expression".to_string(),
+                    span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
+                    hint: None,
+                    severity: Severity::Error,
+                });
+            } else if !expr_text.is_empty() {
                 let mut sub_parser = Parser::new(expr_text);
                 let parsed = sub_parser.parse_expr();
                 errors.extend(sub_parser.errors.into_iter());
@@ -256,6 +263,13 @@ fn parse_string_parts(
                     let adjusted_start = inner_offset + expr_start_byte + sub_span.start;
                     let adjusted_end = inner_offset + expr_start_byte + sub_span.end;
                     parts.push(StringPart::Expr((expr, adjusted_start..adjusted_end)));
+                } else {
+                    errors.push(ParseError {
+                        message: "failed to parse interpolation expression".to_string(),
+                        span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
+                        hint: None,
+                        severity: Severity::Error,
+                    });
                 }
             }
             continue;
@@ -5196,7 +5210,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known gap: interpolation parse errors silently dropped (sub-parser errors not propagated)"]
     fn parse_interpolated_string_empty_expr_reports_error() {
         let result = parse(r#"fn main() { let s = f"hello {}"; }"#);
         assert!(

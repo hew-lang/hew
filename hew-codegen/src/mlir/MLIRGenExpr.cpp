@@ -84,8 +84,17 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         else if (currentFunction && currentFunction.getResultTypes().size() == 1 &&
                  llvm::isa<hew::OptionEnumType>(currentFunction.getResultTypes()[0]))
           optionType = currentFunction.getResultTypes()[0];
-        else
-          optionType = hew::OptionEnumType::get(&context, builder.getI32Type());
+        else if (auto *resolvedType = resolvedTypeOf(expr.span)) {
+          auto converted = convertType(*resolvedType);
+          if (converted && mlir::isa<hew::OptionEnumType>(converted))
+            optionType = converted;
+        }
+        if (!optionType) {
+          ++errorCount_;
+          emitError(location)
+              << "cannot determine type for `None`; add an explicit type annotation";
+          return nullptr;
+        }
         mlir::Value result = hew::EnumConstructOp::create(
             builder, location, optionType, static_cast<uint32_t>(variantIndex),
             llvm::StringRef("Option"), mlir::ValueRange{},

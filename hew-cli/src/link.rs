@@ -320,21 +320,20 @@ pub fn find_package_libs(modules: &[String]) -> Vec<String> {
 
     let mut libs = Vec::new();
     for module_path in modules {
-        if let Some(lib_name) = module_to_staticlib_name(module_path) {
-            let candidates = [
-                exe_dir.join("../lib").join(&lib_name),
-                exe_dir.join("../lib/hew").join(&lib_name),
-                exe_dir.join("../lib64/hew").join(&lib_name),
-                exe_dir.join(&lib_name),
-                exe_dir.join("../../target/release").join(&lib_name),
-                exe_dir.join("../../target/debug").join(&lib_name),
-            ];
-            for c in &candidates {
-                if c.exists() {
-                    if let Ok(p) = c.canonicalize() {
-                        libs.push(p.display().to_string());
-                        break;
-                    }
+        let lib_name = module_to_staticlib_name(module_path);
+        let candidates = [
+            exe_dir.join("../lib").join(&lib_name),
+            exe_dir.join("../lib/hew").join(&lib_name),
+            exe_dir.join("../lib64/hew").join(&lib_name),
+            exe_dir.join(&lib_name),
+            exe_dir.join("../../target/release").join(&lib_name),
+            exe_dir.join("../../target/debug").join(&lib_name),
+        ];
+        for c in &candidates {
+            if c.exists() {
+                if let Ok(p) = c.canonicalize() {
+                    libs.push(p.display().to_string());
+                    break;
                 }
             }
         }
@@ -345,41 +344,12 @@ pub fn find_package_libs(modules: &[String]) -> Vec<String> {
 /// Map a module path to its expected staticlib filename.
 ///
 /// `"std::encoding::hex"` → `"libhew_std_encoding_hex.a"`
-fn module_to_staticlib_name(module_path: &str) -> Option<String> {
-    let crate_name = match module_path {
-        "std::encoding::base64" => "hew_std_encoding_base64",
-        "std::encoding::csv" => "hew_std_encoding_csv",
-        "std::encoding::json" => "hew_std_encoding_json",
-        "std::encoding::markdown" => "hew_std_encoding_markdown",
-        "std::encoding::msgpack" => "hew_std_encoding_msgpack",
-        "std::encoding::protobuf" => "hew_std_encoding_protobuf",
-        "std::encoding::toml" => "hew_std_encoding_toml",
-        "std::encoding::yaml" => "hew_std_encoding_yaml",
-        "std::crypto::crypto" => "hew_std_crypto_crypto",
-        "std::crypto::jwt" => "hew_std_crypto_jwt",
-        "std::crypto::password" => "hew_std_crypto_password",
-        "std::net::http" => "hew_std_net_http",
-        "std::net::ipnet" => "hew_std_net_ipnet",
-        "std::net::smtp" => "hew_std_net_smtp",
-        "std::net::url" => "hew_std_net_url",
-        "std::net::websocket" => "hew_std_net_websocket",
-        "std::time::cron" => "hew_std_time_cron",
-        "std::time::datetime" => "hew_std_time_datetime",
-        "std::text::regex" => "hew_std_text_regex",
-        "std::text::semver" => "hew_std_text_semver",
-        "std::encoding::compress" => "hew_std_encoding_compress",
-        "std::misc::uuid" => "hew_std_misc_uuid",
-        "std::misc::log" => "hew_std_misc_log",
-        "ecosystem::db::postgres" => "hew_ecosystem_db_postgres",
-        "ecosystem::db::redis" => "hew_ecosystem_db_redis",
-        "ecosystem::db::sqlite" => "hew_ecosystem_db_sqlite",
-        "ecosystem::misc::glob" => "hew_ecosystem_misc_glob",
-        _ => return None,
-    };
+fn module_to_staticlib_name(module_path: &str) -> String {
+    let crate_name = format!("hew_{}", module_path.replace("::", "_"));
     if cfg!(target_os = "windows") {
-        Some(format!("{crate_name}.lib"))
+        format!("{crate_name}.lib")
     } else {
-        Some(format!("lib{crate_name}.a"))
+        format!("lib{crate_name}.a")
     }
 }
 

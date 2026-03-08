@@ -4472,8 +4472,8 @@ static void transformCoroutineGenerators(llvm::Module &M) {
     auto *DoneFn = M.getFunction(baseName + "__done");
 
     if (!InitFn || !NextFn || !DoneFn) {
-      llvm::errs() << "Warning: missing generator stubs for " << baseName << "\n";
-      continue;
+      llvm::report_fatal_error(llvm::Twine("missing generator stubs for '") + baseName +
+                               "' — coroutine IR generation is incomplete");
     }
 
     // Determine the yield type from the __next function's return type
@@ -4950,15 +4950,17 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
                                                    : opts.target_triple);
     std::string error;
     auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
-    if (target) {
-      llvm::TargetOptions tOpts;
-      auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
-      if (tm) {
-        auto dl = tm->createDataLayout().getStringRepresentation();
-        module->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
-                        mlir::StringAttr::get(&context, dl));
-      }
-    }
+    if (!target)
+      llvm::report_fatal_error(llvm::Twine("cannot find target for triple '") + triple.str() +
+                               "': " + error);
+    llvm::TargetOptions tOpts;
+    auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
+    if (!tm)
+      llvm::report_fatal_error(llvm::Twine("cannot create target machine for triple '") +
+                               triple.str() + "'");
+    auto dl = tm->createDataLayout().getStringRepresentation();
+    module->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
+                    mlir::StringAttr::get(&context, dl));
   }
 
   // Reject unsupported ops early when targeting WASM.

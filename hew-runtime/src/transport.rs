@@ -271,9 +271,7 @@ pub unsafe extern "C" fn hew_actor_ref_send(
 /// `ref_ptr` must be a valid pointer to a [`HewActorRef`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_ref_is_local(ref_ptr: *const HewActorRef) -> c_int {
-    if ref_ptr.is_null() {
-        return 0;
-    }
+    cabi_guard!(ref_ptr.is_null(), 0);
     // SAFETY: caller guarantees the pointer is valid.
     c_int::from(unsafe { (*ref_ptr).kind } == ACTOR_REF_LOCAL)
 }
@@ -507,9 +505,7 @@ fn accept_with_optional_timeout(listen_sock: &Socket, timeout_ms: c_int) -> Opti
 // ---- TCP vtable callbacks --------------------------------------------------
 
 unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-    if impl_ptr.is_null() || address.is_null() {
-        return HEW_CONN_INVALID;
-    }
+    cabi_guard!(impl_ptr.is_null() || address.is_null(), HEW_CONN_INVALID);
     // SAFETY: caller guarantees address is a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
         return HEW_CONN_INVALID;
@@ -532,9 +528,7 @@ unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) 
 }
 
 unsafe extern "C" fn tcp_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-    if impl_ptr.is_null() || address.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null() || address.is_null(), -1);
     // SAFETY: caller guarantees address is a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
         return -1;
@@ -561,9 +555,7 @@ unsafe extern "C" fn tcp_listen(impl_ptr: *mut c_void, address: *const c_char) -
 }
 
 unsafe extern "C" fn tcp_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_int {
-    if impl_ptr.is_null() {
-        return HEW_CONN_INVALID;
-    }
+    cabi_guard!(impl_ptr.is_null(), HEW_CONN_INVALID);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let Some(listen_sock) = &tcp.listen_sock else {
@@ -586,9 +578,7 @@ unsafe extern "C" fn tcp_send(
     data: *const c_void,
     len: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || data.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let Some(sock) = tcp.get_conn(conn) else {
@@ -605,9 +595,7 @@ unsafe extern "C" fn tcp_recv(
     buf: *mut c_void,
     buf_size: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     let Some(sock) = tcp.get_conn(conn) else {
@@ -619,18 +607,14 @@ unsafe extern "C" fn tcp_recv(
 }
 
 unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {
-    if impl_ptr.is_null() {
-        return;
-    }
+    cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr points to a valid TcpTransport.
     let tcp = unsafe { &*impl_ptr.cast::<TcpTransport>() };
     tcp.remove_conn(conn);
 }
 
 unsafe extern "C" fn tcp_destroy(impl_ptr: *mut c_void) {
-    if impl_ptr.is_null() {
-        return;
-    }
+    cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_tcp_new.
     let _ = unsafe { Box::from_raw(impl_ptr.cast::<TcpTransport>()) };
 }
@@ -712,9 +696,7 @@ fn tcp_clone_stream(handle: c_int) -> Option<TcpStream> {
 /// `addr` must be a valid, NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_listen(addr: *const c_char) -> c_int {
-    if addr.is_null() {
-        return -1;
-    }
+    cabi_guard!(addr.is_null(), -1);
     // SAFETY: caller guarantees `addr` is a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
         return -1;
@@ -767,9 +749,7 @@ pub extern "C" fn hew_tcp_accept(listener: c_int) -> c_int {
 /// `addr` must be a valid, NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_connect(addr: *const c_char) -> c_int {
-    if addr.is_null() {
-        return -1;
-    }
+    cabi_guard!(addr.is_null(), -1);
     // SAFETY: caller guarantees `addr` is a valid C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
         return -1;
@@ -923,9 +903,7 @@ pub extern "C" fn hew_tcp_read(conn: c_int) -> *mut crate::vec::HewVec {
 /// `hew_vec_new` (i32 elements).
 #[no_mangle]
 pub unsafe extern "C" fn hew_tcp_write(conn: c_int, vec: *mut crate::vec::HewVec) -> c_int {
-    if vec.is_null() {
-        return -1;
-    }
+    cabi_guard!(vec.is_null(), -1);
     let Some(mut stream) = tcp_clone_stream(conn) else {
         return -1;
     };
@@ -1014,9 +992,7 @@ pub unsafe extern "C" fn hew_tcp_broadcast_except(
     exclude_conn: c_int,
     msg: *const c_char,
 ) -> c_int {
-    if msg.is_null() {
-        return -1;
-    }
+    cabi_guard!(msg.is_null(), -1);
     // SAFETY: caller guarantees `msg` is a valid C string.
     let Ok(text) = unsafe { CStr::from_ptr(msg) }.to_str() else {
         return -1;
@@ -1155,9 +1131,7 @@ mod unix_transport {
     // ---- Unix vtable callbacks -------------------------------------------------
 
     unsafe extern "C" fn unix_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-        if impl_ptr.is_null() || address.is_null() {
-            return HEW_CONN_INVALID;
-        }
+        cabi_guard!(impl_ptr.is_null() || address.is_null(), HEW_CONN_INVALID);
         // SAFETY: caller guarantees address is a valid C string.
         let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
             return HEW_CONN_INVALID;
@@ -1179,9 +1153,7 @@ mod unix_transport {
     }
 
     unsafe extern "C" fn unix_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-        if impl_ptr.is_null() || address.is_null() {
-            return -1;
-        }
+        cabi_guard!(impl_ptr.is_null() || address.is_null(), -1);
         // SAFETY: caller guarantees address is a valid C string.
         let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
             return -1;
@@ -1211,9 +1183,7 @@ mod unix_transport {
     }
 
     unsafe extern "C" fn unix_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_int {
-        if impl_ptr.is_null() {
-            return HEW_CONN_INVALID;
-        }
+        cabi_guard!(impl_ptr.is_null(), HEW_CONN_INVALID);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let Some(listen_sock) = &ut.listen_sock else {
@@ -1236,9 +1206,7 @@ mod unix_transport {
         data: *const c_void,
         len: usize,
     ) -> c_int {
-        if impl_ptr.is_null() || data.is_null() {
-            return -1;
-        }
+        cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let Some(sock) = ut.get_conn(conn) else {
@@ -1255,9 +1223,7 @@ mod unix_transport {
         buf: *mut c_void,
         buf_size: usize,
     ) -> c_int {
-        if impl_ptr.is_null() || buf.is_null() {
-            return -1;
-        }
+        cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         let Some(sock) = ut.get_conn(conn) else {
@@ -1269,18 +1235,14 @@ mod unix_transport {
     }
 
     unsafe extern "C" fn unix_close_conn(impl_ptr: *mut c_void, conn: c_int) {
-        if impl_ptr.is_null() {
-            return;
-        }
+        cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr points to a valid UnixTransport.
         let ut = unsafe { &*impl_ptr.cast::<UnixTransport>() };
         ut.remove_conn(conn);
     }
 
     unsafe extern "C" fn unix_destroy(impl_ptr: *mut c_void) {
-        if impl_ptr.is_null() {
-            return;
-        }
+        cabi_guard!(impl_ptr.is_null());
         // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_unix_new.
         let _ = unsafe { Box::from_raw(impl_ptr.cast::<UnixTransport>()) };
     }

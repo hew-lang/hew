@@ -257,9 +257,7 @@ pub unsafe extern "C" fn hew_timer_wheel_new() -> *mut HewTimerWheel {
 /// not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_free(tw: *mut HewTimerWheel) {
-    if tw.is_null() {
-        return;
-    }
+    cabi_guard!(tw.is_null());
     // SAFETY: caller guarantees `tw` is valid and surrenders ownership.
     let wheel = unsafe { Box::from_raw(tw) };
     let mut w = wheel
@@ -294,9 +292,7 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
     cb: HewTimerCb,
     data: *mut c_void,
 ) -> *mut HewTimerEntry {
-    if tw.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(tw.is_null(), ptr::null_mut());
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
     let mut w = wheel
@@ -324,9 +320,7 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule(
 /// [`hew_timer_wheel_schedule`] on the same wheel and not yet freed.
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_cancel(tw: *mut HewTimerWheel, entry: *mut HewTimerEntry) {
-    if tw.is_null() || entry.is_null() {
-        return;
-    }
+    cabi_guard!(tw.is_null() || entry.is_null());
     // SAFETY: caller guarantees both pointers are valid.
     let wheel = unsafe { &*tw };
     let _w = wheel
@@ -349,9 +343,7 @@ pub unsafe extern "C" fn hew_timer_wheel_cancel(tw: *mut HewTimerWheel, entry: *
 /// callback/data pairs must still be valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
-    if tw.is_null() {
-        return 0;
-    }
+    cabi_guard!(tw.is_null(), 0);
     // SAFETY: hew_now_ms has no preconditions; caller guarantees `tw` is valid.
     let now = unsafe { hew_now_ms() };
     // SAFETY: caller guarantees `tw` is valid.
@@ -437,9 +429,7 @@ pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
 /// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel) -> i64 {
-    if tw.is_null() {
-        return -1;
-    }
+    cabi_guard!(tw.is_null(), -1);
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
     let w = wheel

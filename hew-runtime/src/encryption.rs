@@ -334,9 +334,7 @@ unsafe fn do_responder_handshake(
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn enc_connect(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-    if impl_ptr.is_null() {
-        return HEW_CONN_INVALID;
-    }
+    cabi_guard!(impl_ptr.is_null(), HEW_CONN_INVALID);
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
     let ops = match enc.inner_ops() {
@@ -386,9 +384,7 @@ unsafe extern "C" fn enc_connect(impl_ptr: *mut c_void, address: *const c_char) 
 }
 
 unsafe extern "C" fn enc_listen(impl_ptr: *mut c_void, address: *const c_char) -> c_int {
-    if impl_ptr.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null(), -1);
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &*impl_ptr.cast::<EncryptedTransport>() };
     let Some(ops) = enc.inner_ops() else {
@@ -402,9 +398,7 @@ unsafe extern "C" fn enc_listen(impl_ptr: *mut c_void, address: *const c_char) -
 }
 
 unsafe extern "C" fn enc_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_int {
-    if impl_ptr.is_null() {
-        return HEW_CONN_INVALID;
-    }
+    cabi_guard!(impl_ptr.is_null(), HEW_CONN_INVALID);
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
     let ops = match enc.inner_ops() {
@@ -457,9 +451,7 @@ unsafe extern "C" fn enc_send(
     data: *const c_void,
     len: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || data.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null() || data.is_null(), -1);
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
 
@@ -519,9 +511,7 @@ unsafe extern "C" fn enc_recv(
     buf: *mut c_void,
     buf_size: usize,
 ) -> c_int {
-    if impl_ptr.is_null() || buf.is_null() {
-        return -1;
-    }
+    cabi_guard!(impl_ptr.is_null() || buf.is_null(), -1);
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
 
@@ -590,9 +580,7 @@ unsafe extern "C" fn enc_recv(
 }
 
 unsafe extern "C" fn enc_close_conn(impl_ptr: *mut c_void, conn: c_int) {
-    if impl_ptr.is_null() {
-        return;
-    }
+    cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
     let inner_conn = enc.get_conn_mut(conn).map(|cs| cs.inner_conn_id);
@@ -610,9 +598,7 @@ unsafe extern "C" fn enc_close_conn(impl_ptr: *mut c_void, conn: c_int) {
 }
 
 unsafe extern "C" fn enc_destroy(impl_ptr: *mut c_void) {
-    if impl_ptr.is_null() {
-        return;
-    }
+    cabi_guard!(impl_ptr.is_null());
     // SAFETY: impl_ptr was created by Box::into_raw in hew_transport_encrypted_new.
     let _ = unsafe { Box::from_raw(impl_ptr.cast::<EncryptedTransport>()) };
 }
@@ -837,9 +823,7 @@ pub unsafe extern "C" fn hew_transport_encrypted_new(
     inner: *mut HewTransport,
     private_key: *const u8,
 ) -> *mut HewTransport {
-    if inner.is_null() || private_key.is_null() {
-        return ptr::null_mut();
-    }
+    cabi_guard!(inner.is_null() || private_key.is_null(), ptr::null_mut());
     let mut local_private_key = [0u8; KEY_LEN];
     // SAFETY: private_key is non-null and caller guarantees at least KEY_LEN bytes.
     unsafe { ptr::copy_nonoverlapping(private_key, local_private_key.as_mut_ptr(), KEY_LEN) };
@@ -863,9 +847,7 @@ pub unsafe extern "C" fn hew_noise_keygen(
     public_key_out: *mut u8,
     private_key_out: *mut u8,
 ) -> c_int {
-    if public_key_out.is_null() || private_key_out.is_null() {
-        return -1;
-    }
+    cabi_guard!(public_key_out.is_null() || private_key_out.is_null(), -1);
 
     let Ok(pattern) = NOISE_PATTERN.parse() else {
         return -1;
@@ -897,9 +879,10 @@ pub unsafe extern "C" fn hew_noise_key_save(
     public_key: *const u8,
     private_key: *const u8,
 ) -> c_int {
-    if path.is_null() || public_key.is_null() || private_key.is_null() {
-        return -1;
-    }
+    cabi_guard!(
+        path.is_null() || public_key.is_null() || private_key.is_null(),
+        -1
+    );
 
     // SAFETY: path is non-null and expected to be valid C string.
     let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
@@ -943,9 +926,10 @@ pub unsafe extern "C" fn hew_noise_key_load(
     public_key_out: *mut u8,
     private_key_out: *mut u8,
 ) -> c_int {
-    if path.is_null() || public_key_out.is_null() || private_key_out.is_null() {
-        return -1;
-    }
+    cabi_guard!(
+        path.is_null() || public_key_out.is_null() || private_key_out.is_null(),
+        -1
+    );
 
     // SAFETY: path is non-null and expected to be valid C string.
     let Ok(path_str) = unsafe { CStr::from_ptr(path) }.to_str() else {
@@ -1022,9 +1006,7 @@ pub unsafe extern "C" fn hew_noise_set_keypair(
     }
     // SAFETY: caller guarantees transport is valid.
     let t = unsafe { &*transport };
-    if t.r#impl.is_null() {
-        return;
-    }
+    cabi_guard!(t.r#impl.is_null());
     // SAFETY: impl points to a valid EncryptedTransport.
     let enc = unsafe { &mut *t.r#impl.cast::<EncryptedTransport>() };
     // SAFETY: private_key is valid for at least KEY_LEN bytes.

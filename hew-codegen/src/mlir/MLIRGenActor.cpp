@@ -462,13 +462,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           if (!actorName.empty())
             actorVarTypes[param.name] = actorName;
         }
-        // Register HashMap parameters for erased-pointer fallback dispatch.
-        {
-          auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-          auto collStr = typeExprToCollectionString(param.ty.value, resolveAlias);
-          if (collStr.rfind("HashMap<", 0) == 0)
-            collectionVarTypes[param.name] = collStr;
-        }
+        // HashMap dispatch now uses typed hew::HashMapType; no string tracking needed.
         ++pi;
       }
     }

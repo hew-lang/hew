@@ -545,9 +545,6 @@ private:
   std::string currentActorName;
 
   // ── Collection type tracking ───────────────────────────────────────
-  // Track HashMap variables for erased-pointer fallback paths.
-  // Vec/bytes dispatch uses typed hew::VecType and does not use this map.
-  std::unordered_map<std::string, std::string> collectionVarTypes;
   // Track collection-typed actor fields: "ActorName.fieldName" → "Vec<i32>", etc.
   std::unordered_map<std::string, std::string> collectionFieldTypes;
   // Extern function semantic return types before LLVM ABI erasure.

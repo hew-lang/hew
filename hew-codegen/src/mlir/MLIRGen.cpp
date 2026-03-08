@@ -3399,10 +3399,6 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     // Track collection/handle/actor parameter types from type annotation
     const auto &paramTy = param.ty.value;
     {
-      auto resolveAlias = [this](const std::string &n) { return resolveTypeAlias(n); };
-      auto collStr = typeExprToCollectionString(paramTy, resolveAlias);
-      if (collStr.rfind("HashMap<", 0) == 0)
-        collectionVarTypes[paramName] = collStr;
       auto handleStr = typeExprToHandleString(paramTy);
       if (!handleStr.empty())
         handleVarTypes[paramName] = handleStr;

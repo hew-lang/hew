@@ -31,9 +31,8 @@ inline bool isValidType(mlir::Type type) {
   return type && !mlir::isa<mlir::NoneType>(type);
 }
 
-/// Normalize an AST element type name to the canonical form used in
-/// collectionVarTypes strings (e.g. "Vec<i64>").  The language aliases
-/// "int" → i64 and "float" → f64, so we must unify them.
+/// Normalize an AST element type name to canonical form (e.g. "Vec<i64>").
+/// The language aliases "int" → i64 and "float" → f64, so we must unify them.
 inline std::string normalizeElemTypeName(const std::string &name) {
   if (name == "int")
     return "i64";

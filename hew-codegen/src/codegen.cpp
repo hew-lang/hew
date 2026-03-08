@@ -1657,28 +1657,9 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
 // ── Vec collection op lowerings ────────────────────────────────────────────
 
 /// Helper: map an MLIR element type to the runtime function suffix.
+/// Returns the explicit suffix for every type — callers that need the
+/// unsuffixed variant (e.g. hew_vec_new for i32) must fixup afterwards.
 static std::string vecElemSuffix(mlir::Type elemType) {
-  if (elemType.isInteger(64))
-    return "_i64";
-  if (elemType.isF64())
-    return "_f64";
-  if (mlir::isa<hew::StringRefType>(elemType))
-    return "_str";
-  if (mlir::isa<hew::ActorRefType>(elemType) || mlir::isa<hew::TypedActorRefType>(elemType) ||
-      mlir::isa<hew::HandleType>(elemType) || mlir::isa<mlir::LLVM::LLVMPointerType>(elemType) ||
-      mlir::isa<hew::VecType>(elemType) || mlir::isa<hew::HashMapType>(elemType))
-    return "_ptr";
-  if (mlir::isa<mlir::LLVM::LLVMStructType>(elemType))
-    return "_generic";
-  if (elemType.isF32())
-    return "_f64"; // f32 promoted to f64 for Vec storage (runtime has no _f32 variant)
-  // Bool (i1) and i32 both use the default no-suffix version (hew_vec_new)
-  return "";
-}
-
-/// Helper: map element type for push/get/set/pop to the variant suffix
-/// including ptr. Runtime uses explicit _i32 suffix for these ops.
-static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
   if (elemType.isInteger(64))
     return "_i64";
   if (elemType.isF64())
@@ -1701,7 +1682,7 @@ static std::string vecElemSuffixWithPtr(mlir::Type elemType) {
     return "_i32"; // i8/u8/byte stored as i32 in Vec
   if (elemType.isInteger(16))
     return "_i32"; // i16/u16 stored as i32 in Vec
-  llvm_unreachable("vecElemSuffixWithPtr: unrecognized element type");
+  llvm_unreachable("vecElemSuffix: unrecognized element type");
 }
 
 struct VecNewOpLowering : public mlir::OpConversionPattern<hew::VecNewOp> {
@@ -1715,6 +1696,10 @@ struct VecNewOpLowering : public mlir::OpConversionPattern<hew::VecNewOp> {
     std::string suffix;
     if (auto vecTy = mlir::dyn_cast<hew::VecType>(op.getResult().getType()))
       suffix = vecElemSuffix(vecTy.getElementType());
+
+    // hew_vec_new (unsuffixed) is the i32 constructor
+    if (suffix == "_i32")
+      suffix = "";
 
     if (suffix == "_generic") {
       // For struct element types, create Vec with explicit element size.
@@ -1788,9 +1773,9 @@ struct VecPushOpLowering : public mlir::OpConversionPattern<hew::VecPushOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto valType = adaptor.getValue().getType();
 
-    std::string suffix = vecElemSuffixWithPtr(op.getValue().getType());
+    std::string suffix = vecElemSuffix(op.getValue().getType());
     if (suffix.empty())
-      suffix = vecElemSuffixWithPtr(valType);
+      suffix = vecElemSuffix(valType);
 
     if (suffix == "_generic") {
       // For struct elements: alloca + store + pass pointer to push_generic
@@ -1906,9 +1891,9 @@ struct VecGetOpLowering : public mlir::OpConversionPattern<hew::VecGetOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-    std::string suffix = vecElemSuffixWithPtr(op.getResult().getType());
+    std::string suffix = vecElemSuffix(op.getResult().getType());
     if (suffix.empty())
-      suffix = vecElemSuffixWithPtr(resultType);
+      suffix = vecElemSuffix(resultType);
 
     // Inline lowering for primitive types: load data/len from HewVec struct,
     // bounds-check, then GEP+load. Avoids runtime function call overhead.
@@ -2016,9 +2001,9 @@ struct VecSetOpLowering : public mlir::OpConversionPattern<hew::VecSetOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto valType = adaptor.getValue().getType();
 
-    std::string suffix = vecElemSuffixWithPtr(op.getValue().getType());
+    std::string suffix = vecElemSuffix(op.getValue().getType());
     if (suffix.empty())
-      suffix = vecElemSuffixWithPtr(valType);
+      suffix = vecElemSuffix(valType);
 
     // Inline lowering for primitive types: bounds-check then GEP+store.
     if ((suffix == "_i64" || suffix == "_i32" || suffix == "_f64") &&
@@ -2156,9 +2141,9 @@ struct VecPopOpLowering : public mlir::OpConversionPattern<hew::VecPopOp> {
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-    std::string suffix = vecElemSuffixWithPtr(op.getResult().getType());
+    std::string suffix = vecElemSuffix(op.getResult().getType());
     if (suffix.empty())
-      suffix = vecElemSuffixWithPtr(resultType);
+      suffix = vecElemSuffix(resultType);
 
     std::string funcName = "hew_vec_pop" + suffix;
     mlir::Type callResultType = resultType;
@@ -2192,9 +2177,9 @@ struct VecRemoveOpLowering : public mlir::OpConversionPattern<hew::VecRemoveOp> 
     auto valType = adaptor.getValue().getType();
     mlir::Value val = adaptor.getValue();
 
-    std::string suffix = vecElemSuffixWithPtr(op.getValue().getType());
+    std::string suffix = vecElemSuffix(op.getValue().getType());
     if (suffix.empty())
-      suffix = vecElemSuffixWithPtr(valType);
+      suffix = vecElemSuffix(valType);
 
     // Promote narrow types to match runtime function signatures
     mlir::Type callType = valType;

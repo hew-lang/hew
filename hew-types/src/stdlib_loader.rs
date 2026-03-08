@@ -5,7 +5,9 @@
 
 use std::path::Path;
 
-use hew_parser::ast::{Block, Expr, ExternFnDecl, ImplDecl, Item, Stmt, TypeExpr};
+use hew_parser::ast::{
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeExpr,
+};
 use hew_parser::parse;
 
 use crate::ty::Ty;
@@ -21,6 +23,10 @@ pub struct ModuleInfo {
     pub handle_types: Vec<String>,
     /// Handle method mappings: ((`type_name`, `method_name`), `c_symbol`).
     pub handle_methods: Vec<((String, String), String)>,
+    /// Wrapper `pub fn` signatures: (`method_name`, `param_types`, `return_type`).
+    pub wrapper_fns: Vec<(String, Vec<Ty>, Ty)>,
+    /// Types with `impl Drop` — move-only, not Copy.
+    pub drop_types: Vec<String>,
 }
 
 /// Load type information for a module from its `.hew` file.
@@ -95,6 +101,8 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
         clean_names: Vec::new(),
         handle_types: Vec::new(),
         handle_methods: Vec::new(),
+        wrapper_fns: Vec::new(),
+        drop_types: Vec::new(),
     };
 
     for (item, _span) in &program.items {
@@ -105,16 +113,55 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                     info.functions.push((func.name.clone(), params, ret));
                 }
             }
+            // Only types WITHOUT struct fields are opaque handles.
+            // Types with fields (e.g. Version { maj: i32; ... }) are real
+            // structs, not opaque pointers.
             Item::TypeDecl(td) => {
-                let qualified = format!("{module_short}.{}", td.name);
-                info.handle_types.push(qualified);
-            }
-            Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
-                if let Some(c_symbol) = extract_call_target(&fn_decl.body) {
-                    info.clean_names.push((fn_decl.name.clone(), c_symbol));
+                let has_fields = td
+                    .body
+                    .iter()
+                    .any(|b| matches!(b, TypeBodyItem::Field { .. }));
+                if !has_fields {
+                    let qualified = format!("{module_short}.{}", td.name);
+                    info.handle_types.push(qualified);
                 }
             }
+            Item::Function(fn_decl) if fn_decl.visibility.is_pub() => {
+                // Extract wrapper function's own signature
+                let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
+                info.wrapper_fns.push((fn_decl.name.clone(), params, ret));
+
+                // Clean name mapping: use the C function target only for
+                // trivial pass-through wrappers (same param count). Non-trivial
+                // wrappers (e.g. `setup()` calling `hew_log_set_level(2)`) use
+                // identity mapping so the wrapper Hew function is compiled and
+                // called instead.
+                let c_target =
+                    if let Some((target, call_arg_count)) = extract_call_target(&fn_decl.body) {
+                        if call_arg_count == fn_decl.params.len() {
+                            target
+                        } else {
+                            fn_decl.name.clone()
+                        }
+                    } else {
+                        fn_decl.name.clone()
+                    };
+                info.clean_names.push((fn_decl.name.clone(), c_target));
+            }
             Item::Impl(impl_decl) => {
+                // Detect `impl Drop for T` — collect as drop types
+                if let Some(ref tb) = impl_decl.trait_bound {
+                    if tb.name == "Drop" {
+                        if let TypeExpr::Named { ref name, .. } = impl_decl.target_type.0 {
+                            let qualified = if name.contains('.') {
+                                name.clone()
+                            } else {
+                                format!("{module_short}.{name}")
+                            };
+                            info.drop_types.push(qualified);
+                        }
+                    }
+                }
                 extract_handle_methods(impl_decl, module_short, &mut info);
             }
             _ => {}
@@ -140,16 +187,33 @@ fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
     (params, ret)
 }
 
+/// Convert a wrapper `pub fn` declaration to type checker types.
+/// Mirrors `extern_fn_sig` but works on `FnDecl` params (`Param` not `ExternParam`).
+fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
+    let params: Vec<Ty> = func
+        .params
+        .iter()
+        .map(|p| type_expr_to_ty(&p.ty.0, module_short))
+        .collect();
+
+    let ret = func
+        .return_type
+        .as_ref()
+        .map_or(Ty::Unit, |rt| type_expr_to_ty(&rt.0, module_short));
+
+    (params, ret)
+}
+
 /// Convert a Hew type expression to the type checker's `Ty`.
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
             match name.as_str() {
-                "String" => Ty::String,
+                "String" | "string" => Ty::String,
                 "i8" => Ty::I8,
                 "i16" => Ty::I16,
                 "i32" => Ty::I32,
-                "i64" => Ty::I64,
+                "i64" | "int" | "Int" => Ty::I64,
                 "u8" => Ty::U8,
                 "u16" => Ty::U16,
                 "u32" => Ty::U32,
@@ -160,6 +224,49 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 "char" => Ty::Char,
                 "bytes" => Ty::Bytes,
                 "duration" => Ty::Duration,
+                // Option<T> → Ty::option() helper
+                "Option" => {
+                    if let Some(args) = type_args {
+                        if let Some(first) = args.first() {
+                            return Ty::option(type_expr_to_ty(&first.0, module_short));
+                        }
+                    }
+                    Ty::Named {
+                        name: "Option".to_string(),
+                        args: vec![],
+                    }
+                }
+                // Result<O, E> → Ty::result() helper
+                "Result" => {
+                    if let Some(args) = type_args {
+                        if args.len() >= 2 {
+                            return Ty::result(
+                                type_expr_to_ty(&args[0].0, module_short),
+                                type_expr_to_ty(&args[1].0, module_short),
+                            );
+                        }
+                    }
+                    Ty::Named {
+                        name: "Result".to_string(),
+                        args: vec![],
+                    }
+                }
+                // Built-in generic/language types — do NOT module-qualify
+                "Vec" | "HashMap" | "ActorRef" | "Actor" | "Task" | "Stream" | "Sink"
+                | "StreamPair" => {
+                    let args = type_args
+                        .as_ref()
+                        .map(|a| {
+                            a.iter()
+                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Ty::Named {
+                        name: name.to_string(),
+                        args,
+                    }
+                }
                 // Qualified handle type like "json.Value"
                 n if n.contains('.') => Ty::Named {
                     name: n.to_string(),
@@ -231,11 +338,11 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     }
 }
 
-/// Extract the C function name from a wrapper function's body.
+/// Extract the C function name and argument count from a wrapper function's body.
 ///
 /// Looks for a simple call expression like `hew_json_parse(s)` in the
-/// function body and returns the callee name.
-fn extract_call_target(body: &Block) -> Option<String> {
+/// function body and returns `(callee_name, arg_count)`.
+fn extract_call_target(body: &Block) -> Option<(String, usize)> {
     // Check trailing expression first (most common case)
     if let Some(trailing) = &body.trailing_expr {
         return call_target_from_expr(&trailing.0);
@@ -249,12 +356,12 @@ fn extract_call_target(body: &Block) -> Option<String> {
     None
 }
 
-/// Extract the callee name from a call expression.
-fn call_target_from_expr(expr: &Expr) -> Option<String> {
+/// Extract the callee name and argument count from a call expression.
+fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
     match expr {
-        Expr::Call { function, .. } => {
+        Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
-                return Some(name.clone());
+                return Some((name.clone(), args.len()));
             }
             None
         }
@@ -283,7 +390,7 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
 
     for method in &impl_decl.methods {
         // Skip the `self` parameter when matching — it's not part of the call
-        if let Some(c_symbol) = extract_call_target(&method.body) {
+        if let Some((c_symbol, _arg_count)) = extract_call_target(&method.body) {
             info.handle_methods
                 .push(((type_name.clone(), method.name.clone()), c_symbol));
         }
@@ -387,78 +494,162 @@ mod tests {
 
     #[test]
     fn load_all_std_modules() {
-        // Modules with extern "C" FFI — must have function signatures
-        let ffi_modules = [
-            "std::fs",
-            "std::os",
-            "std::net",
-            "std::process",
-            "std::string",
-            "std::encoding::json",
-            "std::misc::log",
-            "std::misc::uuid",
-            "std::time::datetime",
-            "std::net::url",
-            "std::path",
-            "std::semaphore",
-            "std::stream",
-            "std::encoding::base64",
-            "std::crypto::crypto",
-            "std::encoding::compress",
-            "std::encoding::yaml",
-            "std::encoding::toml",
-            "std::encoding::csv",
-            "std::encoding::msgpack",
-            "std::encoding::protobuf",
-            "std::encoding::markdown",
-            "std::crypto::jwt",
-            "std::crypto::password",
-            "std::crypto::encrypt",
-            "std::net::http",
-            "std::net::websocket",
-            "std::net::smtp",
-            "std::net::ipnet",
-            "std::time::cron",
-            "std::text::semver",
-            "std::text::regex",
-        ];
+        use crate::module_registry::ModuleRegistry;
 
         let root = test_root();
-        for module in &ffi_modules {
-            let info = load_module(module, &root);
-            assert!(info.is_some(), "should load module {module}");
-            let info = info.unwrap();
+        let mut module_paths = Vec::new();
+        discover_modules(&root.join("std"), &root, &mut module_paths);
+        if root.join("ecosystem").exists() {
+            discover_modules(&root.join("ecosystem"), &root, &mut module_paths);
+        }
+
+        assert!(
+            !module_paths.is_empty(),
+            "should discover modules under std/"
+        );
+
+        let mut registry = ModuleRegistry::new(vec![root]);
+        for module_path in &module_paths {
+            let result = registry.load(module_path);
             assert!(
-                !info.functions.is_empty(),
-                "module {module} should have functions"
+                result.is_ok(),
+                "should load module {module_path}: {:?}",
+                result.err()
             );
         }
 
-        // Pure-Hew modules (no extern "C") — must load but have no FFI functions
-        let pure_modules = [
-            "std::encoding::hex",
-            "std::encoding::wire",
-            "std::net::mime",
-        ];
+        assert!(
+            module_paths.len() > 20,
+            "should discover many modules, found {}",
+            module_paths.len()
+        );
+    }
 
-        for module in &pure_modules {
-            let info = load_module(module, &root);
-            assert!(info.is_some(), "should load pure module {module}");
+    /// Walk a directory tree and discover module paths from `.hew` files.
+    ///
+    /// Derives module paths from directory structure:
+    /// - `std/encoding/json/` -> `std::encoding::json`
+    /// - `std/fs.hew` -> `std::fs`
+    fn discover_modules(
+        dir: &std::path::Path,
+        repo_root: &std::path::Path,
+        paths: &mut Vec<String>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut sorted: Vec<_> = entries.filter_map(Result::ok).collect();
+        sorted.sort_by_key(|e| e.file_name());
+
+        let mut has_hew = false;
+        for entry in &sorted {
+            let path = entry.path();
+            if path.is_dir() {
+                discover_modules(&path, repo_root, paths);
+            } else if path.extension().is_some_and(|e| e == "hew")
+                && !path.file_name().is_some_and(|f| f == "builtins.hew")
+            {
+                has_hew = true;
+            }
+        }
+
+        if has_hew {
+            let Ok(rel) = dir.strip_prefix(repo_root) else {
+                return;
+            };
+            let segments: Vec<&str> = rel
+                .components()
+                .map(|c| c.as_os_str().to_str().unwrap())
+                .collect();
+
+            if segments.len() >= 2 {
+                // Subdirectory module: std/encoding/json → std::encoding::json
+                paths.push(segments.join("::"));
+            } else if segments.len() == 1 {
+                // Root-level files: std/fs.hew → std::fs — each file is its own module
+                for entry in &sorted {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "hew")
+                        && !path.file_name().is_some_and(|f| f == "builtins.hew")
+                    {
+                        let stem = path.file_stem().unwrap().to_str().unwrap();
+                        paths.push(format!("{}::{stem}", segments[0]));
+                    }
+                }
+            }
         }
     }
 
     #[test]
     fn type_mapping_primitives() {
-        let info = load_module("std::encoding::base64", &test_root()).unwrap();
+        let info = load_module("std::encoding::json", &test_root()).unwrap();
 
-        // base64 module should have functions with String params/returns
+        // json module should have functions with String params/returns
         let has_string_fn = info
             .functions
             .iter()
             .any(|(_, params, _)| params.contains(&Ty::String));
         assert!(
             has_string_fn,
-            "base64 module should have String-typed functions"
+            "json module should have String-typed functions"
+        );
+    }
+
+    #[test]
+    fn wrapper_fns_extracted() {
+        let info = load_module("std::misc::log", &test_root()).unwrap();
+
+        assert!(
+            !info.wrapper_fns.is_empty(),
+            "log module should have wrapper fns"
+        );
+
+        // `pub fn setup()` takes no params and returns Unit
+        let setup = info.wrapper_fns.iter().find(|(name, _, _)| name == "setup");
+        assert!(setup.is_some(), "log module should have 'setup' wrapper fn");
+        let (_, params, ret) = setup.unwrap();
+        assert!(params.is_empty(), "setup() takes no parameters");
+        assert_eq!(*ret, Ty::Unit, "setup() returns Unit");
+
+        // `pub fn setup_level(level: i32)` takes one i32 param
+        let setup_level = info
+            .wrapper_fns
+            .iter()
+            .find(|(name, _, _)| name == "setup_level");
+        assert!(
+            setup_level.is_some(),
+            "log module should have 'setup_level' wrapper fn"
+        );
+        let (_, params, _) = setup_level.unwrap();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0], Ty::I32);
+    }
+
+    #[test]
+    fn drop_types_extracted() {
+        let info = load_module("std::net::http", &test_root()).unwrap();
+
+        assert!(
+            !info.drop_types.is_empty(),
+            "http module should have drop types"
+        );
+
+        assert!(
+            info.drop_types.contains(&"http.Request".to_string()),
+            "http.Request should be a drop type, got: {:?}",
+            info.drop_types
+        );
+    }
+
+    #[test]
+    fn struct_types_not_in_handle_types() {
+        // semver.Version has struct fields — it should NOT be a handle type
+        let info = load_module("std::text::semver", &test_root()).unwrap();
+
+        assert!(
+            !info.handle_types.contains(&"semver.Version".to_string()),
+            "Version with struct fields should not be a handle type, got: {:?}",
+            info.handle_types
         );
     }
 }

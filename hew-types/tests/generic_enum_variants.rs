@@ -7,7 +7,7 @@ fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
         "parser errors: {:?}",
         parsed.errors
     );
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     checker.check_program(&parsed.program)
 }
 

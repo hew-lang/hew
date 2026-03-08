@@ -1,4 +1,4 @@
-//! CSV parsing.
+//! CSV parsing — pure Hew implementation.
 //!
 //! Parse CSV data from strings or files into a table that can be
 //! queried by row/column index or column name.
@@ -13,84 +13,211 @@
 //!     let rows = table.rows();
 //!     let name = table.get_by_name(0, "name");
 //!     println(name);  // "Alice"
-//!     table.free();
 //! }
 //! ```
 
-/// An opaque CSV table.
-///
-/// Represents parsed CSV data with optional headers. Created by
-/// `csv.parse`, `csv.parse_no_headers`, or `csv.parse_file`.
-/// Must be freed with `free()` when no longer needed.
-type Table {}
+/// A parsed CSV table with headers and data rows.
+type Table {
+    hdrs: Vec<String>;
+    data: Vec<Vec<String>>;
+}
 
 /// Methods available on a CSV `Table`.
 trait TableMethods {
-    // Return the number of data rows (excluding the header row).
+    /// Return the number of data rows (excluding the header row).
     fn rows(self: Table) -> i32;
 
-    // Return the number of columns.
+    /// Return the number of columns.
     fn cols(self: Table) -> i32;
 
-    // Return the header name for the given column index.
+    /// Return the header name for the given column index.
     fn header(self: Table, col: i32) -> String;
 
-    // Return the cell value at the given row and column index.
+    /// Return the cell value at the given row and column index.
     fn get(self: Table, row: i32, col: i32) -> String;
 
-    // Return the cell value at the given row for the named column.
+    /// Return the cell value at the given row for the named column.
     fn get_by_name(self: Table, row: i32, col_name: String) -> String;
 
-    // Release the table resources.
+    /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(self: Table);
 }
 
 impl TableMethods for Table {
-    fn rows(self: Table) -> i32 { hew_csv_rows(self) }
-    fn cols(self: Table) -> i32 { hew_csv_cols(self) }
-    fn header(self: Table, col: i32) -> String { hew_csv_header(self, col) }
-    fn get(self: Table, row: i32, col: i32) -> String { hew_csv_get(self, row, col) }
-    fn get_by_name(self: Table, row: i32, col_name: String) -> String {
-        hew_csv_get_by_name(self, row, col_name)
+    fn rows(self: Table) -> i32 { self.data.len() }
+    fn cols(self: Table) -> i32 { self.hdrs.len() }
+
+    fn header(self: Table, col: i32) -> String {
+        if col < 0 || col >= self.hdrs.len() {
+            return "";
+        }
+        self.hdrs.get(col)
     }
-    fn free(self: Table) { hew_csv_free(self); }
+
+    fn get(self: Table, row: i32, col: i32) -> String {
+        if row < 0 || row >= self.data.len() {
+            return "";
+        }
+        let r = self.data.get(row);
+        if col < 0 || col >= r.len() {
+            return "";
+        }
+        r.get(col)
+    }
+
+    fn get_by_name(self: Table, row: i32, col_name: String) -> String {
+        let col = find_header(self.hdrs, col_name);
+        if col < 0 {
+            return "";
+        }
+        self.get(row, col)
+    }
+
+    fn free(self: Table) {
+        // No-op: struct tables are value types, no manual freeing needed.
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
 
 /// Parse CSV data from a string (first row is treated as headers).
-///
-/// # Examples
-///
-/// ```
-/// let table = csv.parse("a,b\n1,2");
-/// ```
 pub fn parse(data: String) -> Table {
-    hew_csv_parse(data)
+    parse_impl(data, true)
 }
 
 /// Parse CSV data from a string without treating the first row as headers.
 pub fn parse_no_headers(data: String) -> Table {
-    hew_csv_parse_no_headers(data)
+    parse_impl(data, false)
 }
 
 /// Parse CSV data from a file path (first row is treated as headers).
 ///
 /// Panics if the file cannot be read.
 pub fn parse_file(path: String) -> Table {
-    hew_csv_parse_file(path)
+    let content = read_file(path);
+    parse_impl(content, true)
 }
 
-// ── FFI bindings (implementation detail) ──────────────────────────────
+// ── Internal parsing ──────────────────────────────────────────────────
 
-extern "C" {
-    fn hew_csv_parse(data: String) -> Table;
-    fn hew_csv_parse_no_headers(data: String) -> Table;
-    fn hew_csv_parse_file(path: String) -> Table;
-    fn hew_csv_rows(table: Table) -> i32;
-    fn hew_csv_cols(table: Table) -> i32;
-    fn hew_csv_header(table: Table, col: i32) -> String;
-    fn hew_csv_get(table: Table, row: i32, col: i32) -> String;
-    fn hew_csv_get_by_name(table: Table, row: i32, col_name: String) -> String;
-    fn hew_csv_free(table: Table);
+fn parse_impl(data: String, has_headers: bool) -> Table {
+    // Normalize \r\n to \n
+    let normalized = data.replace("\r\n", "\n");
+    // Remove trailing newline
+    var input = normalized;
+    if input.len() > 0 && input.ends_with("\n") {
+        input = input.slice(0, input.len() - 1);
+    }
+
+    var headers: Vec<String> = Vec::new();
+    let rows: Vec<Vec<String>> = Vec::new();
+
+    if input.len() > 0 {
+        // Split into lines manually
+        let lines: Vec<String> = Vec::new();
+        var pos = 0;
+        let ilen = input.len();
+        while pos <= ilen {
+            let rest = input.slice(pos, ilen);
+            let nl = rest.find("\n");
+            if nl < 0 {
+                lines.push(input.slice(pos, ilen));
+                break;
+            }
+            lines.push(input.slice(pos, pos + nl));
+            pos = pos + nl + 1;
+        }
+
+        let nlines = lines.len();
+        var start_row = 0;
+
+        if has_headers {
+            headers = parse_csv_line(lines.get(0));
+            start_row = 1;
+        }
+
+        for i in start_row..nlines {
+            let line = lines.get(i);
+            if line.len() > 0 {
+                rows.push(parse_csv_line(line));
+            }
+        }
+
+        // Generate synthetic headers if no header row
+        if !has_headers && rows.len() > 0 {
+            let ncols = rows.get(0).len();
+            for i in 0..ncols {
+                headers.push(f"col{i}");
+            }
+        }
+    }
+
+    Table { hdrs: headers, data: rows }
+}
+
+/// Parse a single CSV line into fields, handling quoted fields.
+fn parse_csv_line(line: String) -> Vec<String> {
+    let fields: Vec<String> = Vec::new();
+    let len = line.len();
+    var pos = 0;
+
+    while pos <= len {
+        if pos == len {
+            // Trailing comma → empty field
+            fields.push("");
+            break;
+        }
+
+        let ch = line.slice(pos, pos + 1);
+        if ch == "\"" {
+            // Quoted field: scan for closing quote
+            pos = pos + 1;
+            var field = "";
+            while pos < len {
+                let c = line.slice(pos, pos + 1);
+                if c == "\"" {
+                    // Check for escaped quote ("")
+                    if pos + 1 < len && line.slice(pos + 1, pos + 2) == "\"" {
+                        field = field + "\"";
+                        pos = pos + 2;
+                    } else {
+                        // End of quoted field
+                        pos = pos + 1;
+                        break;
+                    }
+                } else {
+                    field = field + c;
+                    pos = pos + 1;
+                }
+            }
+            fields.push(field);
+            // Skip comma after closing quote
+            if pos < len && line.slice(pos, pos + 1) == "," {
+                pos = pos + 1;
+            }
+        } else {
+            // Unquoted field: find next comma
+            let rest = line.slice(pos, len);
+            let comma_idx = rest.find(",");
+            if comma_idx < 0 {
+                fields.push(rest);
+                break;
+            } else {
+                fields.push(line.slice(pos, pos + comma_idx));
+                pos = pos + comma_idx + 1;
+            }
+        }
+    }
+
+    fields
+}
+
+/// Find the column index for a header name. Returns -1 if not found.
+fn find_header(headers: Vec<String>, name: String) -> i32 {
+    for i in 0..headers.len() {
+        if headers.get(i) == name {
+            return i;
+        }
+    }
+    -1
 }

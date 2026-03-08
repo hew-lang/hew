@@ -97,3 +97,97 @@ pub fn contains_int(r: Result<int, int>, needle: int) -> bool {
         Err(_) => false,
     }
 }
+
+// ── String variants ────────────────────────────────────────────────
+
+/// Returns `true` if the result contains an `Ok` value.
+pub fn is_ok_str(r: Result<String, String>) -> bool {
+    match r {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+/// Returns `true` if the result contains an `Err` value.
+pub fn is_err_str(r: Result<String, String>) -> bool {
+    match r {
+        Ok(_) => false,
+        Err(_) => true,
+    }
+}
+
+/// Unwrap the `Ok` value.  Panics if the result is `Err`.
+pub fn unwrap_str(r: Result<String, String>) -> String {
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            panic(f"result: unwrap called on Err({e})");
+            ""
+        },
+    }
+}
+
+/// Unwrap the `Err` value.  Panics if the result is `Ok`.
+pub fn unwrap_err_str(r: Result<String, String>) -> String {
+    match r {
+        Ok(v) => {
+            panic(f"result: unwrap_err called on Ok({v})");
+            ""
+        },
+        Err(e) => e,
+    }
+}
+
+/// Unwrap the `Ok` value, or return `fallback` if `Err`.
+pub fn unwrap_or_str(r: Result<String, String>, fallback: String) -> String {
+    match r {
+        Ok(v) => v,
+        Err(_) => fallback,
+    }
+}
+
+/// Returns `true` if the result is `Ok` and contains `needle`.
+pub fn contains_str(r: Result<String, String>, needle: String) -> bool {
+    match r {
+        Ok(v) => v == needle,
+        Err(_) => false,
+    }
+}
+
+// ── Float variants ─────────────────────────────────────────────────
+
+/// Returns `true` if the result contains an `Ok` value.
+pub fn is_ok_f64(r: Result<f64, String>) -> bool {
+    match r {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+/// Returns `true` if the result contains an `Err` value.
+pub fn is_err_f64(r: Result<f64, String>) -> bool {
+    match r {
+        Ok(_) => false,
+        Err(_) => true,
+    }
+}
+
+/// Unwrap the `Ok` value.  Panics if the result is `Err`.
+pub fn unwrap_f64(r: Result<f64, String>) -> f64 {
+    match r {
+        Ok(v) => v,
+        Err(e) => {
+            panic(f"result: unwrap called on Err({e})");
+            0.0
+        },
+    }
+}
+
+/// Unwrap the `Ok` value, or return `fallback` if `Err`.
+pub fn unwrap_or_f64(r: Result<f64, String>, fallback: f64) -> f64 {
+    match r {
+        Ok(v) => v,
+        Err(_) => fallback,
+    }
+}
+

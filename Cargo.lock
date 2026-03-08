@@ -721,27 +721,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "csv"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52cd9d68cf7efc6ddfaaee42e7288d3a99d613d4b50f76ce9827ae0c6e14f938"
-dependencies = [
- "csv-core",
- "itoa",
- "ryu",
- "serde_core",
-]
-
-[[package]]
-name = "csv-core"
-version = "0.1.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704a3c26996a80471189265814dbc2c257598b96b8a7feae2d31ace646bb9782"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "ctr"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1570,12 +1549,6 @@ dependencies = [
 [[package]]
 name = "hew-std-encoding-base64"
 version = "0.1.9"
-dependencies = [
- "base64",
- "hew-cabi",
- "hew-runtime",
- "libc",
-]
 
 [[package]]
 name = "hew-std-encoding-compress"
@@ -1590,13 +1563,6 @@ dependencies = [
 [[package]]
 name = "hew-std-encoding-csv"
 version = "0.1.9"
-dependencies = [
- "csv",
- "hew-cabi",
- "hew-runtime",
- "libc",
- "tempfile",
-]
 
 [[package]]
 name = "hew-std-encoding-json"
@@ -1744,12 +1710,6 @@ dependencies = [
 [[package]]
 name = "hew-std-text-semver"
 version = "0.1.9"
-dependencies = [
- "hew-cabi",
- "hew-runtime",
- "libc",
- "semver",
-]
 
 [[package]]
 name = "hew-std-time-cron"

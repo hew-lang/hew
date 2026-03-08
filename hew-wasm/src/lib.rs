@@ -36,7 +36,8 @@ pub fn get_keywords() -> String {
 pub fn hover(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
     let type_output = if parse_result.errors.is_empty() {
-        let mut checker = hew_types::Checker::new();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         Some(checker.check_program(&parse_result.program))
     } else {
         None
@@ -55,7 +56,8 @@ pub fn hover(source: &str, offset: usize) -> String {
 pub fn complete(source: &str, offset: usize) -> String {
     let parse_result = hew_parser::parse(source);
     let type_output = if parse_result.errors.is_empty() {
-        let mut checker = hew_types::Checker::new();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         Some(checker.check_program(&parse_result.program))
     } else {
         None
@@ -161,7 +163,8 @@ pub fn signature_help(source: &str, offset: usize) -> String {
     if !parse_result.errors.is_empty() {
         return String::new();
     }
-    let mut checker = hew_types::Checker::new();
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let type_output = checker.check_program(&parse_result.program);
     match hew_analysis::signature_help::build_signature_help(source, &type_output, offset) {
         Some(result) => serde_json::to_string(&result).unwrap_or_default(),
@@ -177,7 +180,8 @@ pub fn inlay_hints(source: &str) -> String {
     if !parse_result.errors.is_empty() {
         return String::new();
     }
-    let mut checker = hew_types::Checker::new();
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let type_output = checker.check_program(&parse_result.program);
     let hints = hew_analysis::inlay_hints::build_inlay_hints(source, &parse_result, &type_output);
     serde_json::to_string(&hints).unwrap_or_default()
@@ -235,7 +239,8 @@ fn run_analysis(source: &str) -> AnalysisResult {
     }
 
     if parse_result.errors.is_empty() {
-        let mut checker = hew_types::Checker::new();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
 
         for err in &type_output.errors {

@@ -2,10 +2,7 @@
 
 use crate::env::TypeEnv;
 use crate::error::{TypeError, TypeErrorKind};
-use crate::stdlib::{
-    handle_types_for_module, is_handle_type, module_short_name, stdlib_clean_names,
-    stdlib_functions, wrapper_fn_sigs,
-};
+use crate::module_registry::ModuleRegistry;
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Substitution, Ty, TypeVar};
 use crate::unify::unify;
@@ -164,6 +161,7 @@ pub struct Checker {
     env: TypeEnv,
     subst: Substitution,
     registry: TraitRegistry,
+    module_registry: ModuleRegistry,
     errors: Vec<TypeError>,
     warnings: Vec<TypeError>,
     expr_types: HashMap<SpanKey, Ty>,
@@ -429,11 +427,12 @@ fn common_numeric_type(a: &Ty, b: &Ty) -> Option<Ty> {
 
 impl Checker {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(module_registry: ModuleRegistry) -> Self {
         Self {
             env: TypeEnv::new(),
             subst: Substitution::new(),
             registry: TraitRegistry::new(),
+            module_registry,
             errors: Vec::new(),
             warnings: Vec::new(),
             expr_types: HashMap::new(),
@@ -478,6 +477,21 @@ impl Checker {
     /// Enable WASM32-specific validation and warnings.
     pub fn enable_wasm_target(&mut self) {
         self.wasm_target = true;
+    }
+
+    /// Extract the module registry after type checking is done.
+    ///
+    /// This transfers ownership of the registry (with its cached module data)
+    /// so it can be passed to the enricher.
+    #[must_use]
+    pub fn into_module_registry(self) -> ModuleRegistry {
+        self.module_registry
+    }
+
+    /// Borrow the module registry (for read-only access after checking).
+    #[must_use]
+    pub fn module_registry(&self) -> &ModuleRegistry {
+        &self.module_registry
     }
 
     /// Look up a type definition, handling module-qualified names like `json.Value`.
@@ -2072,9 +2086,24 @@ impl Checker {
     fn register_import(&mut self, decl: &ImportDecl, import_span: Option<&Span>) {
         let module_path = decl.path.join("::");
 
-        // --- Stdlib path ---
-        if let Some(funcs) = stdlib_functions(&module_path) {
-            for (name, params, ret) in funcs {
+        // Try to load module from registry (works for both stdlib and user modules)
+        if let Ok(info) = self.module_registry.load(&module_path) {
+            // Clone all data from ModuleInfo before mutating self, because
+            // info borrows from self.module_registry.
+            let functions = info.functions.clone();
+            let wrapper_fns = info.wrapper_fns.clone();
+            let clean_names = info.clean_names.clone();
+            let handle_types = info.handle_types.clone();
+            let drop_types = info.drop_types.clone();
+
+            let short = module_path
+                .rsplit("::")
+                .next()
+                .unwrap_or(&module_path)
+                .to_string();
+
+            // Register extern C function signatures
+            for (name, params, ret) in functions {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
@@ -2091,11 +2120,9 @@ impl Checker {
                 self.unsafe_functions.insert(name.clone());
                 self.fn_sigs.insert(name, sig);
             }
-        }
-        // Register wrapper `pub fn` signatures under their clean method names.
-        // These may differ from the extern C signatures (e.g., `setup()` vs `hew_log_set_level(level)`).
-        if let Some(wrapper_sigs) = wrapper_fn_sigs(&module_path) {
-            for (name, params, ret) in wrapper_sigs {
+
+            // Register wrapper pub fn signatures
+            for (name, params, ret) in wrapper_fns {
                 let accepts_kwargs = module_path == "std::misc::log"
                     && Self::LOG_KWARGS_FUNCTIONS.contains(&name.as_str());
                 let sig = FnSig {
@@ -2111,47 +2138,53 @@ impl Checker {
                 };
                 self.fn_sigs.insert(name, sig);
             }
-        }
-        // Register clean module.method names alongside the hew_* names
-        if let Some(short) = module_short_name(&module_path) {
-            self.modules.insert(short.to_string());
-            // Track the import span for unused-import detection (user imports only)
+
+            // Register module and clean names
+            self.modules.insert(short.clone());
             if let Some(span) = import_span {
-                self.import_spans.insert(short.to_string(), span.clone());
+                self.import_spans.insert(short.clone(), span.clone());
             }
-            if let Some(clean_names) = stdlib_clean_names(&module_path) {
-                for (method, c_symbol) in clean_names {
-                    // Prefer the wrapper function's own signature (registered under
-                    // the method name) over the extern C function's signature.
-                    // E.g. `log.setup()` should have 0 params (the wrapper's sig),
-                    // not 1 param (the extern `hew_log_set_level(level)` sig).
-                    let wrapper_sig = self.fn_sigs.get(method).cloned();
-                    let sig = wrapper_sig
-                        .clone()
-                        .or_else(|| self.fn_sigs.get(c_symbol).cloned());
-                    if let Some(sig) = sig {
-                        let key = format!("{short}.{method}");
-                        self.fn_sigs.insert(key.clone(), sig);
-                        if wrapper_sig.is_none() {
-                            self.unsafe_functions.insert(key);
-                        }
+            for (method, c_symbol) in &clean_names {
+                // Prefer the wrapper function's own signature (registered under
+                // the method name) over the extern C function's signature.
+                // E.g. `log.setup()` should have 0 params (the wrapper's sig),
+                // not 1 param (the extern `hew_log_set_level(level)` sig).
+                let wrapper_sig = self.fn_sigs.get(method.as_str()).cloned();
+                let sig = wrapper_sig
+                    .clone()
+                    .or_else(|| self.fn_sigs.get(c_symbol.as_str()).cloned());
+                if let Some(sig) = sig {
+                    let key = format!("{short}.{method}");
+                    self.fn_sigs.insert(key.clone(), sig);
+                    if wrapper_sig.is_none() {
+                        self.unsafe_functions.insert(key);
                     }
                 }
             }
+
             // Register handle type names so they can be used in type annotations
-            for type_name in handle_types_for_module(&module_path) {
-                self.known_types.insert(type_name.to_string());
+            for type_name in &handle_types {
+                self.known_types.insert(type_name.clone());
             }
+
+            // Populate TraitRegistry with handle/drop types
+            for ht in &handle_types {
+                self.registry.register_handle_type(ht.clone());
+            }
+            for dt in &drop_types {
+                self.registry.register_drop_type(dt.clone());
+            }
+
             // Process resolved Hew source items (types, traits, impls) from stdlib
             // modules that have .hew files alongside their C/Rust bindings.
             // This enables trait methods like bench.Suite.add() to be visible.
             if let Some(ref resolved_items) = decl.resolved_items {
-                self.register_stdlib_hew_items(short, resolved_items);
+                self.register_stdlib_hew_items(&short, resolved_items);
             }
-            return; // stdlib handled
+            return;
         }
 
-        // --- User module path ---
+        // --- User module path (unchanged) ---
         if let Some(ref resolved_items) = decl.resolved_items {
             if decl.path.is_empty() {
                 // File-based import (`import "math_lib.hew"`) — register all
@@ -7445,12 +7478,12 @@ impl Checker {
             }
             // Allow handle types to coerce to/from string (both are !llvm.ptr at runtime)
             if let Ty::Named { name, .. } = &actual_resolved {
-                if is_handle_type(name) && expected_resolved == Ty::String {
+                if self.module_registry.is_handle_type(name) && expected_resolved == Ty::String {
                     return;
                 }
             }
             if let Ty::Named { name, .. } = &expected_resolved {
-                if is_handle_type(name) && actual_resolved == Ty::String {
+                if self.module_registry.is_handle_type(name) && actual_resolved == Ty::String {
                     return;
                 }
             }
@@ -7834,7 +7867,7 @@ impl Checker {
 
 impl Default for Checker {
     fn default() -> Self {
-        Self::new()
+        Self::new(ModuleRegistry::new(vec![]))
     }
 }
 
@@ -7842,6 +7875,16 @@ impl Default for Checker {
 mod tests {
     use super::*;
     use hew_parser::ast::{ImportName, Param, Visibility};
+
+    /// Module registry with the repo root as a search path, so stdlib
+    /// modules (e.g. `std::encoding::json`) can be loaded during tests.
+    fn test_registry() -> ModuleRegistry {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        ModuleRegistry::new(vec![repo_root])
+    }
 
     fn check_source(_source: &str) -> TypeCheckOutput {
         // hew-types has zero external deps, so we cannot parse source here.
@@ -7851,7 +7894,7 @@ mod tests {
             items: vec![],
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.check_program(&program)
     }
 
@@ -7863,7 +7906,7 @@ mod tests {
 
     #[test]
     fn test_type_checker_creation() {
-        let checker = Checker::new();
+        let checker = Checker::new(ModuleRegistry::new(vec![]));
         assert_eq!(checker.errors.len(), 0);
     }
 
@@ -7884,7 +7927,7 @@ mod tests {
 
     #[test]
     fn test_literal_types() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
         // Test integer literal (defaults to i64)
         let int_expr = make_int_literal(42, 0..2);
@@ -7899,7 +7942,7 @@ mod tests {
 
     #[test]
     fn test_builtin_registration() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.register_builtins();
 
         // Check that println_int is registered
@@ -7938,7 +7981,7 @@ mod tests {
             items: vec![(Item::Function(fd), 0..30)],
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
         assert!(output
             .errors
@@ -8002,7 +8045,7 @@ mod tests {
             module_doc: None,
         };
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
         assert!(output.errors.is_empty());
         assert_eq!(
@@ -8028,7 +8071,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8054,7 +8097,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8077,7 +8120,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8100,7 +8143,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8118,7 +8161,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.iter().any(|e| {
@@ -8182,7 +8225,7 @@ mod tests {
             module_doc: None,
         };
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
         // The body is empty (returns unit) so there will be a return-type mismatch error,
         // but fn_sigs is populated in pass 1 (before body checking), so the signature
@@ -8192,7 +8235,7 @@ mod tests {
 
     #[test]
     fn test_arity_mismatch_too_many_args() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.register_builtins();
         // println_int takes 1 arg; call with 2
         let call = (
@@ -8228,7 +8271,7 @@ mod tests {
 
     #[test]
     fn test_arity_mismatch_too_few_args() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.register_builtins();
         // println_int takes 1 arg; call with 0
         let call = (
@@ -8255,7 +8298,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output.errors.is_empty(),
@@ -8279,7 +8322,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output.errors.is_empty(),
@@ -8293,7 +8336,7 @@ mod tests {
 
     #[test]
     fn test_string_literal_type() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let expr = (Expr::Literal(Literal::String("hello".to_string())), 0..5);
         let ty = checker.synthesize(&expr.0, &expr.1);
         assert_eq!(ty, Ty::String);
@@ -8305,7 +8348,7 @@ mod tests {
         reason = "testing that 3.14 parses as Float, not using it as PI"
     )]
     fn test_float_literal_type() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let expr = (Expr::Literal(Literal::Float(3.14)), 0..4);
         let ty = checker.synthesize(&expr.0, &expr.1);
         assert_eq!(ty, Ty::F64);
@@ -8313,7 +8356,7 @@ mod tests {
 
     #[test]
     fn test_char_literal_type() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let expr = (Expr::Literal(Literal::Char('a')), 0..3);
         let ty = checker.synthesize(&expr.0, &expr.1);
         assert_eq!(ty, Ty::Char);
@@ -8329,7 +8372,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output.errors.is_empty(),
@@ -8352,7 +8395,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -8379,7 +8422,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -8406,7 +8449,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8426,7 +8469,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         // The function signature should still reflect i32 return type
         assert_eq!(output.fn_sigs["foo"].return_type, Ty::I32);
@@ -8441,7 +8484,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8459,7 +8502,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8480,7 +8523,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8498,7 +8541,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8516,7 +8559,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output.errors.is_empty(),
@@ -8534,7 +8577,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8552,7 +8595,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         // Vec::new() may or may not resolve depending on builtins, but should not panic
         assert!(output.errors.len() <= 2);
@@ -8571,7 +8614,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8626,7 +8669,7 @@ mod tests {
             items: vec![(Item::Actor(actor), 0..0)],
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
         assert!(output.fn_sigs.contains_key("Greeter::greet"));
     }
@@ -8636,7 +8679,7 @@ mod tests {
         let source = "fn noop() {}";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty());
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8658,7 +8701,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8688,7 +8731,7 @@ mod tests {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -8811,7 +8854,7 @@ mod tests {
     fn warn_unused_variable() {
         let source = "fn main() { let unused_var = 42; }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
         assert!(
@@ -8828,7 +8871,7 @@ mod tests {
     fn warn_var_never_mutated() {
         let source = "fn main() { var x = 10; println(x); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(output.errors.is_empty(), "errors: {:?}", output.errors);
         assert!(
@@ -8845,7 +8888,7 @@ mod tests {
     fn no_warn_underscore_prefix() {
         let source = "fn main() { let _unused = 42; }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -8869,7 +8912,7 @@ mod tests {
             "unexpected parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         (output.errors, output.warnings)
     }
@@ -9221,7 +9264,7 @@ mod tests {
     fn warn_unreachable_after_return() {
         let source = "fn foo() -> i32 { return 1; let x = 2; x }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -9237,7 +9280,7 @@ mod tests {
     fn no_warn_unreachable_when_return_is_last() {
         let source = "fn foo() -> i32 { let x = 1; return x; }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9255,7 +9298,7 @@ mod tests {
     fn warn_variable_shadowing() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -9272,7 +9315,7 @@ mod tests {
     fn no_warn_shadowing_underscore_prefix() {
         let source = "fn main() { let _x = 1; if true { let _x = 2; println(_x); } println(_x); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9288,7 +9331,7 @@ mod tests {
     fn no_warn_shadowing_for_loop_var() {
         let source = "fn main() { let i = 0; for i in 0..10 { println(i); } println(i); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9306,7 +9349,7 @@ mod tests {
     fn warn_dead_code_unused_function() {
         let source = "fn unused_helper() -> i32 { 42 } fn main() { println(1); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -9322,7 +9365,7 @@ mod tests {
     fn no_warn_dead_code_main() {
         let source = "fn main() { println(1); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9338,7 +9381,7 @@ mod tests {
     fn no_warn_dead_code_called_function() {
         let source = "fn helper() -> i32 { 42 } fn main() { let x = helper(); println(x); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9354,7 +9397,7 @@ mod tests {
     fn no_warn_dead_code_underscore_prefix() {
         let source = "fn _unused() -> i32 { 42 } fn main() { println(1); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9384,7 +9427,7 @@ fn main() {
 }
 ";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9402,7 +9445,7 @@ fn main() {
     fn warn_unused_import() {
         let source = "import std::encoding::json;\nfn main() { println(1); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(test_registry());
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -9419,7 +9462,7 @@ fn main() {
         let source =
             "import std::encoding::json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(test_registry());
         let output = checker.check_program(&result.program);
         assert!(
             !output
@@ -9437,7 +9480,7 @@ fn main() {
     fn unreachable_code_has_warning_severity() {
         let source = "fn foo() -> i32 { return 1; let x = 2; x }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         let w = output
             .warnings
@@ -9455,7 +9498,7 @@ fn main() {
     fn shadowing_has_note_for_original_definition() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         let w = output
             .warnings
@@ -9597,7 +9640,7 @@ fn main() {
             items,
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.check_program(&program)
     }
 
@@ -9835,7 +9878,7 @@ fn main() {
             items: vec![(Item::Import(import), 0..0)],
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let _output = checker.check_program(&program);
 
         // pub const should be findable in the environment
@@ -9884,7 +9927,7 @@ fn main() {
             items: vec![(Item::Import(import), 0..0)],
             module_doc: None,
         };
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let _output = checker.check_program(&program);
 
         assert!(
@@ -10432,7 +10475,7 @@ fn main() {
             module_doc: None,
         };
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
 
         assert!(
@@ -10479,7 +10522,7 @@ fn main() {
             result.errors
         );
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -10514,7 +10557,7 @@ fn main() {
             result.errors
         );
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -10571,7 +10614,7 @@ fn main() {
             result.errors
         );
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
 
         if !output.errors.is_empty() {
@@ -10608,7 +10651,7 @@ fn main() {
             min_version: None,
         };
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.validate_wire_version_constraints("TestMsg", &wire);
 
         assert!(checker.errors.is_empty(), "should not produce errors");
@@ -10648,7 +10691,7 @@ fn main() {
             min_version: None,
         };
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.validate_wire_version_constraints("TestMsg", &wire);
 
         assert!(checker.errors.is_empty(), "should not produce errors");
@@ -10702,7 +10745,7 @@ fn main() {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -10731,7 +10774,7 @@ fn main() {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -10757,7 +10800,7 @@ fn main() {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output.errors.is_empty(),
@@ -10781,7 +10824,7 @@ fn main() {
             "parse errors: {:?}",
             result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
@@ -10797,7 +10840,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_integer_to_i32() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = make_int_literal(42, 0..2);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
         assert_eq!(ty, Ty::I32);
@@ -10805,7 +10848,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_integer_to_u8() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = make_int_literal(255, 0..3);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
         assert_eq!(ty, Ty::U8);
@@ -10813,7 +10856,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_integer_to_u8_overflow() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = make_int_literal(256, 0..3);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::U8);
         assert_eq!(ty, Ty::Error);
@@ -10829,7 +10872,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_negative_to_unsigned() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = (
             Expr::Unary {
                 op: UnaryOp::Negate,
@@ -10851,7 +10894,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_i32_overflow() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         // 2^31 = 2147483648, which exceeds i32 max (2147483647)
         let lit = make_int_literal(2_147_483_648, 0..10);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::I32);
@@ -10868,7 +10911,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_integer_to_f32() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = make_int_literal(42, 0..2);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
         assert_eq!(ty, Ty::F32);
@@ -10876,7 +10919,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_float_to_f32() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let lit = (Expr::Literal(Literal::Float(3.14)), 0..4);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
         assert_eq!(ty, Ty::F32);
@@ -10939,7 +10982,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_array_to_i32_array() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let elems = vec![
             make_int_literal(1, 1..2),
             make_int_literal(2, 4..5),
@@ -10958,7 +11001,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_array_repeat_to_i32() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let value = make_int_literal(0, 1..2);
         let count = make_int_literal(5, 4..5);
         let arr = (
@@ -10982,7 +11025,7 @@ fn main() {
 
     #[test]
     fn tuple_literal_coercion_to_typed() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let elems = vec![
             make_int_literal(42, 1..3),
             (Expr::Literal(Literal::Float(3.14)), 5..9),
@@ -11000,7 +11043,7 @@ fn main() {
 
     #[test]
     fn tuple_literal_coercion_overflow() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let elems = vec![make_int_literal(256, 1..4)];
         let tuple = (Expr::Tuple(elems), 0..5);
         let expected = Ty::Tuple(vec![Ty::U8]);
@@ -11018,7 +11061,7 @@ fn main() {
 
     #[test]
     fn range_default_type_is_i64() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let range = (
             Expr::Range {
                 start: None,
@@ -11040,7 +11083,7 @@ fn main() {
 
     #[test]
     fn literal_coercion_through_type_var() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         // Create a type variable and unify it with i32
         let tv = TypeVar::fresh();
         checker.subst.insert(tv, Ty::I32);
@@ -11059,7 +11102,7 @@ fn main() {
 
     #[test]
     fn let_bound_literal_coercion() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         // Simulate: let n = 5
         let let_stmt = Stmt::Let {
             pattern: (Pattern::Identifier("n".to_string()), 4..5),
@@ -11080,7 +11123,7 @@ fn main() {
 
     #[test]
     fn let_bound_literal_overflow() {
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         // Simulate: let n = 2147483648 (exceeds i32 max)
         let let_stmt = Stmt::Let {
             pattern: (Pattern::Identifier("n".to_string()), 4..5),

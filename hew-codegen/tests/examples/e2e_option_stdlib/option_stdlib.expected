@@ -12,4 +12,10 @@ false
 false
 PASS: unwrap_or matches
 PASS: is_some matches
+true
+true
+hello
+default
+true
+false
 === Done ===

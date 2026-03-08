@@ -111,7 +111,7 @@ impl HewLanguageServer {
         let type_output = if has_parse_errors {
             None
         } else {
-            let mut checker = Checker::new();
+            let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
             Some(checker.check_program(&parse_result.program))
         };
 
@@ -2550,7 +2550,7 @@ mod tests {
             "unexpected parse errors: {:?}",
             parse_result.errors
         );
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
 
         let doc = DocumentState {
@@ -2614,7 +2614,7 @@ mod tests {
             parse_result.errors
         );
 
-        let mut checker = Checker::new();
+        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let doc = DocumentState {
             source: source.to_string(),

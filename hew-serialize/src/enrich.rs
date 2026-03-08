@@ -387,13 +387,14 @@ fn lookup_inferred_type(
 pub fn enrich_program(
     program: &mut Program,
     tco: &TypeCheckOutput,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
     let mut diagnostics = Vec::new();
     for (item, _span) in &mut program.items {
-        enrich_item_with_diagnostics(item, tco, &mut diagnostics)?;
+        enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
     }
-    normalize_all_types(program);
-    synthesize_stdlib_externs(program)?;
+    normalize_all_types(program, registry);
+    synthesize_stdlib_externs(program, registry)?;
     Ok(EnrichProgramDiagnostics { diagnostics })
 }
 
@@ -402,7 +403,7 @@ pub fn enrich_program(
 ///
 /// The parser may emit these as generic `Named` types; the C++ backend expects
 /// the dedicated `Result`/`Option` variants.
-fn normalize_type_expr(te: &mut TypeExpr) {
+fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry::ModuleRegistry) {
     // First, recurse into child type exprs regardless of variant.
     match te {
         TypeExpr::Named {
@@ -410,41 +411,41 @@ fn normalize_type_expr(te: &mut TypeExpr) {
             ..
         } => {
             for arg in args.iter_mut() {
-                normalize_type_expr(&mut arg.0);
+                normalize_type_expr(&mut arg.0, registry);
             }
         }
         TypeExpr::Result { ok, err } => {
-            normalize_type_expr(&mut ok.0);
-            normalize_type_expr(&mut err.0);
+            normalize_type_expr(&mut ok.0, registry);
+            normalize_type_expr(&mut err.0, registry);
         }
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) => {
-            normalize_type_expr(&mut inner.0);
+            normalize_type_expr(&mut inner.0, registry);
         }
         TypeExpr::Tuple(elems) => {
             for elem in elems.iter_mut() {
-                normalize_type_expr(&mut elem.0);
+                normalize_type_expr(&mut elem.0, registry);
             }
         }
         TypeExpr::Array { element, .. } => {
-            normalize_type_expr(&mut element.0);
+            normalize_type_expr(&mut element.0, registry);
         }
         TypeExpr::Function {
             params,
             return_type,
         } => {
             for p in params.iter_mut() {
-                normalize_type_expr(&mut p.0);
+                normalize_type_expr(&mut p.0, registry);
             }
-            normalize_type_expr(&mut return_type.0);
+            normalize_type_expr(&mut return_type.0, registry);
         }
         TypeExpr::Pointer { pointee, .. } => {
-            normalize_type_expr(&mut pointee.0);
+            normalize_type_expr(&mut pointee.0, registry);
         }
         TypeExpr::TraitObject(ref mut bounds) => {
             for bound in bounds.iter_mut() {
                 if let Some(ref mut args) = bound.type_args {
                     for arg in args.iter_mut() {
-                        normalize_type_expr(&mut arg.0);
+                        normalize_type_expr(&mut arg.0, registry);
                     }
                 }
             }
@@ -472,7 +473,7 @@ fn normalize_type_expr(te: &mut TypeExpr) {
             _ => {
                 // Qualify unqualified handle type names (e.g. "Connection" → "net.Connection")
                 if type_args.is_none() && name != "Result" {
-                    if let Some(qualified) = hew_types::stdlib::qualify_handle_type(name) {
+                    if let Some(qualified) = registry.qualify_handle_type(name) {
                         *name = qualified.to_string();
                     }
                 }
@@ -485,14 +486,18 @@ fn normalize_type_expr(te: &mut TypeExpr) {
 ///
 /// The serializer embeds extern function declarations as top-level
 /// `ExternBlock` items so the C++ backend can generate extern declarations.
-fn synthesize_stdlib_externs(program: &mut Program) -> Result<(), TypeExprConversionError> {
+fn synthesize_stdlib_externs(
+    program: &mut Program,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<(), TypeExprConversionError> {
     let mut new_items: Vec<Spanned<Item>> = Vec::new();
 
     for (item, _span) in &program.items {
         if let Item::Import(import_decl) = item {
             let module_path = import_decl.path.join("::");
-            if let Some(funcs) = hew_types::stdlib::stdlib_functions(&module_path) {
-                let extern_fns = funcs
+            if let Some(info) = registry.get(&module_path) {
+                let extern_fns = info
+                    .functions
                     .iter()
                     .map(|(name, params, ret_ty)| {
                         let param_exprs = params
@@ -545,9 +550,12 @@ fn synthesize_stdlib_externs(program: &mut Program) -> Result<(), TypeExprConver
 }
 
 /// Walk the entire program AST and normalize all `TypeExpr` nodes.
-fn normalize_all_types(program: &mut Program) {
+fn normalize_all_types(
+    program: &mut Program,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
     for (item, _span) in &mut program.items {
-        normalize_item_types(item);
+        normalize_item_types(item, registry);
     }
 }
 
@@ -556,9 +564,12 @@ fn normalize_all_types(program: &mut Program) {
 /// This is the same transformation as [`normalize_all_types`] but operates on
 /// a standalone item list — useful for normalizing module-graph modules that
 /// are not part of the root `Program::items`.
-pub fn normalize_items_types(items: &mut [Spanned<Item>]) {
+pub fn normalize_items_types(
+    items: &mut [Spanned<Item>],
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
     for (item, _span) in items {
-        normalize_item_types(item);
+        normalize_item_types(item, registry);
     }
 }
 
@@ -869,42 +880,42 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
     clippy::too_many_lines,
     reason = "normalization covers all item variants"
 )]
-fn normalize_item_types(item: &mut Item) {
+fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::ModuleRegistry) {
     match item {
-        Item::Function(fn_decl) => normalize_fn_decl_types(fn_decl),
+        Item::Function(fn_decl) => normalize_fn_decl_types(fn_decl, registry),
         Item::Actor(actor) => {
             for field in &mut actor.fields {
-                normalize_type_expr(&mut field.ty.0);
+                normalize_type_expr(&mut field.ty.0, registry);
             }
             if let Some(ref mut init) = actor.init {
-                normalize_block_types(&mut init.body);
+                normalize_block_types(&mut init.body, registry);
             }
             for recv in &mut actor.receive_fns {
                 for param in &mut recv.params {
-                    normalize_type_expr(&mut param.ty.0);
+                    normalize_type_expr(&mut param.ty.0, registry);
                 }
                 if let Some(ref mut rt) = recv.return_type {
-                    normalize_type_expr(&mut rt.0);
+                    normalize_type_expr(&mut rt.0, registry);
                 }
-                normalize_block_types(&mut recv.body);
+                normalize_block_types(&mut recv.body, registry);
             }
             for method in &mut actor.methods {
-                normalize_fn_decl_types(method);
+                normalize_fn_decl_types(method, registry);
             }
         }
         Item::Impl(impl_decl) => {
-            normalize_type_expr(&mut impl_decl.target_type.0);
+            normalize_type_expr(&mut impl_decl.target_type.0, registry);
             for method in &mut impl_decl.methods {
-                normalize_fn_decl_types(method);
+                normalize_fn_decl_types(method, registry);
             }
         }
         Item::ExternBlock(eb) => {
             for func in &mut eb.functions {
                 for param in &mut func.params {
-                    normalize_type_expr(&mut param.ty.0);
+                    normalize_type_expr(&mut param.ty.0, registry);
                 }
                 if let Some(ref mut rt) = func.return_type {
-                    normalize_type_expr(&mut rt.0);
+                    normalize_type_expr(&mut rt.0, registry);
                 }
             }
         }
@@ -912,20 +923,20 @@ fn normalize_item_types(item: &mut Item) {
             for body_item in &mut td.body {
                 match body_item {
                     hew_parser::ast::TypeBodyItem::Field { ty, .. } => {
-                        normalize_type_expr(&mut ty.0);
+                        normalize_type_expr(&mut ty.0, registry);
                     }
                     hew_parser::ast::TypeBodyItem::Method(m) => {
-                        normalize_fn_decl_types(m);
+                        normalize_fn_decl_types(m, registry);
                     }
                     hew_parser::ast::TypeBodyItem::Variant(v) => match &mut v.kind {
                         hew_parser::ast::VariantKind::Tuple(fields) => {
                             for field_ty in fields {
-                                normalize_type_expr(&mut field_ty.0);
+                                normalize_type_expr(&mut field_ty.0, registry);
                             }
                         }
                         hew_parser::ast::VariantKind::Struct(fields) => {
                             for (_name, field_ty) in fields {
-                                normalize_type_expr(&mut field_ty.0);
+                                normalize_type_expr(&mut field_ty.0, registry);
                             }
                         }
                         hew_parser::ast::VariantKind::Unit => {}
@@ -938,48 +949,48 @@ fn normalize_item_types(item: &mut Item) {
                 match trait_item {
                     hew_parser::ast::TraitItem::Method(m) => {
                         for param in &mut m.params {
-                            normalize_type_expr(&mut param.ty.0);
+                            normalize_type_expr(&mut param.ty.0, registry);
                         }
                         if let Some(ref mut rt) = m.return_type {
-                            normalize_type_expr(&mut rt.0);
+                            normalize_type_expr(&mut rt.0, registry);
                         }
                         if let Some(ref mut body) = m.body {
-                            normalize_block_types(body);
+                            normalize_block_types(body, registry);
                         }
                     }
                     hew_parser::ast::TraitItem::AssociatedType { default, .. } => {
                         if let Some(ref mut default_ty) = default {
-                            normalize_type_expr(&mut default_ty.0);
+                            normalize_type_expr(&mut default_ty.0, registry);
                         }
                     }
                 }
             }
         }
         Item::Const(const_decl) => {
-            normalize_type_expr(&mut const_decl.ty.0);
+            normalize_type_expr(&mut const_decl.ty.0, registry);
         }
         Item::TypeAlias(type_alias) => {
-            normalize_type_expr(&mut type_alias.ty.0);
+            normalize_type_expr(&mut type_alias.ty.0, registry);
         }
         Item::Machine(machine) => {
             for state in &mut machine.states {
                 for (_name, ty) in &mut state.fields {
-                    normalize_type_expr(&mut ty.0);
+                    normalize_type_expr(&mut ty.0, registry);
                 }
             }
             for event in &mut machine.events {
                 for (_name, ty) in &mut event.fields {
-                    normalize_type_expr(&mut ty.0);
+                    normalize_type_expr(&mut ty.0, registry);
                 }
             }
             for transition in &mut machine.transitions {
-                normalize_expr_types(&mut transition.body);
+                normalize_expr_types(&mut transition.body, registry);
             }
         }
         Item::Supervisor(sup) => {
             for child in &mut sup.children {
                 for arg in &mut child.args {
-                    normalize_expr_types(arg);
+                    normalize_expr_types(arg, registry);
                 }
             }
         }
@@ -987,33 +998,36 @@ fn normalize_item_types(item: &mut Item) {
     }
 }
 
-fn normalize_fn_decl_types(fn_decl: &mut FnDecl) {
+fn normalize_fn_decl_types(
+    fn_decl: &mut FnDecl,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
     for param in &mut fn_decl.params {
-        normalize_type_expr(&mut param.ty.0);
+        normalize_type_expr(&mut param.ty.0, registry);
     }
     if let Some(ref mut rt) = fn_decl.return_type {
-        normalize_type_expr(&mut rt.0);
+        normalize_type_expr(&mut rt.0, registry);
     }
-    normalize_block_types(&mut fn_decl.body);
+    normalize_block_types(&mut fn_decl.body, registry);
 }
 
-fn normalize_block_types(block: &mut Block) {
+fn normalize_block_types(block: &mut Block, registry: &hew_types::module_registry::ModuleRegistry) {
     for (stmt, _span) in &mut block.stmts {
-        normalize_stmt_types(stmt);
+        normalize_stmt_types(stmt, registry);
     }
     if let Some(ref mut expr) = block.trailing_expr {
-        normalize_expr_types(expr);
+        normalize_expr_types(expr, registry);
     }
 }
 
-fn normalize_stmt_types(stmt: &mut Stmt) {
+fn normalize_stmt_types(stmt: &mut Stmt, registry: &hew_types::module_registry::ModuleRegistry) {
     match stmt {
         Stmt::Let { ty, value, .. } | Stmt::Var { ty, value, .. } => {
             if let Some(ref mut t) = ty {
-                normalize_type_expr(&mut t.0);
+                normalize_type_expr(&mut t.0, registry);
             }
             if let Some(ref mut val) = value {
-                normalize_expr_types(val);
+                normalize_expr_types(val, registry);
             }
         }
         Stmt::Expression(ref mut expr)
@@ -1022,21 +1036,21 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
             value: Some(ref mut expr),
             ..
         } => {
-            normalize_expr_types(expr);
+            normalize_expr_types(expr, registry);
         }
         Stmt::If {
             condition,
             then_block,
             else_block,
         } => {
-            normalize_expr_types(condition);
-            normalize_block_types(then_block);
+            normalize_expr_types(condition, registry);
+            normalize_block_types(then_block, registry);
             if let Some(ref mut eb) = else_block {
                 if let Some(ref mut block) = eb.block {
-                    normalize_block_types(block);
+                    normalize_block_types(block, registry);
                 }
                 if let Some(ref mut if_stmt) = eb.if_stmt {
-                    normalize_stmt_types(&mut if_stmt.0);
+                    normalize_stmt_types(&mut if_stmt.0, registry);
                 }
             }
         }
@@ -1046,48 +1060,51 @@ fn normalize_stmt_types(stmt: &mut Stmt) {
             else_body,
             ..
         } => {
-            normalize_expr_types(expr);
-            normalize_block_types(body);
+            normalize_expr_types(expr, registry);
+            normalize_block_types(body, registry);
             if let Some(block) = else_body {
-                normalize_block_types(block);
+                normalize_block_types(block, registry);
             }
         }
         Stmt::For { body, iterable, .. } => {
-            normalize_expr_types(iterable);
-            normalize_block_types(body);
+            normalize_expr_types(iterable, registry);
+            normalize_block_types(body, registry);
         }
         Stmt::While {
             condition, body, ..
         } => {
-            normalize_expr_types(condition);
-            normalize_block_types(body);
+            normalize_expr_types(condition, registry);
+            normalize_block_types(body, registry);
         }
         Stmt::Loop { body, .. } => {
-            normalize_block_types(body);
+            normalize_block_types(body, registry);
         }
         Stmt::Match { scrutinee, arms } => {
-            normalize_expr_types(scrutinee);
+            normalize_expr_types(scrutinee, registry);
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    normalize_expr_types(guard);
+                    normalize_expr_types(guard, registry);
                 }
-                normalize_expr_types(&mut arm.body);
+                normalize_expr_types(&mut arm.body, registry);
             }
         }
         Stmt::Assign { target, value, .. } => {
-            normalize_expr_types(target);
-            normalize_expr_types(value);
+            normalize_expr_types(target, registry);
+            normalize_expr_types(value, registry);
         }
         Stmt::Defer(ref mut expr) => {
-            normalize_expr_types(expr);
+            normalize_expr_types(expr, registry);
         }
         Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
 }
 
-fn normalize_expr_types(expr: &mut Spanned<Expr>) {
+fn normalize_expr_types(
+    expr: &mut Spanned<Expr>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
     stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
-        normalize_expr_types_inner(expr);
+        normalize_expr_types_inner(expr, registry);
     });
 }
 
@@ -1095,14 +1112,17 @@ fn normalize_expr_types(expr: &mut Spanned<Expr>) {
     clippy::too_many_lines,
     reason = "builtin rewriting covers all expression types"
 )]
-fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
+fn normalize_expr_types_inner(
+    expr: &mut Spanned<Expr>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
     match &mut expr.0 {
         Expr::Block(block)
         | Expr::Scope { body: block, .. }
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {
-            normalize_block_types(block);
+            normalize_block_types(block, registry);
         }
         Expr::If {
             condition,
@@ -1110,10 +1130,10 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             else_block,
             ..
         } => {
-            normalize_expr_types(condition);
-            normalize_expr_types(then_block);
+            normalize_expr_types(condition, registry);
+            normalize_expr_types(then_block, registry);
             if let Some(ref mut e) = else_block {
-                normalize_expr_types(e);
+                normalize_expr_types(e, registry);
             }
         }
         Expr::IfLet {
@@ -1122,34 +1142,34 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             else_body,
             ..
         } => {
-            normalize_expr_types(expr);
-            normalize_block_types(body);
+            normalize_expr_types(expr, registry);
+            normalize_block_types(body, registry);
             if let Some(block) = else_body {
-                normalize_block_types(block);
+                normalize_block_types(block, registry);
             }
         }
         Expr::Match { scrutinee, arms } => {
-            normalize_expr_types(scrutinee);
+            normalize_expr_types(scrutinee, registry);
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    normalize_expr_types(guard);
+                    normalize_expr_types(guard, registry);
                 }
-                normalize_expr_types(&mut arm.body);
+                normalize_expr_types(&mut arm.body, registry);
             }
         }
         Expr::ArrayRepeat { value, count } => {
-            normalize_expr_types(value);
-            normalize_expr_types(count);
+            normalize_expr_types(value, registry);
+            normalize_expr_types(count, registry);
         }
         Expr::Array(elements) | Expr::Tuple(elements) => {
             for e in elements.iter_mut() {
-                normalize_expr_types(e);
+                normalize_expr_types(e, registry);
             }
         }
         Expr::MapLiteral { entries } => {
             for (k, v) in entries {
-                normalize_expr_types(k);
-                normalize_expr_types(v);
+                normalize_expr_types(k, registry);
+                normalize_expr_types(v, registry);
             }
         }
         Expr::Lambda {
@@ -1159,14 +1179,14 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             ..
         } => {
             if let Some(ref mut rt) = return_type {
-                normalize_type_expr(&mut rt.0);
+                normalize_type_expr(&mut rt.0, registry);
             }
             for param in params.iter_mut() {
                 if let Some(ref mut t) = param.ty {
-                    normalize_type_expr(&mut t.0);
+                    normalize_type_expr(&mut t.0, registry);
                 }
             }
-            normalize_expr_types(body);
+            normalize_expr_types(body, registry);
         }
         Expr::Call {
             function,
@@ -1174,96 +1194,96 @@ fn normalize_expr_types_inner(expr: &mut Spanned<Expr>) {
             type_args,
             ..
         } => {
-            normalize_expr_types(function);
+            normalize_expr_types(function, registry);
             for arg in args.iter_mut() {
-                normalize_expr_types(arg.expr_mut());
+                normalize_expr_types(arg.expr_mut(), registry);
             }
             if let Some(ref mut ta) = type_args {
                 for t in ta.iter_mut() {
-                    normalize_type_expr(&mut t.0);
+                    normalize_type_expr(&mut t.0, registry);
                 }
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
-            normalize_expr_types(receiver);
+            normalize_expr_types(receiver, registry);
             for arg in args.iter_mut() {
-                normalize_expr_types(arg.expr_mut());
+                normalize_expr_types(arg.expr_mut(), registry);
             }
         }
         Expr::Binary { left, right, .. } => {
-            normalize_expr_types(left);
-            normalize_expr_types(right);
+            normalize_expr_types(left, registry);
+            normalize_expr_types(right, registry);
         }
         Expr::Unary { operand, .. } => {
-            normalize_expr_types(operand);
+            normalize_expr_types(operand, registry);
         }
         Expr::Cast { expr, ty } => {
-            normalize_expr_types(expr);
-            normalize_type_expr(&mut ty.0);
+            normalize_expr_types(expr, registry);
+            normalize_type_expr(&mut ty.0, registry);
         }
         Expr::FieldAccess { object, .. } => {
-            normalize_expr_types(object);
+            normalize_expr_types(object, registry);
         }
         Expr::Index { object, index } => {
-            normalize_expr_types(object);
-            normalize_expr_types(index);
+            normalize_expr_types(object, registry);
+            normalize_expr_types(index, registry);
         }
         Expr::StructInit { fields, .. } => {
             for (_name, val) in fields.iter_mut() {
-                normalize_expr_types(val);
+                normalize_expr_types(val, registry);
             }
         }
         Expr::Spawn { target, args } => {
-            normalize_expr_types(target);
+            normalize_expr_types(target, registry);
             for (_name, val) in args.iter_mut() {
-                normalize_expr_types(val);
+                normalize_expr_types(val, registry);
             }
         }
         Expr::SpawnLambdaActor { body, .. } => {
-            normalize_expr_types(body);
+            normalize_expr_types(body, registry);
         }
         Expr::Send { target, message } => {
-            normalize_expr_types(target);
-            normalize_expr_types(message);
+            normalize_expr_types(target, registry);
+            normalize_expr_types(message, registry);
         }
         Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
-            normalize_expr_types(inner);
+            normalize_expr_types(inner, registry);
         }
         Expr::Timeout {
             expr: inner,
             duration,
         } => {
-            normalize_expr_types(inner);
-            normalize_expr_types(duration);
+            normalize_expr_types(inner, registry);
+            normalize_expr_types(duration, registry);
         }
         Expr::Join(exprs) => {
             for e in exprs.iter_mut() {
-                normalize_expr_types(e);
+                normalize_expr_types(e, registry);
             }
         }
         Expr::InterpolatedString(parts) => {
             for part in parts.iter_mut() {
                 if let hew_parser::ast::StringPart::Expr(e) = part {
-                    normalize_expr_types(e);
+                    normalize_expr_types(e, registry);
                 }
             }
         }
         Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
-                normalize_expr_types(&mut arm.source);
-                normalize_expr_types(&mut arm.body);
+                normalize_expr_types(&mut arm.source, registry);
+                normalize_expr_types(&mut arm.body, registry);
             }
             if let Some(ref mut t) = timeout {
-                normalize_expr_types(&mut t.duration);
-                normalize_expr_types(&mut t.body);
+                normalize_expr_types(&mut t.duration, registry);
+                normalize_expr_types(&mut t.body, registry);
             }
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
-                normalize_expr_types(s);
+                normalize_expr_types(s, registry);
             }
             if let Some(e) = end {
-                normalize_expr_types(e);
+                normalize_expr_types(e, registry);
             }
         }
         Expr::Literal(_)
@@ -1281,28 +1301,33 @@ fn enrich_item_with_diagnostics(
     item: &mut Item,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     match item {
-        Item::Function(fn_decl) => enrich_fn_decl_with_diagnostics(fn_decl, tco, diagnostics)?,
-        Item::Actor(actor) => enrich_actor_with_diagnostics(actor, tco, diagnostics)?,
+        Item::Function(fn_decl) => {
+            enrich_fn_decl_with_diagnostics(fn_decl, tco, diagnostics, registry)?;
+        }
+        Item::Actor(actor) => {
+            enrich_actor_with_diagnostics(actor, tco, diagnostics, registry)?;
+        }
         Item::Machine(machine) => {
             for transition in &mut machine.transitions {
-                enrich_expr_with_diagnostics(&mut transition.body, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut transition.body, tco, diagnostics, registry)?;
             }
         }
         Item::Impl(impl_decl) => {
             for method in &mut impl_decl.methods {
-                enrich_fn_decl_with_diagnostics(method, tco, diagnostics)?;
+                enrich_fn_decl_with_diagnostics(method, tco, diagnostics, registry)?;
             }
         }
         Item::Const(const_decl) => {
-            enrich_expr_with_diagnostics(&mut const_decl.value, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(&mut const_decl.value, tco, diagnostics, registry)?;
         }
         Item::Trait(trait_decl) => {
             for trait_item in &mut trait_decl.items {
                 if let hew_parser::ast::TraitItem::Method(m) = trait_item {
                     if let Some(ref mut body) = m.body {
-                        enrich_block_with_diagnostics(body, tco, diagnostics)?;
+                        enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
                     }
                 }
             }
@@ -1310,14 +1335,14 @@ fn enrich_item_with_diagnostics(
         Item::TypeDecl(td) => {
             for body_item in &mut td.body {
                 if let hew_parser::ast::TypeBodyItem::Method(m) = body_item {
-                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics)?;
+                    enrich_fn_decl_with_diagnostics(m, tco, diagnostics, registry)?;
                 }
             }
         }
         Item::Supervisor(sup) => {
             for child in &mut sup.children {
                 for arg in &mut child.args {
-                    enrich_expr_with_diagnostics(arg, tco, diagnostics)?;
+                    enrich_expr_with_diagnostics(arg, tco, diagnostics, registry)?;
                 }
             }
         }
@@ -1330,8 +1355,9 @@ fn enrich_fn_decl_with_diagnostics(
     fn_decl: &mut FnDecl,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
-    enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics)?;
+    enrich_block_with_diagnostics(&mut fn_decl.body, tco, diagnostics, registry)?;
 
     let needs_infer =
         fn_decl.return_type.is_none() || matches!(&fn_decl.return_type, Some((TypeExpr::Infer, _)));
@@ -1358,15 +1384,16 @@ fn enrich_actor_with_diagnostics(
     actor: &mut ActorDecl,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut init) = actor.init {
-        enrich_block_with_diagnostics(&mut init.body, tco, diagnostics)?;
+        enrich_block_with_diagnostics(&mut init.body, tco, diagnostics, registry)?;
     }
     for recv in &mut actor.receive_fns {
-        enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics)?;
+        enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics, registry)?;
     }
     for method in &mut actor.methods {
-        enrich_fn_decl_with_diagnostics(method, tco, diagnostics)?;
+        enrich_fn_decl_with_diagnostics(method, tco, diagnostics, registry)?;
     }
     Ok(())
 }
@@ -1375,12 +1402,13 @@ fn enrich_block_with_diagnostics(
     block: &mut Block,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     for (stmt, _span) in &mut block.stmts {
-        enrich_stmt_with_diagnostics(stmt, tco, diagnostics)?;
+        enrich_stmt_with_diagnostics(stmt, tco, diagnostics, registry)?;
     }
     if let Some(ref mut expr) = block.trailing_expr {
-        enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
+        enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
     }
     Ok(())
 }
@@ -1393,6 +1421,7 @@ fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     match stmt {
         Stmt::Let { ty, value, .. } => {
@@ -1410,7 +1439,7 @@ fn enrich_stmt_with_diagnostics(
                 }
             }
             if let Some(ref mut val) = value {
-                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Stmt::Var { name, ty, value } => {
@@ -1428,7 +1457,7 @@ fn enrich_stmt_with_diagnostics(
                 }
             }
             if let Some(ref mut val) = value {
-                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Stmt::If {
@@ -1436,10 +1465,10 @@ fn enrich_stmt_with_diagnostics(
             then_block,
             else_block,
         } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
-            enrich_block_with_diagnostics(then_block, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(then_block, tco, diagnostics, registry)?;
             if let Some(ref mut else_b) = else_block {
-                enrich_else_block_with_diagnostics(else_b, tco, diagnostics)?;
+                enrich_else_block_with_diagnostics(else_b, tco, diagnostics, registry)?;
             }
         }
         Stmt::IfLet {
@@ -1448,33 +1477,33 @@ fn enrich_stmt_with_diagnostics(
             else_body,
             ..
         } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
             if let Some(block) = else_body {
-                enrich_block_with_diagnostics(block, tco, diagnostics)?;
+                enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
             }
         }
         Stmt::Match { scrutinee, arms } => {
-            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics, registry)?;
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    enrich_expr_with_diagnostics(guard, tco, diagnostics)?;
+                    enrich_expr_with_diagnostics(guard, tco, diagnostics, registry)?;
                 }
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
             }
         }
         Stmt::For { body, iterable, .. } => {
-            enrich_expr_with_diagnostics(iterable, tco, diagnostics)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(iterable, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Stmt::While {
             condition, body, ..
         } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Stmt::Loop { body, .. } => {
-            enrich_block_with_diagnostics(body, tco, diagnostics)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Stmt::Expression(ref mut expr)
         | Stmt::Return(Some(ref mut expr))
@@ -1482,14 +1511,14 @@ fn enrich_stmt_with_diagnostics(
             value: Some(ref mut expr),
             ..
         } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
         }
         Stmt::Defer(ref mut expr) => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
         }
         Stmt::Assign { target, value, .. } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(value, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(value, tco, diagnostics, registry)?;
         }
         Stmt::Return(None) | Stmt::Break { value: None, .. } | Stmt::Continue { .. } => {}
     }
@@ -1500,12 +1529,13 @@ fn enrich_else_block_with_diagnostics(
     else_block: &mut ElseBlock,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut block) = else_block.block {
-        enrich_block_with_diagnostics(block, tco, diagnostics)?;
+        enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
     }
     if let Some(ref mut if_stmt) = else_block.if_stmt {
-        enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics)?;
+        enrich_stmt_with_diagnostics(&mut if_stmt.0, tco, diagnostics, registry)?;
     }
     Ok(())
 }
@@ -1518,19 +1548,22 @@ fn enrich_expr_with_diagnostics(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     match &mut expr.0 {
-        Expr::Block(block) => enrich_block_with_diagnostics(block, tco, diagnostics)?,
+        Expr::Block(block) => {
+            enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
+        }
         Expr::If {
             condition,
             then_block,
             else_block,
             ..
         } => {
-            enrich_expr_with_diagnostics(condition, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(then_block, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(then_block, tco, diagnostics, registry)?;
             if let Some(ref mut e) = else_block {
-                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
             }
         }
         Expr::IfLet {
@@ -1539,54 +1572,53 @@ fn enrich_expr_with_diagnostics(
             else_body,
             ..
         } => {
-            enrich_expr_with_diagnostics(expr, tco, diagnostics)?;
-            enrich_block_with_diagnostics(body, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
             if let Some(block) = else_body {
-                enrich_block_with_diagnostics(block, tco, diagnostics)?;
+                enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
             }
         }
         Expr::Match { scrutinee, arms } => {
-            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(scrutinee, tco, diagnostics, registry)?;
             for arm in arms {
                 if let Some(ref mut guard) = arm.guard {
-                    enrich_expr_with_diagnostics(guard, tco, diagnostics)?;
+                    enrich_expr_with_diagnostics(guard, tco, diagnostics, registry)?;
                 }
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
             }
         }
         Expr::Array(elements) | Expr::Tuple(elements) => {
             for e in elements.iter_mut() {
-                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
             }
         }
         Expr::MapLiteral { entries } => {
             for (k, v) in entries {
-                enrich_expr_with_diagnostics(k, tco, diagnostics)?;
-                enrich_expr_with_diagnostics(v, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(k, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(v, tco, diagnostics, registry)?;
             }
         }
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            enrich_expr_with_diagnostics(body, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Expr::MethodCall {
             receiver,
             method,
             args,
         } => {
-            enrich_expr_with_diagnostics(receiver, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
-                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics)?;
+                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
             // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
             // This happens during AST enrichment, before serialization.
             if let Expr::Identifier(module_name) = &receiver.0 {
-                if let Some(c_symbol) = hew_types::stdlib::resolve_module_call(module_name, method)
-                {
+                if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
                     // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
                     // non-trivial Hew wrappers that must be compiled as module graph
                     // functions and called via their mangled name. Leaving them as
                     // MethodCall lets the C++ codegen dispatch them correctly.
-                    if c_symbol != method {
+                    if c_symbol != *method {
                         let old_args = std::mem::take(args);
                         expr.0 = Expr::Call {
                             function: Box::new((
@@ -1622,16 +1654,14 @@ fn enrich_expr_with_diagnostics(
                 start: receiver.1.start,
                 end: receiver.1.end,
             };
-            let c_fn = match tco.expr_types.get(&key) {
+            let c_fn: Option<String> = match tco.expr_types.get(&key) {
                 Some(Ty::Named { name, .. }) if name == "Stream" => {
-                    hew_types::stdlib::resolve_stream_method("Stream", method)
+                    hew_types::stdlib::resolve_stream_method("Stream", method).map(String::from)
                 }
                 Some(Ty::Named { name, .. }) if name == "Sink" => {
-                    hew_types::stdlib::resolve_stream_method("Sink", method)
+                    hew_types::stdlib::resolve_stream_method("Sink", method).map(String::from)
                 }
-                Some(Ty::Named { name, .. }) => {
-                    hew_types::stdlib::resolve_handle_method(name, method)
-                }
+                Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
                 _ => None,
             };
             if let Some(c_fn) = c_fn {
@@ -1651,7 +1681,7 @@ fn enrich_expr_with_diagnostics(
                 all_args.push(hew_parser::ast::CallArg::Positional(recv));
                 all_args.extend(old_args);
                 expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_fn.to_string()), span)),
+                    function: Box::new((Expr::Identifier(c_fn), span)),
                     type_args: None,
                     args: all_args,
                     is_tail_call: false,
@@ -1659,9 +1689,9 @@ fn enrich_expr_with_diagnostics(
             }
         }
         Expr::Call { function, args, .. } => {
-            enrich_expr_with_diagnostics(function, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(function, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
-                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics)?;
+                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
             // Rewrite len(x) → x.len() method call so the C++ codegen
             // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
@@ -1680,84 +1710,84 @@ fn enrich_expr_with_diagnostics(
             }
         }
         Expr::Binary { left, right, .. } => {
-            enrich_expr_with_diagnostics(left, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(right, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(left, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(right, tco, diagnostics, registry)?;
         }
         Expr::Unary { operand: inner, .. }
         | Expr::Cast { expr: inner, .. }
         | Expr::Await(inner)
         | Expr::PostfixTry(inner)
         | Expr::Yield(Some(inner)) => {
-            enrich_expr_with_diagnostics(inner, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(inner, tco, diagnostics, registry)?;
         }
         Expr::FieldAccess { object, .. } => {
-            enrich_expr_with_diagnostics(object, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(object, tco, diagnostics, registry)?;
         }
         Expr::Index { object, index } => {
-            enrich_expr_with_diagnostics(object, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(index, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(object, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(index, tco, diagnostics, registry)?;
         }
         Expr::StructInit { fields, .. } => {
             for (_name, val) in fields.iter_mut() {
-                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Expr::Spawn { target, args } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
             for (_name, val) in args.iter_mut() {
-                enrich_expr_with_diagnostics(val, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(val, tco, diagnostics, registry)?;
             }
         }
         Expr::Send { target, message } => {
-            enrich_expr_with_diagnostics(target, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(message, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(target, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(message, tco, diagnostics, registry)?;
         }
         Expr::Range { start, end, .. } => {
             if let Some(s) = start {
-                enrich_expr_with_diagnostics(s, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(s, tco, diagnostics, registry)?;
             }
             if let Some(e) = end {
-                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
             }
         }
         Expr::Scope { body: block, .. }
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {
-            enrich_block_with_diagnostics(block, tco, diagnostics)?;
+            enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
         }
         Expr::Timeout {
             expr: inner,
             duration,
         } => {
-            enrich_expr_with_diagnostics(inner, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(duration, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(inner, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(duration, tco, diagnostics, registry)?;
         }
         Expr::Join(exprs) => {
             for e in exprs.iter_mut() {
-                enrich_expr_with_diagnostics(e, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
             }
         }
         Expr::InterpolatedString(parts) => {
             for part in parts.iter_mut() {
                 if let hew_parser::ast::StringPart::Expr(e) = part {
-                    enrich_expr_with_diagnostics(e, tco, diagnostics)?;
+                    enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
                 }
             }
         }
         Expr::Select { arms, timeout } => {
             for arm in arms.iter_mut() {
-                enrich_expr_with_diagnostics(&mut arm.source, tco, diagnostics)?;
-                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut arm.source, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(&mut arm.body, tco, diagnostics, registry)?;
             }
             if let Some(ref mut t) = timeout {
-                enrich_expr_with_diagnostics(&mut t.duration, tco, diagnostics)?;
-                enrich_expr_with_diagnostics(&mut t.body, tco, diagnostics)?;
+                enrich_expr_with_diagnostics(&mut t.duration, tco, diagnostics, registry)?;
+                enrich_expr_with_diagnostics(&mut t.body, tco, diagnostics, registry)?;
             }
         }
         Expr::ArrayRepeat { value, count } => {
-            enrich_expr_with_diagnostics(value, tco, diagnostics)?;
-            enrich_expr_with_diagnostics(count, tco, diagnostics)?;
+            enrich_expr_with_diagnostics(value, tco, diagnostics, registry)?;
+            enrich_expr_with_diagnostics(count, tco, diagnostics, registry)?;
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
@@ -1776,14 +1806,34 @@ fn enrich_expr(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
 ) -> Result<(), TypeExprConversionError> {
+    let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
     let mut diagnostics = Vec::new();
-    enrich_expr_with_diagnostics(expr, tco, &mut diagnostics)
+    enrich_expr_with_diagnostics(expr, tco, &mut diagnostics, &registry)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hew_parser::ast::{ImportDecl, Visibility};
+
+    /// Module registry with the repo root as a search path, so stdlib
+    /// modules can be loaded during tests.
+    fn test_registry() -> hew_types::module_registry::ModuleRegistry {
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        hew_types::module_registry::ModuleRegistry::new(vec![repo_root])
+    }
+
+    /// Create a test registry with the given modules pre-loaded.
+    fn test_registry_with(modules: &[&str]) -> hew_types::module_registry::ModuleRegistry {
+        let mut reg = test_registry();
+        for m in modules {
+            let _ = reg.load(m);
+        }
+        reg
+    }
 
     // -----------------------------------------------------------------------
     // normalize_type_expr tests
@@ -1809,7 +1859,10 @@ mod tests {
             name: "Result".into(),
             type_args: Some(vec![ok_ty, err_ty]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         match te {
             TypeExpr::Result { ok, err } => {
                 assert!(matches!(
@@ -1844,7 +1897,10 @@ mod tests {
             name: "Option".into(),
             type_args: Some(vec![inner]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         match te {
             TypeExpr::Option(inner) => {
                 assert!(matches!(
@@ -1886,7 +1942,10 @@ mod tests {
             name: "Option".into(),
             type_args: Some(vec![result_te]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         match te {
             TypeExpr::Option(inner) => {
                 assert!(matches!(inner.0, TypeExpr::Result { .. }));
@@ -1907,7 +1966,10 @@ mod tests {
                 0..0,
             )]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         assert!(matches!(te, TypeExpr::Named { ref name, .. } if name == "Vec"));
     }
 
@@ -1923,7 +1985,10 @@ mod tests {
                 0..0,
             )]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         assert!(matches!(te, TypeExpr::Named { ref name, .. } if name == "Result"));
     }
 
@@ -1933,7 +1998,10 @@ mod tests {
             name: "Result".into(),
             type_args: None,
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         assert!(matches!(te, TypeExpr::Named { ref name, .. } if name == "Result"));
     }
 
@@ -1958,7 +2026,10 @@ mod tests {
                 ),
             ]),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         assert!(matches!(te, TypeExpr::Named { ref name, .. } if name == "Option"));
     }
 
@@ -1986,7 +2057,10 @@ mod tests {
                 0..0,
             ),
         ]);
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         if let TypeExpr::Tuple(elems) = &te {
             assert!(matches!(elems[0].0, TypeExpr::Option(_)));
         } else {
@@ -2000,7 +2074,10 @@ mod tests {
             name: "i32".into(),
             type_args: None,
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         assert!(matches!(te, TypeExpr::Named { ref name, .. } if name == "i32"));
     }
 
@@ -2043,7 +2120,10 @@ mod tests {
                 0..0,
             )),
         };
-        normalize_type_expr(&mut te);
+        normalize_type_expr(
+            &mut te,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         if let TypeExpr::Function {
             params,
             return_type,
@@ -2077,7 +2157,7 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        synthesize_stdlib_externs(&mut program).unwrap();
+        synthesize_stdlib_externs(&mut program, &test_registry_with(&["std::fs"])).unwrap();
         assert!(
             program.items.len() > 1,
             "expected extern block to be synthesized for std::fs"
@@ -2106,7 +2186,7 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        synthesize_stdlib_externs(&mut program).unwrap();
+        synthesize_stdlib_externs(&mut program, &test_registry()).unwrap();
         assert_eq!(program.items.len(), 1);
     }
 
@@ -2117,7 +2197,7 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        synthesize_stdlib_externs(&mut program).unwrap();
+        synthesize_stdlib_externs(&mut program, &test_registry()).unwrap();
         assert!(program.items.is_empty());
     }
 
@@ -2147,7 +2227,7 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        synthesize_stdlib_externs(&mut program).unwrap();
+        synthesize_stdlib_externs(&mut program, &test_registry()).unwrap();
         assert_eq!(program.items.len(), 1);
     }
 
@@ -2181,7 +2261,11 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        synthesize_stdlib_externs(&mut program).unwrap();
+        synthesize_stdlib_externs(
+            &mut program,
+            &test_registry_with(&["std::fs", "std::encoding::json"]),
+        )
+        .unwrap();
         let extern_count = program
             .items
             .iter()
@@ -2493,7 +2577,12 @@ mod tests {
             Ty::Var(TypeVar(7)),
         );
 
-        let diagnostics = enrich_program(&mut program, &tco).unwrap();
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
         assert_eq!(diagnostics.diagnostics().len(), 1);
         let diagnostic = &diagnostics.diagnostics()[0];
         assert_eq!(diagnostic.span(), Some(&expr_span));
@@ -2554,7 +2643,12 @@ mod tests {
             Ty::generator(Ty::I32, Ty::String),
         );
 
-        let diagnostics = enrich_program(&mut program, &tco).unwrap();
+        let diagnostics = enrich_program(
+            &mut program,
+            &tco,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        )
+        .unwrap();
         assert_eq!(diagnostics.diagnostics().len(), 1);
         let diagnostic = &diagnostics.diagnostics()[0];
         assert_eq!(diagnostic.span(), Some(&expr_span));
@@ -2619,7 +2713,10 @@ mod tests {
             module_doc: None,
             module_graph: None,
         };
-        normalize_all_types(&mut program);
+        normalize_all_types(
+            &mut program,
+            &hew_types::module_registry::ModuleRegistry::new(vec![]),
+        );
         if let Item::Function(f) = &program.items[0].0 {
             assert!(
                 matches!(f.return_type.as_ref().unwrap().0, TypeExpr::Option(_)),

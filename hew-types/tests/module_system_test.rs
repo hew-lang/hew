@@ -114,7 +114,7 @@ fn test_module_graph_preserved_through_pipeline() {
         module_doc: None,
         module_graph: Some(graph),
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -141,7 +141,7 @@ fn test_qualified_name_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -173,7 +173,7 @@ fn test_glob_import_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -218,7 +218,7 @@ fn test_named_import_selective_resolution() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -273,7 +273,7 @@ fn test_private_items_not_visible() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -317,7 +317,7 @@ fn test_pub_type_accessible_qualified() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -399,7 +399,7 @@ fn test_two_modules_same_fn_no_collision() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(output.fn_sigs.contains_key("alpha.run"));
@@ -488,7 +488,7 @@ fn test_actor_bare_import_registers_type_and_methods() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -539,7 +539,7 @@ fn test_actor_glob_import_registers_unqualified() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -578,7 +578,7 @@ fn test_actor_named_import_selective() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -616,7 +616,7 @@ fn test_actor_multiple_receive_fns() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -648,7 +648,7 @@ fn test_actor_and_function_coexist_in_module() {
         module_doc: None,
         module_graph: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(
@@ -690,7 +690,7 @@ fn test_module_graph_same_fn_different_modules_no_collision() {
         module_doc: None,
         module_graph: Some(graph),
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&program);
 
     assert!(

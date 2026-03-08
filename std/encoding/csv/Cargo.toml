@@ -12,14 +12,5 @@ categories = ["compilers"]
 [lib]
 crate-type = ["staticlib", "lib"]
 
-[dependencies]
-hew-cabi = { path = "../../../hew-cabi" }
-hew-runtime = { path = "../../../hew-runtime" }
-csv = "1"
-libc = "0.2"
-
-[dev-dependencies]
-tempfile = "3"
-
 [lints]
 workspace = true

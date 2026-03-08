@@ -15,6 +15,3 @@ workspace = true
 [dependencies]
 hew-parser = { path = "../hew-parser" }
 stacker = "0.1"
-
-[build-dependencies]
-hew-parser = { path = "../hew-parser" }

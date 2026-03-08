@@ -9,7 +9,7 @@ fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
         items,
         module_doc: None,
     };
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     checker.check_program(&program)
 }
 

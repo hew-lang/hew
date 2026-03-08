@@ -30,7 +30,7 @@ fn trait_bound_violation_reports_error() {
     let parse = hew_parser::parse(source);
     assert!(parse.errors.is_empty(), "parser errors: {:?}", parse.errors);
 
-    let mut checker = Checker::new();
+    let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
     let output = checker.check_program(&parse.program);
     assert!(
         output

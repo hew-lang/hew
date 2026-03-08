@@ -61,5 +61,16 @@ fn main() {
         println("FAIL: is_some mismatch");
     }
 
+    // ── String variants ─────────────────────────────────────────
+    let some_s = Some("hello");
+    let none_s: Option<String> = None;
+
+    println(option.is_some_str(some_s));
+    println(option.is_none_str(none_s));
+    println(option.unwrap_str(some_s));
+    println(option.unwrap_or_str(none_s, "default"));
+    println(option.contains_str(some_s, "hello"));
+    println(option.contains_str(some_s, "world"));
+
     println("=== Done ===");
 }

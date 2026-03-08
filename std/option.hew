@@ -78,3 +78,86 @@ pub fn contains_int(opt: Option<int>, needle: int) -> bool {
         None => false,
     }
 }
+
+// ── String variants ────────────────────────────────────────────────
+
+/// Returns `true` if the option contains a value.
+pub fn is_some_str(opt: Option<String>) -> bool {
+    match opt {
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Returns `true` if the option is `None`.
+pub fn is_none_str(opt: Option<String>) -> bool {
+    match opt {
+        Some(_) => false,
+        None => true,
+    }
+}
+
+/// Unwrap the `String` value.  Panics if the option is `None`.
+pub fn unwrap_str(opt: Option<String>) -> String {
+    match opt {
+        Some(v) => v,
+        None => {
+            panic("option: unwrap called on None");
+            ""
+        },
+    }
+}
+
+/// Unwrap the `String` value, or return `fallback` if `None`.
+pub fn unwrap_or_str(opt: Option<String>, fallback: String) -> String {
+    match opt {
+        Some(v) => v,
+        None => fallback,
+    }
+}
+
+/// Returns `true` if the option contains `needle`.
+pub fn contains_str(opt: Option<String>, needle: String) -> bool {
+    match opt {
+        Some(v) => v == needle,
+        None => false,
+    }
+}
+
+// ── Float variants ─────────────────────────────────────────────────
+
+/// Returns `true` if the option contains a value.
+pub fn is_some_f64(opt: Option<f64>) -> bool {
+    match opt {
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Returns `true` if the option is `None`.
+pub fn is_none_f64(opt: Option<f64>) -> bool {
+    match opt {
+        Some(_) => false,
+        None => true,
+    }
+}
+
+/// Unwrap the `f64` value.  Panics if the option is `None`.
+pub fn unwrap_f64(opt: Option<f64>) -> f64 {
+    match opt {
+        Some(v) => v,
+        None => {
+            panic("option: unwrap called on None");
+            0.0
+        },
+    }
+}
+
+/// Unwrap the `f64` value, or return `fallback` if `None`.
+pub fn unwrap_or_f64(opt: Option<f64>, fallback: f64) -> f64 {
+    match opt {
+        Some(v) => v,
+        None => fallback,
+    }
+}
+

@@ -336,6 +336,8 @@ add_e2e_file_test(bytes_append        e2e_bytes           bytes_append)
 add_e2e_file_test(bytes_literal       e2e_bytes           bytes_literal)
 add_e2e_file_test(hex_test            e2e_hex             hex_test)
 add_e2e_file_test(base64_test         e2e_base64          base64_test)
+add_e2e_file_test(semver_test         e2e_semver          semver_test)
+add_e2e_file_test(csv_test            e2e_csv             csv_test)
 add_e2e_file_test(crypto_test         e2e_crypto          crypto_test)
 
 # Machine type tests (state machines with compile-time exhaustiveness)

@@ -72,6 +72,15 @@ public:
 private:
   // ── Type conversion ──────────────────────────────────────────────
   mlir::Type convertType(const ast::TypeExpr &type);
+
+  /// Convert a TypeExpr to an MLIR type, returning nullptr on failure.
+  /// Calls convertType() and checks the result with isValidType().
+  /// On failure, emits a contextual error (in addition to any root-cause
+  /// error from convertType()), increments errorCount_, and returns nullptr.
+  /// Use this at call sites that consume the type — it prevents silent
+  /// NoneType propagation and centralizes the validation boilerplate.
+  mlir::Type convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context);
+
   mlir::Type defaultIntType();
   mlir::Type defaultFloatType();
 

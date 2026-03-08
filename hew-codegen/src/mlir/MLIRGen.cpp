@@ -414,12 +414,9 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
       return mlir::NoneType::get(&context); // unit type
     llvm::SmallVector<mlir::Type, 4> elemTypes;
     for (const auto &elem : tuple->elements) {
-      auto elemType = convertType(elem.value);
-      if (!isValidType(elemType)) {
-        ++errorCount_;
-        emitError(currentLoc) << "cannot resolve element type in tuple";
+      auto elemType = convertTypeOrError(elem.value, "cannot resolve element type in tuple");
+      if (!elemType)
         return mlir::NoneType::get(&context);
-      }
       elemTypes.push_back(elemType);
     }
     return hew::HewTupleType::get(&context, elemTypes);
@@ -427,35 +424,30 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 
   // Array types
   if (auto *array = std::get_if<ast::TypeArray>(&type.kind)) {
-    auto elemType = convertType(array->element->value);
-    if (!isValidType(elemType)) {
-      ++errorCount_;
-      emitError(currentLoc) << "cannot resolve element type in array";
+    auto elemType =
+        convertTypeOrError(array->element->value, "cannot resolve element type in array");
+    if (!elemType)
       return mlir::NoneType::get(&context);
-    }
     return hew::HewArrayType::get(&context, elemType, array->size);
   }
 
   // Option<T> → !hew.option<T>
   if (auto *option = std::get_if<ast::TypeOption>(&type.kind)) {
-    auto innerType = convertType(option->inner->value);
-    if (!isValidType(innerType)) {
-      ++errorCount_;
-      emitError(currentLoc) << "cannot resolve inner type for Option";
+    auto innerType =
+        convertTypeOrError(option->inner->value, "cannot resolve inner type for Option");
+    if (!innerType)
       return mlir::NoneType::get(&context);
-    }
     return hew::OptionEnumType::get(&context, innerType);
   }
 
   // Result<T, E> → !hew.result<T, E>
   if (auto *result = std::get_if<ast::TypeResult>(&type.kind)) {
-    auto okType = convertType(result->ok->value);
-    auto errType = convertType(result->err->value);
-    if (!isValidType(okType) || !isValidType(errType)) {
-      ++errorCount_;
-      emitError(currentLoc) << "cannot resolve type for Result";
+    auto okType = convertTypeOrError(result->ok->value, "cannot resolve ok type for Result");
+    auto errType =
+        okType ? convertTypeOrError(result->err->value, "cannot resolve err type for Result")
+               : nullptr;
+    if (!okType || !errType)
       return mlir::NoneType::get(&context);
-    }
     return hew::ResultEnumType::get(&context, okType, errType);
   }
 
@@ -465,12 +457,10 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
   if (auto *function = std::get_if<ast::TypeFunction>(&type.kind)) {
     llvm::SmallVector<mlir::Type, 4> paramTypes;
     for (const auto &pt : function->params) {
-      auto paramType = convertType(pt.value);
-      if (!isValidType(paramType)) {
-        ++errorCount_;
-        emitError(currentLoc) << "cannot resolve parameter type in function type";
+      auto paramType =
+          convertTypeOrError(pt.value, "cannot resolve parameter type in function type");
+      if (!paramType)
         return mlir::NoneType::get(&context);
-      }
       paramTypes.push_back(paramType);
     }
     // Use NoneType as sentinel for void return (no return type)
@@ -492,8 +482,45 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
 }
 
 // ============================================================================
+// Type conversion with validation
+// ============================================================================
+
+mlir::Type MLIRGen::convertTypeOrError(const ast::TypeExpr &type, llvm::StringRef context) {
+  auto result = convertType(type);
+  if (!isValidType(result)) {
+    ++errorCount_;
+    emitError(currentLoc) << context;
+    return nullptr;
+  }
+  return result;
+}
+
+// ============================================================================
 // Type coercion
 // ============================================================================
+
+/// Recursively compare two LLVM struct types for layout compatibility.
+/// Returns true if both have the same number of fields and each field pair
+/// is either identical or (for nested structs) recursively compatible.
+/// This handles generic type alias mangling (e.g. Pair_int vs Pair_i64
+/// when both contain identical primitive fields).
+static bool structsLayoutCompatible(mlir::LLVM::LLVMStructType a, mlir::LLVM::LLVMStructType b) {
+  if (a == b)
+    return true;
+  auto bodyA = a.getBody();
+  auto bodyB = b.getBody();
+  if (bodyA.size() != bodyB.size())
+    return false;
+  for (size_t i = 0; i < bodyA.size(); ++i) {
+    if (bodyA[i] == bodyB[i])
+      continue;
+    auto nestedA = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyA[i]);
+    auto nestedB = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(bodyB[i]);
+    if (!nestedA || !nestedB || !structsLayoutCompatible(nestedA, nestedB))
+      return false;
+  }
+  return true;
+}
 
 mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::Location location,
                                 bool isUnsigned) {
@@ -656,6 +683,32 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
+  // TypedActorRef<T> → ActorRef: typed actor refs are subtypes of untyped refs.
+  // Both lower to !llvm.ptr at the LLVM level.
+  if (mlir::isa<hew::TypedActorRefType>(value.getType()) &&
+      mlir::isa<hew::ActorRefType>(targetType)) {
+    return hew::BitcastOp::create(builder, location, targetType, value);
+  }
+
+  // Structurally identical LLVM structs with different mangled names (e.g.,
+  // Wrapper_int vs Wrapper_i64 from generics with type aliases). Both have
+  // the same field layout — return the value as-is. The source type name
+  // propagates but is layout-compatible, so codegen produces correct LLVM IR.
+  // Uses recursive comparison for nested generics (Box<Pair<int>> vs
+  // Box<Pair<i64>>).
+  if (auto srcStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType())) {
+    if (auto dstStruct = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(targetType)) {
+      if (structsLayoutCompatible(srcStruct, dstStruct)) {
+        return value;
+      }
+    }
+  }
+
+  // Fallthrough: no explicit coercion found. Return the value with a warning
+  // rather than erroring, because the codegen has implicit coercion paths
+  // (e.g., string→int hashing, value→Option wrapping) that are not yet
+  // modelled as explicit coercions. These should be added over time.
+  // TODO: add explicit coercions for remaining cases and convert to emitError.
   emitWarning(location) << "coerceType: no known conversion from " << value.getType() << " to "
                         << targetType;
   return value;
@@ -841,10 +894,9 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
       // Extern "C" functions always use LLVM-level types — convert any
       // Hew dialect types (handles, strings, vecs, …) to !llvm.ptr so
       // that the type conversion framework doesn't have to chase them.
-      auto paramType = convertType(param.ty.value);
-      if (!isValidType(paramType)) {
-        ++errorCount_;
-        emitError(currentLoc) << "cannot resolve type in extern function signature";
+      auto paramType =
+          convertTypeOrError(param.ty.value, "cannot resolve parameter type in extern function");
+      if (!paramType) {
         externOk = false;
         break;
       }
@@ -856,12 +908,10 @@ void MLIRGen::generateExternBlock(const ast::ExternBlock &block) {
     mlir::Type resultType = nullptr;
     mlir::Type semanticResultType = nullptr;
     if (fn.return_type) {
-      semanticResultType = convertType(fn.return_type->value);
-      if (!isValidType(semanticResultType)) {
-        ++errorCount_;
-        emitError(currentLoc) << "cannot resolve type in extern function signature";
+      semanticResultType = convertTypeOrError(fn.return_type->value,
+                                              "cannot resolve return type in extern function");
+      if (!semanticResultType)
         continue;
-      }
       resultType = toLLVMStorageType(semanticResultType);
     }
 
@@ -1647,6 +1697,12 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
   // Register built-in enum type info for payload offset calculation.
   // Option<T> layout: (tag, T) — None has no payload, Some has 1
   // Result<T, E> layout: (tag, T, E) — Ok has 1 payload, Err has 1 payload
+  //
+  // NOTE: The i32 placeholder types below are LOW-RISK registration defaults
+  // used only for variant lookup table structure (payload count and positions).
+  // They do NOT affect actual type inference — OptionEnumType/ResultEnumType
+  // carry the real inner types, and match codegen resolves payload types from
+  // the scrutinee's concrete type, not from these defaults.
   {
     EnumTypeInfo optInfo;
     optInfo.name = "__Option";
@@ -1658,7 +1714,7 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     EnumVariantInfo someV;
     someV.name = "Some";
     someV.index = 1;
-    someV.payloadTypes.push_back(builder.getI32Type()); // default; overridden by actual usage
+    someV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
     optInfo.variants.push_back(someV);
     enumTypes["__Option"] = std::move(optInfo);
 
@@ -1668,12 +1724,12 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     EnumVariantInfo okV;
     okV.name = "Ok";
     okV.index = 0;
-    okV.payloadTypes.push_back(builder.getI32Type()); // default; overridden by actual usage
+    okV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
     resInfo.variants.push_back(okV);
     EnumVariantInfo errV;
     errV.name = "Err";
     errV.index = 1;
-    errV.payloadTypes.push_back(builder.getI32Type()); // default; overridden by actual usage
+    errV.payloadTypes.push_back(builder.getI32Type()); // placeholder; not used for type inference
     resInfo.variants.push_back(errV);
     enumTypes["__Result"] = std::move(resInfo);
   }
@@ -2213,11 +2269,9 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
         if (auto *tuple = std::get_if<ast::VariantDecl::VariantTuple>(&variantItem->variant.kind)) {
           bool variantOk = true;
           for (const auto &ty : tuple->fields) {
-            auto payloadType = convertType(ty.value);
-            if (!isValidType(payloadType)) {
-              ++errorCount_;
-              emitError(currentLoc)
-                  << "cannot resolve payload type for variant '" << vi.name << "'";
+            auto payloadType = convertTypeOrError(
+                ty.value, "cannot resolve payload type for variant '" + vi.name + "'");
+            if (!payloadType) {
               variantOk = false;
               break;
             }
@@ -2229,11 +2283,9 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
                        std::get_if<ast::VariantDecl::VariantStruct>(&variantItem->variant.kind)) {
           bool variantOk = true;
           for (const auto &field : strct->fields) {
-            auto payloadType = convertType(field.ty.value);
-            if (!isValidType(payloadType)) {
-              ++errorCount_;
-              emitError(currentLoc)
-                  << "cannot resolve payload type for variant '" << vi.name << "'";
+            auto payloadType = convertTypeOrError(
+                field.ty.value, "cannot resolve payload type for variant '" + vi.name + "'");
+            if (!payloadType) {
               variantOk = false;
               break;
             }
@@ -2373,12 +2425,10 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
     if (auto *fieldItem = std::get_if<ast::TypeBodyItemField>(&bodyItem.kind)) {
       StructFieldInfo field;
       field.name = fieldItem->name;
-      field.semanticType = convertType(fieldItem->ty.value);
-      if (!isValidType(field.semanticType)) {
-        ++errorCount_;
-        emitError(currentLoc) << "cannot resolve type for field '" << fieldItem->name << "'";
+      field.semanticType = convertTypeOrError(
+          fieldItem->ty.value, "cannot resolve type for field '" + fieldItem->name + "'");
+      if (!field.semanticType)
         return;
-      }
       field.type = toLLVMStorageType(field.semanticType);
       field.index = idx++;
       // Preserve original type expression for collection dispatch
@@ -2541,10 +2591,9 @@ void MLIRGen::registerMachineDecl(const ast::MachineDecl &decl) {
       vi.index = idx++;
       bool stateOk = true;
       for (const auto &[fieldName, fieldType] : state.fields) {
-        auto payloadType = convertType(fieldType.value);
-        if (!isValidType(payloadType)) {
-          ++errorCount_;
-          emitError(currentLoc) << "cannot resolve type for state field '" << fieldName << "'";
+        auto payloadType = convertTypeOrError(
+            fieldType.value, "cannot resolve type for state field '" + fieldName + "'");
+        if (!payloadType) {
           stateOk = false;
           break;
         }
@@ -2638,10 +2687,9 @@ void MLIRGen::registerMachineDecl(const ast::MachineDecl &decl) {
       vi.index = idx++;
       bool eventOk = true;
       for (const auto &[fieldName, fieldType] : event.fields) {
-        auto payloadType = convertType(fieldType.value);
-        if (!isValidType(payloadType)) {
-          ++errorCount_;
-          emitError(currentLoc) << "cannot resolve type for state field '" << fieldName << "'";
+        auto payloadType = convertTypeOrError(
+            fieldType.value, "cannot resolve type for event field '" + fieldName + "'");
+        if (!payloadType) {
           eventOk = false;
           break;
         }

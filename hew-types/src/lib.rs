@@ -8,6 +8,7 @@ pub mod check;
 pub mod cycle;
 pub mod env;
 pub mod error;
+pub mod module_registry;
 pub mod stdlib;
 pub mod stdlib_loader;
 pub mod traits;

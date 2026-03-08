@@ -25,13 +25,15 @@ omitting data.
 
 ## From the audit phase
 
-### 1. Multi-model consensus produces higher-quality analysis
+### 1. Multi-model parallel analysis catches more than single-model review
 
-Deploying 4 different LLM models (GPT-5.3-Codex, Gemini 3 Pro, GPT-5.2, Sonnet 4.6)
-on the same codebase with different audit angles produced complementary findings.
-GPT-5.3-Codex was strongest on quantitative unsafe/duplication counting, Sonnet 4.6
-produced the most actionable API contract analysis, GPT-5.2 gave the best end-to-end
-distributed systems gap analysis, and Gemini 3 Pro focused well on code organization.
+Running 4-5 different frontier models on the same codebase with different audit angles
+produces complementary findings that no single model catches alone. Each model has
+characteristic strengths: Claude Opus excels at parser/AST structure and codegen
+correctness; GPT Codex variants find type system subtleties and quantitative patterns;
+Claude Sonnet catches codegen UB and memory safety; Gemini focuses on runtime safety
+and code organization. Pragmatic code reviewers catch integration bugs that implementers
+miss. Convergence between models on the same finding is a high-confidence triage signal.
 
 ### 2. Typed MLIR ops obsolete string-based dispatch
 
@@ -45,51 +47,25 @@ dead code. ~300 LOC of string parsing can be safely removed.
 guard macro would eliminate this, but care is needed: the return values differ
 (some return -1, some return null, some return 0).
 
-### 4. The connection.rs dangling pointer is a real UB risk
-
-`connection.rs:334` passes a pointer to a field of a struct that is subsequently
-moved. The spawned reader thread may dereference a dangling pointer. This must
-be fixed before any distributed actor work.
-
-### 5. Wire send path triplication indicates a missing abstraction
+### 4. Wire send path triplication indicates a missing abstraction
 
 The same ~90-line envelope encode+send logic appears in transport.rs, node.rs,
 and connection.rs. This is a clear sign that "send an envelope to a remote actor"
 should be a single function, not copy-pasted.
 
-### 6. The msgpack schema boundary is the highest-risk seam
+### 5. The msgpack schema boundary is the highest-risk seam
 
 The Rust → C++ boundary via msgpack has no version, no sync mechanism, and
 manually-mirrored types. Any AST change is a silent breakage. Adding a version
 field and a CI test that round-trips a known blob is the minimum fix.
 
-### 7. Node::\* builtins exist in the type checker but not in codegen
-
-The type checker registers `Node::start`, `Node::shutdown`, `Node::register`,
-`Node::lookup` — but the compiler never generates code for them. The example
-file explicitly comments them out. This is a clear gap that needs bridging.
-
-### 8. SWIM membership is isolated from everything
-
-The cluster.rs SWIM implementation works in isolation but has no integration with:
-
-- Connection management (how do SWIM messages travel?)
-- Service discovery (how do membership changes affect routing?)
-- Supervision (how do node failures affect supervised actors?)
-
-### 9. Static analysis tools missed the dangling pointer
+### 6. Static analysis tools missed the dangling pointer
 
 Despite running clippy and extensive testing, the `connection.rs:334` UB was
 only caught by manual audit. This suggests we need more targeted safety
 analysis for code that spawns threads with pointers.
 
-### 10. Pre-existing test failures mask real issues
-
-The 5 HashMap test failures (contains_key returning bool instead of i32)
-existed on main for an unknown duration. Regular CI runs that exclude
-certain test categories can hide regressions.
-
-### 11. Agent-extracted code can re-introduce fixed bugs
+### 7. Agent-extracted code can re-introduce fixed bugs
 
 When GPT-5.3-Codex extracted `generateBuiltinMethodCall` from the monolithic method-call
 path, it re-introduced a `CmpIOp` for `contains_key` that had been explicitly removed in
@@ -97,96 +73,41 @@ PRs #5-#10. The agent didn't have context about the prior fix. Lesson: always ru
 test suite after agent-generated refactoring, and cross-check extracted code against recent
 commit history for the same functions.
 
-### 12. Integration layers beat rewrites
+### 8. Integration layers beat rewrites
 
 Phase 4 succeeded because HewNode was designed as an integration layer — it wires together
 existing transport, cluster, connection, and registry modules rather than rewriting them.
 Each sub-agent worked on a focused piece (handshake, routing, SWIM wiring) independently,
 and they composed cleanly because the integration boundary was explicit.
 
-### 13. Thread safety through ownership, not locks
+### 9. Thread safety through ownership, not locks
 
 The dangling pointer fix (Phase 1) and routing table (Phase 4) both succeeded by choosing
 the right ownership model upfront: `Arc<AtomicU64>` for the heartbeat counter shared
 between ConnectionActor and reader thread, `RwLock<HashMap>` for the routing table.
 Fixing ownership is cheaper than adding locks after the fact.
 
-### 14. Fixed-size wire formats eliminate parsing bugs
+### 10. Fixed-size wire formats eliminate parsing bugs
 
 The 48-byte handshake format has zero variable-length fields, zero TLV parsing, and zero
 ambiguity. It's trivially serializable/deserializable and can be validated in a single
 comparison. This simplicity paid off immediately — the handshake tests are 100% reliable.
 
-### 15. Test expectations must track semantic changes across branches
-
-The HashMap tests expected `1`/`0` (I32) for contains_key, but the codegen now produces
-`true`/`false` (I1) on some branches. Test expectations are branch-sensitive — when
-semantic changes like return type modifications are in flight across branches, expected
-outputs must be updated in the same commit as the semantic change.
-
-### 16. Dual-identity fields create silent routing failures
-
-Having two identity concepts (`pid` as counter, `id` as location-transparent address)
-in the same struct is a trap. The C-ABI function `hew_actor_self_pid()` returned the
-counter, and `hew_pid_node(counter)` always returned 0, making every actor appear local.
-This is undetectable without cross-node testing — single-node tests pass because local
-routing works with either value.
-
-### 17. Security features must be wired end-to-end to be meaningful
-
-The Noise XX handshake was generating ephemeral keys per-connection but never using the
-node's persistent identity key. The peer allowlist existed but was never called. Both
-features passed unit tests because the tests only checked that the code _existed_, not
-that it was _integrated_. Integration tests that verify actual authentication and
-rejection are essential.
-
-### 18. Connection lifecycle events need explicit cleanup contracts
-
-When a TCP reader loop exits, the connection is "dead" but nothing cleaned up: routing
-table still had stale entries, SWIM still considered the peer alive, connmgr still
-tracked it. Each subsystem needs explicit `on_disconnect` callbacks, and these must be
-tested with simulated drops, not just graceful shutdowns.
-
-### 19. Background agent file changes don't always persist
+### 11. Background agent file changes don't always persist
 
 When dispatching sub-agents in background mode, their SQL database changes persist but
 file modifications may not survive across context boundaries. Always verify file changes
 on disk after agent completion. Trust SQL status for tracking but verify file diffs with
 `git status`.
 
-### 20. Thread-local error APIs are essential for C-ABI libraries
+### 12. Thread-local error APIs are essential for C-ABI libraries
 
 Returning `-1` from 34 C-ABI functions with no diagnostic is useless to callers.
 A `thread_local!` last-error string (accessible via `hew_last_error() -> *const c_char`)
 gives callers actionable diagnostics without global lock contention. The pattern mirrors
 `errno`/`GetLastError` but with richer messages.
 
-### 21. Every send path must handle remote PIDs — local-only is a silent failure
-
-`hew_actor_send_by_id` searched only `LIVE_ACTORS` (local set). When a remote PID
-was passed, it returned -1 silently — no error, no network attempt, no diagnostic.
-This is the most dangerous kind of bug: all local tests pass, the API looks correct,
-but distributed sends are dead. The fix is a two-line check: if local lookup fails
-AND `hew_pid_is_local() == false`, forward to `try_remote_send`. Every function that
-accepts a PID must handle both local and remote cases explicitly.
-
-### 22. Global node handles enable location-transparent routing
-
-A `static AtomicPtr<HewNode>` set during `hew_node_start` allows any function in the
-runtime to route messages to remote nodes without requiring callers to pass a node
-handle. This mirrors Erlang's model where `!` (send) works transparently regardless
-of whether the target PID is local or remote. The tradeoff is one-node-per-process,
-which is acceptable for the actor model.
-
-### 23. Multi-model parallel analysis catches more gaps than single-model review
-
-Running 5 different frontier models (Claude Opus, GPT-5.1/5.2 Codex, Claude Sonnet,
-Gemini Pro) each analyzing a different layer (parser, types, codegen, runtime, examples)
-found 25 gaps in ~5 minutes. Each model caught things others missed — Claude Opus was
-best at parser/AST analysis, GPT-5.1 Codex excelled at type system subtleties, Claude
-Sonnet 4.5 was thorough on codegen lowering gaps.
-
-### 24. Visibility refactors must touch serialization boundaries
+### 13. Visibility refactors must touch serialization boundaries
 
 Changing `is_pub: bool` → `Visibility` enum required updating not just Rust code but
 the serde serialization format AND the C++ msgpack reader in the codegen. The Rust
@@ -194,21 +115,14 @@ the serde serialization format AND the C++ msgpack reader in the codegen. The Ru
 hardcoded key lookups. Multi-language serialization boundaries are high-risk refactor
 points.
 
-### 25. Unsafe enforcement in a language with runtime FFI requires audit of all tests
+### 14. Unsafe enforcement in a language with runtime FFI requires audit of all tests
 
 Adding `unsafe { }` enforcement for extern calls broke 12 e2e tests that directly
 called runtime extern functions. In a language with a C-ABI runtime, many "stdlib"
 functions are thin wrappers around extern calls. The correct fix is to wrap the extern
 calls in `unsafe` in both the stdlib wrappers AND any tests that bypass the wrappers.
 
-### 26. TraitObject vec migration must update codegen's dyn dispatch resolution
-
-Changing `Ty::TraitObject { trait_name, args }` → `Ty::TraitObject { traits: Vec<TraitObjectBound> }`
-impacts every consumer: type checker, unification, serialization, AND the C++ codegen's
-dynamic dispatch resolution. The C++ side uses the trait name to look up vtable entries,
-so using `bounds[0].name` preserves backward compatibility for single-trait objects.
-
-### 27. Agent-generated code must be fixed for Rust borrow checker patterns
+### 15. Agent-generated code must be fixed for Rust borrow checker patterns
 
 When multiple AI agents write Rust code in parallel, they often produce code that
 conflicts with the borrow checker — holding `&self` borrows while calling `&mut self`
@@ -217,50 +131,28 @@ The fix patterns are consistent: clone data before dropping the borrow, extract
 values into locals, or restructure closures into if/else chains. This is a systematic
 issue when agents don't have full context of surrounding code.
 
-### 28. Associated type resolution requires `Self::Type` syntax in the parser
-
-`Self::Item` as a type expression requires special handling in `parse_type()` —
-after parsing `Self` as a named type, the parser must check for `::` and combine
-into `Self::TypeName`. Without this, trait methods returning `Self::Item` fail
-to parse with "expected `;`, found `::`" errors.
-
-### 29. Cross-enum variant fallback is a type-safety hole
+### 16. Cross-enum variant fallback is a type-safety hole
 
 When match pattern resolution can't find a variant in the scrutinee's type, falling
 back to a global search across all types is dangerous. It means `match colour { Shape::Circle => }`
 silently type-checks. The fix is simple: when the scrutinee type is known, only search
 that type's variants.
 
-### 30. String getters returning internal pointers create invisible use-after-free
+### 17. String getters returning internal pointers create invisible use-after-free
 
 C-ABI string getters (HashMap.get_str, Vec.get_str) that return pointers into
 internal storage create lifetime hazards invisible to both the compiler and the
 generated code. Returning strdup'd copies is safer, though it adds allocation cost.
 The codegen must be aware that returned strings need freeing.
 
-### 31. Multi-model code review catches different bug classes
-
-Claude Opus caught parser inconsistencies and operator precedence issues. GPT-5.1
-Codex found type coercion and unification bugs. Gemini found runtime memory safety
-issues. Claude Sonnet found codegen UB and missing verification. Each model has
-blind spots the others compensate for.
-
-### 32. Match expressions and match statements need identical checks
+### 18. Match expressions and match statements need identical checks
 
 When a language has both match-as-expression and match-as-statement, the
 type checker must apply the same validation to both. The expression handler
 had exhaustiveness checking but the statement handler didn't — an easy
 oversight when the two codepaths diverged early.
 
-### 33. Struct literal parsing requires explicit empty-struct lookahead
-
-When `{}` after an identifier can mean either "empty struct literal" or
-"block expression", the parser needs explicit handling for the empty case.
-The standard lookahead of `ident: expr` inside braces fails when there are
-no fields. Adding `peek == RightBrace` as a struct-init condition is the
-minimal fix.
-
-### 34. Drop ordering in return statements: evaluate first, then clean up
+### 19. Drop ordering in return statements: evaluate first, then clean up
 
 In a language with deterministic destruction, `return expr` must evaluate
 `expr` while all locals are still alive, capture the result, THEN run
@@ -268,21 +160,22 @@ destructors. The natural code structure of "clean up, then return" causes
 use-after-free when the return expression references locals. This is
 especially subtle with method calls like `return vec.get(0)`.
 
-### 35. Labeled control flow must deactivate ALL intermediate loops
+### 20. Labeled break must deactivate ALL intermediate loops and their continue flags
 
-When `break @outer` targets a non-adjacent loop, every loop between the
-current position and the target must be deactivated. Only deactivating the
-innermost and outermost leaves intermediate loops spinning. This requires
+When `break @outer` targets a non-adjacent loop, every loop between the current
+position and the target must be deactivated — both the active flag and the continue
+flag at each level. Only deactivating the innermost and outermost leaves intermediate
+loops spinning, with middle loop bodies executing after inner loop exits. This requires
 tracking loop depth indices, not just innermost/outermost references.
 
-### 36. Self type in generic impls needs full type information
+### 21. Self type in generic impls needs full type information
 
 Storing `Self` as just a name string loses generic type parameters. In
 `impl<T> Pair<T>`, `Self` must resolve to `Pair<T>`, not bare `Pair`.
 The fix is storing `(name, args)` instead of just `name` — a lesson in
 not discarding type information at storage boundaries.
 
-### 37. Code review catches what tests miss at nesting depth
+### 22. Code review catches what tests miss at nesting depth
 
 The labeled break test with 2-level nesting passed both with and without
 the fix because normal scope cleanup handled both scopes. Only a
@@ -290,7 +183,7 @@ pragmatic code review identified that 3+ nesting was needed to exercise
 the intermediate-scope drop logic. Tests should match the complexity of
 the bug they're verifying.
 
-### 38. Compound assignment must be checked everywhere assignment occurs
+### 23. Compound assignment must be checked everywhere assignment occurs
 
 When adding compound assignment operators (`+=`, `-=`, etc.), every
 assignment path must handle them: simple variable assignment, field
@@ -298,7 +191,7 @@ assignment, AND indexed assignment. The indexed case was missed because
 VecSetOp takes the value directly — there's no separate "read-modify-write"
 in the IR, so it must be manually synthesized.
 
-### 39. Don't restrict core type coercions without understanding the language design
+### 24. Don't restrict core type coercions without understanding the language design
 
 Adding an integer width restriction (i64→i32 rejected) seemed correct from
 a type-safety perspective but broke the entire language because Hew's `int`
@@ -306,35 +199,20 @@ type is i64 and is used ubiquitously for array indices, loop counters, etc.
 Understanding the language's design philosophy (convenience over strict
 width typing) is critical before adding restrictions.
 
-### 40. Double-evaluation in codegen is a category of bug, not a one-off
+### 25. Double-evaluation in codegen is a category of bug, not a one-off
 
 The HashSet arg double-evaluation is the same class of bug as any "generate
 for type info, then generate again for the actual op" pattern. When codegen
 inspects an expression to determine types, it must NOT call
 generateExpression — use AST type info or pass the generated value through.
 
-### 41. 100% test pass rate is achievable and meaningful
+### 26. 100% test pass rate is achievable and meaningful
 
 Going from 314/316 to 317/318 to 321/321 across sprints shows that
 persistent, methodical quality work pays compound returns. Each sprint fixes
 the bugs that the previous sprint's fixes revealed.
 
-### 42. "Last arm" match optimizations must exclude ALL structured patterns
-
-The match codegen had a "last arm shortcut" that skipped tag checks for
-the final arm if it wasn't a literal, constructor, or enum variant. But it
-forgot struct variant patterns — any optimization that bypasses tag checks
-must be excluded for ALL pattern types that depend on the tag being correct.
-Check the exclusion list whenever adding new pattern types.
-
-### 43. New statement types need return/break/continue guard registration
-
-When adding a new statement type (e.g., StmtIfLet), it must be registered
-in `stmtMightContainReturn` and `stmtMightContainBreakOrContinue` in
-MLIRGenHelpers.h. Without this, the return-flag guard mechanism won't fire
-after the new statement type, allowing post-return code to execute.
-
-### 44. Lambda capture analysis must mirror AST traversal completeness
+### 27. Lambda capture analysis must mirror AST traversal completeness
 
 Every new expression type (ExprIfLet, ExprArrayRepeat) must be handled in
 both `collectFreeVarsInExpr` and `collectFreeVarsInStmt`. Pattern-bound
@@ -343,16 +221,7 @@ Missing any expression type causes false captures (outer variables captured
 when they shouldn't be) or missed captures (variables not captured when
 they should be).
 
-### 45. Multi-model analysis catches different bug categories
-
-Different AI models find different classes of bugs. Claude Opus 4.6 found
-structural codegen bugs (match bypass, lambda capture). GPT-5.2 Codex
-found type system logical errors (exhaustiveness, trait resolution).
-Claude Sonnet 4.5 found memory safety issues. Pragmatic code reviewers
-catch integration bugs the implementers miss. Using diverse models in
-parallel maximizes bug coverage.
-
-### 46. Type enrichment should return None for types the backend doesn't need
+### 28. Type enrichment should return None for types the backend doesn't need
 
 Mapping internal types (Unit, Generator, AsyncGenerator, Range) to
 TypeExpr::Named causes "unresolved type" errors in C++ codegen. The correct
@@ -360,21 +229,13 @@ approach is to return None — the backend handles these via built-in type
 logic, not through the expr_types map. Only map types that the C++ side
 actually looks up.
 
-### 47. Test all numeric type widths in lowering, not just the common ones
+### 29. Test all numeric type widths in lowering, not just the common ones
 
 The PrintOpLowering and CastOpLowering both handled i32, i64, f64 but
 missed f32. When adding a type-dispatching lowering pattern, check ALL
 possible types in the language's type system, not just the most common ones.
 
-### 48. Two bugs can mask each other in pattern matching
-
-Nested constructor patterns failed because (1) the type checker didn't
-resolve type variables before pattern matching AND (2) the codegen only
-handled PatIdentifier sub-patterns. Either fix alone would still leave
-the feature broken. When debugging, always check both the type checking
-and codegen sides of a feature.
-
-### 49. Early returns must clean up all pending state
+### 30. Early returns must clean up all pending state
 
 In MLIRGenStmt, `pendingDeclaredType` acts as a side-channel between
 type annotation parsing and expression generation. If a `var` declaration
@@ -383,7 +244,7 @@ otherwise the leaked type contaminates the next expression's type
 resolution. Any codegen state stored in instance variables must be
 cleaned up on all exit paths.
 
-### 50. Exhaustive expression traversal prevents silent semantic gaps
+### 31. Exhaustive expression traversal prevents silent semantic gaps
 
 `rewrite_builtin_calls_in_expr` only handled 9 of ~30 expression variants,
 meaning built-in call rewriting (e.g., `len(x)` → `x.len()`) silently
@@ -391,7 +252,7 @@ failed inside interpolated strings, ranges, sends, timeouts, etc. When
 adding a recursive expression visitor, enumerate ALL variants explicitly —
 a `_ => {}` wildcard silently swallows new additions.
 
-### 51. All loop codegen must use the same four-part pattern
+### 32. All loop codegen must use the same four-part pattern
 
 Every loop in Hew codegen must: (1) AND its condition with `!returnFlag`,
 (2) use `generateLoopBodyWithContinueGuards`, (3) use `MutableTableScopeT`,
@@ -399,7 +260,7 @@ Every loop in Hew codegen must: (1) AND its condition with `!returnFlag`,
 missed item 1, and stream/generator/for-await loops missed item 2.
 Violating any item creates subtle flow control bugs.
 
-### 52. Always verify AST node semantics before treating as "always true"
+### 33. Always verify AST node semantics before treating as "always true"
 
 In `generateOrPatternCondition`, `PatIdentifier` can mean either a variable
 binding (always matches) or an enum unit variant (needs tag comparison).
@@ -408,22 +269,14 @@ made enum or-patterns like `Red | Blue` match unconditionally. The pragmatic
 reviewer caught this before commit. When handling overloaded AST nodes,
 always check contextual information (like `variantLookup`).
 
-### 53. Symmetrical registration and cleanup prevents stale state
+### 34. Symmetrical registration and cleanup prevents stale state
 
 Every for-loop variant registered labeled loop flags but only `while` and
 `loop` cleaned them up. The pattern of "register in setup, erase in cleanup"
 must be systematically applied whenever a new loop codegen path is added.
 A checklist pattern (setup label → use → cleanup label) prevents drift.
 
-### 54. SSA domination errors from over-eager return-flag guards
-
-Adding `StmtExpression` to `stmtMightContainReturn` broke SSA because it
-wraps EVERY expression statement in a return-flag `scf.if` block.Values
-defined inside the if-block don't dominate uses outside it. Return-flag
-guards must only activate for statements that can structurally contain
-returns (if, match, while, for, loop) — not general expression statements.
-
-### 55. Every type-dispatching lowering must handle ALL supported types
+### 35. Every type-dispatching lowering must handle ALL supported types
 
 ToStringOp, AssertOp, AssertEqOp, AssertNeOp, and VecNewOp all had if/else
 chains that handled the "common" types (i32, i64, f64) but missed f32, i8,
@@ -432,7 +285,7 @@ functions with the wrong ABI (f32 passed where f64 is expected, i8 passed
 where i64 is expected). Every lowering pattern must enumerate ALL types:
 i1, i8, i16, i32, i64, f32, f64, index, string_ref, pointer.
 
-### 56. Capture analysis and builtin rewriting share the same completeness risk
+### 36. Capture analysis and builtin rewriting share the same completeness risk
 
 Both `collectFreeVarsInExpr` (C++) and `rewrite_builtin_calls_in_expr` (Rust)
 recursively traverse expression trees. Both had the same bug: a catch-all
@@ -440,7 +293,7 @@ recursively traverse expression trees. Both had the same bug: a catch-all
 a new Expr variant is added to the AST, BOTH visitors must be updated.
 Consider a compile-time assertion or exhaustive match to prevent silent gaps.
 
-### 57. Suffix remapping creates a mismatch between value type and storage type
+### 37. Suffix remapping creates a mismatch between value type and storage type
 
 When `vecElemSuffixWithPtr` maps i1/i8/i16 to `_i32`, the inline fast path
 must also remap the value and GEP element type to i32. The suffix determines
@@ -448,7 +301,7 @@ which runtime function is called (and thus the element stride), but the GEP
 and load/store instructions use the MLIR value type. Both must agree on the
 element size or pointer arithmetic will be wrong.
 
-### 58. Parallel suffix functions must stay in sync
+### 38. Parallel suffix functions must stay in sync
 
 `vecElemSuffix` (for VecNew) and `vecElemSuffixWithPtr` (for push/get/set/pop)
 are separate functions that map element types to runtime function suffixes.
@@ -456,7 +309,7 @@ When f32 support was added to `vecElemSuffixWithPtr` but not `vecElemSuffix`,
 Vec<f32> was created with wrong element size. Any duplicated dispatch logic
 must be updated in all copies simultaneously.
 
-### 59. Pragmatic code reviewers catch integration bugs that unit tests miss
+### 39. Pragmatic code reviewers catch integration bugs that unit tests miss
 
 Sprint 13's pragmatic reviewer caught that Vec<f32> would crash even though
 all 330 tests passed — because no test exercised Vec<f32>. Static analysis
@@ -464,60 +317,40 @@ by a reviewer found the inconsistency between two suffix functions that
 unit tests couldn't cover. Always run a pragmatic reviewer after implementation
 agents, especially for type-dispatch changes.
 
-### 60. Build a coverage matrix, not an ad-hoc bug hunt
+### 40. Build a coverage matrix, not an ad-hoc bug hunt
 
 Sprints 5-13 found 60+ type-dispatch bugs reactively. Sprint 14 built a full
 (operation × type) matrix by tracing every if/else chain in all 14 lowering
 patterns, instantly revealing 4 critical bugs that 332 passing tests missed.
 The matrix approach is exhaustive; the sprint approach has a long tail.
 
-### 61. Operations without tests accumulate silent bugs
+### 41. Operations without tests accumulate silent bugs
 
 VecRemoveOp had zero type promotion logic across all sprints because no test
 exercised `remove` with narrow types. Meanwhile, VecPush/Get/Set/Pop all got
 fixed iteratively. Any operation not covered by a typed test will accumulate
 the same class of bugs that other operations already had fixed.
 
-### 62. i8 should use ExtUIOp (zero-extend) not ExtSIOp (sign-extend)
-
-The codebase convention is that i1 and i8 use ExtUIOp (unsigned), while i16
-uses ExtSIOp (signed). When adding new type promotion paths, match the
-existing convention — otherwise values > 127 will roundtrip incorrectly
-(e.g., push 200, try to remove -56).
-
-### 63. Return inside loop must set both returnFlag AND continueFlag
-
-Setting only returnFlag causes the loop to exit on the next iteration check,
-but remaining statements in the CURRENT iteration still execute (guarded only
-by continueFlag). Always set both flags when returning from inside a loop body.
-
-### 64. Labeled break must propagate continue flags through ALL nesting levels
-
-`break 'outer` through 3+ loops must set continue flags for every intermediate
-loop, not just the innermost. Otherwise, middle loop bodies continue executing
-after the inner loop exits. The active-flag deactivation loop should also set
-the corresponding continue flag at each level.
-
-### 65. Warnings for unhandled codegen cases should be errors
+### 42. Warnings for unhandled codegen cases should be errors
 
 Silent warnings that skip match arms or fall through to default behaviour
 cause miscompilation that's invisible at compile time and produces wrong
 results at runtime. Use emitError + return failure, not emitWarning + skip.
 
-### 66. Never/Error types must be excluded from match result type inference
+### 43. Never/Error types must be excluded from match result type inference
 
 When determining the overall type of a match expression, skip arms that
 evaluate to Ty::Never (return, panic, break) or Ty::Error. Otherwise the
 match is typed as Never, causing downstream inference to fail or accept
 wrong types. Use the first non-diverging arm as the expected type.
 
-### 67. Qualified type names need module-aware comparison
+### 44. Qualified type names need module-aware comparison
 
 Two fully-qualified names from different modules (auth.User vs billing.User)
 must NOT unify. Only bare-name vs qualified-name matching is allowed. This
 prevents cross-module type confusion while still supporting imported types.
 
-### 68. AST traversal functions must visit ALL child expressions
+### 45. AST traversal functions must visit ALL child expressions
 
 When adding enrichment/normalization traversals, every child expression of
 every variant must be visited. Select arms have both source and body; both
@@ -525,7 +358,7 @@ must be traversed in enrich_expr, normalize_expr_types, and
 rewrite_builtin_calls. Missing a child means that child's expressions
 won't get their types normalized or their builtin calls rewritten.
 
-### 69. HashMap.get() must return Option<T>, not raw T
+### 46. HashMap.get() must return Option<T>, not raw T
 
 Returning raw T from HashMap.get() and relying on match-time wrapping is
 fragile — it only works for inline match expressions, not let-binding +
@@ -533,42 +366,42 @@ match patterns. Wrap at the expression level: check contains_key, then
 construct Some(raw_get) or None via scf.IfOp. The internal values() method
 can still use HashMapGetOp directly (raw value) since it iterates known keys.
 
-### 70. Match fallthrough must trap, not return default values
+### 47. Match fallthrough must trap, not return default values
 
 When no match arm matches at runtime (non-exhaustive match), returning
 zero/undef via createDefaultValue produces silently wrong results. Emit
 hew.panic (or llvm.trap) instead. The createDefaultValue after the panic
 is still needed for SSA type consistency but is unreachable code.
 
-### 71. Exhaustiveness checking must cover ALL types
+### 48. Exhaustiveness checking must cover ALL types
 
 Integer, float, and string matches without a wildcard or binding pattern
 should warn — not just enum/bool/Option/Result. The catch-all in
 check_exhaustiveness must check for Pattern::Identifier (binding) as well
 as Pattern::Wildcard, since both are catch-all patterns for non-enum types.
 
-### 72. Vec push overflow requires checked arithmetic
+### 49. Vec push overflow requires checked arithmetic
 
 All hew*vec_push\*\* functions compute len + 1 for the new length. If len
 is usize::MAX, this silently wraps to 0, causing ensure_cap to not grow
 and subsequent writes to corrupt memory. Use checked_add and abort on
 overflow. Store old len for slot calculation before updating (*v).len.
 
-### 73. Vec append requires type validation
+### 50. Vec append requires type validation
 
 hew_vec_append blindly memcpys src data into dst without checking that
 elem_size and elem_kind match. Appending a Vec<f64> into a Vec<i32>
 would silently corrupt the destination. Validate both fields match before
 the copy, aborting if they differ.
 
-### 74. Shared wire modifier logic prevents syntax drift
+### 51. Shared wire modifier logic prevents syntax drift
 
 `#[wire] struct` and legacy `wire type` had duplicated field-modifier handling, which let
 `since N` survive in one parser path but disappear in the other and in formatting. A tiny
 shared parser helper plus shared formatter emission is cheaper than chasing AST drift after
 downstream tools start depending on wire metadata.
 
-### 75. Select losers need cancellation, not join-style destruction
+### 52. Select losers need cancellation, not join-style destruction
 
 `join` owns every reply channel all the way through `hew_reply_wait`, so it can destroy
 each channel immediately. `select` only consumes one reply; destroying the losing channels
@@ -576,20 +409,20 @@ eagerly would risk use-after-free when a late actor reply arrives. The safe reme
 to cancel non-winning channels explicitly (including timeout paths), then release only the
 waiter-side reference and let the runtime's late-reply cleanup handle the final free.
 
-### 76. Ask send failures need an explicit submit status
+### 53. Ask send failures need an explicit submit status
 
 If an ask never makes it into a mailbox, `join`/`select` must learn that from the send
 operation itself; otherwise they can wait forever on a reply that can never exist. An
 explicit send status is safer than trying to infer failure later from reply payload shape.
 
-### 77. Partial select/join setup needs prefix cleanup before panic
+### 54. Partial select/join setup needs prefix cleanup before panic
 
 `select` and `join` build reply channels incrementally. When arm N fails to submit, arms
 `0..N` already own live channels; panicking without canceling and destroying that prefix
 still leaves leaked waiters and late-reply hazards. Clean up the full prefix first, then
 panic.
 
-### 78. Best-effort serializer omissions still need structured, deduplicated diagnostics
+### 55. Best-effort serializer omissions still need structured, deduplicated diagnostics
 
 Some inferred `Ty` shapes (notably generator forms) are intentionally left implicit because
 codegen tracks them through other mechanisms, but that does not justify a silent `None`

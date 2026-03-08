@@ -131,10 +131,22 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                 let (params, ret) = wrapper_fn_sig(fn_decl, module_short);
                 info.wrapper_fns.push((fn_decl.name.clone(), params, ret));
 
-                // Clean name mapping
-                if let Some(c_symbol) = extract_call_target(&fn_decl.body) {
-                    info.clean_names.push((fn_decl.name.clone(), c_symbol));
-                }
+                // Clean name mapping: use the C function target only for
+                // trivial pass-through wrappers (same param count). Non-trivial
+                // wrappers (e.g. `setup()` calling `hew_log_set_level(2)`) use
+                // identity mapping so the wrapper Hew function is compiled and
+                // called instead.
+                let c_target =
+                    if let Some((target, call_arg_count)) = extract_call_target(&fn_decl.body) {
+                        if call_arg_count == fn_decl.params.len() {
+                            target
+                        } else {
+                            fn_decl.name.clone()
+                        }
+                    } else {
+                        fn_decl.name.clone()
+                    };
+                info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {
                 // Detect `impl Drop for T` — collect as drop types
@@ -197,11 +209,11 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
             match name.as_str() {
-                "String" => Ty::String,
+                "String" | "string" => Ty::String,
                 "i8" => Ty::I8,
                 "i16" => Ty::I16,
                 "i32" => Ty::I32,
-                "i64" => Ty::I64,
+                "i64" | "int" | "Int" => Ty::I64,
                 "u8" => Ty::U8,
                 "u16" => Ty::U16,
                 "u32" => Ty::U32,
@@ -212,6 +224,49 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                 "char" => Ty::Char,
                 "bytes" => Ty::Bytes,
                 "duration" => Ty::Duration,
+                // Option<T> → Ty::option() helper
+                "Option" => {
+                    if let Some(args) = type_args {
+                        if let Some(first) = args.first() {
+                            return Ty::option(type_expr_to_ty(&first.0, module_short));
+                        }
+                    }
+                    Ty::Named {
+                        name: "Option".to_string(),
+                        args: vec![],
+                    }
+                }
+                // Result<O, E> → Ty::result() helper
+                "Result" => {
+                    if let Some(args) = type_args {
+                        if args.len() >= 2 {
+                            return Ty::result(
+                                type_expr_to_ty(&args[0].0, module_short),
+                                type_expr_to_ty(&args[1].0, module_short),
+                            );
+                        }
+                    }
+                    Ty::Named {
+                        name: "Result".to_string(),
+                        args: vec![],
+                    }
+                }
+                // Built-in generic/language types — do NOT module-qualify
+                "Vec" | "HashMap" | "ActorRef" | "Actor" | "Task" | "Stream" | "Sink"
+                | "StreamPair" => {
+                    let args = type_args
+                        .as_ref()
+                        .map(|a| {
+                            a.iter()
+                                .map(|(te, _)| type_expr_to_ty(te, module_short))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Ty::Named {
+                        name: name.to_string(),
+                        args,
+                    }
+                }
                 // Qualified handle type like "json.Value"
                 n if n.contains('.') => Ty::Named {
                     name: n.to_string(),
@@ -283,11 +338,11 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     }
 }
 
-/// Extract the C function name from a wrapper function's body.
+/// Extract the C function name and argument count from a wrapper function's body.
 ///
 /// Looks for a simple call expression like `hew_json_parse(s)` in the
-/// function body and returns the callee name.
-fn extract_call_target(body: &Block) -> Option<String> {
+/// function body and returns `(callee_name, arg_count)`.
+fn extract_call_target(body: &Block) -> Option<(String, usize)> {
     // Check trailing expression first (most common case)
     if let Some(trailing) = &body.trailing_expr {
         return call_target_from_expr(&trailing.0);
@@ -301,12 +356,12 @@ fn extract_call_target(body: &Block) -> Option<String> {
     None
 }
 
-/// Extract the callee name from a call expression.
-fn call_target_from_expr(expr: &Expr) -> Option<String> {
+/// Extract the callee name and argument count from a call expression.
+fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
     match expr {
-        Expr::Call { function, .. } => {
+        Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
-                return Some(name.clone());
+                return Some((name.clone(), args.len()));
             }
             None
         }
@@ -335,7 +390,7 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
 
     for method in &impl_decl.methods {
         // Skip the `self` parameter when matching — it's not part of the call
-        if let Some(c_symbol) = extract_call_target(&method.body) {
+        if let Some((c_symbol, _arg_count)) = extract_call_target(&method.body) {
             info.handle_methods
                 .push(((type_name.clone(), method.name.clone()), c_symbol));
         }

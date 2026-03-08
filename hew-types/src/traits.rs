@@ -103,6 +103,10 @@ pub struct TraitRegistry {
     trait_impls: HashMap<(String, String), Vec<MethodSig>>,
     /// Actor definitions (actors are always Send)
     actors: HashSet<String>,
+    /// Opaque handle types from loaded modules (e.g. "json.Value", "net.Connection").
+    handle_types: HashSet<String>,
+    /// Drop types from loaded modules (e.g. "http.Request").
+    drop_types: HashSet<String>,
 }
 
 impl TraitRegistry {
@@ -120,6 +124,34 @@ impl TraitRegistry {
     /// Register an actor type.
     pub fn register_actor(&mut self, name: String) {
         self.actors.insert(name);
+    }
+
+    /// Register an opaque handle type (e.g. "json.Value").
+    pub fn register_handle_type(&mut self, name: String) {
+        self.handle_types.insert(name);
+    }
+
+    /// Register a drop type (e.g. "http.Request").
+    pub fn register_drop_type(&mut self, name: String) {
+        self.drop_types.insert(name);
+    }
+
+    /// Check if a name is a handle type (qualified or unqualified).
+    fn is_handle_type_any(&self, name: &str) -> bool {
+        self.handle_types.contains(name)
+            || self
+                .handle_types
+                .iter()
+                .any(|ht| ht.rsplit('.').next() == Some(name))
+    }
+
+    /// Check if a name is a drop type (qualified or unqualified).
+    fn is_drop_type_any(&self, name: &str) -> bool {
+        self.drop_types.contains(name)
+            || self
+                .drop_types
+                .iter()
+                .any(|dt| dt.rsplit('.').next() == Some(name))
     }
 
     /// Register a negative impl (type does NOT implement trait).
@@ -271,9 +303,7 @@ impl TraitRegistry {
                 }
                 // Drop types (e.g. http.Request): Send + Clone + Debug but NOT Copy.
                 // They own resources and need move semantics for actor sends.
-                if crate::stdlib::is_drop_type(name)
-                    || crate::stdlib::is_unqualified_drop_type(name)
-                {
+                if self.is_drop_type_any(name) {
                     return matches!(
                         marker,
                         MarkerTrait::Send
@@ -286,9 +316,7 @@ impl TraitRegistry {
                 // Opaque stdlib handle types: Send + Copy + Clone + Debug
                 // (they're integer file descriptors or pointers at the ABI level)
                 // Check both qualified ("net.Connection") and unqualified ("Connection") forms.
-                if crate::stdlib::is_handle_type(name)
-                    || crate::stdlib::is_unqualified_handle_type(name)
-                {
+                if self.is_handle_type_any(name) {
                     return matches!(
                         marker,
                         MarkerTrait::Send

@@ -167,6 +167,48 @@ fn collect_new_inferred_type_diagnostics<'a>(
 ///
 /// # Errors
 ///
+/// Build search paths for module resolution.
+///
+/// The search order is:
+/// 1. `HEWPATH` environment variable (colon-separated directories)
+/// 2. Installed location relative to the compiler binary (`../lib/hew`)
+/// 3. Dev fallback: repo root (when `std/` exists next to the binary's grandparent)
+fn build_module_search_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // HEWPATH environment variable
+    if let Ok(hewpath) = std::env::var("HEWPATH") {
+        for p in hewpath.split(':') {
+            let path = PathBuf::from(p);
+            if path.exists() {
+                paths.push(path);
+            }
+        }
+    }
+
+    // Relative to compiler binary (installed location)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let installed = exe_dir.join("../lib/hew");
+            if installed.exists() {
+                paths.push(installed);
+            }
+        }
+    }
+
+    // Dev fallback: repo root
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let repo_root = exe_dir.join("../..");
+            if repo_root.join("std").exists() {
+                paths.push(repo_root);
+            }
+        }
+    }
+
+    paths
+}
+
 /// Returns a human-readable message when any pipeline stage fails.
 #[expect(
     clippy::too_many_lines,
@@ -283,10 +325,13 @@ pub fn compile(
     extra_libs.extend(options.extra_link_libs.iter().cloned());
 
     // 3. Type-check
-    let tco = if options.no_typecheck {
-        None
+    let search_paths = build_module_search_paths();
+    let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
+
+    let (tco, module_registry) = if options.no_typecheck {
+        (None, module_registry)
     } else {
-        let mut checker = hew_types::Checker::new();
+        let mut checker = hew_types::Checker::new(module_registry);
         if options
             .target
             .as_deref()
@@ -351,7 +396,8 @@ pub fn compile(
             return Err("type errors found".into());
         }
 
-        Some(tco)
+        let module_registry = checker.into_module_registry();
+        (Some(tco), module_registry)
     };
 
     if check_only {
@@ -366,7 +412,7 @@ pub fn compile(
 
     let expr_type_map = if let Some(tco) = &tco {
         let mut seen_inferred_type_diagnostics = HashSet::new();
-        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, tco)
+        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, tco, &module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
         for diagnostic in collect_new_inferred_type_diagnostics(
             enrich_diagnostics.diagnostics(),
@@ -392,7 +438,7 @@ pub fn compile(
             // and len(x) → x.len() etc.
             for (id, module) in &mut mg.modules {
                 if *id != mg.root {
-                    hew_serialize::normalize_items_types(&mut module.items);
+                    hew_serialize::normalize_items_types(&mut module.items, &module_registry);
                     hew_serialize::rewrite_builtin_calls(&mut module.items);
                 }
             }
@@ -429,7 +475,7 @@ pub fn compile(
     }
 
     // Build handle type metadata for C++ codegen (replaces hardcoded type lists)
-    let handle_types = hew_types::stdlib::all_handle_types();
+    let handle_types = module_registry.all_handle_types();
     let handle_type_repr: std::collections::HashMap<String, String> = handle_types
         .iter()
         .filter(|t| hew_types::stdlib::handle_type_representation(t) != "handle")
@@ -1484,7 +1530,9 @@ mod tests {
             Ty::generator(Ty::I32, Ty::Unit),
         );
 
-        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, &tco).unwrap();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let enrich_diagnostics =
+            hew_serialize::enrich_program(&mut program, &tco, &registry).unwrap();
         let expr_type_map_build = hew_serialize::build_expr_type_map(&tco);
         let mut seen = HashSet::new();
         let imported_item_sources = Vec::new();

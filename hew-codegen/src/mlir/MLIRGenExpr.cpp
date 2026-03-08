@@ -175,7 +175,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     if (!value)
       return nullptr;
     currentLoc = location;
-    auto targetType = convertType(cast->ty.value);
+    auto targetType = convertTypeOrError(cast->ty.value, "cannot resolve cast target type");
+    if (!targetType)
+      return nullptr;
     bool isUnsigned = isUnsignedTypeExpr(cast->ty.value);
     return coerceType(value, targetType, location, isUnsigned);
   }
@@ -2823,9 +2825,12 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // HashSet<T> methods (HandleType with name "HashSet")
   if (auto handleType = mlir::dyn_cast<hew::HandleType>(receiverType)) {
     if (handleType.getHandleKind() == "HashSet") {
-      // For now, determine element type from method arguments
-      // TODO: Store element type information in the HandleType or track it separately
-      mlir::Type elemType = i64Type; // Default to i64
+      // Determine element type from method arguments at the call site.
+      // The i64 default below is a LOW-RISK fallback — it is only used when
+      // the method takes no arguments (e.g., len(), clear()), where element
+      // type doesn't affect the runtime call. Methods that process elements
+      // (insert, contains, remove) always override from the actual argument type.
+      mlir::Type elemType = i64Type;
       mlir::Value argValue;
       const bool methodRequiresArg =
           method == "insert" || method == "contains" || method == "remove";

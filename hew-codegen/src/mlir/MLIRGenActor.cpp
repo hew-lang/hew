@@ -53,7 +53,10 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   llvm::SmallVector<mlir::Type, 4> fieldTypes;
   std::vector<mlir::Type> fieldHewTypes; // Hew MLIR types before toLLVMStorageType
   for (const auto &field : decl.fields) {
-    auto hewType = convertType(field.ty.value);
+    auto hewType = convertTypeOrError(field.ty.value,
+                                      "cannot resolve type for actor field '" + field.name + "'");
+    if (!hewType)
+      return;
     fieldHewTypes.push_back(hewType);
     fieldTypes.push_back(toLLVMStorageType(hewType));
   }
@@ -154,7 +157,10 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
     recvInfo.name = recv.name;
 
     for (const auto &param : recv.params) {
-      auto ty = convertType(param.ty.value);
+      auto ty = convertTypeOrError(param.ty.value, "cannot resolve type for receive parameter '" +
+                                                       param.name + "'");
+      if (!ty)
+        return;
       recvInfo.paramNames.push_back(param.name);
       recvInfo.paramTypes.push_back(ty);
     }

@@ -498,6 +498,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   auto location = currentLoc;
   // Set the declared type so constructors (Vec::new, HashMap::new, None, Ok,
   // Err) can emit correctly typed results.
+  // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is
+  // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
   if (stmt.ty)
     pendingDeclaredType = convertType(stmt.ty->value);
 
@@ -513,7 +515,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   // Type coercion: if declared type doesn't match value type, try to coerce
   if (stmt.ty) {
     auto declaredType = convertType(stmt.ty->value);
-    value = coerceType(value, declaredType, location);
+    if (isValidType(declaredType))
+      value = coerceType(value, declaredType, location);
   }
 
   // Extract the name from the pattern
@@ -776,6 +779,8 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
   auto location = currentLoc;
   auto varNameStr = stmt.name;
   // Set the declared type so constructors can emit correctly typed results.
+  // Note: stmt.ty may contain inferred unit type `()` → NoneType, which is
+  // valid here. Use convertType (not convertTypeOrError) to allow NoneType.
   if (stmt.ty)
     pendingDeclaredType = convertType(stmt.ty->value);
 
@@ -795,7 +800,7 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
 
   if (stmt.ty) {
     varType = convertType(stmt.ty->value);
-    if (initValue)
+    if (isValidType(varType) && initValue)
       initValue = coerceType(initValue, varType, location);
   }
 

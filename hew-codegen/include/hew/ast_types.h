@@ -981,6 +981,9 @@ struct ExprTypeEntry {
 };
 
 struct Program {
+  /// Schema version of the msgpack AST payload.
+  /// 0 means the payload pre-dates versioning (always accepted).
+  uint32_t schema_version = 0;
   std::vector<Spanned<Item>> items;
   std::optional<std::string> module_doc;
   /// Resolved expression types from the type checker (indexed by span).

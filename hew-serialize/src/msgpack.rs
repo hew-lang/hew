@@ -10,6 +10,14 @@ use hew_parser::ast::{Spanned, TypeExpr};
 use hew_parser::module::{Module, ModuleGraph, ModuleId};
 use serde::{Deserialize, Serialize};
 
+/// Schema version for the msgpack AST boundary.
+///
+/// Increment when the serialized format changes in a way that older C++
+/// codegen cannot understand. The C++ reader rejects versions higher than
+/// its own `CURRENT_SCHEMA_VERSION`, but accepts lower versions (including
+/// 0, which represents old payloads that pre-date versioning).
+pub const SCHEMA_VERSION: u32 = 1;
+
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
 ///
 /// Carries the resolved type for a single expression, identified by its source
@@ -33,6 +41,9 @@ pub struct ExprTypeEntry {
 /// `"expr_types"` as optional for backward compatibility.
 #[derive(Debug, Serialize)]
 struct TypedProgram<'a> {
+    /// Schema version — always serialized first so the C++ reader can
+    /// reject incompatible payloads before parsing the rest of the AST.
+    schema_version: u32,
     items: &'a Vec<Spanned<hew_parser::ast::Item>>,
     module_doc: &'a Option<String>,
     /// Resolved types for every expression the type checker annotated.
@@ -80,6 +91,7 @@ pub fn serialize_to_msgpack(
     line_map: Option<&[usize]>,
 ) -> Vec<u8> {
     let typed = TypedProgram {
+        schema_version: SCHEMA_VERSION,
         items: &program.items,
         module_doc: &program.module_doc,
         expr_types: &expr_types,
@@ -105,6 +117,7 @@ struct ModuleGraphJson<'a> {
 /// `module_graph` uses string keys for the modules map.
 #[derive(Serialize)]
 struct TypedProgramJson<'a> {
+    schema_version: u32,
     items: &'a Vec<Spanned<hew_parser::ast::Item>>,
     module_doc: &'a Option<String>,
     expr_types: &'a [ExprTypeEntry],
@@ -152,6 +165,7 @@ pub fn serialize_to_json(
         topo_order: &mg.topo_order,
     });
     let typed = TypedProgramJson {
+        schema_version: SCHEMA_VERSION,
         items: &program.items,
         module_doc: &program.module_doc,
         expr_types: &expr_types,
@@ -361,6 +375,41 @@ mod tests {
         let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
         assert!(!bytes.is_empty());
 
+        let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
+        assert_eq!(program, restored);
+    }
+
+    /// Verify that the serialized msgpack contains a `schema_version` field
+    /// set to `SCHEMA_VERSION`, and that a round-trip still produces an
+    /// identical `Program` (the version field is metadata, not part of `Program`).
+    #[test]
+    fn schema_version_round_trip() {
+        let program = Program {
+            items: vec![],
+            module_doc: None,
+            module_graph: None,
+        };
+
+        let bytes = serialize_to_msgpack(&program, vec![], vec![], HashMap::new(), None, None);
+
+        // Deserialize into a serde_json::Value to inspect the schema_version field.
+        // rmp_serde can deserialize msgpack into any Deserialize type, and
+        // serde_json::Value is a convenient untyped representation.
+        let value: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("should deserialize to generic value");
+
+        let obj = value.as_object().expect("top-level should be a map");
+        let sv = obj
+            .get("schema_version")
+            .expect("schema_version key should be present");
+        assert_eq!(
+            sv.as_u64(),
+            Some(u64::from(SCHEMA_VERSION)),
+            "schema_version should equal SCHEMA_VERSION"
+        );
+
+        // The round-trip should still produce the same Program (schema_version
+        // is extra metadata that Program doesn't carry, so it's silently ignored).
         let restored = deserialize_from_msgpack(&bytes).expect("deserialization should succeed");
         assert_eq!(program, restored);
     }

@@ -1824,8 +1824,26 @@ static ast::ExprTypeEntry parseExprTypeEntry(const msgpack::object &obj) {
   return entry;
 }
 
+/// Maximum schema version this reader understands.  Payloads with a
+/// higher version are rejected so we never silently misparse a newer
+/// format.  Version 0 (field absent) is accepted for backward
+/// compatibility with pre-versioned payloads.
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 1;
+
 static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
+
+  // Read schema_version first — reject payloads from a newer serializer
+  // that this reader cannot understand.
+  const auto *sv = mapGet(obj, "schema_version");
+  if (sv && !isNil(*sv)) {
+    prog.schema_version = static_cast<uint32_t>(getUint(*sv));
+  }
+  if (prog.schema_version > CURRENT_SCHEMA_VERSION) {
+    fail("unsupported schema version " + std::to_string(prog.schema_version) +
+         " (max supported: " + std::to_string(CURRENT_SCHEMA_VERSION) + ")");
+  }
+
   prog.items =
       parseVec<ast::Spanned<ast::Item>>(mapReq(obj, "items"), [](const msgpack::object &o) {
         return parseSpanned<ast::Item>(o, parseItem);

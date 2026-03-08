@@ -1,0 +1,15 @@
+{
+  "name": "hew-grammar-fuzz",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fuzz": "node grammar-fuzz.mjs",
+    "fuzz:textmate": "node grammar-fuzz.mjs --textmate",
+    "fuzz:tree-sitter": "node grammar-fuzz.mjs --tree-sitter",
+    "fuzz:diff": "node grammar-fuzz.mjs --diff"
+  },
+  "dependencies": {
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  }
+}

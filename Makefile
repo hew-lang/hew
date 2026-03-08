@@ -34,7 +34,7 @@
 
 .PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
-.PHONY: clean install install-check uninstall
+.PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -274,6 +274,14 @@ test-cpp: test-codegen
 
 lint:
 	cargo clippy --workspace
+
+# ── FFI symbol verification ───────────────────────────────────────────────
+# Checks that every hew_* function name referenced in C++ codegen has a
+# matching #[no_mangle] export in hew-runtime (or is in a known exception
+# list for stdlib packages and codegen-internal rewrites).
+
+verify-ffi:
+	python3 scripts/verify-ffi-symbols.py --strict
 
 # ── ANTLR4 grammar validation ──────────────────────────────────────────────
 # Requires Java and the ANTLR4 jar. This is rarely needed — only when

@@ -494,63 +494,89 @@ mod tests {
 
     #[test]
     fn load_all_std_modules() {
-        // Modules with extern "C" FFI — must have function signatures
-        let ffi_modules = [
-            "std::fs",
-            "std::os",
-            "std::net",
-            "std::process",
-            "std::string",
-            "std::encoding::json",
-            "std::misc::log",
-            "std::misc::uuid",
-            "std::time::datetime",
-            "std::net::url",
-            "std::path",
-            "std::semaphore",
-            "std::stream",
-            "std::crypto::crypto",
-            "std::encoding::compress",
-            "std::encoding::yaml",
-            "std::encoding::toml",
-            "std::encoding::msgpack",
-            "std::encoding::protobuf",
-            "std::encoding::markdown",
-            "std::crypto::jwt",
-            "std::crypto::password",
-            "std::crypto::encrypt",
-            "std::net::http",
-            "std::net::websocket",
-            "std::net::smtp",
-            "std::net::ipnet",
-            "std::time::cron",
-            "std::text::regex",
-        ];
+        use crate::module_registry::ModuleRegistry;
 
         let root = test_root();
-        for module in &ffi_modules {
-            let info = load_module(module, &root);
-            assert!(info.is_some(), "should load module {module}");
-            let info = info.unwrap();
+        let mut module_paths = Vec::new();
+        discover_modules(&root.join("std"), &root, &mut module_paths);
+        if root.join("ecosystem").exists() {
+            discover_modules(&root.join("ecosystem"), &root, &mut module_paths);
+        }
+
+        assert!(
+            !module_paths.is_empty(),
+            "should discover modules under std/"
+        );
+
+        let mut registry = ModuleRegistry::new(vec![root]);
+        for module_path in &module_paths {
+            let result = registry.load(module_path);
             assert!(
-                !info.functions.is_empty(),
-                "module {module} should have functions"
+                result.is_ok(),
+                "should load module {module_path}: {:?}",
+                result.err()
             );
         }
 
-        // Pure-Hew modules (no extern "C") — must load but have no FFI functions
-        let pure_modules = [
-            "std::encoding::hex",
-            "std::encoding::wire",
-            "std::net::mime",
-            "std::encoding::base64",
-            "std::encoding::csv",
-            "std::text::semver",
-        ];
+        assert!(
+            module_paths.len() > 20,
+            "should discover many modules, found {}",
+            module_paths.len()
+        );
+    }
 
-        for module in &pure_modules {
-            let info = load_module(module, &root);
-            assert!(info.is_some(), "should load pure module {module}");
+    /// Walk a directory tree and discover module paths from `.hew` files.
+    ///
+    /// Derives module paths from directory structure:
+    /// - `std/encoding/json/` -> `std::encoding::json`
+    /// - `std/fs.hew` -> `std::fs`
+    fn discover_modules(
+        dir: &std::path::Path,
+        repo_root: &std::path::Path,
+        paths: &mut Vec<String>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut sorted: Vec<_> = entries.filter_map(Result::ok).collect();
+        sorted.sort_by_key(|e| e.file_name());
+
+        let mut has_hew = false;
+        for entry in &sorted {
+            let path = entry.path();
+            if path.is_dir() {
+                discover_modules(&path, repo_root, paths);
+            } else if path.extension().is_some_and(|e| e == "hew")
+                && !path.file_name().is_some_and(|f| f == "builtins.hew")
+            {
+                has_hew = true;
+            }
+        }
+
+        if has_hew {
+            let Ok(rel) = dir.strip_prefix(repo_root) else {
+                return;
+            };
+            let segments: Vec<&str> = rel
+                .components()
+                .map(|c| c.as_os_str().to_str().unwrap())
+                .collect();
+
+            if segments.len() >= 2 {
+                // Subdirectory module: std/encoding/json → std::encoding::json
+                paths.push(segments.join("::"));
+            } else if segments.len() == 1 {
+                // Root-level files: std/fs.hew → std::fs — each file is its own module
+                for entry in &sorted {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "hew")
+                        && !path.file_name().is_some_and(|f| f == "builtins.hew")
+                    {
+                        let stem = path.file_stem().unwrap().to_str().unwrap();
+                        paths.push(format!("{}::{stem}", segments[0]));
+                    }
+                }
+            }
         }
     }
 

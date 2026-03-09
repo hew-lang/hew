@@ -8,6 +8,7 @@ url="https://hew.sh"
 license=('MIT' 'Apache-2.0')
 provides=('hew' 'adze')
 conflicts=('hew' 'hew-git')
+depends=('zlib' 'zstd')
 options=('!strip')  # binaries are pre-stripped
 
 source_x86_64=("https://github.com/hew-lang/hew/releases/download/v${pkgver}/hew-v${pkgver}-linux-x86_64.tar.gz")

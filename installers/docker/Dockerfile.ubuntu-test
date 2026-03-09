@@ -22,17 +22,17 @@
 #      codegen), the C linker, and the Hew runtime.
 #
 # hew-codegen is built with HEW_STATIC_LINK=ON (the default), so LLVM/MLIR are
-# statically linked.  Only libz3-4 remains as a runtime shared dependency.
+# statically linked.  The z3 interface is compiled into LLVMSupport but is never
+# invoked by hew-codegen (code generation does not use z3's theorem prover), so
+# z3 is filtered from LLVMSupport's interface link libraries at build time —
+# leaving no runtime z3 dependency.
 
 FROM ubuntu:24.04
 
 # gcc + libc-dev: hew invokes the system C compiler to link compiled .o files.
 # The runtime and stdlib staticlibs are linked statically — no Rust needed.
-# libz3-4: required by hew-codegen (LLVM's z3 theorem prover dependency).
-#   LLVM/MLIR themselves are now statically linked inside hew-codegen; only
-#   z3 remains as a shared-library dependency.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates libz3-4 \
+    && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-assembled release tarball contents from the named build context

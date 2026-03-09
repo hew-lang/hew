@@ -155,6 +155,22 @@ if(HEW_STATIC_LINK)
     endif()
   endif()
 
+  # Strip z3 from LLVMSupport's interface link libraries.
+  # The LLVM APT packages compile LLVMSupport with z3 enabled, so its CMake
+  # interface lists libz3.so as a transitive dependency.  hew-codegen never
+  # invokes any z3 code path (z3 is only used by constraint-elimination analysis
+  # passes that we don't run), so no z3 symbols appear in the final binary.
+  # Removing it here avoids a phantom NEEDED entry that breaks installation on
+  # distros where the z3 soname differs (Fedora 41: libz3.so.4.13, Arch: libz3.so.4.15).
+  if(TARGET LLVMSupport)
+    get_target_property(_llvm_support_iface LLVMSupport INTERFACE_LINK_LIBRARIES)
+    if(_llvm_support_iface)
+      list(FILTER _llvm_support_iface EXCLUDE REGEX ".*libz3.*")
+      set_target_properties(LLVMSupport PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${_llvm_support_iface}")
+    endif()
+  endif()
+
   target_link_libraries(HewMLIRDialect PUBLIC
     ${HEW_MLIR_LIBS}
     ${LLVM_STATIC_LIBS}

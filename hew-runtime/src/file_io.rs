@@ -351,14 +351,13 @@ pub unsafe extern "C" fn hew_fs_rename(from: *const c_char, to: *const c_char) -
     if from.is_null() || to.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees both pointers are valid C strings.
-    let from_str = match unsafe { CStr::from_ptr(from) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
+    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+        return -1;
     };
-    let to_str = match unsafe { CStr::from_ptr(to) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
+    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+        return -1;
     };
     if std::fs::rename(from_str, to_str).is_ok() {
         0
@@ -379,14 +378,13 @@ pub unsafe extern "C" fn hew_fs_copy(from: *const c_char, to: *const c_char) -> 
     if from.is_null() || to.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees both pointers are valid C strings.
-    let from_str = match unsafe { CStr::from_ptr(from) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
+    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+        return -1;
     };
-    let to_str = match unsafe { CStr::from_ptr(to) }.to_str() {
-        Ok(s) => s,
-        Err(_) => return -1,
+    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
+    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+        return -1;
     };
     if std::fs::copy(from_str, to_str).is_ok() {
         0

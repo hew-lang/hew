@@ -434,9 +434,8 @@ pub unsafe extern "C" fn hew_http_response_header(
 pub unsafe extern "C" fn hew_http_response_content_type(
     resp: *const HewHttpResponse,
 ) -> *mut c_char {
-    let name = b"content-type\0".as_ptr().cast::<c_char>();
     // SAFETY: name is a valid static NUL-terminated C string.
-    unsafe { hew_http_response_header(resp, name) }
+    unsafe { hew_http_response_header(resp, c"content-type".as_ptr()) }
 }
 
 /// Convenience wrapper: make an HTTP GET request and return just the body

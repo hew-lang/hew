@@ -1,0 +1,23 @@
+[package]
+name = "hew-std-net-quic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::net::quic — QUIC transport for internode messaging"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+libc = "0.2"
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "time", "net", "sync", "macros"] }
+rcgen = "0.13"
+
+[lints]
+workspace = true

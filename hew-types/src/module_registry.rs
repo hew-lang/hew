@@ -14,7 +14,7 @@ use crate::stdlib_loader::{load_module, module_short_name, ModuleInfo};
 /// by searching the filesystem and parsing `.hew` files at user compile time.
 #[derive(Debug)]
 pub struct ModuleRegistry {
-    /// Cached module info, keyed by full module path (e.g. "std::encoding::json").
+    /// Cached module info, keyed by full module path (e.g. `std::encoding::json`).
     modules: HashMap<String, ModuleInfo>,
     /// Ordered search paths for module resolution.
     search_paths: Vec<PathBuf>,
@@ -80,7 +80,7 @@ impl ModuleRegistry {
         }
     }
 
-    /// Load a module by its full path (e.g. "std::encoding::json").
+    /// Load a module by its full path (e.g. `std::encoding::json`).
     ///
     /// If the module is already cached, returns the cached version.
     /// Otherwise, iterates search paths and delegates to `stdlib_loader::load_module`
@@ -88,6 +88,11 @@ impl ModuleRegistry {
     ///
     /// On success, the module's handle types and drop types are accumulated into
     /// the registry-wide sets.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModuleError::NotFound`] if no search path contains the module,
+    /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         // Already cached — return it.
         if self.modules.contains_key(module_path) {

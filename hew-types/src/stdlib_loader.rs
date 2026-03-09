@@ -205,6 +205,10 @@ fn wrapper_fn_sig(func: &FnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
 }
 
 /// Convert a Hew type expression to the type checker's `Ty`.
+#[allow(
+    clippy::too_many_lines,
+    reason = "type mapping covers all primitive and generic variants"
+)]
 fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
     match texpr {
         TypeExpr::Named { name, type_args } => {
@@ -263,7 +267,7 @@ fn type_expr_to_ty(texpr: &TypeExpr, module_short: &str) -> Ty {
                         })
                         .unwrap_or_default();
                     Ty::Named {
-                        name: name.to_string(),
+                        name: name.clone(),
                         args,
                     }
                 }

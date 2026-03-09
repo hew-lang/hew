@@ -61,6 +61,25 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
     fieldTypes.push_back(toLLVMStorageType(hewType));
   }
 
+  // Record how many of those fields are user-declared state fields.
+  size_t numUserFields = fieldTypes.size();
+
+  // Add hidden init-param fields after user fields (before gen-frame fields).
+  // These let spawn pass init arguments into the state struct, and the init
+  // body accesses them by their original parameter names via the GEP helpers.
+  std::vector<std::string> initParamNames;
+  if (decl.init) {
+    for (const auto &param : decl.init->params) {
+      auto hewType = convertTypeOrError(param.ty.value, "cannot resolve type for init parameter '" +
+                                                            param.name + "'");
+      if (!hewType)
+        return;
+      initParamNames.push_back(param.name);
+      fieldHewTypes.push_back(hewType);
+      fieldTypes.push_back(toLLVMStorageType(hewType));
+    }
+  }
+
   // Add hidden __gen_frame fields for generator receive fns (ptr to HewGenCtx)
   auto ptrTypeForFields = mlir::LLVM::LLVMPointerType::get(&context);
   for (const auto &recv : decl.receive_fns) {
@@ -88,6 +107,16 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
       fi.index = i;
       stInfo.fields.push_back(std::move(fi));
       ++i;
+    }
+    // Add init params as named hidden fields so the init body can access them by
+    // bare name through the actor-field GEP path (same as regular state fields).
+    for (size_t j = 0; j < initParamNames.size(); ++j, ++i) {
+      StructFieldInfo fi;
+      fi.name = initParamNames[j];
+      fi.semanticType = fieldHewTypes[i];
+      fi.type = fieldTypes[i];
+      fi.index = i;
+      stInfo.fields.push_back(std::move(fi));
     }
   }
   structTypes[actorName] = std::move(stInfo);
@@ -117,6 +146,8 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   actorInfo.name = actorName;
   actorInfo.stateType = stateType;
   actorInfo.fieldHewTypes = std::move(fieldHewTypes);
+  actorInfo.numUserFields = numUserFields;
+  actorInfo.initParamNames = std::move(initParamNames);
   actorInfo.mailboxCapacity = decl.mailbox_capacity;
 
   if (decl.overflow_policy) {
@@ -512,6 +543,34 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
+    // Bind init parameters by loading them from their hidden state-struct fields.
+    // The hidden fields sit after the user-declared fields; the GEP helpers in
+    // MLIRGenExpr/MLIRGenStmt can also access them by name, but we bind them
+    // explicitly here so that the init body can use them as ordinary variables.
+    {
+      const auto &actorIt = actorRegistry.find(actorName);
+      if (actorIt != actorRegistry.end()) {
+        const auto &aInfo = actorIt->second;
+        auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(aInfo.stateType);
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        for (size_t pi = 0; pi < decl.init->params.size(); ++pi) {
+          const auto &param = decl.init->params[pi];
+          size_t fieldIdx = aInfo.numUserFields + pi;
+          auto fieldType = aInfo.fieldHewTypes[fieldIdx];
+          auto storageType = toLLVMStorageType(fieldType);
+          auto fieldPtr = mlir::LLVM::GEPOp::create(
+              builder, location, ptrType, structType, selfPtr,
+              llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(fieldIdx)});
+          mlir::Value paramVal =
+              mlir::LLVM::LoadOp::create(builder, location, storageType, fieldPtr).getResult();
+          // Coerce pointer storage types back to semantic types (e.g., string_ref).
+          if (storageType != fieldType)
+            paramVal = coerceType(paramVal, fieldType, location);
+          declareVariable(param.name, paramVal);
+        }
+      }
+    }
+
     // Generate init block body
     generateBlock(decl.init->body);
 
@@ -827,35 +886,54 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
   }
   const auto &actorInfo = it->second;
 
-  // Generate init argument values from named args
-  llvm::SmallVector<mlir::Value, 4> initArgVals;
-  for (const auto &[fieldName, argExpr] : expr.args) {
-    auto argVal = generateExpression(argExpr->value);
-    if (!argVal)
-      return nullptr;
-    initArgVals.push_back(argVal);
-  }
-
-  // Zero-arg spawn: pad missing user fields with Go-style zero values.
-  // Vec/bytes → VecNewOp, HashMap → HashMapNewOp, string → "", others → 0/null.
-  {
-    size_t numUserFields = actorInfo.fieldHewTypes.size();
-    for (size_t i = initArgVals.size(); i < numUserFields; ++i) {
-      auto hewType = actorInfo.fieldHewTypes[i];
-      if (auto vecType = mlir::dyn_cast<hew::VecType>(hewType)) {
-        initArgVals.push_back(hew::VecNewOp::create(builder, location, vecType).getResult());
-      } else if (auto hmType = mlir::dyn_cast<hew::HashMapType>(hewType)) {
-        initArgVals.push_back(hew::HashMapNewOp::create(builder, location, hmType).getResult());
-      } else if (mlir::isa<hew::StringRefType>(hewType)) {
-        auto symName = getOrCreateGlobalString("");
-        initArgVals.push_back(hew::ConstantOp::create(builder, location,
-                                                      hew::StringRefType::get(&context),
-                                                      builder.getStringAttr(symName))
-                                  .getResult());
-      } else {
-        initArgVals.push_back(createDefaultValue(builder, location, toLLVMStorageType(hewType)));
-      }
+  // Helper: produce a zero/default value for a Hew MLIR type.
+  auto makeDefaultVal = [&](mlir::Type hewType) -> mlir::Value {
+    if (auto vecType = mlir::dyn_cast<hew::VecType>(hewType))
+      return hew::VecNewOp::create(builder, location, vecType).getResult();
+    if (auto hmType = mlir::dyn_cast<hew::HashMapType>(hewType))
+      return hew::HashMapNewOp::create(builder, location, hmType).getResult();
+    if (mlir::isa<hew::StringRefType>(hewType)) {
+      auto symName = getOrCreateGlobalString("");
+      return hew::ConstantOp::create(builder, location, hew::StringRefType::get(&context),
+                                     builder.getStringAttr(symName))
+          .getResult();
     }
+    return createDefaultValue(builder, location, toLLVMStorageType(hewType));
+  };
+
+  // Generate init argument values.
+  // Layout in initArgVals: [user_field_0..N, init_param_0..M]
+  //   - Actors with init params: user fields are zero-initialized; spawn args fill init-param
+  //   slots.
+  //   - Actors without init params: spawn args fill user field slots directly (original behaviour).
+  llvm::SmallVector<mlir::Value, 4> initArgVals;
+  if (!actorInfo.initParamNames.empty()) {
+    // Zero-initialize all user state fields.
+    for (size_t i = 0; i < actorInfo.numUserFields; ++i)
+      initArgVals.push_back(makeDefaultVal(actorInfo.fieldHewTypes[i]));
+    // Append spawn call args as init-param values.
+    for (const auto &[fieldName, argExpr] : expr.args) {
+      auto argVal = generateExpression(argExpr->value);
+      if (!argVal)
+        return nullptr;
+      initArgVals.push_back(argVal);
+    }
+    // Pad any missing init-param slots with defaults.
+    size_t totalExpected = actorInfo.fieldHewTypes.size();
+    for (size_t i = initArgVals.size(); i < totalExpected; ++i)
+      initArgVals.push_back(makeDefaultVal(actorInfo.fieldHewTypes[i]));
+  } else {
+    // No init params: spawn args initialize user fields directly.
+    for (const auto &[fieldName, argExpr] : expr.args) {
+      auto argVal = generateExpression(argExpr->value);
+      if (!argVal)
+        return nullptr;
+      initArgVals.push_back(argVal);
+    }
+    // Zero-arg spawn: pad missing user fields with Go-style zero values.
+    size_t numUserFields = actorInfo.fieldHewTypes.size();
+    for (size_t i = initArgVals.size(); i < numUserFields; ++i)
+      initArgVals.push_back(makeDefaultVal(actorInfo.fieldHewTypes[i]));
   }
 
   // Add zero-initialized hidden gen frame fields (ptr null)

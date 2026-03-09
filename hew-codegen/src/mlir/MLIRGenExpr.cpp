@@ -63,6 +63,36 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     if (val)
       return val;
 
+    // Inside actor init/receive, bare field names (e.g. `handle`) resolve to
+    // self.field via GEP into the actor state struct.
+    if (!currentActorName.empty()) {
+      auto selfVal = lookupVariable("self");
+      if (selfVal) {
+        auto actorIt = structTypes.find(currentActorName);
+        if (actorIt != structTypes.end()) {
+          auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorIt->second.mlirType);
+          if (structType) {
+            for (const auto &field : actorIt->second.fields) {
+              if (field.name == name) {
+                auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+                auto fieldPtr = mlir::LLVM::GEPOp::create(
+                    builder, currentLoc, ptrType, structType, selfVal,
+                    llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
+                auto fieldVal =
+                    mlir::LLVM::LoadOp::create(builder, currentLoc, field.type, fieldPtr)
+                        .getResult();
+                if ((mlir::isa<hew::VecType>(field.semanticType) ||
+                     mlir::isa<hew::HashMapType>(field.semanticType)) &&
+                    field.semanticType != field.type)
+                  return coerceType(fieldVal, field.semanticType, currentLoc);
+                return fieldVal;
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Check module-level constants
     auto constIt = moduleConstants.find(name);
     if (constIt != moduleConstants.end()) {

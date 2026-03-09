@@ -1055,6 +1055,44 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (!rhs)
     return;
 
+  // Inside actor init/receive, bare field names (e.g. `handle = ...`) map to
+  // actor state fields via GEP into the actor state struct.
+  if (!currentActorName.empty()) {
+    auto selfVal = lookupVariable("self");
+    if (selfVal) {
+      auto actorIt = structTypes.find(currentActorName);
+      if (actorIt != structTypes.end()) {
+        auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(actorIt->second.mlirType);
+        if (structType) {
+          for (const auto &field : actorIt->second.fields) {
+            if (field.name == name) {
+              auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+              auto fieldPtr = mlir::LLVM::GEPOp::create(
+                  builder, location, ptrType, structType, selfVal,
+                  llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
+              if (stmt.op) {
+                auto current =
+                    mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
+                rhs = coerceType(rhs, field.type, location);
+                bool isFloat = llvm::isa<mlir::FloatType>(field.type);
+                bool isUnsigned = false;
+                if (mlir::isa<mlir::IntegerType>(field.type))
+                  if (auto *ty = resolvedTypeOf(stmt.target.span))
+                    isUnsigned = isUnsignedTypeExpr(*ty);
+                rhs = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
+                if (!rhs)
+                  return;
+              }
+              rhs = coerceType(rhs, field.type, location);
+              mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Handle compound assignment operators
   if (stmt.op) {
     mlir::Value current = lookupVariable(name);

@@ -321,7 +321,8 @@ pub fn compile(
             }
         }
     }
-    let mut extra_libs = super::link::find_package_libs(&imported_modules);
+    let mut extra_libs =
+        super::link::find_package_libs(&imported_modules, options.pkg_path.as_deref());
     extra_libs.extend(options.extra_link_libs.iter().cloned());
 
     // 3. Type-check
@@ -1068,9 +1069,25 @@ fn resolve_file_imports(
                 }
                 // Unversioned package paths (fallback)
                 candidates.push(cwd.join(".adze/packages").join(&rel_path));
+                candidates.push(cwd.join(".adze/packages").join(&dir_path));
                 // Custom package path (--pkg-path flag)
                 if let Some(pkg) = extra_pkg_path {
+                    candidates.push(pkg.join(&dir_path));
                     candidates.push(pkg.join(&rel_path));
+                }
+                // For hew:: ecosystem modules with a custom pkg_path, also try
+                // without the leading "hew" segment. This supports local ecosystem
+                // checkouts where files live at db/sqlite/sqlite.hew rather than
+                // hew/db/sqlite/sqlite.hew (the adze-installed layout).
+                if module_str.starts_with("hew::") && decl.path.len() > 1 {
+                    let tail: PathBuf = decl.path[1..].iter().collect();
+                    let tail_last = decl.path.last().expect("path is non-empty");
+                    let tail_dir = tail.join(format!("{tail_last}.hew"));
+                    let tail_rel = tail.with_extension("hew");
+                    if let Some(pkg) = extra_pkg_path {
+                        candidates.push(pkg.join(&tail_dir));
+                        candidates.push(pkg.join(&tail_rel));
+                    }
                 }
                 if let Some(ref exe) = exe_dir {
                     if let Some(project_root) = exe.parent().and_then(|p| p.parent()) {

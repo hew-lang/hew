@@ -77,11 +77,11 @@ pub fn get(url: String) -> Response {
 /// # Examples
 ///
 /// ```
-/// let resp = http_client.post("https://api.example.com/data", "application/json", "{}", 2);
+/// let resp = http_client.post("https://api.example.com/data", "application/json", "{}");
 /// resp.free();
 /// ```
-pub fn post(url: String, content_type: String, body: String, body_len: i64) -> Response {
-    hew_http_post(url, content_type, body, body_len)
+pub fn post(url: String, content_type: String, body: String) -> Response {
+    hew_http_post(url, content_type, body)
 }
 
 /// Perform an HTTP GET request and return the response body as a string.
@@ -121,7 +121,7 @@ pub fn post_string(url: String, content_type: String, body: String) -> String {
 
 extern "C" {
     fn hew_http_get(url: String) -> Response;
-    fn hew_http_post(url: String, content_type: String, body: String, body_len: i64) -> Response;
+    fn hew_http_post(url: String, content_type: String, body: String) -> Response;
     fn hew_http_response_free(resp: Response);
     fn hew_http_response_status(resp: Response) -> i32;
     fn hew_http_response_body(resp: Response) -> String;

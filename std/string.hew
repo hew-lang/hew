@@ -302,7 +302,7 @@ pub fn replace(s: String, old: String, new_val: String) -> String {
 /// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
 /// ```
 pub fn split(s: String, sep: String) -> Vec<String> {
-    string_split(s, sep)
+    hew_string_split(s, sep)
 }
 
 /// Split a string into lines, stripping `\r\n` or `\n` endings.
@@ -315,7 +315,7 @@ pub fn split(s: String, sep: String) -> Vec<String> {
 /// let lines = string.lines("foo\nbar");  // ["foo", "bar"]
 /// ```
 pub fn lines(s: String) -> Vec<String> {
-    string_lines(s)
+    hew_string_lines(s)
 }
 
 /// Join a list of strings with `sep` between each element.
@@ -328,7 +328,7 @@ pub fn lines(s: String) -> Vec<String> {
 /// let s = string.join(parts, ", ");
 /// ```
 pub fn join(parts: Vec<String>, sep: String) -> String {
-    string_join(parts, sep)
+    hew_string_join(parts, sep)
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────
@@ -355,4 +355,7 @@ pub trait ToString {
 
 extern "C" {
     fn hew_char_to_string(code: i32) -> String;
+    fn hew_string_split(s: String, sep: String) -> Vec<String>;
+    fn hew_string_lines(s: String) -> Vec<String>;
+    fn hew_string_join(parts: Vec<String>, sep: String) -> String;
 }

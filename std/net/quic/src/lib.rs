@@ -152,10 +152,12 @@ pub unsafe extern "C" fn hew_quic_endpoint_listen(
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
+    // SAFETY: Caller guarantees these are valid C strings
     let cert_str = match unsafe { CStr::from_ptr(cert_path) }.to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
+    // SAFETY: Caller guarantees this is a valid C string
     let key_str = match unsafe { CStr::from_ptr(key_path) }.to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
@@ -277,6 +279,7 @@ pub unsafe extern "C" fn hew_quic_endpoint_connect(
 
     // SAFETY: Caller guarantees these are valid
     let ep = unsafe { &*endpoint };
+    // SAFETY: Caller guarantees this is a valid C string
     let addr_str = match unsafe { CStr::from_ptr(addr) }.to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),

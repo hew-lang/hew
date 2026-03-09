@@ -1685,6 +1685,8 @@ version = "0.1.9"
 name = "hew-std-net-quic"
 version = "0.1.9"
 dependencies = [
+ "hew-cabi",
+ "hew-runtime",
  "libc",
  "quinn",
  "rustls",

@@ -460,14 +460,13 @@ pub unsafe extern "C" fn hew_quic_connection_remote_address(
 /// # Safety
 ///
 /// * `stream` must be a valid pointer from stream functions.
-/// * `data` must point to at least `len` readable bytes, or be null if `len` is 0.
+/// * `vec` must be a valid, non-null pointer to a `HewVec` (i32 elements, one per byte).
 #[no_mangle]
 pub unsafe extern "C" fn hew_quic_stream_send(
     stream: *mut HewQuicStream,
-    data: *const u8,
-    len: usize,
+    vec: *mut hew_runtime::vec::HewVec,
 ) -> i32 {
-    if stream.is_null() {
+    if stream.is_null() || vec.is_null() {
         return -1;
     }
 
@@ -479,17 +478,22 @@ pub unsafe extern "C" fn hew_quic_stream_send(
         None => return -1,
     };
 
-    let slice = if len == 0 {
-        &[]
-    } else {
-        if data.is_null() {
-            return -1;
-        }
-        // SAFETY: Caller guarantees data is valid for len bytes
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
+    // SAFETY: caller guarantees `vec` is a valid HewVec pointer
+    let len = unsafe { hew_runtime::vec::hew_vec_len(vec) };
+    #[expect(clippy::cast_sign_loss, reason = "vec len is always non-negative")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "vec len fits in usize on all platforms"
+    )]
+    let mut data = Vec::with_capacity(len as usize);
+    for i in 0..len {
+        // SAFETY: i < len, so index is in bounds
+        let byte = unsafe { hew_runtime::vec::hew_vec_get_i32(vec, i) };
+        #[expect(clippy::cast_sign_loss, reason = "byte values are 0-255")]
+        data.push(byte as u8);
+    }
 
-    match stream_ref.runtime.block_on(send.write_all(slice)) {
+    match stream_ref.runtime.block_on(send.write_all(&data)) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -497,7 +501,8 @@ pub unsafe extern "C" fn hew_quic_stream_send(
 
 /// Receive data from a QUIC stream.
 ///
-/// Blocks until data is available. Returns null on stream close or error.
+/// Returns a pointer to a heap-allocated `HewVec` (i32 elements, one per byte).
+/// Returns an empty `HewVec` (not null) on stream close or error.
 ///
 /// # Safety
 ///
@@ -505,9 +510,12 @@ pub unsafe extern "C" fn hew_quic_stream_send(
 #[no_mangle]
 pub unsafe extern "C" fn hew_quic_stream_recv(
     stream: *mut HewQuicStream,
-) -> *mut u8 {
+) -> *mut hew_runtime::vec::HewVec {
+    // SAFETY: hew_vec_new allocates and returns a valid HewVec; we own it
+    let v = unsafe { hew_runtime::vec::hew_vec_new() };
+
     if stream.is_null() {
-        return std::ptr::null_mut();
+        return v;
     }
 
     // SAFETY: Caller guarantees valid pointer
@@ -515,36 +523,22 @@ pub unsafe extern "C" fn hew_quic_stream_recv(
 
     let recv = match stream_ref.recv.as_mut() {
         Some(r) => r,
-        None => return std::ptr::null_mut(),
+        None => return v,
     };
 
     // Read available data
-    let mut buf = Vec::new();
     let chunk = match stream_ref.runtime.block_on(recv.read_chunk(usize::MAX, true)) {
         Ok(Some(chunk)) => chunk,
-        Ok(None) | Err(_) => return std::ptr::null_mut(),
+        Ok(None) | Err(_) => return v,
     };
 
-    buf.extend_from_slice(&chunk.bytes);
-
-    // Allocate and copy to C-compatible buffer
-    let len = buf.len();
-    if len == 0 {
-        return std::ptr::null_mut();
+    // Convert bytes to i32 HewVec elements
+    for &byte in &chunk.bytes {
+        // SAFETY: v was allocated by hew_vec_new and is non-null
+        unsafe { hew_runtime::vec::hew_vec_push_i32(v, i32::from(byte)) };
     }
 
-    // SAFETY: Requesting len bytes from malloc
-    let ptr = unsafe { libc::malloc(len) }.cast::<u8>();
-    if ptr.is_null() {
-        return ptr;
-    }
-
-    // SAFETY: Both pointers valid for len bytes
-    unsafe {
-        std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, len);
-    }
-
-    ptr
+    v
 }
 
 /// Finish sending on a QUIC stream.

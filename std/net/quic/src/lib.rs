@@ -474,6 +474,75 @@ pub unsafe extern "C" fn hew_quic_connection_remote_address(
     ptr
 }
 
+/// Get the current round-trip time (RTT) estimate for a connection.
+///
+/// Returns the RTT in milliseconds, or -1 if unavailable.
+///
+/// # Safety
+///
+/// `conn` must be a valid pointer returned by connection functions.
+#[no_mangle]
+#[expect(clippy::cast_possible_truncation, reason = "RTT in ms fits in i32")]
+pub unsafe extern "C" fn hew_quic_connection_rtt_ms(conn: *mut HewQuicConnection) -> i32 {
+    if conn.is_null() {
+        return -1;
+    }
+
+    // SAFETY: Caller guarantees valid pointer
+    let connection = unsafe { &*conn };
+
+    // Get RTT stats from Quinn
+    let stats = connection.connection.stats();
+
+    stats.path.rtt.as_millis() as i32
+}
+
+/// Get the number of bytes sent on a connection.
+///
+/// Returns the total bytes sent, or -1 on error.
+///
+/// # Safety
+///
+/// `conn` must be a valid pointer returned by connection functions.
+#[no_mangle]
+#[expect(clippy::cast_possible_wrap, reason = "u64 to i64 conversion for FFI compatibility")]
+pub unsafe extern "C" fn hew_quic_connection_bytes_sent(conn: *mut HewQuicConnection) -> i64 {
+    if conn.is_null() {
+        return -1;
+    }
+
+    // SAFETY: Caller guarantees valid pointer
+    let connection = unsafe { &*conn };
+
+    // Get bytes sent from Quinn stats
+    let stats = connection.connection.stats();
+
+    stats.path.sent_packets as i64
+}
+
+/// Get the number of bytes received on a connection.
+///
+/// Returns the total bytes received, or -1 on error.
+///
+/// # Safety
+///
+/// `conn` must be a valid pointer returned by connection functions.
+#[no_mangle]
+#[expect(clippy::cast_possible_wrap, reason = "u64 to i64 conversion for FFI compatibility")]
+pub unsafe extern "C" fn hew_quic_connection_bytes_received(conn: *mut HewQuicConnection) -> i64 {
+    if conn.is_null() {
+        return -1;
+    }
+
+    // SAFETY: Caller guarantees valid pointer
+    let connection = unsafe { &*conn };
+
+    // Get bytes received from Quinn stats
+    let stats = connection.connection.stats();
+
+    stats.udp_rx.bytes as i64
+}
+
 /// Send data over a QUIC stream.
 ///
 /// Returns 0 on success, -1 on error.

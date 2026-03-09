@@ -1071,9 +1071,23 @@ fn resolve_file_imports(
                 candidates.push(cwd.join(".adze/packages").join(&rel_path));
                 candidates.push(cwd.join(".adze/packages").join(&dir_path));
                 // Custom package path (--pkg-path flag)
+                // Try full path and also path with first segment stripped (e.g. `hew::db::sqlite`
+                // lives at `{pkg}/db/sqlite/sqlite.hew`, not `{pkg}/hew/db/sqlite/sqlite.hew`).
                 if let Some(pkg) = extra_pkg_path {
                     candidates.push(pkg.join(&dir_path));
                     candidates.push(pkg.join(&rel_path));
+                    if decl.path.len() > 1 {
+                        let rest_dir: PathBuf = decl.path[1..]
+                            .iter()
+                            .collect::<PathBuf>()
+                            .join(format!("{}.hew", last));
+                        let rest_flat: PathBuf = decl.path[1..]
+                            .iter()
+                            .collect::<PathBuf>()
+                            .with_extension("hew");
+                        candidates.push(pkg.join(&rest_dir));
+                        candidates.push(pkg.join(&rest_flat));
+                    }
                 }
                 // For hew:: ecosystem modules with a custom pkg_path, also try
                 // without the leading "hew" segment. This supports local ecosystem

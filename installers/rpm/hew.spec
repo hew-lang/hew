@@ -19,11 +19,10 @@ Source0:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 # Pre-built binaries — no compilation needed.
 %global debug_package %{nil}
 
-# Binaries are statically linked (LLVM/MLIR baked in); disable automatic
-# shared-library dependency scanning so rpmbuild doesn't declare
-# requirements on packages that aren't needed at runtime.
-AutoReqProv:    no
-Requires:       glibc zlib libzstd
+# LLVM/MLIR, libstdc++, zlib, and zstd are statically linked into hew-codegen.
+# Rust binaries link only glibc.  Let RPM auto-detect the actual deps.
+# AutoProv: no — we don't export reusable shared-library provides.
+AutoProv:       no
 
 %description
 Hew is a statically-typed, actor-oriented programming language targeting

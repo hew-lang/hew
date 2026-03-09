@@ -70,10 +70,9 @@ override_dh_auto_install:
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/NOTICE \
 	              $(DESTDIR)/usr/share/doc/hew/NOTICE
 
-# Pre-built binaries — skip automatic shared-library dependency detection.
-# hew-codegen links against LLVM/MLIR shared libs; the Rust binaries are
-# fully static. We list runtime deps manually in debian/control.
-override_dh_shlibdeps:
+# hew-codegen is statically linked (LLVM/MLIR/libstdc++/zlib/zstd baked in).
+# Rust binaries link only glibc.  dpkg-shlibdeps auto-detects the actual
+# runtime deps from the installed binaries and populates ${shlibs:Depends}.
 
 override_dh_auto_clean:
 	rm -rf hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/ $(ARCHIVE) || true

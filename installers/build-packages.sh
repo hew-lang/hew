@@ -603,10 +603,10 @@ WORKDIR /tmp/hew-install
 RUN tar -xzf /tmp/hew.tar.gz && mv hew-v*-linux-* hew
 
 FROM alpine:3.21
+# gcompat: glibc compatibility shim for glibc-linked Rust binaries.
+# hew-codegen is fully static (LLVM/MLIR/libstdc++/zlib/zstd baked in).
 RUN apk add --no-cache \
       gcompat \
-      libgcc \
-      libstdc++ \
       ca-certificates
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze

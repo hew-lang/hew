@@ -7,11 +7,10 @@ pkgdesc="Statically-typed, actor-oriented programming language"
 url="https://hew.sh"
 arch="x86_64 aarch64"
 license="MIT OR Apache-2.0"
-# All binaries are statically linked for musl — no runtime dependencies
-# except basic system libraries.
-depends="zlib zstd-libs"
-# Pre-built binaries — skip automatic shared-library dependency tracing.
-options="!tracedeps !strip"
+# All binaries are statically linked against musl — no runtime dependencies.
+depends=""
+# Pre-built binaries — nothing to strip (already stripped) or trace.
+options="!strip"
 
 _hew_arch=""
 case "$CARCH" in

@@ -100,7 +100,8 @@ jobs:
             libmlir-${{ env.LLVM_VERSION }}-dev \
             mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
+            libssl-dev pkg-config \
+            zlib1g-dev libzstd-dev
 
       - name: Install LLVM/MLIR (macOS)
         if: startsWith(matrix.target, 'darwin')

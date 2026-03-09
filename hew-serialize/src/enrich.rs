@@ -474,7 +474,7 @@ fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry:
                 // Qualify unqualified handle type names (e.g. "Connection" → "net.Connection")
                 if type_args.is_none() && name != "Result" {
                     if let Some(qualified) = registry.qualify_handle_type(name) {
-                        *name = qualified.to_string();
+                        name.clone_from(&qualified);
                     }
                 }
             }
@@ -1413,10 +1413,6 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "enrichment covers all statement variants"
-)]
 fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,
@@ -1551,9 +1547,6 @@ fn enrich_expr_with_diagnostics(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     match &mut expr.0 {
-        Expr::Block(block) => {
-            enrich_block_with_diagnostics(block, tco, diagnostics, registry)?;
-        }
         Expr::If {
             condition,
             then_block,
@@ -1622,7 +1615,7 @@ fn enrich_expr_with_diagnostics(
                         let old_args = std::mem::take(args);
                         expr.0 = Expr::Call {
                             function: Box::new((
-                                Expr::Identifier(c_symbol.to_string()),
+                                Expr::Identifier(c_symbol.clone()),
                                 receiver.1.clone(),
                             )),
                             type_args: None,
@@ -1750,7 +1743,8 @@ fn enrich_expr_with_diagnostics(
                 enrich_expr_with_diagnostics(e, tco, diagnostics, registry)?;
             }
         }
-        Expr::Scope { body: block, .. }
+        Expr::Block(block)
+        | Expr::Scope { body: block, .. }
         | Expr::Unsafe(block)
         | Expr::ScopeLaunch(block)
         | Expr::ScopeSpawn(block) => {

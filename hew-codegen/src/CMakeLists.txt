@@ -156,29 +156,37 @@ if(HEW_STATIC_LINK)
   endif()
 
   # Strip phantom shared-lib entries from LLVMSupport's CMake interface.
-  # LLVM APT packages compile LLVMSupport with z3 enabled (unused by hew),
-  # and reference zlib/zstd as shared libs.  We remove all three and then
-  # link static zlib and zstd explicitly so their symbols resolve from
-  # archives rather than creating NEEDED entries for shared libs.
-  #   z3:   never used — constraint passes we don't run
-  #   zlib: needed by LLVM IR reader — replaced by libz.a below
-  #   zstd: needed by LLVM bitcode — replaced by libzstd.a below
+  # LLVM APT packages compile LLVMSupport with z3 enabled (unused by hew)
+  # and export zlib/zstd as shared libs.  On Linux we remove all three and
+  # re-link static archives so their symbols resolve from .a files rather
+  # than creating NEEDED entries.  On other platforms only z3 is stripped
+  # (macOS/FreeBSD bundle zlib/zstd into LLVM archives or link them via
+  # the system linker and must not have those entries removed).
+  #   z3:   never used — constraint passes we don't run (all platforms)
+  #   zlib: needed by LLVM IR reader — replaced by libz.a on Linux
+  #   zstd: needed by LLVM bitcode — replaced by libzstd.a on Linux
   if(TARGET LLVMSupport)
     get_target_property(_llvm_support_iface LLVMSupport INTERFACE_LINK_LIBRARIES)
     if(_llvm_support_iface)
-      list(FILTER _llvm_support_iface EXCLUDE REGEX "libz3|ZLIB|[Zz]std|libz\\.so")
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        list(FILTER _llvm_support_iface EXCLUDE REGEX "libz3|ZLIB|[Zz]std|libz\\.so")
+      else()
+        list(FILTER _llvm_support_iface EXCLUDE REGEX "libz3")
+      endif()
       set_target_properties(LLVMSupport PROPERTIES
         INTERFACE_LINK_LIBRARIES "${_llvm_support_iface}")
     endif()
   endif()
 
-  # On Linux, find static zlib and zstd archives and link them after the
+  # On Linux only, find static zlib and zstd archives and link them after the
   # LLVM/MLIR component archives so GNU ld resolves their symbols statically.
   # zlib1g-dev and libzstd-dev provide the .a files on Debian/Ubuntu.
   # On Alpine the symbols are compiled into the LLVM archives themselves
   # (LLVM built from source with zlib-static/zstd-static), so the .a find
   # is a harmless no-op there.
-  if(UNIX AND NOT APPLE)
+  # FreeBSD and macOS are excluded: FreeBSD builds LLVM with ZSTD=OFF and
+  # uses libc++; macOS bundles its own zlib/zstd via Homebrew.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(_save_sfx "${CMAKE_FIND_LIBRARY_SUFFIXES}")
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
     find_library(_HEW_ZLIB_STATIC z)
@@ -192,7 +200,7 @@ if(HEW_STATIC_LINK)
     ${LLVM_STATIC_LIBS}
   )
 
-  if(UNIX AND NOT APPLE)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(_HEW_ZLIB_STATIC)
       target_link_libraries(HewMLIRDialect PUBLIC "${_HEW_ZLIB_STATIC}")
     else()
@@ -256,11 +264,14 @@ if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
   if(NOT MSVC AND NOT APPLE)
     target_link_options(hew-codegen PRIVATE -s)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-       CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+       (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+        CMAKE_SYSTEM_NAME STREQUAL "Linux"))
       # Statically link the C++ runtime and GCC intrinsics library.
-      # Both GCC and clang on Linux support these flags when the GNU C++
-      # standard library is installed (libstdc++-dev / g++).  This removes
-      # libstdc++.so.6 and libgcc_s.so.1 from the binary's NEEDED entries.
+      # GCC on any platform and Clang on Linux both support these flags
+      # when GNU libstdc++ (libstdc++-dev / g++) is installed.  This
+      # removes libstdc++.so.6 and libgcc_s.so.1 from NEEDED entries.
+      # Clang on FreeBSD/BSD uses libc++ (not libstdc++) so these flags
+      # are deliberately excluded there.
       target_link_options(hew-codegen PRIVATE -static-libgcc -static-libstdc++)
     endif()
   endif()

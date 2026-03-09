@@ -249,3 +249,257 @@ pub unsafe extern "C" fn hew_file_write_bytes(
         -1
     }
 }
+
+// ---------------------------------------------------------------------------
+// Directory operations
+// ---------------------------------------------------------------------------
+
+/// Create a directory.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_mkdir(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
+    let c_path = unsafe { CStr::from_ptr(path) };
+    let Ok(rust_path) = c_path.to_str() else {
+        return -1;
+    };
+    if std::fs::create_dir(rust_path).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Create a directory and all its parent components.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_mkdir_all(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
+    let c_path = unsafe { CStr::from_ptr(path) };
+    let Ok(rust_path) = c_path.to_str() else {
+        return -1;
+    };
+    if std::fs::create_dir_all(rust_path).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+/// List entries in a directory.
+///
+/// Returns a `HewVec` of entry names (not full paths). Caller must free with
+/// `hew_vec_free`. Returns an empty vec on error.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_list_dir(path: *const c_char) -> *mut crate::vec::HewVec {
+    // SAFETY: hew_vec_new_str allocates a valid empty HewVec<String>.
+    let v = unsafe { crate::vec::hew_vec_new_str() };
+    if path.is_null() {
+        return v;
+    }
+    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
+    let c_path = unsafe { CStr::from_ptr(path) };
+    let Ok(rust_path) = c_path.to_str() else {
+        return v;
+    };
+    let Ok(entries) = std::fs::read_dir(rust_path) else {
+        return v;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Ok(name_str) = name.into_string() else {
+            continue;
+        };
+        let Ok(c_name) = CString::new(name_str) else {
+            continue;
+        };
+        // SAFETY: v is a valid HewVec; c_name is a valid NUL-terminated C string.
+        unsafe { crate::vec::hew_vec_push_str(v, c_name.as_ptr()) };
+    }
+    v
+}
+
+/// Rename or move a file or directory.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// Both `from` and `to` must be valid, NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_rename(from: *const c_char, to: *const c_char) -> i32 {
+    if from.is_null() || to.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
+    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+        return -1;
+    };
+    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
+    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+        return -1;
+    };
+    if std::fs::rename(from_str, to_str).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Copy a file.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// Both `from` and `to` must be valid, NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_copy(from: *const c_char, to: *const c_char) -> i32 {
+    if from.is_null() || to.is_null() {
+        return -1;
+    }
+    // SAFETY: caller guarantees `from` is a valid NUL-terminated C string.
+    let Ok(from_str) = (unsafe { CStr::from_ptr(from) }).to_str() else {
+        return -1;
+    };
+    // SAFETY: caller guarantees `to` is a valid NUL-terminated C string.
+    let Ok(to_str) = (unsafe { CStr::from_ptr(to) }).to_str() else {
+        return -1;
+    };
+    if std::fs::copy(from_str, to_str).is_ok() {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Check whether a path is a directory.
+///
+/// Returns 1 if the path is a directory, 0 otherwise.
+///
+/// # Safety
+///
+/// `path` must be a valid, NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_fs_is_dir(path: *const c_char) -> i32 {
+    if path.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `path` is a valid NUL-terminated C string.
+    let c_path = unsafe { CStr::from_ptr(path) };
+    let Ok(rust_path) = c_path.to_str() else {
+        return 0;
+    };
+    i32::from(std::path::Path::new(rust_path).is_dir())
+}
+
+#[cfg(test)]
+mod fs_tests {
+    use super::*;
+
+    #[test]
+    fn test_mkdir_and_is_dir() {
+        let dir = std::env::temp_dir().join("hew_test_mkdir");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        // SAFETY: path is a valid NUL-terminated C string.
+        let rc = unsafe { hew_fs_mkdir(path.as_ptr()) };
+        assert_eq!(rc, 0);
+        // SAFETY: path is a valid NUL-terminated C string.
+        assert_eq!(unsafe { hew_fs_is_dir(path.as_ptr()) }, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_mkdir_all_nested() {
+        let dir = std::env::temp_dir().join("hew_test_mkdir_all/a/b/c");
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("hew_test_mkdir_all"));
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        // SAFETY: path is a valid NUL-terminated C string.
+        let rc = unsafe { hew_fs_mkdir_all(path.as_ptr()) };
+        assert_eq!(rc, 0);
+        // SAFETY: path is a valid NUL-terminated C string.
+        assert_eq!(unsafe { hew_fs_is_dir(path.as_ptr()) }, 1);
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("hew_test_mkdir_all"));
+    }
+
+    #[test]
+    fn test_list_dir() {
+        let dir = std::env::temp_dir().join("hew_test_list_dir");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("alpha.txt"), "a").unwrap();
+        std::fs::write(dir.join("beta.txt"), "b").unwrap();
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        // SAFETY: path is a valid NUL-terminated C string.
+        let v = unsafe { hew_fs_list_dir(path.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec.
+        let len = unsafe { crate::vec::hew_vec_len(v) };
+        assert_eq!(len, 2);
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rename_file() {
+        let dir = std::env::temp_dir().join("hew_test_rename");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.txt");
+        let dst = dir.join("dst.txt");
+        std::fs::write(&src, "hello").unwrap();
+        let from = CString::new(src.to_str().unwrap()).unwrap();
+        let to = CString::new(dst.to_str().unwrap()).unwrap();
+        // SAFETY: both args are valid NUL-terminated C strings.
+        let rc = unsafe { hew_fs_rename(from.as_ptr(), to.as_ptr()) };
+        assert_eq!(rc, 0);
+        assert!(dst.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_copy_file() {
+        let dir = std::env::temp_dir().join("hew_test_copy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("orig.txt");
+        let dst = dir.join("copy.txt");
+        std::fs::write(&src, "hello").unwrap();
+        let from = CString::new(src.to_str().unwrap()).unwrap();
+        let to = CString::new(dst.to_str().unwrap()).unwrap();
+        // SAFETY: both args are valid NUL-terminated C strings.
+        let rc = unsafe { hew_fs_copy(from.as_ptr(), to.as_ptr()) };
+        assert_eq!(rc, 0);
+        assert!(dst.exists());
+        assert!(src.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_dir_null() {
+        // SAFETY: Null pointer is explicitly handled.
+        assert_eq!(unsafe { hew_fs_is_dir(std::ptr::null()) }, 0);
+    }
+}

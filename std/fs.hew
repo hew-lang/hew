@@ -102,6 +102,59 @@ pub fn write_bytes(path: String, data: bytes) -> i32 {
     hew_file_write_bytes(path, data)
 }
 
+// ── Directory operations ──────────────────────────────────────────────
+
+/// Create a directory. Returns 0 on success, -1 on error.
+///
+/// Fails if any parent directory does not exist. Use `mkdir_all` to create
+/// parent directories automatically.
+pub fn mkdir(path: String) -> i32 {
+    hew_fs_mkdir(path)
+}
+
+/// Create a directory and all its parent components.
+///
+/// Returns 0 on success, -1 on error.
+pub fn mkdir_all(path: String) -> i32 {
+    hew_fs_mkdir_all(path)
+}
+
+/// List the entries in a directory.
+///
+/// Returns a list of entry names (not full paths). Returns an empty list on
+/// error.
+///
+/// # Examples
+///
+/// ```
+/// let entries = fs.list_dir("/tmp");
+/// for entry in entries {
+///     println(entry);
+/// }
+/// ```
+pub fn list_dir(path: String) -> Vec<String> {
+    hew_fs_list_dir(path)
+}
+
+/// Rename or move a file or directory.
+///
+/// Returns 0 on success, -1 on error.
+pub fn rename(from: String, to: String) -> i32 {
+    hew_fs_rename(from, to)
+}
+
+/// Copy a file.
+///
+/// Returns 0 on success, -1 on error.
+pub fn copy(from: String, to: String) -> i32 {
+    hew_fs_copy(from, to)
+}
+
+/// Check whether a path is a directory.
+pub fn is_dir(path: String) -> bool {
+    hew_fs_is_dir(path)
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
@@ -114,4 +167,10 @@ extern "C" {
     fn hew_stdin_read_line() -> String;
     fn hew_file_read_bytes(path: String) -> bytes;
     fn hew_file_write_bytes(path: String, data: bytes) -> i32;
+    fn hew_fs_mkdir(path: String) -> i32;
+    fn hew_fs_mkdir_all(path: String) -> i32;
+    fn hew_fs_list_dir(path: String) -> Vec<String>;
+    fn hew_fs_rename(from: String, to: String) -> i32;
+    fn hew_fs_copy(from: String, to: String) -> i32;
+    fn hew_fs_is_dir(path: String) -> bool;
 }

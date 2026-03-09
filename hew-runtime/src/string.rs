@@ -1226,6 +1226,24 @@ pub unsafe extern "C" fn hew_string_to_bytes(s: *const c_char) -> *mut crate::ve
     v
 }
 
+/// Join a `Vec<String>` into a single string with `sep` between elements.
+///
+/// Convenience alias for [`hew_vec_join_str`] used by the `string_join` builtin.
+/// Caller must `free` the result.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` of C strings. `sep` must be a valid NUL-terminated
+/// C string (or null, treated as empty separator).
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_join(
+    v: *mut crate::vec::HewVec,
+    sep: *const c_char,
+) -> *mut c_char {
+    // SAFETY: forwarding identical contract to hew_vec_join_str.
+    unsafe { hew_vec_join_str(v, sep) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1572,5 +1590,60 @@ mod tests {
         // SAFETY: Null input is explicitly handled by hew_string_reverse_utf8.
         let result = unsafe { hew_string_reverse_utf8(core::ptr::null()) };
         assert!(result.is_null());
+    }
+
+    #[test]
+    fn test_string_split_basic() {
+        let s = CString::new("a,b,c").unwrap();
+        let sep = CString::new(",").unwrap();
+        // SAFETY: Both args are valid NUL-terminated C strings.
+        let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_split.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
+        // SAFETY: index 1 is within bounds.
+        let part = unsafe { crate::vec::hew_vec_get_str(v, 1) };
+        assert!(!part.is_null());
+        // SAFETY: part is a valid C string.
+        let s = unsafe { CStr::from_ptr(part) }.to_str().unwrap();
+        assert_eq!(s, "b");
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_lines_basic() {
+        let s = CString::new("line1\nline2\nline3").unwrap();
+        // SAFETY: s is a valid NUL-terminated C string.
+        let v = unsafe { hew_string_lines(s.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec from hew_string_lines.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
+        // SAFETY: index 0 is within bounds.
+        let part = unsafe { crate::vec::hew_vec_get_str(v, 0) };
+        // SAFETY: part is a valid C string.
+        assert_eq!(unsafe { CStr::from_ptr(part) }.to_str().unwrap(), "line1");
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    #[test]
+    fn test_string_join_basic() {
+        let s = CString::new("a,b,c").unwrap();
+        let sep = CString::new(",").unwrap();
+        // SAFETY: Both args are valid NUL-terminated C strings.
+        let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        let joined = unsafe { hew_string_join(v, sep.as_ptr()) };
+        assert!(!joined.is_null());
+        // SAFETY: joined is a valid malloc'd C string.
+        let result = unsafe { CStr::from_ptr(joined) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: joined was malloc'd.
+        unsafe { libc::free(joined.cast()) };
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+        assert_eq!(result, "a,b,c");
     }
 }

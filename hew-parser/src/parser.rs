@@ -137,7 +137,7 @@ fn unescape_string(s: &str) -> String {
 /// * `span_start` — byte offset of the token in the original source
 #[expect(
     clippy::too_many_lines,
-    reason = "top-level parser handles all statement types"
+    reason = "string interpolation parser has many branches and is clearer kept in one function"
 )]
 fn parse_string_parts(
     raw: &str,

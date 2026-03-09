@@ -89,7 +89,7 @@ STDLIB_PACKAGES := \
     hew-std-encoding-yaml \
     hew-std-crypto-crypto hew-std-crypto-jwt hew-std-crypto-password \
     hew-std-net-http hew-std-net-ipnet hew-std-net-smtp \
-    hew-std-net-url hew-std-net-websocket \
+    hew-std-net-url hew-std-net-websocket hew-std-net-quic \
     hew-std-time-cron hew-std-time-datetime \
     hew-std-text-regex hew-std-text-semver \
     hew-std-misc-uuid hew-std-misc-log

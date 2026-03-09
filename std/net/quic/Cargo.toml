@@ -1,0 +1,30 @@
+[package]
+name = "hew-std-net-quic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::net::quic — QUIC transport with bidirectional streams"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib", "quic"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../../hew-cabi" }
+once_cell = "1.19"
+quinn = "0.11"
+rcgen = "0.12"
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
+futures-util = "0.3"
+tokio = { version = "1.50", features = ["rt-multi-thread"] }
+libc = "0.2"
+
+[dev-dependencies]
+hew-runtime = { path = "../../../hew-runtime" }
+
+[lints]
+workspace = true

@@ -1,0 +1,192 @@
+//! QUIC transport for internode messaging with bidirectional streams.
+//!
+//! Provides blocking helpers over the async QUIC runtime:
+//! - `listen(addr)` starts a server with an ephemeral self-signed certificate.
+//! - `connect(addr)` dials using system roots (falls back to insecure if none).
+//! - `connect_with_ca(addr, ca_der)` pins a specific DER certificate.
+//! - Channels (`Channel`) are bidirectional streams with `send`/`recv`/`finish`.
+//!
+//! `addr` strings follow `host:port`; use `:0` to pick an ephemeral port and
+//! read it back via `listener.address()`.
+//!
+//! # Examples
+//! ```
+//! import std::net::quic;
+//!
+//! fn main() {
+//!     let listener = quic.listen(":0");
+//!     let cert = listener.certificate_der();
+//!     let addr = listener.address();
+//!
+//!     let client = quic.connect_with_ca(addr, cert);
+//!     let server_conn = listener.accept();
+//!
+//!     let chan = client.open_channel();
+//!     chan.send("ping");
+//!     let chunk = chan.recv(4096);
+//!     if !chunk.is_end() {
+//!         // handle chunk.data()
+//!     }
+//!     chunk.free();
+//!     chan.finish();
+//!     client.close();
+//!     server_conn.close();
+//!     listener.close();
+//! }
+//! ```
+
+/// A QUIC listener bound to an address.
+type Listener {}
+
+/// An established QUIC connection.
+type Connection {}
+
+/// A bidirectional QUIC stream.
+type Channel {}
+
+/// A received chunk from a stream.
+type Chunk {}
+
+// ── Listener methods ───────────────────────────────────────────────────
+
+/// Methods on a QUIC `Listener`.
+trait ListenerMethods {
+    /// Accept the next incoming connection (blocking).
+    fn accept(self: Listener) -> Connection;
+
+    /// Return the listener's bound address as `"host:port"`.
+    fn address(self: Listener) -> String;
+
+    /// Return the listener's self-signed certificate (DER bytes).
+    fn certificate_der(self: Listener) -> bytes;
+
+    /// Close the listener and stop accepting new connections.
+    fn close(self: Listener);
+}
+
+impl ListenerMethods for Listener {
+    fn accept(self: Listener) -> Connection { hew_quic_accept(self) }
+    fn address(self: Listener) -> String { hew_quic_listener_addr(self) }
+    fn certificate_der(self: Listener) -> bytes { hew_quic_listener_cert(self) }
+    fn close(self: Listener) { hew_quic_listener_close(self); }
+}
+
+// ── Connection methods ─────────────────────────────────────────────────
+
+/// Methods on a QUIC `Connection`.
+trait ConnectionMethods {
+    /// Open a new bidirectional stream to the peer.
+    fn open_channel(self: Connection) -> Channel;
+
+    /// Accept the next inbound bidirectional stream from the peer.
+    fn accept_channel(self: Connection) -> Channel;
+
+    /// Return the peer address as `"host:port"`.
+    fn peer_address(self: Connection) -> String;
+
+    /// Close the connection gracefully.
+    fn close(self: Connection);
+
+    /// Close the connection with a specific application error code.
+    fn close_with_error(self: Connection, code: i64);
+}
+
+impl ConnectionMethods for Connection {
+    fn open_channel(self: Connection) -> Channel { hew_quic_open_bi(self) }
+    fn accept_channel(self: Connection) -> Channel { hew_quic_accept_bi(self) }
+    fn peer_address(self: Connection) -> String { hew_quic_peer_addr(self) }
+    fn close(self: Connection) { hew_quic_close(self); }
+    fn close_with_error(self: Connection, code: i64) { hew_quic_close_err(self, code); }
+}
+
+// ── Channel methods ────────────────────────────────────────────────────
+
+/// Methods on a QUIC `Channel`.
+trait ChannelMethods {
+    /// Send bytes to the peer. Returns 0 on success, −1 on error.
+    fn send(self: Channel, data: bytes) -> i32;
+
+    /// Receive up to `max_len` bytes (blocking). Returns a `Chunk` that must be freed.
+    fn recv(self: Channel, max_len: i64) -> Chunk;
+
+    /// Finish the send side of the stream. Returns 0 on success.
+    fn finish(self: Channel) -> i32;
+}
+
+impl ChannelMethods for Channel {
+    fn send(self: Channel, data: bytes) -> i32 { hew_quic_send(self, data) }
+    fn recv(self: Channel, max_len: i64) -> Chunk { hew_quic_recv(self, max_len) }
+    fn finish(self: Channel) -> i32 { hew_quic_finish(self) }
+}
+
+// ── Chunk methods ──────────────────────────────────────────────────────
+
+/// Methods on a received `Chunk`.
+trait ChunkMethods {
+    /// Access the received bytes.
+    fn data(self: Chunk) -> bytes;
+
+    /// Whether the stream is finished after this chunk.
+    fn is_end(self: Chunk) -> bool;
+
+    /// Free the chunk resources.
+    fn free(self: Chunk);
+}
+
+impl ChunkMethods for Chunk {
+    fn data(self: Chunk) -> bytes { hew_quic_chunk_data(self) }
+    fn is_end(self: Chunk) -> bool { hew_quic_chunk_fin(self) }
+    fn free(self: Chunk) { hew_quic_chunk_free(self); }
+}
+
+// ── Module-level functions ─────────────────────────────────────────────
+
+/// Start a QUIC listener bound to `addr` (`host:port` or `:port`).
+pub fn listen(addr: String) -> Listener {
+    hew_quic_listen(addr)
+}
+
+/// Connect to a QUIC server using system root certificates.
+///
+/// If no roots are available (e.g., in minimal containers), falls back to
+/// insecure certificate verification. Prefer `connect_with_ca` when possible.
+pub fn connect(addr: String) -> Connection {
+    hew_quic_connect(addr)
+}
+
+/// Connect to a QUIC server using an explicit DER certificate.
+pub fn connect_with_ca(addr: String, ca_der: bytes) -> Connection {
+    hew_quic_connect_with_ca(addr, ca_der)
+}
+
+/// Connect without certificate verification (for local testing).
+pub fn connect_insecure(addr: String) -> Connection {
+    hew_quic_connect_insecure(addr)
+}
+
+// ── FFI bindings ───────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_quic_listen(addr: String) -> Listener;
+    fn hew_quic_listener_addr(listener: Listener) -> String;
+    fn hew_quic_listener_cert(listener: Listener) -> bytes;
+    fn hew_quic_listener_close(listener: Listener);
+
+    fn hew_quic_accept(listener: Listener) -> Connection;
+    fn hew_quic_connect(addr: String) -> Connection;
+    fn hew_quic_connect_with_ca(addr: String, ca_der: bytes) -> Connection;
+    fn hew_quic_connect_insecure(addr: String) -> Connection;
+    fn hew_quic_peer_addr(conn: Connection) -> String;
+    fn hew_quic_close(conn: Connection);
+    fn hew_quic_close_err(conn: Connection, code: i64);
+
+    fn hew_quic_open_bi(conn: Connection) -> Channel;
+    fn hew_quic_accept_bi(conn: Connection) -> Channel;
+    fn hew_quic_send(ch: Channel, data: bytes) -> i32;
+    fn hew_quic_recv(ch: Channel, max_len: i64) -> Chunk;
+    fn hew_quic_finish(ch: Channel) -> i32;
+
+    fn hew_quic_chunk_data(chunk: Chunk) -> bytes;
+    fn hew_quic_chunk_fin(chunk: Chunk) -> bool;
+    fn hew_quic_chunk_free(chunk: Chunk);
+}

@@ -49,6 +49,19 @@ pub struct HewQuicStream {
     runtime: Arc<Runtime>,
 }
 
+/// Parse an address string, supporting both "host:port" and ":port" formats.
+///
+/// If the address starts with ':', assumes "0.0.0.0:port" for binding.
+fn parse_socket_addr(addr: &str) -> Option<SocketAddr> {
+    if addr.starts_with(':') {
+        // Format like ":4433" - bind to 0.0.0.0
+        format!("0.0.0.0{addr}").parse().ok()
+    } else {
+        // Standard "host:port" format
+        addr.parse().ok()
+    }
+}
+
 /// Load a PEM-encoded certificate chain from a file.
 ///
 /// # Errors
@@ -96,10 +109,11 @@ pub extern "C" fn hew_quic_endpoint_new() -> *mut HewQuicEndpoint {
         Err(_) => return std::ptr::null_mut(),
     };
 
-    // Create a client configuration with custom settings
+    // Create a client configuration with proper TLS verification
     let mut crypto = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+        .with_root_certificates(rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        })
         .with_no_client_auth();
 
     crypto.alpn_protocols = vec![b"hew-quic".to_vec()];
@@ -163,10 +177,10 @@ pub unsafe extern "C" fn hew_quic_endpoint_listen(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    // Parse address
-    let socket_addr: SocketAddr = match addr_str.parse() {
-        Ok(addr) => addr,
-        Err(_) => return std::ptr::null_mut(),
+    // Parse address - support ":port" format
+    let socket_addr = match parse_socket_addr(addr_str) {
+        Some(addr) => addr,
+        None => return std::ptr::null_mut(),
     };
 
     // Load certificates and key
@@ -285,14 +299,21 @@ pub unsafe extern "C" fn hew_quic_endpoint_connect(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    // Parse address
-    let socket_addr: SocketAddr = match addr_str.parse() {
-        Ok(addr) => addr,
-        Err(_) => return std::ptr::null_mut(),
+    // Parse address - support ":port" format and standard "host:port"
+    let socket_addr = match parse_socket_addr(addr_str) {
+        Some(addr) => addr,
+        None => return std::ptr::null_mut(),
     };
 
-    // Connect
-    let connecting = match ep.endpoint.connect(socket_addr, "localhost") {
+    // Extract hostname for SNI from the address string
+    // Support formats: "hostname:port" or "ip:port"
+    let server_name = addr_str
+        .split(':')
+        .next()
+        .unwrap_or("localhost");
+
+    // Connect with proper SNI
+    let connecting = match ep.endpoint.connect(socket_addr, server_name) {
         Ok(conn) => conn,
         Err(_) => return std::ptr::null_mut(),
     };
@@ -586,51 +607,6 @@ pub unsafe extern "C" fn hew_quic_stream_close(stream: *mut HewQuicStream) {
     // Finish send if still open - finish() is not async
     if let Some(mut send) = stream_obj.send.take() {
         let _ = send.finish();
-    }
-}
-
-/// Skip server certificate verification (for testing/development).
-///
-/// WARNING: This is insecure and should only be used for testing.
-#[derive(Debug)]
-struct SkipServerVerification;
-
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::ED25519,
-        ]
     }
 }
 

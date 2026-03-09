@@ -4,7 +4,7 @@
 //! All returned strings and response structs are allocated with `libc::malloc`
 //! / `Box` so callers can free them with the corresponding free function.
 
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -22,26 +22,49 @@ static HTTP_TIMEOUT_MS: AtomicI32 = AtomicI32::new(30_000);
 pub struct HewHttpResponse {
     /// HTTP status code, or -1 on network/transport error.
     pub status_code: i32,
-    /// Response body (NUL-terminated, allocated with `malloc`). Caller frees.
+    /// Response body (NUL-terminated, allocated with `malloc`). Caller frees
+    /// the entire struct via `hew_http_response_free`.
     pub body: *mut c_char,
     /// Length of body in bytes (not counting NUL terminator).
     pub body_len: usize,
+    /// Captured response headers (heap-allocated `Box<Vec<(String, String)>>`).
+    /// May be null if no headers were captured.
+    pub headers: *mut Vec<(String, String)>,
 }
 
-/// Build a [`HewHttpResponse`] from a Rust string body.
-fn build_response(status_code: i32, body: &str) -> *mut HewHttpResponse {
+/// Collect all response headers into a heap-allocated `Vec<(String, String)>`.
+fn capture_headers(map: &ureq::http::HeaderMap) -> *mut Vec<(String, String)> {
+    let pairs: Vec<(String, String)> = map
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.to_string(), v.to_string()))
+        })
+        .collect();
+    Box::into_raw(Box::new(pairs))
+}
+
+/// Build a [`HewHttpResponse`] from a Rust string body and captured headers.
+fn build_response(
+    status_code: i32,
+    body: &str,
+    headers: *mut Vec<(String, String)>,
+) -> *mut HewHttpResponse {
     let body_len = body.len();
     let body_ptr = str_to_malloc(body);
     Box::into_raw(Box::new(HewHttpResponse {
         status_code,
         body: body_ptr,
         body_len,
+        headers,
     }))
 }
 
-/// Build an error response with `status_code = -1`.
+/// Build an error response with `status_code = -1` and no headers.
 fn error_response(msg: &str) -> *mut HewHttpResponse {
-    build_response(-1, msg)
+    build_response(-1, msg, std::ptr::null_mut())
 }
 
 /// Make an HTTP GET request.
@@ -66,12 +89,22 @@ pub unsafe extern "C" fn hew_http_get(url: *const c_char) -> *mut HewHttpRespons
     match ureq::get(url_str).call() {
         Ok(mut resp) => {
             let status = resp.status().as_u16();
+            let headers = capture_headers(resp.headers());
             match resp.body_mut().read_to_string() {
-                Ok(body) => build_response(i32::from(status), &body),
-                Err(e) => error_response(&format!("failed to read response body: {e}")),
+                Ok(body) => build_response(i32::from(status), &body, headers),
+                Err(e) => {
+                    // Free headers before returning error.
+                    if !headers.is_null() {
+                        // SAFETY: headers was just allocated with Box::into_raw.
+                        drop(unsafe { Box::from_raw(headers) });
+                    }
+                    error_response(&format!("failed to read response body: {e}"))
+                }
             }
         }
-        Err(ureq::Error::StatusCode(code)) => build_response(i32::from(code), ""),
+        Err(ureq::Error::StatusCode(code)) => {
+            build_response(i32::from(code), "", std::ptr::null_mut())
+        }
         Err(e) => error_response(&e.to_string()),
     }
 }
@@ -113,12 +146,21 @@ pub unsafe extern "C" fn hew_http_post(
     {
         Ok(mut resp) => {
             let status = resp.status().as_u16();
+            let headers = capture_headers(resp.headers());
             match resp.body_mut().read_to_string() {
-                Ok(resp_body) => build_response(i32::from(status), &resp_body),
-                Err(e) => error_response(&format!("failed to read response body: {e}")),
+                Ok(resp_body) => build_response(i32::from(status), &resp_body, headers),
+                Err(e) => {
+                    if !headers.is_null() {
+                        // SAFETY: headers was just allocated with Box::into_raw.
+                        drop(unsafe { Box::from_raw(headers) });
+                    }
+                    error_response(&format!("failed to read response body: {e}"))
+                }
             }
         }
-        Err(ureq::Error::StatusCode(code)) => build_response(i32::from(code), ""),
+        Err(ureq::Error::StatusCode(code)) => {
+            build_response(i32::from(code), "", std::ptr::null_mut())
+        }
         Err(e) => error_response(&e.to_string()),
     }
 }
@@ -150,12 +192,20 @@ fn make_agent() -> ureq::Agent {
     ureq::Agent::new_with_config(config)
 }
 
-/// Parse a response, mapping body-read errors to an error response.
+/// Parse a response, capturing headers and mapping body-read errors to an
+/// error response.
 fn finish_response(mut resp: ureq::http::Response<ureq::Body>) -> *mut HewHttpResponse {
     let status = resp.status().as_u16();
+    let headers = capture_headers(resp.headers());
     match resp.body_mut().read_to_string() {
-        Ok(body) => build_response(i32::from(status), &body),
-        Err(e) => error_response(&format!("failed to read response body: {e}")),
+        Ok(body) => build_response(i32::from(status), &body, headers),
+        Err(e) => {
+            if !headers.is_null() {
+                // SAFETY: headers was just allocated with Box::into_raw.
+                drop(unsafe { Box::from_raw(headers) });
+            }
+            error_response(&format!("failed to read response body: {e}"))
+        }
     }
 }
 
@@ -235,7 +285,9 @@ pub unsafe extern "C" fn hew_http_request(
                 .fold(req, |r, (k, v)| r.header(*k, *v));
             match req.call() {
                 Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => build_response(i32::from(code), ""),
+                Err(ureq::Error::StatusCode(code)) => {
+                    build_response(i32::from(code), "", std::ptr::null_mut())
+                }
                 Err(e) => error_response(&e.to_string()),
             }
         }
@@ -256,7 +308,9 @@ pub unsafe extern "C" fn hew_http_request(
                 .fold(req, |r, (k, v)| r.header(*k, *v));
             match req.send(body_bytes) {
                 Ok(resp) => finish_response(resp),
-                Err(ureq::Error::StatusCode(code)) => build_response(i32::from(code), ""),
+                Err(ureq::Error::StatusCode(code)) => {
+                    build_response(i32::from(code), "", std::ptr::null_mut())
+                }
                 Err(e) => error_response(&e.to_string()),
             }
         }
@@ -279,10 +333,110 @@ pub unsafe extern "C" fn hew_http_response_free(resp: *mut HewHttpResponse) {
     // SAFETY: resp was allocated with Box::into_raw in build_response.
     let response = unsafe { Box::from_raw(resp) };
     if !response.body.is_null() {
-        // SAFETY: body was allocated with libc::malloc in malloc_cstring.
+        // SAFETY: body was allocated with libc::malloc in str_to_malloc.
         unsafe { libc::free(response.body.cast()) };
     }
+    if !response.headers.is_null() {
+        // SAFETY: headers was allocated with Box::into_raw in capture_headers.
+        drop(unsafe { Box::from_raw(response.headers) });
+    }
     // Box is dropped here, freeing the HewHttpResponse struct.
+}
+
+// ── Response accessor functions ───────────────────────────────────────
+
+/// Get the HTTP status code from a response.
+///
+/// Returns -1 if `resp` is null.
+///
+/// # Safety
+///
+/// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_status(resp: *const HewHttpResponse) -> i32 {
+    if resp.is_null() {
+        return -1;
+    }
+    // SAFETY: resp is a valid HewHttpResponse per caller contract.
+    unsafe { (*resp).status_code }
+}
+
+/// Get a copy of the response body as a malloc-allocated C string.
+///
+/// The caller must free the returned string with `libc::free`. Returns null if
+/// `resp` is null.
+///
+/// # Safety
+///
+/// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_body(resp: *const HewHttpResponse) -> *mut c_char {
+    if resp.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: resp is a valid HewHttpResponse per caller contract.
+    let r = unsafe { &*resp };
+    if r.body.is_null() {
+        return str_to_malloc("");
+    }
+    // SAFETY: body is a valid NUL-terminated C string from str_to_malloc.
+    unsafe { libc::strdup(r.body) }
+}
+
+/// Look up a response header by name (case-insensitive).
+///
+/// Returns a malloc-allocated C string. If the header is not present the
+/// returned string is empty (not null). Returns null if `resp` or `name` is
+/// null.
+///
+/// # Safety
+///
+/// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
+/// `name` must be a valid NUL-terminated C string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_header(
+    resp: *const HewHttpResponse,
+    name: *const c_char,
+) -> *mut c_char {
+    if resp.is_null() {
+        return str_to_malloc("");
+    }
+    // SAFETY: resp is a valid HewHttpResponse per caller contract.
+    let r = unsafe { &*resp };
+    // SAFETY: If non-null, name is a valid NUL-terminated C string per caller contract.
+    let Some(name_str) = (unsafe { cstr_to_str(name) }) else {
+        return str_to_malloc("");
+    };
+    let name_lower = name_str.to_lowercase();
+    if r.headers.is_null() {
+        return str_to_malloc("");
+    }
+    // SAFETY: headers was allocated with Box::into_raw in capture_headers.
+    let headers = unsafe { &*r.headers };
+    for (k, v) in headers {
+        if k.to_lowercase() == name_lower {
+            return str_to_malloc(v);
+        }
+    }
+    str_to_malloc("")
+}
+
+/// Get the `content-type` response header.
+///
+/// Convenience shorthand for `hew_http_response_header(resp, "content-type")`.
+/// Returns a malloc-allocated C string (empty if not present). Returns null if
+/// `resp` is null.
+///
+/// # Safety
+///
+/// `resp` must be a valid [`HewHttpResponse`] pointer, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_response_content_type(
+    resp: *const HewHttpResponse,
+) -> *mut c_char {
+    let name = b"content-type\0".as_ptr().cast::<c_char>();
+    // SAFETY: name is a valid static NUL-terminated C string.
+    unsafe { hew_http_response_header(resp, name) }
 }
 
 /// Convenience wrapper: make an HTTP GET request and return just the body
@@ -322,6 +476,45 @@ pub unsafe extern "C" fn hew_http_get_string(url: *const c_char) -> *mut c_char 
     body
 }
 
+/// Convenience wrapper: make an HTTP POST request and return just the response
+/// body string.
+///
+/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
+/// it with `libc::free`. Returns null on error or non-2xx status.
+///
+/// # Safety
+///
+/// `url`, `content_type`, and `body` must all be valid NUL-terminated C strings.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_post_string(
+    url: *const c_char,
+    content_type: *const c_char,
+    body: *const c_char,
+) -> *mut c_char {
+    // SAFETY: all pointers forwarded with the same contract to hew_http_post.
+    let resp = unsafe { hew_http_post(url, content_type, body) };
+    if resp.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: resp was just allocated by hew_http_post and is valid.
+    let resp_ref = unsafe { &mut *resp };
+
+    if resp_ref.status_code < 0 {
+        // SAFETY: resp is a valid HewHttpResponse from hew_http_post.
+        unsafe { hew_http_response_free(resp) };
+        return std::ptr::null_mut();
+    }
+
+    // Extract body, null it so hew_http_response_free won't double-free.
+    let body_ptr = resp_ref.body;
+    resp_ref.body = std::ptr::null_mut();
+
+    // SAFETY: resp is valid; body was nulled.
+    unsafe { hew_http_response_free(resp) };
+
+    body_ptr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,7 +530,7 @@ mod tests {
         // SAFETY: resp is valid and non-null.
         let r = unsafe { &*resp };
         let status = r.status_code;
-        // SAFETY: body is a valid NUL-terminated C string from malloc_cstring.
+        // SAFETY: body is a valid NUL-terminated C string from str_to_malloc.
         let body = unsafe { CStr::from_ptr(r.body) }
             .to_str()
             .unwrap()
@@ -406,5 +599,93 @@ mod tests {
         // SAFETY: resp is a valid error response.
         let (status, _body) = unsafe { take_response(resp) };
         assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn response_status_accessor_returns_code() {
+        let resp = build_response(201, "created", std::ptr::null_mut());
+        // SAFETY: resp is a valid HewHttpResponse from build_response.
+        assert_eq!(unsafe { hew_http_response_status(resp) }, 201);
+        // SAFETY: resp is a valid HewHttpResponse.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    #[test]
+    fn response_status_accessor_null_returns_minus_one() {
+        // SAFETY: Null pointer is explicitly handled.
+        assert_eq!(unsafe { hew_http_response_status(ptr::null()) }, -1);
+    }
+
+    #[test]
+    fn response_body_accessor_returns_copy() {
+        let resp = build_response(200, "hello", std::ptr::null_mut());
+        // SAFETY: resp is a valid HewHttpResponse.
+        let body_ptr = unsafe { hew_http_response_body(resp) };
+        assert!(!body_ptr.is_null());
+        // SAFETY: body_ptr is a valid malloc'd C string.
+        let body = unsafe { CStr::from_ptr(body_ptr) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: body_ptr was malloc'd by hew_http_response_body (strdup).
+        unsafe { libc::free(body_ptr.cast()) };
+        // SAFETY: resp is still valid (body_ptr is a copy).
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(body, "hello");
+    }
+
+    #[test]
+    fn response_header_lookup_case_insensitive() {
+        let headers = Box::into_raw(Box::new(vec![(
+            "Content-Type".to_string(),
+            "application/json".to_string(),
+        )]));
+        let resp = build_response(200, "", headers);
+        let name = CString::new("content-type").unwrap();
+        // SAFETY: resp and name are valid.
+        let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(val, "application/json");
+    }
+
+    #[test]
+    fn response_header_missing_returns_empty_string() {
+        let resp = build_response(200, "", std::ptr::null_mut());
+        let name = CString::new("x-missing").unwrap();
+        // SAFETY: resp and name are valid.
+        let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn response_content_type_returns_header() {
+        let headers = Box::into_raw(Box::new(vec![(
+            "content-type".to_string(),
+            "text/plain".to_string(),
+        )]));
+        let resp = build_response(200, "", headers);
+        // SAFETY: resp is a valid HewHttpResponse.
+        let ct = unsafe { hew_http_response_content_type(resp) };
+        assert!(!ct.is_null());
+        // SAFETY: ct is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
+        // SAFETY: ct was malloc'd.
+        unsafe { libc::free(ct.cast()) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(val, "text/plain");
     }
 }

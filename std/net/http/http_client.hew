@@ -11,6 +11,11 @@
 //! fn main() {
 //!     let body = http_client.get_string("https://example.com");
 //!     println(body);
+//!
+//!     let resp = http_client.get("https://api.example.com/data");
+//!     println(resp.status());
+//!     println(resp.content_type());
+//!     resp.free();
 //! }
 //! ```
 
@@ -24,11 +29,31 @@ type Response {}
 
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
+    // Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
+    fn status(self: Response) -> i32;
+
+    // Return a copy of the response body as a string.
+    fn body(self: Response) -> String;
+
+    // Look up a response header by name (case-insensitive).
+    //
+    // Returns an empty string if the header is not present.
+    fn header(self: Response, name: String) -> String;
+
+    // Return the `content-type` response header.
+    //
+    // Returns an empty string if not present.
+    fn content_type(self: Response) -> String;
+
     // Release the response resources.
     fn free(self: Response);
 }
 
 impl ResponseMethods for Response {
+    fn status(self: Response) -> i32 { hew_http_response_status(self) }
+    fn body(self: Response) -> String { hew_http_response_body(self) }
+    fn header(self: Response, name: String) -> String { hew_http_response_header(self, name) }
+    fn content_type(self: Response) -> String { hew_http_response_content_type(self) }
     fn free(self: Response) { hew_http_response_free(self); }
 }
 
@@ -40,6 +65,7 @@ impl ResponseMethods for Response {
 ///
 /// ```
 /// let resp = http_client.get("https://example.com");
+/// println(resp.status());
 /// resp.free();
 /// ```
 pub fn get(url: String) -> Response {
@@ -73,11 +99,34 @@ pub fn get_string(url: String) -> String {
     hew_http_get_string(url)
 }
 
+/// Perform an HTTP POST request and return the response body as a string.
+///
+/// Returns an empty string on network error.
+///
+/// # Examples
+///
+/// ```
+/// let body = http_client.post_string(
+///     "https://api.example.com/submit",
+///     "application/json",
+///     "{\"key\": \"value\"}",
+/// );
+/// println(body);
+/// ```
+pub fn post_string(url: String, content_type: String, body: String) -> String {
+    hew_http_post_string(url, content_type, body)
+}
+
 // ── FFI bindings (implementation detail) ──────────────────────────────
 
 extern "C" {
     fn hew_http_get(url: String) -> Response;
     fn hew_http_post(url: String, content_type: String, body: String, body_len: i64) -> Response;
     fn hew_http_response_free(resp: Response);
+    fn hew_http_response_status(resp: Response) -> i32;
+    fn hew_http_response_body(resp: Response) -> String;
+    fn hew_http_response_header(resp: Response, name: String) -> String;
+    fn hew_http_response_content_type(resp: Response) -> String;
     fn hew_http_get_string(url: String) -> String;
+    fn hew_http_post_string(url: String, content_type: String, body: String) -> String;
 }

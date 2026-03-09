@@ -79,6 +79,54 @@ pub fn parse(s: String) -> Url {
     hew_url_parse(s)
 }
 
+// ── Percent-encoding ──────────────────────────────────────────────────
+
+/// Percent-encode a string (RFC 3986 unreserved characters are left unchanged).
+///
+/// # Examples
+///
+/// ```
+/// import std::net::url;
+///
+/// let encoded = url.encode("hello world");  // "hello%20world"
+/// ```
+pub fn encode(s: String) -> String {
+    hew_url_encode(s)
+}
+
+/// Decode a percent-encoded string.
+///
+/// Returns an empty string on decode error.
+///
+/// # Examples
+///
+/// ```
+/// import std::net::url;
+///
+/// let decoded = url.decode("hello%20world");  // "hello world"
+/// ```
+pub fn decode(s: String) -> String {
+    hew_url_decode(s)
+}
+
+/// Build a percent-encoded query string from a newline-separated list of
+/// `key=value` pairs.
+///
+/// Each line should be `key=value`. Lines without `=` are skipped. Pairs are
+/// joined with `&`.
+///
+/// # Examples
+///
+/// ```
+/// import std::net::url;
+///
+/// let qs = url.encode_query("name=hello world\npage=1");
+/// // "name=hello%20world&page=1"
+/// ```
+pub fn encode_query(params: String) -> String {
+    hew_url_encode_query(params)
+}
+
 // ── FFI bindings ──────────────────────────────────────────────────────
 
 extern "C" {
@@ -92,4 +140,7 @@ extern "C" {
     fn hew_url_to_string(url: Url) -> String;
     fn hew_url_join(base: Url, path: String) -> Url;
     fn hew_url_free(url: Url);
+    fn hew_url_encode(s: String) -> String;
+    fn hew_url_decode(s: String) -> String;
+    fn hew_url_encode_query(params: String) -> String;
 }

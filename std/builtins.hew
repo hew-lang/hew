@@ -171,6 +171,33 @@ fn string_to_int(s: String) -> i32 {}
 /// Returns the byte offset, or -1 if not found.
 fn string_find(haystack: String, needle: String) -> i32 {}
 
+/// Split a string by `sep` into a list of substrings.
+///
+/// # Examples
+///
+/// ```
+/// let parts = string_split("a,b,c", ",");
+/// ```
+fn string_split(s: String, sep: String) -> Vec<String> {}
+
+/// Split a string into lines, stripping `\r\n` or `\n` endings.
+///
+/// # Examples
+///
+/// ```
+/// let lines = string_lines("foo\nbar\nbaz");
+/// ```
+fn string_lines(s: String) -> Vec<String> {}
+
+/// Join a list of strings with `sep` between each element.
+///
+/// # Examples
+///
+/// ```
+/// let joined = string_join(parts, ", ");
+/// ```
+fn string_join(parts: Vec<String>, sep: String) -> String {}
+
 // ---------------------------------------------------------------------------
 // File I/O  (convenience wrappers — see also `import std::fs;`)
 // ---------------------------------------------------------------------------

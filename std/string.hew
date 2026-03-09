@@ -292,6 +292,45 @@ pub fn replace(s: String, old: String, new_val: String) -> String {
     s.replace(old, new_val)
 }
 
+/// Split a string by `sep` into a list of substrings.
+///
+/// # Examples
+///
+/// ```
+/// import std::string;
+///
+/// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
+/// ```
+pub fn split(s: String, sep: String) -> Vec<String> {
+    string_split(s, sep)
+}
+
+/// Split a string into lines, stripping `\r\n` or `\n` endings.
+///
+/// # Examples
+///
+/// ```
+/// import std::string;
+///
+/// let lines = string.lines("foo\nbar");  // ["foo", "bar"]
+/// ```
+pub fn lines(s: String) -> Vec<String> {
+    string_lines(s)
+}
+
+/// Join a list of strings with `sep` between each element.
+///
+/// # Examples
+///
+/// ```
+/// import std::string;
+///
+/// let s = string.join(parts, ", ");
+/// ```
+pub fn join(parts: Vec<String>, sep: String) -> String {
+    string_join(parts, sep)
+}
+
 // ── Trait: ToString ──────────────────────────────────────────────────
 
 /// Trait for types that can be converted to a string representation.

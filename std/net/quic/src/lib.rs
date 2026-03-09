@@ -491,7 +491,7 @@ pub unsafe extern "C" fn hew_quic_connection_rtt_ms(conn: *mut HewQuicConnection
     // SAFETY: Caller guarantees valid pointer
     let connection = unsafe { &*conn };
 
-    // Get RTT stats from Quinn
+    // Get RTT stats from Quinn - stats() doesn't require runtime context
     let stats = connection.connection.stats();
 
     stats.path.rtt.as_millis() as i32
@@ -517,7 +517,8 @@ pub unsafe extern "C" fn hew_quic_connection_bytes_sent(conn: *mut HewQuicConnec
     // Get bytes sent from Quinn stats
     let stats = connection.connection.stats();
 
-    stats.path.sent_packets as i64
+    // Note: sent_packets is packet count, not bytes. Use udp_tx.bytes for actual byte count
+    stats.udp_tx.bytes as i64
 }
 
 /// Get the number of bytes received on a connection.
@@ -682,6 +683,18 @@ pub unsafe extern "C" fn hew_quic_stream_close(stream: *mut HewQuicStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+
+    /// Generate a self-signed certificate for testing.
+    ///
+    /// Returns (cert_pem, key_pem) as byte vectors.
+    fn generate_self_signed_cert() -> (Vec<u8>, Vec<u8>) {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let cert_pem = cert.cert.pem();
+        let key_pem = cert.key_pair.serialize_pem();
+
+        (cert_pem.into_bytes(), key_pem.into_bytes())
+    }
 
     #[test]
     fn endpoint_new_returns_valid_pointer() {
@@ -698,5 +711,287 @@ mod tests {
     fn endpoint_close_null_is_noop() {
         // SAFETY: Passing null is explicitly handled
         unsafe { hew_quic_endpoint_close(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    #[ignore] // Requires actual network and TLS setup - run with `cargo test -- --ignored`
+    fn client_server_stream_roundtrip() {
+        // Install crypto provider for tests
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // Generate test certificates
+        let (cert_pem, key_pem) = generate_self_signed_cert();
+        let cert_path = std::env::temp_dir().join("quic_test_cert.pem");
+        let key_path = std::env::temp_dir().join("quic_test_key.pem");
+        std::fs::write(&cert_path, &cert_pem).unwrap();
+        std::fs::write(&key_path, &key_pem).unwrap();
+
+        let cert_path_str = CString::new(cert_path.to_str().unwrap()).unwrap();
+        let key_path_str = CString::new(key_path.to_str().unwrap()).unwrap();
+
+        // Start server on localhost:0 (random port)
+        let server_addr = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: Valid C strings
+        let server_endpoint = unsafe {
+            hew_quic_endpoint_listen(
+                server_addr.as_ptr(),
+                cert_path_str.as_ptr(),
+                key_path_str.as_ptr(),
+            )
+        };
+        assert!(!server_endpoint.is_null(), "server endpoint should not be null");
+
+        // Get the actual port the server bound to
+        // SAFETY: Valid pointer
+        let server_ep = unsafe { &*server_endpoint };
+        let actual_addr = server_ep.endpoint.local_addr().unwrap();
+
+        // Convert pointer to usize for thread safety
+        let server_endpoint_addr = server_endpoint as usize;
+
+        // Spawn server thread
+        let server_handle = std::thread::spawn(move || {
+            // SAFETY: Valid pointer, owned by this thread
+            unsafe {
+                // Convert back to pointer
+                let server_endpoint = server_endpoint_addr as *mut HewQuicEndpoint;
+
+                // Accept connection
+                let conn = hew_quic_endpoint_accept(server_endpoint);
+                assert!(!conn.is_null(), "server connection should not be null");
+
+                // Accept stream
+                let stream = hew_quic_connection_accept_stream(conn);
+                assert!(!stream.is_null(), "server stream should not be null");
+
+                // Receive data
+                let recv_vec = hew_quic_stream_recv(stream);
+                assert!(!recv_vec.is_null(), "received data should not be null");
+
+                // Echo data back
+                let send_result = hew_quic_stream_send(stream, recv_vec);
+                assert_eq!(send_result, 0, "send should succeed");
+
+                // Finish and close
+                let finish_result = hew_quic_stream_finish(stream);
+                assert_eq!(finish_result, 0, "finish should succeed");
+                hew_quic_stream_close(stream);
+                hew_quic_connection_close(conn);
+                hew_quic_endpoint_close(server_endpoint);
+
+                // Clean up HewVec
+                hew_runtime::vec::hew_vec_free(recv_vec);
+            }
+        });
+
+        // Give server time to start accepting
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Create client endpoint
+        let client_endpoint = hew_quic_endpoint_new();
+        assert!(!client_endpoint.is_null(), "client endpoint should not be null");
+
+        // Connect to server (use IP address to avoid SNI issues with self-signed cert)
+        let client_addr = CString::new(format!("127.0.0.1:{}", actual_addr.port())).unwrap();
+        // SAFETY: Valid pointers
+        let conn = unsafe { hew_quic_endpoint_connect(client_endpoint, client_addr.as_ptr()) };
+        assert!(!conn.is_null(), "client connection should not be null");
+
+        // Open stream
+        // SAFETY: Valid pointer
+        let stream = unsafe { hew_quic_connection_open_stream(conn) };
+        assert!(!stream.is_null(), "client stream should not be null");
+
+        // Send test data
+        // SAFETY: Create and populate a HewVec
+        let send_vec = unsafe { hew_runtime::vec::hew_vec_new() };
+        let test_data = b"Hello, QUIC!";
+        for &byte in test_data {
+            // SAFETY: Valid HewVec
+            unsafe { hew_runtime::vec::hew_vec_push_i32(send_vec, i32::from(byte)) };
+        }
+
+        // SAFETY: Valid pointers
+        let send_result = unsafe { hew_quic_stream_send(stream, send_vec) };
+        assert_eq!(send_result, 0, "send should succeed");
+
+        // Finish sending
+        // SAFETY: Valid pointer
+        let finish_result = unsafe { hew_quic_stream_finish(stream) };
+        assert_eq!(finish_result, 0, "finish should succeed");
+
+        // Receive echo
+        // SAFETY: Valid pointer
+        let recv_vec = unsafe { hew_quic_stream_recv(stream) };
+        assert!(!recv_vec.is_null(), "received data should not be null");
+
+        // Verify data
+        // SAFETY: Valid HewVec
+        let recv_len = unsafe { hew_runtime::vec::hew_vec_len(recv_vec) };
+        assert_eq!(recv_len, test_data.len() as i64, "received length should match");
+
+        for (i, &expected_byte) in test_data.iter().enumerate() {
+            // SAFETY: i < recv_len
+            let actual_byte = unsafe { hew_runtime::vec::hew_vec_get_i32(recv_vec, i as i64) };
+            assert_eq!(
+                actual_byte,
+                i32::from(expected_byte),
+                "byte {} should match",
+                i
+            );
+        }
+
+        // Clean up
+        // SAFETY: Valid pointers
+        unsafe {
+            hew_runtime::vec::hew_vec_free(send_vec);
+            hew_runtime::vec::hew_vec_free(recv_vec);
+            hew_quic_stream_close(stream);
+            hew_quic_connection_close(conn);
+            hew_quic_endpoint_close(client_endpoint);
+        }
+
+        // Wait for server to finish
+        server_handle.join().unwrap();
+
+        // Clean up temp files
+        let _ = std::fs::remove_file(cert_path);
+        let _ = std::fs::remove_file(key_path);
+    }
+
+    #[test]
+    #[ignore] // Requires actual network and TLS setup - run with `cargo test -- --ignored`
+    fn connection_observation_hooks() {
+        // Install crypto provider for tests
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        // Generate test certificates
+        let (cert_pem, key_pem) = generate_self_signed_cert();
+        let cert_path = std::env::temp_dir().join("quic_obs_test_cert.pem");
+        let key_path = std::env::temp_dir().join("quic_obs_test_key.pem");
+        std::fs::write(&cert_path, &cert_pem).unwrap();
+        std::fs::write(&key_path, &key_pem).unwrap();
+
+        let cert_path_str = CString::new(cert_path.to_str().unwrap()).unwrap();
+        let key_path_str = CString::new(key_path.to_str().unwrap()).unwrap();
+
+        // Start server
+        let server_addr = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: Valid C strings
+        let server_endpoint = unsafe {
+            hew_quic_endpoint_listen(
+                server_addr.as_ptr(),
+                cert_path_str.as_ptr(),
+                key_path_str.as_ptr(),
+            )
+        };
+        assert!(!server_endpoint.is_null());
+
+        // SAFETY: Valid pointer
+        let server_ep = unsafe { &*server_endpoint };
+        let actual_addr = server_ep.endpoint.local_addr().unwrap();
+
+        // Convert pointer to usize for thread safety
+        let server_endpoint_addr = server_endpoint as usize;
+
+        // Spawn server thread
+        let server_handle = std::thread::spawn(move || {
+            // SAFETY: Valid pointer, owned by this thread
+            unsafe {
+                // Convert back to pointer
+                let server_endpoint = server_endpoint_addr as *mut HewQuicEndpoint;
+
+                let conn = hew_quic_endpoint_accept(server_endpoint);
+                assert!(!conn.is_null());
+
+                // Test observation hooks on server side
+                let rtt = hew_quic_connection_rtt_ms(conn);
+                assert!(rtt >= 0, "RTT should be non-negative");
+
+                let bytes_sent = hew_quic_connection_bytes_sent(conn);
+                assert!(bytes_sent >= 0, "bytes_sent should be non-negative");
+
+                let bytes_received = hew_quic_connection_bytes_received(conn);
+                assert!(bytes_received >= 0, "bytes_received should be non-negative");
+
+                let stream = hew_quic_connection_accept_stream(conn);
+                let recv_vec = hew_quic_stream_recv(stream);
+                hew_quic_stream_send(stream, recv_vec);
+                hew_quic_stream_finish(stream);
+
+                // Check stats after data transfer
+                let bytes_sent_after = hew_quic_connection_bytes_sent(conn);
+                assert!(
+                    bytes_sent_after >= bytes_sent,
+                    "bytes_sent should increase after sending"
+                );
+
+                hew_quic_stream_close(stream);
+                hew_quic_connection_close(conn);
+                hew_quic_endpoint_close(server_endpoint);
+
+                hew_runtime::vec::hew_vec_free(recv_vec);
+            }
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Create client
+        let client_endpoint = hew_quic_endpoint_new();
+        let client_addr = CString::new(format!("127.0.0.1:{}", actual_addr.port())).unwrap();
+        // SAFETY: Valid pointers
+        let conn = unsafe { hew_quic_endpoint_connect(client_endpoint, client_addr.as_ptr()) };
+        assert!(!conn.is_null());
+
+        // Test observation hooks on client side
+        // SAFETY: Valid pointer
+        let rtt = unsafe { hew_quic_connection_rtt_ms(conn) };
+        assert!(rtt >= 0, "RTT should be non-negative");
+
+        // SAFETY: Valid pointer
+        let bytes_sent_before = unsafe { hew_quic_connection_bytes_sent(conn) };
+        assert!(bytes_sent_before >= 0);
+
+        // SAFETY: Valid pointer
+        let stream = unsafe { hew_quic_connection_open_stream(conn) };
+        let send_vec = unsafe { hew_runtime::vec::hew_vec_new() };
+        for &byte in b"test" {
+            unsafe { hew_runtime::vec::hew_vec_push_i32(send_vec, i32::from(byte)) };
+        }
+        // SAFETY: Valid pointers
+        unsafe {
+            hew_quic_stream_send(stream, send_vec);
+            hew_quic_stream_finish(stream);
+        }
+
+        // SAFETY: Valid pointer
+        let recv_vec = unsafe { hew_quic_stream_recv(stream) };
+
+        // Check stats after data transfer
+        // SAFETY: Valid pointer
+        let bytes_sent_after = unsafe { hew_quic_connection_bytes_sent(conn) };
+        assert!(
+            bytes_sent_after >= bytes_sent_before,
+            "bytes_sent should increase"
+        );
+
+        // SAFETY: Valid pointer
+        let bytes_received = unsafe { hew_quic_connection_bytes_received(conn) };
+        assert!(bytes_received >= 0);
+
+        // Clean up
+        // SAFETY: Valid pointers
+        unsafe {
+            hew_runtime::vec::hew_vec_free(send_vec);
+            hew_runtime::vec::hew_vec_free(recv_vec);
+            hew_quic_stream_close(stream);
+            hew_quic_connection_close(conn);
+            hew_quic_endpoint_close(client_endpoint);
+        }
+
+        server_handle.join().unwrap();
+
+        let _ = std::fs::remove_file(cert_path);
+        let _ = std::fs::remove_file(key_path);
     }
 }

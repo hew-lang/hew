@@ -22,5 +22,8 @@ libc = "0.2"
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
 
+[dev-dependencies]
+rcgen = "0.13"
+
 [lints]
 workspace = true

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+_ = os  # Intentional: keep os import (may be used dynamically)
 import re
 import shutil
 import signal

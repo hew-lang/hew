@@ -312,7 +312,7 @@ fn find_runtime_lib(name: &str) -> Result<String, String> {
 /// For each module that has a standalone package crate (e.g.,
 /// `std::encoding::hex` → `libhew_std_encoding_hex.a`), searches
 /// the standard candidate directories and returns the found paths.
-pub fn find_package_libs(modules: &[String]) -> Vec<String> {
+pub fn find_package_libs(modules: &[String], pkg_path: Option<&std::path::Path>) -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else {
         return vec![];
     };
@@ -321,7 +321,7 @@ pub fn find_package_libs(modules: &[String]) -> Vec<String> {
     let mut libs = Vec::new();
     for module_path in modules {
         let lib_name = module_to_staticlib_name(module_path);
-        let candidates = [
+        let mut candidates: Vec<std::path::PathBuf> = vec![
             exe_dir.join("../lib").join(&lib_name),
             exe_dir.join("../lib/hew").join(&lib_name),
             exe_dir.join("../lib64/hew").join(&lib_name),
@@ -329,6 +329,12 @@ pub fn find_package_libs(modules: &[String]) -> Vec<String> {
             exe_dir.join("../../target/release").join(&lib_name),
             exe_dir.join("../../target/debug").join(&lib_name),
         ];
+        // When --pkg-path points to a local ecosystem checkout, also search
+        // <pkg_path>/target/{debug,release}/ for the compiled staticlibs.
+        if let Some(pkg) = pkg_path {
+            candidates.push(pkg.join("target/debug").join(&lib_name));
+            candidates.push(pkg.join("target/release").join(&lib_name));
+        }
         for c in &candidates {
             if c.exists() {
                 if let Ok(p) = c.canonicalize() {

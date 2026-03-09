@@ -42,6 +42,10 @@ package() {
   install -Dm644 "$builddir/lib/libhew_runtime.a" \
     "$pkgdir/usr/lib/hew/libhew_runtime.a"
 
+  # Stdlib package static libraries
+  find "$builddir/lib" -maxdepth 1 -name "libhew_std_*.a" \
+    -exec install -Dm644 {} "$pkgdir/usr/lib/hew/" \;
+
   if [ -d "$builddir/std" ]; then
     mkdir -p "$pkgdir/usr/share/hew/std"
     cp -r "$builddir/std/." "$pkgdir/usr/share/hew/std/"

@@ -47,6 +47,8 @@ install -Dm755 bin/hew-codegen  %{buildroot}%{_bindir}/hew-codegen
 install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
 
 install -Dm644 lib/libhew_runtime.a %{buildroot}%{_libdir}/hew/libhew_runtime.a
+find lib -maxdepth 1 -name "libhew_std_*.a" -exec \
+  install -Dm644 {} %{buildroot}%{_libdir}/hew/ \;
 
 # Standard library
 if [ -d std ]; then

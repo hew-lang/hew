@@ -1,0 +1,43 @@
+// Stdlib installation smoke test.
+// Exercises the stdlib modules added in the stdlib-gap-fill work to
+// confirm the runtime, staticlibs, and .hew sources are all in place.
+
+import std::string;
+import std::fs;
+import std::net::url;
+
+fn main() {
+    // ── string.split / string.join ───────────────────────────────────────
+    let parts = string.split("a,b,c", ",");
+    let joined = string.join(parts, "-");
+    assert(joined == "a-b-c");
+    println("string.split/join: ok");
+
+    // ── string.lines ─────────────────────────────────────────────────────
+    let lines = string.lines("first\nsecond\nthird");
+    assert(lines.len() == 3);
+    println("string.lines: ok");
+
+    // ── fs.mkdir_all / fs.is_dir / fs.list_dir ───────────────────────────
+    let dir = "/tmp/hew_smoke_test";
+    let rc = fs.mkdir_all(dir);
+    assert(rc == 0);
+    assert(fs.is_dir(dir));
+    let entries = fs.list_dir("/tmp");
+    assert(entries.len() > 0);
+    println("fs.mkdir_all/is_dir/list_dir: ok");
+
+    // ── url.encode / url.decode ───────────────────────────────────────────
+    let encoded = url.encode("hello world");
+    assert(encoded == "hello%20world");
+    let decoded = url.decode("hello%20world");
+    assert(decoded == "hello world");
+    println("url.encode/decode: ok");
+
+    // ── url.encode_query ─────────────────────────────────────────────────
+    let q = url.encode_query("key=hello world\nother=a+b");
+    assert(string.contains(q, "hello%20world"));
+    println("url.encode_query: ok");
+
+    println("\nAll stdlib checks passed.");
+}

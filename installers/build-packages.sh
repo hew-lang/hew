@@ -206,7 +206,12 @@ build_tarball() {
         warn "libhew_runtime.a not found"
     fi
 
-    cp "${REPO_DIR}/std/"*.hew "${staging}/std/" 2>/dev/null || true
+    # Stdlib package static libraries
+    find "${REPO_DIR}/target/release" -maxdepth 1 -name "libhew_std_*.a" \
+        -exec cp {} "${staging}/lib/" \; 2>/dev/null || true
+
+    # Standard library sources (all .hew files, including subdirectories)
+    cp -r "${REPO_DIR}/std/." "${staging}/std/"
     cp "${REPO_DIR}/completions/hew.bash" \
         "${REPO_DIR}/completions/hew.zsh" \
         "${REPO_DIR}/completions/hew.fish" \
@@ -488,7 +493,12 @@ build_alpine() {
             warn "musl libhew_runtime.a not found"
         fi
 
-        cp "${REPO_DIR}/std/"*.hew "${staging}/std/" 2>/dev/null || true
+        # Stdlib package static libraries
+        find "${musl_release}" -maxdepth 1 -name "libhew_std_*.a" \
+            -exec cp {} "${staging}/lib/" \; 2>/dev/null || true
+
+        # Standard library sources (all .hew files, including subdirectories)
+        cp -r "${REPO_DIR}/std/." "${staging}/std/"
         cp "${REPO_DIR}/completions/"*.bash \
             "${REPO_DIR}/completions/"*.zsh \
             "${REPO_DIR}/completions/"*.fish "${staging}/completions/" 2>/dev/null || true

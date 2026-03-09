@@ -1,0 +1,204 @@
+//! QUIC transport protocol for bidirectional communication.
+//!
+//! Provides a QUIC endpoint and connection API for low-latency,
+//! multiplexed, reliable communication over UDP. Designed for
+//! internode messaging in distributed actor systems.
+//!
+//! # Examples
+//!
+//! Server:
+//! ```
+//! import std::net::quic;
+//!
+//! fn main() {
+//!     let endpoint = quic.listen(":4433", "cert.pem", "key.pem");
+//!     let conn = endpoint.accept();
+//!     let stream = conn.accept_stream();
+//!     let data = stream.recv();
+//!     stream.send(data);
+//!     stream.close();
+//!     conn.close();
+//!     endpoint.close();
+//! }
+//! ```
+//!
+//! Client:
+//! ```
+//! import std::net::quic;
+//!
+//! fn main() {
+//!     let endpoint = quic.endpoint();
+//!     let conn = endpoint.connect("localhost:4433");
+//!     let stream = conn.open_stream();
+//!     stream.send("hello");
+//!     let response = stream.recv();
+//!     stream.close();
+//!     conn.close();
+//!     endpoint.close();
+//! }
+//! ```
+
+/// A QUIC endpoint that can listen for or initiate connections.
+///
+/// Created by calling `quic.endpoint()` for clients or `quic.listen()`
+/// for servers. Manages the underlying UDP socket and QUIC protocol state.
+type Endpoint {}
+
+/// An established QUIC connection to a remote peer.
+///
+/// Supports multiplexed bidirectional and unidirectional streams.
+/// Obtained from `endpoint.accept()` (server) or `endpoint.connect()` (client).
+type Connection {}
+
+/// A QUIC stream for sending and receiving data.
+///
+/// Can be bidirectional (both send and receive) or unidirectional.
+/// Obtained from `connection.open_stream()` or `connection.accept_stream()`.
+type Stream {}
+
+// ── Endpoint methods ──────────────────────────────────────────────────
+
+/// Methods available on a QUIC `Endpoint`.
+trait EndpointMethods {
+    /// Accept an incoming connection (server-side).
+    ///
+    /// Blocks until a client connects. Returns null on error.
+    fn accept(self: Endpoint) -> Connection;
+
+    /// Connect to a remote QUIC server (client-side).
+    ///
+    /// Blocks until the connection is established or fails.
+    fn connect(self: Endpoint, addr: String) -> Connection;
+
+    /// Close the endpoint and release all resources.
+    fn close(self: Endpoint);
+}
+
+impl EndpointMethods for Endpoint {
+    fn accept(self: Endpoint) -> Connection { hew_quic_endpoint_accept(self) }
+    fn connect(self: Endpoint, addr: String) -> Connection { hew_quic_endpoint_connect(self, addr) }
+    fn close(self: Endpoint) { hew_quic_endpoint_close(self); }
+}
+
+// ── Connection methods ────────────────────────────────────────────────
+
+/// Methods available on a QUIC `Connection`.
+trait ConnectionMethods {
+    /// Open a new bidirectional stream.
+    ///
+    /// Returns a Stream handle for sending and receiving data.
+    fn open_stream(self: Connection) -> Stream;
+
+    /// Accept an incoming stream from the remote peer.
+    ///
+    /// Blocks until a stream is available. Returns null on connection close.
+    fn accept_stream(self: Connection) -> Stream;
+
+    /// Close the connection gracefully.
+    ///
+    /// Waits for pending streams to finish.
+    fn close(self: Connection);
+
+    /// Get the remote address of this connection.
+    fn remote_address(self: Connection) -> String;
+}
+
+impl ConnectionMethods for Connection {
+    fn open_stream(self: Connection) -> Stream { hew_quic_connection_open_stream(self) }
+    fn accept_stream(self: Connection) -> Stream { hew_quic_connection_accept_stream(self) }
+    fn close(self: Connection) { hew_quic_connection_close(self); }
+    fn remote_address(self: Connection) -> String { hew_quic_connection_remote_address(self) }
+}
+
+// ── Stream methods ────────────────────────────────────────────────────
+
+/// Methods available on a QUIC `Stream`.
+trait StreamMethods {
+    /// Send data over the stream.
+    ///
+    /// Returns 0 on success, -1 on error.
+    fn send(self: Stream, data: bytes) -> i32;
+
+    /// Send a string over the stream.
+    ///
+    /// Convenience wrapper that converts String to bytes.
+    fn send_string(self: Stream, data: String) -> i32;
+
+    /// Receive data from the stream.
+    ///
+    /// Blocks until data is available. Returns empty bytes on stream close.
+    fn recv(self: Stream) -> bytes;
+
+    /// Receive a string from the stream.
+    ///
+    /// Convenience wrapper that converts bytes to String.
+    fn recv_string(self: Stream) -> String;
+
+    /// Finish sending on this stream.
+    ///
+    /// Signals that no more data will be sent.
+    fn finish(self: Stream) -> i32;
+
+    /// Close the stream and release resources.
+    fn close(self: Stream);
+}
+
+impl StreamMethods for Stream {
+    fn send(self: Stream, data: bytes) -> i32 { hew_quic_stream_send(self, data) }
+    fn send_string(self: Stream, data: String) -> i32 { hew_quic_stream_send(self, hew_string_to_bytes(data)) }
+    fn recv(self: Stream) -> bytes { hew_quic_stream_recv(self) }
+    fn recv_string(self: Stream) -> String { hew_bytes_to_string(hew_quic_stream_recv(self)) }
+    fn finish(self: Stream) -> i32 { hew_quic_stream_finish(self) }
+    fn close(self: Stream) { hew_quic_stream_close(self); }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a QUIC client endpoint.
+///
+/// Can be used to connect to QUIC servers.
+///
+/// # Examples
+///
+/// ```
+/// let endpoint = quic.endpoint();
+/// ```
+pub fn endpoint() -> Endpoint {
+    hew_quic_endpoint_new()
+}
+
+/// Create a QUIC server endpoint listening on the given address.
+///
+/// Requires TLS certificate and private key for secure connections.
+///
+/// # Examples
+///
+/// ```
+/// let endpoint = quic.listen(":4433", "cert.pem", "key.pem");
+/// ```
+pub fn listen(addr: String, cert_path: String, key_path: String) -> Endpoint {
+    hew_quic_endpoint_listen(addr, cert_path, key_path)
+}
+
+// ── FFI bindings (implementation detail) ──────────────────────────────
+
+extern "C" {
+    fn hew_quic_endpoint_new() -> Endpoint;
+    fn hew_quic_endpoint_listen(addr: String, cert_path: String, key_path: String) -> Endpoint;
+    fn hew_quic_endpoint_accept(endpoint: Endpoint) -> Connection;
+    fn hew_quic_endpoint_connect(endpoint: Endpoint, addr: String) -> Connection;
+    fn hew_quic_endpoint_close(endpoint: Endpoint);
+
+    fn hew_quic_connection_open_stream(conn: Connection) -> Stream;
+    fn hew_quic_connection_accept_stream(conn: Connection) -> Stream;
+    fn hew_quic_connection_close(conn: Connection);
+    fn hew_quic_connection_remote_address(conn: Connection) -> String;
+
+    fn hew_quic_stream_send(stream: Stream, data: bytes) -> i32;
+    fn hew_quic_stream_recv(stream: Stream) -> bytes;
+    fn hew_quic_stream_finish(stream: Stream) -> i32;
+    fn hew_quic_stream_close(stream: Stream);
+
+    fn hew_bytes_to_string(data: bytes) -> String;
+    fn hew_string_to_bytes(s: String) -> bytes;
+}

@@ -52,6 +52,7 @@ The Hew standard library provides core types, data structures, networking, encod
 | net       | TCP listener and connection types        |
 | http      | HTTP server and client                   |
 | websocket | WebSocket client connections             |
+| quic      | QUIC transport protocol for low-latency multiplexed communication |
 | smtp      | Email sending via SMTP                   |
 | url       | URL parsing and construction             |
 | ipnet     | IP address and CIDR utilities            |

@@ -21,6 +21,17 @@ use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerCo
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::runtime::Runtime;
 
+/// Maximum bytes read in a single [`hew_quic_stream_recv`] call.
+///
+/// 64 KiB is chosen because it matches the default QUIC maximum stream data
+/// window and ensures a single `read()` call is always large enough to drain
+/// one QUIC STREAM frame payload.
+const RECV_BUFFER_SIZE: usize = 65536;
+
+/// Timeout (seconds) for [`hew_quic_endpoint_on_event`] to wait for the next
+/// incoming connection attempt before returning an error event.
+const ENDPOINT_EVENT_TIMEOUT_SECS: u64 = 30;
+
 // ── TLS helpers ───────────────────────────────────────────────────────────────
 
 /// A rustls [`ClientConfig`] that skips all certificate verification.
@@ -389,7 +400,7 @@ pub unsafe extern "C" fn hew_quic_endpoint_on_event(
 
     // Observe the next incoming connection attempt as a "connected" event.
     let kind = endpoint.rt.block_on(async {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(Duration::from_secs(ENDPOINT_EVENT_TIMEOUT_SECS), async {
             endpoint.endpoint.accept().await.map(|_| 0i32)
         })
         .await
@@ -581,7 +592,7 @@ pub unsafe extern "C" fn hew_quic_stream_recv(
     // SAFETY: `stream` is a valid pointer per caller contract.
     let s = unsafe { &*stream };
 
-    let mut buf = vec![0u8; 65536];
+    let mut buf = vec![0u8; RECV_BUFFER_SIZE];
     let Ok(mut recv) = s.recv.lock() else {
         return std::ptr::null_mut();
     };
@@ -632,6 +643,12 @@ pub unsafe extern "C" fn hew_quic_stream_finish(stream: *mut HewQuicStream) -> c
 /// Unlike [`hew_quic_stream_finish`], pending data is discarded.
 /// Returns 0 on success, −1 on error.
 ///
+/// `error_code` is passed as a QUIC application-layer error code. QUIC error
+/// codes are unsigned and limited to 62 bits (`VarInt::MAX = 2^62 − 1`). If
+/// the absolute value of `error_code` exceeds `VarInt::MAX` it is silently
+/// clamped to `VarInt::MAX`; the caller is responsible for passing a value in
+/// the valid range `[0, 2^62 − 1]`.
+///
 /// # Safety
 ///
 /// `stream` must be a valid pointer returned by an open/accept function.
@@ -648,6 +665,7 @@ pub unsafe extern "C" fn hew_quic_stream_stop(
     let Ok(mut send) = s.send.lock() else {
         return -1;
     };
+    // Clamp out-of-range values to VarInt::MAX (see doc comment above).
     let code = quinn::VarInt::try_from(error_code.unsigned_abs()).unwrap_or(quinn::VarInt::MAX);
     match send.reset(code) {
         Ok(()) => 0,

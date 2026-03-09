@@ -6,6 +6,7 @@
 
 mod app;
 mod client;
+mod theme;
 mod ui;
 
 use std::io;
@@ -66,6 +67,7 @@ fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
         // Periodic data fetch
         if last_refresh.elapsed() >= refresh {
             app.refresh();
+            app.clamp_selections();
             last_refresh = Instant::now();
         }
 
@@ -83,6 +85,7 @@ fn run_app(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::BackTab => app.prev_tab(),
                     KeyCode::Char('r') if !app.filter_active => {
                         app.refresh();
+                        app.clamp_selections();
                         last_refresh = Instant::now();
                     }
                     KeyCode::Char('?') if !app.filter_active => {
@@ -123,12 +126,17 @@ fn handle_tab_keys(app: &mut App, key: KeyCode) {
             KeyCode::Esc => {
                 app.filter_active = false;
                 app.filter_text.clear();
+                app.clamp_selections();
             }
             KeyCode::Enter => app.filter_active = false,
             KeyCode::Backspace => {
                 app.filter_text.pop();
+                app.clamp_selections();
             }
-            KeyCode::Char(c) => app.filter_text.push(c),
+            KeyCode::Char(c) => {
+                app.filter_text.push(c);
+                app.clamp_selections();
+            }
             _ => {}
         }
         return;

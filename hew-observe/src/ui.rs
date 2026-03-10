@@ -266,6 +266,15 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
     draw_message_controls(f, app, chunks[1]);
 }
 
+/// Create a vertical lane separator consisting of Unicode box-drawing characters.
+///
+/// This uses a centering format with a vertical bar (`│`, U+2502) as the fill
+/// character applied to an empty string to produce a `segment_width`-wide bar:
+/// `"{:\u{2502}^width$}", "", width = segment_width`.
+fn make_vertical_lane_bar(segment_width: usize) -> String {
+    format!("{:\u{2502}^width$}", "", width = segment_width)
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -394,10 +403,10 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
             if i == lane_idx {
                 let label_display = if event_label.len() > segment_width && segment_width > 1 {
                     // Truncate with ellipsis when label exceeds segment width
-                    let trunc = segment_width - 1;
+                    let max_label_chars = segment_width - 1;
                     format!(
                         "{}\u{2026}",
-                        &event_label[..event_label.floor_char_boundary(trunc)]
+                        &event_label[..event_label.floor_char_boundary(max_label_chars)]
                     )
                 } else if event_label.len() > segment_width {
                     // Segment too narrow for ellipsis; safe-truncate at char boundary
@@ -417,7 +426,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(event_colour),
                 ));
             } else {
-                let bar = format!("{:\u{2502}^width$}", "", width = segment_width);
+                let bar = make_vertical_lane_bar(segment_width);
                 row_spans.push(Span::styled(bar, theme::dim_style()));
             }
         }
@@ -566,7 +575,9 @@ fn draw_timeline_chart(f: &mut Frame, app: &App, area: Rect) {
                 * chart_width as f64) as usize;
             if x < chart_width {
                 let (glyph, colour) = theme::timeline_event_glyph(&evt.event_type);
-                // If there's already something at this position (density), keep the higher-priority one
+                // Collision handling: only overwrite empty cells or the generic density marker (●).
+                // Higher-priority events (e.g., spawn/crash/stop) are rendered as distinct glyphs and
+                // should not be replaced once drawn, but they may replace ' ' or '\u{25CF}'.
                 let existing = row_chars[x].0;
                 if existing == ' ' || existing == '\u{25CF}' {
                     row_chars[x] = (glyph, colour);
@@ -1144,7 +1155,7 @@ fn draw_help_popup(f: &mut Frame) {
     f.render_widget(help, popup);
 }
 
-/// Render a vertically centred, single-line muted empty-state message.
+/// Render a vertically centered, single-line muted empty-state message.
 ///
 /// Uses a 40%/1-line/60% vertical split so the text sits slightly above center.
 fn draw_empty_state(f: &mut Frame, area: Rect, msg: &str) {

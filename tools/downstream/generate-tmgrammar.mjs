@@ -267,13 +267,13 @@ for (const keywords of Object.values(keywordGroups)) {
 
 const missing = syntaxData.all_keywords.filter(k => !coveredKeywords.has(k));
 if (missing.length > 0) {
-  console.log(`\u26a0  Keywords in all_keywords not assigned to any grammar scope:`);
+  console.log(`\u26a0 Keywords in all_keywords not assigned to any grammar scope:`);
   console.log(`   ${missing.join(', ')}\n`);
 }
 
 const extras = [...coveredKeywords].filter(k => !syntaxData.all_keywords.includes(k));
 if (extras.length > 0) {
-  console.log(`\u26a0  Keywords in grammar scopes but not in all_keywords:`);
+  console.log(`\u26a0 Keywords in grammar scopes but not in all_keywords:`);
   console.log(`   ${extras.join(', ')}\n`);
 }
 

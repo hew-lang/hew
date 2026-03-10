@@ -1,0 +1,416 @@
+//! QUIC transport for internode messaging.
+//!
+//! Provides multiplexed, bidirectional byte streams over QUIC/UDP connections.
+//! QUIC connections carry multiple independent streams so that head-of-line
+//! blocking never stalls unrelated traffic — ideal for actor supervisor chains
+//! and distributed messaging between Hew nodes.
+//!
+//! # Architecture
+//!
+//! ```
+//!  ┌──────────────────────────────────────────────────────────┐
+//!  │ QUICEndpoint                                             │
+//!  │  bound to a local UDP address (client or server)         │
+//!  │                                                          │
+//!  │  ┌─────────────────────────────────────────────────┐    │
+//!  │  │ QUICConnection  (one per remote peer)            │    │
+//!  │  │  ┌──────────────┐  ┌──────────────┐             │    │
+//!  │  │  │ QUICStream   │  │ QUICStream   │  …          │    │
+//!  │  │  │ (send/recv)  │  │ (send/recv)  │             │    │
+//!  │  │  └──────────────┘  └──────────────┘             │    │
+//!  │  └─────────────────────────────────────────────────┘    │
+//!  └──────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Examples
+//!
+//! ## Server
+//!
+//! ```
+//! import std::net::quic;
+//!
+//! fn main() {
+//!     let ep = quic.new_server(":4433");
+//!     let conn = ep.accept();
+//!     let stream = conn.accept_stream();
+//!     let data = stream.recv();
+//!     stream.send(data);
+//!     stream.finish();
+//!     stream.close();
+//!     conn.disconnect();
+//!     ep.close();
+//! }
+//! ```
+//!
+//! ## Client
+//!
+//! ```
+//! import std::net::quic;
+//!
+//! fn main() {
+//!     let ep = quic.new_client();
+//!     let conn = ep.connect("127.0.0.1:4433", "localhost");
+//!     let stream = conn.open_stream();
+//!     stream.send(b"hello quic");
+//!     let reply = stream.recv();
+//!     stream.finish();
+//!     stream.close();
+//!     conn.disconnect();
+//!     ep.close();
+//! }
+//! ```
+
+/// A QUIC endpoint bound to a local UDP address.
+///
+/// An endpoint can operate as a client (dial outgoing connections) or as
+/// a server (accept incoming connections), or both simultaneously.
+///
+/// Created by `quic.new_client()` or `quic.new_server(addr)`.
+/// Must be released with `close()`.
+type QUICEndpoint {}
+
+/// An established QUIC connection to a remote peer.
+///
+/// A connection multiplexes many independent streams over a single UDP path.
+/// Obtained from `endpoint.connect()` (client) or `endpoint.accept()` (server).
+/// Must be released with `disconnect()`.
+type QUICConnection {}
+
+/// A bidirectional QUIC stream within a connection.
+///
+/// Streams are independent of each other: a slow receiver on one stream does
+/// not delay data arriving on another stream of the same connection.
+///
+/// Obtained from `conn.open_stream()` or `conn.accept_stream()`.
+/// Finish the send side with `finish()` when no more data will be sent;
+/// the receive side drains naturally.
+type QUICStream {}
+
+/// An observed QUIC event emitted by an endpoint or connection.
+///
+/// Used by the blocking event API to react to queued connection and channel
+/// events. Pair this with `observe()` for non-destructive snapshots.
+type QUICEvent {}
+
+/// Non-destructive endpoint observation.
+pub type QUICEndpointObservation {
+    local_addr: String;
+    accepted_connections: i64;
+    last_error: String;
+}
+
+/// Non-destructive connection observation.
+pub type QUICConnectionObservation {
+    local_addr: String;
+    peer_addr: String;
+    opened_streams: i64;
+    accepted_streams: i64;
+    rtt_ms: i32;
+    bytes_sent: i64;
+    bytes_received: i64;
+    closed: bool;
+    last_error: String;
+}
+
+/// Non-destructive stream observation.
+pub type QUICStreamObservation {
+    bytes_sent: i64;
+    bytes_received: i64;
+    send_closed: bool;
+    recv_closed: bool;
+    last_error: String;
+}
+
+// ── QUICEndpoint methods ──────────────────────────────────────────────
+
+/// Methods available on a `QUICEndpoint`.
+trait QUICEndpointMethods {
+    /// Dial a remote QUIC server.
+    ///
+    /// `addr` is a `"host:port"` address; `server_name` is the TLS SNI name
+    /// used to verify the server's certificate.
+    ///
+    /// Returns an established `QUICConnection` or a zero-value on failure.
+    fn connect(self: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
+
+    /// Block until a remote peer opens an incoming connection (server side).
+    ///
+    /// Returns an established `QUICConnection` or a zero-value on failure.
+    fn accept(self: QUICEndpoint) -> QUICConnection;
+
+    /// Close the endpoint and release all associated resources.
+    fn close(self: QUICEndpoint);
+
+    /// Block until the next queued QUIC event on this endpoint.
+    ///
+    /// Events are recorded by successful `connect()` and `accept()` calls and
+    /// by connection failures observed by the runtime.
+    fn on_event(self: QUICEndpoint) -> QUICEvent;
+
+    /// Return a non-destructive snapshot of endpoint state.
+    fn observe(self: QUICEndpoint) -> QUICEndpointObservation;
+}
+
+impl QUICEndpointMethods for QUICEndpoint {
+    fn connect(self: QUICEndpoint, addr: String, server_name: String) -> QUICConnection {
+        hew_quic_endpoint_connect(self, addr, server_name)
+    }
+    fn accept(self: QUICEndpoint) -> QUICConnection {
+        hew_quic_endpoint_accept(self)
+    }
+    fn close(self: QUICEndpoint) {
+        hew_quic_endpoint_close(self);
+    }
+    fn on_event(self: QUICEndpoint) -> QUICEvent {
+        hew_quic_endpoint_on_event(self)
+    }
+    fn observe(self: QUICEndpoint) -> QUICEndpointObservation {
+        endpoint_observe(self)
+    }
+}
+
+// ── QUICConnection methods ────────────────────────────────────────────
+
+/// Methods available on a `QUICConnection`.
+trait QUICConnectionMethods {
+    /// Open a new bidirectional stream on this connection.
+    ///
+    /// Returns a `QUICStream` or a zero-value on failure.
+    fn open_stream(self: QUICConnection) -> QUICStream;
+
+    /// Block until the remote peer opens an incoming stream.
+    ///
+    /// Returns a `QUICStream` or a zero-value on failure.
+    fn accept_stream(self: QUICConnection) -> QUICStream;
+
+    /// Gracefully close this connection and release its resources.
+    ///
+    /// Returns 0 on success or −1 on error.
+    fn disconnect(self: QUICConnection) -> i32;
+
+    /// Block until the next queued QUIC event on this connection.
+    ///
+    /// Events are recorded when streams open, when the peer disconnects, and
+    /// when stream operations fail.
+    fn on_event(self: QUICConnection) -> QUICEvent;
+
+    /// Return a non-destructive snapshot of connection state and telemetry.
+    fn observe(self: QUICConnection) -> QUICConnectionObservation;
+}
+
+impl QUICConnectionMethods for QUICConnection {
+    fn open_stream(self: QUICConnection) -> QUICStream {
+        hew_quic_conn_open_stream(self)
+    }
+    fn accept_stream(self: QUICConnection) -> QUICStream {
+        hew_quic_conn_accept_stream(self)
+    }
+    fn disconnect(self: QUICConnection) -> i32 {
+        hew_quic_conn_disconnect(self)
+    }
+    fn on_event(self: QUICConnection) -> QUICEvent {
+        hew_quic_conn_on_event(self)
+    }
+    fn observe(self: QUICConnection) -> QUICConnectionObservation {
+        connection_observe(self)
+    }
+}
+
+// ── QUICStream methods ────────────────────────────────────────────────
+
+/// Methods available on a `QUICStream`.
+trait QUICStreamMethods {
+    /// Send raw bytes on this stream.
+    ///
+    /// Returns 0 on success or −1 on error.
+    fn send(self: QUICStream, data: bytes) -> i32;
+
+    /// Block until data arrives and return the received bytes.
+    ///
+    /// Returns an empty buffer on stream close or error.
+    fn recv(self: QUICStream) -> bytes;
+
+    /// Signal that no more data will be sent on this stream.
+    ///
+    /// The receive side of the remote peer will see EOF after all buffered
+    /// data has been delivered. This does not release the local stream handle;
+    /// call `close()` when you are finished with the stream. Returns 0 on
+    /// success or −1 on error.
+    fn finish(self: QUICStream) -> i32;
+
+    /// Abruptly stop this stream with an application-defined error code.
+    ///
+    /// Unlike `finish`, pending data is discarded. Call `close()` afterwards to
+    /// release the local stream handle. Returns 0 on success or −1 on error.
+    fn stop(self: QUICStream, error_code: i64) -> i32;
+
+    /// Release the local stream handle.
+    ///
+    /// Call `finish()` first if you want the peer to observe a graceful EOF.
+    fn close(self: QUICStream) -> i32;
+
+    /// Return a non-destructive snapshot of stream state.
+    fn observe(self: QUICStream) -> QUICStreamObservation;
+}
+
+impl QUICStreamMethods for QUICStream {
+    fn send(self: QUICStream, data: bytes) -> i32 { hew_quic_stream_send(self, data) }
+    fn recv(self: QUICStream) -> bytes { hew_quic_stream_recv(self) }
+    fn finish(self: QUICStream) -> i32 { hew_quic_stream_finish(self) }
+    fn stop(self: QUICStream, error_code: i64) -> i32 { hew_quic_stream_stop(self, error_code) }
+    fn close(self: QUICStream) -> i32 { hew_quic_stream_close(self) }
+    fn observe(self: QUICStream) -> QUICStreamObservation {
+        stream_observe(self)
+    }
+}
+
+// ── QUICEvent methods ─────────────────────────────────────────────────
+
+/// Methods available on a `QUICEvent`.
+trait QUICEventMethods {
+    /// Return the event kind as an integer.
+    ///
+    /// Event kinds:
+    ///   0 — connected, 1 — disconnected, 2 — stream opened,
+    ///   3 — stream closed, −1 — error.
+    fn kind(self: QUICEvent) -> i32;
+
+    /// Release the event and its resources.
+    fn free(self: QUICEvent);
+}
+
+impl QUICEventMethods for QUICEvent {
+    fn kind(self: QUICEvent) -> i32 { hew_quic_event_kind(self) }
+    fn free(self: QUICEvent) { hew_quic_event_free(self); }
+}
+
+// ── Module-level constructors ─────────────────────────────────────────
+
+/// Create a QUIC client endpoint bound to an ephemeral local port.
+///
+/// The endpoint is configured with a permissive TLS verifier suitable
+/// for development. Pass TLS configuration explicitly for production use.
+///
+/// # Examples
+///
+/// ```
+/// let ep = quic.new_client();
+/// let conn = ep.connect("node2.example.com:4433", "node2.example.com");
+/// ```
+pub fn new_client() -> QUICEndpoint {
+    hew_quic_new_client()
+}
+
+/// Create a QUIC client endpoint that trusts the given CA bundle.
+///
+/// `ca_pem` must contain one or more PEM-encoded certificates.
+pub fn new_client_with_ca(ca_pem: String) -> QUICEndpoint {
+    hew_quic_new_client_with_ca(ca_pem)
+}
+
+/// Bind a QUIC server endpoint on `addr`.
+///
+/// `addr` uses `"host:port"` or `":port"` notation.  A self-signed
+/// certificate is generated automatically for development use.
+///
+/// # Examples
+///
+/// ```
+/// let ep = quic.new_server(":4433");
+/// let conn = ep.accept();
+/// ```
+pub fn new_server(addr: String) -> QUICEndpoint {
+    hew_quic_new_server(addr)
+}
+
+/// Bind a QUIC server endpoint on `addr` with explicit TLS material.
+///
+/// `cert_pem` may contain a PEM-encoded certificate chain; `key_pem` must
+/// contain the matching PEM-encoded private key.
+pub fn new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint {
+    hew_quic_new_server_with_tls(addr, cert_pem, key_pem)
+}
+
+// Keep observation assembly in module-level wrappers so imported
+// `handle.observe()` calls rewrite during AST enrichment.
+pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
+    QUICEndpointObservation {
+        local_addr: hew_quic_endpoint_local_addr(ep),
+        accepted_connections: hew_quic_endpoint_accepted_connections(ep),
+        last_error: hew_quic_endpoint_last_error(ep),
+    }
+}
+
+pub fn connection_observe(conn: QUICConnection) -> QUICConnectionObservation {
+    QUICConnectionObservation {
+        local_addr: hew_quic_conn_local_addr(conn),
+        peer_addr: hew_quic_conn_peer_addr(conn),
+        opened_streams: hew_quic_conn_opened_streams(conn),
+        accepted_streams: hew_quic_conn_accepted_streams(conn),
+        rtt_ms: hew_quic_conn_rtt_ms(conn),
+        bytes_sent: hew_quic_conn_bytes_sent(conn),
+        bytes_received: hew_quic_conn_bytes_received(conn),
+        closed: hew_quic_conn_is_closed(conn),
+        last_error: hew_quic_conn_last_error(conn),
+    }
+}
+
+pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
+    QUICStreamObservation {
+        bytes_sent: hew_quic_stream_bytes_sent(stream),
+        bytes_received: hew_quic_stream_bytes_received(stream),
+        send_closed: hew_quic_stream_send_closed(stream),
+        recv_closed: hew_quic_stream_recv_closed(stream),
+        last_error: hew_quic_stream_last_error(stream),
+    }
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    // Endpoint constructors
+    fn hew_quic_new_client() -> QUICEndpoint;
+    fn hew_quic_new_client_with_ca(ca_pem: String) -> QUICEndpoint;
+    fn hew_quic_new_server(addr: String) -> QUICEndpoint;
+    fn hew_quic_new_server_with_tls(addr: String, cert_pem: String, key_pem: String) -> QUICEndpoint;
+
+    // Endpoint methods
+    fn hew_quic_endpoint_connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
+    fn hew_quic_endpoint_accept(ep: QUICEndpoint) -> QUICConnection;
+    fn hew_quic_endpoint_close(ep: QUICEndpoint);
+    fn hew_quic_endpoint_on_event(ep: QUICEndpoint) -> QUICEvent;
+    fn hew_quic_endpoint_local_addr(ep: QUICEndpoint) -> String;
+    fn hew_quic_endpoint_accepted_connections(ep: QUICEndpoint) -> i64;
+    fn hew_quic_endpoint_last_error(ep: QUICEndpoint) -> String;
+
+    // Connection methods
+    fn hew_quic_conn_open_stream(conn: QUICConnection) -> QUICStream;
+    fn hew_quic_conn_accept_stream(conn: QUICConnection) -> QUICStream;
+    fn hew_quic_conn_disconnect(conn: QUICConnection) -> i32;
+    fn hew_quic_conn_on_event(conn: QUICConnection) -> QUICEvent;
+    fn hew_quic_conn_local_addr(conn: QUICConnection) -> String;
+    fn hew_quic_conn_peer_addr(conn: QUICConnection) -> String;
+    fn hew_quic_conn_opened_streams(conn: QUICConnection) -> i64;
+    fn hew_quic_conn_accepted_streams(conn: QUICConnection) -> i64;
+    fn hew_quic_conn_rtt_ms(conn: QUICConnection) -> i32;
+    fn hew_quic_conn_bytes_sent(conn: QUICConnection) -> i64;
+    fn hew_quic_conn_bytes_received(conn: QUICConnection) -> i64;
+    fn hew_quic_conn_is_closed(conn: QUICConnection) -> bool;
+    fn hew_quic_conn_last_error(conn: QUICConnection) -> String;
+
+    // Stream methods
+    fn hew_quic_stream_send(stream: QUICStream, data: bytes) -> i32;
+    fn hew_quic_stream_recv(stream: QUICStream) -> bytes;
+    fn hew_quic_stream_finish(stream: QUICStream) -> i32;
+    fn hew_quic_stream_stop(stream: QUICStream, error_code: i64) -> i32;
+    fn hew_quic_stream_close(stream: QUICStream) -> i32;
+    fn hew_quic_stream_bytes_sent(stream: QUICStream) -> i64;
+    fn hew_quic_stream_bytes_received(stream: QUICStream) -> i64;
+    fn hew_quic_stream_send_closed(stream: QUICStream) -> bool;
+    fn hew_quic_stream_recv_closed(stream: QUICStream) -> bool;
+    fn hew_quic_stream_last_error(stream: QUICStream) -> String;
+
+    // Event methods
+    fn hew_quic_event_kind(event: QUICEvent) -> i32;
+    fn hew_quic_event_free(event: QUICEvent);
+}

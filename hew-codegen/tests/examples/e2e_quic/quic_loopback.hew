@@ -1,0 +1,122 @@
+import std::net::quic;
+
+fn main() {
+    let server = quic.new_server("127.0.0.1:0");
+    let server_endpoint = server.observe();
+    let dial_addr = server_endpoint.local_addr;
+
+    var server_conn_accepted_streams: i64 = 0;
+    var server_stream_bytes_received: i64 = 0;
+    var server_stream_bytes_sent: i64 = 0;
+    var server_stream_send_closed = false;
+    var server_conn_closed = false;
+
+    scope |s| {
+        s.spawn {
+            let conn = server.accept();
+            let connected = server.on_event();
+            assert_eq(connected.kind(), 0);
+            connected.free();
+
+            let server_obs = server.observe();
+            assert_eq(server_obs.accepted_connections, 1);
+            assert_eq(server_obs.last_error, "");
+
+            let stream = conn.accept_stream();
+            let opened = conn.on_event();
+            assert_eq(opened.kind(), 2);
+            opened.free();
+
+            let conn_obs = conn.observe();
+            assert_eq(conn_obs.accepted_streams, 1);
+            assert(conn_obs.rtt_ms >= 0);
+
+            let data = stream.recv();
+            assert_eq(data.len(), 10);
+            let stream_after_recv = stream.observe();
+            assert_eq(stream_after_recv.bytes_received, 10);
+            assert_eq(stream_after_recv.last_error, "");
+
+            assert_eq(stream.send(data), 0);
+            assert_eq(stream.finish(), 0);
+            let stream_after_send = stream.observe();
+            assert_eq(stream_after_send.bytes_sent, 10);
+            assert(stream_after_send.send_closed);
+
+            assert_eq(stream.close(), 0);
+            let closed = conn.on_event();
+            assert_eq(closed.kind(), 3);
+            closed.free();
+
+            let disconnected = conn.on_event();
+            assert_eq(disconnected.kind(), 1);
+            disconnected.free();
+
+            server_conn_accepted_streams = conn_obs.accepted_streams;
+            server_stream_bytes_received = stream_after_recv.bytes_received;
+            server_stream_bytes_sent = stream_after_send.bytes_sent;
+            server_stream_send_closed = stream_after_send.send_closed;
+            let conn_after_disconnect = conn.observe();
+            server_conn_closed = conn_after_disconnect.closed;
+
+            assert_eq(conn.disconnect(), 0);
+            server.close();
+        };
+
+        let client = quic.new_client();
+        let conn = client.connect(dial_addr, "localhost");
+        let connected = client.on_event();
+        assert_eq(connected.kind(), 0);
+        connected.free();
+
+        let client_obs = client.observe();
+        assert_eq(client_obs.last_error, "");
+
+        let stream = conn.open_stream();
+        let opened = conn.on_event();
+        assert_eq(opened.kind(), 2);
+        opened.free();
+
+        let conn_before_send = conn.observe();
+        assert_eq(conn_before_send.opened_streams, 1);
+        assert(conn_before_send.rtt_ms >= 0);
+        assert(conn_before_send.bytes_sent >= 0);
+        assert(conn_before_send.bytes_received >= 0);
+
+        assert_eq(stream.send(b"hello quic"), 0);
+        let stream_after_send = stream.observe();
+        assert_eq(stream_after_send.bytes_sent, 10);
+        assert(!stream_after_send.send_closed);
+
+        let reply = stream.recv();
+        assert_eq(reply.len(), 10);
+        let stream_after_recv = stream.observe();
+        assert_eq(stream_after_recv.bytes_received, 10);
+        assert_eq(stream_after_recv.last_error, "");
+
+        assert_eq(stream.finish(), 0);
+        let eof = stream.recv();
+        assert_eq(eof.len(), 0);
+        let stream_after_eof = stream.observe();
+        assert(stream_after_eof.recv_closed);
+
+        let conn_after_io = conn.observe();
+        assert(conn_after_io.rtt_ms >= 0);
+        assert(conn_after_io.bytes_sent > 0);
+        assert(conn_after_io.bytes_received > 0);
+
+        assert_eq(stream.close(), 0);
+        let closed = conn.on_event();
+        assert_eq(closed.kind(), 3);
+        closed.free();
+
+        assert_eq(conn.disconnect(), 0);
+        client.close();
+    }
+
+    println(server_conn_accepted_streams);
+    println(server_stream_bytes_received);
+    println(server_stream_bytes_sent);
+    println(server_stream_send_closed);
+    println(server_conn_closed);
+}

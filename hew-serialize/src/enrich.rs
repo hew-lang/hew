@@ -2851,6 +2851,48 @@ mod tests {
     }
 
     #[test]
+    fn test_enrich_quic_observe_handle_method_uses_wrapper_fn() {
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            hew_types::check::SpanKey { start: 0, end: 2 },
+            hew_types::Ty::Named {
+                name: "quic.QUICEndpoint".to_string(),
+                args: vec![],
+            },
+        );
+        let registry = test_registry_with(&["std::net::quic"]);
+
+        let mut expr: Spanned<Expr> = (
+            Expr::MethodCall {
+                receiver: Box::new((Expr::Identifier("ep".to_string()), 0..2)),
+                method: "observe".to_string(),
+                args: vec![],
+            },
+            0..10,
+        );
+
+        let mut diagnostics = Vec::new();
+        enrich_expr_with_diagnostics(&mut expr, &tco, &mut diagnostics, &registry).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        match &expr.0 {
+            Expr::Call { function, args, .. } => {
+                match &function.0 {
+                    Expr::Identifier(name) => {
+                        assert_eq!(name, "endpoint_observe");
+                    }
+                    other => panic!("expected Identifier, got {other:?}"),
+                }
+                assert_eq!(args.len(), 1, "observe() should prepend the receiver");
+            }
+            other => panic!("expected Call expr, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_enrich_user_module_preserves_multiple_args() {
         use hew_parser::ast::CallArg;
 

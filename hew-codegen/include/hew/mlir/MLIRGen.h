@@ -440,6 +440,9 @@ private:
   // the memref stores an `!llvm.ptr` to a heap cell, and lookupVariable /
   // storeVariable perform double indirection through it.
   llvm::DenseMap<mlir::Value, mlir::Type> heapCellValueTypes;
+  // Memref-backed local slots whose element type is an LLVM storage type
+  // rather than the original semantic Hew type. Loads/stores must bitcast.
+  llvm::DenseMap<mlir::Value, mlir::Type> slotSemanticTypes;
 
   // ── Hoisted loop-invariant values ────────────────────────────────
   // Maps AST expression pointers to pre-computed MLIR values so that
@@ -722,7 +725,7 @@ private:
   // Per-function flag: true when an early return has been taken.
   mlir::Value returnFlag; // memref<i1>, nullptr when not active
   // Per-function slot for storing the return value.
-  mlir::Value returnSlot; // memref<ReturnType>, nullptr when not active
+  mlir::Value returnSlot; // memref<LLVM storage of ReturnType>, nullptr when not active
 
   // ── Try/catch context ────────────────────────────────────────
   // When non-null, PostfixTry (?) jumps here instead of func.return.

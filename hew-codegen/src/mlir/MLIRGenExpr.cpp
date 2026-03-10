@@ -405,9 +405,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                 llvm::ArrayRef<mlir::LLVM::GEPArg>{0, static_cast<int32_t>(field.index)});
             auto fieldVal =
                 mlir::LLVM::LoadOp::create(builder, location, field.type, fieldPtr).getResult();
-            if ((mlir::isa<hew::VecType>(field.semanticType) ||
-                 mlir::isa<hew::HashMapType>(field.semanticType)) &&
-                field.semanticType != field.type)
+            if (field.semanticType != field.type)
               return coerceType(fieldVal, field.semanticType, location);
             return fieldVal;
           }
@@ -494,9 +492,7 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
                                                   builder.getStringAttr(fieldName),
                                                   builder.getI64IntegerAttr(field.index))
                               .getResult();
-          if ((mlir::isa<hew::VecType>(field.semanticType) ||
-               mlir::isa<hew::HashMapType>(field.semanticType)) &&
-              field.semanticType != field.type)
+          if (field.semanticType != field.type)
             return coerceType(fieldVal, field.semanticType, location);
           return fieldVal;
         }

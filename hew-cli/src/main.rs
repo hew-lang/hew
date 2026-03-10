@@ -26,6 +26,8 @@ mod link;
 mod machine;
 mod manifest;
 mod platform;
+#[cfg(unix)]
+mod signal;
 mod test_runner;
 mod watch;
 mod wire;
@@ -148,10 +150,26 @@ fn cmd_run(args: &[String]) {
         }
     }
 
-    // Run the compiled binary
-    let status = std::process::Command::new(&tmp_bin)
+    // Run the compiled binary, holding a Child handle so signals sent directly
+    // to `hew run` also terminate the compiled program instead of orphaning it.
+    let mut child = match std::process::Command::new(&tmp_bin)
         .args(program_args)
-        .status();
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error: cannot run compiled binary: {e}");
+            drop(tmp_path);
+            std::process::exit(1);
+        }
+    };
+
+    // Forward SIGTERM/SIGINT to the child so that signals sent directly to the
+    // wrapper also terminate the compiled program instead of orphaning it.
+    #[cfg(unix)]
+    signal::forward_signals_to_child(child.id());
+
+    let status = child.wait();
 
     // Drop TempPath to clean up before exit (std::process::exit skips destructors)
     drop(tmp_path);

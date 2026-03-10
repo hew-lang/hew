@@ -1419,6 +1419,7 @@ dependencies = [
  "hew-parser",
  "hew-serialize",
  "hew-types",
+ "libc",
  "notify",
  "pulldown-cmark",
  "rustyline",

@@ -1096,7 +1096,7 @@ fn resolve_file_imports(
                         let rest_dir: PathBuf = decl.path[1..]
                             .iter()
                             .collect::<PathBuf>()
-                            .join(format!("{}.hew", last));
+                            .join(format!("{last}.hew"));
                         let rest_flat: PathBuf = decl.path[1..]
                             .iter()
                             .collect::<PathBuf>()

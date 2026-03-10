@@ -312,6 +312,10 @@ fn find_runtime_lib(name: &str) -> Result<String, String> {
 /// For each module that has a standalone package crate (e.g.,
 /// `std::encoding::hex` → `libhew_std_encoding_hex.a`), searches
 /// the standard candidate directories and returns the found paths.
+///
+/// `pkg_path` is the optional `--pkg-path` override: when set, also searches
+/// `{pkg_path}/target/release` and `{pkg_path}/target/debug` for ecosystem
+/// package staticlibs (e.g. `hew::net::http` → `libhew_hew_net_http.a`).
 pub fn find_package_libs(modules: &[String], pkg_path: Option<&std::path::Path>) -> Vec<String> {
     let Ok(exe) = std::env::current_exe() else {
         return vec![];

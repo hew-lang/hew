@@ -8,5 +8,6 @@ fn main() {
     counter.send(5);
     counter.send(10);
     counter.send(15);
-    sleep_ms(100);
+    close(counter);
+    await counter;
 }

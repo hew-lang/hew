@@ -14,16 +14,19 @@ actor Counter {
         print(amount);
         println(f", now {self.value}");
     }
+    receive fn report() -> int {
+        self.value
+    }
 }
 
 fn main() {
     println("=== Actor Counter ===");
-    let c = spawn Counter(count: 0);
+    let c = spawn Counter(value: 0);
     c.increment(5);
     c.increment(3);
     c.decrement(2);
     c.increment(10);
     c.decrement(1);
-    sleep_ms(200);
+    await c.report();
     println("Done");
 }

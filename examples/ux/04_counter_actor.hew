@@ -7,15 +7,14 @@ actor Counter {
         self.count = self.count + n;
     }
 
-    receive fn get_count() {
-        println(self.count);
+    receive fn get_count() -> i32 {
+        self.count
     }
 }
 
 fn main() {
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     counter.increment(5);
     counter.increment(10);
-    counter.get_count();
-    sleep_ms(100);
+    println(await counter.get_count());
 }

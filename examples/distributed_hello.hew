@@ -16,7 +16,8 @@ fn main() {
     let counter = spawn Counter;
     counter.increment(5);
     counter.increment(3);
-    sleep_ms(200);
+    close(counter);
+    await counter;
 
     // ── Distributed API (runtime ready, codegen pending) ─────
     // Node::start("0.0.0.0:9000");

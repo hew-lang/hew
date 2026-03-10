@@ -12,14 +12,16 @@ actor Counter {
 fn main() {
     println("=== Live Actor Runtime Test ===");
     println("Spawning Counter actor on its own thread...");
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     println("[main] Sending increment(10)");
-    counter.increment(10);
+    let first = counter.increment(10);
     println("[main] Sending increment(20)");
-    counter.increment(20);
+    let second = counter.increment(20);
     println("[main] Sending increment(12)");
-    counter.increment(12);
-    sleep_ms(50);
+    let third = counter.increment(12);
+    await first;
+    await second;
+    await third;
     println("[main] All messages processed. Stopping actor.");
     stop(counter);
     println("[main] Done. Expected final count: 42");

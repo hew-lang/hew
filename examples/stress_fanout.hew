@@ -8,31 +8,22 @@ fn fib(n: i32) -> i32 {
     }
 }
 
-actor Computer {
-    let id: i32;
-    receive fn compute(x: i32) {
-        let result = fib(x);
-        print("Worker ");
-        print(self.id);
-        print(": fib(");
-        print(x);
-        println(f") = {result}");
-    }
+fn print_result(worker_id: i32, x: i32, result: i32) {
+    print("Worker ");
+    print(worker_id);
+    print(": fib(");
+    print(x);
+    println(f") = {result}");
 }
 
-actor ResultCollector {
-    let received: i32;
-    receive fn done() {
-        self.received = self.received + 1;
-    }
-    receive fn report() {
-        println(f"Results received: {self.received}");
+actor Computer {
+    receive fn compute(x: i32) -> i32 {
+        fib(x)
     }
 }
 
 fn main() {
     println("=== Stress: Fan-out ===");
-    let collector = spawn ResultCollector;
     // Fan out to 10 workers
     let w1 = spawn Computer;
     let w2 = spawn Computer;
@@ -45,46 +36,61 @@ fn main() {
     let w9 = spawn Computer;
     let w10 = spawn Computer;
     // Send different workloads to each
-    w1.compute(5);
-    w2.compute(8);
-    w3.compute(10);
-    w4.compute(12);
-    w5.compute(6);
-    w6.compute(9);
-    w7.compute(11);
-    w8.compute(7);
-    w9.compute(13);
-    w10.compute(14);
+    let (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10) = join {
+        await w1.compute(5),
+        await w2.compute(8),
+        await w3.compute(10),
+        await w4.compute(12),
+        await w5.compute(6),
+        await w6.compute(9),
+        await w7.compute(11),
+        await w8.compute(7),
+        await w9.compute(13),
+        await w10.compute(14),
+    };
 
-    // Track completions
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    collector.done();
-    sleep_ms(500);
-    collector.report();
+    print_result(1, 5, r1);
+    print_result(2, 8, r2);
+    print_result(3, 10, r3);
+    print_result(4, 12, r4);
+    print_result(5, 6, r5);
+    print_result(6, 9, r6);
+    print_result(7, 11, r7);
+    print_result(8, 7, r8);
+    print_result(9, 13, r9);
+    print_result(10, 14, r10);
+    println("Results received: 10");
 
     // Second round: burst messages to all workers
     println("--- Round 2: burst ---");
+    var completed = 10;
+    var checksum_total = r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10;
     for i in 0..5 {
-        w1.compute(i + 3);
-        w2.compute(i + 4);
-        w3.compute(i + 5);
-        w4.compute(i + 6);
-        w5.compute(i + 7);
-        w6.compute(i + 3);
-        w7.compute(i + 4);
-        w8.compute(i + 5);
-        w9.compute(i + 6);
-        w10.compute(i + 7);
+        let round: i32 = i;
+        let (b1, b2, b3, b4, b5, b6, b7, b8, b9, b10) = join {
+            await w1.compute(round + 3),
+            await w2.compute(round + 4),
+            await w3.compute(round + 5),
+            await w4.compute(round + 6),
+            await w5.compute(round + 7),
+            await w6.compute(round + 3),
+            await w7.compute(round + 4),
+            await w8.compute(round + 5),
+            await w9.compute(round + 6),
+            await w10.compute(round + 7),
+        };
+        let round_checksum = b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + b10;
+        completed = completed + 10;
+        checksum_total = checksum_total + round_checksum;
+        print("Burst ");
+        print(round + 1);
+        print(": checksum = ");
+        print(round_checksum);
+        print(", results received = ");
+        println(completed);
     }
-    sleep_ms(500);
+    print("Total checksum: ");
+    println(checksum_total);
     println("PASS: fan-out to 10 workers with burst messaging");
     stop(w1);
     stop(w2);
@@ -96,5 +102,4 @@ fn main() {
     stop(w8);
     stop(w9);
     stop(w10);
-    stop(collector);
 }

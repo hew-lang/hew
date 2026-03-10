@@ -1,11 +1,11 @@
 // Test: Actors and Messaging
 // Exercises: actor definition, receive fn, spawn, message send, actor state, stop
 actor Counter {
-    let count: i32;
-    receive fn increment(amount: i32) {
+    let count: int;
+    receive fn increment(amount: int) {
         self.count = self.count + amount;
     }
-    receive fn get_count() -> i32 {
+    receive fn get_count() -> int {
         self.count
     }
     receive fn reset() {
@@ -14,41 +14,49 @@ actor Counter {
 }
 
 actor Printer {
-    let prefix: i32;
-    receive fn print_msg(value: i32) {
+    let prefix: int;
+    receive fn print_msg(value: int) -> int {
         print("  [Printer ");
         print(self.prefix);
         println(f"] got: {value}");
+        value
     }
 }
 
-fn test_basic_actor() -> i32 {
+fn test_basic_actor() -> int {
     println("--- test_basic_actor ---");
-    let counter = spawn Counter;
+    let counter = spawn Counter(count: 0);
     counter.increment(10);
     counter.increment(20);
     counter.increment(12);
-    sleep_ms(50);
-    println("PASS: basic actor spawn + messaging");
+    let count = await counter.get_count();
     stop(counter);
-    1
+    if count == 42 {
+        println("PASS: basic actor spawn + messaging");
+        1
+    } else {
+        println("FAIL: basic actor spawn + messaging");
+        0
+    }
 }
 
-fn test_multiple_actors() -> i32 {
+fn test_multiple_actors() -> int {
     println("--- test_multiple_actors ---");
-    let p1 = spawn Printer;
-    let p2 = spawn Printer;
-    p1.print_msg(100);
-    p2.print_msg(200);
-    p1.print_msg(300);
-    sleep_ms(50);
+    let p1 = spawn Printer(prefix: 1);
+    let p2 = spawn Printer(prefix: 2);
+    let first = p1.print_msg(100);
+    let second = p2.print_msg(200);
+    let third = p1.print_msg(300);
+    await first;
+    await second;
+    await third;
     println("PASS: multiple actors");
     stop(p1);
     stop(p2);
     1
 }
 
-fn test_lambda_actor() -> i32 {
+fn test_lambda_actor() -> int {
     println("--- test_lambda_actor ---");
     let doubler = spawn (x: i32) => {
         print("  doubled: ");
@@ -56,29 +64,31 @@ fn test_lambda_actor() -> i32 {
     };
     doubler.send(21);
     doubler.send(5);
-    sleep_ms(50);
+    close(doubler);
+    await doubler;
     println("PASS: lambda actor");
     1
 }
 
-fn test_actor_factory() -> i32 {
+fn test_actor_factory() -> int {
     println("--- test_actor_factory ---");
     let m = make_multiplier(3);
     m.send(10);
     m.send(7);
-    sleep_ms(50);
+    close(m);
+    await m;
     println("PASS: actor factory");
     1
 }
 
-fn make_multiplier(factor: i32) -> Actor<i32> {
-    spawn (x: i32) => {
+fn make_multiplier(factor: int) -> Actor<int> {
+    spawn (x: int) => {
         print("  multiplied: ");
         println(x * factor);
     }
 }
 
-fn test_complex_lambda() -> i32 {
+fn test_complex_lambda() -> int {
     println("--- test_complex_lambda ---");
     let processor = spawn (n: i32) => {
         if n > 10 {
@@ -89,15 +99,16 @@ fn test_complex_lambda() -> i32 {
     };
     processor.send(5);
     processor.send(15);
-    sleep_ms(50);
+    close(processor);
+    await processor;
     println("PASS: complex lambda actor");
     1
 }
 
-fn main() -> i32 {
+fn main() -> int {
     println("=== Test: Actors & Messaging ===");
-    var passed = 0;
-    let total = 5;
+    var passed: int = 0;
+    let total: int = 5;
     passed = passed + test_basic_actor();
     passed = passed + test_multiple_actors();
     passed = passed + test_lambda_actor();

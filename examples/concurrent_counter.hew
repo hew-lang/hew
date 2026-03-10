@@ -8,16 +8,16 @@ actor Counter {
     receive fn increment(n: i32) {
         self.count = self.count + n;
     }
-    receive fn print_total() {
+    receive fn print_total() -> i32 {
         println(self.count);
+        self.count
     }
 }
 
 fn main() {
-    let c = spawn Counter;
+    let c = spawn Counter(count: 0);
     c.increment(10);
     c.increment(20);
     c.increment(12);
-    c.print_total();
-    sleep_ms(200);
+    await c.print_total();
 }

@@ -14,6 +14,9 @@ actor Accumulator {
         print(n);
         println(f", total = {self.total}");
     }
+    receive fn report() -> int {
+        self.total
+    }
 }
 
 fn main() {
@@ -24,7 +27,7 @@ fn main() {
     acc.multiply(2);
     acc.add(4);
     acc.multiply(3);
-    sleep_ms(200);
+    await acc.report();
     // Expected: 0 + 5 = 5, + 3 = 8, * 2 = 16, + 4 = 20, * 3 = 60
     println("Done");
 }

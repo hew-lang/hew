@@ -14,16 +14,16 @@ actor Counter {
         self.value *= n;
     }
 
-    receive fn print_value() {
+    receive fn print_value() -> i32 {
         println(self.value);
+        self.value
     }
 }
 
 fn main() {
-    let counter = spawn Counter;
+    let counter = spawn Counter(value: 0);
     counter.set(3);
     counter.double();
     counter.scale(4);
-    counter.print_value();
-    sleep_ms(50);
+    await counter.print_value();
 }

@@ -100,7 +100,8 @@ jobs:
             libmlir-${{ env.LLVM_VERSION }}-dev \
             mlir-${{ env.LLVM_VERSION }}-tools \
             clang-${{ env.LLVM_VERSION }} \
-            libssl-dev pkg-config
+            libssl-dev pkg-config \
+            zlib1g-dev libzstd-dev
 
       - name: Install LLVM/MLIR (macOS)
         if: startsWith(matrix.target, 'darwin')
@@ -206,6 +207,34 @@ jobs:
       - name: Build hew, adze, and hew-lsp
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
+      - name: Build stdlib packages
+        run: |
+          cargo build \
+            -p hew-std-encoding-base64 \
+            -p hew-std-encoding-compress \
+            -p hew-std-encoding-csv \
+            -p hew-std-encoding-json \
+            -p hew-std-encoding-markdown \
+            -p hew-std-encoding-msgpack \
+            -p hew-std-encoding-protobuf \
+            -p hew-std-encoding-toml \
+            -p hew-std-encoding-yaml \
+            -p hew-std-crypto-crypto \
+            -p hew-std-crypto-jwt \
+            -p hew-std-crypto-password \
+            -p hew-std-net-http \
+            -p hew-std-net-ipnet \
+            -p hew-std-net-smtp \
+            -p hew-std-net-url \
+            -p hew-std-net-websocket \
+            -p hew-std-time-cron \
+            -p hew-std-time-datetime \
+            -p hew-std-text-regex \
+            -p hew-std-text-semver \
+            -p hew-std-misc-uuid \
+            -p hew-std-misc-log \
+            --release --target ${{ matrix.rust_target }}
+
       - name: Smoke test hew-lsp (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
@@ -280,8 +309,12 @@ jobs:
           # Runtime library
           cp "target/${{ matrix.rust_target }}/release/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
 
-          # Standard library sources
-          cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+          # Stdlib package static libraries
+          find "target/${{ matrix.rust_target }}/release" -maxdepth 1 -name "libhew_std_*.a" \
+            -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+
+          # Standard library sources (all .hew files, including subdirectories)
+          cp -r std/. "${ARCHIVE_NAME}/std/"
 
           # Shell completions (hew + adze)
           cp completions/hew.bash completions/hew.zsh completions/hew.fish \
@@ -312,8 +345,12 @@ jobs:
           Copy-Item "hew-codegen/build/src/hew-codegen.exe"                      "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
 
-          # Standard library sources
-          Copy-Item "std/*.hew" "${ArchiveName}/std/" -ErrorAction SilentlyContinue
+          # Stdlib package static libraries
+          Get-ChildItem "target/${{ matrix.rust_target }}/release" -Filter "hew_std_*.lib" |
+            Copy-Item -Destination "${ArchiveName}/lib/"
+
+          # Standard library sources (all .hew files, including subdirectories)
+          Copy-Item "std" "${ArchiveName}/std" -Recurse
 
           # Licenses
           Copy-Item "LICENSE-MIT" "${ArchiveName}/"
@@ -519,6 +556,19 @@ jobs:
             # ── Rust builds (release) ──────────────────────────────────────
             cargo build -p hew-runtime --release
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+            cargo build \
+              -p hew-std-encoding-base64 -p hew-std-encoding-compress \
+              -p hew-std-encoding-csv -p hew-std-encoding-json \
+              -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
+              -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
+              -p hew-std-encoding-yaml -p hew-std-crypto-crypto \
+              -p hew-std-crypto-jwt -p hew-std-crypto-password \
+              -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-smtp \
+              -p hew-std-net-url -p hew-std-net-websocket \
+              -p hew-std-time-cron -p hew-std-time-datetime \
+              -p hew-std-text-regex -p hew-std-text-semver \
+              -p hew-std-misc-uuid -p hew-std-misc-log \
+              --release
 
             # ── hew-codegen (statically linked) ────────────────────────────
             cd hew-codegen
@@ -546,8 +596,12 @@ jobs:
             # Runtime library
             cp target/release/libhew_runtime.a "${ARCHIVE_NAME}/lib/"
 
-            # Standard library sources
-            cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+            # Stdlib package static libraries
+            find target/release -maxdepth 1 -name "libhew_std_*.a" \
+              -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+
+            # Standard library sources (all .hew files, including subdirectories)
+            cp -r std/. "${ARCHIVE_NAME}/std/"
 
             # Shell completions
             cp completions/hew.bash completions/hew.zsh completions/hew.fish \
@@ -685,7 +739,18 @@ jobs:
           CC_aarch64_unknown_linux_musl: musl-gcc
         run: |
           cargo build --release --target ${{ matrix.rust_musl_target }} \
-            -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime
+            -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime \
+            -p hew-std-encoding-base64 -p hew-std-encoding-compress \
+            -p hew-std-encoding-csv -p hew-std-encoding-json \
+            -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
+            -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
+            -p hew-std-encoding-yaml -p hew-std-crypto-crypto \
+            -p hew-std-crypto-jwt -p hew-std-crypto-password \
+            -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-smtp \
+            -p hew-std-net-url -p hew-std-net-websocket \
+            -p hew-std-time-cron -p hew-std-time-datetime \
+            -p hew-std-text-regex -p hew-std-text-semver \
+            -p hew-std-misc-uuid -p hew-std-misc-log
 
       - name: Build hew-codegen natively on Alpine
         run: |
@@ -723,7 +788,9 @@ jobs:
           chmod +x "${ARCHIVE_NAME}/bin/hew-codegen"
 
           cp "${MUSL_REL}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
-          cp std/*.hew "${ARCHIVE_NAME}/std/" 2>/dev/null || true
+          find "${MUSL_REL}" -maxdepth 1 -name "libhew_std_*.a" \
+            -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+          cp -r std/. "${ARCHIVE_NAME}/std/"
           cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 

@@ -50,6 +50,22 @@ ifeq ($(origin CXX),default)
 endif
 export CC CXX
 
+# Static linking for hew-codegen — on by default so dev and release builds
+# match what we ship.  With this enabled, hew-codegen requires no LLVM shared
+# libraries at runtime (only standard system libs: libstdc++, libgcc_s, libc,
+# libz, libzstd, libz3 — all available on standard Linux distros).
+#
+# To build with shared LLVM instead (faster cold-link, requires LLVM at runtime):
+#   make HEW_STATIC=0
+# Note: switching from a previous shared/static build requires: make clean
+HEW_STATIC ?= 1
+
+# Rust binaries (hew, adze, hew-lsp) link only against libgcc_s and libc,
+# which are always present on any Linux system.  Full static Rust binaries
+# require the musl target (x86_64-unknown-linux-musl) — this is handled by
+# the CI release pipeline (Alpine/musl Docker build), not by the local Makefile.
+# Using +crt-static on the glibc target breaks proc-macro builds.
+
 # Installation prefix (used by `make install`)
 PREFIX     ?= /usr/local/hew
 DESTDIR    ?=
@@ -157,6 +173,11 @@ ifdef MLIR_DIR
 else ifneq ($(LLVM_PREFIX),)
   CMAKE_EXTRA_ARGS += -DMLIR_DIR=$(LLVM_PREFIX)/lib/cmake/mlir
 endif
+ifeq ($(HEW_STATIC),1)
+  CMAKE_EXTRA_ARGS += -DHEW_STATIC_LINK=ON
+else
+  CMAKE_EXTRA_ARGS += -DHEW_STATIC_LINK=OFF
+endif
 
 # macOS requires brew's clang (not Apple Clang) to handle LLVM 21 bitcode
 # in the statically linked MLIR objects, plus the Apple SDK sysroot to fix
@@ -247,8 +268,12 @@ assemble-release:
 		ln -sfn ../../../$(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(BUILD_DIR)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@for f in std/*.hew; do \
-		ln -sfn "../../$$f" "$(BUILD_DIR)/std/$$(basename $$f)"; \
+	@rm -rf $(BUILD_DIR)/std
+	@ln -sfn ../std $(BUILD_DIR)/std
+	@mkdir -p $(BUILD_DIR)/lib/hew
+	@for f in $(RELEASE_DIR)/libhew_std_*.a; do \
+		[ -f "$$f" ] || continue; \
+		ln -sfn "../../../$$f" "$(BUILD_DIR)/lib/hew/$$(basename $$f)"; \
 	done
 	@echo "build/ assembled (release)."
 
@@ -326,6 +351,7 @@ install: install-check
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -d $(DESTDIR)$(PREFIX)/lib
+	install -d $(DESTDIR)$(PREFIX)/lib/hew
 	install -d $(DESTDIR)$(PREFIX)/std
 	install -d $(DESTDIR)$(PREFIX)/completions
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
@@ -337,7 +363,10 @@ install: install-check
 		install -m 644 $(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	install -m 644 std/*.hew                         $(DESTDIR)$(PREFIX)/std/
+	@for f in $(RELEASE_DIR)/libhew_std_*.a; do \
+		[ -f "$$f" ] && install -m 644 "$$f" $(DESTDIR)$(PREFIX)/lib/hew/; \
+	done
+	cp -r std/. $(DESTDIR)$(PREFIX)/std/
 	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/
 	install -m 644 completions/hew.zsh               $(DESTDIR)$(PREFIX)/completions/
 	install -m 644 completions/hew.fish              $(DESTDIR)$(PREFIX)/completions/

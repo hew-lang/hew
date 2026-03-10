@@ -8,6 +8,9 @@ url="https://hew.sh"
 license=('MIT' 'Apache-2.0')
 provides=('hew' 'adze')
 conflicts=('hew' 'hew-git')
+# Rust binaries link only glibc; hew-codegen is otherwise fully static.
+# glibc is in Arch's base but listed explicitly to document the requirement.
+depends=('glibc')
 options=('!strip')  # binaries are pre-stripped
 
 source_x86_64=("https://github.com/hew-lang/hew/releases/download/v${pkgver}/hew-v${pkgver}-linux-x86_64.tar.gz")
@@ -36,6 +39,10 @@ package() {
   # Runtime library
   install -Dm644 "${_srcdir}/lib/libhew_runtime.a" \
     "${pkgdir}/usr/lib/hew/libhew_runtime.a"
+
+  # Stdlib package static libraries
+  find "${_srcdir}/lib" -maxdepth 1 -name "libhew_std_*.a" \
+    -exec install -Dm644 {} "${pkgdir}/usr/lib/hew/" \;
 
   # Standard library
   if [ -d "${_srcdir}/std" ]; then

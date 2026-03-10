@@ -170,13 +170,14 @@ fn collect_new_inferred_type_diagnostics<'a>(
 /// Build search paths for module resolution.
 ///
 /// The search order is:
-/// 1. `HEWPATH` environment variable (colon-separated directories)
-/// 2. Installed location relative to the compiler binary (`../lib/hew`)
-/// 3. Dev fallback: repo root (when `std/` exists next to the binary's grandparent)
+/// 1. `HEWPATH` environment variable (colon-separated parent-of-std directories)
+/// 2. `HEW_STD` environment variable (path to the `std/` directory itself)
+/// 3. FHS installed location: `../share/hew` relative to the compiler binary
+/// 4. Dev fallback: repo root (when `std/` exists next to the binary's grandparent)
 fn build_module_search_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // HEWPATH environment variable
+    // HEWPATH environment variable (colon-separated; each entry is the parent of std/)
     if let Ok(hewpath) = std::env::var("HEWPATH") {
         for p in hewpath.split(':') {
             let path = PathBuf::from(p);
@@ -186,17 +187,32 @@ fn build_module_search_paths() -> Vec<PathBuf> {
         }
     }
 
-    // Relative to compiler binary (installed location)
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let installed = exe_dir.join("../lib/hew");
-            if installed.exists() {
-                paths.push(installed);
+    // HEW_STD environment variable (points directly to the std/ directory;
+    // module loader needs its parent as the search root)
+    if let Ok(hew_std) = std::env::var("HEW_STD") {
+        let std_path = PathBuf::from(&hew_std);
+        if std_path.exists() {
+            if let Some(parent) = std_path.parent() {
+                let parent = parent.to_path_buf();
+                if !paths.contains(&parent) {
+                    paths.push(parent);
+                }
             }
         }
     }
 
-    // Dev fallback: repo root
+    // FHS installed location: <prefix>/share/hew (parent of std/)
+    // e.g. /usr/local/bin/hew → /usr/local/share/hew → contains std/
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let share_hew = exe_dir.join("../share/hew");
+            if share_hew.join("std").exists() && !paths.contains(&share_hew) {
+                paths.push(share_hew);
+            }
+        }
+    }
+
+    // Dev fallback: repo root (when std/ exists two levels above the binary)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let repo_root = exe_dir.join("../..");
@@ -1103,6 +1119,22 @@ fn resolve_file_imports(
                         candidates.push(pkg.join(&tail_rel));
                     }
                 }
+                // HEW_STD env var: points to std/ directory; parent is the search root
+                if let Ok(hew_std) = std::env::var("HEW_STD") {
+                    let std_root = PathBuf::from(hew_std);
+                    if let Some(parent) = std_root.parent() {
+                        candidates.push(parent.join(&dir_path));
+                        candidates.push(parent.join(&rel_path));
+                    }
+                }
+                // FHS installed location: <prefix>/share/hew (contains std/)
+                // e.g. /usr/local/bin/hew → /usr/local/share/hew → std/
+                if let Some(ref exe) = exe_dir {
+                    let fhs_root = exe.join("../share/hew");
+                    candidates.push(fhs_root.join(&dir_path));
+                    candidates.push(fhs_root.join(&rel_path));
+                }
+                // Dev fallback: two levels above the binary (repo root when std/ is at repo root)
                 if let Some(ref exe) = exe_dir {
                     if let Some(project_root) = exe.parent().and_then(|p| p.parent()) {
                         candidates.push(project_root.join(&dir_path));

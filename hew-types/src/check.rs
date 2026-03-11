@@ -6709,6 +6709,7 @@ impl Checker {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     if self.modules.contains(module) {
+                        self.used_modules.borrow_mut().insert(module.clone());
                         Some(field.clone())
                     } else {
                         None

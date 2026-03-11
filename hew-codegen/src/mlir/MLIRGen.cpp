@@ -1042,6 +1042,18 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
         .getResult(0);
   }
 
+  // to_float(x) -> f64: convert any integer to f64
+  if (name == "to_float") {
+    if (args.empty()) {
+      emitError(location) << name << " requires at least 1 argument";
+      return nullptr;
+    }
+    auto arg = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!arg)
+      return nullptr;
+    return coerceType(arg, builder.getF64Type(), location);
+  }
+
   // abs(x) -> i64
   if (name == "abs") {
     if (args.empty()) {

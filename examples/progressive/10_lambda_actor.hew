@@ -2,7 +2,7 @@
 // Trying a simple lambda-based actor
 fn main() {
     // Create a simple counter lambda actor
-    let counter = spawn (msg: i32) => {
+    let counter = spawn (msg: int) => {
         println(msg * 2);
     };
     counter.send(5);

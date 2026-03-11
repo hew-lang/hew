@@ -15,9 +15,7 @@ fn main() -> int {
     // 2. Capture a string from enclosing scope
     let tag = "TAGGED";
     let tagger = spawn (x: int) => {
-        print("[");
-        print(tag);
-        println(f"] {x}");
+        println(f"[{tag}] {x}");
     };
     tagger.send(42);
     close(tagger);

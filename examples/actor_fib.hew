@@ -1,5 +1,5 @@
 // Fibonacci across actors - demonstrates deterministic fan-out with joins
-fn fib(n: i32) -> i32 {
+fn fib(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -7,16 +7,12 @@ fn fib(n: i32) -> i32 {
     }
 }
 
-fn print_result(worker_id: i32, n: i32, result: i32) {
-    print("Worker ");
-    print(worker_id);
-    print(": fib(");
-    print(n);
-    println(f") = {result}");
+fn print_result(worker_id: int, n: int, result: int) {
+    println(f"Worker {worker_id}: fib({n}) = {result}");
 }
 
 actor FibWorker {
-    receive fn compute(n: i32) -> i32 {
+    receive fn compute(n: int) -> int {
         fib(n)
     }
 }

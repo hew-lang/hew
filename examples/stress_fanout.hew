@@ -1,6 +1,6 @@
 // stress_fanout.hew - Test fan-out pattern with multiple workers
 // Spawns multiple workers, sends computation to each, verifies all complete.
-fn fib(n: i32) -> i32 {
+fn fib(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -8,16 +8,12 @@ fn fib(n: i32) -> i32 {
     }
 }
 
-fn print_result(worker_id: i32, x: i32, result: i32) {
-    print("Worker ");
-    print(worker_id);
-    print(": fib(");
-    print(x);
-    println(f") = {result}");
+fn print_result(worker_id: int, x: int, result: int) {
+    println(f"Worker {worker_id}: fib({x}) = {result}");
 }
 
 actor Computer {
-    receive fn compute(x: i32) -> i32 {
+    receive fn compute(x: int) -> int {
         fib(x)
     }
 }
@@ -66,7 +62,7 @@ fn main() {
     var completed = 10;
     var checksum_total = r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10;
     for i in 0..5 {
-        let round: i32 = i;
+        let round: int = i;
         let (b1, b2, b3, b4, b5, b6, b7, b8, b9, b10) = join {
             await w1.compute(round + 3),
             await w2.compute(round + 4),
@@ -82,15 +78,9 @@ fn main() {
         let round_checksum = b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + b10;
         completed = completed + 10;
         checksum_total = checksum_total + round_checksum;
-        print("Burst ");
-        print(round + 1);
-        print(": checksum = ");
-        print(round_checksum);
-        print(", results received = ");
-        println(completed);
+        println(f"Burst {round + 1}: checksum = {round_checksum}, results received = {completed}");
     }
-    print("Total checksum: ");
-    println(checksum_total);
+    println(f"Total checksum: {checksum_total}");
     println("PASS: fan-out to 10 workers with burst messaging");
     stop(w1);
     stop(w2);

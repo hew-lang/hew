@@ -29,7 +29,7 @@ fn describe_shape(s: Shape) {
     }
 }
 
-fn fib(n: i32) -> i32 {
+fn fib(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -37,7 +37,7 @@ fn fib(n: i32) -> i32 {
     }
 }
 
-fn divide(a: i32, b: i32) -> Result<i32, String> {
+fn divide(a: int, b: int) -> Result<int, String> {
     if b == 0 {
         Err("division by zero")
     } else {
@@ -46,11 +46,11 @@ fn divide(a: i32, b: i32) -> Result<i32, String> {
 }
 
 actor Counter {
-    let count: i32;
+    let count: int;
     receive fn increment() {
         self.count = self.count + 1;
     }
-    receive fn get_count() -> i32 {
+    receive fn get_count() -> int {
         self.count
     }
 }
@@ -109,8 +109,7 @@ fn main() {
     // 8. Arrays
     println("8. Arrays:");
     let primes = [2, 3, 5, 7, 11];
-    print("  primes[3] = ");
-    println(primes[3]);
+    println(f"  primes[3] = {primes[3]}");
 
     // 9. Actors
     println("9. Actors:");
@@ -119,8 +118,7 @@ fn main() {
     c.increment();
     c.increment();
     let count = await c.get_count();
-    print("  Counter after 3 increments: ");
-    println(count);
+    println(f"  Counter after 3 increments: {count}");
 
     // 10. Boolean operators
     println("10. Boolean operators:");

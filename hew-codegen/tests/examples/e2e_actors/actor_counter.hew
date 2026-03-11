@@ -4,15 +4,11 @@ actor Counter {
     let value: int;
     receive fn increment(amount: int) {
         self.value = self.value + amount;
-        print("Incremented by ");
-        print(amount);
-        println(f", now {self.value}");
+        println(f"Incremented by {amount}, now {self.value}");
     }
     receive fn decrement(amount: int) {
         self.value = self.value - amount;
-        print("Decremented by ");
-        print(amount);
-        println(f", now {self.value}");
+        println(f"Decremented by {amount}, now {self.value}");
     }
     receive fn report() -> int {
         self.value

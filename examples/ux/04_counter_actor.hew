@@ -1,13 +1,13 @@
 // Simple counter actor
 
 actor Counter {
-    let count: i32;
+    let count: int;
 
-    receive fn increment(n: i32) {
+    receive fn increment(n: int) {
         self.count = self.count + n;
     }
 
-    receive fn get_count() -> i32 {
+    receive fn get_count() -> int {
         self.count
     }
 }

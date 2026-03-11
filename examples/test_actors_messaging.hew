@@ -16,9 +16,7 @@ actor Counter {
 actor Printer {
     let prefix: int;
     receive fn print_msg(value: int) -> int {
-        print("  [Printer ");
-        print(self.prefix);
-        println(f"] got: {value}");
+        println(f"  [Printer {self.prefix}] got: {value}");
         value
     }
 }
@@ -58,9 +56,8 @@ fn test_multiple_actors() -> int {
 
 fn test_lambda_actor() -> int {
     println("--- test_lambda_actor ---");
-    let doubler = spawn (x: i32) => {
-        print("  doubled: ");
-        println(x * 2);
+    let doubler = spawn (x: int) => {
+        println(f"  doubled: {x * 2}");
     };
     doubler.send(21);
     doubler.send(5);
@@ -83,14 +80,13 @@ fn test_actor_factory() -> int {
 
 fn make_multiplier(factor: int) -> Actor<int> {
     spawn (x: int) => {
-        print("  multiplied: ");
-        println(x * factor);
+        println(f"  multiplied: {x * factor}");
     }
 }
 
 fn test_complex_lambda() -> int {
     println("--- test_complex_lambda ---");
-    let processor = spawn (n: i32) => {
+    let processor = spawn (n: int) => {
         if n > 10 {
             println(f"  large: {n}");
         } else {
@@ -115,9 +111,7 @@ fn main() -> int {
     passed = passed + test_actor_factory();
     passed = passed + test_complex_lambda();
     println("");
-    print("Passed: ");
-    print(passed);
-    println(f"/{total}");
+    println(f"Passed: {passed}/{total}");
     if passed == total {
         0
     } else {

@@ -1,8 +1,8 @@
 // Regression: compound assignment on self.field
 actor Counter {
-    let value: i32;
+    let value: int;
 
-    receive fn set(v: i32) {
+    receive fn set(v: int) {
         self.value = v;
     }
 
@@ -10,11 +10,11 @@ actor Counter {
         self.value *= 2;
     }
 
-    receive fn scale(n: i32) {
+    receive fn scale(n: int) {
         self.value *= n;
     }
 
-    receive fn print_value() -> i32 {
+    receive fn print_value() -> int {
         println(self.value);
         self.value
     }

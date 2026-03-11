@@ -1,7 +1,7 @@
 actor Counter {
-    let count: i32;
+    let count: int;
 
-    receive fn increment(amount: i32) -> i32 {
+    receive fn increment(amount: int) -> int {
         self.count = self.count + amount;
         println("  [actor] count is now:");
         println(self.count);

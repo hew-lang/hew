@@ -109,8 +109,7 @@ fn main() {
     // 8. Arrays
     println("8. Arrays:");
     let primes = [2, 3, 5, 7, 11];
-    print("  primes[3] = ");
-    println(primes[3]);
+    println(f"  primes[3] = {primes[3]}");
 
     // 9. Actors
     println("9. Actors:");
@@ -119,8 +118,7 @@ fn main() {
     c.increment();
     c.increment();
     let count = await c.get_count();
-    print("  Counter after 3 increments: ");
-    println(count);
+    println(f"  Counter after 3 increments: {count}");
 
     // 10. Boolean operators
     println("10. Boolean operators:");

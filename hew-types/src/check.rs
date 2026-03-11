@@ -1847,7 +1847,15 @@ impl Checker {
                 self.register_extern_block(eb);
             }
             Item::Import(id) => {
-                self.register_import(id, Some(span));
+                // Only track import spans for root-module items. Sub-module spans are
+                // byte offsets into their own source file and cannot be attributed to
+                // the root file's source text for diagnostics.
+                let import_span = if self.current_module.is_none() {
+                    Some(span)
+                } else {
+                    None
+                };
+                self.register_import(id, import_span);
             }
             _ => {}
         }

@@ -27,11 +27,15 @@ actor ChatRoom {
         println(f"[room] {username} left");
     }
 
-    receive fn history() {
-        println(f"[room] {self.messages.len()} messages total");
-        for i in 0..self.messages.len() {
+    receive fn history() -> int {
+        let total = self.messages.len();
+        println(f"[room] {total} messages total");
+        var i = 0;
+        while i < total {
             println(f"  {self.messages.get(i)}");
+            i = i + 1;
         }
+        total
     }
 }
 
@@ -60,9 +64,7 @@ fn main() {
     room.say("alice", "how is the weather?");
     room.exit_room("bob");
 
-    sleep_ms(100);
-    room.history();
-    sleep_ms(100);
+    await room.history();
 
     // Node::shutdown();
     println("[main] chat demo complete");

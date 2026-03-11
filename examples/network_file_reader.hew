@@ -1,12 +1,12 @@
 // File reader with actor message passing - Hew language example  
 // Demonstrates reading a file and printing via actor message passing
 actor Printer {
-    receive fn print_message(msg: i32) {
+    receive fn print_message(msg: int) {
         println(f"Received value: {msg}");
     }
 }
 
-fn fibonacci(n: i32) -> i32 {
+fn fibonacci(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -28,6 +28,6 @@ fn main() {
     let fib10 = fibonacci(10);
     printer.print_message(fib5);
     printer.print_message(fib10);
-    sleep_ms(100);
+    await close(printer);
     println("=== Done ===");
 }

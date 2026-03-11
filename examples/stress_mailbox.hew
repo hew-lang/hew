@@ -2,27 +2,50 @@
 // Sends many messages to a bounded mailbox and verifies backpressure
 // doesn't deadlock and all messages are eventually processed.
 actor Counter {
-    let count: i32;
+    let count: int;
 
-    mailbox 10;
-    receive fn increment() {
+    mailbox 4 overflow block;
+    receive fn increment() -> int {
         self.count = self.count + 1;
+        self.count
     }
-    receive fn report() {
+    receive fn report() -> int {
         println(f"Counter count: {self.count}");
+        self.count
+    }
+}
+
+fn drain_batch(counter: ActorRef<Counter>, remaining: int) -> int {
+    if remaining <= 1 {
+        await counter.increment()
+    } else {
+        let pending = counter.increment();
+        let batch_count = drain_batch(counter, remaining - 1);
+        await pending;
+        batch_count
     }
 }
 
 fn main() {
     println("=== Stress: Bounded Mailbox ===");
-    let c = spawn Counter;
-    // Send 1000 messages to mailbox with capacity 10
-    // This exercises backpressure: sender must wait when mailbox is full
-    for i in 0..1000 {
-        c.increment();
+    let c = spawn Counter(count: 0);
+    // Fill the bounded mailbox in deterministic batches without spelling out
+    // ten separate awaits in the main loop.
+    for batch in 0..100 {
+        let batch_index: int = batch;
+        let batch_count = drain_batch(c, 10);
+        let expected_count = (batch_index + 1) * 10;
+        if batch_count != expected_count {
+            println(f"FAIL: expected {expected_count} messages after batch {batch_index + 1}, got {batch_count}");
+            stop(c);
+            return;
+        }
     }
-    sleep_ms(500);
-    c.report();
-    println("PASS: bounded mailbox processed all messages without deadlock");
+    let final_count = await c.report();
+    if final_count == 1000 {
+        println("PASS: bounded mailbox processed all messages without deadlock");
+    } else {
+        println(f"FAIL: expected 1000 messages, got {final_count}");
+    }
     stop(c);
 }

@@ -4,20 +4,20 @@
 // Three increment messages are sent to a Counter actor.
 // Expected output: 42
 actor Counter {
-    let count: i32;
-    receive fn increment(n: i32) {
+    let count: int;
+    receive fn increment(n: int) {
         self.count = self.count + n;
     }
-    receive fn print_total() {
+    receive fn print_total() -> int {
         println(self.count);
+        self.count
     }
 }
 
 fn main() {
-    let c = spawn Counter;
+    let c = spawn Counter(count: 0);
     c.increment(10);
     c.increment(20);
     c.increment(12);
-    c.print_total();
-    sleep_ms(200);
+    await c.print_total();
 }

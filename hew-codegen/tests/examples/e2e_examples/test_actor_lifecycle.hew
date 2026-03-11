@@ -32,7 +32,6 @@ fn main() {
     c.increment();
     c.increment();
     c.increment();
-    sleep_ms(50);
     let val2 = await c.get_count();
     println(val2);
 
@@ -41,7 +40,6 @@ fn main() {
     acc.add(10);
     acc.add(20);
     acc.add(30);
-    sleep_ms(50);
     let total = await acc.get_total();
     println(total);
 
@@ -50,7 +48,6 @@ fn main() {
     let val3 = await c2.get_count();
     println(val3);
     c2.increment();
-    sleep_ms(50);
     let val4 = await c2.get_count();
     println(val4);
     println("done");

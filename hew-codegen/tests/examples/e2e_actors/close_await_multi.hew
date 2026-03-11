@@ -9,11 +9,9 @@ fn main() {
     let b = spawn Printer;
     a.say("a1");
     a.say("a2");
-    close(a);
-    await a;
+    await close(a);
     b.say("b1");
     b.say("b2");
-    close(b);
-    await b;
+    await close(b);
     println("all done");
 }

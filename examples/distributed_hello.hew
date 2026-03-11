@@ -4,8 +4,8 @@
 // codegen lowering. Only Node::start/shutdown/register/lookup are
 // typechecker builtins today.
 actor Counter {
-    let count: i32;
-    receive fn increment(n: i32) {
+    let count: int;
+    receive fn increment(n: int) {
         self.count = self.count + n;
         println(self.count);
     }
@@ -16,7 +16,7 @@ fn main() {
     let counter = spawn Counter;
     counter.increment(5);
     counter.increment(3);
-    sleep_ms(200);
+    await close(counter);
 
     // ── Distributed API (runtime ready, codegen pending) ─────
     // Node::start("0.0.0.0:9000");

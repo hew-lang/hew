@@ -2,13 +2,13 @@
 // The compiler enforces that actor state is never shared.
 
 actor Counter {
-    let count: i32;
+    let count: int;
 
-    receive fn increment(amount: i32) {
+    receive fn increment(amount: int) {
         self.count = self.count + amount;
     }
 
-    receive fn get_count() -> i32 {
+    receive fn get_count() -> int {
         self.count
     }
 }
@@ -19,8 +19,8 @@ supervisor CounterPool {
     max_restarts: 5;
     window: 60;
 
-    child c1: Counter;
-    child c2: Counter;
+    child c1: Counter(0);
+    child c2: Counter(0);
 }
 
 // Wire types are first-class.
@@ -49,7 +49,6 @@ fn main() {
     c1.increment(10);
     c1.increment(5);
     c2.increment(100);
-    sleep_ms(100); // Give actors time to process messages.
 
     // Read back the counts.
     println(f"Counter 1: {await c1.get_count()}");

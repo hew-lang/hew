@@ -10,6 +10,6 @@ fn main() {
     printer.send(42);
     printer.send(100);
     printer.send(7);
-    sleep_ms(200);
+    await close(printer);
     println("Done");
 }

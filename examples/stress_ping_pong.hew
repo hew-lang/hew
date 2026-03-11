@@ -2,47 +2,51 @@
 // Two actors exchange messages in a pipeline pattern, exercising
 // rapid message passing and actor scheduling under load.
 actor Pinger {
-    let count: i32;
-    receive fn ping(n: i32) {
+    let count: int;
+    receive fn ping(n: int) {
         self.count = n;
     }
-    receive fn report() {
+    receive fn report() -> int {
         println(f"Pinger final count: {self.count}");
+        self.count
     }
 }
 
 actor Ponger {
-    let count: i32;
-    receive fn pong(n: i32) {
+    let count: int;
+    receive fn pong(n: int) {
         self.count = n;
     }
-    receive fn report() {
+    receive fn report() -> int {
         println(f"Ponger final count: {self.count}");
+        self.count
     }
 }
 
 fn main() {
     println("=== Stress: Ping-Pong ===");
-    let pinger = spawn Pinger;
-    let ponger = spawn Ponger;
+    let pinger = spawn Pinger(count: 0);
+    let ponger = spawn Ponger(count: 0);
     // Rapid alternating message sends — simulates ping-pong
     for i in 0..1000 {
-        pinger.ping(i);
-        ponger.pong(i);
+        let ping_value: int = i;
+        let pong_value: int = i;
+        pinger.ping(ping_value);
+        ponger.pong(pong_value);
     }
-    sleep_ms(200);
-    pinger.report();
-    ponger.report();
+    await pinger.report();
+    await ponger.report();
 
     // Second burst: stress with higher volume
     println("--- Round 2: 5000 rounds ---");
     for j in 0..5000 {
-        pinger.ping(j);
-        ponger.pong(j);
+        let ping_value: int = j;
+        let pong_value: int = j;
+        pinger.ping(ping_value);
+        ponger.pong(pong_value);
     }
-    sleep_ms(500);
-    pinger.report();
-    ponger.report();
+    await pinger.report();
+    await ponger.report();
     println("PASS: 6000 ping-pong rounds completed");
     stop(pinger);
     stop(ponger);

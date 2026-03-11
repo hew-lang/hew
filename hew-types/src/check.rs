@@ -621,7 +621,12 @@ impl Checker {
         self.register_builtin_fn("sleep_ms", vec![Ty::I64], Ty::Unit);
         self.register_builtin_fn("sleep", vec![Ty::I64], Ty::Unit);
         self.register_builtin_fn("stop", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
-        self.register_builtin_fn("close", vec![Ty::Var(TypeVar::fresh())], Ty::Unit);
+        let close_t = TypeVar::fresh();
+        self.register_builtin_fn(
+            "close",
+            vec![Ty::actor_ref(Ty::Var(close_t))],
+            Ty::actor_ref(Ty::Var(close_t)),
+        );
         self.register_builtin_fn("exit", vec![Ty::I64], Ty::Never);
         self.register_builtin_fn("panic", vec![Ty::String], Ty::Never);
 
@@ -3813,7 +3818,7 @@ impl Checker {
                     Ty::Named { name, args } if name == "Task" && !args.is_empty() => {
                         args[0].clone()
                     }
-                    _ if inner_ty.as_actor_ref().is_some() => Ty::Unit,
+                    _ if inner_ty.as_actor_handle().is_some() => Ty::Unit,
                     _ => inner_ty,
                 }
             }
@@ -4068,7 +4073,11 @@ impl Checker {
                         let mut result_ty: Option<Ty> = None;
                         for arm in arms {
                             self.env.push_scope();
-                            let source_ty = self.synthesize(&arm.source.0, &arm.source.1);
+                            let source_ty = self.synthesize_actor_concurrency_source(
+                                &arm.source.0,
+                                &arm.source.1,
+                                "select arm source",
+                            );
                             self.bind_pattern(&arm.binding.0, &source_ty, false, &arm.binding.1);
                             let body_ty = if let Some(expected) = &result_ty {
                                 self.check_against(&arm.body.0, &arm.body.1, expected)
@@ -4092,9 +4101,16 @@ impl Checker {
                         result_ty.unwrap_or(Ty::Unit)
                     }
                     Expr::Join(exprs) => {
-                        // Join returns a tuple of all expression types
-                        let types: Vec<Ty> =
-                            exprs.iter().map(|(e, s)| self.synthesize(e, s)).collect();
+                        let types: Vec<Ty> = exprs
+                            .iter()
+                            .map(|(e, s)| {
+                                self.synthesize_actor_concurrency_source(
+                                    e,
+                                    s,
+                                    "join expression element",
+                                )
+                            })
+                            .collect();
                         if types.len() == 1 {
                             types[0].clone()
                         } else {
@@ -4782,6 +4798,28 @@ impl Checker {
                 }
                 return Ty::result(Ty::Var(TypeVar::fresh()), e);
             }
+            "close" => {
+                if args.len() != 1 {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        format!("`close` takes 1 argument but {} were supplied", args.len()),
+                    );
+                    return Ty::Error;
+                }
+                let (expr, sp) = args[0].expr();
+                let actor_ty = self.synthesize(expr, sp);
+                let resolved = self.subst.resolve(&actor_ty);
+                if resolved.as_actor_handle().is_some() {
+                    return resolved;
+                }
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`close` expects an actor handle".to_string(),
+                );
+                return Ty::Error;
+            }
             "bytes::from" => {
                 if args.len() != 1 {
                     self.report_error(
@@ -5008,6 +5046,64 @@ impl Checker {
                 Ty::Error
             }
         }
+    }
+
+    fn synthesize_actor_concurrency_source(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        construct: &str,
+    ) -> Ty {
+        let (method_expr, method_span, receiver_expr, receiver_span) = match expr {
+            Expr::MethodCall { receiver, .. } => (expr, span, &receiver.0, &receiver.1),
+            Expr::Await(inner) => match &inner.0 {
+                Expr::MethodCall { receiver, .. } => (&inner.0, &inner.1, &receiver.0, &receiver.1),
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("{construct} must be actor.method(args)"),
+                    );
+                    return Ty::Error;
+                }
+            },
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("{construct} must be actor.method(args)"),
+                );
+                return Ty::Error;
+            }
+        };
+
+        let receiver_ty = {
+            let ty = self.synthesize(receiver_expr, receiver_span);
+            self.subst.resolve(&ty)
+        };
+        if receiver_ty.as_actor_handle().is_none() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("{construct} must be actor.method(args)"),
+            );
+            return Ty::Error;
+        }
+
+        let ty = {
+            let synthesized = self.synthesize(method_expr, method_span);
+            self.subst.resolve(&synthesized)
+        };
+        if ty == Ty::Unit {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("{construct} requires a receive handler with a return type"),
+            );
+            return Ty::Error;
+        }
+
+        ty
     }
 
     #[expect(
@@ -10735,6 +10831,98 @@ fn main() {
             output.errors.is_empty(),
             "expected no errors, got: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_await_close_actor_ref() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.register_builtins();
+
+        checker.env.define(
+            "g".to_string(),
+            Ty::actor_ref(Ty::Named {
+                name: "Greeter".to_string(),
+                args: vec![],
+            }),
+            false,
+        );
+
+        let span = 0..0;
+        let expr = Expr::Await(Box::new((
+            Expr::Call {
+                function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
+                type_args: None,
+                args: vec![CallArg::Positional((
+                    Expr::Identifier("g".to_string()),
+                    span.clone(),
+                ))],
+                is_tail_call: false,
+            },
+            span.clone(),
+        )));
+
+        let ty = checker.synthesize(&expr, &span);
+        assert_eq!(ty, Ty::Unit);
+        assert!(
+            checker.errors.is_empty(),
+            "expected no errors, got: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_await_close_lambda_actor() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.register_builtins();
+
+        checker.env.define(
+            "worker".to_string(),
+            Ty::Named {
+                name: "Actor".to_string(),
+                args: vec![Ty::I64],
+            },
+            false,
+        );
+
+        let span = 0..0;
+        let expr = Expr::Await(Box::new((
+            Expr::Call {
+                function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
+                type_args: None,
+                args: vec![CallArg::Positional((
+                    Expr::Identifier("worker".to_string()),
+                    span.clone(),
+                ))],
+                is_tail_call: false,
+            },
+            span.clone(),
+        )));
+
+        let ty = checker.synthesize(&expr, &span);
+        assert_eq!(ty, Ty::Unit);
+        assert!(
+            checker.errors.is_empty(),
+            "expected no errors, got: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn typecheck_join_rejects_non_actor_sources() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 0..0;
+        let expr = Expr::Join(vec![
+            make_int_literal(1, span.clone()),
+            make_int_literal(2, span.clone()),
+        ]);
+        let _ = checker.synthesize(&expr, &span);
+        assert!(
+            checker.errors.iter().any(|error| error
+                .message
+                .contains("join expression element must be actor.method(args)")),
+            "expected join source error, got: {:?}",
+            checker.errors
         );
     }
 

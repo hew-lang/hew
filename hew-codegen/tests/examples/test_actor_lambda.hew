@@ -4,5 +4,5 @@ fn main() {
     };
     printer.send(42);
     printer.send(100);
-    sleep_ms(200);
+    await close(printer);
 }

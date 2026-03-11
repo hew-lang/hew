@@ -6,6 +6,9 @@ actor SharedCounter {
         self.value = self.value + amount;
         println(f"Counter: {self.value}");
     }
+    receive fn report() -> int {
+        self.value
+    }
 }
 
 fn main() {
@@ -17,7 +20,7 @@ fn main() {
     counter.inc(3);
     counter.inc(4);
     counter.inc(5);
-    sleep_ms(200);
+    await counter.report();
     // Total should be 1+2+3+4+5 = 15
     println("Done");
 }

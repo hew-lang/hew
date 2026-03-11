@@ -712,20 +712,15 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       emitError(location) << "await requires an actor method call";
       return nullptr;
     }
-    // Check for actor ref await (void await — close+await pattern)
-    if (auto *ie = std::get_if<ast::ExprIdentifier>(&awaitE->inner->value.kind)) {
-      if (actorVarTypes.count(ie->name)) {
-        auto operand = generateExpression(awaitE->inner->value);
-        if (!operand)
-          return nullptr;
-        auto awaitOp = builder.create<hew::ActorAwaitOp>(location, builder.getI32Type(), operand);
-        return awaitOp.getResult();
-      }
-    }
-    // Not a method call — operand might be a task handle.
+    // Not a method call — operand might be an actor ref or a task handle.
     auto operand = generateExpression(awaitE->inner->value);
     if (!operand)
       return nullptr;
+
+    if (mlir::isa<hew::ActorRefType, hew::TypedActorRefType>(operand.getType())) {
+      auto awaitOp = builder.create<hew::ActorAwaitOp>(location, builder.getI32Type(), operand);
+      return awaitOp.getResult();
+    }
 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
     if (auto handleTy = mlir::dyn_cast<hew::HandleType>(operand.getType())) {

@@ -3,82 +3,72 @@
 fn main() {
     println("=== Lambda Actor Factory ===");
 
-    // Create multiplier actors with different factors
-    let times_2 = make_multiplier(2);
-    let times_5 = make_multiplier(5);
-    let times_10 = make_multiplier(10);
-    // Test the multiplier actors
+    // Create configured lambda actors from helper functions
     println("Testing multiplier actors:");
-    times_2.send(7); // should print "2 * 7 = 14"
-    times_5.send(3); // should print "5 * 3 = 15" 
-    times_10.send(4); // should print "10 * 4 = 40"
-    sleep_ms(50);
+    run_multiplier(2, 7); // should print "2 * 7 = 14"
+    run_multiplier(5, 3); // should print "5 * 3 = 15"
+    run_multiplier(10, 4); // should print "10 * 4 = 40"
 
     // Create string processing actors
-    let upper_printer = make_string_processor("UPPER");
-    let lower_printer = make_string_processor("lower");
-    upper_printer.send(42); // prints "[UPPER] 42"
-    lower_printer.send(99); // prints "[lower] 99"
-    sleep_ms(50);
+    run_string_processor("UPPER", 42); // prints "[UPPER] 42"
+    run_string_processor("lower", 99); // prints "[lower] 99"
 
     // Create conditional processors
-    let even_checker = make_conditional_processor(true); // print evens
-    let odd_checker = make_conditional_processor(false); // print odds
     println("Testing conditional processors:");
-    even_checker.send(4); // should print (even)
-    even_checker.send(7); // should not print
-    odd_checker.send(4); // should not print  
-    odd_checker.send(7); // should print (odd)
-    sleep_ms(50);
+    run_conditional_processor(true, 4, 7); // prints only the even input
+    run_conditional_processor(false, 4, 7); // prints only the odd input
 
-    // Nested factory - factory that creates other factories
-    let factory_maker = create_factory_maker(100);
-    let custom_adder = factory_maker.send(25); // This won't work as expected - just demo syntax
-    // In real implementation, we'd need different approach for nested factories
+    // Nested capture - helper configures another lambda actor
+    run_factory_maker(100, 25);
     println("=== Factory Done ===");
 }
 
-// Factory function that returns a lambda actor for multiplication
-fn make_multiplier(factor: i32) -> Actor<i32> {
-    spawn (x: i32) => {
-        print(factor);
-        print(" * ");
-        print(x);
-        print(" = ");
-        println(x * factor);
-    }
+// Factory helper that creates a lambda actor for multiplication
+fn run_multiplier(factor: int, value: int) {
+    let worker = spawn (x: int) => {
+        println(f"{factor} * {x} = {x * factor}");
+    };
+    worker.send(value);
+    await close(worker);
+    return;
 }
 
-// Factory for string-tagged number processing
-fn make_string_processor(tag: str) -> Actor<i32> {
-    spawn (x: i32) => {
-        print("[");
-        print(tag);
-        println(f"] {x}");
-    }
+// Factory helper for string-tagged number processing
+fn run_string_processor(tag: str, value: int) {
+    let worker = spawn (x: int) => {
+        println(f"[{tag}] {x}");
+    };
+    worker.send(value);
+    await close(worker);
+    return;
 }
 
-// Factory for conditional processing (even/odd)
-fn make_conditional_processor(check_even: bool) -> Actor<i32> {
-    spawn (x: i32) => {
+// Factory helper for conditional processing (even/odd)
+fn run_conditional_processor(check_even: bool, first: int, second: int) {
+    let worker = spawn (x: int) => {
         let is_even = x % 2 == 0;
         if check_even && is_even {
-            print(x);
-            println(" (even)");
+            println(f"{x} (even)");
         } else if !check_even && !is_even {
-            print(x);
-            println(" (odd)");
+            println(f"{x} (odd)");
         }
         // else: don't print anything
-    }
+    };
+    worker.send(first);
+    worker.send(second);
+    await close(worker);
+    return;
 }
 
-// Advanced: Factory that creates other factories (for demonstration)
-fn create_factory_maker(base: i32) -> Actor<i32> {
-    spawn (offset: i32) => {
-        let total = base + offset;
+// Advanced: factory helper with nested captured configuration
+fn run_factory_maker(base: int, offset: int) {
+    let worker = spawn (value: int) => {
+        let total = base + value;
         println(f"Factory maker result: {total}");
         // In a real implementation, this might create and return another actor
         // but that would require more complex type system support
-    }
+    };
+    worker.send(offset);
+    await close(worker);
+    return;
 }

@@ -1,5 +1,5 @@
-// Fibonacci across actors - demonstrates actor-based message passing
-fn fib(n: i32) -> i32 {
+// Fibonacci across actors - demonstrates deterministic fan-out with joins
+fn fib(n: int) -> int {
     if n <= 1 {
         n
     } else {
@@ -7,15 +7,13 @@ fn fib(n: i32) -> i32 {
     }
 }
 
+fn print_result(worker_id: int, n: int, result: int) {
+    println(f"Worker {worker_id}: fib({n}) = {result}");
+}
+
 actor FibWorker {
-    let id: i32;
-    receive fn compute(n: i32) {
-        let result = fib(n);
-        print("Worker ");
-        print(self.id);
-        print(": fib(");
-        print(n);
-        println(f") = {result}");
+    receive fn compute(n: int) -> int {
+        fib(n)
     }
 }
 
@@ -24,9 +22,15 @@ fn main() {
     let w1 = spawn FibWorker;
     let w2 = spawn FibWorker;
     let w3 = spawn FibWorker;
-    w1.compute(5);
-    w2.compute(10);
-    w3.compute(15);
-    sleep_ms(200);
+
+    let (r1, r2, r3) = join {
+        w1.compute(5),
+        w2.compute(10),
+        w3.compute(15),
+    };
+
+    print_result(1, 5, r1);
+    print_result(2, 10, r2);
+    print_result(3, 15, r3);
     println("=== Done ===");
 }

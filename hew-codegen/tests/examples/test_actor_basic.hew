@@ -5,8 +5,9 @@ actor Counter {
         self.count = self.count + amount;
     }
 
-    receive fn print_count() {
+    receive fn print_count() -> int {
         println(self.count);
+        self.count
     }
 }
 
@@ -14,6 +15,5 @@ fn main() {
     let c = spawn Counter(count: 0);
     c.increment(5);
     c.increment(3);
-    c.print_count();
-    sleep_ms(200);
+    await c.print_count();
 }

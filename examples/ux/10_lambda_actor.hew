@@ -1,7 +1,7 @@
 // Lambda actor - inline actor definition
 
 fn main() {
-    let worker = spawn (msg: i32) => {
+    let worker = spawn (msg: int) => {
         println(msg * 2);
     };
 
@@ -9,5 +9,5 @@ fn main() {
     worker.send(10);
     worker.send(15);
 
-    sleep_ms(100);
+    await close(worker);
 }

@@ -172,6 +172,13 @@ inline mlir::Type toLLVMStorageType(mlir::Type type) {
   return type;
 }
 
+/// Convert a type to the memref slot element type used for variable and
+/// return-value storage. Only pointer-like Hew values need LLVM pointer slots;
+/// other semantic types can stay in their native form.
+inline mlir::Type toSlotStorageType(mlir::Type type) {
+  return isPointerLikeType(type) ? toLLVMStorageType(type) : type;
+}
+
 /// Create an integer constant with a given type.
 inline mlir::Value createIntConstant(mlir::OpBuilder &builder, mlir::Location loc, mlir::Type type,
                                      int64_t value) {

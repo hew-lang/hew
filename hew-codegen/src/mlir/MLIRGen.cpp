@@ -124,8 +124,11 @@ void MLIRGen::initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes,
       !mlir::isa<hew::HewTupleType>(resultTypes[0]) &&
       !mlir::isa<hew::HewArrayType>(resultTypes[0]) &&
       !mlir::isa<hew::HewTraitObjectType>(resultTypes[0])) {
-    auto slotMemrefType = mlir::MemRefType::get({}, resultTypes[0]);
+    auto storageType = toSlotStorageType(resultTypes[0]);
+    auto slotMemrefType = mlir::MemRefType::get({}, storageType);
     returnSlot = mlir::memref::AllocaOp::create(builder, location, slotMemrefType);
+    if (storageType != resultTypes[0])
+      slotSemanticTypes[returnSlot] = resultTypes[0];
   }
 }
 
@@ -729,12 +732,14 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
   // them via memref::LoadOp.  The alloca is placed in the function entry
   // block so it dominates all uses.
   if (returnFlag && value && currentFunction) {
-    auto type = value.getType();
-    bool canPromote = mlir::isa<mlir::IntegerType>(type) || mlir::isa<mlir::FloatType>(type) ||
-                      mlir::isa<mlir::LLVM::LLVMPointerType>(type) ||
-                      mlir::isa<mlir::IndexType>(type) || isPointerLikeType(type);
+    auto semanticType = value.getType();
+    auto storageType = toSlotStorageType(semanticType);
+    bool canPromote = mlir::isa<mlir::IntegerType>(storageType) ||
+                      mlir::isa<mlir::FloatType>(storageType) ||
+                      mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) ||
+                      mlir::isa<mlir::IndexType>(storageType) || isPointerLikeType(semanticType);
     if (canPromote) {
-      auto memrefType = mlir::MemRefType::get({}, type);
+      auto memrefType = mlir::MemRefType::get({}, storageType);
       // Insert alloca at function entry block start (dominates everything)
       auto savedIP = builder.saveInsertionPoint();
       auto &entryBlock = currentFunction.front();
@@ -744,13 +749,16 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
       // at function exit are safe even when the variable's definition was
       // skipped (e.g. early return before the let-binding).
       // hew_vec_free/hew_hashmap_free_impl/hew_string_drop all accept null.
-      if (mlir::isa<mlir::LLVM::LLVMPointerType>(type) || isPointerLikeType(type)) {
-        auto zero = createDefaultValue(builder, builder.getUnknownLoc(), type);
+      if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+        auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
         mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
       }
       builder.restoreInsertionPoint(savedIP);
       // Store the value at the current insertion point
-      mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), value, alloca);
+      auto storedValue = coerceType(value, storageType, builder.getUnknownLoc());
+      mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
+      if (storageType != semanticType)
+        slotSemanticTypes[alloca] = semanticType;
       mutableVars.insert(name, alloca);
       return;
     }
@@ -761,7 +769,8 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
 void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
                                      mlir::Value initialValue) {
   name = intern(name.str());
-  auto memrefType = mlir::MemRefType::get({}, type);
+  auto storageType = toSlotStorageType(type);
+  auto memrefType = mlir::MemRefType::get({}, storageType);
   mlir::Value alloca;
   // When return guards are active, hoist alloca to function entry block
   // so it dominates all uses across sibling guard regions.
@@ -773,8 +782,8 @@ void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
     // Zero-initialize pointer-like allocas so that unconditional drops
     // at function exit are safe even when the variable's definition was
     // skipped (e.g. early return before the let-binding).
-    if (mlir::isa<mlir::LLVM::LLVMPointerType>(type) || isPointerLikeType(type)) {
-      auto zero = createDefaultValue(builder, builder.getUnknownLoc(), type);
+    if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(type)) {
+      auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
       mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
     }
     builder.restoreInsertionPoint(savedIP);
@@ -782,8 +791,11 @@ void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
     alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
   }
   if (initialValue) {
-    mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), initialValue, alloca);
+    auto storedValue = coerceType(initialValue, storageType, builder.getUnknownLoc());
+    mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
   }
+  if (storageType != type)
+    slotSemanticTypes[alloca] = type;
   mutableVars.insert(name, alloca);
 }
 
@@ -802,7 +814,12 @@ void MLIRGen::storeVariable(llvm::StringRef name, mlir::Value value) {
     mlir::LLVM::StoreOp::create(builder, builder.getUnknownLoc(), value, cellPtr);
     return;
   }
-  mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), value, it);
+  auto storedValue = value;
+  if (auto semIt = slotSemanticTypes.find(it); semIt != slotSemanticTypes.end()) {
+    auto storageType = mlir::cast<mlir::MemRefType>(it.getType()).getElementType();
+    storedValue = coerceType(value, storageType, builder.getUnknownLoc());
+  }
+  mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, it);
 }
 
 mlir::Value MLIRGen::getMutableVarSlot(llvm::StringRef name) {
@@ -833,7 +850,11 @@ mlir::Value MLIRGen::lookupVariable(llvm::StringRef name) {
         loaded = hew::BitcastOp::create(builder, builder.getUnknownLoc(), origType, loaded);
       return loaded;
     }
-    return mlir::memref::LoadOp::create(builder, builder.getUnknownLoc(), mutVal);
+    auto loaded =
+        mlir::memref::LoadOp::create(builder, builder.getUnknownLoc(), mutVal).getResult();
+    if (auto semIt = slotSemanticTypes.find(mutVal); semIt != slotSemanticTypes.end())
+      return coerceType(loaded, semIt->second, builder.getUnknownLoc());
+    return loaded;
   }
   // Then check immutable bindings
   auto val = symbolTable.lookup(name);
@@ -3280,8 +3301,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
                                               /*withElseRegion=*/true);
 
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
-      auto slotVal =
-          mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{});
+      auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
+                         .getResult();
+      if (slotVal.getType() != resultTypes[0])
+        slotVal = coerceType(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       builder.setInsertionPointToStart(&selectOp.getElseRegion().front());
@@ -3499,8 +3522,10 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 
       // Then (early return was taken): load from return slot
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
-      auto slotVal =
-          mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{});
+      auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
+                         .getResult();
+      if (slotVal.getType() != resultTypes[0])
+        slotVal = coerceType(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
       // Else (normal flow): use body value or default

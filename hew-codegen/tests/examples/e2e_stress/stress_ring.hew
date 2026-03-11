@@ -21,8 +21,7 @@ fn main() {
     let n8 = spawn RingNode(id: 8);
     let n9 = spawn RingNode(id: 9);
     var value = 0;
-    var round = 0;
-    while round < 100 {
+    for round in 0..100 {
         value = await n0.pass(value);
         value = await n1.pass(value);
         value = await n2.pass(value);
@@ -33,7 +32,6 @@ fn main() {
         value = await n7.pass(value);
         value = await n8.pass(value);
         value = await n9.pass(value);
-        round = round + 1;
     }
     println(value);
 }

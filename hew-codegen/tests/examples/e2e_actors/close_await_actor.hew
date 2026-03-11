@@ -8,7 +8,6 @@ fn main() {
     let w = spawn Worker;
     w.greet("hello");
     w.greet("world");
-    close(w);
-    await w;
+    await close(w);
     println("done");
 }

@@ -329,6 +329,19 @@ impl Ty {
         }
     }
 
+    /// If this is an actor handle (`ActorRef<T>` or `Actor<T>`), return `Some(&T)`.
+    #[must_use]
+    pub fn as_actor_handle(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args }
+                if (name == "ActorRef" || name == "Actor") && args.len() == 1 =>
+            {
+                Some(&args[0])
+            }
+            _ => None,
+        }
+    }
+
     /// If this is `Stream<T>`, return `Some(&T)`.
     #[must_use]
     pub fn as_stream(&self) -> Option<&Ty> {

@@ -21,11 +21,10 @@ actor Worker {
 
 fn main() {
     let collector = spawn Collector(count: 0);
-    var i: int = 0;
-    while i < 500 {
-        let w = spawn Worker(id: i, collector: collector);
+    for i in 0..500 {
+        let worker_id: int = i;
+        let w = spawn Worker(id: worker_id, collector: collector);
         w.work();
-        i = i + 1;
     }
     sleep_ms(500);
     let count = await collector.get_count();

@@ -1274,7 +1274,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     return nullptr;
   }
 
-  // close(actor) -> void: close an actor's mailbox
+  // close(actor) -> actor: close an actor's mailbox and return the same ref
   if (name == "close") {
     if (args.empty()) {
       emitError(location) << name << " requires at least 1 argument";
@@ -1284,7 +1284,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!actorVal)
       return nullptr;
     hew::ActorCloseOp::create(builder, location, actorVal);
-    return nullptr;
+    return actorVal;
   }
 
   // link(actor_ref) — link current actor to target

@@ -28,7 +28,6 @@ fn main() {
     let fib10 = fibonacci(10);
     printer.print_message(fib5);
     printer.print_message(fib10);
-    close(printer);
-    await printer;
+    await close(printer);
     println("=== Done ===");
 }

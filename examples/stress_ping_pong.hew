@@ -28,22 +28,22 @@ fn main() {
     let pinger = spawn Pinger(count: 0);
     let ponger = spawn Ponger(count: 0);
     // Rapid alternating message sends — simulates ping-pong
-    var i = 0;
-    while i < 1000 {
-        pinger.ping(i);
-        ponger.pong(i);
-        i = i + 1;
+    for i in 0..1000 {
+        let ping_value: int = i;
+        let pong_value: int = i;
+        pinger.ping(ping_value);
+        ponger.pong(pong_value);
     }
     await pinger.report();
     await ponger.report();
 
     // Second burst: stress with higher volume
     println("--- Round 2: 5000 rounds ---");
-    var j = 0;
-    while j < 5000 {
-        pinger.ping(j);
-        ponger.pong(j);
-        j = j + 1;
+    for j in 0..5000 {
+        let ping_value: int = j;
+        let pong_value: int = j;
+        pinger.ping(ping_value);
+        ponger.pong(pong_value);
     }
     await pinger.report();
     await ponger.report();

@@ -18,7 +18,7 @@ fn main() {
     // Test 1: select with timeout where the timeout fires
     let slow = spawn Slow(value: 999);
     let result = select {
-        x from await slow.get() => x,
+        x from slow.get() => x,
         after 100ms => -1,
     };
     println(result);
@@ -26,7 +26,7 @@ fn main() {
     // Test 2: select with timeout where the reply arrives first
     let fast = spawn Fast(value: 42);
     let result2 = select {
-        x from await fast.get() => x,
+        x from fast.get() => x,
         after 2s => -1,
     };
     println(result2);

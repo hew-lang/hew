@@ -16,7 +16,7 @@ _Task model unification, actor lifecycle fix, RAII streams, duration type, synta
 - §4.3: Unified task model — `s.launch` for cooperative micro-coroutines, `s.spawn` for parallel OS threads
 - §4.5: Cancellation is automatic at safepoints; removed manual `is_cancelled()` polling
 - §4.7/§4.8: Fixed contradiction — cooperative tasks share actor state, parallel tasks do not
-- §4.10: Added `await actorRef`, `await all()` for actor synchronization
+- §4.10: Added `await actor`, `await close(actor)`, and actor reply barriers
 - §6.5.3: Streams/sinks auto-close via RAII (Drop); explicit `.close()` optional
 - §9.0: Documented 3-level preemption hierarchy (message budget, reduction budget, coroutine yield)
 - §9.1: Actor lifecycle reduced from 8 states to 6 (removed Init and Blocked)
@@ -254,7 +254,7 @@ actor Counter {
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
 - **`receive fn` without return type** → fire-and-forget. The method call returns `()` and the caller does not need `await`. The message is enqueued and the caller continues immediately.
-- **`receive fn` with return type** → request-response. The method call returns `Task<R>` and the caller must `await` the result.
+- **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
 
 **Calling named actors:**
 
@@ -2725,32 +2725,29 @@ let ref = spawn(MyActor::new());
 await ref;  // Blocks until ref reaches Stopped or Crashed
 ```
 
-`await actorRef` installs a monitor on the target actor and blocks (via condvar) until the actor reaches a terminal state (`Stopped` or `Crashed`). This is event-driven — no polling or busy-waiting.
+`await actor` installs a monitor on the target actor and blocks (via condvar) until the actor reaches a terminal state (`Stopped` or `Crashed`). This is event-driven — no polling or busy-waiting.
 
-**Fan-out/fan-in with `await all()`:**
-
-```hew
-let a = spawn(Worker::new(1));
-let b = spawn(Worker::new(2));
-let c = spawn(Worker::new(3));
-
-// Wait for all actors to terminate
-await all(a, b, c);
-```
-
-`await all(a, b, c)` monitors all listed actors and returns when every actor has reached a terminal state. This is the idiomatic pattern for fork-join parallelism across actors.
-
-**Drain barrier:**
+**Close and await in one step:**
 
 ```hew
-actor.drain(ref);  // Stdlib barrier message — ensures all prior messages are processed
+await close(actor);
 ```
 
-`actor.drain(ref)` sends a barrier message to the actor's mailbox. When the actor processes the barrier, it signals the caller. This guarantees all messages sent before the drain have been processed.
+For finite actors, `await close(actor)` is shorthand for `close(actor); await actor;`: it closes the mailbox to new messages and then waits for the actor to finish draining its remaining work.
+
+**Read-after-send barrier:**
+
+```hew
+counter.increment();
+counter.increment();
+let count = await counter.get_count();
+```
+
+For actor request/reply handlers, an awaited read acts as a barrier. The `get_count()` ask is enqueued after the earlier sends, so its reply observes all prior messages from the same sender.
 
 **Design rationale:**
 
-These primitives replace `sleep_ms()` patterns with deterministic, event-driven synchronization. `await ref` is zero-cost when the actor has already stopped, and `await all()` enables clean fan-out/fan-in without manual bookkeeping.
+These primitives replace `sleep_ms()` patterns with deterministic, event-driven synchronization. `await actor` is zero-cost when the actor has already stopped, `await close(actor)` removes shutdown boilerplate for finite actors, and awaited reply handlers provide a simple mailbox barrier without polling.
 
 ### 4.11 Select and Join Expressions
 
@@ -2758,7 +2755,7 @@ Hew provides two built-in concurrency expressions for coordinating multiple asyn
 
 #### 4.11.1 `select` Expression
 
-The `select` expression waits for the first of several asynchronous operations to complete, then evaluates the corresponding arm. Remaining operations are cancelled.
+The `select` expression waits for the first of several actor request/reply operations to complete, then evaluates the corresponding arm. Remaining operations are cancelled.
 
 **Syntax:**
 
@@ -2772,22 +2769,23 @@ let result = select {
 
 **Semantics:**
 
-- Each arm starts an asynchronous operation.
+- Each arm starts an actor request/reply operation.
 - The first operation to complete wins; its binding is made available to the `=>` expression.
 - All other operations are cancelled cooperatively.
 - The `from` keyword binds the result of the operation to the identifier.
 - An `after` arm provides a timeout — if no operation completes within the given duration, the timeout arm evaluates.
 - All arm result expressions must have the same type `T`. The `select` expression has type `T`.
+- Each non-timeout source must be an actor receive handler call with a return type. An explicit `await` is accepted for backward compatibility but is redundant inside `select`.
 
 **Type rules:**
 
 ```
 select {
-    p1 from e1 => r1,
-    p2 from e2 => r2,
+    p1 from actor1.compute() => r1,
+    p2 from actor2.compute() => r2,
     after d => r3,
 } : T
-where e1: Task<A>, e2: Task<B>, r1: T, r2: T, r3: T
+where actor1.compute(): A, actor2.compute(): B, r1: T, r2: T, r3: T
 ```
 
 The bound identifiers (`p1`, `p2`) have types `A`, `B` respectively within their arm expressions. The overall `select` has type `T` — the common type of all arm results.
@@ -2806,28 +2804,22 @@ let (a, b, c) = join {
 };
 ```
 
+Each branch must be an actor receive handler call with a return type. An explicit `await` is accepted for backward compatibility but is redundant inside `join`.
+
 **Type rules:**
 
 ```
-join { e1, e2, e3 } : (T1, T2, T3)
-where e1: Task<T1>, e2: Task<T2>, e3: Task<T3>
+join {
+    actor1.compute(),
+    actor2.compute(),
+    actor3.compute(),
+} : (T1, T2, T3)
+where actor1.compute(): T1, actor2.compute(): T2, actor3.compute(): T3
 ```
 
 Each branch may have a different result type. The result is a tuple of all branch results, in declaration order.
 
-**Dynamic `join_all` (variable number of branches):**
-
-```hew
-let results: Vec<i32> = join_all(actors, |a| a.compute());
-```
-
-`join_all` takes a collection and a closure, spawning a concurrent operation for each element. All branches must have the same result type. Returns `Vec<T>`.
-
-**Type rules:**
-
-```
-join_all(collection: Iterable<A>, f: fn(A) -> Task<T>) : Vec<T>
-```
+Dynamic `join_all` remains reserved for future surface work; current Hew exposes static `join { ... }` for actor reply fan-out.
 
 **Error propagation:** If any branch in a `join` traps, the remaining branches are cancelled and the trap propagates to the enclosing scope.
 
@@ -4645,7 +4637,7 @@ If you want this to be directly executable as an engineering project, the next m
 ### v0.9.0
 
 - **Added:** Cooperative task model. `s.launch` spawns micro-coroutines on actor thread; `s.spawn` for parallel OS threads.
-- **Added:** `await actorRef`, `await all()` for event-driven actor synchronization.
+- **Added:** `await actor`, `await close(actor)`, and awaited actor reply barriers.
 - **Added:** RAII auto-close for streams/sinks via Drop.
 - **Added:** Duration literal suffixes (i64 nanoseconds); distinct `duration` type planned but not yet implemented.
 - **Fixed:** Task model spec contradiction (§4.3/§4.7/§4.8 unified).

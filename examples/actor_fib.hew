@@ -24,9 +24,9 @@ fn main() {
     let w3 = spawn FibWorker;
 
     let (r1, r2, r3) = join {
-        await w1.compute(5),
-        await w2.compute(10),
-        await w3.compute(15),
+        w1.compute(5),
+        w2.compute(10),
+        w3.compute(15),
     };
 
     print_result(1, 5, r1);

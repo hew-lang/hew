@@ -15,33 +15,31 @@ actor Counter {
     }
 }
 
+fn drain_batch(counter: ActorRef<Counter>, remaining: int) -> int {
+    if remaining <= 1 {
+        await counter.increment()
+    } else {
+        let pending = counter.increment();
+        let batch_count = drain_batch(counter, remaining - 1);
+        await pending;
+        batch_count
+    }
+}
+
 fn main() {
     println("=== Stress: Bounded Mailbox ===");
     let c = spawn Counter(count: 0);
-    // Fill the bounded mailbox in deterministic batches, then await each batch.
-    var batch: int = 0;
-    while batch < 100 {
-        let m1 = c.increment();
-        let m2 = c.increment();
-        let m3 = c.increment();
-        let m4 = c.increment();
-        let m5 = c.increment();
-        let m6 = c.increment();
-        let m7 = c.increment();
-        let m8 = c.increment();
-        let m9 = c.increment();
-        let m10 = c.increment();
-        await m1;
-        await m2;
-        await m3;
-        await m4;
-        await m5;
-        await m6;
-        await m7;
-        await m8;
-        await m9;
-        await m10;
-        batch = batch + 1;
+    // Fill the bounded mailbox in deterministic batches without spelling out
+    // ten separate awaits in the main loop.
+    for batch in 0..100 {
+        let batch_index: int = batch;
+        let batch_count = drain_batch(c, 10);
+        let expected_count = (batch_index + 1) * 10;
+        if batch_count != expected_count {
+            println(f"FAIL: expected {expected_count} messages after batch {batch_index + 1}, got {batch_count}");
+            stop(c);
+            return;
+        }
     }
     let final_count = await c.report();
     if final_count == 1000 {

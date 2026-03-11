@@ -18,8 +18,8 @@ fn main() {
     let fast = spawn Fast(value: 42);
     let slow = spawn Slow(value: 999);
     let result = select {
-        x from await fast.get() => x,
-        y from await slow.get() => y,
+        x from fast.get() => x,
+        y from slow.get() => y,
     };
     println(result);
     sleep_ms(300);

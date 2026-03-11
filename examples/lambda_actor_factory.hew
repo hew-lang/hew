@@ -29,8 +29,7 @@ fn run_multiplier(factor: int, value: int) {
         println(f"{factor} * {x} = {x * factor}");
     };
     worker.send(value);
-    close(worker);
-    await worker;
+    await close(worker);
     return;
 }
 
@@ -40,8 +39,7 @@ fn run_string_processor(tag: str, value: int) {
         println(f"[{tag}] {x}");
     };
     worker.send(value);
-    close(worker);
-    await worker;
+    await close(worker);
     return;
 }
 
@@ -58,8 +56,7 @@ fn run_conditional_processor(check_even: bool, first: int, second: int) {
     };
     worker.send(first);
     worker.send(second);
-    close(worker);
-    await worker;
+    await close(worker);
     return;
 }
 
@@ -72,7 +69,6 @@ fn run_factory_maker(base: int, offset: int) {
         // but that would require more complex type system support
     };
     worker.send(offset);
-    close(worker);
-    await worker;
+    await close(worker);
     return;
 }

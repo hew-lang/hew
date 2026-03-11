@@ -9,8 +9,7 @@ fn main() -> int {
         println(x * factor);
     };
     multiplier.send(7);
-    close(multiplier);
-    await multiplier;
+    await close(multiplier);
 
     // 2. Capture a string from enclosing scope
     let tag = "TAGGED";
@@ -18,8 +17,7 @@ fn main() -> int {
         println(f"[{tag}] {x}");
     };
     tagger.send(42);
-    close(tagger);
-    await tagger;
+    await close(tagger);
 
     // 3. Capture an actor reference (pipeline pattern)
     let printer = spawn (x: int) => {
@@ -29,10 +27,8 @@ fn main() -> int {
         printer.send(x * 2);
     };
     doubler.send(5);
-    close(doubler);
-    await doubler;
-    close(printer);
-    await printer;
+    await close(doubler);
+    await close(printer);
 
     // 4. Factory helper spawning a lambda actor with capture
     run_adder(100, 23);
@@ -45,7 +41,6 @@ fn run_adder(base: int, value: int) {
         println(base + x);
     };
     adder.send(value);
-    close(adder);
-    await adder;
+    await close(adder);
     return;
 }

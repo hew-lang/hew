@@ -9,6 +9,5 @@ fn main() {
     worker.send(10);
     worker.send(15);
 
-    close(worker);
-    await worker;
+    await close(worker);
 }

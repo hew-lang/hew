@@ -6,8 +6,7 @@ fn main() {
         println(x * 2);
     };
     doubler.send(21);
-    close(doubler);
-    await doubler;
+    await close(doubler);
 
     // Multiple lambda actors running concurrently
     let printer = spawn (msg: int) => {
@@ -37,8 +36,7 @@ fn main() {
             println(f"Scoped: {msg}");
         };
         scoped_actor.send(42);
-        close(scoped_actor);
-        await scoped_actor;
+        await close(scoped_actor);
     };
     // Multiple sends to same actor
     let counter = spawn (x: int) => {
@@ -47,8 +45,7 @@ fn main() {
     counter.send(1);
     counter.send(2);
     counter.send(3);
-    close(counter);
-    await counter;
+    await close(counter);
 
     // Lambda actor with complex body (if/else, function calls)
     let complex_actor = spawn (n: int) => {
@@ -62,8 +59,7 @@ fn main() {
     };
     complex_actor.send(5);
     complex_actor.send(15);
-    close(complex_actor);
-    await complex_actor;
+    await close(complex_actor);
 
     // Test actor factory pattern
     run_multiplier_actor(4, 10); // should print 40
@@ -76,7 +72,6 @@ fn run_multiplier_actor(factor: int, value: int) {
         println(f"Multiplied by {factor}: {x * factor}");
     };
     worker.send(value);
-    close(worker);
-    await worker;
+    await close(worker);
     return;
 }

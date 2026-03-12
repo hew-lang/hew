@@ -1383,22 +1383,21 @@ mlir::Value MLIRGen::generateActorMethodAsk(mlir::Value actorPtr, const ActorInf
     return nullptr;
   }
 
-  if (!recvInfo->returnType.has_value()) {
-    emitError(location) << "await requires a receive handler with a return type, "
-                        << "but '" << methodName << "' returns void";
-    return nullptr;
-  }
-
   auto argVals = generateActorCallArgs(args, location);
   if (!argVals)
     return nullptr;
 
-  // Emit hew.actor_ask — blocking request-response
+  // Emit hew.actor_ask — blocking request-response.
+  // Void-return handlers use NoneType; the caller discards the result.
+  mlir::Type resultType =
+      recvInfo->returnType.has_value() ? *recvInfo->returnType : mlir::NoneType::get(&context);
   auto askOp =
-      hew::ActorAskOp::create(builder, location, *recvInfo->returnType, actorPtr,
+      hew::ActorAskOp::create(builder, location, resultType, actorPtr,
                               builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals,
                               /*timeout_ms=*/mlir::IntegerAttr{});
 
+  if (!recvInfo->returnType.has_value())
+    return nullptr; // void handler — result is discarded by the caller
   return askOp.getResult();
 }
 

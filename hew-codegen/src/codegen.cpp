@@ -966,6 +966,18 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     // Load the result from the reply pointer — always load as ptr since
     // custom types like !hew.string_ref can't be loaded by LLVM directly
     auto resultType = op.getResult().getType();
+
+    // Void-return handler: hew_actor_ask returns null (hew_reply was called with null/0).
+    // free(null) is a safe no-op. Erase the op — no result value to produce.
+    if (llvm::isa<mlir::NoneType>(resultType)) {
+      auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                 mlir::ValueRange{replyPtr});
+      rewriter.eraseOp(op);
+      return mlir::success();
+    }
+
     mlir::Value resultVal;
     if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
@@ -1642,8 +1654,50 @@ struct ReceiveOpLowering : public mlir::OpConversionPattern<hew::ReceiveOp> {
 
         rewriter.setInsertionPointAfter(replyIfOp);
       } else {
-        // Void handler — fire-and-forget (original behaviour)
+        // Void handler — call the handler (no return value)
         mlir::func::CallOp::create(rewriter, loc, handlerName, mlir::TypeRange{}, callArgs);
+
+        // If a reply channel was appended to the message (caller used `await c.handler()`),
+        // signal completion with an empty reply so the caller is unblocked.
+        mlir::Value expectedSize;
+        if (numHandlerArgs <= 1) {
+          expectedSize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
+        } else {
+          auto numMsgParams = numHandlerArgs - 1;
+          if (numMsgParams == 1) {
+            expectedSize = emitSizeOf(rewriter, loc, handlerType.getInput(1));
+          } else {
+            llvm::SmallVector<mlir::Type, 4> ft;
+            for (unsigned pi = 1; pi < numHandlerArgs; ++pi)
+              ft.push_back(handlerType.getInput(pi));
+            auto pt = mlir::LLVM::LLVMStructType::getLiteral(rewriter.getContext(), ft);
+            expectedSize = emitSizeOf(rewriter, loc, pt);
+          }
+        }
+
+        // Check if data_size > expectedSize → reply channel is present
+        auto hasReply = mlir::arith::CmpIOp::create(rewriter, loc, mlir::arith::CmpIPredicate::ugt,
+                                                    dataSizeVal, expectedSize);
+        auto replyIfOp = mlir::scf::IfOp::create(rewriter, loc, hasReply, /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&replyIfOp.getThenRegion().front());
+
+        // Extract reply channel pointer from end of data
+        auto ptrSizeVal = emitSizeOf(rewriter, loc, ptrType);
+        auto voidOffset = mlir::arith::SubIOp::create(rewriter, loc, dataSizeVal, ptrSizeVal);
+        auto i8TypeV = rewriter.getI8Type();
+        auto replyChanAddr = mlir::LLVM::GEPOp::create(rewriter, loc, ptrType, i8TypeV, dataVal,
+                                                       mlir::ValueRange{voidOffset});
+        auto replyChan = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyChanAddr);
+
+        // Call hew_reply(ch, null, 0) — signal completion with no value
+        auto replyFuncType = rewriter.getFunctionType({ptrType, ptrType, sizeType}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_reply", replyFuncType);
+        auto nullPtr = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType);
+        auto voidZeroSize = mlir::arith::ConstantIntOp::create(rewriter, loc, sizeType, 0);
+        mlir::func::CallOp::create(rewriter, loc, "hew_reply", mlir::TypeRange{},
+                                   mlir::ValueRange{replyChan, nullPtr, voidZeroSize});
+
+        rewriter.setInsertionPointAfter(replyIfOp);
       }
 
       rewriter.setInsertionPointAfter(ifOp);

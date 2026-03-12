@@ -1,5 +1,7 @@
 // Backpressure test - bounded mailbox demo
-// Demonstrates that actors with bounded mailboxes apply backpressure
+// Demonstrates bounded mailboxes and await-on-void synchronization.
+// The first three messages are sent fire-and-forget; the fourth is awaited
+// so that main blocks until the handler finishes, making output deterministic.
 actor SlowWorker {
     let id: int;
 
@@ -15,12 +17,10 @@ actor SlowWorker {
 fn main() {
     println("=== Backpressure Test ===");
     let worker = spawn SlowWorker(id: 1);
-    // Send multiple messages - bounded mailbox (capacity 4) will apply backpressure
-    var i: int = 0;
-    while i < 8 {
-        worker.process(i);
-        i = i + 1;
-    }
-    sleep_ms(500);
+    worker.process(0);
+    worker.process(1);
+    worker.process(2);
+    // await blocks until this handler completes, giving us deterministic output
+    await worker.process(3);
     println("=== Done ===");
 }

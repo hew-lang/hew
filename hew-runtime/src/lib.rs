@@ -279,6 +279,9 @@ pub mod tracing;
 #[cfg(feature = "encryption")]
 pub mod encryption;
 
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub mod quic_transport;
+
 pub mod log_core;
 
 #[cfg(feature = "export-meta")]

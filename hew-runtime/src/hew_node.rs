@@ -328,8 +328,24 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.transport.is_null() {
-        // SAFETY: constructor returns owned transport pointer or null.
-        node.transport = unsafe { transport::hew_transport_tcp_new() };
+        // Check HEW_TRANSPORT env var for transport selection.
+        #[cfg(feature = "quic")]
+        let use_quic = std::env::var("HEW_TRANSPORT")
+            .map(|v| v.eq_ignore_ascii_case("quic"))
+            .unwrap_or(false);
+        #[cfg(not(feature = "quic"))]
+        let use_quic = false;
+
+        if use_quic {
+            #[cfg(feature = "quic")]
+            {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { crate::quic_transport::hew_transport_quic_new() };
+            }
+        } else {
+            // SAFETY: constructor returns owned transport pointer or null.
+            node.transport = unsafe { transport::hew_transport_tcp_new() };
+        }
         if node.transport.is_null() {
             fail_start!("hew_node_start: failed to create transport");
         }

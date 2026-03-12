@@ -1454,6 +1454,12 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                                    "bytes::new",
                                                    "bytes::from",
                                                    "duration::from_nanos",
+                                                   "Node::start",
+                                                   "Node::shutdown",
+                                                   "Node::connect",
+                                                   "Node::set_transport",
+                                                   "Node::register",
+                                                   "Node::lookup",
                                                    "to_float"};
     if (builtinNames.contains(calleeName))
       return generateBuiltinCall(calleeName, call.args, location);

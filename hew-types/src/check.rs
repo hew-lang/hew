@@ -747,6 +747,8 @@ impl Checker {
         // Node/distributed builtins
         self.register_builtin_fn("Node::start", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
+        self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
+        self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn(
             "Node::register",
             vec![Ty::String, Ty::Var(TypeVar::fresh())],

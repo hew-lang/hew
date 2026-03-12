@@ -4,6 +4,7 @@ mod checksum;
 mod client;
 mod config;
 mod credentials;
+mod happy_eyeballs;
 mod index;
 mod lockfile;
 mod manifest;

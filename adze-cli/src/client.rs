@@ -163,6 +163,8 @@ pub struct RegistryClient {
     /// CDN base URL for package downloads.
     cdn_url: Option<String>,
     token: Option<String>,
+    /// Shared HTTP agent with Happy Eyeballs TCP connector.
+    agent: ureq::Agent,
 }
 
 impl RegistryClient {
@@ -197,6 +199,7 @@ impl RegistryClient {
             fallback_urls: Vec::new(),
             cdn_url: None,
             token: None,
+            agent: build_agent(),
         }
     }
 
@@ -221,7 +224,7 @@ impl RegistryClient {
     /// Returns [`ApiError`] on HTTP or parse failures.
     pub fn login_device(&self) -> Result<DeviceFlowResponse, ApiError> {
         let url = format!("{}/login/device", self.api_url);
-        let resp = ureq::post(&url).send_empty().map_err(map_ureq_error)?;
+        let resp = self.agent.post(&url).send_empty().map_err(map_ureq_error)?;
 
         if resp.status().as_u16() != 200 {
             return Err(self.parse_error_response(resp));
@@ -241,7 +244,11 @@ impl RegistryClient {
         let url = format!("{}/login/token", self.api_url);
         let body = serde_json::json!({ "device_code": device_code });
 
-        let resp = ureq::post(&url).send_json(&body).map_err(map_ureq_error)?;
+        let resp = self
+            .agent
+            .post(&url)
+            .send_json(&body)
+            .map_err(map_ureq_error)?;
 
         resp.into_body()
             .read_json()
@@ -279,7 +286,9 @@ impl RegistryClient {
             "tarball": tarball_b64,
         });
 
-        let resp = ureq::put(&url)
+        let resp = self
+            .agent
+            .put(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(&body)
             .map_err(map_ureq_error)?;
@@ -316,7 +325,9 @@ impl RegistryClient {
             body["reason"] = serde_json::Value::String(r.to_string());
         }
 
-        let resp = ureq::patch(&url)
+        let resp = self
+            .agent
+            .patch(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(&body)
             .map_err(map_ureq_error)?;
@@ -346,7 +357,7 @@ impl RegistryClient {
                 let _ = write!(url, "&category={cat}");
             }
 
-            let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -372,7 +383,7 @@ impl RegistryClient {
 
             let url = format!("{}/packages/{}", base_url, encode_name(name));
 
-            let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -395,7 +406,9 @@ impl RegistryClient {
         let token = self.token.as_ref().ok_or(ApiError::NotAuthenticated)?;
         let url = format!("{}/namespaces/{}", self.api_url, prefix);
 
-        let resp = ureq::put(&url)
+        let resp = self
+            .agent
+            .put(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_empty()
             .map_err(map_ureq_error)?;
@@ -416,7 +429,7 @@ impl RegistryClient {
         self.try_with_fallback(|base_url| {
             let url = format!("{base_url}/namespaces/{prefix}");
 
-            let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -447,7 +460,9 @@ impl RegistryClient {
             "key_type": "ed25519",
         });
 
-        let resp = ureq::put(&url)
+        let resp = self
+            .agent
+            .put(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(&body)
             .map_err(map_ureq_error)?;
@@ -484,7 +499,9 @@ impl RegistryClient {
             body["successor"] = serde_json::Value::String(succ.to_string());
         }
 
-        let resp = ureq::patch(&url)
+        let resp = self
+            .agent
+            .patch(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(&body)
             .map_err(map_ureq_error)?;
@@ -509,7 +526,11 @@ impl RegistryClient {
         let do_download = |download_url: &str| -> Result<Vec<u8>, ApiError> {
             use std::io::Read as _;
 
-            let resp = ureq::get(download_url).call().map_err(map_ureq_error)?;
+            let resp = self
+                .agent
+                .get(download_url)
+                .call()
+                .map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -574,7 +595,7 @@ impl RegistryClient {
         let encoded_fp = percent_encode(fingerprint);
         self.try_with_fallback(|base_url| {
             let url = format!("{base_url}/keys/{encoded_fp}");
-            let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -594,7 +615,7 @@ impl RegistryClient {
     pub fn get_registry_key(&self) -> Result<RegistryKeyResponse, ApiError> {
         self.try_with_fallback(|base_url| {
             let url = format!("{base_url}/registry-key");
-            let resp = ureq::get(&url).call().map_err(map_ureq_error)?;
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
 
             if resp.status().as_u16() != 200 {
                 return Err(self.parse_error_response(resp));
@@ -667,6 +688,26 @@ impl Default for RegistryClient {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Build a [`ureq::Agent`] whose TCP connector implements Happy Eyeballs
+/// (RFC 8305), racing IPv6/IPv4 connections in parallel.
+fn build_agent() -> ureq::Agent {
+    use ureq::unversioned::resolver::DefaultResolver;
+    use ureq::unversioned::transport::{ConnectProxyConnector, Connector, RustlsConnector};
+
+    use crate::happy_eyeballs::HappyEyeballsConnector;
+
+    let connector =
+        ().chain(ConnectProxyConnector::default())
+            .chain(HappyEyeballsConnector)
+            .chain(RustlsConnector::default());
+
+    ureq::Agent::with_parts(
+        ureq::config::Config::default(),
+        connector,
+        DefaultResolver::default(),
+    )
 }
 
 /// Encode a package name for use in URL paths.

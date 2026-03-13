@@ -63,28 +63,24 @@ struct QuicConn {
     recv: Option<quinn::RecvStream>,
     /// Whether this side initiated the connection (true) or accepted it (false).
     is_initiator: bool,
-    /// Runtime handle for async stream establishment.
-    rt: Arc<Runtime>,
 }
 
 impl QuicConn {
     /// Ensure the bidirectional stream is open. Initiators call `open_bi()`,
     /// acceptors call `accept_bi()`.
-    fn ensure_stream(&mut self) -> Result<(), String> {
+    fn ensure_stream(&mut self, rt: &Runtime) -> Result<(), String> {
         if self.send.is_some() && self.recv.is_some() {
             return Ok(());
         }
         let conn = &self.connection;
         if self.is_initiator {
-            let (send, recv) = self
-                .rt
+            let (send, recv) = rt
                 .block_on(async { conn.open_bi().await })
                 .map_err(|e| format!("open_bi: {e}"))?;
             self.send = Some(send);
             self.recv = Some(recv);
         } else {
-            let (send, recv) = self
-                .rt
+            let (send, recv) = rt
                 .block_on(async { conn.accept_bi().await })
                 .map_err(|e| format!("accept_bi: {e}"))?;
             self.send = Some(send);
@@ -389,7 +385,6 @@ unsafe extern "C" fn quic_connect(impl_ptr: *mut c_void, address: *const c_char)
     };
 
     let ep = endpoint.clone();
-    let rt = qt.rt.clone();
     let result = qt.rt.block_on(async {
         let conn = ep.connect(addr, DEFAULT_SERVER_NAME)?.await?;
         Ok::<_, Box<dyn std::error::Error>>(QuicConn {
@@ -397,7 +392,6 @@ unsafe extern "C" fn quic_connect(impl_ptr: *mut c_void, address: *const c_char)
             send: None,
             recv: None,
             is_initiator: true,
-            rt: rt.clone(),
         })
     });
 
@@ -484,7 +478,6 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
     // synchronous vtable interface.
     let (tx, rx) = std::sync::mpsc::channel::<QuicConn>();
     let accept_ep = result.clone();
-    let accept_rt = qt.rt.clone();
     qt.rt.spawn(async move {
         loop {
             let Some(incoming) = accept_ep.accept().await else {
@@ -498,7 +491,6 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
                 send: None,
                 recv: None,
                 is_initiator: false,
-                rt: accept_rt.clone(),
             };
             if tx.send(qc).is_err() {
                 break;
@@ -562,12 +554,12 @@ unsafe extern "C" fn quic_send(
         return -1;
     };
 
-    if let Err(e) = qc.ensure_stream() {
+    if let Err(e) = qc.ensure_stream(&qt.rt) {
         set_last_error(e);
         return -1;
     }
 
-    framed_send_quic(&qc.rt, qc.send.as_mut().unwrap(), slice)
+    framed_send_quic(&qt.rt, qc.send.as_mut().unwrap(), slice)
 }
 
 unsafe extern "C" fn quic_recv(
@@ -593,12 +585,12 @@ unsafe extern "C" fn quic_recv(
         return -1;
     };
 
-    if let Err(e) = qc.ensure_stream() {
+    if let Err(e) = qc.ensure_stream(&qt.rt) {
         set_last_error(e);
         return -1;
     }
 
-    framed_recv_quic(&qc.rt, qc.recv.as_mut().unwrap(), slice)
+    framed_recv_quic(&qt.rt, qc.recv.as_mut().unwrap(), slice)
 }
 
 unsafe extern "C" fn quic_close_conn(impl_ptr: *mut c_void, conn: c_int) {
@@ -613,12 +605,27 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     if impl_ptr.is_null() {
         return;
     }
-    let qt = unsafe { Box::from_raw(impl_ptr.cast::<QuicTransport>()) };
-    // Close the endpoint if open, then drop the runtime.
-    if let Some(ep) = &qt.endpoint {
+    let mut qt = unsafe { Box::from_raw(impl_ptr.cast::<QuicTransport>()) };
+    // Close the endpoint to stop the accept task.
+    if let Some(ep) = qt.endpoint.take() {
         ep.close(quinn::VarInt::from_u32(0), b"shutdown");
     }
+    // Drop all connections.
+    for slot in &qt.conns {
+        if let Ok(mut guard) = slot.lock() {
+            *guard = None;
+        }
+    }
+    // Drop the incoming channel receiver.
+    if let Ok(mut guard) = qt.incoming_rx.lock() {
+        *guard = None;
+    }
+    // Intentionally leak the tokio runtime to avoid "cannot drop runtime
+    // in async context" panics from worker threads still winding down.
+    // The process is shutting down and the OS will reclaim resources.
+    let rt = qt.rt.clone();
     drop(qt);
+    std::mem::forget(rt);
 }
 
 // ---------------------------------------------------------------------------

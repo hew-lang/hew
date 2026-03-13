@@ -754,7 +754,7 @@ impl Checker {
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
             Ty::Unit,
         );
-        self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::Var(TypeVar::fresh()));
+        self.register_builtin_fn("Node::lookup", vec![Ty::String], Ty::I64);
 
         // std::math module — always available, no import needed
         self.modules.insert("math".to_string());

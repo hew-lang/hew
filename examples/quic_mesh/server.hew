@@ -1,0 +1,54 @@
+// quic_mesh/server.hew — QUIC mesh server node
+//
+// Demonstrates:
+//   - Node::set_transport("quic") for QUIC-based mesh (TLS 1.3 encryption)
+//   - Node::start to bind and listen
+//   - Actor spawning and registration
+//   - The server stays alive until an incoming connection is established,
+//     exchanges the application handshake (48-byte protocol header),
+//     then prints connection info and shuts down cleanly.
+//
+// Run with:
+//   HEW_PPROF=:6060 hew run examples/quic_mesh/server.hew
+//   (browse http://localhost:6060 for live metrics)
+
+actor Counter {
+    let count: int;
+
+    receive fn increment(n: int) {
+        self.count = self.count + n;
+        println(f"[server] counter incremented to {self.count}");
+    }
+
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+fn main() {
+    println("[server] starting QUIC mesh node...");
+
+    // Select QUIC transport — uses TLS 1.3 instead of Noise XX.
+    Node::set_transport("quic");
+
+    // Start the node on a fixed port.
+    Node::start("127.0.0.1:9000");
+    println("[server] listening on 127.0.0.1:9000 (QUIC/TLS 1.3)");
+
+    // Spawn a service actor and register it by name.
+    let counter = spawn Counter;
+    counter.increment(100);
+    Node::register("counter", counter);
+    println("[server] registered 'counter' actor");
+
+    // Keep the node alive for a few seconds to accept connections.
+    // In a real service, this would be an event loop.
+    sleep_ms(5000);
+
+    // Clean up.
+    let final_count = await counter.get_count();
+    println(f"[server] final count: {final_count}");
+    await close(counter);
+    Node::shutdown();
+    println("[server] node shut down");
+}

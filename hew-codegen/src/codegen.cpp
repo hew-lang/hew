@@ -913,6 +913,7 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
     auto *ctx = rewriter.getContext();
     auto ptrType = mlir::LLVM::LLVMPointerType::get(ctx);
     auto i32Type = rewriter.getI32Type();
+    auto i64Type = rewriter.getI64Type();
     auto sizeType = getSizeType(ctx, module);
 
     auto targetVal = adaptor.getTarget();
@@ -924,10 +925,22 @@ struct ActorSendOpLowering : public mlir::OpConversionPattern<hew::ActorSendOp> 
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
     auto [dataPtr, dataSize] = emitPackArgs(rewriter, loc, clonedArgs);
 
-    auto sendFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {});
-    getOrInsertFuncDecl(module, rewriter, "hew_actor_send", sendFuncType);
-    mlir::func::CallOp::create(rewriter, loc, "hew_actor_send", mlir::TypeRange{},
-                               mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+    // Remote dispatch: if the target is an i64 PID (from Node::lookup),
+    // route through hew_actor_send_by_id which handles both local and
+    // remote delivery transparently.
+    if (targetVal.getType() == i64Type) {
+      auto sendFuncType =
+          rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType}, {i32Type});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_send_by_id", sendFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send_by_id", mlir::TypeRange{i32Type},
+                                 mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+    } else {
+      // Local dispatch: direct pointer to actor struct.
+      auto sendFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_send", sendFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send", mlir::TypeRange{},
+                                 mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+    }
 
     rewriter.eraseOp(op);
     return mlir::success();
@@ -948,6 +961,7 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto sizeType = getSizeType(ctx, module);
 
     auto targetVal = adaptor.getTarget();
+    auto i64Type = rewriter.getI64Type();
     auto msgTypeVal = mlir::arith::ConstantIntOp::create(rewriter, loc, i32Type,
                                                          static_cast<int64_t>(op.getMsgType()));
 
@@ -955,7 +969,32 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
     auto [dataPtr, dataSize] = emitPackArgs(rewriter, loc, clonedArgs);
 
-    // Phase 1: blocking ask — hew_actor_ask returns void*
+    // Remote actors (i64 PID from Node::lookup): use fire-and-forget send
+    // via hew_actor_send_by_id. Full remote await (request-response) requires
+    // a distributed reply channel protocol — planned for a future release.
+    if (targetVal.getType() == i64Type) {
+      auto sendFuncType =
+          rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType}, {i32Type});
+      getOrInsertFuncDecl(module, rewriter, "hew_actor_send_by_id", sendFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send_by_id", mlir::TypeRange{i32Type},
+                                 mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+
+      // Return a zero/null result since we can't await remote actors yet.
+      auto resultType = op.getResult().getType();
+      mlir::Value zeroResult;
+      if (llvm::isa<mlir::NoneType>(resultType)) {
+        rewriter.eraseOp(op);
+        return mlir::success();
+      } else if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
+        zeroResult = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType).getResult();
+      } else {
+        zeroResult = mlir::arith::ConstantIntOp::create(rewriter, loc, resultType, 0);
+      }
+      rewriter.replaceOp(op, zeroResult);
+      return mlir::success();
+    }
+
+    // Local actor: blocking ask via hew_actor_ask (returns void*)
     auto askFuncType = rewriter.getFunctionType({ptrType, i32Type, ptrType, sizeType}, {ptrType});
     getOrInsertFuncDecl(module, rewriter, "hew_actor_ask", askFuncType);
     auto call =

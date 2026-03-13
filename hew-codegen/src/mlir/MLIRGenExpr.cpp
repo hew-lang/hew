@@ -3575,8 +3575,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
 
-  // Check if receiver is an actor (ptr type + tracked in actorVarTypes)
-  if (isPointerLikeType(receiverType)) {
+  // Check if receiver is an actor (ptr type + tracked in actorVarTypes,
+  // or i64 PID from Node::lookup for remote actors)
+  if (isPointerLikeType(receiverType) || mlir::isa<mlir::IntegerType>(receiverType)) {
     std::string actorTypeName = resolveActorTypeName(mc.receiver->value, &mc.receiver->span);
 
     if (!actorTypeName.empty()) {

@@ -693,6 +693,14 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     return hew::BitcastOp::create(builder, location, targetType, value);
   }
 
+  // Remote actor ref: i64 PID (from Node::lookup) used where an actor ref is
+  // expected. Keep the value as i64 — ActorSendOp/AskOp lowering handles the
+  // i64 target by routing through hew_actor_send_by_id.
+  if (mlir::isa<mlir::IntegerType>(value.getType()) &&
+      (mlir::isa<hew::TypedActorRefType>(targetType) || mlir::isa<hew::ActorRefType>(targetType))) {
+    return value;
+  }
+
   // Structurally identical LLVM structs with different mangled names (e.g.,
   // Wrapper_int vs Wrapper_i64 from generics with type aliases). Both have
   // the same field layout — return the value as-is. The source type name

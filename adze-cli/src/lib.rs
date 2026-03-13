@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod config;
+pub mod happy_eyeballs;
 pub mod index;
 pub mod manifest;
 pub mod registry;

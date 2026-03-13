@@ -1,0 +1,43 @@
+// quic_mesh/server.hew — QUIC mesh server node
+//
+// Demonstrates:
+//   - Node::set_transport("quic") for QUIC-based mesh (TLS 1.3)
+//   - Spawning, registering, and serving a named actor
+//   - Receiving remote messages from a connected client
+//
+// Run:  hew run examples/quic_mesh/server.hew
+// Then: hew run examples/quic_mesh/client.hew
+
+actor Counter {
+    let count: int;
+
+    receive fn increment(n: int) {
+        self.count = self.count + n;
+        println(f"[server] counter incremented by {n} → {self.count}");
+    }
+
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+fn main() {
+    println("[server] starting QUIC mesh node...");
+
+    Node::set_transport("quic");
+    Node::start("127.0.0.1:9000");
+    println("[server] listening on 127.0.0.1:9000 (QUIC/TLS 1.3)");
+
+    let counter = spawn Counter;
+    Node::register("counter", counter);
+    println("[server] registered 'counter' actor, waiting for clients...");
+
+    // Keep alive to serve remote messages.
+    sleep_ms(5000);
+
+    let final_count = await counter.get_count();
+    println(f"[server] final count: {final_count}");
+    await close(counter);
+    Node::shutdown();
+    println("[server] shut down");
+}

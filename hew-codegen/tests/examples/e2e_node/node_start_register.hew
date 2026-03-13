@@ -1,0 +1,32 @@
+// Test: Node API — start, register, lookup, shutdown
+// Exercises: Node::start, Node::register, Node::lookup, Node::shutdown
+actor Counter {
+    let count: int;
+    receive fn increment(n: int) {
+        self.count = self.count + n;
+    }
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+fn main() {
+    // Start a local node on an ephemeral port.
+    Node::start("127.0.0.1:0");
+
+    // Spawn and register an actor.
+    let counter = spawn Counter;
+    counter.increment(10);
+    counter.increment(5);
+    Node::register("counter", counter);
+
+    // Look up the actor by name and verify it works.
+    let found = Node::lookup("counter");
+    println(found != 0);
+
+    // Clean up.
+    let result = await counter.get_count();
+    println(result);
+    await close(counter);
+    Node::shutdown();
+}

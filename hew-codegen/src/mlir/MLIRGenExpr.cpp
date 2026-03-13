@@ -1454,6 +1454,12 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                                    "bytes::new",
                                                    "bytes::from",
                                                    "duration::from_nanos",
+                                                   "Node::start",
+                                                   "Node::shutdown",
+                                                   "Node::connect",
+                                                   "Node::set_transport",
+                                                   "Node::register",
+                                                   "Node::lookup",
                                                    "to_float"};
     if (builtinNames.contains(calleeName))
       return generateBuiltinCall(calleeName, call.args, location);
@@ -3569,8 +3575,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
 
-  // Check if receiver is an actor (ptr type + tracked in actorVarTypes)
-  if (isPointerLikeType(receiverType)) {
+  // Check if receiver is an actor (ptr type + tracked in actorVarTypes,
+  // or i64 PID from Node::lookup for remote actors)
+  if (isPointerLikeType(receiverType) || mlir::isa<mlir::IntegerType>(receiverType)) {
     std::string actorTypeName = resolveActorTypeName(mc.receiver->value, &mc.receiver->span);
 
     if (!actorTypeName.empty()) {

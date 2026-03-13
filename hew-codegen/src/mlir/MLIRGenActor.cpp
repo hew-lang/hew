@@ -1340,6 +1340,12 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
                                                          static_cast<int64_t>(msgIdx));
     mlir::func::CallOp::create(builder, location, "hew_actor_send_wire", mlir::TypeRange{},
                                mlir::ValueRange{actorPtrCast, msgTypeVal, bytesVec});
+  } else if (mlir::isa<mlir::IntegerType>(actorPtr.getType())) {
+    // Remote dispatch: target is a PID (i64 from Node::lookup).
+    // Route through hew_actor_send_by_id which handles both local and
+    // remote delivery transparently via the node mesh.
+    hew::ActorSendOp::create(builder, location, actorPtr,
+                             builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
   } else {
     // Standard path: hew.actor_send — the lowering pass handles arg packing
     hew::ActorSendOp::create(builder, location, actorPtr,

@@ -328,8 +328,24 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     }
 
     if node.transport.is_null() {
-        // SAFETY: constructor returns owned transport pointer or null.
-        node.transport = unsafe { transport::hew_transport_tcp_new() };
+        // Check HEW_TRANSPORT env var for transport selection.
+        #[cfg(feature = "quic")]
+        let use_quic = std::env::var("HEW_TRANSPORT")
+            .map(|v| v.eq_ignore_ascii_case("quic"))
+            .unwrap_or(false);
+        #[cfg(not(feature = "quic"))]
+        let use_quic = false;
+
+        if use_quic {
+            #[cfg(feature = "quic")]
+            {
+                // SAFETY: constructor returns owned transport pointer or null.
+                node.transport = unsafe { crate::quic_transport::hew_transport_quic_new() };
+            }
+        } else {
+            // SAFETY: constructor returns owned transport pointer or null.
+            node.transport = unsafe { transport::hew_transport_tcp_new() };
+        }
         if node.transport.is_null() {
             fail_start!("hew_node_start: failed to create transport");
         }
@@ -1025,5 +1041,161 @@ mod tests {
 
         // SAFETY: node was allocated by hew_node_new above.
         unsafe { hew_node_free(node) };
+    }
+}
+
+// ============================================================================
+// Simplified Node API for Hew-language builtins
+// ============================================================================
+//
+// These functions manage the CURRENT_NODE internally, providing a stateless
+// interface for the compiler-generated code. Each corresponds to a
+// `Node::*` builtin in the Hew language.
+
+/// Counter for auto-assigning node IDs.
+static NODE_ID_COUNTER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+
+/// `Node::start(addr)` — Create and start a node, binding to `addr`.
+///
+/// # Safety
+///
+/// `addr` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
+    if addr.is_null() {
+        set_last_error("Node::start: address is null");
+        return -1;
+    }
+    let node_id = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let node = unsafe { hew_node_new(node_id, addr) };
+    if node.is_null() {
+        return -1;
+    }
+    let rc = unsafe { hew_node_start(node) };
+    if rc != 0 {
+        unsafe { hew_node_free(node) };
+        return rc;
+    }
+    0
+}
+
+/// `Node::shutdown()` — Stop and free the current node.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
+    // Read the current node pointer (hew_node_stop will clear CURRENT_NODE).
+    let ptr = {
+        let guard = match CURRENT_NODE.read() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *guard as *mut HewNode
+    };
+    if ptr.is_null() {
+        return -1;
+    }
+    unsafe { hew_node_stop(ptr) };
+    unsafe { hew_node_free(ptr) };
+    0
+}
+
+/// `Node::connect(addr)` — Connect the current node to a peer.
+///
+/// # Safety
+///
+/// `addr` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
+    if addr.is_null() {
+        return -1;
+    }
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let node = *guard as *mut HewNode;
+    if node.is_null() {
+        set_last_error("Node::connect: no active node");
+        return -1;
+    }
+    unsafe { hew_node_connect(node, addr) }
+}
+
+/// `Node::register(name, actor_ptr)` — Register a named actor.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string. `actor` must be a valid
+/// pointer to a live [`crate::actor::HewActor`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_register(
+    name: *const c_char,
+    actor: *mut crate::actor::HewActor,
+) -> c_int {
+    if name.is_null() || actor.is_null() {
+        return -1;
+    }
+    let actor_id = unsafe { (*actor).pid };
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let node = *guard as *mut HewNode;
+    if node.is_null() {
+        set_last_error("Node::register: no active node");
+        return -1;
+    }
+    unsafe { hew_node_register(node, name, actor_id) }
+}
+
+/// `Node::lookup(name)` — Look up a registered actor by name.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
+    if name.is_null() {
+        return 0;
+    }
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let node = *guard as *mut HewNode;
+    if node.is_null() {
+        return 0;
+    }
+    unsafe { hew_node_lookup(node, name) }
+}
+
+/// `Node::set_transport(name)` — Set the transport type before starting.
+///
+/// Supported values: `"tcp"` (default), `"quic"`.
+/// Must be called before `Node::start`.
+///
+/// # Safety
+///
+/// `name` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_int {
+    if name.is_null() {
+        return -1;
+    }
+    let Ok(s) = unsafe { CStr::from_ptr(name) }.to_str() else {
+        return -1;
+    };
+    match s {
+        "tcp" => {
+            std::env::set_var("HEW_TRANSPORT", "tcp");
+            0
+        }
+        "quic" => {
+            std::env::set_var("HEW_TRANSPORT", "quic");
+            0
+        }
+        _ => {
+            set_last_error(format!("Node::set_transport: unknown transport '{s}'"));
+            -1
+        }
     }
 }

@@ -1153,7 +1153,21 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     #[cfg(feature = "encryption")]
-    let upgraded_noise = if hew_conn_supports_encryption(local_hs.feature_flags)
+    let skip_noise = {
+        #[cfg(feature = "quic")]
+        {
+            // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
+            unsafe { crate::quic_transport::hew_transport_is_quic(mgr.transport) }
+        }
+        #[cfg(not(feature = "quic"))]
+        {
+            false
+        }
+    };
+
+    #[cfg(feature = "encryption")]
+    let upgraded_noise = if !skip_noise
+        && hew_conn_supports_encryption(local_hs.feature_flags)
         && hew_conn_supports_encryption(peer_hs.feature_flags)
     {
         // SAFETY: mgr.transport and conn_id are valid per caller contract;
@@ -1172,7 +1186,8 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     };
 
     #[cfg(feature = "encryption")]
-    let upgraded_noise = if hew_conn_supports_encryption(local_hs.feature_flags)
+    let upgraded_noise = if !skip_noise
+        && hew_conn_supports_encryption(local_hs.feature_flags)
         && hew_conn_supports_encryption(peer_hs.feature_flags)
     {
         let Some((noise, peer_static_pubkey)) = upgraded_noise else {

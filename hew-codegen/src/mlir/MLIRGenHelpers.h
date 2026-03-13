@@ -131,10 +131,23 @@ inline std::string typeExprToActorName(const ast::TypeExpr &te) {
   auto *named = std::get_if<ast::TypeNamed>(&te.kind);
   if (!named)
     return "";
+  // ActorRef<Counter> → "Counter"
   if (named->name == "ActorRef" && named->type_args && !named->type_args->empty()) {
     if (auto *inner = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind))
       return inner->name;
   }
+  return "";
+}
+
+/// Like typeExprToActorName but also returns the bare type name.
+/// Used for Node::lookup where the type annotation is `Counter` not `ActorRef<Counter>`.
+inline std::string typeExprToTypeName(const ast::TypeExpr &te) {
+  auto actor = typeExprToActorName(te);
+  if (!actor.empty())
+    return actor;
+  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
+  if (named)
+    return named->name;
   return "";
 }
 

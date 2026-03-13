@@ -543,6 +543,28 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         }
       }
     }
+    // Detect Node::lookup("name") → register variable as remote actor ref.
+    // The actor type comes from the type annotation: let x: Counter = Node::lookup(...)
+    if (stmt.value) {
+      if (auto *callExpr = std::get_if<ast::ExprCall>(&stmt.value->value.kind)) {
+        if (callExpr->function) {
+          if (auto *fnIdent = std::get_if<ast::ExprIdentifier>(&callExpr->function->value.kind)) {
+            if (fnIdent->name == "Node::lookup") {
+              std::string actorName;
+              if (stmt.ty) {
+                actorName = typeExprToTypeName(stmt.ty->value);
+              }
+              if (stmt.ty) {
+                actorName = typeExprToTypeName(stmt.ty->value);
+              }
+              if (!actorName.empty() && actorRegistry.count(actorName)) {
+                actorVarTypes[varName] = actorName;
+              }
+            }
+          }
+        }
+      }
+    }
     // Lambda actors use generated names not in the type annotation
     if (stmt.value && std::holds_alternative<ast::ExprSpawnLambdaActor>(stmt.value->value.kind)) {
       if (lambdaActorCounter > 0)

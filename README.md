@@ -1,159 +1,154 @@
-# Hew
+# Node Builtin Codegen Implementation Guide
 
-A statically-typed, actor-oriented programming language for concurrent and distributed systems.
+This directory contains reference documentation for implementing codegen lowering for Hew's `Node::*` builtins.
 
-**[Website](https://hew.sh)** | **[Documentation](https://hew.sh/docs)** | **[Playground](https://hew.sh/playground)** | **[Tutorial](https://hew.sh/learn)**
+## Documents in This Directory
 
-## Install
+1. **BUILTIN_LOWERING_REFERENCE.md** (Comprehensive)
+   - Complete analysis of how println, spawn, close, sleep_ms are lowered
+   - Serialization format for builtin calls
+   - Typechecker registration patterns
+   - Full context and examples
 
-```bash
-curl -fsSL https://hew.sh/install.sh | bash
-```
+2. **NODE_BUILTIN_IMPLEMENTATION_PLAN.md** (Step-by-Step)
+   - 3-step implementation process
+   - Exact code for all 6 Node builtins
+   - Testing checklist
+   - Files to modify with line counts
 
-Pre-built binaries for Linux (x86_64) and macOS (x86_64, ARM) are available on the [Releases](https://github.com/hew-lang/hew/releases) page. Also available via [Homebrew, Docker, and system packages](https://hew.sh/docs/install).
+3. **QUICK_REFERENCE.md** (Lookup)
+   - File locations and line numbers
+   - Implementation quick steps
+   - Pattern checklist
+   - Common mistakes to avoid
 
 ## Quick Start
 
-```bash
-# Hello world
-echo 'fn main() { println("Hello from Hew!"); }' > hello.hew
-hew run hello.hew
+### What needs to be implemented?
 
-# Start a new project
-adze init my_project
-cd my_project
-hew run src/main.hew
+Add codegen lowering for 6 Node builtins:
 
-# Interactive REPL
-hew eval
+- `Node::start(addr: String) -> Unit`
+- `Node::shutdown() -> Unit`
+- `Node::connect(addr: String) -> Unit`
+- `Node::register(name: String, actor_ref: T) -> Unit`
+- `Node::lookup(name: String) -> T`
+- `Node::set_transport(config: T) -> Unit`
+
+### Where?
+
+**2 files only:**
+
+1. `/home/slepp/projects/hew-lang/hew/hew-types/src/check.rs` (2 new lines)
+2. `/home/slepp/projects/hew-lang/hew/hew-codegen/src/mlir/MLIRGen.cpp` (~70 new lines)
+
+### How?
+
+1. **Typechecker:** Add 2 builtin registrations
+2. **Codegen:** Add 6 names to StringSet + 6 if-blocks
+
+See NODE_BUILTIN_IMPLEMENTATION_PLAN.md for exact code.
+
+## Key Insight: The Pattern
+
+All Node builtins follow the same pattern as existing builtins like `sleep_ms()` and `close()`:
+
+```cpp
+if (name == "Node::something") {
+  // Validate args
+  auto arg = generateExpression(...);
+  if (!arg) return nullptr;
+
+  // Call C FFI function via RuntimeCallOp
+  hew::RuntimeCallOp::create(builder, location,
+    mlir::TypeRange{/* return type or empty */},
+    mlir::SymbolRefAttr::get(&context, "hew_node_something"),
+    mlir::ValueRange{arg});
+
+  // For void: return nullptr
+  // For value: return .getResult()
+}
 ```
 
-See the [Getting Started Guide](https://hew.sh/docs/getting-started) for more.
+## Reference Materials
 
-## Architecture
+### How println is lowered
 
-The compiler has three layers: **Rust frontend** → **MLIR middle layer** → **LLVM backend**.
+- Entry point: `MLIRGenExpr.cpp:1407-1413`
+- Implementation: `MLIRGenExpr.cpp:1792-1815`
+- Uses custom `hew::PrintOp` (not RuntimeCallOp)
 
-```
-source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
-               (hew-lexer) (hew-parser) (hew-types)    (hew-serialize)
-                                                             │
-                                        ┌────────────────────┘
-                                        ▼ stdin (MessagePack AST)
-               hew-codegen (C++): MLIRGen → Hew dialect → LLVM dialect → LLVM IR → .o
-               hew (Rust):        cc .o + libhew_runtime.a → executable
-```
+### How spawn creates actors
 
-> **Detailed diagrams:** See [`docs/diagrams.md`](docs/diagrams.md) for Mermaid sequence diagrams, state machines, and architecture visuals covering the full compilation pipeline, MLIR lowering stages, actor lifecycle, message flow, runtime layers, and wire protocol format.
+- Implementation: `MLIRGenActor.cpp:852-950`
+- Returns actor pointer (handle)
+- Calls generated C init functions
 
-## Repository Structure
+### How close/stop work (reference for Node builtins)
 
-### Compiler
+- close(): `MLIRGen.cpp:1277-1288`
+- stop(): `MLIRGen.cpp:1264-1275`
+- Both void-returning, take actor argument
 
-- **hew-cli/** — Compiler driver (`hew` binary)
-- **hew-lexer/** — Tokenizer
-- **hew-parser/** — Recursive-descent + Pratt precedence parser
-- **hew-types/** — Bidirectional type checker with Hindley-Milner inference
-- **hew-serialize/** — MessagePack AST serialization
-- **hew-codegen/** — MLIR middle layer + LLVM backend (Hew dialect ops, lowering, code generation)
-- **hew-astgen/** — Generates C++ msgpack deserialization from AST definitions
-- **hew-runtime/** — Pure Rust actor runtime (`libhew_runtime.a`); also compiles for WASM targets
-- **hew-cabi/** — C ABI bridge for stdlib FFI bindings
+### Serialization format
 
-### Package Manager & Tooling
+- AST: `hew-parser/src/ast.rs` line 180-185 (Expr::Call)
+- MessagePack: `hew-serialize/src/msgpack.rs` line 85-107
+- Schema version: 1
 
-- **adze-cli/** — Package manager (`adze` binary) — init, install, publish, search
-- **hew-lsp/** — Language server (tower-lsp)
-- **hew-observe/** — Runtime observability TUI (`hew-observe`)
-- **hew-wasm/** — Frontend compiled to WASM for in-browser diagnostics
+### Typechecker registration
 
-### Standard Library & Build Support
+- Existing registrations: `check.rs:742-750`
+- Pattern: `register_builtin_fn(name, params, return_type)`
+- Node::lookup uses generic TypeVar for polymorphism
 
-- **std/** — Standard library modules (`.hew` source files + Rust FFI crates)
-- **hew-export-macro/** — Proc macro for stdlib export declarations
-- **hew-export-types/** — Shared types for the export system
-- **hew-stdlib-gen/** — Generates stdlib module descriptors for the type checker
+## Files to Study
 
-### Distribution
+### Core Implementation Files
 
-- **editors/** — Editor support (Emacs, Nano, Sublime)
-- **completions/** — Shell completions (bash, zsh, fish)
-- **installers/** — Package installers (Homebrew, Debian, RPM, Arch, Alpine, Nix, Docker)
-- **examples/** — Example programs and benchmarks
-- **scripts/** — Development scripts
-- **docs/** — Language specification and API references
+- `/home/slepp/projects/hew-lang/hew/hew-codegen/src/mlir/MLIRGen.cpp`
+  - generateBuiltinCall() - main dispatcher (line 943)
+  - sleep_ms pattern (line 1121)
+  - close/stop/link patterns (line 1264+)
 
-## Documentation
+- `/home/slepp/projects/hew-lang/hew/hew-codegen/src/mlir/MLIRGenExpr.cpp`
+  - generateFunctionCallExpr() - call entry point (line 1368)
+  - println dispatch (line 1407)
+  - generatePrintCall() - custom handler (line 1792)
+  - module method calls (line 3155)
 
-Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
+- `/home/slepp/projects/hew-lang/hew/hew-types/src/check.rs`
+  - Builtin registration (line 740+)
+  - register_builtin_fn (line 784)
 
-Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.sh)**
+### Reference Files
 
-## Building from Source
+- `/home/slepp/projects/hew-lang/hew/hew-codegen/src/mlir/MLIRGenActor.cpp`
+  - generateSpawnExpr() - actor creation (line 852)
 
-### Prerequisites
+- `/home/slepp/projects/hew-lang/hew/hew-parser/src/ast.rs`
+  - Expr enum (line 121+)
+  - Expr::Call (line 180)
+  - CallArg enum (line 85)
 
-| Dependency    | Version                 | Purpose                                     |
-| ------------- | ----------------------- | ------------------------------------------- |
-| Rust          | stable (latest)         | Frontend compiler, runtime, package manager |
-| LLVM          | 22.1                    | MLIR code generation and LLVM backend       |
-| MLIR          | (bundled with LLVM 22)  | Hew dialect and lowering passes             |
-| CMake         | >= 3.20                 | Builds hew-codegen (C++ MLIR backend)       |
-| Ninja         | any                     | CMake build generator                       |
-| clang/clang++ | any (LLVM 22 preferred) | C/C++ compilation of hew-codegen            |
+## Next Steps
 
-**Install on Ubuntu/Debian:**
+1. **Read** BUILTIN_LOWERING_REFERENCE.md for deep understanding
+2. **Follow** NODE_BUILTIN_IMPLEMENTATION_PLAN.md for step-by-step implementation
+3. **Use** QUICK_REFERENCE.md while coding for fast lookups
+4. **Implement** the 2-file changes
+5. **Test** with sample Hew code using Node:: calls
 
-```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+## Notes
 
-# LLVM 22 + MLIR
-sudo mkdir -p /etc/apt/keyrings
-wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
-  | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-22 main" \
-  | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
-sudo apt-get update
-sudo apt-get install -y cmake ninja-build \
-  llvm-22-dev libmlir-21-dev mlir-21-tools clang-22
-```
+- All Node:: builtins should call corresponding `hew_node_*` C functions
+- Two builtins (Node::connect, Node::set_transport) are NOT in typechecker yet - add them first
+- Four builtins (start, shutdown, register, lookup) already exist in typechecker
+- C++ code uses RuntimeCallOp for all FFI calls
+- Rust typechecker uses register_builtin_fn to define signatures
 
-**Install on macOS:**
+---
 
-```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# LLVM 22 + MLIR
-brew install llvm@22 ninja cmake
-```
-
-### Build
-
-```bash
-make          # Build everything (debug)
-make release  # Build everything (optimized)
-make test     # Run Rust + native codegen tests
-make lint     # cargo clippy
-```
-
-See `make help` or the [Makefile](Makefile) header for all targets.
-
-### Optional Dependencies
-
-These are only needed for specific workflows:
-
-| Dependency           | Install                                             | Purpose                                        |
-| -------------------- | --------------------------------------------------- | ---------------------------------------------- |
-| wasmtime             | `curl https://wasmtime.dev/install.sh -sSf \| bash` | Run WASM tests (`make test-wasm`)              |
-| wasm32-wasip1 target | `rustup target add wasm32-wasip1`                   | Build WASM runtime (`make wasm-runtime`)       |
-| Python 3             | system package manager                              | Visualization and fuzzing scripts (`scripts/`) |
-| Java 21 + ANTLR4     | system package manager                              | Grammar validation (`make grammar`)            |
-| cargo-fuzz           | `cargo install cargo-fuzz`                          | Parser fuzzing (`hew-parser/fuzz/`)            |
-
-## License
-
-Hew is distributed under the terms of both the MIT license and the Apache License (Version 2.0).
-
-See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for details.
+**Status:** Ready for implementation  
+**Total Changes:** 2 files, ~72 lines of code  
+**Effort:** 30-60 minutes for implementation + testing

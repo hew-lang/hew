@@ -747,6 +747,8 @@ impl Checker {
         // Node/distributed builtins
         self.register_builtin_fn("Node::start", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
+        self.register_builtin_fn("Node::connect", vec![Ty::String], Ty::Unit);
+        self.register_builtin_fn("Node::set_transport", vec![Ty::String], Ty::Unit);
         self.register_builtin_fn(
             "Node::register",
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
@@ -2615,7 +2617,7 @@ impl Checker {
         }
 
         // Apply final substitutions to all recorded types
-        let expr_types = self
+        let expr_types: HashMap<SpanKey, Ty> = self
             .expr_types
             .iter()
             .map(|(k, v)| (k.clone(), self.subst.resolve(v)))
@@ -2696,8 +2698,14 @@ impl Checker {
         }
 
         // Move data out of Checker — it is not used after check_program.
+        // Resolve any remaining type variables in expr_types via the
+        // substitution so the enrichment layer sees concrete types.
+        let resolved_expr_types: HashMap<SpanKey, Ty> = expr_types
+            .into_iter()
+            .map(|(k, v)| (k, self.subst.resolve(&v)))
+            .collect();
         let mut output = TypeCheckOutput {
-            expr_types,
+            expr_types: resolved_expr_types,
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             type_defs: std::mem::take(&mut self.type_defs),

@@ -693,6 +693,14 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     return hew::BitcastOp::create(builder, location, targetType, value);
   }
 
+  // Remote actor ref: i64 PID (from Node::lookup) used where an actor ref is
+  // expected. Keep the value as i64 — ActorSendOp/AskOp lowering handles the
+  // i64 target by routing through hew_actor_send_by_id.
+  if (mlir::isa<mlir::IntegerType>(value.getType()) &&
+      (mlir::isa<hew::TypedActorRefType>(targetType) || mlir::isa<hew::ActorRefType>(targetType))) {
+    return value;
+  }
+
   // Structurally identical LLVM structs with different mangled names (e.g.,
   // Wrapper_int vs Wrapper_i64 from generics with type aliases). Both have
   // the same field layout — return the value as-is. The source type name
@@ -1630,6 +1638,94 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!c)
       return nullptr;
     return hew::ToStringOp::create(builder, location, hew::StringRefType::get(&context), c)
+        .getResult();
+  }
+
+  // ── Node API builtins ──────────────────────────────────────────────────────
+
+  // Node::start(addr) -> void: create and start a node
+  if (name == "Node::start") {
+    if (args.empty()) {
+      emitError(location) << name << " requires 1 argument (bind address)";
+      return nullptr;
+    }
+    auto addr = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!addr)
+      return nullptr;
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_node_api_start"),
+                               mlir::ValueRange{addr});
+    return nullptr;
+  }
+
+  // Node::shutdown() -> void: stop the current node
+  if (name == "Node::shutdown") {
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_node_api_shutdown"),
+                               mlir::ValueRange{});
+    return nullptr;
+  }
+
+  // Node::connect(addr) -> void: connect to a peer node
+  if (name == "Node::connect") {
+    if (args.empty()) {
+      emitError(location) << name << " requires 1 argument (peer address)";
+      return nullptr;
+    }
+    auto addr = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!addr)
+      return nullptr;
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_node_api_connect"),
+                               mlir::ValueRange{addr});
+    return nullptr;
+  }
+
+  // Node::set_transport(name) -> void: set transport before start
+  if (name == "Node::set_transport") {
+    if (args.empty()) {
+      emitError(location) << name << " requires 1 argument (\"tcp\" or \"quic\")";
+      return nullptr;
+    }
+    auto tname = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!tname)
+      return nullptr;
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_node_api_set_transport"),
+                               mlir::ValueRange{tname});
+    return nullptr;
+  }
+
+  // Node::register(name, actor) -> void: register a named actor
+  if (name == "Node::register") {
+    if (args.size() < 2) {
+      emitError(location) << name << " requires 2 arguments (name, actor)";
+      return nullptr;
+    }
+    auto regName = generateExpression(ast::callArgExpr(args[0]).value);
+    auto actorVal = generateExpression(ast::callArgExpr(args[1]).value);
+    if (!regName || !actorVal)
+      return nullptr;
+    // Pass the actor ref pointer directly; the runtime extracts the PID.
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, "hew_node_api_register"),
+                               mlir::ValueRange{regName, actorVal});
+    return nullptr;
+  }
+
+  // Node::lookup(name) -> actor_id (u64)
+  if (name == "Node::lookup") {
+    if (args.empty()) {
+      emitError(location) << name << " requires 1 argument (actor name)";
+      return nullptr;
+    }
+    auto lookupName = generateExpression(ast::callArgExpr(args[0]).value);
+    if (!lookupName)
+      return nullptr;
+    auto u64Ty = builder.getI64Type();
+    return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{u64Ty},
+                                      mlir::SymbolRefAttr::get(&context, "hew_node_api_lookup"),
+                                      mlir::ValueRange{lookupName})
         .getResult();
   }
 

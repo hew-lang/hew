@@ -3,7 +3,7 @@
 actor Worker {
     let id: int;
     receive fn ping() {
-        println(f"Worker {self.id} pinged");
+        println(f"Worker {id} pinged");
     }
 }
 

@@ -865,6 +865,8 @@ static ast::Expr parseExpr(const msgpack::object &obj) {
   }
   if (name == "Cooperate")
     return ast::Expr{ast::ExprCooperate{}, {}};
+  if (name == "This")
+    return ast::Expr{ast::ExprThis{}, {}};
   if (name == "FieldAccess") {
     ast::ExprFieldAccess e;
     e.object = std::make_unique<ast::Spanned<ast::Expr>>(

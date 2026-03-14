@@ -150,7 +150,7 @@ blank();
 
 // Actor & concurrency
 emit('# Actor & concurrency');
-const actorWords = ['actor', 'receive', 'init', 'spawn', 'move'];
+const actorWords = ['actor', 'receive', 'init', 'spawn', 'move', 'this'];
 emit(`color brightgreen ${nanoKeywordRegex(actorWords)}`);
 blank();
 
@@ -222,10 +222,9 @@ for (const chunk of traitChunks) {
 }
 blank();
 
-// Self
-emit('# Self');
+// Self type
+emit('# Self type');
 emit('color brightblue "\\<Self\\>"');
-emit('color red "\\<self\\>"');
 blank();
 
 // PascalCase type names

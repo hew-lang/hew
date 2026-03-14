@@ -913,7 +913,6 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::StyleSuggestion
         | TypeErrorKind::UnusedImport
         | TypeErrorKind::UnreachableCode
-        | TypeErrorKind::Shadowing
         | TypeErrorKind::DeadCode
         | TypeErrorKind::OrphanImpl
         | TypeErrorKind::PlatformLimitation => DiagnosticSeverity::WARNING,
@@ -1680,6 +1679,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::ScopeCancel
+        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

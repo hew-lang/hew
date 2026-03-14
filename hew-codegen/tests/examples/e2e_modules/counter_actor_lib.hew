@@ -2,16 +2,16 @@ pub actor Counter {
     var count: int = 0;
 
     receive fn increment() -> int {
-        self.count = self.count + 1;
-        self.count
+        count = count + 1;
+        count
     }
 
     receive fn get_count() -> int {
-        self.count
+        count
     }
 
     receive fn add(n: int) -> int {
-        self.count = self.count + n;
-        self.count
+        count = count + n;
+        count
     }
 }

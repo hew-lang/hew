@@ -9,11 +9,11 @@ actor Worker {
     let id: i32;
     init() {
         print("worker:");
-        println(self.id);
+        println(id);
     }
     receive fn ping() {
         print("ping:");
-        println(self.id);
+        println(id);
     }
 }
 

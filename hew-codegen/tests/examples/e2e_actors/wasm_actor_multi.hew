@@ -2,7 +2,7 @@ actor Adder {
     let base: int;
 
     receive fn add(x: int) -> int {
-        self.base + x
+        base + x
     }
 }
 

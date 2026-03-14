@@ -11,13 +11,13 @@ actor Cache {
     let capacity: i32;
     let entries: i32;
     receive fn store(key: i32) {
-        self.entries = self.entries + 1;
+        entries = entries + 1;
         print("[cache] stored key=");
         print(key);
         print(" (");
-        print(self.entries);
+        print(entries);
         print("/");
-        print(self.capacity);
+        print(capacity);
         println(")");
     }
     receive fn corrupt() {
@@ -30,7 +30,7 @@ actor Database {
     let connections: i32;
     init() {
         print("[db] connected (pool=");
-        print(self.connections);
+        print(connections);
         println(")");
     }
     receive fn query(id: i32) {
@@ -47,7 +47,7 @@ actor ApiHandler {
     let port: i32;
     init() {
         print("[api] listening on port ");
-        println(self.port);
+        println(port);
     }
     receive fn request(user_id: i32) {
         print("[api] GET /users/");

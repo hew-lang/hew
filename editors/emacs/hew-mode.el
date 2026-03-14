@@ -65,7 +65,7 @@
     "break" "continue" "return"
     "let" "var" "const" "fn" "gen" "type" "struct" "enum"
     "trait" "impl" "import" "pub" "super" "where"
-    "actor" "receive" "init" "spawn" "async" "move" "await"
+    "actor" "receive" "init" "spawn" "async" "move" "await" "this"
     "supervisor" "child" "restart" "budget" "strategy"
     "wire" "reserved" "optional" "deprecated" "default"
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
@@ -131,8 +131,8 @@
       ;; PascalCase type names
       ("\\<\\([A-Z][a-zA-Z0-9_]*\\)\\>" 1 font-lock-type-face)
 
-      ;; self
-      ("\\<self\\>" . font-lock-variable-name-face)
+      ;; this — the current actor/struct receiver
+      ("\\<this\\>" . font-lock-variable-name-face)
 
       ;; Numeric literals
       ("\\<0[xX][0-9a-fA-F_]+\\>" . font-lock-constant-face)

@@ -44,7 +44,7 @@ color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
 color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct)\>"
 
 # Actor & concurrency
-color brightgreen "\<(actor|receive|init|spawn|move)\>"
+color brightgreen "\<(actor|receive|init|spawn|move|this)\>"
 
 # Supervisor
 color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
@@ -77,9 +77,8 @@ color brightblue "\<(ActorRef|Stream|Sink|Task|Scope|Generator|AsyncGenerator)\>
 color brightblue "\<(Send|Frozen|Copy|Drop|Clone|Eq|Ord|Hash|Display|Debug)\>"
 color brightblue "\<(Default|Iterator|AsyncIterator|IntoIterator|Into|From|Try|Allocator)\>"
 
-# Self
+# Self type
 color brightblue "\<Self\>"
-color red "\<self\>"
 
 # PascalCase type names
 color brightblue "\<[A-Z][a-zA-Z0-9_]*\>"

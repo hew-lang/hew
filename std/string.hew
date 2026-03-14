@@ -345,12 +345,12 @@ pub fn join(parts: Vec<String>, sep: String) -> String {
 ///
 /// // Implement for custom types:
 /// // impl ToString for MyType {
-/// //     fn to_str(self: MyType) -> String { ... }
+/// //     fn to_str(m: MyType) -> String { ... }
 /// // }
 /// ```
 pub trait ToString {
     /// Convert this value to its string representation.
-    fn to_str(self) -> String;
+    fn to_str(val: Self) -> String;
 }
 
 // ── FFI binding (char-code-to-string has no builtin equivalent) ─────

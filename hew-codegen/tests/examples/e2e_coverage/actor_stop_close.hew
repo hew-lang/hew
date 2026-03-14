@@ -3,9 +3,9 @@
 actor Worker {
     let count: int;
     receive fn tick() {
-        self.count = self.count + 1;
+        count = count + 1;
         print("tick ");
-        println(self.count);
+        println(count);
     }
 }
 

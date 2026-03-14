@@ -4,8 +4,8 @@ actor Pinger {
     let count: int;
     receive fn ping(n: int) -> int {
         println(f"Ping {n}");
-        self.count = self.count + 1;
-        self.count
+        count = count + 1;
+        count
     }
 }
 
@@ -13,8 +13,8 @@ actor Ponger {
     let count: int;
     receive fn pong(n: int) -> int {
         println(f"Pong {n}");
-        self.count = self.count + 1;
-        self.count
+        count = count + 1;
+        count
     }
 }
 

@@ -4,22 +4,22 @@ type Point {
 }
 
 trait PointMethods {
-    fn distance(self: Point) -> f64;
-    fn translate(self: Point, dx: f64, dy: f64) -> Point;
-    fn magnitude(self: Point) -> f64;
+    fn distance(pt: Point) -> f64;
+    fn translate(pt: Point, dx: f64, dy: f64) -> Point;
+    fn magnitude(pt: Point) -> f64;
 }
 
 impl PointMethods for Point {
-    fn distance(self: Point) -> f64 {
-        self.x * self.x + self.y * self.y
+    fn distance(pt: Point) -> f64 {
+        pt.x * pt.x + pt.y * pt.y
     }
 
-    fn translate(self: Point, dx: f64, dy: f64) -> Point {
-        Point { x: self.x + dx, y: self.y + dy }
+    fn translate(pt: Point, dx: f64, dy: f64) -> Point {
+        Point { x: pt.x + dx, y: pt.y + dy }
     }
 
-    fn magnitude(self: Point) -> f64 {
-        let d = self.distance();
+    fn magnitude(pt: Point) -> f64 {
+        let d = pt.distance();
         d * 2.0
     }
 }

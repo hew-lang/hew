@@ -36,20 +36,20 @@ type Request {}
 /// Methods available on an HTTP `Server`.
 trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
-    fn accept(self: Server) -> Request;
+    fn accept(srv: Server) -> Request;
 
     /// Close the server and release the listening socket.
-    fn close(self: Server);
+    fn close(srv: Server);
 }
 
 impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
-    fn accept(self: Server) -> Request {
-        hew_http_server_recv(self)
+    fn accept(srv: Server) -> Request {
+        hew_http_server_recv(srv)
     }
     /// Close the server and release the listening socket.
-    fn close(self: Server) {
-        hew_http_server_close(self);
+    fn close(srv: Server) {
+        hew_http_server_close(srv);
     }
 }
 
@@ -58,23 +58,23 @@ impl ServerMethods for Server {
 /// Methods available on an HTTP `Request`.
 trait RequestMethods {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(self: Request) -> String;
+    fn method(req: Request) -> String;
 
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(self: Request) -> String;
+    fn path(req: Request) -> String;
 
     /// Return the value of the named header, or an empty string.
-    fn header(self: Request, name: String) -> String;
+    fn header(req: Request, name: String) -> String;
 
     /// Return the request body, decoded according to `encoding`.
     ///
     /// Pass `"utf-8"` for text bodies, or `"raw"` for binary.
-    fn body(self: Request, encoding: String) -> String;
+    fn body(req: Request, encoding: String) -> String;
 
     /// Send a full HTTP response with status, content-type, and body.
     ///
     /// `content_length` should be the byte length of `body`.
-    fn respond(self: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
+    fn respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
 
     /// Send a plain-text HTTP response.
     ///
@@ -84,10 +84,10 @@ trait RequestMethods {
     /// req.respond_text(200, "OK");
     /// req.respond_text(404, "Not Found");
     /// ```
-    fn respond_text(self: Request, status: i32, body: String) -> i32;
+    fn respond_text(req: Request, status: i32, body: String) -> i32;
 
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(self: Request, status: i32, json: String) -> i32;
+    fn respond_json(req: Request, status: i32, json: String) -> i32;
 
     /// Begin a streaming response and return a `Sink` for chunked output.
     ///
@@ -102,41 +102,41 @@ trait RequestMethods {
     /// body.write("chunk 2");
     /// body.close();
     /// ```
-    fn respond_stream(self: Request, status: i32, content_type: String) -> Sink;
+    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink;
 
 }
 
 impl RequestMethods for Request {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(self: Request) -> String { hew_http_request_method(self) }
+    fn method(req: Request) -> String { hew_http_request_method(req) }
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(self: Request) -> String { hew_http_request_path(self) }
+    fn path(req: Request) -> String { hew_http_request_path(req) }
     /// Return the value of the named header, or an empty string.
-    fn header(self: Request, name: String) -> String { hew_http_request_header(self, name) }
+    fn header(req: Request, name: String) -> String { hew_http_request_header(req, name) }
     /// Return the request body decoded according to `encoding`.
-    fn body(self: Request, encoding: String) -> String { hew_http_request_body(self, encoding) }
+    fn body(req: Request, encoding: String) -> String { hew_http_request_body(req, encoding) }
     /// Send a full HTTP response with status, content-type, and body.
-    fn respond(self: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32 {
-        hew_http_respond(self, status, content_type, content_length, body)
+    fn respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32 {
+        hew_http_respond(req, status, content_type, content_length, body)
     }
     /// Send a plain-text HTTP response.
-    fn respond_text(self: Request, status: i32, body: String) -> i32 {
-        hew_http_respond_text(self, status, body)
+    fn respond_text(req: Request, status: i32, body: String) -> i32 {
+        hew_http_respond_text(req, status, body)
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
-    fn respond_json(self: Request, status: i32, json: String) -> i32 {
-        hew_http_respond_json(self, status, json)
+    fn respond_json(req: Request, status: i32, json: String) -> i32 {
+        hew_http_respond_json(req, status, json)
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
-    fn respond_stream(self: Request, status: i32, content_type: String) -> Sink {
-        hew_http_respond_stream(self, status, content_type)
+    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink {
+        hew_http_respond_stream(req, status, content_type)
     }
 }
 
 impl Drop for Request {
     /// Release the underlying request resources.
-    fn drop(self: Request) {
-        hew_http_request_free(self);
+    fn drop(req: Request) {
+        hew_http_request_free(req);
     }
 }
 

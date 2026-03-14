@@ -1,0 +1,37 @@
+// Test: this keyword for actor self-reference
+// Exercises: `this` returns ActorRef<Self>, passed to another actor for callback
+
+actor Manager {
+    receive fn register(worker: ActorRef<Worker>, worker_id: int) {
+        println(f"Manager registered worker {worker_id}");
+        // Use the received ActorRef to send a message back to the worker
+        worker.task("build widgets");
+    }
+}
+
+actor Worker {
+    let id: int;
+    let manager: Manager;
+
+    receive fn start() {
+        println(f"Worker {id} registering");
+        // Pass our own handle to the manager so it can call us back
+        manager.register(this, id);
+    }
+
+    receive fn task(name: string) {
+        println(f"Worker {id} got task: {name}");
+    }
+}
+
+fn main() {
+    println("=== This Keyword ===");
+    let manager = spawn Manager;
+    let w1 = spawn Worker(id: 1, manager: manager);
+    let w2 = spawn Worker(id: 2, manager: manager);
+    await w1.start();
+    sleep_ms(100);
+    await w2.start();
+    sleep_ms(100);
+    println("Done");
+}

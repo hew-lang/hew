@@ -23,7 +23,7 @@ fn variant_constructors_preserve_type_args() {
         }
 
         impl Maybe<int> {
-            fn unwrap(self) -> int {
+            fn unwrap(m: Maybe<int>) -> int {
                 0
             }
         }

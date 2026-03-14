@@ -1,5 +1,5 @@
 pub trait Describable {
-    fn describe(self: Self) -> String;
+    fn describe(val: Self) -> String;
 }
 
 pub type Circle {

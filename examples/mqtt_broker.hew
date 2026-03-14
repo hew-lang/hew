@@ -146,7 +146,7 @@ actor ClientHandler {
         var buf = bytes::new();
         var connected = true;
         loop {
-            let chunk = self.conn.read();
+            let chunk = conn.read();
             if chunk.is_empty() {
                 break;
             }
@@ -173,9 +173,9 @@ actor ClientHandler {
                         // CONNECT
                         let proto_name_len = read_u16(buf, var_off);
                         let payload_off = var_off + proto_name_len + 6;
-                        self.client_id = read_mqtt_str(buf, payload_off);
-                        println(f"[mqtt] CONNECT client_id={self.client_id}");
-                        self.conn.write(build_connack(0, 0));
+                        client_id = read_mqtt_str(buf, payload_off);
+                        println(f"[mqtt] CONNECT client_id={client_id}");
+                        conn.write(build_connack(0, 0));
                     },
                     3 => {
                         // PUBLISH
@@ -187,11 +187,11 @@ actor ClientHandler {
                         if qos > 0 {
                             packet_id = read_u16(buf, pid_off);
                             pid_off = pid_off + 2;
-                            self.conn.write(build_puback(packet_id));
+                            conn.write(build_puback(packet_id));
                         }
                         let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
                         println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                        self.router.publish(topic, payload_bytes, qos, packet_id);
+                        router.publish(topic, payload_bytes, qos, packet_id);
                     },
                     8 => {
                         // SUBSCRIBE
@@ -208,11 +208,11 @@ actor ClientHandler {
                             } else {
                                 req_qos
                             };
-                            self.router.subscribe(stopic, self.conn, granted);
+                            router.subscribe(stopic, conn, granted);
                             return_codes.push(granted);
                             topic_off = topic_off + tw + 1;
                         }
-                        self.conn.write(build_suback(sub_packet_id, return_codes));
+                        conn.write(build_suback(sub_packet_id, return_codes));
                         println("[mqtt] SUBSCRIBE processed");
                     },
                     10 => {
@@ -223,20 +223,20 @@ actor ClientHandler {
                         while topic_off < payload_end {
                             let tw = 2 + read_u16(buf, topic_off);
                             let utopic = read_mqtt_str(buf, topic_off);
-                            self.router.unsubscribe(utopic, self.conn);
+                            router.unsubscribe(utopic, conn);
                             topic_off = topic_off + tw;
                         }
-                        self.conn.write(build_unsuback(unsub_packet_id));
-                        println(f"[mqtt] UNSUBSCRIBE {self.client_id}");
+                        conn.write(build_unsuback(unsub_packet_id));
+                        println(f"[mqtt] UNSUBSCRIBE {client_id}");
                     },
                     12 => {
                         // PINGREQ
-                        self.conn.write(build_pingresp());
+                        conn.write(build_pingresp());
                     },
                     14 => {
                         // DISCONNECT
                         connected = false;
-                        println(f"[mqtt] DISCONNECT {self.client_id}");
+                        println(f"[mqtt] DISCONNECT {client_id}");
                     },
                     _ => {},
                 }
@@ -250,12 +250,12 @@ actor ClientHandler {
                 break;
             }
         }
-        self.router.client_disconnect(self.conn);
-        self.conn.close();
-        println(f"[mqtt] connection closed for {self.client_id}");
+        router.client_disconnect(conn);
+        conn.close();
+        println(f"[mqtt] connection closed for {client_id}");
     }
     receive fn deliver(packet: bytes) {
-        self.conn.write(packet);
+        conn.write(packet);
     }
 }
 
@@ -270,27 +270,27 @@ actor Router {
     let sub_conns: Vec<Connection>;
     let sub_qos: Vec<i32>;
     receive fn register_client(conn: Connection, handler: ActorRef<ClientHandler>) {
-        self.client_conns.push(conn);
-        self.client_actors.push(handler);
+        client_conns.push(conn);
+        client_actors.push(handler);
         println("[router] client registered");
     }
     receive fn subscribe(topic: String, conn: Connection, qos: i32) {
-        self.sub_topics.push(topic);
-        self.sub_conns.push(conn);
-        self.sub_qos.push(qos);
+        sub_topics.push(topic);
+        sub_conns.push(conn);
+        sub_qos.push(qos);
         println(f"[router] subscribed qos={qos}");
     }
     receive fn publish(topic: String, payload: bytes, qos: i32, packet_id: i32) {
         // Fan out to all matching subscribers. Inline build_publish so the
         // expressions passed to deliver() are Expr::Call (not Identifier),
         // which avoids the move-at-actor-boundary rule.
-        for i in 0..self.sub_topics.len() {
-            if self.sub_topics.get(i) == topic {
-                let sub_conn = self.sub_conns.get(i);
-                let sub_q = self.sub_qos.get(i);
-                for j in 0..self.client_conns.len() {
-                    if self.client_conns.get(j) == sub_conn {
-                        let target = self.client_actors.get(j);
+        for i in 0..sub_topics.len() {
+            if sub_topics.get(i) == topic {
+                let sub_conn = sub_conns.get(i);
+                let sub_q = sub_qos.get(i);
+                for j in 0..client_conns.len() {
+                    if client_conns.get(j) == sub_conn {
+                        let target = client_actors.get(j);
                         target.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
                     }
@@ -303,47 +303,47 @@ actor Router {
         var new_topics: Vec<String> = Vec::new();
         var new_conns: Vec<Connection> = Vec::new();
         var new_qos: Vec<i32> = Vec::new();
-        for i in 0..self.sub_topics.len() {
-            if self.sub_conns.get(i) == conn {
-                if self.sub_topics.get(i) == topic {
+        for i in 0..sub_topics.len() {
+            if sub_conns.get(i) == conn {
+                if sub_topics.get(i) == topic {
                     continue;
                 }
             }
-            new_topics.push(self.sub_topics.get(i));
-            new_conns.push(self.sub_conns.get(i));
-            new_qos.push(self.sub_qos.get(i));
+            new_topics.push(sub_topics.get(i));
+            new_conns.push(sub_conns.get(i));
+            new_qos.push(sub_qos.get(i));
         }
-        self.sub_topics = new_topics;
-        self.sub_conns = new_conns;
-        self.sub_qos = new_qos;
+        sub_topics = new_topics;
+        sub_conns = new_conns;
+        sub_qos = new_qos;
         println(f"[router] unsubscribed topic={topic}");
     }
     receive fn client_disconnect(conn: Connection) {
         // Remove from client registry
         var new_conns: Vec<Connection> = Vec::new();
         var new_actors: Vec<ActorRef<ClientHandler>> = Vec::new();
-        for i in 0..self.client_conns.len() {
-            if self.client_conns.get(i) != conn {
-                new_conns.push(self.client_conns.get(i));
-                new_actors.push(self.client_actors.get(i));
+        for i in 0..client_conns.len() {
+            if client_conns.get(i) != conn {
+                new_conns.push(client_conns.get(i));
+                new_actors.push(client_actors.get(i));
             }
         }
-        self.client_conns = new_conns;
-        self.client_actors = new_actors;
+        client_conns = new_conns;
+        client_actors = new_actors;
         // Remove subscriptions for this conn
         var new_sub_topics: Vec<String> = Vec::new();
         var new_sub_conns: Vec<Connection> = Vec::new();
         var new_sub_qos: Vec<i32> = Vec::new();
-        for j in 0..self.sub_conns.len() {
-            if self.sub_conns.get(j) != conn {
-                new_sub_topics.push(self.sub_topics.get(j));
-                new_sub_conns.push(self.sub_conns.get(j));
-                new_sub_qos.push(self.sub_qos.get(j));
+        for j in 0..sub_conns.len() {
+            if sub_conns.get(j) != conn {
+                new_sub_topics.push(sub_topics.get(j));
+                new_sub_conns.push(sub_conns.get(j));
+                new_sub_qos.push(sub_qos.get(j));
             }
         }
-        self.sub_topics = new_sub_topics;
-        self.sub_conns = new_sub_conns;
-        self.sub_qos = new_sub_qos;
+        sub_topics = new_sub_topics;
+        sub_conns = new_sub_conns;
+        sub_qos = new_sub_qos;
         println("[router] client disconnected");
     }
 }
@@ -357,8 +357,8 @@ actor Listener {
         loop {
             let conn = lst.accept();
             let pending_id: String = "__pending__";
-            let handler = spawn ClientHandler(conn: conn, name: pending_id, room: self.router);
-            self.router.register_client(conn, handler);
+            let handler = spawn ClientHandler(conn: conn, name: pending_id, room: router);
+            router.register_client(conn, handler);
             handler.start();
         }
     }

@@ -1,9 +1,9 @@
 trait Printable {
-    fn to_text(self) -> string;
+    fn to_text(val: Self) -> string;
 }
 
 trait Measurable {
-    fn size(self) -> int;
+    fn size(val: Self) -> int;
 }
 
 struct Box {
@@ -12,14 +12,14 @@ struct Box {
 }
 
 impl Printable for Box {
-    fn to_text(self) -> string {
-        self.label
+    fn to_text(b: Box) -> string {
+        b.label
     }
 }
 
 impl Measurable for Box {
-    fn size(self) -> int {
-        self.width
+    fn size(b: Box) -> int {
+        b.width
     }
 }
 

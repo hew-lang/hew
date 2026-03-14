@@ -3,10 +3,10 @@
 actor Counter {
     let value: int;
     receive fn tick() -> int {
-        self.value = self.value + 1;
+        value = value + 1;
         print("tick ");
-        println(self.value);
-        self.value
+        println(value);
+        value
     }
     receive fn crash_now() {
         println("crashing");

@@ -82,7 +82,7 @@ machine TcpState {
 
     // Wildcard: handle event in all unhandled states
     on Timeout: _ -> _ {
-        self  // stay in current state (identity transition)
+        state  // stay in current state (identity transition)
     }
 }
 ```
@@ -138,7 +138,7 @@ on EventIdent : SourceIdent -> TargetIdent { Expr }
 Inside a transition body, `state` is bound to the source state's data:
 
 - If the source state has no fields, `state` is the unit-like state value.
-- If the source state has fields, `self.field_name` accesses each field.
+- If the source state has fields, `state.field_name` accesses each field.
 - `state` is consumed by the transition (move semantics). After the transition body executes, the old state no longer exists.
 
 ```hew
@@ -163,7 +163,7 @@ on Data: Established -> Established {
 }
 ```
 
-Event payload fields are bound as local immutable variables in the transition body. If an event field name conflicts with a state field name, the event field takes precedence and the state field is accessed via `self.field_name`.
+Event payload fields are bound as local immutable variables in the transition body. If an event field name conflicts with a state field name, the event field takes precedence and the state field is accessed via `state.field_name`.
 
 ### §3.3 Return value
 
@@ -193,11 +193,11 @@ actor ConnectionManager {
     var tcp: TcpState = TcpState::Closed;
 
     receive fn handle(event: TcpStateEvent) {
-        let old = self.tcp;
-        self.tcp.step(event);
+        let old = tcp;
+        tcp.step(event);
 
         // Side effects happen here, not in the machine
-        match self.tcp {
+        match tcp {
             TcpState::Established { .. } => println("Connection established"),
             TcpState::Closed => println("Connection closed"),
             _ => {}
@@ -367,8 +367,8 @@ Machines MAY implement traits via `impl` blocks:
 
 ```hew
 impl Display for TcpState {
-    fn to_string(self) -> String {
-        self.state_name()
+    fn to_string(s: TcpState) -> String {
+        s.state_name()
     }
 }
 ```
@@ -602,23 +602,23 @@ machine CircuitBreaker {
     }
 
     on Success: HalfOpen -> HalfOpen {
-        if self.successes + 1 >= 3 {
+        if state.successes + 1 >= 3 {
             Closed { failures: 0 }
         } else {
-            HalfOpen { successes: self.successes + 1 }
+            HalfOpen { successes: state.successes + 1 }
         }
     }
 
     on Success: Open -> Open {
-        self  // ignored while open
+        state  // ignored while open
     }
 
     // --- Failure transitions ---
     on Failure: Closed -> Closed {
-        if self.failures + 1 >= 5 {
+        if state.failures + 1 >= 5 {
             Open { expires_at: timestamp + 10000 }
         } else {
-            Closed { failures: self.failures + 1 }
+            Closed { failures: state.failures + 1 }
         }
     }
 
@@ -627,20 +627,20 @@ machine CircuitBreaker {
     }
 
     on Failure: Open -> Open {
-        self  // already open
+        state  // already open
     }
 
     // --- Tick transitions ---
     on Tick: Open -> Open {
-        if now >= self.expires_at {
+        if now >= state.expires_at {
             HalfOpen { successes: 0 }
         } else {
-            self
+            state
         }
     }
 
     on Tick: _ -> _ {
-        self  // no-op in Closed and HalfOpen
+        state  // no-op in Closed and HalfOpen
     }
 }
 ```
@@ -653,7 +653,7 @@ actor ApiGateway {
 
     receive fn call(req: Request) -> Result<Response, String> {
         // Check circuit state
-        match self.breaker {
+        match breaker {
             CircuitBreaker::Open { .. } => {
                 return Err("circuit open");
             },
@@ -665,12 +665,12 @@ actor ApiGateway {
         // Update machine based on outcome
         match result {
             Ok(resp) => {
-                self.breaker.step(CircuitBreakerEvent::Success);
+                breaker.step(CircuitBreakerEvent::Success);
                 Ok(resp)
             },
             Err(e) => {
                 let now = time::now_ms();
-                self.breaker.step(CircuitBreakerEvent::Failure { timestamp: now });
+                breaker.step(CircuitBreakerEvent::Failure { timestamp: now });
                 Err(e)
             },
         }

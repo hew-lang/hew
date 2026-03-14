@@ -14,9 +14,9 @@ actor Doubler {
 actor Adder {
     let offset: int;
     receive fn process(n: int) -> int {
-        let result = n + self.offset;
+        let result = n + offset;
         print("Adder(+");
-        print(self.offset);
+        print(offset);
         print("): ");
         print(n);
         println(f" -> {result}");

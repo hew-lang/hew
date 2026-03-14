@@ -647,7 +647,8 @@ primary
     : literal
     | INTERPOLATED_STRING
     | ident '{' fieldInitList '}'       // Struct init: Point { x: 1, y: 2 }
-    | ident                             // Plain identifier (including 'self')
+    | ident                             // Plain identifier
+    | 'this'                            // Actor self-reference
     | block                             // Block expression: { ... }
     | '[' exprList? ']'                 // Array literal
     | '(' expr ( ',' exprList )? ')'    // Grouping or tuple

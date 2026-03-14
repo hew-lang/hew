@@ -7,11 +7,11 @@ actor Counter {
     let count: Int;
 
     receive fn tick() {
-        self.count += 1;
+        count += 1;
     }
 
     receive fn get_count() -> Int {
-        self.count
+        count
     }
 }
 
@@ -22,7 +22,7 @@ actor Relay {
     receive fn forward(n: Int) {
         var i = 0;
         while i < n {
-            self.target.tick();
+            target.tick();
             i += 1;
         }
     }
@@ -35,11 +35,11 @@ actor Monitor {
     let checks: Int;
 
     receive fn check() {
-        let a = await self.c1.get_count();
-        let b = await self.c2.get_count();
-        let c = await self.c3.get_count();
-        self.checks += 1;
-        println(f"[check #{self.checks}] counters: {a}, {b}, {c}");
+        let a = await c1.get_count();
+        let b = await c2.get_count();
+        let c = await c3.get_count();
+        checks += 1;
+        println(f"[check #{checks}] counters: {a}, {b}, {c}");
     }
 }
 

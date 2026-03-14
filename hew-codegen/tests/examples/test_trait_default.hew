@@ -3,15 +3,15 @@ type Widget {
 }
 
 trait Describable {
-    fn describe(self: Widget) -> int;
-    fn default_value(self: Widget) -> int {
+    fn describe(w: Widget) -> int;
+    fn default_value(w: Widget) -> int {
         42
     }
 }
 
 impl Describable for Widget {
-    fn describe(self: Widget) -> int {
-        self.id
+    fn describe(w: Widget) -> int {
+        w.id
     }
 }
 

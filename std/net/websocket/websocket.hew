@@ -34,22 +34,22 @@ type Message {}
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
     /// Send a text message over the connection. Return 0 on success.
-    fn send_text(self: Conn, msg: String) -> i32;
+    fn send_text(conn: Conn, msg: String) -> i32;
 
     /// Block until a message is received and return it.
-    fn recv(self: Conn) -> Message;
+    fn recv(conn: Conn) -> Message;
 
     /// Close the WebSocket connection.
-    fn close(self: Conn);
+    fn close(conn: Conn);
 }
 
 impl ConnMethods for Conn {
     /// Send a text message over the connection.
-    fn send_text(self: Conn, msg: String) -> i32 { hew_ws_send_text(self, msg) }
+    fn send_text(conn: Conn, msg: String) -> i32 { hew_ws_send_text(conn, msg) }
     /// Block until a message is received and return it.
-    fn recv(self: Conn) -> Message { hew_ws_recv(self) }
+    fn recv(conn: Conn) -> Message { hew_ws_recv(conn) }
     /// Close the WebSocket connection.
-    fn close(self: Conn) { hew_ws_close(self); }
+    fn close(conn: Conn) { hew_ws_close(conn); }
 }
 
 // ── Message methods ───────────────────────────────────────────────────
@@ -57,12 +57,12 @@ impl ConnMethods for Conn {
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
     /// Release the message resources.
-    fn free(self: Message);
+    fn free(msg: Message);
 }
 
 impl MessageMethods for Message {
     /// Release the message resources.
-    fn free(self: Message) { hew_ws_message_free(self); }
+    fn free(msg: Message) { hew_ws_message_free(msg); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

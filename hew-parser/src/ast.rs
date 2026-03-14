@@ -208,6 +208,7 @@ pub enum Expr {
     Unsafe(Block),
     Yield(Option<Box<Spanned<Expr>>>),
     Cooperate,
+    This,
     FieldAccess {
         object: Box<Spanned<Expr>>,
         field: String,

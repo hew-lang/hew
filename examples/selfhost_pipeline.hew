@@ -54,7 +54,7 @@ actor Writer {
 
 // ========================================
 // Pipeline simulation functions
-// Since actor spawn and self.field assignment don't codegen yet,
+// Since actor spawn and actor-field assignment don't codegen yet,
 // we simulate the pipeline with regular functions
 // ========================================
 
@@ -306,7 +306,7 @@ fn main() {
     println("=== Self-Hosting Gaps Identified ===");
     println("1. Actor spawn not in codegen - cannot create pipeline actors at runtime");
     println("2. No actor message send/receive - pipeline uses functions instead of actors");
-    println("3. self.field assignment is TODO in codegen");
+    println("3. actor-field assignment is TODO in codegen");
     println("4. No string length/iteration - cannot process file contents line by line");
     println("5. No array/Vec for collecting pipeline results");
     println("6. No structured concurrency (scope/spawn) in codegen");

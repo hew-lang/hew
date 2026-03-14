@@ -4,7 +4,7 @@ actor Fibonacci {
     receive gen fn sequence() -> int {
         var a: int = 0;
         var b = 1;
-        while a < self.limit {
+        while a < limit {
             yield a;
             let next = a + b;
             a = b;

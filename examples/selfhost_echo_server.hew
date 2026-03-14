@@ -281,7 +281,7 @@ fn main() {
     println("2. Actor spawn not in codegen - cannot spawn connection handlers");
     println("3. No supervisor codegen - supervision tree is parsed but not compiled");
     println("4. No async/await in codegen - cannot do non-blocking I/O");
-    println("5. self.field assignment is TODO in codegen");
+    println("5. actor-field assignment is TODO in codegen");
     println("6. No structured concurrency (scope) in codegen");
     println("7. No Result/Option codegen - cannot handle connection errors properly");
     println("8. No byte/buffer types - cannot handle raw network data");

@@ -312,7 +312,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         // Load the args struct from the args pointer
         auto argsStruct = mlir::LLVM::LoadOp::create(builder, location, argsStructType, argsPtr);
 
-        // Extract self pointer (field 0)
+        // Extract actor state pointer (field 0) and bind as internal variable "self".
+        // NOTE: "self" is an internal codegen name for the actor state pointer, NOT
+        // a Hew language concept. Hew source uses bare field names; codegen resolves
+        // them via lookupVariable("self") + GEP. See MLIRGenExpr.cpp bare-field path.
         auto selfPtr = mlir::LLVM::ExtractValueOp::create(builder, location, argsStruct,
                                                           llvm::ArrayRef<int64_t>{0});
         declareVariable("self", selfPtr);
@@ -478,7 +481,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = nullptr;
     returnSlot = nullptr;
 
-    // Bind self pointer — store in symbol table so field access works
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
@@ -539,7 +542,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = nullptr;
     returnSlot = nullptr;
 
-    // Bind self pointer for field access
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
@@ -1094,6 +1097,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     returnFlag = nullptr;
     returnSlot = nullptr;
 
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
     declareVariable("self", selfPtr);
     {
@@ -1206,17 +1210,6 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
     const auto &argSpanned = ast::callArgExpr(arg);
-    // When passing `self` as an argument (ActorRef<Self>), use hew_actor_self()
-    // instead of the raw state pointer
-    if (!currentActorName.empty()) {
-      if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
-        if (identExpr->name == "self") {
-          auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType).getResult();
-          argVals.push_back(selfRef);
-          continue;
-        }
-      }
-    }
     auto val = generateExpression(argSpanned.value);
     if (!val)
       return std::nullopt;

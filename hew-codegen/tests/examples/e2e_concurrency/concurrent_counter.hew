@@ -3,11 +3,11 @@
 actor SharedCounter {
     let value: int;
     receive fn inc(amount: int) {
-        self.value = self.value + amount;
-        println(f"Counter: {self.value}");
+        value = value + amount;
+        println(f"Counter: {value}");
     }
     receive fn report() -> int {
-        self.value
+        value
     }
 }
 

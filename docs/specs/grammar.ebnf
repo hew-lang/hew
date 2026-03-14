@@ -98,8 +98,9 @@ TraitSuper     = ":" TraitBounds ;
 TraitItem      = FnSig ";"
                | AssociatedType ;
 AssociatedType = "type" Ident ( ":" TraitBounds )? ( "=" Type )? ";" ;
-FnSig          = "fn" Ident TypeParams? "(" (SelfParam ("," Params)? | Params)? ")" RetType? WhereClause? ;
-SelfParam      = "self" ;
+FnSig          = "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? ;
+(* Note: Receivers use named parameters — first param whose type matches
+   the impl target (or Self) serves as the receiver. No special SelfParam. *)
 
 ImplDecl       = "impl" TypeParams? TraitBound "for" Type WhereClause? "{" { FnDecl | AssociatedTypeImpl } "}" ;
 AssociatedTypeImpl = "type" Ident "=" Type ";" ;
@@ -207,6 +208,7 @@ PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args
 
 Primary        = Literal
                | InterpolatedStr
+               | "this"                              (* Actor self-reference *)
                | Ident ( "{" FieldInitList "}" )?   (* Struct init: Point { x: 1, y: 2 } *)
                | "[" ExprList? "]"                  (* Array literal *)
                | "[" Expr ";" Expr "]"              (* Array repeat: [0; 256] *)

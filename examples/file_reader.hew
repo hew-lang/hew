@@ -3,7 +3,7 @@
 actor Printer {
     let lines_printed: i32;
     receive fn print_line(text: i32) {
-        self.lines_printed = self.lines_printed + 1;
+        lines_printed = lines_printed + 1;
     }
     receive fn print_content() {
         println("Printer: printing complete");
@@ -14,7 +14,7 @@ actor FileReader {
     let done: i32;
     receive fn read(path: i32) {
         println("FileReader: reading file...");
-        self.done = 1;
+        done = 1;
     }
 }
 

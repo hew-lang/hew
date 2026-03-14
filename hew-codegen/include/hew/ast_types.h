@@ -426,6 +426,7 @@ struct ExprYield {
   std::optional<std::unique_ptr<Spanned<Expr>>> value;
 };
 struct ExprCooperate {};
+struct ExprThis {};
 struct ExprFieldAccess {
   std::unique_ptr<Spanned<Expr>> object;
   std::string field;
@@ -482,7 +483,7 @@ struct Expr {
   std::variant<ExprBinary, ExprUnary, ExprLiteral, ExprIdentifier, ExprTuple, ExprArray, ExprBlock,
                ExprIf, ExprIfLet, ExprMatch, ExprLambda, ExprSpawn, ExprSpawnLambdaActor, ExprScope,
                ExprInterpolatedString, ExprCall, ExprMethodCall, ExprStructInit, ExprSend,
-               ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate,
+               ExprSelect, ExprJoin, ExprTimeout, ExprUnsafe, ExprYield, ExprCooperate, ExprThis,
                ExprFieldAccess, ExprIndex, ExprCast, ExprPostfixTry, ExprRange, ExprAwait,
                ExprScopeLaunch, ExprScopeSpawn, ExprScopeCancel, ExprRegexLiteral, ExprArrayRepeat,
                ExprByteStringLiteral, ExprByteArrayLiteral, ExprMapLiteral>

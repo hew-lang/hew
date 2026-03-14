@@ -3021,32 +3021,27 @@ impl<'src> Parser<'src> {
                 break;
             };
 
-            // Special case: bare `self` without type annotation
+            // Bare `self` without type annotation is no longer valid Hew syntax.
+            // Users must use named receivers: fn method(val: Self) or fn method(p: Point)
             if name == "self" && !matches!(self.peek(), Some(&Token::Colon)) {
-                let span = if self.pos == 0 {
-                    0..0
-                } else {
-                    self.tokens
-                        .get(self.pos - 1)
-                        .map_or(0..0, |(_, s)| s.clone())
-                };
-                let ty = (
-                    TypeExpr::Named {
-                        name: "Self".to_string(),
-                        type_args: None,
-                    },
+                let span = self
+                    .tokens
+                    .get(self.pos.wrapping_sub(1))
+                    .map_or(self.peek_span(), |(_, s)| s.clone());
+                self.errors.push(ParseError {
+                    message: "bare `self` parameter is no longer supported in Hew; \
+                              use a named receiver with explicit type instead: \
+                              `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                        .to_string(),
                     span,
-                );
-                params.push(Param {
-                    name,
-                    ty,
-                    is_mutable,
+                    hint: None,
+                    severity: Severity::Error,
                 });
-
-                if !self.eat(&Token::Comma) {
-                    break;
+                // Skip past self and any trailing comma to recover
+                if self.eat(&Token::Comma) {
+                    continue;
                 }
-                continue;
+                break;
             }
 
             if !self.eat(&Token::Colon) {
@@ -4293,6 +4288,10 @@ impl<'src> Parser<'src> {
             Token::Cooperate => {
                 self.advance();
                 Expr::Cooperate
+            }
+            Token::This => {
+                self.advance();
+                Expr::This
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
@@ -5547,9 +5546,23 @@ mod tests {
 
     #[test]
     fn parse_trait_declaration() {
-        let source = "trait Printable { fn print(self); }";
+        let source = "trait Printable { fn print(val: Self); }";
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_bare_self_is_error() {
+        let source = "trait Printable { fn print(self); }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for bare `self` parameter"
+        );
+        assert!(
+            result.errors[0].message.contains("no longer supported"),
+            "error message should mention self is no longer supported"
+        );
     }
 
     #[test]

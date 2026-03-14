@@ -6,7 +6,7 @@ actor SlowWorker {
     mailbox 4;
     receive fn process(value: i32) {
         print("SlowWorker ");
-        print(self.id);
+        print(id);
         println(f": processing {value}");
         sleep_ms(50);
     }

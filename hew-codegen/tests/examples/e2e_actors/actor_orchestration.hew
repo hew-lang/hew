@@ -3,14 +3,14 @@
 actor Doubler {
     let factor: int;
     receive fn double(x: int) -> int {
-        x * self.factor
+        x * factor
     }
 }
 
 actor Adder {
     let base: int;
     receive fn add(x: int) -> int {
-        x + self.base
+        x + base
     }
 }
 

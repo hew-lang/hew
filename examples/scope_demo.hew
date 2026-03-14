@@ -7,7 +7,7 @@ actor Worker {
     receive fn compute(n: i32) {
         let result = fib(n);
         print("Worker ");
-        print(self.id);
+        print(id);
         print(": fib(");
         print(n);
         println(f") = {result}");

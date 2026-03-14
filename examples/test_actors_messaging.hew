@@ -3,20 +3,20 @@
 actor Counter {
     let count: int;
     receive fn increment(amount: int) {
-        self.count = self.count + amount;
+        count = count + amount;
     }
     receive fn get_count() -> int {
-        self.count
+        count
     }
     receive fn reset() {
-        self.count = 0;
+        count = 0;
     }
 }
 
 actor Printer {
     let prefix: int;
     receive fn print_msg(value: int) -> int {
-        println(f"  [Printer {self.prefix}] got: {value}");
+        println(f"  [Printer {prefix}] got: {value}");
         value
     }
 }

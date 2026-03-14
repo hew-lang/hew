@@ -4,17 +4,17 @@ type Point {
 }
 
 trait PointOps {
-    fn sum(self: Point) -> f64;
-    fn scale(self: Point, factor: f64) -> Point;
+    fn sum(pt: Point) -> f64;
+    fn scale(pt: Point, factor: f64) -> Point;
 }
 
 impl PointOps for Point {
-    fn sum(self: Point) -> f64 {
-        self.x + self.y
+    fn sum(pt: Point) -> f64 {
+        pt.x + pt.y
     }
 
-    fn scale(self: Point, factor: f64) -> Point {
-        Point { x: self.x * factor, y: self.y * factor }
+    fn scale(pt: Point, factor: f64) -> Point {
+        Point { x: pt.x * factor, y: pt.y * factor }
     }
 }
 

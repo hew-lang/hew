@@ -35,7 +35,7 @@ actor Handler {
         if path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {
-            let file_path = resolve_path(self.root, path);
+            let file_path = resolve_path(root, path);
             if fs.exists(file_path) {
                 let body = fs.read(file_path);
                 let content_type = mime.from_path(file_path);

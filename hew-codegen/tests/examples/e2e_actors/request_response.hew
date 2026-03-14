@@ -4,7 +4,7 @@ actor Calculator {
     let last_result: int;
     receive fn compute(a: int) {
         let result = a * a + 1;
-        self.last_result = result;
+        last_result = result;
         print("Computed: ");
         print(a);
         println(f"^2 + 1 = {result}");

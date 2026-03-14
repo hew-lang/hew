@@ -9,8 +9,8 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl,
-    FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl,
+    ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param,
     Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
     TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind,
     WhereClause, WireDecl, WireDeclKind,
@@ -216,6 +216,10 @@ pub struct Checker {
     local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
     current_self_type: Option<(String, Vec<Ty>)>,
+    /// The actor type currently being checked (for `this` keyword resolution).
+    current_actor_type: Option<Ty>,
+    /// Field names of the current actor (for purity checks on bare field assignment).
+    current_actor_fields: Vec<String>,
     impl_alias_scopes: Vec<ImplAliasScope>,
     /// Names of functions that require an unsafe block to call.
     unsafe_functions: HashSet<String>,
@@ -465,6 +469,8 @@ impl Checker {
             local_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
+            current_actor_type: None,
+            current_actor_fields: Vec::new(),
             impl_alias_scopes: Vec::new(),
             unsafe_functions: HashSet::new(),
             wasm_target: false,
@@ -1751,16 +1757,15 @@ impl Checker {
                                 .collect();
                             for m in defaults {
                                 let method_key = format!("{type_name}::{}", m.name);
-                                let param_names: Vec<String> = m
-                                    .params
-                                    .iter()
-                                    .filter(|p| p.name != "self")
-                                    .map(|p| p.name.clone())
-                                    .collect();
+                                let skip = usize::from(
+                                    m.params.first().is_some_and(|p| self.is_receiver_param(p)),
+                                );
+                                let param_names: Vec<String> =
+                                    m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
                                 let params: Vec<Ty> = m
                                     .params
                                     .iter()
-                                    .filter(|p| p.name != "self")
+                                    .skip(skip)
                                     .map(|p| self.resolve_type_expr(&p.ty.0))
                                     .collect();
                                 let return_type = m
@@ -1812,16 +1817,22 @@ impl Checker {
                     if let TypeBodyItem::Method(method) = item {
                         let method_key = format!("{}::{}", td.name, method.name);
                         self.register_fn_sig_with_name(&method_key, method);
+                        let skip = usize::from(
+                            method
+                                .params
+                                .first()
+                                .is_some_and(|p| self.is_receiver_param(p)),
+                        );
                         let param_names: Vec<String> = method
                             .params
                             .iter()
-                            .filter(|p| p.name != "self")
+                            .skip(skip)
                             .map(|p| p.name.clone())
                             .collect();
                         let params: Vec<Ty> = method
                             .params
                             .iter()
-                            .filter(|p| p.name != "self")
+                            .skip(skip)
                             .map(|p| self.resolve_type_expr(&p.ty.0))
                             .collect();
                         let return_type = method
@@ -1920,20 +1931,62 @@ impl Checker {
         }
     }
 
+    /// Check whether a parameter is the receiver (i.e. the implicit first
+    /// parameter of an impl/trait method).  A parameter is a receiver if its
+    /// declared type matches `Self` or the current impl target type.
+    /// Note: name-based matching (`p.name == "self"`) has been intentionally
+    /// removed — receivers are identified by type, not by name.
+    fn is_receiver_param(&mut self, p: &Param) -> bool {
+        match &p.ty.0 {
+            TypeExpr::Named { name, type_args } => {
+                if name == "Self" {
+                    return true;
+                }
+                // Clone to avoid borrowing self while we resolve type args.
+                let impl_target = self.current_self_type.clone();
+                if let Some((self_name, self_type_args)) = impl_target {
+                    if name != &self_name {
+                        return false;
+                    }
+                    // Name matches — also verify generic arguments match the
+                    // impl target so that e.g. `impl Box<int>` rejects a
+                    // parameter typed `Box<string>`.
+                    let param_args: Vec<Ty> = type_args
+                        .as_ref()
+                        .map(|args| {
+                            args.iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    param_args == self_type_args
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
-        // Only filter out `self` for methods (Type::method), not free functions
-        // that happen to have a parameter named `self`.
+        // Only filter out the receiver for methods (Type::method), not free
+        // functions that happen to have a parameter named `self`.
         let is_method = name.contains("::");
+        let skip = if is_method {
+            usize::from(fd.params.first().is_some_and(|p| self.is_receiver_param(p)))
+        } else {
+            0
+        };
         let param_names = fd
             .params
             .iter()
-            .filter(|p| !is_method || p.name != "self")
+            .skip(skip)
             .map(|p| p.name.clone())
             .collect();
         let params = fd
             .params
             .iter()
-            .filter(|p| !is_method || p.name != "self")
+            .skip(skip)
             .map(|p| self.resolve_type_expr(&p.ty.0))
             .collect();
         let declared_return = fd
@@ -1974,10 +2027,16 @@ impl Checker {
     fn register_impl_method(&mut self, type_name: &str, method: &FnDecl) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
         self.register_fn_sig_with_name(&method_key, method);
+        let skip = usize::from(
+            method
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p)),
+        );
         let params: Vec<Ty> = method
             .params
             .iter()
-            .filter(|p| p.name != "self")
+            .skip(skip)
             .map(|p| self.resolve_type_expr(&p.ty.0))
             .collect();
         let return_type = method
@@ -1987,7 +2046,7 @@ impl Checker {
         let param_names: Vec<String> = method
             .params
             .iter()
-            .filter(|p| p.name != "self")
+            .skip(skip)
             .map(|p| p.name.clone())
             .collect();
         let sig = FnSig {
@@ -2754,16 +2813,27 @@ impl Checker {
         self.in_pure_function = fd.is_pure;
         self.env.push_scope();
 
-        // Bind params
-        for p in &fd.params {
+        // If inside an actor, push a separate scope for parameters so
+        // shadowing checks detect collisions with actor field names.
+        let in_actor = !self.current_actor_fields.is_empty();
+        if in_actor {
+            self.env.push_scope();
+        }
+
+        // Bind params — only the first parameter can be the receiver
+        for (i, p) in fd.params.iter().enumerate() {
             let mut ty = self.resolve_type_expr(&p.ty.0);
-            if p.name == "self" {
+            if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
                         name: self_name.clone(),
                         args: self_args.clone(),
                     };
                 }
+            }
+            // If inside an actor, check that params don't shadow actor fields
+            if in_actor {
+                self.check_shadowing(&p.name, &p.ty.1);
             }
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
@@ -2801,6 +2871,9 @@ impl Checker {
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
+        if in_actor {
+            self.env.pop_scope();
+        }
         self.emit_scope_warnings();
     }
 
@@ -2809,18 +2882,22 @@ impl Checker {
         if let Some(init) = &ad.init {
             self.check_actor_init(&ad.name, init, &ad.fields);
         }
+        let actor_ty = Ty::Named {
+            name: ad.name.clone(),
+            args: vec![],
+        };
+        let prev_actor_type = self.current_actor_type.replace(actor_ty);
+        let prev_actor_fields = std::mem::replace(
+            &mut self.current_actor_fields,
+            ad.fields.iter().map(|f| f.name.clone()).collect(),
+        );
+
         for rf in &ad.receive_fns {
             self.check_receive_fn(&ad.name, rf, &ad.fields);
         }
         for method in &ad.methods {
             self.env.push_scope();
-            // Bind self for regular actor methods too
-            let self_ty = Ty::Named {
-                name: ad.name.clone(),
-                args: vec![],
-            };
-            self.env.define("self".to_string(), self_ty, true);
-            // Bind actor fields directly in scope
+            // Bind actor fields directly in scope (bare field access)
             for field in &ad.fields {
                 let field_ty = self.resolve_type_expr(&field.ty.0);
                 self.env.define(field.name.clone(), field_ty, true);
@@ -2828,6 +2905,9 @@ impl Checker {
             self.check_function(method);
             self.env.pop_scope();
         }
+
+        self.current_actor_type = prev_actor_type;
+        self.current_actor_fields = prev_actor_fields;
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -2889,20 +2969,18 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        // Bind `self` to the actor's type so field accesses work
-        let self_ty = Ty::Named {
-            name: actor_name.to_string(),
-            args: vec![],
-        };
-        self.env.define("self".to_string(), self_ty, true);
-
-        // Bind actor fields directly in scope (accessible without self.)
+        // Bind actor fields directly in scope (bare field access)
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty.0);
             self.env.define(field.name.clone(), field_ty, true);
         }
 
+        // Push a separate scope for parameters so shadowing checks can
+        // detect collisions with actor field names in the outer scope.
+        self.env.push_scope();
+
         for p in &rf.params {
+            self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty.0);
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
@@ -2935,7 +3013,8 @@ impl Checker {
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }
-        self.env.pop_scope();
+        self.env.pop_scope(); // params scope
+        self.env.pop_scope(); // fields scope
     }
 
     fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
@@ -3008,29 +3087,26 @@ impl Checker {
 
             for method in &id.methods {
                 if target_is_struct {
+                    // Only the first parameter can be the receiver; checking all
+                    // params would false-positive on a non-receiver whose type
+                    // happens to match the impl target.
                     if let Some(self_param) = method
                         .params
-                        .iter()
-                        .find(|param| param.name == "self" && param.is_mutable)
+                        .first()
+                        .filter(|param| self.is_receiver_param(param) && param.is_mutable)
                     {
                         self.report_error_with_suggestions(
                             TypeErrorKind::MutabilityError,
                             &self_param.ty.1,
                             "`var self` in struct impl methods has no effect — struct methods receive self by value".to_string(),
                             vec![
-                                "return a modified copy of `self` instead".to_string(),
+                                "return a modified copy of the receiver instead".to_string(),
                                 "convert this type to an actor if you need mutable shared state".to_string(),
                             ],
                         );
                     }
                 }
                 self.env.push_scope();
-                // Bind self for methods that take it
-                let self_ty = Ty::Named {
-                    name: type_name.clone(),
-                    args: self_type_args.clone(),
-                };
-                self.env.define("self".to_string(), self_ty, true);
                 // Use qualified name (e.g. Connection::close) so the fn_sigs
                 // lookup finds the impl method, not a same-named builtin or
                 // inlined function from another module.
@@ -3294,17 +3370,16 @@ impl Checker {
                     .define_with_span(name.clone(), val_ty, true, span.clone());
             }
             Stmt::Assign { target, op, value } => {
-                // Purity check: pure functions cannot assign to self fields
+                // Purity check: pure functions cannot assign to actor fields
                 if self.in_pure_function {
-                    if let Expr::FieldAccess { object, field } = &target.0 {
-                        if let Expr::Identifier(name) = &object.0 {
-                            if name == "self" {
-                                self.report_error(
-                                    TypeErrorKind::PurityViolation,
-                                    span,
-                                    format!("cannot assign to `self.{field}` in a pure function"),
-                                );
-                            }
+                    // Check bare field name assignment (actor fields in scope)
+                    if let Expr::Identifier(name) = &target.0 {
+                        if self.current_actor_fields.contains(name) {
+                            self.report_error(
+                                TypeErrorKind::PurityViolation,
+                                span,
+                                format!("cannot assign to actor field `{name}` in a pure function"),
+                            );
                         }
                     }
                 }
@@ -3942,6 +4017,20 @@ impl Checker {
 
             // Cooperate
             Expr::Cooperate => Ty::Unit,
+
+            // Actor self-reference handle — returns ActorRef<Self>, not the actor type itself
+            Expr::This => {
+                if let Some(actor_ty) = &self.current_actor_type {
+                    Ty::actor_ref(actor_ty.clone())
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`this` can only be used inside an actor".to_string(),
+                    );
+                    Ty::Error
+                }
+            }
 
             // Index
             Expr::Index { object, index } => {
@@ -7325,7 +7414,7 @@ impl Checker {
     }
 
     /// Look up a method on a trait, walking super-traits if needed.
-    /// Returns a `FnSig` with self filtered out.
+    /// Returns a `FnSig` with the receiver filtered out.
     fn lookup_trait_method(&mut self, trait_name: &str, method: &str) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
         let found_method = self
@@ -7333,22 +7422,19 @@ impl Checker {
             .get(trait_name)
             .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
         if let Some(m) = found_method {
+            let skip = usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)));
             let params: Vec<Ty> = m
                 .params
                 .iter()
-                .filter(|p| p.name != "self")
+                .skip(skip)
                 .map(|p| self.resolve_type_expr(&p.ty.0))
                 .collect();
             let return_type = m
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-            let param_names: Vec<String> = m
-                .params
-                .iter()
-                .filter(|p| p.name != "self")
-                .map(|p| p.name.clone())
-                .collect();
+            let param_names: Vec<String> =
+                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             return Some(FnSig {
                 type_params: vec![],
                 type_param_bounds: HashMap::new(),
@@ -7743,18 +7829,23 @@ impl Checker {
         });
     }
 
-    /// Check if a variable binding would shadow an outer scope variable and emit a warning.
+    /// Check if a variable binding would shadow an outer scope variable and emit an error.
     fn check_shadowing(&mut self, name: &str, span: &Span) {
         if name.starts_with('_') || self.in_for_binding {
             return;
         }
-        if let Some(prev_span) = self.env.find_in_outer_scope(name) {
-            self.warnings.push(TypeError {
-                severity: crate::error::Severity::Warning,
+        if let Some(prev) = self.env.find_in_outer_scope(name) {
+            // Synthetic bindings (actor fields) have no source span,
+            // so the notes list may be empty.
+            let notes = prev
+                .map(|s| vec![(s, "previously defined here".to_string())])
+                .unwrap_or_default();
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` shadows a previous binding"),
-                notes: vec![(prev_span, "previously defined here".to_string())],
+                notes,
                 suggestions: vec![format!(
                     "if this is intentional, prefix with underscore: `_{name}`"
                 )],
@@ -9451,51 +9542,85 @@ mod tests {
     // ── Shadowing Tests ─────────────────────────────────────────────────
 
     #[test]
-    fn warn_variable_shadowing() {
+    fn error_variable_shadowing() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing
-                    && w.message.contains("variable `x` shadows")),
-            "expected shadowing warning, got: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing
+                    && e.message.contains("variable `x` shadows")),
+            "expected shadowing error, got: {:?}",
+            output.errors
         );
     }
 
     #[test]
-    fn no_warn_shadowing_underscore_prefix() {
+    fn no_error_shadowing_underscore_prefix() {
         let source = "fn main() { let _x = 1; if true { let _x = 2; println(_x); } println(_x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing),
-            "should not warn for _ prefixed vars: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing),
+            "should not error for _ prefixed vars: {:?}",
+            output.errors
         );
     }
 
     #[test]
-    fn no_warn_shadowing_for_loop_var() {
+    fn no_error_shadowing_for_loop_var() {
         let source = "fn main() { let i = 0; for i in 0..10 { println(i); } println(i); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing),
-            "should not warn for for-loop variable shadowing: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing),
+            "should not error for for-loop variable shadowing: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn test_actor_field_shadowing_is_error() {
+        let source = r#"
+            actor Counter {
+                var count: int = 0;
+                receive fn update(count: int) {
+                    println(count);
+                }
+            }
+        "#;
+        let (errors, _warnings) = parse_and_check(source);
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message.contains("variable `count` shadows")),
+            "should error on param shadowing actor field, got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn test_actor_fn_method_field_shadowing_is_error() {
+        let source = r#"
+            actor Counter {
+                var count: int = 0;
+                fn helper(count: int) -> int { count }
+            }
+        "#;
+        let (errors, _warnings) = parse_and_check(source);
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message.contains("variable `count` shadows")),
+            "should error on fn param shadowing actor field, got: {errors:?}",
         );
     }
 
@@ -9651,19 +9776,19 @@ fn main() {
     }
 
     #[test]
-    fn shadowing_has_note_for_original_definition() {
+    fn shadowing_error_has_note_for_original_definition() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
-        let w = output
-            .warnings
+        let e = output
+            .errors
             .iter()
-            .find(|w| w.kind == TypeErrorKind::Shadowing);
-        assert!(w.is_some(), "expected shadowing warning");
+            .find(|e| e.kind == TypeErrorKind::Shadowing);
+        assert!(e.is_some(), "expected shadowing error");
         assert!(
-            !w.unwrap().notes.is_empty(),
-            "shadowing warning should have a note pointing to the original definition"
+            !e.unwrap().notes.is_empty(),
+            "shadowing error should have a note pointing to the original definition"
         );
     }
 
@@ -10700,8 +10825,8 @@ fn main() {
                     return Pair { first: first, second: second };
                 }
 
-                fn swap(self) -> Self {
-                    return Pair { first: self.second, second: self.first };
+                fn swap(p: Pair<T>) -> Self {
+                    return Pair { first: p.second, second: p.first };
                 }
             }
         ";
@@ -10740,7 +10865,7 @@ fn main() {
         // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
         let source = r"
             trait Iterator<T> {
-                fn next(self: dyn Iterator<T>) -> Option<T>;
+                fn next(iter: Self) -> Option<T>;
             }
 
             type Counter {
@@ -10748,7 +10873,7 @@ fn main() {
             }
 
             impl Iterator<int> for Counter {
-                fn next(self: dyn Iterator<int>) -> Option<int> {
+                fn next(c: Counter) -> Option<int> {
                     Some(42)
                 }
             }

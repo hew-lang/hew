@@ -38,8 +38,8 @@ fn main() {
     let c = Circle(5);
     println(shape_area(c));
 
-    let r = Rectangle(4);
-    println(shape_area(r));
+    let rect = Rectangle(4);
+    println(shape_area(rect));
 
     // Match as expression
     let s = Circle(3);

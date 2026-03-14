@@ -3517,16 +3517,25 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       }
     }
     handleType = normalizeHandleType(handleType);
-    // Check field access (e.g. self.conn)
-    if (handleType.empty()) {
+    // Check field access (e.g. self.conn or bare field name)
+    if (handleType.empty() && !currentActorName.empty()) {
       if (auto *fa = std::get_if<ast::ExprFieldAccess>(&mc.receiver->value.kind)) {
         if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-          if (baseIdent->name == "self" && !currentActorName.empty()) {
+          if (baseIdent->name == "self") {
             auto key = currentActorName + "." + fa->field;
             auto aft = actorFieldTypes.find(key);
             if (aft != actorFieldTypes.end())
               handleType = normalizeHandleType(aft->second);
           }
+        }
+      }
+      // Bare field name as receiver (e.g. conn.method())
+      if (handleType.empty()) {
+        if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
+          auto key = currentActorName + "." + ie->name;
+          auto aft = actorFieldTypes.find(key);
+          if (aft != actorFieldTypes.end())
+            handleType = normalizeHandleType(aft->second);
         }
       }
     }
@@ -4760,6 +4769,13 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
     auto it = actorVarTypes.find(ie->name);
     if (it != actorVarTypes.end())
       return it->second;
+    // Bare field name that is an actor-typed actor field (e.g. `target`)
+    if (!currentActorName.empty()) {
+      auto key = currentActorName + "." + ie->name;
+      auto aft = actorFieldTypes.find(key);
+      if (aft != actorFieldTypes.end() && actorRegistry.count(aft->second))
+        return aft->second;
+    }
   }
   if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
     std::string baseName;

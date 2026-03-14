@@ -312,7 +312,9 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         // Load the args struct from the args pointer
         auto argsStruct = mlir::LLVM::LoadOp::create(builder, location, argsStructType, argsPtr);
 
-        // Extract self pointer (field 0)
+        // Extract self pointer (field 0) and bind as an internal variable.
+        // Field reads and writes resolve through this entry (see
+        // MLIRGenExpr.cpp bare-field path and MLIRGenStmt.cpp assignment path).
         auto selfPtr = mlir::LLVM::ExtractValueOp::create(builder, location, argsStruct,
                                                           llvm::ArrayRef<int64_t>{0});
         declareVariable("self", selfPtr);
@@ -478,7 +480,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = nullptr;
     returnSlot = nullptr;
 
-    // Bind self pointer — store in symbol table so field access works
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
@@ -539,7 +541,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = nullptr;
     returnSlot = nullptr;
 
-    // Bind self pointer for field access
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
@@ -1094,6 +1096,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     returnFlag = nullptr;
     returnSlot = nullptr;
 
+    // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
     declareVariable("self", selfPtr);
     {

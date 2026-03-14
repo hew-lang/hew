@@ -2096,7 +2096,7 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
     collType = typeExprToCollectionString(
         *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
-  // Also check self.field access for actor collection fields
+  // Also check self.field or bare field access for actor collection fields
   if (collType.empty() && !currentActorName.empty()) {
     if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&stmt.iterable.value.kind)) {
       if (fieldAccess->object) {
@@ -2108,6 +2108,15 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
               collType = cit->second;
           }
         }
+      }
+    }
+    // Bare field name (e.g. `for item in items`)
+    if (collType.empty()) {
+      if (auto *ident = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
+        auto key = currentActorName + "." + ident->name;
+        auto cit = collectionFieldTypes.find(key);
+        if (cit != collectionFieldTypes.end())
+          collType = cit->second;
       }
     }
   }

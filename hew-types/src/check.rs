@@ -5064,9 +5064,10 @@ impl Checker {
     ) -> Ty {
         let (method_expr, method_span, receiver_expr, receiver_span) = match expr {
             Expr::MethodCall { receiver, .. } => (expr, span, &receiver.0, &receiver.1),
-            Expr::Await(inner) => match &inner.0 {
-                Expr::MethodCall { receiver, .. } => (&inner.0, &inner.1, &receiver.0, &receiver.1),
-                _ => {
+            Expr::Await(inner) => {
+                if let Expr::MethodCall { receiver, .. } = &inner.0 {
+                    (&inner.0, &inner.1, &receiver.0, &receiver.1)
+                } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -5074,7 +5075,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-            },
+            }
             _ => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

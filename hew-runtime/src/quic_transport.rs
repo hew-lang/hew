@@ -126,13 +126,13 @@ impl QuicTransport {
         }
     }
 
-    /// Allocate a slot for a new connection, returning its index as conn_id.
+    /// Allocate a slot for a new connection, returning its index as `conn_id`.
     fn store_conn(&self, conn: QuicConn) -> c_int {
         for (i, slot) in self.conns.iter().enumerate() {
             let Ok(mut guard) = slot.lock() else { continue };
             if guard.is_none() {
                 *guard = Some(conn);
-                return i as c_int;
+                return c_int::try_from(i).unwrap_or(HEW_CONN_INVALID);
             }
         }
         HEW_CONN_INVALID
@@ -140,12 +140,10 @@ impl QuicTransport {
 
     /// Remove and drop a connection by slot index.
     fn remove_conn(&self, id: c_int) {
-        if id >= 0 {
-            let idx = id as usize;
-            if let Some(slot) = self.conns.get(idx) {
-                if let Ok(mut guard) = slot.lock() {
-                    *guard = None;
-                }
+        let Ok(idx) = usize::try_from(id) else { return };
+        if let Some(slot) = self.conns.get(idx) {
+            if let Ok(mut guard) = slot.lock() {
+                *guard = None;
             }
         }
     }
@@ -218,6 +216,7 @@ pub(crate) fn load_pem_creds() -> Result<Option<TlsCreds>, String> {
 
 /// Load a CA certificate from PEM (for client trust).
 /// If `HEW_QUIC_CA` is not set, returns `Ok(None)`.
+#[allow(dead_code, reason = "reserved for custom CA trust-root support")]
 pub(crate) fn load_ca_cert() -> Result<Option<CertificateDer<'static>>, String> {
     let Some(ca_path) = std::env::var("HEW_QUIC_CA").ok() else {
         return Ok(None);
@@ -289,13 +288,14 @@ pub(crate) fn build_client_config(trusted_cert_der: &[u8]) -> Result<ClientConfi
 // Framing helpers (4-byte LE length prefix, same as TCP)
 // ---------------------------------------------------------------------------
 
-/// Write a length-prefixed frame to a QUIC SendStream (blocking via runtime).
+/// Write a length-prefixed frame to a QUIC [`SendStream`](quinn::SendStream) (blocking via runtime).
 fn framed_send_quic(rt: &Runtime, send: &mut quinn::SendStream, data: &[u8]) -> c_int {
     if data.len() > MAX_FRAME_SIZE {
         set_last_error("frame exceeds MAX_FRAME_SIZE");
         return -1;
     }
-    let frame_len = data.len() as u32;
+    // data.len() ≤ MAX_FRAME_SIZE (16 MiB), which always fits in u32.
+    let frame_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
     let header = frame_len.to_le_bytes();
 
     let result = rt.block_on(async {
@@ -305,7 +305,7 @@ fn framed_send_quic(rt: &Runtime, send: &mut quinn::SendStream, data: &[u8]) -> 
     });
 
     match result {
-        Ok(()) => data.len() as c_int,
+        Ok(()) => c_int::try_from(data.len()).unwrap_or(-1),
         Err(e) => {
             set_last_error(format!("quic send: {e}"));
             -1
@@ -313,7 +313,7 @@ fn framed_send_quic(rt: &Runtime, send: &mut quinn::SendStream, data: &[u8]) -> 
     }
 }
 
-/// Read a length-prefixed frame from a QUIC RecvStream (blocking via runtime).
+/// Read a length-prefixed frame from a QUIC [`RecvStream`](quinn::RecvStream) (blocking via runtime).
 fn framed_recv_quic(rt: &Runtime, recv: &mut quinn::RecvStream, buf: &mut [u8]) -> c_int {
     let result = rt.block_on(async {
         // Read 4-byte header.
@@ -334,7 +334,7 @@ fn framed_recv_quic(rt: &Runtime, recv: &mut quinn::RecvStream, buf: &mut [u8]) 
             .await
             .map_err(|e| format!("payload: {e}"))?;
 
-        Ok(frame_len as c_int)
+        Ok(c_int::try_from(frame_len).unwrap_or(-1))
     });
 
     match result {
@@ -354,7 +354,11 @@ unsafe extern "C" fn quic_connect(impl_ptr: *mut c_void, address: *const c_char)
     if impl_ptr.is_null() || address.is_null() {
         return HEW_CONN_INVALID;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
+    // SAFETY: address checked non-null above; caller guarantees a valid
+    // NUL-terminated C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
         return HEW_CONN_INVALID;
     };
@@ -369,13 +373,14 @@ unsafe extern "C" fn quic_connect(impl_ptr: *mut c_void, address: *const c_char)
         Err(_) => {
             // Try resolving as host:port.
             match std::net::ToSocketAddrs::to_socket_addrs(&addr_str) {
-                Ok(mut addrs) => match addrs.next() {
-                    Some(a) => a,
-                    None => {
+                Ok(mut addrs) => {
+                    if let Some(a) = addrs.next() {
+                        a
+                    } else {
                         set_last_error(format!("quic: cannot resolve {addr_str}"));
                         return HEW_CONN_INVALID;
                     }
-                },
+                }
                 Err(e) => {
                     set_last_error(format!("quic: resolve {addr_str}: {e}"));
                     return HEW_CONN_INVALID;
@@ -408,7 +413,12 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
     if impl_ptr.is_null() || address.is_null() {
         return -1;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`. Exclusive access is sound because
+    // the vtable contract requires single-threaded listen setup.
     let qt = unsafe { &mut *impl_ptr.cast::<QuicTransport>() };
+    // SAFETY: address checked non-null above; caller guarantees a valid
+    // NUL-terminated C string.
     let Ok(addr_str) = unsafe { CStr::from_ptr(address) }.to_str() else {
         return -1;
     };
@@ -440,7 +450,7 @@ unsafe extern "C" fn quic_listen(impl_ptr: *mut c_void, address: *const c_char) 
         }
     };
 
-    qt.server_cert_der = creds.cert_der.clone();
+    qt.server_cert_der.clone_from(&creds.cert_der);
 
     let server_config = match build_server_config(&creds) {
         Ok(c) => c,
@@ -509,6 +519,8 @@ unsafe extern "C" fn quic_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_
     if impl_ptr.is_null() {
         return HEW_CONN_INVALID;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
 
     let Ok(guard) = qt.incoming_rx.lock() else {
@@ -521,8 +533,11 @@ unsafe extern "C" fn quic_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_
     let result = if timeout_ms < 0 {
         rx.recv().ok()
     } else {
-        rx.recv_timeout(Duration::from_millis(timeout_ms as u64))
-            .ok()
+        // timeout_ms ≥ 0 (negative branch handled above), safe to convert.
+        rx.recv_timeout(Duration::from_millis(
+            u64::try_from(timeout_ms).unwrap_or(0),
+        ))
+        .ok()
     };
 
     match result {
@@ -540,10 +555,16 @@ unsafe extern "C" fn quic_send(
     if impl_ptr.is_null() || data.is_null() {
         return -1;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
+    // SAFETY: data checked non-null above; caller guarantees [data, data+len)
+    // is a valid readable region.
     let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
 
-    let idx = conn as usize;
+    let Ok(idx) = usize::try_from(conn) else {
+        return -1;
+    };
     let Some(slot) = qt.conns.get(idx) else {
         return -1;
     };
@@ -571,10 +592,16 @@ unsafe extern "C" fn quic_recv(
     if impl_ptr.is_null() || buf.is_null() {
         return -1;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
+    // SAFETY: buf checked non-null above; caller guarantees [buf, buf+buf_size)
+    // is a valid writable region.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
 
-    let idx = conn as usize;
+    let Ok(idx) = usize::try_from(conn) else {
+        return -1;
+    };
     let Some(slot) = qt.conns.get(idx) else {
         return -1;
     };
@@ -597,6 +624,8 @@ unsafe extern "C" fn quic_close_conn(impl_ptr: *mut c_void, conn: c_int) {
     if impl_ptr.is_null() {
         return;
     }
+    // SAFETY: impl_ptr checked non-null above; points to the QuicTransport
+    // allocated by `hew_transport_quic_new`.
     let qt = unsafe { &*impl_ptr.cast::<QuicTransport>() };
     qt.remove_conn(conn);
 }
@@ -605,6 +634,8 @@ unsafe extern "C" fn quic_destroy(impl_ptr: *mut c_void) {
     if impl_ptr.is_null() {
         return;
     }
+    // SAFETY: takes back ownership of the Box<QuicTransport> allocated in
+    // `hew_transport_quic_new`; called at most once per transport.
     let mut qt = unsafe { Box::from_raw(impl_ptr.cast::<QuicTransport>()) };
     // Close the endpoint to stop the accept task.
     if let Some(ep) = qt.endpoint.take() {
@@ -655,6 +686,8 @@ pub unsafe extern "C" fn hew_transport_is_quic(transport: *const HewTransport) -
     if transport.is_null() {
         return false;
     }
+    // SAFETY: transport checked non-null above; caller guarantees a live
+    // `HewTransport`.
     let t = unsafe { &*transport };
     std::ptr::eq(t.ops, &raw const QUIC_OPS)
 }
@@ -701,10 +734,15 @@ pub unsafe extern "C" fn hew_transport_quic_free(transport: *mut HewTransport) {
     if transport.is_null() {
         return;
     }
+    // SAFETY: transport checked non-null above; caller guarantees it was
+    // returned by `hew_transport_quic_new` and has not been freed.
     let t = unsafe { &*transport };
+    // SAFETY: t.ops points to the static QUIC_OPS vtable, always valid.
     if let Some(destroy_fn) = unsafe { (*t.ops).destroy } {
+        // SAFETY: t.r#impl is the QuicTransport pointer from the constructor.
         unsafe { destroy_fn(t.r#impl) };
     }
+    // SAFETY: reclaims the Box<HewTransport> allocated in `hew_transport_quic_new`.
     let _ = unsafe { Box::from_raw(transport) };
 }
 

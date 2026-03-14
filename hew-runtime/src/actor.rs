@@ -1407,12 +1407,12 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
         unsafe { reply_channel::hew_reply_channel_free(ch) };
         return ptr::null_mut();
     }
-    // SAFETY: copying data into packed buffer; write_unaligned handles the
-    // potentially-misaligned channel slot.
     #[expect(
         clippy::cast_ptr_alignment,
         reason = "write_unaligned on the next line handles misalignment"
     )]
+    // SAFETY: copying data into packed buffer; write_unaligned handles the
+    // potentially-misaligned channel slot.
     unsafe {
         if size > 0 && !data.is_null() {
             ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);

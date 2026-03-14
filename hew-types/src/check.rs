@@ -2813,16 +2813,27 @@ impl Checker {
         self.in_pure_function = fd.is_pure;
         self.env.push_scope();
 
-        // Bind params
-        for p in &fd.params {
+        // If inside an actor, push a separate scope for parameters so
+        // shadowing checks detect collisions with actor field names.
+        let in_actor = !self.current_actor_fields.is_empty();
+        if in_actor {
+            self.env.push_scope();
+        }
+
+        // Bind params — only the first parameter can be the receiver
+        for (i, p) in fd.params.iter().enumerate() {
             let mut ty = self.resolve_type_expr(&p.ty.0);
-            if self.is_receiver_param(p) {
+            if i == 0 && self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
                         name: self_name.clone(),
                         args: self_args.clone(),
                     };
                 }
+            }
+            // If inside an actor, check that params don't shadow actor fields
+            if in_actor {
+                self.check_shadowing(&p.name, &p.ty.1);
             }
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
@@ -2860,6 +2871,9 @@ impl Checker {
         self.in_pure_function = prev_in_pure;
         self.current_return_type = None;
         self.current_function = prev_function;
+        if in_actor {
+            self.env.pop_scope();
+        }
         self.emit_scope_warnings();
     }
 
@@ -3031,10 +3045,13 @@ impl Checker {
 
             for method in &id.methods {
                 if target_is_struct {
+                    // Only the first parameter can be the receiver; checking all
+                    // params would false-positive on a non-receiver whose type
+                    // happens to match the impl target.
                     if let Some(self_param) = method
                         .params
-                        .iter()
-                        .find(|param| self.is_receiver_param(param) && param.is_mutable)
+                        .first()
+                        .filter(|param| self.is_receiver_param(param) && param.is_mutable)
                     {
                         self.report_error_with_suggestions(
                             TypeErrorKind::MutabilityError,
@@ -9546,6 +9563,22 @@ mod tests {
             errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
                 && e.message.contains("variable `count` shadows")),
             "should error on param shadowing actor field, got: {errors:?}",
+        );
+    }
+
+    #[test]
+    fn test_actor_fn_method_field_shadowing_is_error() {
+        let source = r#"
+            actor Counter {
+                var count: int = 0;
+                fn helper(count: int) -> int { count }
+            }
+        "#;
+        let (errors, _warnings) = parse_and_check(source);
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message.contains("variable `count` shadows")),
+            "should error on fn param shadowing actor field, got: {errors:?}",
         );
     }
 

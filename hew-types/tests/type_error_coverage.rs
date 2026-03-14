@@ -245,3 +245,27 @@ fn test_receiver_param_rejects_mismatched_generics() {
          for `impl Box<int>`."
     );
 }
+
+/// A non-first parameter whose type matches the impl target must not be
+/// flagged as a mutable receiver. Only the first parameter can be the receiver.
+#[test]
+fn test_non_receiver_param_same_type_not_flagged() {
+    let output = typecheck(
+        r"
+        type Box { value: int; }
+        impl Box {
+            fn combine(b: Box, var other: Box) -> int { b.value + other.value }
+        }
+        fn main() {
+            let b1 = Box { value: 1 };
+            let b2 = Box { value: 2 };
+            println(b1.combine(b2));
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "non-receiver param of same type should not trigger receiver warning: {:?}",
+        output.errors
+    );
+}

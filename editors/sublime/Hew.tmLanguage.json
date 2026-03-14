@@ -179,7 +179,7 @@
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|receive|init|spawn|async|move|mailbox|overflow)\\b"
+          "match": "\\b(actor|receive|init|spawn|async|move|this|mailbox|overflow)\\b"
         },
         {
           "comment": "Supervisor",
@@ -504,9 +504,9 @@
     "variables": {
       "patterns": [
         {
-          "comment": "self reference",
-          "name": "variable.language.self.hew",
-          "match": "\\bself\\b"
+          "comment": "this reference — current actor/struct receiver",
+          "name": "variable.language.this.hew",
+          "match": "\\bthis\\b"
         },
         {
           "comment": "Loop label: 'outer",

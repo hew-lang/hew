@@ -30,9 +30,9 @@ fn main() {
     Node::connect("127.0.0.1:9000");
     println("[client] connected (QUIC/TLS 1.3 encrypted)");
 
-    // Look up the remote Counter actor.
+    // Look up the remote Counter actor via cross-node registry gossip.
     let counter: Counter = Node::lookup("counter");
-    println("[client] found remote 'counter' actor");
+    println("[client] found remote 'counter' actor via registry gossip");
 
     // Send messages to the remote actor — same syntax as local.
     counter.increment(10);

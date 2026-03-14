@@ -227,7 +227,7 @@ impl TraitRegistry {
                 MarkerTrait::Eq | MarkerTrait::Ord | MarkerTrait::Hash
             ),
 
-            // String: Send + Sync + Clone, but NOT Frozen (mutable), NOT Copy
+            // String: Send + Sync + Clone + Encode + Decode, but NOT Frozen (mutable), NOT Copy
             Ty::String => matches!(
                 marker,
                 MarkerTrait::Send
@@ -238,9 +238,11 @@ impl TraitRegistry {
                     | MarkerTrait::Hash
                     | MarkerTrait::Display
                     | MarkerTrait::Debug
+                    | MarkerTrait::Encode
+                    | MarkerTrait::Decode
             ),
 
-            // Bytes: Send + Sync + Clone + Eq + Hash + Debug (ref-counted, not Copy)
+            // Bytes: Send + Sync + Clone + Eq + Hash + Debug + Encode + Decode
             Ty::Bytes => matches!(
                 marker,
                 MarkerTrait::Send
@@ -249,6 +251,8 @@ impl TraitRegistry {
                     | MarkerTrait::Eq
                     | MarkerTrait::Hash
                     | MarkerTrait::Debug
+                    | MarkerTrait::Encode
+                    | MarkerTrait::Decode
             ),
 
             // ActorRef: always Send + Sync + Frozen + Copy (identity reference)

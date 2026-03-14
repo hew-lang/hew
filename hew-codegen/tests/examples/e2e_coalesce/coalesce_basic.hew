@@ -1,12 +1,12 @@
 actor PriceTracker {
-    let symbol: int;
-    let price: int;
+    var symbol: int;
+    var price: int;
 
     mailbox 2 overflow coalesce(symbol);
 
-    receive fn update_price(symbol: int, price: int) -> int {
-        symbol = symbol;
-        price = price;
+    receive fn update_price(new_symbol: int, new_price: int) -> int {
+        symbol = new_symbol;
+        price = new_price;
         price
     }
 }

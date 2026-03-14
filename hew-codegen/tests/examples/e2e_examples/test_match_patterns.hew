@@ -115,8 +115,8 @@ fn test_match_enum_payload() -> int {
         Rect(w, h) => 0,
         _ => -1,
     };
-    let r = Rect(3, 4);
-    let area = match r {
+    let rect = Rect(3, 4);
+    let area = match rect {
         Circle(r) => 0,
         Rect(w, h) => w * h,
         _ => -1,

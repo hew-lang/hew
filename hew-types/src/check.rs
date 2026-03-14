@@ -1939,10 +1939,19 @@ impl Checker {
         if p.name == "self" {
             return true;
         }
-        if let Some((self_name, _)) = &self.current_self_type {
-            matches!(&p.ty.0, TypeExpr::Named { name, .. } if name == self_name)
-        } else {
-            false
+        // In trait/impl context, recognise a first param typed as `Self` or as the impl target
+        match &p.ty.0 {
+            TypeExpr::Named { name, .. } => {
+                if name == "Self" {
+                    return true;
+                }
+                if let Some((self_name, _)) = &self.current_self_type {
+                    name == self_name
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 

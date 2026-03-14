@@ -4,21 +4,21 @@ fn main() -> int {
     println("=== Collection Ops Bench ===");
 
     // Vec: 10000 pushes
-    let v: Vec<int> = Vec::new();
+    let vec: Vec<int> = Vec::new();
     var i: int = 0;
     while i < 10000 {
-        v.push(i);
+        vec.push(i);
         i = i + 1;
     }
     print("Vec: pushed ");
-    print(v.len());
+    print(vec.len());
     println(" elements");
 
     // Vec: 10000 reads
     var sum: int = 0;
     i = 0;
     while i < 10000 {
-        sum = sum + v.get(i);
+        sum = sum + vec.get(i);
         i = i + 1;
     }
     println(f"Vec sum: {sum}");

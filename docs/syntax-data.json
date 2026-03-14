@@ -50,7 +50,8 @@
       "after",
       "from",
       "await",
-      "cooperate"
+      "cooperate",
+      "this"
     ],
     "wire": ["wire", "reserved", "optional", "deprecated", "default"],
     "supervisor_config": [
@@ -113,6 +114,7 @@
     "receive",
     "init",
     "type",
+    "this",
     "dyn",
     "move",
     "try",

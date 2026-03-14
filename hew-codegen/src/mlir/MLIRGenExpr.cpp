@@ -343,6 +343,12 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
     return createIntConstant(builder, currentLoc, builder.getI32Type(), 0);
   }
 
+  if (std::get_if<ast::ExprThis>(&expr.kind)) {
+    // Actor self-reference handle
+    auto refType = hew::TypedActorRefType::get(&context, builder.getStringAttr(currentActorName));
+    return hew::ActorSelfOp::create(builder, currentLoc, refType).getResult();
+  }
+
   if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
     auto location = currentLoc;
     auto operandVal = generateExpression(fa->object->value);

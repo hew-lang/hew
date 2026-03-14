@@ -3901,6 +3901,20 @@ impl Checker {
             // Cooperate
             Expr::Cooperate => Ty::Unit,
 
+            // Actor self-reference handle
+            Expr::This => {
+                if let Some((_, binding)) = self.env.lookup_with_depth("self") {
+                    binding.ty.clone()
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`this` can only be used inside an actor".to_string(),
+                    );
+                    Ty::Error
+                }
+            }
+
             // Index
             Expr::Index { object, index } => {
                 let obj_ty = self.synthesize(&object.0, &object.1);

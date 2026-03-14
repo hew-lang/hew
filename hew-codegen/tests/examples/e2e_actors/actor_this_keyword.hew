@@ -1,0 +1,24 @@
+// Test: this keyword for actor self-reference
+// Exercises: `this` expression returns the actor's own handle
+actor Printer {
+    receive fn print(msg: string) {
+        println(msg);
+    }
+}
+
+actor Relay {
+    let target: Printer;
+    receive fn forward(msg: string) {
+        // Use `this` — it resolves to the actor's own handle
+        let _me = this;
+        self.target.print(msg);
+    }
+}
+
+fn main() {
+    let printer = spawn Printer;
+    let relay = spawn Relay(target: printer);
+    relay.forward("Hello via this");
+    sleep_ms(100);
+    println("Done");
+}

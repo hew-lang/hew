@@ -4294,6 +4294,10 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Expr::Cooperate
             }
+            Token::This => {
+                self.advance();
+                Expr::This
+            }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
                 let name = Self::contextual_keyword_name(tok).unwrap();

@@ -1216,11 +1216,9 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
     if (!currentActorName.empty()) {
       if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
         if (identExpr->name == "self") {
-          llvm::errs() << "ICE: encountered bare `self` as actor argument — "
-                       << "use `this` keyword instead\n";
-          auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType).getResult();
-          argVals.push_back(selfRef);
-          continue;
+          emitError(location, "ICE: encountered bare `self` as actor argument — "
+                              "use `this` keyword instead");
+          return std::nullopt;
         }
       }
     }

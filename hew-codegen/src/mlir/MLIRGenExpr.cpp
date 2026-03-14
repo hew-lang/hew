@@ -344,7 +344,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
   }
 
   if (std::get_if<ast::ExprThis>(&expr.kind)) {
-    // Actor self-reference handle
+    // Actor self-reference handle — must be inside an actor definition
+    assert(!currentActorName.empty() &&
+           "'this' expression encountered outside of an actor context");
     auto refType = hew::TypedActorRefType::get(&context, builder.getStringAttr(currentActorName));
     return hew::ActorSelfOp::create(builder, currentLoc, refType).getResult();
   }
@@ -422,9 +424,9 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
       if (!currentActorName.empty()) {
         if (auto *selfIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
           if (selfIdent->name == "self") {
-            llvm::errs() << "ICE: encountered self.field in codegen — "
-                         << "bare field names should be used instead\n";
-            targetStructName = currentActorName;
+            emitError(currentLoc, "ICE: encountered self.field in codegen — "
+                                  "bare field names should be used instead");
+            return {};
           }
         }
       }
@@ -3526,12 +3528,9 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       if (auto *fa = std::get_if<ast::ExprFieldAccess>(&mc.receiver->value.kind)) {
         if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
           if (baseIdent->name == "self") {
-            llvm::errs() << "ICE: encountered self.field method receiver in codegen — "
-                         << "bare field names should be used instead\n";
-            auto key = currentActorName + "." + fa->field;
-            auto aft = actorFieldTypes.find(key);
-            if (aft != actorFieldTypes.end())
-              handleType = normalizeHandleType(aft->second);
+            emitError(currentLoc, "ICE: encountered self.field method receiver in codegen — "
+                                  "bare field names should be used instead");
+            return {};
           }
         }
       }
@@ -4787,9 +4786,9 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
     std::string baseName;
     if (auto *baseIE = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
       if (baseIE->name == "self" && !currentActorName.empty()) {
-        llvm::errs() << "ICE: encountered self.field in actor type resolution — "
-                     << "bare field names should be used instead\n";
-        baseName = currentActorName;
+        emitError(currentLoc, "ICE: encountered self.field in actor type resolution — "
+                              "bare field names should be used instead");
+        return "";
       } else {
         auto baseIt = actorVarTypes.find(baseIE->name);
         if (baseIt != actorVarTypes.end())

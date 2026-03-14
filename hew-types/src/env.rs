@@ -217,13 +217,16 @@ impl TypeEnv {
     }
 
     /// Check if a variable name exists in any outer scope (not the current one).
-    /// Returns the definition span of the shadowed binding if found.
+    ///
+    /// Returns `Some(Some(span))` when the binding has a source span,
+    /// `Some(None)` when found but synthetic (e.g. actor fields), or
+    /// `None` when the name is not bound in any outer scope.
     #[must_use]
-    pub fn find_in_outer_scope(&self, name: &str) -> Option<Span> {
+    pub fn find_in_outer_scope(&self, name: &str) -> Option<Option<Span>> {
         // Skip the last (current) scope and check all outer scopes
         for scope in self.scopes.iter().rev().skip(1) {
             if let Some(binding) = scope.get(name) {
-                return binding.def_span.clone();
+                return Some(binding.def_span.clone());
             }
         }
         None

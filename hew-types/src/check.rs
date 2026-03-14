@@ -1936,14 +1936,30 @@ impl Checker {
     /// declared type matches `Self` or the current impl target type.
     /// Note: name-based matching (`p.name == "self"`) has been intentionally
     /// removed — receivers are identified by type, not by name.
-    fn is_receiver_param(&self, p: &Param) -> bool {
+    fn is_receiver_param(&mut self, p: &Param) -> bool {
         match &p.ty.0 {
-            TypeExpr::Named { name, .. } => {
+            TypeExpr::Named { name, type_args } => {
                 if name == "Self" {
                     return true;
                 }
-                if let Some((self_name, _)) = &self.current_self_type {
-                    name == self_name
+                // Clone to avoid borrowing self while we resolve type args.
+                let impl_target = self.current_self_type.clone();
+                if let Some((self_name, self_type_args)) = impl_target {
+                    if name != &self_name {
+                        return false;
+                    }
+                    // Name matches — also verify generic arguments match the
+                    // impl target so that e.g. `impl Box<int>` rejects a
+                    // parameter typed `Box<string>`.
+                    let param_args: Vec<Ty> = type_args
+                        .as_ref()
+                        .map(|args| {
+                            args.iter()
+                                .map(|(te, _)| self.resolve_type_expr(te))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    param_args == self_type_args
                 } else {
                     false
                 }
@@ -2903,7 +2919,12 @@ impl Checker {
             self.env.define(field.name.clone(), field_ty, true);
         }
 
+        // Push a separate scope for parameters so shadowing checks can
+        // detect collisions with actor field names in the outer scope.
+        self.env.push_scope();
+
         for p in &rf.params {
+            self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_type_expr(&p.ty.0);
             self.env.define(p.name.clone(), ty, p.is_mutable);
         }
@@ -2936,7 +2957,8 @@ impl Checker {
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }
-        self.env.pop_scope();
+        self.env.pop_scope(); // params scope
+        self.env.pop_scope(); // fields scope
     }
 
     fn check_const(&mut self, cd: &ConstDecl, _span: &Span) {
@@ -3937,10 +3959,10 @@ impl Checker {
             // Cooperate
             Expr::Cooperate => Ty::Unit,
 
-            // Actor self-reference handle
+            // Actor self-reference handle — returns ActorRef<Self>, not the actor type itself
             Expr::This => {
                 if let Some(actor_ty) = &self.current_actor_type {
-                    actor_ty.clone()
+                    Ty::actor_ref(actor_ty.clone())
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -7753,13 +7775,18 @@ impl Checker {
         if name.starts_with('_') || self.in_for_binding {
             return;
         }
-        if let Some(prev_span) = self.env.find_in_outer_scope(name) {
+        if let Some(prev) = self.env.find_in_outer_scope(name) {
+            // Synthetic bindings (actor fields) have no source span,
+            // so the notes list may be empty.
+            let notes = prev
+                .map(|s| vec![(s, "previously defined here".to_string())])
+                .unwrap_or_default();
             self.errors.push(TypeError {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` shadows a previous binding"),
-                notes: vec![(prev_span, "previously defined here".to_string())],
+                notes,
                 suggestions: vec![format!(
                     "if this is intentional, prefix with underscore: `_{name}`"
                 )],
@@ -9501,6 +9528,24 @@ mod tests {
                 .any(|e| e.kind == TypeErrorKind::Shadowing),
             "should not error for for-loop variable shadowing: {:?}",
             output.errors
+        );
+    }
+
+    #[test]
+    fn test_actor_field_shadowing_is_error() {
+        let source = r#"
+            actor Counter {
+                var count: int = 0;
+                receive fn update(count: int) {
+                    println(count);
+                }
+            }
+        "#;
+        let (errors, _warnings) = parse_and_check(source);
+        assert!(
+            errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message.contains("variable `count` shadows")),
+            "should error on param shadowing actor field, got: {errors:?}",
         );
     }
 

@@ -221,3 +221,27 @@ fn test_lambda_arity_mismatch() {
         "Expected ArityMismatch error for lambda with wrong arity"
     );
 }
+
+/// Receiver detection must compare generic arguments, not just the type name.
+/// `impl Box<int>` should reject `b: Box<string>` as a receiver parameter.
+#[test]
+fn test_receiver_param_rejects_mismatched_generics() {
+    let output = typecheck(
+        r#"
+        type Box<T> { value: T; }
+        impl Box<int> {
+            fn bad(b: Box<string>) -> int { 0 }
+        }
+        fn main() {
+            let b = Box { value: 42 };
+            b.bad();
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "Expected a type error when receiver generic arguments don't match the impl target, \
+         but type-checking succeeded. `Box<string>` should not be treated as a receiver \
+         for `impl Box<int>`."
+    );
+}

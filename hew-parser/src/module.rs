@@ -101,6 +101,13 @@ impl std::error::Error for CycleError {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleGraph {
     /// All modules in the graph, keyed by their ID.
+    ///
+    /// Custom serialization converts `ModuleId` keys to strings (JSON requires
+    /// string keys).  Format: `"std::net::http"` or `"(root)"` for the root.
+    #[serde(
+        serialize_with = "serialize_module_map",
+        deserialize_with = "deserialize_module_map"
+    )]
     pub modules: HashMap<ModuleId, Module>,
     /// The root module (entry point).
     pub root: ModuleId,
@@ -199,6 +206,45 @@ impl ModuleGraph {
         self.topo_order = order;
         Ok(())
     }
+}
+
+// ── ModuleId ↔ String map serialization ─────────────────────────────
+//
+// JSON requires object keys to be strings.  `ModuleId` is a struct, so
+// serde_json refuses to serialize `HashMap<ModuleId, _>` by default.
+// These helpers convert keys via `Display` / `FromStr`-style parsing.
+
+fn serialize_module_map<S>(
+    map: &HashMap<ModuleId, Module>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+    for (k, v) in map {
+        ser_map.serialize_entry(&k.to_string(), v)?;
+    }
+    ser_map.end()
+}
+
+fn deserialize_module_map<'de, D>(deserializer: D) -> Result<HashMap<ModuleId, Module>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let string_map: HashMap<String, Module> = HashMap::deserialize(deserializer)?;
+    Ok(string_map
+        .into_iter()
+        .map(|(k, v)| {
+            let id = if k == "(root)" {
+                ModuleId::root()
+            } else {
+                ModuleId::new(k.split("::").map(String::from).collect())
+            };
+            (id, v)
+        })
+        .collect())
 }
 
 #[cfg(test)]

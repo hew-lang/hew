@@ -198,6 +198,8 @@ jobs:
             -p hew-std-misc-uuid -p hew-std-misc-log
 
       - name: Run Rust workspace tests
+        # Default features include "full" (encryption + profiler + quic),
+        # so all 33 QUIC transport tests run without an explicit flag.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests
@@ -258,6 +260,8 @@ jobs:
           restore-keys: coverage-${{ runner.os }}-
 
       - name: Run tests with coverage
+        # Default features include "full" (encryption + profiler + quic),
+        # so all QUIC transport tests are covered without an explicit flag.
         run: >
           cargo llvm-cov nextest
           --workspace --exclude hew-wasm
@@ -323,6 +327,8 @@ jobs:
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
+        # Default features include "full" (encryption + profiler + quic),
+        # so all QUIC transport tests run without an explicit flag.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

@@ -135,6 +135,8 @@ jobs:
             # ── Tests ──────────────────────────────────────────────────────
 
             # Rust workspace tests (skip WASM and hew-cabi)
+            # Default features include "full" (encryption + profiler + quic),
+            # so all QUIC transport tests run without an explicit flag.
             cargo test --workspace --exclude hew-wasm --exclude hew-cabi
 
             # Codegen unit tests

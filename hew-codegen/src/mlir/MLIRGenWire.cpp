@@ -1042,4 +1042,222 @@ void MLIRGen::generateWireMethodWrappers(const ast::WireDecl &decl) {
   generateStaticWrapper("from_yaml", declName + "_from_yaml", {ptrType}, structType);
 }
 
+// ============================================================================
+// Struct-type serialization (auto-derived for Encode types)
+// ============================================================================
+//
+// For regular struct types (not wire types), the type checker identifies which
+// structs have all-encodable fields and registers to_json/from_json/etc methods.
+// These functions generate the MLIR to implement those methods.
+
+/// Classify an MLIR storage type for JSON serialization dispatch.
+static WireJsonKind jsonKindOfMLIR(mlir::Type t) {
+  if (t.isInteger(1))
+    return WireJsonKind::Bool;
+  if (t.isF32())
+    return WireJsonKind::Float32;
+  if (t.isF64())
+    return WireJsonKind::Float64;
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(t))
+    return WireJsonKind::String; // strings are ptr at the LLVM level
+  return WireJsonKind::Integer;  // i8, i16, i32, i64
+}
+
+void MLIRGen::generateStructToSerial(const std::string &typeName, llvm::StringRef format) {
+  auto structIt = structTypes.find(typeName);
+  if (structIt == structTypes.end())
+    return;
+  const auto &info = structIt->second;
+
+  auto location = currentLoc;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto f64Type = builder.getF64Type();
+
+  // Function: (struct) -> !llvm.ptr (string pointer)
+  std::string mangledName = mangleName(currentModulePath, typeName, "to_" + format.str());
+
+  auto savedIP = builder.saveInsertionPoint();
+  builder.setInsertionPointToEnd(module.getBody());
+  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(mangledName))
+    existing.erase();
+
+  auto fnType = mlir::FunctionType::get(&context, {info.mlirType}, {ptrType});
+  auto fn = mlir::func::FuncOp::create(builder, location, mangledName, fnType);
+  auto *entry = fn.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+
+  // Runtime function names — TOML uses "table" instead of "object"
+  std::string objWord = (format == "toml") ? "table" : "object";
+  std::string rtNew = "hew_" + format.str() + "_" + objWord + "_new";
+  std::string rtSetBool = "hew_" + format.str() + "_" + objWord + "_set_bool";
+  std::string rtSetFloat = "hew_" + format.str() + "_" + objWord + "_set_float";
+  std::string rtSetString = "hew_" + format.str() + "_" + objWord + "_set_string";
+  std::string rtSetInt = "hew_" + format.str() + "_" + objWord + "_set_int";
+  std::string rtStringify = "hew_" + format.str() + "_stringify";
+  std::string rtFree = "hew_" + format.str() + "_free";
+
+  // obj = hew_{format}_{object|table}_new()
+  auto objPtr =
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                 mlir::SymbolRefAttr::get(&context, rtNew), mlir::ValueRange{})
+          .getResult();
+
+  mlir::Value selfStruct = entry->getArgument(0);
+
+  for (const auto &field : info.fields) {
+    auto keyPtr = wireStringPtr(location, field.name);
+    mlir::Value fv = mlir::LLVM::ExtractValueOp::create(builder, location, selfStruct, field.index);
+
+    auto jkind = jsonKindOfMLIR(field.type);
+    if (jkind == WireJsonKind::Bool) {
+      // Bool is i1 in Hew, needs extending to i32 for the FFI
+      mlir::Value i32v = mlir::arith::ExtUIOp::create(builder, location, i32Type, fv);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetBool),
+                                 mlir::ValueRange{objPtr, keyPtr, i32v});
+    } else if (jkind == WireJsonKind::Float32) {
+      mlir::Value f64v = mlir::arith::ExtFOp::create(builder, location, f64Type, fv);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                 mlir::ValueRange{objPtr, keyPtr, f64v});
+    } else if (jkind == WireJsonKind::Float64) {
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetFloat),
+                                 mlir::ValueRange{objPtr, keyPtr, fv});
+    } else if (jkind == WireJsonKind::String) {
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetString),
+                                 mlir::ValueRange{objPtr, keyPtr, fv});
+    } else {
+      // Integer types: sign-extend to i64 if needed
+      mlir::Value v64 = fv;
+      if (fv.getType() != i64Type)
+        v64 = mlir::arith::ExtSIOp::create(builder, location, i64Type, fv);
+      hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                                 mlir::SymbolRefAttr::get(&context, rtSetInt),
+                                 mlir::ValueRange{objPtr, keyPtr, v64});
+    }
+  }
+
+  // result = hew_{format}_stringify(obj); hew_{format}_free(obj)
+  auto resultPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                              mlir::SymbolRefAttr::get(&context, rtStringify),
+                                              mlir::ValueRange{objPtr})
+                       .getResult();
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, rtFree), mlir::ValueRange{objPtr});
+
+  mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{resultPtr});
+  builder.restoreInsertionPoint(savedIP);
+}
+
+void MLIRGen::generateStructFromSerial(const std::string &typeName, llvm::StringRef format) {
+  auto structIt = structTypes.find(typeName);
+  if (structIt == structTypes.end())
+    return;
+  const auto &info = structIt->second;
+
+  auto location = currentLoc;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+  auto f64Type = builder.getF64Type();
+
+  // Function: (!llvm.ptr) -> struct
+  std::string mangledName = mangleName(currentModulePath, typeName, "from_" + format.str());
+
+  auto savedIP = builder.saveInsertionPoint();
+  builder.setInsertionPointToEnd(module.getBody());
+  if (auto existing = module.lookupSymbol<mlir::func::FuncOp>(mangledName))
+    existing.erase();
+
+  auto fnType = mlir::FunctionType::get(&context, {ptrType}, {info.mlirType});
+  auto fn = mlir::func::FuncOp::create(builder, location, mangledName, fnType);
+  auto *entry = fn.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+
+  // Runtime function names
+  std::string rtParse = "hew_" + format.str() + "_parse";
+  std::string rtGetField = "hew_" + format.str() + "_get_field";
+  std::string rtGetBool = "hew_" + format.str() + "_get_bool";
+  std::string rtGetFloat = "hew_" + format.str() + "_get_float";
+  std::string rtGetString = "hew_" + format.str() + "_get_string";
+  std::string rtGetInt = "hew_" + format.str() + "_get_int";
+  std::string rtFree = "hew_" + format.str() + "_free";
+
+  // obj = hew_{format}_parse(str)
+  auto objPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                           mlir::SymbolRefAttr::get(&context, rtParse),
+                                           mlir::ValueRange{entry->getArgument(0)})
+                    .getResult();
+
+  mlir::Value result = mlir::LLVM::UndefOp::create(builder, location, info.mlirType);
+
+  for (const auto &field : info.fields) {
+    auto keyPtr = wireStringPtr(location, field.name);
+    auto fieldJval = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                mlir::SymbolRefAttr::get(&context, rtGetField),
+                                                mlir::ValueRange{objPtr, keyPtr})
+                         .getResult();
+
+    mlir::Value decoded;
+    auto jkind = jsonKindOfMLIR(field.type);
+    if (jkind == WireJsonKind::Bool) {
+      auto raw = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
+                                            mlir::SymbolRefAttr::get(&context, rtGetBool),
+                                            mlir::ValueRange{fieldJval})
+                     .getResult();
+      // Truncate i32 → i1 for bool
+      decoded = mlir::arith::TruncIOp::create(builder, location, builder.getI1Type(), raw);
+    } else if (jkind == WireJsonKind::Float32) {
+      auto f64v = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                             mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                             mlir::ValueRange{fieldJval})
+                      .getResult();
+      decoded = mlir::arith::TruncFOp::create(builder, location, builder.getF32Type(), f64v);
+    } else if (jkind == WireJsonKind::Float64) {
+      decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{f64Type},
+                                           mlir::SymbolRefAttr::get(&context, rtGetFloat),
+                                           mlir::ValueRange{fieldJval})
+                    .getResult();
+    } else if (jkind == WireJsonKind::String) {
+      decoded = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                           mlir::SymbolRefAttr::get(&context, rtGetString),
+                                           mlir::ValueRange{fieldJval})
+                    .getResult();
+    } else {
+      auto rawI64 = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
+                                               mlir::SymbolRefAttr::get(&context, rtGetInt),
+                                               mlir::ValueRange{fieldJval})
+                        .getResult();
+      if (field.type != i64Type)
+        decoded = mlir::arith::TruncIOp::create(builder, location, field.type, rawI64).getResult();
+      else
+        decoded = rawI64;
+    }
+
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                               mlir::SymbolRefAttr::get(&context, rtFree),
+                               mlir::ValueRange{fieldJval});
+
+    result = mlir::LLVM::InsertValueOp::create(builder, location, result, decoded, field.index);
+  }
+
+  hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
+                             mlir::SymbolRefAttr::get(&context, rtFree), mlir::ValueRange{objPtr});
+
+  mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{result});
+  builder.restoreInsertionPoint(savedIP);
+}
+
+void MLIRGen::generateStructEncodeWrappers(const std::string &typeName) {
+  // Generate to_json/from_json, to_yaml/from_yaml, to_toml/from_toml
+  for (const auto &format : {"json", "yaml", "toml"}) {
+    generateStructToSerial(typeName, format);
+    generateStructFromSerial(typeName, format);
+  }
+}
+
 } // namespace hew

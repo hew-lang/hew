@@ -327,11 +327,23 @@ pub fn compile(
         })
         .unwrap_or_default();
     // Wire types always generate JSON encode/decode calls, so link the
-    // JSON and YAML staticlibs even without an explicit import.
-    if program.items.iter().any(|(item, _)| {
+    // JSON, YAML, and TOML staticlibs are needed for wire types (always
+    // generate JSON/YAML) and for auto-derived struct serialization (which
+    // generates to_json/to_yaml/to_toml for types with all-encodable fields).
+    // Link them when wire types are present or when any struct type exists
+    // that could have auto-derived encode methods.
+    let has_wire = program.items.iter().any(|(item, _)| {
         matches!(item, Item::Wire(_)) || matches!(item, Item::TypeDecl(td) if td.wire.is_some())
-    }) {
-        for m in ["std::encoding::json", "std::encoding::yaml"] {
+    });
+    let has_struct = program.items.iter().any(|(item, _)| {
+        matches!(item, Item::TypeDecl(td) if td.kind == hew_parser::ast::TypeDeclKind::Struct && td.wire.is_none())
+    });
+    if has_wire || has_struct {
+        for m in [
+            "std::encoding::json",
+            "std::encoding::yaml",
+            "std::encoding::toml",
+        ] {
             if !imported_modules.contains(&m.to_string()) {
                 imported_modules.push(m.to_string());
             }

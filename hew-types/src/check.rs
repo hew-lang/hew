@@ -216,6 +216,10 @@ pub struct Checker {
     local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
     current_self_type: Option<(String, Vec<Ty>)>,
+    /// The actor type currently being checked (for `this` keyword resolution).
+    current_actor_type: Option<Ty>,
+    /// Field names of the current actor (for purity checks on bare field assignment).
+    current_actor_fields: Vec<String>,
     impl_alias_scopes: Vec<ImplAliasScope>,
     /// Names of functions that require an unsafe block to call.
     unsafe_functions: HashSet<String>,
@@ -465,6 +469,8 @@ impl Checker {
             local_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
+            current_actor_type: None,
+            current_actor_fields: Vec::new(),
             impl_alias_scopes: Vec::new(),
             unsafe_functions: HashSet::new(),
             wasm_target: false,
@@ -2836,18 +2842,22 @@ impl Checker {
     }
 
     fn check_actor(&mut self, ad: &ActorDecl) {
+        let actor_ty = Ty::Named {
+            name: ad.name.clone(),
+            args: vec![],
+        };
+        let prev_actor_type = self.current_actor_type.replace(actor_ty);
+        let prev_actor_fields = std::mem::replace(
+            &mut self.current_actor_fields,
+            ad.fields.iter().map(|f| f.name.clone()).collect(),
+        );
+
         for rf in &ad.receive_fns {
             self.check_receive_fn(&ad.name, rf, &ad.fields);
         }
         for method in &ad.methods {
             self.env.push_scope();
-            // Bind self for regular actor methods too
-            let self_ty = Ty::Named {
-                name: ad.name.clone(),
-                args: vec![],
-            };
-            self.env.define("self".to_string(), self_ty, true);
-            // Bind actor fields directly in scope
+            // Bind actor fields directly in scope (bare field access)
             for field in &ad.fields {
                 let field_ty = self.resolve_type_expr(&field.ty.0);
                 self.env.define(field.name.clone(), field_ty, true);
@@ -2855,6 +2865,9 @@ impl Checker {
             self.check_function(method);
             self.env.pop_scope();
         }
+
+        self.current_actor_type = prev_actor_type;
+        self.current_actor_fields = prev_actor_fields;
     }
 
     fn check_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl, fields: &[FieldDecl]) {
@@ -2878,14 +2891,7 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        // Bind `self` to the actor's type so field accesses work
-        let self_ty = Ty::Named {
-            name: actor_name.to_string(),
-            args: vec![],
-        };
-        self.env.define("self".to_string(), self_ty, true);
-
-        // Bind actor fields directly in scope (accessible without self.)
+        // Bind actor fields directly in scope (bare field access)
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty.0);
             self.env.define(field.name.clone(), field_ty, true);
@@ -3283,8 +3289,9 @@ impl Checker {
                     .define_with_span(name.clone(), val_ty, true, span.clone());
             }
             Stmt::Assign { target, op, value } => {
-                // Purity check: pure functions cannot assign to self fields
+                // Purity check: pure functions cannot assign to actor fields
                 if self.in_pure_function {
+                    // Check `self.field` pattern (legacy)
                     if let Expr::FieldAccess { object, field } = &target.0 {
                         if let Expr::Identifier(name) = &object.0 {
                             if name == "self" {
@@ -3294,6 +3301,16 @@ impl Checker {
                                     format!("cannot assign to `self.{field}` in a pure function"),
                                 );
                             }
+                        }
+                    }
+                    // Check bare field name assignment
+                    if let Expr::Identifier(name) = &target.0 {
+                        if self.current_actor_fields.contains(name) {
+                            self.report_error(
+                                TypeErrorKind::PurityViolation,
+                                span,
+                                format!("cannot assign to actor field `{name}` in a pure function"),
+                            );
                         }
                     }
                 }
@@ -3934,8 +3951,8 @@ impl Checker {
 
             // Actor self-reference handle
             Expr::This => {
-                if let Some((_, binding)) = self.env.lookup_with_depth("self") {
-                    binding.ty.clone()
+                if let Some(actor_ty) = &self.current_actor_type {
+                    actor_ty.clone()
                 } else {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

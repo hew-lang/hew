@@ -126,7 +126,8 @@ fn connect_happy_eyeballs(addrs: &[SocketAddr], timeout: Duration) -> io::Result
         let tx = tx.clone();
         std::thread::spawn(move || {
             if i > 0 {
-                std::thread::sleep(RESOLUTION_DELAY * i as u32);
+                let stagger = u32::try_from(i).expect("address count fits in u32");
+                std::thread::sleep(RESOLUTION_DELAY * stagger);
             }
             let _ = tx.send(TcpStream::connect_timeout(&addr, timeout));
         });
@@ -239,10 +240,7 @@ impl Transport for HewTcpTransport {
             .set_nonblocking(true)
             .and_then(|()| {
                 let mut buf = [0];
-                let alive = match self.stream.read(&mut buf) {
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => true,
-                    _ => false,
-                };
+                let alive = matches!(self.stream.read(&mut buf), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
                 self.stream.set_nonblocking(false)?;
                 Ok(alive)
             })
@@ -250,6 +248,9 @@ impl Transport for HewTcpTransport {
     }
 }
 
+// The Debug impl intentionally shows only the peer address — buffers and cached
+// timeouts are internal bookkeeping with no useful debug representation.
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for HewTcpTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HewTcpTransport")

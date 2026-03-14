@@ -598,9 +598,8 @@ impl HewCluster {
         let Some(cb) = self.registry_callback else {
             return;
         };
-        let c_name = match std::ffi::CString::new(name) {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(c_name) = std::ffi::CString::new(name) else {
+            return;
         };
         cb(
             c_name.as_ptr(),

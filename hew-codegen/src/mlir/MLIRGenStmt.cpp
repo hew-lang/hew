@@ -882,17 +882,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto operandType = operandVal.getType();
     if (isPointerLikeType(operandType)) {
       auto fieldName = fa->field;
-      // Legacy self.field — should no longer appear in Hew source
       std::string targetStructName;
-      if (!currentActorName.empty()) {
-        if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-          if (baseIdent->name == "self") {
-            emitError(location, "ICE: encountered self.field assignment in codegen — "
-                                "bare field names should be used instead");
-            return;
-          }
-        }
-      }
       for (const auto &[typeName, stInfo] : structTypes) {
         if (!targetStructName.empty() && typeName != targetStructName)
           continue;
@@ -2103,17 +2093,6 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
         *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
   // Check bare field access for actor collection fields
   if (collType.empty() && !currentActorName.empty()) {
-    if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&stmt.iterable.value.kind)) {
-      if (fieldAccess->object) {
-        if (auto *objIdent = std::get_if<ast::ExprIdentifier>(&fieldAccess->object->value.kind)) {
-          if (objIdent->name == "self") {
-            emitError(currentLoc, "ICE: encountered self.field in for-loop iterable — "
-                                  "bare field names should be used instead");
-            return;
-          }
-        }
-      }
-    }
     // Bare field name (e.g. `for item in items`)
     if (collType.empty()) {
       if (auto *ident = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {

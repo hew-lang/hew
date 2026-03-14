@@ -1210,18 +1210,6 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
     const auto &argSpanned = ast::callArgExpr(arg);
-    // Legacy: passing `self` as argument for actor self-reference.
-    // New code uses `this` (Expr::This → ActorSelfOp).  If we see a bare
-    // identifier named "self" here, something is wrong.
-    if (!currentActorName.empty()) {
-      if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
-        if (identExpr->name == "self") {
-          emitError(location, "ICE: encountered bare `self` as actor argument — "
-                              "use `this` keyword instead");
-          return std::nullopt;
-        }
-      }
-    }
     auto val = generateExpression(argSpanned.value);
     if (!val)
       return std::nullopt;

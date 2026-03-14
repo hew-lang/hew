@@ -2580,8 +2580,9 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
   structTypes[declName] = std::move(info);
 
   // Generate serialization functions for struct types with all-encodable fields.
-  // Wire types handle their own serialization; skip actors (they aren't data types).
-  if (decl.kind == ast::TypeDeclKind::Struct && !decl.wire.has_value()) {
+  // Wire types handle their own serialization; skip actors and generic templates.
+  if (decl.kind == ast::TypeDeclKind::Struct && !decl.wire.has_value() &&
+      !decl.type_params.has_value()) {
     // Check if all field types are serialization-compatible (primitive, string, bool, float)
     bool allEncodable = true;
     for (const auto &ft : fieldTypes) {

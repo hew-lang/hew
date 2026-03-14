@@ -1081,11 +1081,16 @@ impl Checker {
         }
 
         // Static methods: TypeName.from_json(String) -> Self, etc.
-        let result_self = Ty::result(self_ty.clone(), Ty::String);
+        // SHIM: Returns Self directly, not Result<Self, String>. Result wrapping
+        // requires codegen changes to construct Result enum values. Until then,
+        // parse errors panic at runtime.
+        // WHEN: Add Result wrapping when codegen can emit Result<T, E> construction.
+        // WHAT: Change return type to Ty::result(self_ty, Ty::String) and update codegen
+        // to wrap parse output in Ok/Err.
         let static_methods = [
-            ("from_json", vec![Ty::String], result_self.clone()),
-            ("from_yaml", vec![Ty::String], result_self.clone()),
-            ("from_toml", vec![Ty::String], result_self),
+            ("from_json", vec![Ty::String], self_ty.clone()),
+            ("from_yaml", vec![Ty::String], self_ty.clone()),
+            ("from_toml", vec![Ty::String], self_ty),
         ];
 
         for (method_name, params, return_type) in static_methods {

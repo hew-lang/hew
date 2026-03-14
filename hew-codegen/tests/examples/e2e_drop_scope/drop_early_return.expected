@@ -1,0 +1,12 @@
+=== early return ===
+returning early
+drop 3
+drop 2
+drop 1
+result = 42
+=== normal return ===
+returning late
+drop 3
+drop 2
+drop 1
+result = 0

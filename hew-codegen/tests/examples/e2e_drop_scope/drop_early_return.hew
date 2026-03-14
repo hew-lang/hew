@@ -1,0 +1,34 @@
+// Test: Drop on early return — all constructed values are dropped
+// Exercises: early return, multiple Drop impls, drop ordering on return
+type Tracker {
+    id: int;
+}
+
+impl Drop for Tracker {
+    fn drop(t: Tracker) {
+        println(f"drop {t.id}");
+    }
+}
+
+fn early(flag: bool) -> int {
+    let _a = Tracker { id: 1 };
+    let _b = Tracker { id: 2 };
+    let _c = Tracker { id: 3 };
+    if flag {
+        println("returning early");
+        return 42;
+    }
+    println("returning late");
+    return 0;
+}
+
+fn main() -> int {
+    println("=== early return ===");
+    let r1 = early(true);
+    println(f"result = {r1}");
+
+    println("=== normal return ===");
+    let r2 = early(false);
+    println(f"result = {r2}");
+    return 0;
+}

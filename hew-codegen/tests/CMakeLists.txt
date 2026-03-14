@@ -280,7 +280,7 @@ add_e2e_file_test(sieve               e2e_algorithms sieve_of_eratosthenes)
 add_e2e_file_test(two_sum             e2e_algorithms two_sum)
 add_e2e_file_test(valid_parens        e2e_algorithms valid_parentheses)
 
-# Actors (10 tests)
+# Actors (22 tests)
 add_e2e_file_test(actor_counter       e2e_actors actor_counter)
 add_e2e_file_test(actor_lifecycle     e2e_actors actor_lifecycle)
 add_e2e_file_test(actor_pipeline      e2e_actors actor_pipeline)
@@ -298,6 +298,11 @@ add_e2e_file_test(actor_orchestration e2e_actors actor_orchestration)
 add_e2e_file_test(close_await_actor  e2e_actors close_await_actor)
 add_e2e_file_test(close_await_multi  e2e_actors close_await_multi)
 add_e2e_file_test(actor_this_keyword e2e_actors actor_this_keyword)
+add_e2e_file_test(actor_init_execution    e2e_actors actor_init_execution)
+add_e2e_file_test(actor_init_params       e2e_actors actor_init_params)
+add_e2e_file_test(actor_message_ordering  e2e_actors actor_message_ordering)
+add_e2e_file_test(actor_this_complex      e2e_actors actor_this_complex)
+add_e2e_file_test(actor_field_mutation    e2e_actors actor_field_mutation)
 
 # Concurrency (8 tests)
 add_e2e_file_test(supervision_basic   e2e_concurrency actor_supervision_basic)
@@ -354,6 +359,8 @@ add_e2e_file_test(machine_circuit_br  e2e_machine machine_circuit_breaker)
 add_e2e_file_test(machine_systematic  e2e_machine machine_systematic)
 add_e2e_file_test(machine_event_pay   e2e_machine machine_event_payload)
 add_e2e_file_test(machine_guard       e2e_machine machine_guard)
+add_e2e_file_test(machine_payload_tr  e2e_machine machine_payload_transition)
+add_e2e_file_test(machine_wildcard    e2e_machine machine_wildcard_ordering)
 add_e2e_reject_test(machine_exhaustive e2e_machine machine_exhaustive_fail "does not handle event")
 
 # HashMap for-in iteration (sorted because HashMap order is non-deterministic)
@@ -387,8 +394,9 @@ add_e2e_file_test(string_predicates    e2e_strings string_predicates)
 # Compound assignment on indexed targets
 add_e2e_file_test(indexed_compound  e2e_compound_assign indexed_compound)
 
-# Memory (7 tests)
+# Memory (8 tests)
 add_e2e_file_test(actor_termination   e2e_memory actor_termination_cleanup)
+add_e2e_file_test(actor_str_owner     e2e_memory actor_field_string_ownership)
 add_e2e_file_test(closure_capture     e2e_memory closure_capture_safety)
 add_e2e_file_test(deep_recursion      e2e_memory deep_recursion)
 add_e2e_file_test(large_vec           e2e_memory large_vec_lifecycle)
@@ -478,6 +486,8 @@ add_e2e_file_test(generic_multi_param   e2e_generics generic_multi_param)
 add_e2e_file_test(generic_struct_param  e2e_generics generic_struct_param)
 add_e2e_file_test(generic_all_types    e2e_generics generic_all_types)
 add_e2e_file_test(generic_nested       e2e_generics generic_nested)
+add_e2e_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound_dispatch)
+add_e2e_file_test(generic_receiver_method e2e_generics generic_receiver_method)
 
 # ── Regex tests ───────────────────────────────────────────────────────────────
 add_e2e_file_test(regex_is_match        e2e_regex regex_is_match)
@@ -526,11 +536,14 @@ add_e2e_file_test(dyn_dispatch          e2e_dyn_trait dyn_dispatch)
 add_e2e_file_test(dyn_dispatch_string   e2e_dyn_trait dyn_dispatch_string)
 add_e2e_file_test(dyn_dispatch_args     e2e_dyn_trait dyn_dispatch_args)
 add_e2e_file_test(dyn_dispatch_void     e2e_dyn_trait dyn_dispatch_void)
+add_e2e_file_test(dyn_trait_with_generics e2e_dyn_trait dyn_trait_with_generics)
 add_e2e_file_test(trait_inherit         e2e_trait_inherit trait_inherit)
 
 # ── Trait impl tests ─────────────────────────────────────────────────────────
 add_e2e_file_test(trait_impl            e2e_traits trait_impl)
 add_e2e_file_test(trait_multi_impl      e2e_traits trait_multi_impl)
+add_e2e_file_test(trait_default_override e2e_traits trait_default_override)
+add_e2e_file_test(trait_inherit_diamond e2e_traits trait_inherit_diamond)
 
 # ── Trait-bounded generic dispatch tests ────────────────────────────────────
 add_e2e_file_test(trait_bound_method    e2e_trait_bound_dispatch trait_bound_method)
@@ -596,10 +609,13 @@ add_e2e_file_test(module_trait_inherit  e2e_modules module_trait_inherit)
 add_e2e_file_test(module_actor          e2e_modules module_actor)
 add_e2e_file_test(module_multifile      e2e_modules module_multifile)
 add_e2e_file_test(module_spawn_qualified e2e_modules module_spawn_qualified)
+add_e2e_file_test(module_reexport       e2e_modules module_reexport)
 
 # ── Drop trait tests ─────────────────────────────────────────────────────────
 add_e2e_file_test(drop_trait            e2e_drop_trait drop_trait)
+add_e2e_file_test(drop_nested_struct    e2e_drop_trait drop_nested_struct)
 add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
+add_e2e_file_test(drop_early_return     e2e_drop_scope drop_early_return)
 
 # ── Return statement tests ───────────────────────────────────────────────────
 add_e2e_file_test(return_after_drop     e2e_return return_after_drop)
@@ -779,6 +795,10 @@ add_e2e_file_test(cast_numeric              e2e_coverage cast_numeric)
 add_e2e_file_test(coverage_narrowing_check  e2e_coverage narrowing_check)
 add_e2e_file_test(coverage_var_reassign_drop e2e_coverage var_reassign_drop)
 add_e2e_file_test(coverage_match_exhaustive e2e_coverage match_exhaustive)
+add_e2e_file_test(coverage_match_nested_enum   e2e_coverage match_nested_enum)
+add_e2e_file_test(coverage_option_chain        e2e_coverage option_chain)
+add_e2e_file_test(coverage_result_propagation  e2e_coverage result_propagation)
+add_e2e_file_test(coverage_shadowing_scopes    e2e_coverage shadowing_error_recovery)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

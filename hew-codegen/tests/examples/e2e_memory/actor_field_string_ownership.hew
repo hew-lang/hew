@@ -1,0 +1,33 @@
+// Test: Actor field string ownership — no double-free or use-after-free
+// Exercises: String fields in actors, multiple reads/writes, ownership safety
+actor Store {
+    let data: String;
+
+    receive fn set(value: String) {
+        data = value;
+        println(f"set: {data}");
+    }
+
+    receive fn get() -> String {
+        println(f"get: {data}");
+        data
+    }
+
+    receive fn append(suffix: String) {
+        data = data + suffix;
+        println(f"append: {data}");
+    }
+}
+
+fn main() {
+    println("=== Actor String Ownership ===");
+    let s = spawn Store(data: "initial");
+    await s.get();
+    await s.set("hello");
+    await s.get();
+    await s.append(" world");
+    await s.get();
+    await s.set("replaced");
+    await s.get();
+    println("PASS");
+}

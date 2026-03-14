@@ -1,0 +1,58 @@
+// Test: Specific transitions take priority over wildcard transitions
+// Exercises: wildcard _ transitions, specific transitions, priority ordering
+machine Valve {
+    state Open;
+    state Closed;
+    state Locked;
+
+    event Turn;
+    event Lock;
+    event Unlock;
+
+    // Specific transitions
+    on Turn: Open -> Closed;
+    on Turn: Closed -> Open;
+    on Lock: Closed -> Locked;
+    on Unlock: Locked -> Closed;
+
+    // Wildcards — fallback for unhandled state/event combos
+    on Turn: _ -> _ { state }
+    on Lock: _ -> _ { state }
+    on Unlock: _ -> _ { state }
+}
+
+fn main() -> int {
+    var v = Valve::Open;
+    println(v.state_name());
+
+    // Turn: Open -> Closed (specific)
+    v.step(Turn);
+    println(v.state_name());
+
+    // Lock: Closed -> Locked (specific)
+    v.step(Lock);
+    println(v.state_name());
+
+    // Turn on Locked: no specific rule, wildcard keeps state
+    v.step(Turn);
+    println(v.state_name());
+
+    // Lock on Locked: no specific rule, wildcard keeps state
+    v.step(Lock);
+    println(v.state_name());
+
+    // Unlock: Locked -> Closed (specific)
+    v.step(Unlock);
+    println(v.state_name());
+
+    // Unlock on Closed: no specific rule, wildcard keeps state
+    v.step(Unlock);
+    println(v.state_name());
+
+    // Turn: Closed -> Open (specific)
+    v.step(Turn);
+    println(v.state_name());
+
+    println("PASS");
+    0
+}

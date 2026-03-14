@@ -9,11 +9,11 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern,
-    Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod,
-    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
-    WireDecl, WireDeclKind,
+    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl,
+    FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
+    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind,
+    WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -2878,6 +2878,10 @@ impl Checker {
     }
 
     fn check_actor(&mut self, ad: &ActorDecl) {
+        // Type-check init body if present
+        if let Some(init) = &ad.init {
+            self.check_actor_init(&ad.name, init, &ad.fields);
+        }
         let actor_ty = Ty::Named {
             name: ad.name.clone(),
             args: vec![],
@@ -2904,6 +2908,38 @@ impl Checker {
 
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
+    }
+
+    /// Type-check an actor's `init()` block. The init body runs once when
+    /// the actor is spawned and has access to actor fields (bare names)
+    /// and init parameters, but not to receive fn parameters.
+    fn check_actor_init(&mut self, actor_name: &str, init: &ActorInit, fields: &[FieldDecl]) {
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::init");
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        // Bind actor fields directly in scope (bare field access, mutable
+        // in init body). Hew uses bare names, not `self.field`.
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty.0);
+            self.env.define(field.name.clone(), field_ty, true);
+        }
+
+        // Bind init parameters
+        for p in &init.params {
+            let ty = self.resolve_type_expr(&p.ty.0);
+            self.env.define(p.name.clone(), ty, p.is_mutable);
+        }
+
+        // Init returns unit — no meaningful return type
+        self.current_return_type = Some(Ty::Unit);
+        self.check_block(&init.body);
+        self.current_return_type = None;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
     }
 
     fn check_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl, fields: &[FieldDecl]) {

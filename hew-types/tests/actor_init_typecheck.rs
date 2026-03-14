@@ -64,7 +64,7 @@ fn test_actor_init_valid_field_access() {
         actor Worker {
             let id: i32;
             init() {
-                println(self.id);
+                println(id);
             }
         }
         fn main() {
@@ -106,7 +106,7 @@ fn test_actor_no_init_still_works() {
         actor Counter {
             let count: i32;
             receive fn inc() {
-                self.count = self.count + 1;
+                count = count + 1;
             }
         }
         fn main() {

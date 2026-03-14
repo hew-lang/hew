@@ -2911,8 +2911,8 @@ impl Checker {
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
-    /// the actor is spawned and has access to actor fields and init
-    /// parameters, but not to receive fn parameters.
+    /// the actor is spawned and has access to actor fields (bare names)
+    /// and init parameters, but not to receive fn parameters.
     fn check_actor_init(&mut self, actor_name: &str, init: &ActorInit, fields: &[FieldDecl]) {
         self.env.push_scope();
 
@@ -2920,14 +2920,8 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name);
 
-        // Bind `self` to the actor's type for field access via self.field
-        let self_ty = Ty::Named {
-            name: actor_name.to_string(),
-            args: vec![],
-        };
-        self.env.define("self".to_string(), self_ty, true);
-
-        // Bind actor fields directly in scope (mutable in init body)
+        // Bind actor fields directly in scope (bare field access, mutable
+        // in init body). Hew uses bare names, not `self.field`.
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty.0);
             self.env.define(field.name.clone(), field_ty, true);

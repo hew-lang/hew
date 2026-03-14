@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### Added
+
+- QUIC transport for inter-node messaging in the Node mesh (#152, #163)
+- Happy Eyeballs (RFC 8305) TCP connector in adze package manager (#162)
+- Distributed reply channels for remote `await` across nodes (#169)
+- Cross-node registry gossip for `Node::lookup` (#168)
+- Remote actor dispatch through the Node mesh
+- Two-process QUIC mesh demo with transport cleanup
+- Node API builtins wired through typechecker and MLIR codegen
+- Comprehensive doc comments added to stdlib modules; improved doc renderer template and markdown rendering (#170)
+- Duration as a distinct primitive type (#104)
+- `hew-analysis` crate extracted; `hew-wasm` brought to feature parity with `hew-lsp` (#111)
+- Stdlib gap fill: `string.split`/`lines`/`join`, filesystem directory helpers, URL encoding, HTTP response accessors (#132)
+- Schema version field added to MessagePack AST boundary (#124)
+- Grammar fuzzer for TextMate and tree-sitter grammars (#120)
+- Centralized downstream generator and sync script for editor integrations
+- Duration type design document and implementation plan
+
+### Fixed
+
+- Allow `await` on void receive handlers (#156, #159)
+- Mark module as used when spawning `module.Actor()` (#160)
+- MLIR codegen lowering for `to_float()` builtin (#158)
+- Forward direct SIGTERM/SIGINT to `hew run` child process (#151)
+- Emit error instead of silently defaulting `None` to `Option<i32>` (#115)
+- Eliminate silent type fallbacks in codegen (#117)
+- Close type-checker inference gaps found in audit (#116)
+- Improve integer literal type inference and coercion (#114)
+- Array literal to `Vec` coercion for enum variant elements (#112)
+- Ecosystem package resolution for `--pkg-path` and lib search; module resolution and actor field access in codegen (#146)
+- Suppress unused-import warnings for sub-module imports
+- Replace catch-all match arms in `enrich.rs` with exhaustive variants (#122)
+- Eliminate silent fallbacks in deserializer, codegen, and parser (#129)
+- Convert warnings to errors and remove dead string dispatch (#126)
+- Scope `zlib`/`zstd` static link and `-static-libstdc++` to Linux only
+- Static-link `zlib`/`zstd`/`libstdc++` in hew-codegen; simplify distro packaging
+- Strip phantom z3 dependency from hew-codegen; add multi-distro test script
+- Correct release packaging — stdlib sources, static libs, and codegen static build
+- Resolve all pre-existing Clippy warnings in workspace (#133)
+- Remove stale `isolated`/`and`/`or` keywords from tmLanguage generator (#131)
+- Refactor `convertType` validation into `convertTypeOrError` helper (#119)
+- Unused import fixes (#140, #141)
+
+### Changed
+
+- Migrate actor examples away from sleep-based synchronization (#157)
+- Homogeneous module resolution and stdlib pure-Hew migration (#128)
+- Observer TUI polish — theme, clamping, and UX fixes (#130)
+- Deduplicate `Ty` mapping and add FFI symbol verification (#127)
+- Replace raw `is_null()` + return boilerplate with `cabi_guard!` macro (#125)
+- Unify `vecElemSuffix` and `vecElemSuffixWithPtr` into a single function (#123)
+- Canadian English `-our` spellings adopted across codebase (#113)
+- Sync spec and grammars to v0.9.0 against implementation (#103)
+- Prune superseded lessons and consolidate duplicates (#121)
+- Remove stale plan docs for completed features (#110)
+
 ## [0.1.9] - 2026-03-07
 
 ### Added

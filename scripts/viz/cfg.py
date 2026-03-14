@@ -32,6 +32,7 @@ NOISE_OPS = frozenset([
     "memref.alloca", "memref.store", "memref.load",
     "hew.constant", "hew.bitcast", "hew.drop", "hew.to_string",
     "hew.sched.init", "hew.sched.shutdown",
+    "hew.pack_args", "hew.func_ptr",
     "scf.yield", "scf.condition",
 ])
 
@@ -54,77 +55,135 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
     if not verbose and op in NOISE_OPS:
         return None
 
-    # hew.actor_spawn
+    # ── Actors ────────────────────────────────────────────────────────
     if op == "hew.actor_spawn":
         m = re.search(r'actor_name\s*=\s*"(\w+)"', stripped)
         name = m.group(1) if m else "?"
         return f"spawn {name}"
-
-    # hew.actor_send
     if op == "hew.actor_send":
         return "send"
-
-    # hew.actor_ask
     if op == "hew.actor_ask":
         return "ask"
-
-    # hew.actor_stop / hew.actor_close
+    if op == "hew.actor_await":
+        return "await"
     if op in ("hew.actor_stop", "hew.actor_close"):
         return op.split(".")[-1]
+    if op == "hew.actor_self":
+        return "self_ref"
+    if op in ("hew.actor_link", "hew.actor_unlink"):
+        return op.replace("hew.actor_", "")
+    if op in ("hew.actor_monitor", "hew.actor_demonitor"):
+        return op.replace("hew.actor_", "")
 
-    # hew.sleep
-    if op == "hew.sleep":
-        return "sleep"
-
-    # hew.vec.*
-    if op.startswith("hew.vec."):
-        method = op.split(".")[-1]
-        return f"vec.{method}"
-
-    # hew.hashmap.*
-    if op.startswith("hew.hashmap."):
-        method = op.split(".")[-1]
-        return f"hashmap.{method}"
-
-    # hew.print
-    if op == "hew.print":
-        return "print"
-
-    # hew.string_concat
-    if op == "hew.string_concat":
-        return "str_concat"
-
-    # hew.string_method
-    if op == "hew.string_method":
-        return "str_method"
-
-    # hew.receive
+    # ── Receive / dispatch ────────────────────────────────────────────
     if op == "hew.receive":
         m = re.search(r'handlers\s*=\s*\[([^\]]*)\]', stripped)
         if m:
             handlers = [h.strip().lstrip("@") for h in m.group(1).split(",")]
             return "receive [" + ", ".join(handlers) + "]"
         return "receive"
+    if op == "hew.cooperate":
+        return "cooperate"
+    if op == "hew.sleep":
+        return "sleep"
+    if op == "hew.panic":
+        return "panic"
 
-    # hew.runtime_call
+    # ── Scope / structured concurrency ────────────────────────────────
+    if op.startswith("hew.scope."):
+        method = op.split(".")[-1]
+        return f"scope.{method}"
+
+    # ── Select (multi-channel wait) ───────────────────────────────────
+    if op.startswith("hew.select."):
+        method = op.split(".")[-1]
+        return f"select.{method}"
+
+    # ── Collections ───────────────────────────────────────────────────
+    if op.startswith("hew.vec."):
+        method = op.split(".")[-1]
+        return f"vec.{method}"
+    if op.startswith("hew.hashmap."):
+        method = op.split(".")[-1]
+        return f"hashmap.{method}"
+
+    # ── Tuples / arrays ───────────────────────────────────────────────
+    if op.startswith("hew.tuple."):
+        method = op.split(".")[-1]
+        return f"tuple.{method}"
+    if op.startswith("hew.array."):
+        method = op.split(".")[-1]
+        return f"array.{method}"
+
+    # ── Closures ──────────────────────────────────────────────────────
+    if op.startswith("hew.closure."):
+        method = op.split(".")[-1]
+        return f"closure.{method}"
+
+    # ── Generators ────────────────────────────────────────────────────
+    if op.startswith("hew.gen_") or op.startswith("hew.gen."):
+        method = op.split(".")[-1]
+        return f"gen.{method}"
+
+    # ── Regex ─────────────────────────────────────────────────────────
+    if op.startswith("hew.regex."):
+        method = op.split(".")[-1]
+        return f"regex.{method}"
+
+    # ── Supervisors ───────────────────────────────────────────────────
+    if op.startswith("hew.supervisor."):
+        method = op.split(".")[-1]
+        return f"supervisor.{method}"
+
+    # ── Trait dispatch ────────────────────────────────────────────────
+    if op == "hew.trait_dispatch":
+        return "trait_dispatch"
+
+    # ── Reference counting / arena ────────────────────────────────────
+    if op.startswith("hew.rc_") or op.startswith("hew.rc."):
+        method = op.split(".")[-1] if "." in op[4:] else op.replace("hew.rc_", "rc.")
+        return method if method.startswith("rc.") else f"rc.{method}"
+    if op.startswith("hew.arena"):
+        return "arena"
+
+    # ── Enums ─────────────────────────────────────────────────────────
+    if op == "hew.enum_construct":
+        m = re.search(r'variant_name\s*=\s*"(\w+)"', stripped)
+        variant = m.group(1) if m else "?"
+        return f"enum::{variant}"
+    if op in ("hew.enum_extract_tag", "hew.enum_extract_payload"):
+        return op.replace("hew.enum_extract_", "enum.")
+
+    # ── Strings / IO ──────────────────────────────────────────────────
+    if op == "hew.print":
+        return "print"
+    if op == "hew.string_concat":
+        return "str_concat"
+    if op == "hew.string_method":
+        return "str_method"
+
+    # ── Structs / fields ──────────────────────────────────────────────
+    if op == "hew.struct_init":
+        return "struct_init"
+    if op in ("hew.field_get", "hew.field_set"):
+        return op.split(".")[-1]
+    if op == "hew.sizeof":
+        return "sizeof"
+
+    # ── Assertions ────────────────────────────────────────────────────
+    if op in ("hew.assert", "hew.assert_eq", "hew.assert_ne"):
+        return op.replace("hew.", "")
+
+    # ── Runtime / misc ────────────────────────────────────────────────
     if op == "hew.runtime_call":
         m = re.search(r'@(\w+)', stripped)
         name = m.group(1) if m else "?"
         return f"runtime: {name}"
-
-    # hew.struct_init
-    if op == "hew.struct_init":
-        return "struct_init"
-
-    # hew.field_get / hew.field_set
-    if op in ("hew.field_get", "hew.field_set"):
-        return op.split(".")[-1]
-
-    # hew.cast
     if op == "hew.cast":
         return "cast"
+    # hew.func_ptr and hew.pack_args are in NOISE_OPS
 
-    # func.call / call
+    # ── Function calls ────────────────────────────────────────────────
     if op in ("func.call", "call"):
         m = re.search(r'@(\w+)', stripped)
         if m:
@@ -134,19 +193,17 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
             return f"call {name}()"
         return "call ?()"
 
-    # arith.cmpi
+    # ── Arithmetic comparisons ────────────────────────────────────────
     if op == "arith.cmpi":
         return "compare"
-
-    # arith.cmpf
     if op == "arith.cmpf":
         return "compare_f"
 
-    # return
+    # ── Return ────────────────────────────────────────────────────────
     if op == "return":
         return "return"
 
-    # Catch remaining hew.* ops
+    # Catch remaining hew.* ops (forward-compatible)
     if op.startswith("hew."):
         return op
 

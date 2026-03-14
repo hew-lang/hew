@@ -143,9 +143,15 @@ class ASTWalker:
                 self._process_type_decl(item["TypeDecl"])
             elif "Supervisor" in item:
                 self._process_supervisor(item["Supervisor"])
+            elif "Machine" in item:
+                self._process_machine(item["Machine"])
             elif "Wire" in item:
                 self._process_wire(item["Wire"])
-            # Import, TraitDef, ImplBlock — skip for visualization
+            elif "Const" in item:
+                self._process_const(item["Const"])
+            elif "TypeAlias" in item:
+                self._process_type_alias(item["TypeAlias"])
+            # Import, Trait, Impl, ExternBlock — skip for visualization
 
         # Walk bodies for edges
         for item_and_span in self.ast.get("items", []):
@@ -204,12 +210,37 @@ class ASTWalker:
         self.actors[name] = ActorInfo(name, [], handlers)
         self.actor_names.add(name)
 
+    def _process_machine(self, md: dict):
+        name = md.get("name", "?")
+        # State machines are displayed as actor-like nodes with states as handlers
+        states = []
+        for state in md.get("states", []):
+            state_name = state.get("name", "?")
+            transitions = []
+            for t in state.get("transitions", []):
+                event = t.get("event", "?")
+                target = t.get("target", "?")
+                transitions.append(f"{event} → {target}")
+            desc = "; ".join(transitions) if transitions else ""
+            states.append((state_name, desc))
+        self.actors[name] = ActorInfo(name, [], states)
+
     def _process_wire(self, wd: dict):
         name = wd.get("name", "?")
         fields = []
         for f in wd.get("fields", []):
             fields.append((f.get("name", "?"), f.get("ty", "?")))
         self.type_decls[name] = TypeDeclInfo(name, fields)
+
+    def _process_const(self, cd: dict):
+        name = cd.get("name", "?")
+        ty = fmt_type(cd.get("ty"))
+        self.type_decls[name] = TypeDeclInfo(name, [("const", ty)])
+
+    def _process_type_alias(self, ta: dict):
+        name = ta.get("name", "?")
+        target = fmt_type(ta.get("target"))
+        self.type_decls[name] = TypeDeclInfo(name, [("= ", target)])
 
     def _walk_body(self, body, ctx: _BodyContext):
         if body is None:
@@ -280,6 +311,21 @@ class ASTWalker:
             value = var.get("value")
             if value:
                 self._walk_expr(value, ctx)
+        elif "IfLet" in stmt:
+            il = stmt["IfLet"]
+            self._walk_expr(il.get("expr"), ctx)
+            self._walk_body(il.get("body"), ctx)
+            else_body = il.get("else_body")
+            if else_body:
+                self._walk_body(else_body, ctx)
+        elif "Loop" in stmt:
+            lp = stmt["Loop"]
+            self._walk_body(lp.get("body"), ctx)
+        elif "Break" in stmt:
+            brk = stmt["Break"]
+            if isinstance(brk, dict):
+                self._walk_expr(brk.get("value"), ctx)
+        # Continue, no sub-expressions to walk
 
     def _walk_expr(self, expr, ctx: _BodyContext):
         if expr is None:
@@ -451,6 +497,44 @@ class ASTWalker:
         elif "RegexLiteral" in ec:
             pass  # leaf node, no sub-expressions
 
+        elif "MapLiteral" in ec:
+            for entry in ec["MapLiteral"].get("entries", []):
+                if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                    self._walk_expr(entry[0], ctx)
+                    self._walk_expr(entry[1], ctx)
+
+        elif "ArrayRepeat" in ec:
+            ar = ec["ArrayRepeat"]
+            self._walk_expr(ar.get("value"), ctx)
+            self._walk_expr(ar.get("count"), ctx)
+
+        elif "Send" in ec:
+            s = ec["Send"]
+            self._walk_expr(s.get("target"), ctx)
+            self._walk_expr(s.get("message"), ctx)
+
+        elif "IfLet" in ec:
+            il = ec["IfLet"]
+            self._walk_expr(il.get("expr"), ctx)
+            self._walk_body(il.get("body"), ctx)
+            else_body = il.get("else_body")
+            if else_body:
+                self._walk_body(else_body, ctx)
+
+        elif "Cast" in ec:
+            self._walk_expr(ec["Cast"].get("expr"), ctx)
+
+        elif "StructInit" in ec:
+            si = ec["StructInit"]
+            for f in si.get("fields", []):
+                if isinstance(f, dict):
+                    self._walk_expr(f.get("value"), ctx)
+                elif isinstance(f, (list, tuple)) and len(f) >= 2:
+                    self._walk_expr(f[1], ctx)
+
+        elif "Cooperate" in ec or "ByteStringLiteral" in ec or "ByteArrayLiteral" in ec:
+            pass  # leaf nodes
+
     def _walk_call_arg(self, arg, ctx: _BodyContext):
         if isinstance(arg, dict):
             if "Positional" in arg:
@@ -564,23 +648,42 @@ def generate_dot(walker: ASTWalker) -> str:
         "",
     ]
 
-    # Supervisors — purple rounded boxes (subset of actors dict)
+    # Supervisors — purple, Machines — green
     supervisor_names = {name for name, a in walker.actors.items()
                         if any(h[0].startswith("strategy:") for h in a.handlers)}
+    machine_names = {name for name, a in walker.actors.items()
+                     if any("→" in h[1] for h in a.handlers)}
 
-    # Actors — blue rounded boxes with HTML table labels
+    # Actors / supervisors / machines — rounded boxes with HTML table labels
     for name, actor in walker.actors.items():
-        rows = [f'<tr><td><b>{escape_dot(name)}</b></td></tr>']
+        if name in machine_names:
+            heading = f"machine {name}"
+            handler_prefix = "state"
+        elif name in supervisor_names:
+            heading = name
+            handler_prefix = ""
+        else:
+            heading = name
+            handler_prefix = "receive"
+
+        rows = [f'<tr><td><b>{escape_dot(heading)}</b></td></tr>']
         for fn, ft in actor.fields:
             rows.append(f'<tr><td align="left">{escape_dot(fn)}: {escape_dot(ft)}</td></tr>')
         if actor.fields and actor.handlers:
             rows.append('<hr/>')
         for hn, hp in actor.handlers:
+            prefix = f"{handler_prefix} " if handler_prefix else ""
+            hp_str = f"({escape_dot(hp)})" if hp and not hp.startswith("→") else f" {escape_dot(hp)}" if hp else ""
             rows.append(
-                f'<tr><td align="left">receive {escape_dot(hn)}({escape_dot(hp)})</td></tr>'
+                f'<tr><td align="left">{prefix}{escape_dot(hn)}{hp_str}</td></tr>'
             )
         table = f'<table border="0" cellborder="0" cellspacing="0">{"".join(rows)}</table>'
-        fillcolor = "#E8DAEF" if name in supervisor_names else "#D6EAF8"
+        if name in machine_names:
+            fillcolor = "#E8F5E9"
+        elif name in supervisor_names:
+            fillcolor = "#E8DAEF"
+        else:
+            fillcolor = "#D6EAF8"
         lines.append(
             f'    "{name}" [shape=box, style="rounded,filled", fillcolor="{fillcolor}", '
             f'label=<{table}>];'

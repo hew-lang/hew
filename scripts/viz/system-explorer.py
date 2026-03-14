@@ -82,6 +82,7 @@ NOISE_OPS = frozenset([
     "memref.alloca", "memref.store", "memref.load",
     "hew.constant", "hew.bitcast", "hew.drop", "hew.to_string",
     "hew.sched.init", "hew.sched.shutdown",
+    "hew.pack_args", "hew.func_ptr",
     "scf.yield", "scf.condition",
 ])
 
@@ -97,6 +98,7 @@ def _cfg_classify_op(line: str) -> str | None:
     op = op_match.group(1)
     if op in NOISE_OPS:
         return None
+    # ── Actors
     if op == "hew.actor_spawn":
         m = re.search(r'actor_name\s*=\s*"(\w+)"', stripped)
         return f"spawn {m.group(1)}" if m else "spawn ?"
@@ -104,35 +106,89 @@ def _cfg_classify_op(line: str) -> str | None:
         return "send"
     if op == "hew.actor_ask":
         return "ask"
+    if op == "hew.actor_await":
+        return "await"
     if op in ("hew.actor_stop", "hew.actor_close"):
         return op.split(".")[-1]
-    if op == "hew.sleep":
-        return "sleep"
-    if op.startswith("hew.vec."):
-        return f"vec.{op.split('.')[-1]}"
-    if op.startswith("hew.hashmap."):
-        return f"hashmap.{op.split('.')[-1]}"
-    if op == "hew.print":
-        return "print"
-    if op == "hew.string_concat":
-        return "str_concat"
-    if op == "hew.string_method":
-        return "str_method"
+    if op == "hew.actor_self":
+        return "self_ref"
+    if op in ("hew.actor_link", "hew.actor_unlink",
+              "hew.actor_monitor", "hew.actor_demonitor"):
+        return op.replace("hew.actor_", "")
+    # ── Receive / scheduling
     if op == "hew.receive":
         m = re.search(r'handlers\s*=\s*\[([^\]]*)\]', stripped)
         if m:
             handlers = [h.strip().lstrip("@") for h in m.group(1).split(",")]
             return "receive [" + ", ".join(handlers) + "]"
         return "receive"
-    if op == "hew.runtime_call":
-        m = re.search(r'@(\w+)', stripped)
-        return f"runtime: {m.group(1)}" if m else "runtime: ?"
+    if op == "hew.cooperate":
+        return "cooperate"
+    if op == "hew.sleep":
+        return "sleep"
+    if op == "hew.panic":
+        return "panic"
+    # ── Scope / structured concurrency
+    if op.startswith("hew.scope."):
+        return f"scope.{op.split('.')[-1]}"
+    # ── Select
+    if op.startswith("hew.select."):
+        return f"select.{op.split('.')[-1]}"
+    # ── Collections
+    if op.startswith("hew.vec."):
+        return f"vec.{op.split('.')[-1]}"
+    if op.startswith("hew.hashmap."):
+        return f"hashmap.{op.split('.')[-1]}"
+    # ── Tuples / arrays
+    if op.startswith("hew.tuple."):
+        return f"tuple.{op.split('.')[-1]}"
+    if op.startswith("hew.array."):
+        return f"array.{op.split('.')[-1]}"
+    # ── Closures
+    if op.startswith("hew.closure."):
+        return f"closure.{op.split('.')[-1]}"
+    # ── Generators
+    if op.startswith("hew.gen_") or op.startswith("hew.gen."):
+        return f"gen.{op.split('.')[-1]}"
+    # ── Regex
+    if op.startswith("hew.regex."):
+        return f"regex.{op.split('.')[-1]}"
+    # ── Supervisors
+    if op.startswith("hew.supervisor."):
+        return f"supervisor.{op.split('.')[-1]}"
+    # ── Trait dispatch
+    if op == "hew.trait_dispatch":
+        return "trait_dispatch"
+    # ── Enums
+    if op == "hew.enum_construct":
+        m = re.search(r'variant_name\s*=\s*"(\w+)"', stripped)
+        return f"enum::{m.group(1)}" if m else "enum_construct"
+    if op in ("hew.enum_extract_tag", "hew.enum_extract_payload"):
+        return op.replace("hew.enum_extract_", "enum.")
+    # ── Strings / IO
+    if op == "hew.print":
+        return "print"
+    if op == "hew.string_concat":
+        return "str_concat"
+    if op == "hew.string_method":
+        return "str_method"
+    # ── Structs / fields
     if op == "hew.struct_init":
         return "struct_init"
     if op in ("hew.field_get", "hew.field_set"):
         return op.split(".")[-1]
+    if op == "hew.sizeof":
+        return "sizeof"
+    # ── Assertions
+    if op in ("hew.assert", "hew.assert_eq", "hew.assert_ne"):
+        return op.replace("hew.", "")
+    # ── Runtime / misc
+    if op == "hew.runtime_call":
+        m = re.search(r'@(\w+)', stripped)
+        return f"runtime: {m.group(1)}" if m else "runtime: ?"
     if op == "hew.cast":
         return "cast"
+    # ── Function calls
     if op in ("func.call", "call"):
         m = re.search(r'@(\w+)', stripped)
         if m:
@@ -141,12 +197,14 @@ def _cfg_classify_op(line: str) -> str | None:
                 return None
             return f"call {name}()"
         return "call ?()"
+    # ── Arithmetic comparisons
     if op == "arith.cmpi":
         return "compare"
     if op == "arith.cmpf":
         return "compare_f"
     if op == "return":
         return "return"
+    # Catch remaining hew.* ops (forward-compatible)
     if op.startswith("hew."):
         return op
     return None
@@ -564,6 +622,10 @@ RE_ACTOR_ASK = re.compile(
 )
 RE_ACTOR_STOP = re.compile(r"hew\.actor_stop\s+(?P<target>%\S+)")
 RE_ACTOR_CLOSE = re.compile(r"hew\.actor_close\s+(?P<target>%\S+)")
+RE_ACTOR_AWAIT = re.compile(r"hew\.actor_await\s+(?P<target>%\S+)")
+RE_ACTOR_LIFECYCLE = re.compile(
+    r"hew\.actor_(?P<op>link|unlink|monitor|demonitor|self)\b"
+)
 RE_VEC_OP = re.compile(r"hew\.vec\.(?P<op>\w+)")
 RE_HASHMAP_OP = re.compile(r"hew\.hashmap\.(?P<op>\w+)")
 RE_VEC_NEW = re.compile(r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)")
@@ -573,6 +635,20 @@ RE_HASHMAP_NEW = re.compile(
 RE_RUNTIME_CALL = re.compile(r'hew\.runtime_call\s+@(?P<fn>\w+)')
 RE_RECEIVE = re.compile(r"hew\.receive")
 RE_FUNC_CALL = re.compile(r"(?:func\.)?call\s+@(?P<fn>\w+)")
+RE_SCOPE_OP = re.compile(r"hew\.scope\.(?P<op>\w+)")
+RE_SELECT_OP = re.compile(r"hew\.select\.(?P<op>\w+)")
+RE_TUPLE_OP = re.compile(r"hew\.tuple\.(?P<op>\w+)")
+RE_ARRAY_OP = re.compile(r"hew\.array\.(?P<op>\w+)")
+RE_CLOSURE_OP = re.compile(r"hew\.closure\.(?P<op>\w+)")
+RE_SUPERVISOR_OP = re.compile(r"hew\.supervisor\.(?P<op>\w+)")
+RE_REGEX_OP = re.compile(r"hew\.regex\.(?P<op>\w+)")
+RE_ENUM_CONSTRUCT = re.compile(
+    r'hew\.enum_construct.*enum_name\s*=\s*"(?P<enum>[^"]+)"'
+    r'.*variant_name\s*=\s*"(?P<variant>[^"]+)"'
+)
+RE_BITCAST = re.compile(r"(?P<dst>%\S+)\s*=\s*hew\.bitcast\s+(?P<src>%\S+)")
+RE_MEMREF_STORE = re.compile(r"memref\.store\s+(?P<val>%\S+),\s*(?P<ptr>%\S+)\[\]")
+RE_MEMREF_LOAD = re.compile(r"(?P<dst>%\S+)\s*=\s*memref\.load\s+(?P<ptr>%\S+)\[\]")
 RE_CLOSE_BRACE = re.compile(r"^\s*\}")
 
 RE_LLVM_STRUCT = re.compile(r'!llvm\.struct<"[^"]*",\s*\(([^)]*)\)>')
@@ -622,6 +698,7 @@ def parse_mlir(text: str):
     asks: list[AskEdge] = []
     global_strings: dict[str, str] = {}
     ssa_to_actor: dict[str, str] = {}
+    memref_to_actor: dict[str, str] = {}
 
     current_func: FuncInfo | None = None
     brace_depth = 0
@@ -689,6 +766,31 @@ def parse_mlir(text: str):
             current_func.ops.append(f"spawn {actor_name}")
             continue
 
+        # SSA flow: propagate actor identity through bitcasts and memref
+        m = RE_BITCAST.search(stripped)
+        if m:
+            src_ssa = m.group("src")
+            dst_ssa = m.group("dst")
+            if src_ssa in ssa_to_actor:
+                ssa_to_actor[dst_ssa] = ssa_to_actor[src_ssa]
+            continue
+
+        m = RE_MEMREF_STORE.search(stripped)
+        if m:
+            val_ssa = m.group("val")
+            ptr_ssa = m.group("ptr")
+            if val_ssa in ssa_to_actor:
+                memref_to_actor[ptr_ssa] = ssa_to_actor[val_ssa]
+            continue
+
+        m = RE_MEMREF_LOAD.search(stripped)
+        if m:
+            dst_ssa = m.group("dst")
+            ptr_ssa = m.group("ptr")
+            if ptr_ssa in memref_to_actor:
+                ssa_to_actor[dst_ssa] = memref_to_actor[ptr_ssa]
+            continue
+
         # Actor send
         m = RE_ACTOR_SEND.search(stripped)
         if m:
@@ -708,12 +810,24 @@ def parse_mlir(text: str):
             current_func.ops.append(f"ask msg#{msg}")
             continue
 
-        # Actor stop/close
+        # Actor stop/close/await
         if RE_ACTOR_STOP.search(stripped):
             current_func.ops.append("actor_stop")
             continue
         if RE_ACTOR_CLOSE.search(stripped):
             current_func.ops.append("actor_close")
+            continue
+        if RE_ACTOR_AWAIT.search(stripped):
+            current_func.ops.append("actor_await")
+            continue
+
+        # Actor lifecycle ops (link, unlink, monitor, demonitor, self)
+        m = RE_ACTOR_LIFECYCLE.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"actor_{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
             continue
 
         # Collections
@@ -736,6 +850,73 @@ def parse_mlir(text: str):
             op = m.group("op")
             if f"hashmap.{op}" not in current_func.ops:
                 current_func.ops.append(f"hashmap.{op}")
+            continue
+
+        # Tuples / arrays
+        m = RE_TUPLE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"tuple.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+        m = RE_ARRAY_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"array.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Closures
+        m = RE_CLOSURE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"closure.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Scope (structured concurrency)
+        m = RE_SCOPE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"scope.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Select (multi-channel wait)
+        m = RE_SELECT_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"select.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Enum construct
+        m = RE_ENUM_CONSTRUCT.search(stripped)
+        if m:
+            current_func.ops.append(f"{m.group('variant')}")
+            continue
+
+        # Regex ops
+        m = RE_REGEX_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"regex.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Supervisor ops
+        m = RE_SUPERVISOR_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"supervisor.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
             continue
 
         # Runtime calls
@@ -764,11 +945,18 @@ def parse_mlir(text: str):
                 handler = fname[len(prefix):]
                 actor.handlers.append(handler)
 
-    # Detect supervisors: actors with "supervisor" in their name
+    # Detect supervisors: actors with "supervisor" in name or using supervisor ops
     supervisor_names: set[str] = set()
     for actor_name in actors:
         if "supervisor" in actor_name.lower():
             supervisor_names.add(actor_name)
+    for fname, fi in funcs.items():
+        if any(op.startswith("supervisor.") for op in fi.ops):
+            # The function using supervisor ops belongs to an actor
+            for actor_name in actors:
+                if fname.startswith(actor_name + "_"):
+                    supervisor_names.add(actor_name)
+                    break
 
     return funcs, actors, spawns, sends, asks, global_strings, supervisor_names
 

@@ -85,6 +85,10 @@ RE_ACTOR_ASK = re.compile(
 )
 RE_ACTOR_STOP = re.compile(r"hew\.actor_stop\s+(?P<target>%\S+)")
 RE_ACTOR_CLOSE = re.compile(r"hew\.actor_close\s+(?P<target>%\S+)")
+RE_ACTOR_AWAIT = re.compile(r"hew\.actor_await\s+(?P<target>%\S+)")
+RE_ACTOR_LIFECYCLE = re.compile(
+    r"hew\.actor_(?P<op>link|unlink|monitor|demonitor|self)\b"
+)
 RE_SCHED_INIT = re.compile(r"hew\.sched\.init")
 RE_SCHED_SHUTDOWN = re.compile(r"hew\.sched\.shutdown")
 RE_VEC_NEW = re.compile(r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)")
@@ -102,12 +106,24 @@ RE_ENUM_CONSTRUCT = re.compile(
 RE_RUNTIME_CALL = re.compile(r'hew\.runtime_call\s+@(?P<fn>\w+)')
 RE_RECEIVE = re.compile(r"hew\.receive")
 RE_SLEEP = re.compile(r"hew\.sleep")
+RE_PANIC = re.compile(r"hew\.panic")
+RE_COOPERATE = re.compile(r"hew\.cooperate")
 RE_CONSTANT = re.compile(r'hew\.constant\s+"(?P<sym>\w+)"')
 RE_SCOPE_IF = re.compile(r"scf\.if\s")
 RE_SCOPE_WHILE = re.compile(r"scf\.while\s")
 RE_FUNC_CALL = re.compile(r"(?:func\.)?call\s+@(?P<fn>\w+)")
 RE_REGEX_OP = re.compile(r"hew\.regex\.(?P<op>\w+)")
 RE_SUPERVISOR_OP = re.compile(r"hew\.supervisor\.(?P<op>\w+)")
+RE_SCOPE_OP = re.compile(r"hew\.scope\.(?P<op>\w+)")
+RE_SELECT_OP = re.compile(r"hew\.select\.(?P<op>\w+)")
+RE_TUPLE_OP = re.compile(r"hew\.tuple\.(?P<op>\w+)")
+RE_ARRAY_OP = re.compile(r"hew\.array\.(?P<op>\w+)")
+RE_CLOSURE_OP = re.compile(r"hew\.closure\.(?P<op>\w+)")
+RE_TRAIT_DISPATCH = re.compile(r"hew\.trait_dispatch")
+RE_ASSERT = re.compile(r"hew\.(?P<op>assert(?:_eq|_ne)?)\b")
+RE_BITCAST = re.compile(r"(?P<dst>%\S+)\s*=\s*hew\.bitcast\s+(?P<src>%\S+)")
+RE_MEMREF_STORE = re.compile(r"memref\.store\s+(?P<val>%\S+),\s*(?P<ptr>%\S+)\[\]")
+RE_MEMREF_LOAD = re.compile(r"(?P<dst>%\S+)\s*=\s*memref\.load\s+(?P<ptr>%\S+)\[\]")
 RE_CLOSE_BRACE = re.compile(r"^\s*\}")
 
 
@@ -119,8 +135,9 @@ def parse_mlir(text: str):
     sends: list[SendEdge] = []
     asks: list[AskEdge] = []
     global_strings: dict[str, str] = {}
-    # Track SSA → actor name for send/ask resolution
+    # Track SSA → actor name for send/ask resolution (propagated through bitcasts/memrefs)
     ssa_to_actor: dict[str, str] = {}
+    memref_to_actor: dict[str, str] = {}  # memref ptr SSA → actor name
 
     current_func: FuncInfo | None = None
     brace_depth = 0
@@ -185,6 +202,31 @@ def parse_mlir(text: str):
             current_func.ops.append(f"spawn {actor_name}")
             continue
 
+        # SSA flow: propagate actor identity through bitcasts and memref
+        m = RE_BITCAST.search(stripped)
+        if m:
+            src_ssa = m.group("src")
+            dst_ssa = m.group("dst")
+            if src_ssa in ssa_to_actor:
+                ssa_to_actor[dst_ssa] = ssa_to_actor[src_ssa]
+            continue
+
+        m = RE_MEMREF_STORE.search(stripped)
+        if m:
+            val_ssa = m.group("val")
+            ptr_ssa = m.group("ptr")
+            if val_ssa in ssa_to_actor:
+                memref_to_actor[ptr_ssa] = ssa_to_actor[val_ssa]
+            continue
+
+        m = RE_MEMREF_LOAD.search(stripped)
+        if m:
+            dst_ssa = m.group("dst")
+            ptr_ssa = m.group("ptr")
+            if ptr_ssa in memref_to_actor:
+                ssa_to_actor[dst_ssa] = memref_to_actor[ptr_ssa]
+            continue
+
         # Actor send
         m = RE_ACTOR_SEND.search(stripped)
         if m:
@@ -203,12 +245,24 @@ def parse_mlir(text: str):
             current_func.ops.append(f"ask msg#{msg}")
             continue
 
-        # Actor stop/close
+        # Actor stop/close/await
         if RE_ACTOR_STOP.search(stripped):
             current_func.ops.append("actor_stop")
             continue
         if RE_ACTOR_CLOSE.search(stripped):
             current_func.ops.append("actor_close")
+            continue
+        if RE_ACTOR_AWAIT.search(stripped):
+            current_func.ops.append("actor_await")
+            continue
+
+        # Actor lifecycle ops (link, unlink, monitor, demonitor, self)
+        m = RE_ACTOR_LIFECYCLE.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"actor_{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
             continue
 
         # Scheduler
@@ -241,6 +295,49 @@ def parse_mlir(text: str):
                 current_func.ops.append(f"hashmap.{op}")
             continue
 
+        # Tuples / arrays
+        m = RE_TUPLE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"tuple.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+        m = RE_ARRAY_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"array.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Closures
+        m = RE_CLOSURE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"closure.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Scope (structured concurrency)
+        m = RE_SCOPE_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"scope.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Select (multi-channel wait)
+        m = RE_SELECT_OP.search(stripped)
+        if m:
+            op = m.group("op")
+            label = f"select.{op}"
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
         # Runtime calls
         m = RE_RUNTIME_CALL.search(stripped)
         if m:
@@ -256,9 +353,29 @@ def parse_mlir(text: str):
             current_func.ops.append(f"{m.group('variant')}")
             continue
 
-        # Sleep
+        # Trait dispatch
+        if RE_TRAIT_DISPATCH.search(stripped):
+            if "trait_dispatch" not in current_func.ops:
+                current_func.ops.append("trait_dispatch")
+            continue
+
+        # Assertions
+        m = RE_ASSERT.search(stripped)
+        if m:
+            label = m.group("op")
+            if label not in current_func.ops:
+                current_func.ops.append(label)
+            continue
+
+        # Sleep / panic / cooperate
         if RE_SLEEP.search(stripped):
             current_func.ops.append("sleep")
+            continue
+        if RE_PANIC.search(stripped):
+            current_func.ops.append("panic")
+            continue
+        if RE_COOPERATE.search(stripped):
+            current_func.ops.append("cooperate")
             continue
 
         # String concat (just note it, don't spam)
@@ -332,9 +449,12 @@ def ops_to_rows(ops: list[str], max_rows: int = 12) -> str:
         color = "#666666"
         if op.startswith("spawn"):
             color = "#2196F3"
-        elif op.startswith("send") or op.startswith("ask"):
+        elif op.startswith(("send", "ask", "actor_await")):
             color = "#FF9800"
-        elif op.startswith("vec.") or op.startswith("hashmap."):
+        elif op.startswith(("actor_link", "actor_unlink", "actor_monitor",
+                            "actor_demonitor", "actor_self")):
+            color = "#0D47A1"
+        elif op.startswith(("vec.", "hashmap.", "tuple.", "array.")):
             color = "#9C27B0"
         elif op.startswith("call @"):
             color = "#4CAF50"
@@ -344,10 +464,22 @@ def ops_to_rows(ops: list[str], max_rows: int = 12) -> str:
             color = "#E91E63"
         elif op.startswith("supervisor."):
             color = "#7B1FA2"
+        elif op.startswith("scope."):
+            color = "#00695C"
+        elif op.startswith("select."):
+            color = "#00838F"
+        elif op.startswith("closure."):
+            color = "#6A1B9A"
+        elif op == "trait_dispatch":
+            color = "#4527A0"
+        elif op.startswith("assert"):
+            color = "#BF360C"
         elif op in ("if", "while"):
             color = "#607D8B"
-        elif op in ("sched_init", "sched_shutdown", "sleep"):
+        elif op in ("sched_init", "sched_shutdown", "sleep", "cooperate"):
             color = "#F44336"
+        elif op == "panic":
+            color = "#B71C1C"
         rows.append(
             f'<TR><TD ALIGN="LEFT"><FONT COLOR="{color}">'
             f"{escape_dot(op)}</FONT></TD></TR>"

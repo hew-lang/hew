@@ -52,18 +52,18 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(self: Suite, name: String, iterations: i64, f: fn());
+    fn add(suite: Suite, name: String, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
-    fn report(self: Suite);
+    fn report(suite: Suite);
 
     /// Print results as a JSON array.
-    fn report_json(self: Suite);
+    fn report_json(suite: Suite);
 }
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(self: Suite, name: String, iterations: i64, f: fn()) {
+    fn add(suite: Suite, name: String, iterations: i64, f: fn()) {
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
         if warmup < 1 {
@@ -104,15 +104,15 @@ impl SuiteMethods for Suite {
             max_ns: max_ns,
             total_ns: total_ns,
         };
-        self.results.push(result);
+        suite.results.push(result);
     }
 
     /// Print results as a human-readable table.
-    fn report(self: Suite) {
-        println(f"=== {self.name} ===");
+    fn report(suite: Suite) {
+        println(f"=== {suite.name} ===");
         var i: i32 = 0;
-        while i < self.results.len() {
-            let r = self.results.get(i);
+        while i < suite.results.len() {
+            let r = suite.results.get(i);
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
             let max_str = format_time(r.max_ns);
@@ -123,11 +123,11 @@ impl SuiteMethods for Suite {
     }
 
     /// Print results as a JSON array.
-    fn report_json(self: Suite) {
-        var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
+    fn report_json(suite: Suite) {
+        var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
         var i: i32 = 0;
-        while i < self.results.len() {
-            let r = self.results.get(i);
+        while i < suite.results.len() {
+            let r = suite.results.get(i);
             if i > 0 {
                 json = json + ",";
             }

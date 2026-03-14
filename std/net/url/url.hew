@@ -25,52 +25,52 @@ type Url {}
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(self: Url) -> String;
+    fn scheme(u: Url) -> String;
 
     /// Return the host name.
-    fn host(self: Url) -> String;
+    fn host(u: Url) -> String;
 
     /// Return the port number, or -1 if not specified.
-    fn port(self: Url) -> i32;
+    fn port(u: Url) -> i32;
 
     /// Return the path component.
-    fn path(self: Url) -> String;
+    fn path(u: Url) -> String;
 
     /// Return the query string (without the leading `?`).
-    fn query(self: Url) -> String;
+    fn query(u: Url) -> String;
 
     /// Return the fragment (without the leading `#`).
-    fn fragment(self: Url) -> String;
+    fn fragment(u: Url) -> String;
 
     /// Return the full URL as a string.
-    fn to_string(self: Url) -> String;
+    fn to_string(u: Url) -> String;
 
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(self: Url, path: String) -> Url;
+    fn resolve(u: Url, path: String) -> Url;
 
     /// Release the parsed URL resources.
-    fn free(self: Url);
+    fn free(u: Url);
 }
 
 impl UrlMethods for Url {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(self: Url) -> String { hew_url_scheme(self) }
+    fn scheme(u: Url) -> String { hew_url_scheme(u) }
     /// Return the host name.
-    fn host(self: Url) -> String { hew_url_host(self) }
+    fn host(u: Url) -> String { hew_url_host(u) }
     /// Return the port number, or -1 if not specified.
-    fn port(self: Url) -> i32 { hew_url_port(self) }
+    fn port(u: Url) -> i32 { hew_url_port(u) }
     /// Return the path component.
-    fn path(self: Url) -> String { hew_url_path(self) }
+    fn path(u: Url) -> String { hew_url_path(u) }
     /// Return the query string (without the leading `?`).
-    fn query(self: Url) -> String { hew_url_query(self) }
+    fn query(u: Url) -> String { hew_url_query(u) }
     /// Return the fragment (without the leading `#`).
-    fn fragment(self: Url) -> String { hew_url_fragment(self) }
+    fn fragment(u: Url) -> String { hew_url_fragment(u) }
     /// Return the full URL as a string.
-    fn to_string(self: Url) -> String { hew_url_to_string(self) }
+    fn to_string(u: Url) -> String { hew_url_to_string(u) }
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(self: Url, path: String) -> Url { hew_url_join(self, path) }
+    fn resolve(u: Url, path: String) -> Url { hew_url_join(u, path) }
     /// Release the parsed URL resources.
-    fn free(self: Url) { hew_url_free(self); }
+    fn free(u: Url) { hew_url_free(u); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

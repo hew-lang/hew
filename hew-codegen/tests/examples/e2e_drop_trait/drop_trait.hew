@@ -3,9 +3,9 @@ type Resource {
 }
 
 impl Drop for Resource {
-    fn drop(self: Resource) {
+    fn drop(res: Resource) {
         println("dropping resource");
-        println(self.id);
+        println(res.id);
     }
 }
 

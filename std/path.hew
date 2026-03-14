@@ -28,22 +28,22 @@ type GlobResult {}
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
     /// Return the number of matched paths.
-    fn count(self: GlobResult) -> i32;
+    fn count(res: GlobResult) -> i32;
 
     /// Return the matched path at the given index.
-    fn get(self: GlobResult, index: i32) -> String;
+    fn get(res: GlobResult, index: i32) -> String;
 
     /// Release the glob result resources.
-    fn free(self: GlobResult);
+    fn free(res: GlobResult);
 }
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(self: GlobResult) -> i32 { hew_glob_count(self) }
+    fn count(res: GlobResult) -> i32 { hew_glob_count(res) }
     /// Return the matched path at the given index.
-    fn get(self: GlobResult, index: i32) -> String { hew_glob_get(self, index) }
+    fn get(res: GlobResult, index: i32) -> String { hew_glob_get(res, index) }
     /// Release the glob result resources.
-    fn free(self: GlobResult) { hew_glob_free(self); }
+    fn free(res: GlobResult) { hew_glob_free(res); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

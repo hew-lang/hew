@@ -3,8 +3,8 @@ type Point {
     y: f64;
 }
 
-fn point_sum(self: Point) -> f64 {
-    self.x + self.y
+fn point_sum(pt: Point) -> f64 {
+    pt.x + pt.y
 }
 
 fn main() {

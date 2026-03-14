@@ -1,5 +1,5 @@
 trait Describable {
-    fn describe(self) -> string;
+    fn describe(val: Self) -> string;
 }
 
 type Dog {
@@ -7,8 +7,8 @@ type Dog {
 }
 
 impl Describable for Dog {
-    fn describe(self) -> string {
-        self.name
+    fn describe(d: Dog) -> string {
+        d.name
     }
 }
 

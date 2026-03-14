@@ -31,51 +31,51 @@ type Message {}
 /// Methods available on a protobuf `Message`.
 trait MessageMethods {
     /// Set a string field by field number.
-    fn set_string(self: Message, field_number: i32, value: String);
+    fn set_string(msg: Message, field_number: i32, value: String);
 
     /// Get a string field by field number.
     ///
     /// Returns an empty string if the field is not set.
-    fn get_string(self: Message, field_number: i32) -> String;
+    fn get_string(msg: Message, field_number: i32) -> String;
 
     /// Set a varint (integer) field by field number.
-    fn set_varint(self: Message, field_number: i32, value: i64);
+    fn set_varint(msg: Message, field_number: i32, value: i64);
 
     /// Get a varint (integer) field by field number.
     ///
     /// Returns `fallback` if the field is not set.
-    fn get_varint(self: Message, field_number: i32, fallback: i64) -> i64;
+    fn get_varint(msg: Message, field_number: i32, fallback: i64) -> i64;
 
     /// Test whether a field is present in the message.
-    fn has_field(self: Message, field_number: i32) -> bool;
+    fn has_field(msg: Message, field_number: i32) -> bool;
 
     /// Release the message resources.
-    fn free(self: Message);
+    fn free(msg: Message);
 }
 
 impl MessageMethods for Message {
     /// Set a string field by field number.
-    fn set_string(self: Message, field_number: i32, value: String) {
-        hew_proto_msg_set_string(self, field_number, value);
+    fn set_string(msg: Message, field_number: i32, value: String) {
+        hew_proto_msg_set_string(msg, field_number, value);
     }
     /// Get a string field by field number.
-    fn get_string(self: Message, field_number: i32) -> String {
-        hew_proto_msg_get_string(self, field_number)
+    fn get_string(msg: Message, field_number: i32) -> String {
+        hew_proto_msg_get_string(msg, field_number)
     }
     /// Set a varint (integer) field by field number.
-    fn set_varint(self: Message, field_number: i32, value: i64) {
-        hew_proto_msg_set_varint(self, field_number, value);
+    fn set_varint(msg: Message, field_number: i32, value: i64) {
+        hew_proto_msg_set_varint(msg, field_number, value);
     }
     /// Get a varint (integer) field by field number.
-    fn get_varint(self: Message, field_number: i32, fallback: i64) -> i64 {
-        hew_proto_msg_get_varint(self, field_number, fallback)
+    fn get_varint(msg: Message, field_number: i32, fallback: i64) -> i64 {
+        hew_proto_msg_get_varint(msg, field_number, fallback)
     }
     /// Test whether a field is present in the message.
-    fn has_field(self: Message, field_number: i32) -> bool {
-        hew_proto_msg_has_field(self, field_number)
+    fn has_field(msg: Message, field_number: i32) -> bool {
+        hew_proto_msg_has_field(msg, field_number)
     }
     /// Release the message resources.
-    fn free(self: Message) { hew_proto_msg_free(self); }
+    fn free(msg: Message) { hew_proto_msg_free(msg); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

@@ -1,5 +1,5 @@
 trait Printable {
-    fn show(self: Self);
+    fn show(val: Self);
 }
 
 type Dog {
@@ -11,14 +11,14 @@ type Cat {
 }
 
 impl Printable for Dog {
-    fn show(self: Dog) {
-        println(self.legs);
+    fn show(d: Dog) {
+        println(d.legs);
     }
 }
 
 impl Printable for Cat {
-    fn show(self: Cat) {
-        println(self.lives);
+    fn show(cat: Cat) {
+        println(cat.lives);
     }
 }
 

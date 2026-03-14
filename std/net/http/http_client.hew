@@ -30,36 +30,36 @@ type Response {}
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
     /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
-    fn status(self: Response) -> i32;
+    fn status(resp: Response) -> i32;
 
     /// Return a copy of the response body as a string.
-    fn body(self: Response) -> String;
+    fn body(resp: Response) -> String;
 
     /// Look up a response header by name (case-insensitive).
     ///
     /// Returns an empty string if the header is not present.
-    fn header(self: Response, name: String) -> String;
+    fn header(resp: Response, name: String) -> String;
 
     /// Return the `Content-Type` response header.
     ///
     /// Returns an empty string if not present.
-    fn content_type(self: Response) -> String;
+    fn content_type(resp: Response) -> String;
 
     /// Release the response resources.
-    fn free(self: Response);
+    fn free(resp: Response);
 }
 
 impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
-    fn status(self: Response) -> i32 { hew_http_response_status(self) }
+    fn status(resp: Response) -> i32 { hew_http_response_status(resp) }
     /// Return a copy of the response body as a string.
-    fn body(self: Response) -> String { hew_http_response_body(self) }
+    fn body(resp: Response) -> String { hew_http_response_body(resp) }
     /// Look up a response header by name (case-insensitive).
-    fn header(self: Response, name: String) -> String { hew_http_response_header(self, name) }
+    fn header(resp: Response, name: String) -> String { hew_http_response_header(resp, name) }
     /// Return the `Content-Type` response header.
-    fn content_type(self: Response) -> String { hew_http_response_content_type(self) }
+    fn content_type(resp: Response) -> String { hew_http_response_content_type(resp) }
     /// Release the response resources.
-    fn free(self: Response) { hew_http_response_free(self); }
+    fn free(resp: Response) { hew_http_response_free(resp); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

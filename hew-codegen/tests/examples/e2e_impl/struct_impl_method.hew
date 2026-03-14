@@ -3,12 +3,12 @@ type Counter {
 }
 
 impl Counter {
-    fn increment(self: Counter) -> Counter {
-        Counter { value: self.value + 1 }
+    fn increment(c: Counter) -> Counter {
+        Counter { value: c.value + 1 }
     }
 
-    fn get(self: Counter) -> int {
-        self.value
+    fn get(c: Counter) -> int {
+        c.value
     }
 }
 

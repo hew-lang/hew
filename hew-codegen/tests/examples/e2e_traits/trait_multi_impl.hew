@@ -1,5 +1,5 @@
 trait Area {
-    fn area(self: Self) -> int;
+    fn area(val: Self) -> int;
 }
 
 type Circle {
@@ -12,14 +12,14 @@ type Rect {
 }
 
 impl Area for Circle {
-    fn area(self: Circle) -> int {
-        3 * self.radius * self.radius
+    fn area(circ: Circle) -> int {
+        3 * circ.radius * circ.radius
     }
 }
 
 impl Area for Rect {
-    fn area(self: Rect) -> int {
-        self.width * self.height
+    fn area(rect: Rect) -> int {
+        rect.width * rect.height
     }
 }
 

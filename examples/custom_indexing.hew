@@ -5,8 +5,8 @@ type Grid {
 }
 
 impl Grid {
-    fn get(self: Grid, index: i32) -> i32 {
-        self.data.get(index)
+    fn get(g: Grid, index: i32) -> i32 {
+        g.data.get(index)
     }
 }
 

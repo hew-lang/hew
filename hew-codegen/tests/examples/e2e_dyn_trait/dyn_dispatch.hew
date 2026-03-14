@@ -1,5 +1,5 @@
 trait Greetable {
-    fn greet(self: Self) -> int;
+    fn greet(val: Self) -> int;
 }
 
 type Dog {
@@ -11,14 +11,14 @@ type Cat {
 }
 
 impl Greetable for Dog {
-    fn greet(self: Dog) -> int {
-        return self.legs;
+    fn greet(d: Dog) -> int {
+        return d.legs;
     }
 }
 
 impl Greetable for Cat {
-    fn greet(self: Cat) -> int {
-        return self.lives;
+    fn greet(cat: Cat) -> int {
+        return cat.lives;
     }
 }
 

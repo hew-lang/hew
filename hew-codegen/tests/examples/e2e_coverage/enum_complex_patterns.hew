@@ -1,0 +1,53 @@
+// Test: Enum with payloads and complex pattern matching.
+// Exercises: enum variants with different payload types, nested match,
+// wildcard patterns, guard-like conditional logic, exhaustive checking.
+
+enum Shape {
+    Circle(int);
+    Rectangle(int, int);
+    Triangle(int, int, int);
+    Point;
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Circle(r) => r * r * 3,
+        Rectangle(w, h) => w * h,
+        Triangle(a, b, _c) => (a * b) / 2,
+        Point => 0,
+    }
+}
+
+fn describe(s: Shape) -> String {
+    match s {
+        Circle(_) => "circle",
+        Rectangle(_, _) => "rectangle",
+        Triangle(_, _, _) => "triangle",
+        Point => "point",
+    }
+}
+
+fn is_large(s: Shape) -> bool {
+    area(s) > 100
+}
+
+fn main() {
+    let c = Circle(5);
+    let r = Rectangle(8, 12);
+    let t = Triangle(10, 6, 8);
+    let p = Point;
+
+    println(area(c));
+    println(area(r));
+    println(area(t));
+    println(area(p));
+
+    println(describe(Circle(1)));
+    println(describe(Rectangle(1, 1)));
+    println(describe(Triangle(1, 1, 1)));
+    println(describe(Point));
+
+    println(is_large(Circle(10)));
+    println(is_large(Rectangle(2, 3)));
+    println(is_large(Point));
+}

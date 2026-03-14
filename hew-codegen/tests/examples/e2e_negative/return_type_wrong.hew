@@ -1,0 +1,8 @@
+// Negative test: returning wrong type from a function.
+fn get_number() -> int {
+    "hello"
+}
+
+fn main() {
+    get_number();
+}

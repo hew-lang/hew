@@ -1,0 +1,64 @@
+// Test: For loops with break, continue, and early return.
+// Exercises: for-in range loops, break with value, continue,
+// early return from within loop, nested loops.
+
+fn find_first_over(threshold: int) -> int {
+    let items: Vec<int> = Vec::new();
+    items.push(3);
+    items.push(7);
+    items.push(12);
+    items.push(5);
+    items.push(20);
+
+    for i in 0..items.len() {
+        if items[i] > threshold {
+            return items[i];
+        }
+    }
+    -1
+}
+
+fn count_evens() -> int {
+    var count = 0;
+    for i in 0..20 {
+        if i % 2 != 0 {
+            continue;
+        }
+        count = count + 1;
+    }
+    count
+}
+
+fn sum_until_limit(limit: int) -> int {
+    var total = 0;
+    for i in 1..100 {
+        if total + i > limit {
+            break;
+        }
+        total = total + i;
+    }
+    total
+}
+
+fn nested_search() -> int {
+    for i in 0..5 {
+        for j in 0..5 {
+            if i * j == 12 {
+                return i * 10 + j;
+            }
+        }
+    }
+    -1
+}
+
+fn main() {
+    println(find_first_over(10));
+    println(find_first_over(100));
+
+    println(count_evens());
+
+    println(sum_until_limit(50));
+    println(sum_until_limit(10));
+
+    println(nested_search());
+}

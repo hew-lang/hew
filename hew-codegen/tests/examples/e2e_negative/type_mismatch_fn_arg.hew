@@ -1,0 +1,8 @@
+// Negative test: passing wrong type to a function parameter.
+fn greet(name: String) {
+    println(f"Hello {name}");
+}
+
+fn main() {
+    greet(42);
+}

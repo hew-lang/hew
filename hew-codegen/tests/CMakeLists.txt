@@ -174,7 +174,13 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
 endfunction()
 
 # ── Negative tests (verify compile-time error detection) ─────────────────────
-add_e2e_reject_test(undefined_var  e2e_negative undefined_var "undefined variable")
+add_e2e_reject_test(undefined_var        e2e_negative undefined_var        "undefined variable")
+add_e2e_reject_test(type_mismatch_fn_arg e2e_negative type_mismatch_fn_arg "type mismatch")
+add_e2e_reject_test(mutability_assign_let e2e_negative mutability_assign_let "cannot assign to immutable")
+add_e2e_reject_test(return_type_wrong    e2e_negative return_type_wrong    "type mismatch")
+add_e2e_reject_test(arity_mismatch       e2e_negative arity_mismatch       "takes 2 argument(s) but 1")
+add_e2e_reject_test(self_keyword_reject  e2e_negative self_keyword_reject  "parameter is no longer supported")
+add_e2e_reject_test(actor_field_unknown  e2e_negative actor_field_unknown  "undefined variable")
 
 # ── WASM target tests (compile with --target=wasm32-wasi, run with wasmtime) ──
 # These validate that Hew programs produce identical output on native and WASM.
@@ -799,6 +805,14 @@ add_e2e_file_test(coverage_match_nested_enum   e2e_coverage match_nested_enum)
 add_e2e_file_test(coverage_option_chain        e2e_coverage option_chain)
 add_e2e_file_test(coverage_result_propagation  e2e_coverage result_propagation)
 add_e2e_file_test(coverage_shadowing_scopes    e2e_coverage shadowing_error_recovery)
+add_e2e_file_test(coverage_closure_capture     e2e_coverage closure_capture_types)
+add_e2e_file_test(coverage_generic_impls       e2e_coverage generic_impl_methods)
+add_e2e_file_test(coverage_actor_ask_reply     e2e_coverage actor_ask_reply)
+add_e2e_file_test(coverage_actor_close_await   e2e_coverage actor_close_await)
+add_e2e_file_test(coverage_enum_patterns       e2e_coverage enum_complex_patterns)
+add_e2e_file_test(coverage_loop_control        e2e_coverage loop_control_flow)
+add_e2e_file_test(coverage_hashmap_option      e2e_coverage hashmap_option_integration)
+add_e2e_file_test(coverage_trait_dispatch      e2e_coverage trait_dispatch_generic)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

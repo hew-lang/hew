@@ -1,0 +1,68 @@
+// Test: Generic functions with multiple type parameters and impl methods.
+// Exercises: generic struct construction, generic function monomorphization,
+// concrete impl methods, method calls with different types.
+
+type Wrapper<T> {
+    value: T;
+}
+
+fn wrap<T>(v: T) -> Wrapper<T> {
+    Wrapper { value: v }
+}
+
+fn unwrap<T>(w: Wrapper<T>) -> T {
+    w.value
+}
+
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn make_pair<A, B>(a: A, b: B) -> Pair<A, B> {
+    Pair { first: a, second: b }
+}
+
+fn first_of<A, B>(p: Pair<A, B>) -> A {
+    p.first
+}
+
+fn second_of<A, B>(p: Pair<A, B>) -> B {
+    p.second
+}
+
+// Generic identity and apply
+fn identity<T>(x: T) -> T { x }
+fn apply<T, U>(f: fn(T) -> U, x: T) -> U { f(x) }
+
+fn double(x: int) -> int { x * 2 }
+fn main() {
+    // Wrapper<int>
+    let w1 = wrap<int>(42);
+    println(unwrap<int>(w1));
+
+    // Wrapper<bool>
+    let w2 = wrap<bool>(true);
+    println(unwrap<bool>(w2));
+
+    // Wrapper<String>
+    let w3 = wrap<String>("hello");
+    println(unwrap<String>(w3));
+
+    // Pair<int, bool>
+    let p1 = make_pair<int, bool>(10, false);
+    println(first_of<int, bool>(p1));
+    println(second_of<int, bool>(p1));
+
+    // Pair<String, int>
+    let p2 = make_pair<String, int>("world", 99);
+    println(first_of<String, int>(p2));
+    println(second_of<String, int>(p2));
+
+    // Identity with different types
+    println(identity<int>(7));
+    println(identity<bool>(true));
+
+    // Apply with fn(int) -> int
+    println(apply<int, int>(double, 21));
+}

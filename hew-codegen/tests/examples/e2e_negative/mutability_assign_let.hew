@@ -1,0 +1,5 @@
+// Negative test: assigning to an immutable let binding.
+fn main() {
+    let x = 5;
+    x = 10;
+}

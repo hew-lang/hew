@@ -33,19 +33,22 @@ type Message {}
 
 /// Methods available on a WebSocket `Conn`.
 trait ConnMethods {
-    // Send a text message over the connection. Returns 0 on success.
+    /// Send a text message over the connection. Return 0 on success.
     fn send_text(self: Conn, msg: String) -> i32;
 
-    // Block until a message is received and return it.
+    /// Block until a message is received and return it.
     fn recv(self: Conn) -> Message;
 
-    // Close the WebSocket connection.
+    /// Close the WebSocket connection.
     fn close(self: Conn);
 }
 
 impl ConnMethods for Conn {
+    /// Send a text message over the connection.
     fn send_text(self: Conn, msg: String) -> i32 { hew_ws_send_text(self, msg) }
+    /// Block until a message is received and return it.
     fn recv(self: Conn) -> Message { hew_ws_recv(self) }
+    /// Close the WebSocket connection.
     fn close(self: Conn) { hew_ws_close(self); }
 }
 
@@ -53,11 +56,12 @@ impl ConnMethods for Conn {
 
 /// Methods available on a WebSocket `Message`.
 trait MessageMethods {
-    // Release the message resources.
+    /// Release the message resources.
     fn free(self: Message);
 }
 
 impl MessageMethods for Message {
+    /// Release the message resources.
     fn free(self: Message) { hew_ws_message_free(self); }
 }
 

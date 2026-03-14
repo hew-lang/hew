@@ -105,6 +105,7 @@ fn b64_char(idx: i32, url_safe: bool) -> i32 {
     47                          // '/'
 }
 
+/// Encode binary data to a Base64 string using the standard or URL-safe alphabet.
 fn encode_impl(data: bytes, url_safe: bool) -> String {
     let dlen = data.len();
     let out: bytes = bytes::new();

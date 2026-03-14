@@ -83,6 +83,8 @@ const keywordGroups = {
 
   'keyword.wire.hew': [...kw.wire],
 
+  'keyword.control.machine.hew': [...kw.machine],
+
   'keyword.other.hew': [
     ...kw.other,
   ],

@@ -26,54 +26,64 @@ type Value {}
 
 /// Methods available on a YAML `Value`.
 trait ValueMethods {
-    // Serialize the value back to a YAML string.
+    /// Serialize the value back to a YAML string.
     fn stringify(self: Value) -> String;
 
-    // Return the type tag of this value.
-    //
-    // 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
-    // 5 = sequence, 6 = mapping.
+    /// Return the type tag of this value.
+    ///
+    /// 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
+    /// 5 = sequence, 6 = mapping.
     fn type_of(self: Value) -> i32;
 
-    // Extract the boolean value (0 or 1).
+    /// Extract the boolean value (0 or 1).
     fn get_bool(self: Value) -> i32;
 
-    // Extract the integer value.
+    /// Extract the integer value.
     fn get_int(self: Value) -> i64;
 
-    // Extract the floating-point value.
+    /// Extract the floating-point value.
     fn get_float(self: Value) -> f64;
 
-    // Extract the string value.
+    /// Extract the string value.
     fn get_string(self: Value) -> String;
 
-    // Look up a field by key in a YAML mapping.
-    //
-    // Returns a new `Value` that must be freed separately.
+    /// Look up a field by key in a YAML mapping.
+    ///
+    /// Returns a new `Value` that must be freed separately.
     fn get_field(self: Value, key: String) -> Value;
 
-    // Return the number of elements in a YAML sequence.
+    /// Return the number of elements in a YAML sequence.
     fn array_len(self: Value) -> i32;
 
-    // Return the element at the given index in a YAML sequence.
-    //
-    // Returns a new `Value` that must be freed separately.
+    /// Return the element at the given index in a YAML sequence.
+    ///
+    /// Returns a new `Value` that must be freed separately.
     fn array_get(self: Value, index: i32) -> Value;
 
-    // Release the value resources.
+    /// Release the value resources.
     fn free(self: Value);
 }
 
 impl ValueMethods for Value {
+    /// Serialize the value back to a YAML string.
     fn stringify(self: Value) -> String { hew_yaml_stringify(self) }
+    /// Return the type tag of this value.
     fn type_of(self: Value) -> i32 { hew_yaml_type(self) }
+    /// Extract the boolean value (0 or 1).
     fn get_bool(self: Value) -> i32 { hew_yaml_get_bool(self) }
+    /// Extract the integer value.
     fn get_int(self: Value) -> i64 { hew_yaml_get_int(self) }
+    /// Extract the floating-point value.
     fn get_float(self: Value) -> f64 { hew_yaml_get_float(self) }
+    /// Extract the string value.
     fn get_string(self: Value) -> String { hew_yaml_get_string(self) }
+    /// Look up a field by key in a YAML mapping.
     fn get_field(self: Value, key: String) -> Value { hew_yaml_get_field(self, key) }
+    /// Return the number of elements in a YAML sequence.
     fn array_len(self: Value) -> i32 { hew_yaml_array_len(self) }
+    /// Return the element at the given index in a YAML sequence.
     fn array_get(self: Value, index: i32) -> Value { hew_yaml_array_get(self, index) }
+    /// Release the value resources.
     fn free(self: Value) { hew_yaml_free(self); }
 }
 

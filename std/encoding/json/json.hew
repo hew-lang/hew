@@ -26,60 +26,71 @@ type Value {}
 
 /// Methods available on a JSON `Value`.
 trait ValueMethods {
-    // Serialize the value back to a JSON string.
+    /// Serialize the value back to a JSON string.
     fn stringify(self: Value) -> String;
 
-    // Return the type tag of this value.
-    //
-    // 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
-    // 5 = array, 6 = object.
+    /// Return the type tag of this value.
+    ///
+    /// 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
+    /// 5 = array, 6 = object.
     fn type_of(self: Value) -> i32;
 
-    // Extract the boolean value (0 or 1).
+    /// Extract the boolean value (0 or 1).
     fn get_bool(self: Value) -> i32;
 
-    // Extract the integer value.
+    /// Extract the integer value.
     fn get_int(self: Value) -> i64;
 
-    // Extract the floating-point value.
+    /// Extract the floating-point value.
     fn get_float(self: Value) -> f64;
 
-    // Extract the string value.
+    /// Extract the string value.
     fn get_string(self: Value) -> String;
 
-    // Look up a field by key in a JSON object.
-    //
-    // Returns a new `Value` that must be freed separately.
+    /// Look up a field by key in a JSON object.
+    ///
+    /// Returns a new `Value` that must be freed separately.
     fn get_field(self: Value, key: String) -> Value;
 
-    // Return the number of elements in a JSON array.
+    /// Return the number of elements in a JSON array.
     fn array_len(self: Value) -> i32;
 
-    // Return the element at the given index in a JSON array.
-    //
-    // Returns a new `Value` that must be freed separately.
+    /// Return the element at the given index in a JSON array.
+    ///
+    /// Returns a new `Value` that must be freed separately.
     fn array_get(self: Value, index: i32) -> Value;
 
-    // Return a JSON array of the object's keys.
-    //
-    // Returns a new `Value` that must be freed separately.
+    /// Return a JSON array of the object's keys.
+    ///
+    /// Returns a new `Value` that must be freed separately.
     fn keys(self: Value) -> Value;
 
-    // Release the value resources.
+    /// Release the value resources.
     fn free(self: Value);
 }
 
 impl ValueMethods for Value {
+    /// Serialize the value back to a JSON string.
     fn stringify(self: Value) -> String { hew_json_stringify(self) }
+    /// Return the type tag of this value.
     fn type_of(self: Value) -> i32 { hew_json_type(self) }
+    /// Extract the boolean value (0 or 1).
     fn get_bool(self: Value) -> i32 { hew_json_get_bool(self) }
+    /// Extract the integer value.
     fn get_int(self: Value) -> i64 { hew_json_get_int(self) }
+    /// Extract the floating-point value.
     fn get_float(self: Value) -> f64 { hew_json_get_float(self) }
+    /// Extract the string value.
     fn get_string(self: Value) -> String { hew_json_get_string(self) }
+    /// Look up a field by key in a JSON object.
     fn get_field(self: Value, key: String) -> Value { hew_json_get_field(self, key) }
+    /// Return the number of elements in a JSON array.
     fn array_len(self: Value) -> i32 { hew_json_array_len(self) }
+    /// Return the element at the given index in a JSON array.
     fn array_get(self: Value, index: i32) -> Value { hew_json_array_get(self, index) }
+    /// Return a JSON array of the object's keys.
     fn keys(self: Value) -> Value { hew_json_object_keys(self) }
+    /// Release the value resources.
     fn free(self: Value) { hew_json_free(self); }
 }
 

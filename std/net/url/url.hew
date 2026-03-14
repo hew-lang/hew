@@ -24,43 +24,52 @@ type Url {}
 
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
-    // Return the URL scheme (e.g. "https").
+    /// Return the URL scheme (e.g. `"https"`).
     fn scheme(self: Url) -> String;
 
-    // Return the host name.
+    /// Return the host name.
     fn host(self: Url) -> String;
 
-    // Return the port number, or -1 if not specified.
+    /// Return the port number, or -1 if not specified.
     fn port(self: Url) -> i32;
 
-    // Return the path component.
+    /// Return the path component.
     fn path(self: Url) -> String;
 
-    // Return the query string (without the leading `?`).
+    /// Return the query string (without the leading `?`).
     fn query(self: Url) -> String;
 
-    // Return the fragment (without the leading `#`).
+    /// Return the fragment (without the leading `#`).
     fn fragment(self: Url) -> String;
 
-    // Return the full URL as a string.
+    /// Return the full URL as a string.
     fn to_string(self: Url) -> String;
 
-    // Resolve a relative path onto this URL, returning a new `Url`.
+    /// Resolve a relative path onto this URL, returning a new `Url`.
     fn resolve(self: Url, path: String) -> Url;
 
-    // Release the parsed URL resources.
+    /// Release the parsed URL resources.
     fn free(self: Url);
 }
 
 impl UrlMethods for Url {
+    /// Return the URL scheme (e.g. `"https"`).
     fn scheme(self: Url) -> String { hew_url_scheme(self) }
+    /// Return the host name.
     fn host(self: Url) -> String { hew_url_host(self) }
+    /// Return the port number, or -1 if not specified.
     fn port(self: Url) -> i32 { hew_url_port(self) }
+    /// Return the path component.
     fn path(self: Url) -> String { hew_url_path(self) }
+    /// Return the query string (without the leading `?`).
     fn query(self: Url) -> String { hew_url_query(self) }
+    /// Return the fragment (without the leading `#`).
     fn fragment(self: Url) -> String { hew_url_fragment(self) }
+    /// Return the full URL as a string.
     fn to_string(self: Url) -> String { hew_url_to_string(self) }
+    /// Resolve a relative path onto this URL, returning a new `Url`.
     fn resolve(self: Url, path: String) -> Url { hew_url_join(self, path) }
+    /// Release the parsed URL resources.
     fn free(self: Url) { hew_url_free(self); }
 }
 

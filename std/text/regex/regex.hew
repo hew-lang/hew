@@ -25,42 +25,46 @@ type Pattern {}
 
 /// Methods available on a compiled `Pattern`.
 trait PatternMethods {
-    // Test whether the pattern matches anywhere in the input string.
-    //
-    // # Examples
-    //
-    // ```
-    // let re = regex.new("^[a-z]+$");
-    // assert(re.is_match("hello"));
-    // ```
+    /// Test whether the pattern matches anywhere in the input string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let re = regex.new("^[a-z]+$");
+    /// assert(re.is_match("hello"));
+    /// ```
     fn is_match(self: Pattern, input: String) -> bool;
 
-    // Find the first match of the pattern in the input string.
-    //
-    // Returns the matched substring, or an empty string if no match.
+    /// Find the first match of the pattern in the input string.
+    ///
+    /// Returns the matched substring, or an empty string if no match.
     fn find(self: Pattern, input: String) -> String;
 
-    // Replace all occurrences of the pattern with the replacement string.
-    //
-    // # Examples
-    //
-    // ```
-    // let re = regex.new("[0-9]+");
-    // let result = re.replace("abc123def456", "N");
-    // // result == "abcNdefN"
-    // ```
+    /// Replace all occurrences of the pattern with the replacement string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let re = regex.new("[0-9]+");
+    /// let result = re.replace("abc123def456", "N");
+    /// // result == "abcNdefN"
+    /// ```
     fn replace(self: Pattern, input: String, replacement: String) -> String;
 
-    // Release the compiled pattern resources.
+    /// Release the compiled pattern resources.
     fn free(self: Pattern);
 }
 
 impl PatternMethods for Pattern {
+    /// Test whether the pattern matches anywhere in the input string.
     fn is_match(self: Pattern, input: String) -> bool { hew_regex_is_match(self, input) }
+    /// Find the first match of the pattern in the input string.
     fn find(self: Pattern, input: String) -> String { hew_regex_find(self, input) }
+    /// Replace all occurrences of the pattern with the replacement string.
     fn replace(self: Pattern, input: String, replacement: String) -> String {
         hew_regex_replace(self, input, replacement)
     }
+    /// Release the compiled pattern resources.
     fn free(self: Pattern) { hew_regex_free(self); }
 }
 

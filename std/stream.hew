@@ -34,6 +34,7 @@ type Sink {}
 
 // ── Stream methods ────────────────────────────────────────────────────
 
+/// Methods available on a `Stream`.
 trait StreamMethods {
     /// Pull the next item from the stream. Returns the item, or signals EOF.
     fn next(self: Stream) -> String;
@@ -52,15 +53,21 @@ trait StreamMethods {
 }
 
 impl StreamMethods for Stream {
+    /// Pull the next item from the stream, or signal EOF.
     fn next(self: Stream) -> String { hew_stream_next(self) }
+    /// Close this stream and release resources early.
     fn close(self: Stream) { hew_stream_close(self); }
+    /// Wrap with a line-delimited adapter yielding one line per `next()`.
     fn lines(self: Stream) -> Stream { hew_stream_lines(self) }
+    /// Wrap with a fixed-size chunking adapter.
     fn chunks(self: Stream, size: i64) -> Stream { hew_stream_chunks(self, size) }
+    /// Consume the entire stream and concatenate as a single string.
     fn collect(self: Stream) -> String { hew_stream_collect_string(self) }
 }
 
 // ── Sink methods ──────────────────────────────────────────────────────
 
+/// Methods available on a `Sink`.
 trait SinkMethods {
     /// Write a value to the sink.
     fn write(self: Sink, data: String);
@@ -73,8 +80,11 @@ trait SinkMethods {
 }
 
 impl SinkMethods for Sink {
+    /// Write a value to the sink.
     fn write(self: Sink, data: String) { hew_sink_write_string(self, data); }
+    /// Flush any buffered data.
     fn flush(self: Sink) { hew_sink_flush(self); }
+    /// Close the sink, signalling EOF to the reader.
     fn close(self: Sink) { hew_sink_close(self); }
 }
 

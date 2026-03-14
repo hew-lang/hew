@@ -18,6 +18,7 @@
 
 // ── Algorithm mapping (pure Hew) ─────────────────────────────────────
 
+/// Map an algorithm name (e.g. "HS256") to its integer code for the FFI layer.
 fn algo_to_i32(algorithm: String) -> i32 {
     match algorithm {
         "HS256" => 0,

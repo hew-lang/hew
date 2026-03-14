@@ -38,6 +38,7 @@ trait ListenerMethods {
 }
 
 impl ListenerMethods for Listener {
+    /// Block until a client connects and return the new `Connection`.
     fn accept(self: Listener) -> Connection {
         hew_tcp_accept(self)
     }
@@ -79,12 +80,19 @@ trait ConnectionMethods {
 }
 
 impl ConnectionMethods for Connection {
+    /// Read raw bytes from the connection.
     fn read(self: Connection) -> bytes { hew_tcp_read(self) }
+    /// Read a UTF-8 string from the connection.
     fn read_string(self: Connection) -> String { hew_bytes_to_string(hew_tcp_read(self)) }
+    /// Write raw bytes to the connection.
     fn write(self: Connection, data: bytes) { hew_tcp_write(self, data) }
+    /// Write a UTF-8 string to the connection.
     fn write_string(self: Connection, data: String) { hew_tcp_write(self, hew_string_to_bytes(data)) }
+    /// Close the connection and release resources.
     fn close(self: Connection) -> i32 { hew_tcp_close(self) }
+    /// Set the read timeout in milliseconds.
     fn set_read_timeout(self: Connection, ms: i32) -> i32 { hew_tcp_set_read_timeout(self, ms) }
+    /// Set the write timeout in milliseconds.
     fn set_write_timeout(self: Connection, ms: i32) -> i32 { hew_tcp_set_write_timeout(self, ms) }
 }
 

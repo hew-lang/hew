@@ -27,19 +27,22 @@ type GlobResult {}
 
 /// Methods available on a `GlobResult`.
 trait GlobResultMethods {
-    // Return the number of matched paths.
+    /// Return the number of matched paths.
     fn count(self: GlobResult) -> i32;
 
-    // Return the matched path at the given index.
+    /// Return the matched path at the given index.
     fn get(self: GlobResult, index: i32) -> String;
 
-    // Release the glob result resources.
+    /// Release the glob result resources.
     fn free(self: GlobResult);
 }
 
 impl GlobResultMethods for GlobResult {
+    /// Return the number of matched paths.
     fn count(self: GlobResult) -> i32 { hew_glob_count(self) }
+    /// Return the matched path at the given index.
     fn get(self: GlobResult, index: i32) -> String { hew_glob_get(self, index) }
+    /// Release the glob result resources.
     fn free(self: GlobResult) { hew_glob_free(self); }
 }
 
@@ -149,6 +152,7 @@ pub fn absolute(p: String) -> String {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+/// Strip a single trailing slash from a path, preserving the root `/`.
 fn strip_trailing_slash(p: String) -> String {
     if p == "/" {
         return p;
@@ -159,6 +163,7 @@ fn strip_trailing_slash(p: String) -> String {
     p
 }
 
+/// Return the index of the last `/` in `s`, or `-1` if none.
 fn last_slash_pos(s: String) -> i32 {
     let first = s.find("/");
     if first < 0 {
@@ -178,6 +183,7 @@ fn last_slash_pos(s: String) -> i32 {
     last
 }
 
+/// Return the index of the last `.` in `s`, or `-1` if none.
 fn last_dot_pos(s: String) -> i32 {
     let first = s.find(".");
     if first < 0 {

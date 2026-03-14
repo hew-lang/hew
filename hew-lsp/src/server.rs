@@ -913,7 +913,6 @@ fn error_kind_severity(kind: &TypeErrorKind) -> DiagnosticSeverity {
         | TypeErrorKind::StyleSuggestion
         | TypeErrorKind::UnusedImport
         | TypeErrorKind::UnreachableCode
-        | TypeErrorKind::Shadowing
         | TypeErrorKind::DeadCode
         | TypeErrorKind::OrphanImpl
         | TypeErrorKind::PlatformLimitation => DiagnosticSeverity::WARNING,

@@ -7701,14 +7701,14 @@ impl Checker {
         });
     }
 
-    /// Check if a variable binding would shadow an outer scope variable and emit a warning.
+    /// Check if a variable binding would shadow an outer scope variable and emit an error.
     fn check_shadowing(&mut self, name: &str, span: &Span) {
         if name.starts_with('_') || self.in_for_binding {
             return;
         }
         if let Some(prev_span) = self.env.find_in_outer_scope(name) {
-            self.warnings.push(TypeError {
-                severity: crate::error::Severity::Warning,
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
                 message: format!("variable `{name}` shadows a previous binding"),
@@ -9409,51 +9409,51 @@ mod tests {
     // ── Shadowing Tests ─────────────────────────────────────────────────
 
     #[test]
-    fn warn_variable_shadowing() {
+    fn error_variable_shadowing() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing
-                    && w.message.contains("variable `x` shadows")),
-            "expected shadowing warning, got: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing
+                    && e.message.contains("variable `x` shadows")),
+            "expected shadowing error, got: {:?}",
+            output.errors
         );
     }
 
     #[test]
-    fn no_warn_shadowing_underscore_prefix() {
+    fn no_error_shadowing_underscore_prefix() {
         let source = "fn main() { let _x = 1; if true { let _x = 2; println(_x); } println(_x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing),
-            "should not warn for _ prefixed vars: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing),
+            "should not error for _ prefixed vars: {:?}",
+            output.errors
         );
     }
 
     #[test]
-    fn no_warn_shadowing_for_loop_var() {
+    fn no_error_shadowing_for_loop_var() {
         let source = "fn main() { let i = 0; for i in 0..10 { println(i); } println(i); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             !output
-                .warnings
+                .errors
                 .iter()
-                .any(|w| w.kind == TypeErrorKind::Shadowing),
-            "should not warn for for-loop variable shadowing: {:?}",
-            output.warnings
+                .any(|e| e.kind == TypeErrorKind::Shadowing),
+            "should not error for for-loop variable shadowing: {:?}",
+            output.errors
         );
     }
 
@@ -9609,19 +9609,19 @@ fn main() {
     }
 
     #[test]
-    fn shadowing_has_note_for_original_definition() {
+    fn shadowing_error_has_note_for_original_definition() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
-        let w = output
-            .warnings
+        let e = output
+            .errors
             .iter()
-            .find(|w| w.kind == TypeErrorKind::Shadowing);
-        assert!(w.is_some(), "expected shadowing warning");
+            .find(|e| e.kind == TypeErrorKind::Shadowing);
+        assert!(e.is_some(), "expected shadowing error");
         assert!(
-            !w.unwrap().notes.is_empty(),
-            "shadowing warning should have a note pointing to the original definition"
+            !e.unwrap().notes.is_empty(),
+            "shadowing error should have a note pointing to the original definition"
         );
     }
 

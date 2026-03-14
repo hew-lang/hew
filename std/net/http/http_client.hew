@@ -29,31 +29,36 @@ type Response {}
 
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
-    // Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
+    /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
     fn status(self: Response) -> i32;
 
-    // Return a copy of the response body as a string.
+    /// Return a copy of the response body as a string.
     fn body(self: Response) -> String;
 
-    // Look up a response header by name (case-insensitive).
-    //
-    // Returns an empty string if the header is not present.
+    /// Look up a response header by name (case-insensitive).
+    ///
+    /// Returns an empty string if the header is not present.
     fn header(self: Response, name: String) -> String;
 
-    // Return the `content-type` response header.
-    //
-    // Returns an empty string if not present.
+    /// Return the `Content-Type` response header.
+    ///
+    /// Returns an empty string if not present.
     fn content_type(self: Response) -> String;
 
-    // Release the response resources.
+    /// Release the response resources.
     fn free(self: Response);
 }
 
 impl ResponseMethods for Response {
+    /// Return the HTTP status code (e.g. 200, 404).
     fn status(self: Response) -> i32 { hew_http_response_status(self) }
+    /// Return a copy of the response body as a string.
     fn body(self: Response) -> String { hew_http_response_body(self) }
+    /// Look up a response header by name (case-insensitive).
     fn header(self: Response, name: String) -> String { hew_http_response_header(self, name) }
+    /// Return the `Content-Type` response header.
     fn content_type(self: Response) -> String { hew_http_response_content_type(self) }
+    /// Release the response resources.
     fn free(self: Response) { hew_http_response_free(self); }
 }
 

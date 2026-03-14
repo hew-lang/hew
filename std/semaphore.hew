@@ -25,37 +25,43 @@ type Semaphore {}
 
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
-    // Block until a permit is available, then acquire it.
+    /// Block until a permit is available, then acquire it.
     fn acquire(self: Semaphore);
 
-    // Try to acquire a permit without blocking.
-    //
-    // Returns `true` if a permit was acquired, `false` otherwise.
+    /// Try to acquire a permit without blocking.
+    ///
+    /// Returns `true` if a permit was acquired, `false` otherwise.
     fn try_acquire(self: Semaphore) -> bool;
 
-    // Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    //
-    // Returns `true` if a permit was acquired before the timeout.
+    /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
+    ///
+    /// Returns `true` if a permit was acquired before the timeout.
     fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool;
 
-    // Release a previously acquired permit.
+    /// Release a previously acquired permit.
     fn release(self: Semaphore);
 
-    // Return the current number of available permits.
+    /// Return the current number of available permits.
     fn count(self: Semaphore) -> i32;
 
-    // Release the semaphore resources.
+    /// Release the semaphore resources.
     fn free(self: Semaphore);
 }
 
 impl SemaphoreMethods for Semaphore {
+    /// Block until a permit is available, then acquire it.
     fn acquire(self: Semaphore) { hew_semaphore_acquire(self); }
+    /// Try to acquire a permit without blocking.
     fn try_acquire(self: Semaphore) -> bool { hew_semaphore_try_acquire(self) }
+    /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool {
         hew_semaphore_acquire_timeout(self, timeout_ms)
     }
+    /// Release a previously acquired permit.
     fn release(self: Semaphore) { hew_semaphore_release(self); }
+    /// Return the current number of available permits.
     fn count(self: Semaphore) -> i32 { hew_semaphore_count(self) }
+    /// Release the semaphore resources.
     fn free(self: Semaphore) { hew_semaphore_free(self); }
 }
 

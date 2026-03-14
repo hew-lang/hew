@@ -25,23 +25,26 @@ type Conn {}
 
 /// Methods available on an SMTP `Conn`.
 trait ConnMethods {
-    // Send a plain-text email. Returns 0 on success.
+    /// Send a plain-text email. Return 0 on success.
     fn send(self: Conn, from: String, to: String, subject: String, body: String) -> i32;
 
-    // Send an HTML email. Returns 0 on success.
+    /// Send an HTML email. Return 0 on success.
     fn send_html(self: Conn, from: String, to: String, subject: String, html: String) -> i32;
 
-    // Close the SMTP connection.
+    /// Close the SMTP connection.
     fn close(self: Conn);
 }
 
 impl ConnMethods for Conn {
+    /// Send a plain-text email. Return 0 on success.
     fn send(self: Conn, from: String, to: String, subject: String, body: String) -> i32 {
         hew_smtp_send(self, from, to, subject, body)
     }
+    /// Send an HTML email. Return 0 on success.
     fn send_html(self: Conn, from: String, to: String, subject: String, html: String) -> i32 {
         hew_smtp_send_html(self, from, to, subject, html)
     }
+    /// Close the SMTP connection.
     fn close(self: Conn) { hew_smtp_close(self); }
 }
 

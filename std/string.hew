@@ -94,6 +94,7 @@ pub fn to_int(s: String) -> i32 {
     if negative { 0 - result } else { result }
 }
 
+/// Return the numeric value of a single-character digit string, or `-1` if not a digit.
 fn digit_value(ch: String) -> i32 {
     match ch {
         "0" => 0, "1" => 1, "2" => 2, "3" => 3, "4" => 4,
@@ -348,6 +349,7 @@ pub fn join(parts: Vec<String>, sep: String) -> String {
 /// // }
 /// ```
 pub trait ToString {
+    /// Convert this value to its string representation.
     fn to_str(self) -> String;
 }
 

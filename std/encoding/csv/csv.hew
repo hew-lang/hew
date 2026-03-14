@@ -44,9 +44,12 @@ trait TableMethods {
 }
 
 impl TableMethods for Table {
+    /// Return the number of data rows (excluding the header row).
     fn rows(self: Table) -> i32 { self.data.len() }
+    /// Return the number of columns.
     fn cols(self: Table) -> i32 { self.hdrs.len() }
 
+    /// Return the header name for the given column index.
     fn header(self: Table, col: i32) -> String {
         if col < 0 || col >= self.hdrs.len() {
             return "";
@@ -54,6 +57,7 @@ impl TableMethods for Table {
         self.hdrs.get(col)
     }
 
+    /// Return the cell value at the given row and column index.
     fn get(self: Table, row: i32, col: i32) -> String {
         if row < 0 || row >= self.data.len() {
             return "";
@@ -65,6 +69,7 @@ impl TableMethods for Table {
         r.get(col)
     }
 
+    /// Return the cell value at the given row for the named column.
     fn get_by_name(self: Table, row: i32, col_name: String) -> String {
         let col = find_header(self.hdrs, col_name);
         if col < 0 {
@@ -73,6 +78,7 @@ impl TableMethods for Table {
         self.get(row, col)
     }
 
+    /// No-op for compatibility (struct tables don't need manual freeing).
     fn free(self: Table) {
         // No-op: struct tables are value types, no manual freeing needed.
     }
@@ -100,6 +106,7 @@ pub fn parse_file(path: String) -> Table {
 
 // ── Internal parsing ──────────────────────────────────────────────────
 
+/// Parse CSV data with optional header row handling.
 fn parse_impl(data: String, has_headers: bool) -> Table {
     // Normalize \r\n to \n
     let normalized = data.replace("\r\n", "\n");

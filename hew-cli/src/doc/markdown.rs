@@ -114,12 +114,28 @@ pub fn render_module(module: &DocModule) -> String {
     out
 }
 
-/// Render an index page listing all documented modules as Markdown.
+/// Render an index page listing all documented modules as Markdown, grouped by section.
 #[must_use]
 pub fn render_index(modules: &[DocModule]) -> String {
-    let mut out = String::from("# Hew Documentation\n\n");
+    let mut out = String::from("# Hew Standard Library\n\n");
+
+    let mut root_mods: Vec<&DocModule> = Vec::new();
+    let mut groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
+        std::collections::BTreeMap::new();
+
     for m in modules {
-        let _ = write!(out, "- [{}]({}.md)", m.name, m.name);
+        let after_root = m.name.find("::").map_or("", |i| &m.name[i + 2..]);
+        if after_root.contains("::") {
+            let category = after_root.split("::").next().unwrap_or(after_root);
+            groups.entry(category.to_string()).or_default().push(m);
+        } else {
+            root_mods.push(m);
+        }
+    }
+
+    for m in &root_mods {
+        let filename = super::module_to_filename(&m.name, "md");
+        let _ = write!(out, "- [`{}`]({})", m.name, filename);
         if let Some(doc) = &m.doc {
             if let Some(first_line) = doc.lines().next() {
                 let _ = write!(out, " — {first_line}");
@@ -127,6 +143,21 @@ pub fn render_index(modules: &[DocModule]) -> String {
         }
         out.push('\n');
     }
+
+    for (category, mods) in &groups {
+        let _ = writeln!(out, "\n## {category}\n");
+        for m in mods {
+            let filename = super::module_to_filename(&m.name, "md");
+            let _ = write!(out, "- [`{}`]({})", m.name, filename);
+            if let Some(doc) = &m.doc {
+                if let Some(first_line) = doc.lines().next() {
+                    let _ = write!(out, " — {first_line}");
+                }
+            }
+            out.push('\n');
+        }
+    }
+
     out
 }
 
@@ -150,7 +181,7 @@ mod tests {
     #[test]
     fn render_index_markdown() {
         let module = DocModule {
-            name: "math".to_string(),
+            name: "std::math".to_string(),
             doc: Some("Math utilities.".to_string()),
             functions: vec![],
             types: vec![],
@@ -158,7 +189,7 @@ mod tests {
             traits: vec![],
         };
         let md = render_index(&[module]);
-        assert!(md.contains("[math](math.md)"));
+        assert!(md.contains("[`std::math`](std.math.md)"));
         assert!(md.contains("Math utilities."));
     }
 }

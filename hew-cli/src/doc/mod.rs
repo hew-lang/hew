@@ -14,6 +14,61 @@ pub use highlight::highlight;
 pub use render::{render_index, render_module};
 pub use template::wrap_page;
 
+/// Derive a module name from a file path relative to a root directory.
+///
+/// Includes the root directory name as the first component to produce
+/// fully-qualified names. If the file stem matches its immediate parent
+/// directory, the redundant component is collapsed:
+/// `std/encoding/json/json.hew` → `std::encoding::json`.
+fn derive_module_name(file_path: &std::path::Path, root: &std::path::Path) -> String {
+    let relative = file_path.strip_prefix(root).unwrap_or(file_path);
+    let stem = relative
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let parent = relative.parent().unwrap_or(std::path::Path::new(""));
+
+    // Start with the root directory name
+    let root_name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+
+    let mut parts: Vec<&str> = vec![root_name];
+    parts.extend(parent.components().filter_map(|c| c.as_os_str().to_str()));
+
+    // Collapse foo/foo.hew → foo
+    if parts.last().is_none_or(|last| *last != stem) {
+        parts.push(stem);
+    }
+
+    parts.join("::")
+}
+
+/// Convert a module name to a filename.
+///
+/// Replaces `::` with `.` so `std::encoding::json` becomes `std.encoding.json.html`.
+pub fn module_to_filename(name: &str, ext: &str) -> String {
+    format!("{}.{ext}", name.replace("::", "."))
+}
+
+/// Recursively collect `.hew` files from a directory.
+fn collect_hew_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut sorted: Vec<_> = entries.flatten().collect();
+    sorted.sort_by_key(std::fs::DirEntry::path);
+    for entry in sorted {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_hew_files(&p, files);
+        } else if p.extension().is_some_and(|e| e == "hew") {
+            files.push(p);
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "CLI entry point with straightforward sequential logic"
@@ -66,39 +121,42 @@ pub fn cmd_doc(args: &[String]) {
         std::process::exit(1);
     }
 
-    // Collect .hew files
-    let mut hew_files: Vec<std::path::PathBuf> = Vec::new();
+    // Collect .hew files with fully-qualified module names
+    let mut entries: Vec<(std::path::PathBuf, String)> = Vec::new();
     for path_str in &input_paths {
         let path = std::path::Path::new(path_str);
         if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.extension().is_some_and(|e| e == "hew") {
-                        hew_files.push(p);
-                    }
-                }
+            let mut files = Vec::new();
+            collect_hew_files(path, &mut files);
+            for file in files {
+                let name = derive_module_name(&file, path);
+                entries.push((file, name));
             }
         } else if path.exists() {
-            hew_files.push(path.to_path_buf());
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            entries.push((path.to_path_buf(), name));
         } else {
             eprintln!("Error: {path_str} does not exist");
             std::process::exit(1);
         }
     }
 
-    if hew_files.is_empty() {
+    if entries.is_empty() {
         eprintln!("No .hew files found");
         std::process::exit(1);
     }
 
-    hew_files.sort();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
 
     // Parse and extract docs from each file
     let mut modules = Vec::new();
     let mut had_errors = false;
 
-    for file_path in &hew_files {
+    for (file_path, module_name) in &entries {
         let source = match std::fs::read_to_string(file_path) {
             Ok(s) => s,
             Err(e) => {
@@ -116,13 +174,7 @@ pub fn cmd_doc(args: &[String]) {
             );
         }
 
-        let module_name = file_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let module = extract_docs(&result.program, &module_name);
+        let module = extract_docs(&result.program, module_name);
         modules.push(module);
     }
 
@@ -150,7 +202,7 @@ pub fn cmd_doc(args: &[String]) {
 
         for module in &modules {
             let md = markdown::render_module(module);
-            let filename = format!("{}.md", module.name);
+            let filename = module_to_filename(&module.name, "md");
             if let Err(e) = std::fs::write(out.join(&filename), &md) {
                 eprintln!("Error writing {filename}: {e}");
                 had_errors = true;
@@ -167,12 +219,12 @@ pub fn cmd_doc(args: &[String]) {
 
         for module in &modules {
             let body = render_module(module);
+            let filename = module_to_filename(&module.name, "html");
+            let escaped_name = template::html_escape(&module.name);
             let breadcrumb = format!(
-                "<a href=\"index.html\">Index</a><a href=\"{name}.html\">{name}</a>",
-                name = module.name
+                "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"
             );
             let html = wrap_page(&module.name, &body, Some(&breadcrumb));
-            let filename = format!("{}.html", module.name);
             if let Err(e) = std::fs::write(out.join(&filename), &html) {
                 eprintln!("Error writing {filename}: {e}");
                 had_errors = true;
@@ -219,4 +271,66 @@ fn open_in_browser(path: &std::path::Path) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_to_filename_simple() {
+        assert_eq!(module_to_filename("std::fs", "html"), "std.fs.html");
+    }
+
+    #[test]
+    fn module_to_filename_nested() {
+        assert_eq!(
+            module_to_filename("std::encoding::json", "html"),
+            "std.encoding.json.html"
+        );
+    }
+
+    #[test]
+    fn module_to_filename_deep() {
+        assert_eq!(
+            module_to_filename("std::net::http::http_client", "md"),
+            "std.net.http.http_client.md"
+        );
+    }
+
+    #[test]
+    fn derive_name_root_file() {
+        let name = derive_module_name(
+            std::path::Path::new("std/fs.hew"),
+            std::path::Path::new("std"),
+        );
+        assert_eq!(name, "std::fs");
+    }
+
+    #[test]
+    fn derive_name_collapsed() {
+        let name = derive_module_name(
+            std::path::Path::new("std/encoding/json/json.hew"),
+            std::path::Path::new("std"),
+        );
+        assert_eq!(name, "std::encoding::json");
+    }
+
+    #[test]
+    fn derive_name_not_collapsed() {
+        let name = derive_module_name(
+            std::path::Path::new("std/net/http/http_client.hew"),
+            std::path::Path::new("std"),
+        );
+        assert_eq!(name, "std::net::http::http_client");
+    }
+
+    #[test]
+    fn derive_name_single_dir_collapsed() {
+        let name = derive_module_name(
+            std::path::Path::new("std/crypto/crypto.hew"),
+            std::path::Path::new("std"),
+        );
+        assert_eq!(name, "std::crypto");
+    }
 }

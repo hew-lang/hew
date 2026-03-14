@@ -130,6 +130,7 @@ pub fn is_video(mime_type: String) -> bool {
     mime_type.starts_with("video/")
 }
 
+/// Extract the file extension from a path, returning the substring after the last dot.
 fn extract_extension(path: String) -> String {
     let dot_pos = path.find(".");
     if dot_pos < 0 {

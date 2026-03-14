@@ -254,28 +254,68 @@ pub fn render_module(module: &DocModule) -> String {
     body
 }
 
-/// Render an index page listing all documented modules.
+/// Render an index page listing all documented modules, grouped by section.
 #[must_use]
 pub fn render_index(modules: &[DocModule]) -> String {
-    let mut body = String::from("<h1>Hew Documentation</h1>\n");
-    body.push_str("<ul class=\"module-list\">\n");
+    let mut body = String::from("<h1>Hew Standard Library</h1>\n");
+
+    // Group: root-level modules (single :: component after prefix) first,
+    // then by the second path component (e.g., "encoding", "crypto").
+    let mut root_mods: Vec<&DocModule> = Vec::new();
+    let mut groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
+        std::collections::BTreeMap::new();
+
     for m in modules {
-        body.push_str("<li><a href=\"");
-        body.push_str(&html_escape(&m.name));
-        body.push_str(".html\">");
-        body.push_str(&html_escape(&m.name));
-        body.push_str("</a>");
-        if let Some(doc) = &m.doc {
-            // Show first line of doc as description
-            if let Some(first_line) = doc.lines().next() {
-                body.push_str(" — ");
-                body.push_str(&html_escape(first_line));
-            }
+        // Split off the root prefix (e.g., "std") to find the category
+        let after_root = m.name.find("::").map_or("", |i| &m.name[i + 2..]);
+        if after_root.contains("::") {
+            // Has a sub-package category like "encoding::json"
+            let category = after_root.split("::").next().unwrap_or(after_root);
+            groups.entry(category.to_string()).or_default().push(m);
+        } else {
+            root_mods.push(m);
         }
-        body.push_str("</li>\n");
     }
-    body.push_str("</ul>\n");
+
+    // Core modules
+    if !root_mods.is_empty() {
+        body.push_str("<ul class=\"module-list\">\n");
+        for m in &root_mods {
+            render_index_entry(&mut body, m);
+        }
+        body.push_str("</ul>\n");
+    }
+
+    // Grouped sections
+    for (category, mods) in &groups {
+        body.push_str("<div class=\"section-heading\">");
+        body.push_str(&html_escape(category));
+        body.push_str("</div>\n<ul class=\"module-list\">\n");
+        for m in mods {
+            render_index_entry(&mut body, m);
+        }
+        body.push_str("</ul>\n");
+    }
+
     body
+}
+
+/// Render a single entry in the module index.
+fn render_index_entry(body: &mut String, m: &DocModule) {
+    let filename = super::module_to_filename(&m.name, "html");
+    body.push_str("<li><a href=\"");
+    body.push_str(&html_escape(&filename));
+    body.push_str("\"><code>");
+    body.push_str(&html_escape(&m.name));
+    body.push_str("</code></a>");
+    if let Some(doc) = &m.doc {
+        if let Some(first_line) = doc.lines().next() {
+            body.push_str("<span class=\"module-desc\"> — ");
+            body.push_str(&html_escape(first_line));
+            body.push_str("</span>");
+        }
+    }
+    body.push_str("</li>\n");
 }
 
 #[cfg(test)]
@@ -300,7 +340,7 @@ fn add(a: i32, b: i32) -> i32 {
     #[test]
     fn render_index_links() {
         let module = DocModule {
-            name: "math".to_string(),
+            name: "std::math".to_string(),
             doc: Some("Math utilities.".to_string()),
             functions: vec![],
             types: vec![],
@@ -308,7 +348,8 @@ fn add(a: i32, b: i32) -> i32 {
             traits: vec![],
         };
         let html = render_index(&[module]);
-        assert!(html.contains("math.html"));
+        assert!(html.contains("std.math.html"));
+        assert!(html.contains("std::math"));
         assert!(html.contains("Math utilities."));
     }
 

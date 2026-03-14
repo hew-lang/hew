@@ -19,6 +19,7 @@ import std::time::datetime;
 
 // ── Types ─────────────────────────────────────────────────────────────
 
+/// A single benchmark result containing timing statistics.
 pub type BenchResult {
     name: String;
     iterations: i64;
@@ -28,6 +29,7 @@ pub type BenchResult {
     total_ns: i64;
 }
 
+/// A collection of benchmark results.
 pub type Suite {
     name: String;
     results: Vec<BenchResult>;
@@ -43,6 +45,7 @@ pub fn suite(name: String) -> Suite {
 
 // ── Suite methods ─────────────────────────────────────────────────────
 
+/// Methods available on a benchmark `Suite`.
 trait SuiteMethods {
     /// Run a benchmark and record the result.
     ///
@@ -59,6 +62,7 @@ trait SuiteMethods {
 }
 
 impl SuiteMethods for Suite {
+    /// Run a benchmark and record the result.
     fn add(self: Suite, name: String, iterations: i64, f: fn()) {
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
@@ -103,6 +107,7 @@ impl SuiteMethods for Suite {
         self.results.push(result);
     }
 
+    /// Print results as a human-readable table.
     fn report(self: Suite) {
         println(f"=== {self.name} ===");
         var i: i32 = 0;
@@ -117,6 +122,7 @@ impl SuiteMethods for Suite {
         }
     }
 
+    /// Print results as a JSON array.
     fn report_json(self: Suite) {
         var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
         var i: i32 = 0;
@@ -135,6 +141,7 @@ impl SuiteMethods for Suite {
 
 // ── Time formatting helpers ───────────────────────────────────────────
 
+/// Format a nanosecond duration as a human-readable string with appropriate units.
 fn format_time(ns: i64) -> String {
     if ns < 1000 {
         f"{ns} ns"
@@ -156,6 +163,7 @@ fn format_time(ns: i64) -> String {
     }
 }
 
+/// Format an average nanosecond duration as an operations-per-second string.
 fn format_ops(avg_ns: i64) -> String {
     if avg_ns <= 0 {
         "inf ops/sec"
@@ -177,6 +185,7 @@ fn format_ops(avg_ns: i64) -> String {
     }
 }
 
+/// Pad a number to two digits with a leading zero if needed.
 fn pad_two(n: i64) -> String {
     if n < 10 {
         f"0{n}"

@@ -27,19 +27,21 @@ type Child {}
 
 /// Methods available on a `Child` process.
 trait ChildMethods {
-    // Block until the child process exits and return its exit code.
-    //
-    // Returns 0 for success, non-zero for failure.
+    /// Block until the child process exits and return its exit code.
+    ///
+    /// Returns 0 for success, non-zero for failure.
     fn wait(self: Child) -> i32;
 
-    // Terminate the child process.
-    //
-    // Returns 0 on success, non-zero on error.
+    /// Terminate the child process.
+    ///
+    /// Returns 0 on success, non-zero on error.
     fn kill(self: Child) -> i32;
 }
 
 impl ChildMethods for Child {
+    /// Block until the child process exits and return its exit code.
     fn wait(self: Child) -> i32 { hew_process_wait(self) }
+    /// Terminate the child process.
     fn kill(self: Child) -> i32 { hew_process_kill(self) }
 }
 

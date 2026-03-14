@@ -187,6 +187,53 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
     }
 }
 
+/// Block until a reply is available, returning both value and size.
+///
+/// Writes the reply size to `*out_size`. The caller owns the returned
+/// pointer and must free it with [`libc::free`].
+///
+/// # Safety
+///
+/// - `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
+/// - `out_size` must be a valid, non-null writable pointer.
+/// - Must be called at most once per channel.
+pub(crate) unsafe fn hew_reply_wait_with_size(
+    ch: *mut HewReplyChannel,
+    out_size: *mut usize,
+) -> *mut c_void {
+    if ch.is_null() || out_size.is_null() {
+        return ptr::null_mut();
+    }
+
+    // SAFETY: Caller guarantees `ch` is valid and single-reader.
+    unsafe {
+        // Fast path: check atomic flag without locking.
+        if (*ch).ready.load(Ordering::Acquire) {
+            let result = (*ch).value;
+            *out_size = (*ch).value_size;
+            (*ch).value = ptr::null_mut();
+            return result;
+        }
+
+        // Slow path: wait on condvar.
+        let mut guard = match (*ch).lock.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        while !(*ch).ready.load(Ordering::Acquire) {
+            guard = match (*ch).cond.wait(guard) {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+        }
+        let result = (*ch).value;
+        *out_size = (*ch).value_size;
+        (*ch).value = ptr::null_mut();
+        drop(guard);
+        result
+    }
+}
+
 /// Block until a reply is available or the timeout expires.
 ///
 /// Returns the reply value on success, or null on timeout.

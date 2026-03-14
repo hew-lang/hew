@@ -969,28 +969,57 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
     auto clonedArgs = deepCopyOwnedArgs(rewriter, loc, module, op.getArgs(), adaptor.getArgs());
     auto [dataPtr, dataSize] = emitPackArgs(rewriter, loc, clonedArgs);
 
-    // Remote actors (i64 PID from Node::lookup): use fire-and-forget send
-    // via hew_actor_send_by_id. Full remote await (request-response) requires
-    // a distributed reply channel protocol — planned for a future release.
+    // Remote actors (i64 PID from Node::lookup): distributed ask via
+    // hew_node_api_ask, which sends the message with a request_id over
+    // the mesh and blocks until the reply arrives.
     if (targetVal.getType() == i64Type) {
-      auto sendFuncType =
-          rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType}, {i32Type});
-      getOrInsertFuncDecl(module, rewriter, "hew_actor_send_by_id", sendFuncType);
-      mlir::func::CallOp::create(rewriter, loc, "hew_actor_send_by_id", mlir::TypeRange{i32Type},
-                                 mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+      auto askFuncType = rewriter.getFunctionType({i64Type, i32Type, ptrType, sizeType}, {ptrType});
+      getOrInsertFuncDecl(module, rewriter, "hew_node_api_ask", askFuncType);
+      auto call =
+          mlir::func::CallOp::create(rewriter, loc, "hew_node_api_ask", mlir::TypeRange{ptrType},
+                                     mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
+      auto replyPtr = call.getResult(0);
 
-      // Return a zero/null result since we can't await remote actors yet.
       auto resultType = op.getResult().getType();
-      mlir::Value zeroResult;
+
+      // Void-return handler: free the reply buffer and erase the op.
+      // free(null) is a safe no-op if the ask failed.
       if (llvm::isa<mlir::NoneType>(resultType)) {
+        auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                   mlir::ValueRange{replyPtr});
         rewriter.eraseOp(op);
         return mlir::success();
-      } else if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
-        zeroResult = mlir::LLVM::ZeroOp::create(rewriter, loc, ptrType).getResult();
-      } else {
-        zeroResult = mlir::arith::ConstantIntOp::create(rewriter, loc, resultType, 0);
       }
-      rewriter.replaceOp(op, zeroResult);
+
+      // Non-void: load the result from the reply pointer.
+      // hew_node_api_ask guarantees a non-null return for non-void asks
+      // (returns a zeroed allocation on timeout/failure).
+      mlir::Value resultVal;
+      if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
+        resultVal = loaded.getResult();
+      } else if (resultType == i32Type || resultType == rewriter.getI64Type() ||
+                 llvm::isa<mlir::IntegerType>(resultType) ||
+                 llvm::isa<mlir::FloatType>(resultType) ||
+                 llvm::isa<mlir::LLVM::LLVMStructType>(resultType)) {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, replyPtr);
+        resultVal = loaded.getResult();
+      } else {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
+        resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, resultType,
+                                                             mlir::ValueRange{loaded.getResult()})
+                        .getResult(0);
+      }
+
+      // Free the malloc'd reply buffer.
+      auto freeFuncType = rewriter.getFunctionType({ptrType}, {});
+      getOrInsertFuncDecl(module, rewriter, "free", freeFuncType);
+      mlir::func::CallOp::create(rewriter, loc, "free", mlir::TypeRange{},
+                                 mlir::ValueRange{replyPtr});
+
+      rewriter.replaceOp(op, resultVal);
       return mlir::success();
     }
 

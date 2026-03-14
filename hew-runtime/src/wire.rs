@@ -719,12 +719,19 @@ pub struct HewWireEnvelope {
     pub payload_size: u32,
     /// Pointer to payload bytes.
     pub payload: *mut u8,
+    /// Request ID for distributed ask/reply correlation.
+    /// 0 = fire-and-forget, >0 = expects reply (or is a reply).
+    pub request_id: u64,
+    /// Source node ID for routing replies back to the requester.
+    /// Non-zero on outbound ask requests; zero on reply envelopes.
+    pub source_node_id: u16,
 }
 
 /// Encode an envelope into the wire buffer.
 ///
 /// Fields: `target_id` (1, varint), `source_id` (2, varint),
-/// `msg_type` (3, varint), payload (4, bytes).
+/// `msg_type` (3, varint), payload (4, bytes), `request_id` (5, varint),
+/// `source_node_id` (6, varint).
 ///
 /// # Safety
 ///
@@ -770,6 +777,20 @@ pub unsafe extern "C" fn hew_wire_encode_envelope(
     {
         return -1;
     }
+    // Field 5: request_id (varint) — only encoded when non-zero
+    if e.request_id != 0 {
+        // SAFETY: forwarded.
+        if unsafe { hew_wire_encode_field_varint(buf, 5, e.request_id) } != 0 {
+            return -1;
+        }
+    }
+    // Field 6: source_node_id (varint) — only encoded when non-zero
+    if e.source_node_id != 0 {
+        // SAFETY: forwarded.
+        if unsafe { hew_wire_encode_field_varint(buf, 6, u64::from(e.source_node_id)) } != 0 {
+            return -1;
+        }
+    }
     0
 }
 
@@ -795,6 +816,8 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
     e.msg_type = 0;
     e.payload_size = 0;
     e.payload = std::ptr::null_mut();
+    e.request_id = 0;
+    e.source_node_id = 0;
 
     // Decode TLV fields until we run out of data.
     loop {
@@ -866,6 +889,28 @@ pub unsafe extern "C" fn hew_wire_decode_envelope(
                 )]
                 {
                     e.payload_size = data_len as u32;
+                }
+            }
+            (5, w) if w == HEW_WIRE_VARINT => {
+                let mut v: u64 = 0;
+                // SAFETY: forwarded.
+                if unsafe { hew_wire_decode_varint(buf, &raw mut v) } != 0 {
+                    return -1;
+                }
+                e.request_id = v;
+            }
+            (6, w) if w == HEW_WIRE_VARINT => {
+                let mut v: u64 = 0;
+                // SAFETY: forwarded.
+                if unsafe { hew_wire_decode_varint(buf, &raw mut v) } != 0 {
+                    return -1;
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "source_node_id is u16; validated within range"
+                )]
+                {
+                    e.source_node_id = v as u16;
                 }
             }
             // Unknown field — skip based on wire type.
@@ -1357,6 +1402,93 @@ mod tests {
             assert!(!vec.is_null());
             assert_eq!(crate::vec::hew_vec_len(vec), 0);
             crate::vec::hew_vec_free(vec);
+        }
+    }
+
+    #[test]
+    fn envelope_with_request_id_roundtrip() {
+        // SAFETY: FFI calls use valid wire buffer and envelope pointers.
+        unsafe {
+            let payload = [1u8, 2, 3, 4];
+            let env = HewWireEnvelope {
+                target_actor_id: 0x0003_0000_0000_0042,
+                source_actor_id: 0x0001_0000_0000_0007,
+                msg_type: 10,
+                payload_size: payload.len() as u32,
+                payload: payload.as_ptr().cast_mut(),
+                request_id: 12345,
+                source_node_id: 1,
+            };
+
+            let buf = hew_wire_buf_new();
+            assert!(!buf.is_null());
+            assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
+
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+
+            assert_eq!(decoded_env.target_actor_id, env.target_actor_id);
+            assert_eq!(decoded_env.source_actor_id, env.source_actor_id);
+            assert_eq!(decoded_env.msg_type, env.msg_type);
+            assert_eq!(decoded_env.payload_size, env.payload_size);
+            assert_eq!(decoded_env.request_id, 12345);
+            assert_eq!(decoded_env.source_node_id, 1);
+        }
+    }
+
+    #[test]
+    fn envelope_without_request_id_defaults_to_zero() {
+        // Envelopes encoded without request_id/source_node_id should decode
+        // with those fields set to zero (backward compatibility).
+        // SAFETY: FFI calls use valid wire buffer and envelope pointers.
+        unsafe {
+            let env = HewWireEnvelope {
+                target_actor_id: 42,
+                source_actor_id: 7,
+                msg_type: 1,
+                payload_size: 0,
+                payload: std::ptr::null_mut(),
+                request_id: 0,
+                source_node_id: 0,
+            };
+
+            let buf = hew_wire_buf_new();
+            assert!(!buf.is_null());
+            assert_eq!(hew_wire_encode_envelope(buf, &raw const env), 0);
+
+            let encoded = std::slice::from_raw_parts((*buf).data.cast_const(), (*buf).len).to_vec();
+            hew_wire_buf_destroy(buf);
+
+            let mut read_buf = HewWireBuf {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+                read_pos: 0,
+            };
+            hew_wire_buf_init_read(&raw mut read_buf, encoded.as_ptr(), encoded.len());
+
+            let mut decoded_env: HewWireEnvelope = std::mem::zeroed();
+            assert_eq!(
+                hew_wire_decode_envelope(&raw mut read_buf, &raw mut decoded_env),
+                0
+            );
+
+            assert_eq!(decoded_env.request_id, 0);
+            assert_eq!(decoded_env.source_node_id, 0);
         }
     }
 }

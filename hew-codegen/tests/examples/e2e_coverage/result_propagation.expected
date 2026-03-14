@@ -1,0 +1,5 @@
+ok: 5
+err: unknown: bad
+err: division by zero
+100/5 = 20
+ok: 3

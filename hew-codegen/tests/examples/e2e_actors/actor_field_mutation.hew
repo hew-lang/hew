@@ -1,0 +1,22 @@
+// Test: Actor field mutation across multiple messages
+// Verifies: bare field writes persist across receive fn calls
+
+actor Counter {
+    let count: int;
+
+    receive fn increment() {
+        count = count + 1;
+        println(f"count={count}");
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    c.increment();
+    c.increment();
+    c.increment();
+    c.increment();
+    c.increment();
+    await close(c);
+    println("done");
+}

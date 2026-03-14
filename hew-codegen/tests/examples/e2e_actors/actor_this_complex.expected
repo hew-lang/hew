@@ -1,0 +1,14 @@
+=== This Complex ===
+worker 1: starting
+hub: registered worker 1
+worker 1: got task-1
+hub: report from worker 1
+worker 2: starting
+hub: registered worker 2
+worker 2: got task-2
+hub: report from worker 2
+worker 3: starting
+hub: registered worker 3
+worker 3: got task-3
+hub: report from worker 3
+done

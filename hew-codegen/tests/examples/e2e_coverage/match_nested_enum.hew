@@ -1,0 +1,63 @@
+// Test: recursive (indirect) enum with deep pattern matching
+// Exercises: indirect enum, recursive match, nested constructors,
+// wildcard patterns, multi-level destructuring.
+
+indirect enum Tree {
+    Leaf(int);
+    Node(Tree, Tree);
+}
+
+fn sum_leaves(t: Tree) -> int {
+    match t {
+        Leaf(n) => n,
+        Node(left, right) => sum_leaves(left) + sum_leaves(right),
+    }
+}
+
+fn count_leaves(t: Tree) -> int {
+    match t {
+        Leaf(_) => 1,
+        Node(left, right) => count_leaves(left) + count_leaves(right),
+    }
+}
+
+fn depth(t: Tree) -> int {
+    match t {
+        Leaf(_) => 0,
+        Node(left, right) => {
+            let dl = depth(left);
+            let dr = depth(right);
+            if dl > dr { dl + 1 } else { dr + 1 }
+        },
+    }
+}
+
+fn main() {
+    // Single leaf
+    println(sum_leaves(Leaf(10)));
+
+    // Simple two-leaf tree
+    println(sum_leaves(Node(Leaf(1), Leaf(2))));
+
+    // Asymmetric tree: Node(Node(Leaf(3), Leaf(7)), Leaf(5))
+    println(sum_leaves(Node(Node(Leaf(3), Leaf(7)), Leaf(5))));
+
+    // Count leaves in asymmetric tree
+    println(count_leaves(Node(Node(Leaf(3), Leaf(7)), Leaf(5))));
+
+    // Depth of a single leaf
+    println(depth(Leaf(42)));
+
+    // Depth of a balanced tree (depth 2)
+    println(depth(Node(Node(Leaf(1), Leaf(2)), Node(Leaf(4), Leaf(8)))));
+
+    // Sum of balanced tree
+    println(sum_leaves(Node(Node(Leaf(1), Leaf(2)), Node(Leaf(4), Leaf(8)))));
+
+    // Deeply nested left-spine (depth 3)
+    let deep = Node(Node(Node(Leaf(1), Leaf(2)), Leaf(3)), Leaf(4));
+    println(sum_leaves(deep));
+
+    let deep2 = Node(Node(Node(Leaf(1), Leaf(2)), Leaf(3)), Leaf(4));
+    println(depth(deep2));
+}

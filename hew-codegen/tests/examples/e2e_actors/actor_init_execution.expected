@@ -1,0 +1,4 @@
+init: name=42
+hello: name=42
+hello: name=42
+done

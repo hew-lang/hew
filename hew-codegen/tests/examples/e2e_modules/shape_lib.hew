@@ -1,0 +1,26 @@
+pub enum Shape {
+    Circle(int);
+    Square(int);
+}
+
+pub fn area(s: Shape) -> int {
+    match s {
+        Circle(r) => r * r * 3,
+        Square(side) => side * side,
+    }
+}
+
+pub fn describe(s: Shape) -> String {
+    match s {
+        Circle(_) => "circle",
+        Square(_) => "square",
+    }
+}
+
+pub fn make_unit_circle() -> Shape {
+    Circle(1)
+}
+
+fn internal_scale(n: int) -> int {
+    n * 2
+}

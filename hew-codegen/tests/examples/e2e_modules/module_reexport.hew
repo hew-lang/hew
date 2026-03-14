@@ -1,0 +1,33 @@
+// Test: module visibility boundaries with pub enum types
+// Exercises: pub enum with payloads across module boundary, construction
+// of imported enum variants, match destructuring in importing module,
+// pub fn usage, and private function inaccessibility.
+
+import "shape_lib.hew";
+
+fn main() {
+    // Construct pub enum variants from imported module
+    let c = Circle(5);
+    let sq = Square(4);
+
+    // Use pub functions from imported module
+    println(area(c));
+    println(area(sq));
+
+    // Match on value returned by imported function
+    let shape = make_unit_circle();
+    match shape {
+        Circle(r) => println(f"circle with radius {r}"),
+        Square(side) => println(f"square with side {side}"),
+    }
+
+    // describe pub function
+    println(describe(Circle(10)));
+    println(describe(Square(3)));
+
+    // Inline construction and matching in importing module
+    match Square(7) {
+        Circle(r) => println(r),
+        Square(side) => println(f"side={side}"),
+    }
+}

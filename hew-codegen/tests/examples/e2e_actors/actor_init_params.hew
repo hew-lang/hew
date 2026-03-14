@@ -1,0 +1,22 @@
+// Test: Actor init() with parameters distinct from fields
+// Verifies: init parameters are accessible in init body
+
+actor Stamper {
+    let stamp: int;
+
+    init(seed: int) {
+        stamp = seed * 10;
+        println(f"init: seed={seed} stamp={stamp}");
+    }
+
+    receive fn check() {
+        println(f"stamp={stamp}");
+    }
+}
+
+fn main() {
+    let s = spawn Stamper(seed: 42);
+    sleep_ms(50);
+    await s.check();
+    println("done");
+}

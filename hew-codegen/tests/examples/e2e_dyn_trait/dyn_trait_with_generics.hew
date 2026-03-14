@@ -1,0 +1,49 @@
+// Tests dyn dispatch on values stored in and extracted from generic structs.
+// Verifies vtable lookup works after flowing through monomorphized code.
+
+trait Describable {
+    fn describe(val: Self) -> String;
+}
+
+type Dog {
+    name: String;
+}
+
+type Cat {
+    name: String;
+}
+
+impl Describable for Dog {
+    fn describe(d: Dog) -> String {
+        "Dog: " + d.name
+    }
+}
+
+impl Describable for Cat {
+    fn describe(c: Cat) -> String {
+        "Cat: " + c.name
+    }
+}
+
+type Pair<T> {
+    first: T;
+    second: T;
+}
+
+fn make_pair<T>(a: T, b: T) -> Pair<T> {
+    Pair { first: a, second: b }
+}
+
+fn print_desc(obj: dyn Describable) {
+    println(obj.describe());
+}
+
+fn main() {
+    let dogs = make_pair<Dog>(Dog { name: "Rex" }, Dog { name: "Buddy" });
+    print_desc(dogs.first);
+    print_desc(dogs.second);
+
+    let cats = make_pair<Cat>(Cat { name: "Whiskers" }, Cat { name: "Luna" });
+    print_desc(cats.first);
+    print_desc(cats.second);
+}

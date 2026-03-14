@@ -1,0 +1,17 @@
+// Test: Messages arrive in FIFO order
+// Verifies: mailbox guarantees send-order processing
+
+actor Recorder {
+    receive fn record(n: int) {
+        println(f"msg {n}");
+    }
+}
+
+fn main() {
+    let r = spawn Recorder;
+    for i in 0..10 {
+        r.record(i);
+    }
+    await close(r);
+    println("done");
+}

@@ -1,0 +1,39 @@
+trait Scoreable {
+    fn score(val: Self) -> int;
+    fn bonus(val: Self) -> int {
+        0
+    }
+}
+
+type Player {
+    points: int;
+}
+
+type Boss {
+    points: int;
+    multiplier: int;
+}
+
+impl Scoreable for Player {
+    fn score(p: Player) -> int {
+        p.points
+    }
+}
+
+impl Scoreable for Boss {
+    fn score(b: Boss) -> int {
+        b.points * b.multiplier
+    }
+    fn bonus(b: Boss) -> int {
+        b.multiplier * 10
+    }
+}
+
+fn main() {
+    let p = Player { points: 50 };
+    let b = Boss { points: 20, multiplier: 3 };
+    println(p.score());
+    println(p.bonus());
+    println(b.score());
+    println(b.bonus());
+}

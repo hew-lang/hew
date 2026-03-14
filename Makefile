@@ -300,6 +300,19 @@ test-cpp: test-codegen
 lint:
 	cargo clippy --workspace
 
+# ── Coverage ───────────────────────────────────────────────────────────────
+
+coverage:
+	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir coverage-html
+	@echo "==> Open coverage-html/html/index.html"
+
+coverage-summary:
+	cargo llvm-cov --workspace --exclude hew-wasm report --summary-only
+
+coverage-lcov:
+	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path lcov.info
+	@echo "==> Wrote lcov.info"
+
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Checks that every hew_* function name referenced in C++ codegen has a
 # matching #[no_mangle] export in hew-runtime (or is in a known exception

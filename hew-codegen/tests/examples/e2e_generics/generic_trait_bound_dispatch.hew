@@ -1,0 +1,59 @@
+// Tests that trait methods work on values returned from generic functions
+// and extracted from generic structs (monomorphization + trait dispatch).
+
+trait Describable {
+    fn describe(val: Self) -> String;
+}
+
+type Circle {
+    radius: int;
+}
+
+type Rect {
+    width: int;
+    height: int;
+}
+
+impl Describable for Circle {
+    fn describe(c: Circle) -> String {
+        "Circle(" + int_to_string(c.radius) + ")"
+    }
+}
+
+impl Describable for Rect {
+    fn describe(r: Rect) -> String {
+        "Rect(" + int_to_string(r.width) + "x" + int_to_string(r.height) + ")"
+    }
+}
+
+fn identity<T>(val: T) -> T {
+    val
+}
+
+type Wrapper<T> {
+    inner: T;
+}
+
+fn wrap<T>(val: T) -> Wrapper<T> {
+    Wrapper { inner: val }
+}
+
+fn unwrap<T>(w: Wrapper<T>) -> T {
+    w.inner
+}
+
+fn main() {
+    let c = identity<Circle>(Circle { radius: 5 });
+    println(c.describe());
+
+    let r = identity<Rect>(Rect { width: 4, height: 6 });
+    println(r.describe());
+
+    let wc = wrap<Circle>(Circle { radius: 3 });
+    let uc = unwrap<Circle>(wc);
+    println(uc.describe());
+
+    let wr = wrap<Rect>(Rect { width: 2, height: 8 });
+    let ur = unwrap<Rect>(wr);
+    println(ur.describe());
+}

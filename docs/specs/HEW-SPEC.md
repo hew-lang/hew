@@ -20,7 +20,7 @@ _Task model unification, actor lifecycle fix, RAII streams, duration type, synta
 - §6.5.3: Streams/sinks auto-close via RAII (Drop); explicit `.close()` optional
 - §9.0: Documented 3-level preemption hierarchy (message budget, reduction budget, coroutine yield)
 - §9.1: Actor lifecycle reduced from 8 states to 6 (removed Init and Blocked)
-- §10.3: Duration literals documented (compile to `i64` nanoseconds; distinct `duration` type planned but not yet implemented)
+- §11.3: Duration literals documented (compile to `i64` nanoseconds; `duration` is a distinct primitive type)
 - Removed `isolated` keyword (all actors are isolated by definition)
 - Removed template literal syntax (f-strings are the sole interpolation form)
 - Removed `and`/`or` keyword operators (`&&`/`||` only)
@@ -33,8 +33,8 @@ _Spec accuracy — documented implemented features, removed stale aliases, clari
 - §3.5: Clarified module alias pattern — `import std::net::http;` makes the module available as `http` (short name)
 - §4.12.1: Clarified that `gen fn` and `async gen fn` return types (`Generator<Y>`, `AsyncGenerator<Y>`) are compiler-inferred from the yield type annotation, not written explicitly
 - §4.12.4: `async fn` is supported by the parser (in addition to `async gen fn`)
-- §10: Removed `ActorStream<Y>` from the `Type` production (no prior release, no backward compatibility needed)
-- §10.3: Added Duration literals section documenting `100ms`, `5s`, `1m`, `1h` syntax
+- §11: Removed `ActorStream<Y>` from the `Type` production (no prior release, no backward compatibility needed)
+- §11.3: Added Duration literals section documenting `100ms`, `5s`, `1m`, `1h` syntax
 - Changelog: Added v0.8.0 entry
 
 **Changes in v0.7.1:**
@@ -45,7 +45,7 @@ _First-class `Stream<T>` and `Sink<T>` types for sequential I/O._
 - §3 (Types): `Stream<T>` and `Sink<T>` added to the type grammar; both are `Send`
 - §6.5.4: Documented difference between `ActorStream<Y>` (mailbox-backed) and `Stream<T>` (I/O-backed)
 - `import std::stream;` makes channel, file, and byte-buffer stream constructors available
-- Grammar: Added `Stream<T>` and `Sink<T>` to the `Type` production in §10 EBNF
+- Grammar: Added `Stream<T>` and `Sink<T>` to the `Type` production in §11 EBNF
 - §4.12: `ActorStream<Y>` was a deprecated alias for `Stream<Y>` and has been removed as of v0.8.0. `receive gen fn` return type is `Stream<Y>`.
 
 **Changes in v0.7.0:**
@@ -54,8 +54,8 @@ _Typed handles, regex literals, and match operators._
 
 - §3.10.7: Added typed handle types (`http.Server`, `http.Request`, `net.Listener`, `net.Connection`, `regex.Pattern`, `process.Child`)
 - §3.10.8: Added regex literals (`re"pattern"`), match operators (`=~`, `!~`), and regex methods
-- §10.2: Updated operator precedence to include `=~` and `!~` at equality level
-- §10 (EBNF): Added `RegexLiteral` production and updated `EqExpr`
+- §11.2: Updated operator precedence to include `=~` and `!~` at equality level
+- §11 (EBNF): Added `RegexLiteral` production and updated `EqExpr`
 
 **Changes in v0.6.4:**
 
@@ -66,7 +66,7 @@ _Module dot-syntax, string methods, and f-string expressions._
 - §3.10.5: Updated string interpolation to document expression support in f-strings
 - §3.10.1: Updated stdlib tier with module names (`std::fs`, `std::net`, `std::text::regex`, etc.)
 - §3.10.5: Documented `bool` return types for predicate functions
-- §10: Updated EBNF with f-string expression grammar productions
+- §11: Updated EBNF with f-string expression grammar productions
 
 **Changes in v0.6.3:**
 
@@ -78,8 +78,8 @@ _Spec accuracy — corrected compilation model and runtime references throughout
 - §8.8: Corrected runtime from "pure C library" to "pure Rust staticlib"
 - §2.1: Updated implementation note to remove C codegen references
 - §7.1: Removed stale C codegen implementation note
-- §10: Updated closure implementation note to reflect lambda lifting
-- §11.3, §11.7: Updated bootstrap chain to reflect current architecture
+- §11: Updated closure implementation note to reflect lambda lifting
+- §12.3, §12.7: Updated bootstrap chain to reflect current architecture
 
 **Changes in v0.6.2:**
 
@@ -4286,7 +4286,217 @@ mailbox 100 overflow coalesce(request_id);
 
 ---
 
-## 10. Syntax and EBNF (v0.9.0)
+## 10. Distributed computing and the Node API
+
+Hew provides built-in distributed computing through the `Node` API. Actors on different nodes communicate transparently — message sends to a remote actor use the same syntax as local sends. The runtime handles serialization, transport, and routing automatically.
+
+**Design principles:**
+
+- **Location transparency:** An actor reference obtained from `Node::lookup` behaves identically to a local `spawn` reference. The caller does not need to know whether the target actor is local or remote.
+- **Pluggable transport:** TCP (default) or QUIC with TLS 1.3. Selected before the node starts.
+- **Gossip-based registry:** Actor names propagate across the cluster via SWIM protocol piggybacking, so `Node::lookup` can resolve actors on any connected node.
+
+### 10.1 Node lifecycle
+
+A distributed node is started, used, and shut down within a single program:
+
+```hew
+fn main() {
+    Node::start("127.0.0.1:9000");
+
+    let counter = spawn Counter;
+    Node::register("counter", counter);
+
+    // ... interact with the cluster ...
+
+    Node::shutdown();
+}
+```
+
+**Node states:** `Starting` → `Running` → `Stopping` → `Stopped`
+
+The runtime maintains a single implicit current node per process. All `Node::` calls operate on this current node.
+
+### 10.2 API reference
+
+#### 10.2.1 `Node::start(addr: string)`
+
+Bind the current node to a network address and begin accepting connections.
+
+```hew
+Node::start("127.0.0.1:9000");   // fixed port
+Node::start("127.0.0.1:0");      // ephemeral port (OS-assigned)
+```
+
+- Creates the transport listener (TCP or QUIC, depending on `Node::set_transport`)
+- Initializes the SWIM cluster membership protocol
+- Spawns a background accept loop for incoming peer connections
+- Transitions node state to `Running`
+
+#### 10.2.2 `Node::connect(addr: string)`
+
+Connect the current node to a remote peer node.
+
+```hew
+Node::start("127.0.0.1:9000");
+Node::connect("127.0.0.1:9001");  // join peer
+```
+
+Once connected, registry gossip and message routing flow between the two nodes. Connections are bidirectional — either side can send messages to actors on the other.
+
+#### 10.2.3 `Node::register(name: string, actor)`
+
+Register a spawned actor under a human-readable name in the distributed registry.
+
+```hew
+let counter = spawn Counter;
+Node::register("counter", counter);
+```
+
+- Stores the name → PID mapping in the local registry
+- Queues a gossip event so remote nodes learn about the actor
+- The second parameter is generic (`T`) — any actor reference is accepted
+
+#### 10.2.4 `Node::lookup(name: string) -> T`
+
+Look up an actor by its registered name. Returns the actor reference if found, or a zero value if not found.
+
+```hew
+let found = Node::lookup("counter");
+if found != 0 {
+    found.increment(10);          // fire-and-forget to remote actor
+    let n = await found.get_count();  // request-response across nodes
+}
+```
+
+- Checks the local registry first, then the remote names learned via gossip
+- The return type is generic (`T`) — assign to a typed binding at the call site
+- Remote request-response (`await`) has a 5-second timeout; on timeout a zeroed reply is returned
+
+#### 10.2.5 `Node::shutdown()`
+
+Shut down the current node, closing all connections and cleaning up resources.
+
+```hew
+Node::shutdown();
+```
+
+- Stops the accept loop and tears down transport connections
+- Leaves the SWIM cluster (notifies peers via a graceful `Left` event)
+- Frees all node-owned memory
+
+#### 10.2.6 `Node::set_transport(transport: string)`
+
+Select the network transport **before** calling `Node::start`. Supported values:
+
+| Value    | Transport                                |
+| -------- | ---------------------------------------- |
+| `"tcp"`  | TCP with 4-byte length framing (default) |
+| `"quic"` | QUIC with TLS 1.3 encryption             |
+
+```hew
+Node::set_transport("quic");
+Node::start("127.0.0.1:9000");
+```
+
+If not called, TCP is used. Calling `set_transport` after `start` has no effect on the current node.
+
+### 10.3 Remote message dispatch
+
+Messages sent to a remote actor are routed transparently by the runtime:
+
+```hew
+// On node A
+Node::start("127.0.0.1:9000");
+let counter = spawn Counter;
+Node::register("counter", counter);
+
+// On node B
+Node::start("127.0.0.1:9001");
+Node::connect("127.0.0.1:9000");
+
+let remote_counter = Node::lookup("counter");
+remote_counter.increment(5);              // fire-and-forget (routed to node A)
+let n = await remote_counter.get_count(); // request-response (routed to node A, awaits reply)
+```
+
+**Routing rules:**
+
+- Each actor PID encodes a 16-bit node ID and a 48-bit actor index.
+- When the target node ID matches the local node, the message is delivered directly via the local scheduler.
+- When the target node ID differs, the message is serialized using HBF framing (4-byte little-endian length prefix + payload) and sent over the transport to the remote node.
+- Remote request-response (`await`) assigns a unique request ID, sends the request, and blocks the caller until the reply arrives (5-second timeout).
+
+### 10.4 Cross-node registry gossip
+
+Actor name registrations propagate across the cluster using the SWIM protocol's gossip channel:
+
+1. `Node::register("name", actor)` queues a registry-add event.
+2. The event is piggybacked on the next SWIM ping or ack message sent to peers.
+3. Receiving nodes update their remote name table.
+4. `Node::lookup("name")` on any node can now resolve the actor.
+
+Registry events have a bounded dissemination count (pruned after 8 gossips). Unregister events propagate the same way when an actor is removed.
+
+**SWIM membership states:**
+
+| State     | Meaning                                 |
+| --------- | --------------------------------------- |
+| `Alive`   | Node is responding to pings             |
+| `Suspect` | Node missed a direct ping               |
+| `Dead`    | Node confirmed unreachable              |
+| `Left`    | Node departed gracefully via `shutdown` |
+
+### 10.5 QUIC transport
+
+When `Node::set_transport("quic")` is used, the node communicates over QUIC with TLS 1.3:
+
+- **Self-signed certificates** are generated automatically by default.
+- **Custom certificates** can be provided via environment variables:
+  - `HEW_QUIC_CERT` — PEM server certificate chain
+  - `HEW_QUIC_KEY` — PEM server private key
+- Message framing is identical to TCP (4-byte little-endian length prefix), layered on QUIC bidirectional streams.
+
+### 10.6 Complete example
+
+```hew
+actor Counter {
+    let count: int;
+
+    receive fn increment(n: int) {
+        self.count = self.count + n;
+    }
+
+    receive fn get_count() -> int {
+        self.count
+    }
+}
+
+fn main() {
+    // Start a local node on an ephemeral port.
+    Node::start("127.0.0.1:0");
+
+    // Spawn and register an actor.
+    let counter = spawn Counter;
+    counter.increment(10);
+    counter.increment(5);
+    Node::register("counter", counter);
+
+    // Look up the actor by name and verify it works.
+    let found = Node::lookup("counter");
+    println(found != 0);               // true
+
+    let result = await counter.get_count();
+    println(result);                    // 15
+
+    await close(counter);
+    Node::shutdown();
+}
+```
+
+---
+
+## 11. Syntax and EBNF (v0.9.0)
 
 The complete formal grammar is maintained in two files:
 
@@ -4299,7 +4509,7 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Implementation note:** closures use lambda lifting — captured variables are passed as extra parameters to the generated function. Full closure implementation with heap-allocated environment structs is future work.
 
-### 10.1 Built-in Numeric Types
+### 11.1 Built-in Numeric Types
 
 | Type                      | Size          | Description             |
 | ------------------------- | ------------- | ----------------------- |
@@ -4339,7 +4549,7 @@ let i: i32 = len.to_i32();
 
 These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.to_i32()`, `.to_i64()`, `.to_u8()`, `.to_u16()`, `.to_u32()`, `.to_u64()`, `.to_f32()`, `.to_f64()`, `.to_usize()`, `.to_isize()`.
 
-### 10.2 Operator Precedence (highest to lowest)
+### 11.2 Operator Precedence (highest to lowest)
 
 1. Postfix: `?`, `.field`, `(args)`, `[index]`
 2. Unary: `!`, `-`, `~`, `await`
@@ -4358,7 +4568,7 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 15. Send: `<-`
 16. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
-### 10.3 Duration Literals
+### 11.3 Duration Literals
 
 Duration literals provide a concise syntax for time values. They compile to `i64` values representing nanoseconds:
 
@@ -4430,11 +4640,11 @@ DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
 
 ---
 
-## 11. Self-Hosting Roadmap
+## 12. Self-Hosting Roadmap
 
 Hew is designed with self-hosting as a long-term goal. This section outlines the strategy and requirements for the Hew compiler to be written in Hew itself.
 
-### 11.1 Minimum Viable Subset for Self-Hosting
+### 12.1 Minimum Viable Subset for Self-Hosting
 
 The compiler requires only a subset of Hew's features. The following features are **essential**:
 
@@ -4460,7 +4670,7 @@ The following Hew features are **NOT required** for self-hosting:
 | Wire types      | No serialization needed         |
 | Network I/O     | File-based operation            |
 
-### 11.2 Kernel Language Concept
+### 12.2 Kernel Language Concept
 
 The "kernel language" is the minimal subset that can compile itself:
 
@@ -4483,7 +4693,7 @@ The kernel standard library includes:
 - File I/O (`Read`, `Write`, `File`)
 - Basic formatting
 
-### 11.3 Bootstrap Chain
+### 12.3 Bootstrap Chain
 
 **Phase 1: Rust Frontend + C++ MLIR Codegen (Current)**
 
@@ -4506,7 +4716,7 @@ hewcpp2 (Hew binary) → hewcpp.hew (Hew source) → hewcpp3 (Hew binary)
 hewcpp2 and hewcpp3 should be identical (verified via hash)
 ```
 
-### 11.4 Verification Strategy
+### 12.4 Verification Strategy
 
 **Diverse Double Compilation (DDC):**
 
@@ -4529,7 +4739,7 @@ Requirements for verifiable builds:
 - Fixed seeds for any "random" build decisions
 - Sorted iteration over collections
 
-### 11.5 Implementation Ordering
+### 12.5 Implementation Ordering
 
 **Recommended porting order for compiler components:**
 
@@ -4551,7 +4761,7 @@ Phase 4: Driver
 └── Compiler main - Ties everything together
 ```
 
-### 11.6 Stdlib for Self-Hosting
+### 12.6 Stdlib for Self-Hosting
 
 Minimum standard library required (estimated ~2600 lines):
 
@@ -4563,7 +4773,7 @@ Minimum standard library required (estimated ~2600 lines):
 | **io**          | ~400  | Read, Write, File, BufReader    |
 | **fmt**         | ~300  | Basic formatting                |
 
-### 11.7 Backend Strategy for Bootstrap
+### 12.7 Backend Strategy for Bootstrap
 
 **Recommended approach:**
 
@@ -4581,7 +4791,7 @@ Minimum standard library required (estimated ~2600 lines):
    - For maximum performance
    - Can be optional backend
 
-### 11.8 WASM as Portable Bootstrap Format
+### 12.8 WASM as Portable Bootstrap Format
 
 Future consideration: compile the Hew compiler to WebAssembly for portable bootstrapping:
 
@@ -4602,7 +4812,7 @@ Benefits:
 
 ---
 
-## 12. "Researched outcomes" (what to build first to make Hew real)
+## 13. "Researched outcomes" (what to build first to make Hew real)
 
 1. **Actor + type safety baseline**: proven feasible and performant (Pony demonstrates the capability-typed actor approach can be implemented efficiently). ([tutorial.ponylang.io][1])
 2. **Supervision semantics**: OTP restart categories are well-defined and battle-tested; encode them as primitives. ([Erlang.org][6])
@@ -4611,7 +4821,7 @@ Benefits:
 
 ---
 
-## 13. Minimum viable Hew (implementation plan aligned to this spec)
+## 14. Minimum viable Hew (implementation plan aligned to this spec)
 
 - **Phase A (compiler front-end)**: lexer/parser → AST → typecheck (Send/Frozen rules)
 - **Phase B (runtime)**: scheduler, actor mailboxes, bounded channels, timers, TCP
@@ -4639,7 +4849,7 @@ If you want this to be directly executable as an engineering project, the next m
 - **Added:** Cooperative task model. `s.launch` spawns micro-coroutines on actor thread; `s.spawn` for parallel OS threads.
 - **Added:** `await actor`, `await close(actor)`, and awaited actor reply barriers.
 - **Added:** RAII auto-close for streams/sinks via Drop.
-- **Added:** Duration literal suffixes (i64 nanoseconds); distinct `duration` type planned but not yet implemented.
+- **Added:** Duration literal suffixes (i64 nanoseconds); `duration` is a distinct primitive type.
 - **Fixed:** Task model spec contradiction (§4.3/§4.7/§4.8 unified).
 - **Fixed:** Actor lifecycle states match runtime (6 states, not 8).
 - **Fixed:** Cooperate described as actor-level reduction-based preemption.

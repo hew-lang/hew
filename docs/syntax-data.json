@@ -149,7 +149,6 @@
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
-    "self": "Receiver reference in methods/actors",
     "mut": "Mutable qualifier on parameters",
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",

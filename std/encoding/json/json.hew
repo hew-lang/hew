@@ -28,70 +28,104 @@ type Value {}
 trait ValueMethods {
     /// Serialize the value back to a JSON string.
     fn stringify(val: Value) -> String;
-
-    /// Return the type tag of this value.
-    ///
-    /// 0 = null, 1 = bool, 2 = int, 3 = float, 4 = string,
-    /// 5 = array, 6 = object.
+    /// Return the type tag (0=null, 1=bool, 2=int, 3=float, 4=string, 5=array, 6=object).
     fn type_of(val: Value) -> i32;
-
     /// Extract the boolean value (0 or 1).
     fn get_bool(val: Value) -> i32;
-
     /// Extract the integer value.
     fn get_int(val: Value) -> i64;
-
     /// Extract the floating-point value.
     fn get_float(val: Value) -> f64;
-
     /// Extract the string value.
     fn get_string(val: Value) -> String;
-
     /// Look up a field by key in a JSON object.
-    ///
-    /// Returns a new `Value` that must be freed separately.
     fn get_field(val: Value, key: String) -> Value;
-
     /// Return the number of elements in a JSON array.
     fn array_len(val: Value) -> i32;
-
     /// Return the element at the given index in a JSON array.
-    ///
-    /// Returns a new `Value` that must be freed separately.
     fn array_get(val: Value, index: i32) -> Value;
-
     /// Return a JSON array of the object's keys.
-    ///
-    /// Returns a new `Value` that must be freed separately.
     fn keys(val: Value) -> Value;
-
     /// Release the value resources.
     fn free(val: Value);
+
+    // ── Fluent builders (return self for chaining) ──────────────
+
+    /// Set a string field on an object. Returns the object for chaining.
+    fn with_string(obj: Value, key: String, val: String) -> Value;
+    /// Set an integer field. Returns the object for chaining.
+    fn with_int(obj: Value, key: String, val: i64) -> Value;
+    /// Set a float field. Returns the object for chaining.
+    fn with_float(obj: Value, key: String, val: f64) -> Value;
+    /// Set a boolean field. Returns the object for chaining.
+    fn with_bool(obj: Value, key: String, val: bool) -> Value;
+    /// Set a null field. Returns the object for chaining.
+    fn with_null(obj: Value, key: String) -> Value;
+    /// Set a Value child on an object. The child is consumed. Returns the object.
+    fn with(obj: Value, key: String, child: Value) -> Value;
+    /// Push a Value onto an array. The child is consumed. Returns the array.
+    fn push(arr: Value, child: Value) -> Value;
+    /// Push an integer onto an array. Returns the array.
+    fn push_int(arr: Value, val: i64) -> Value;
+    /// Push a string onto an array. Returns the array.
+    fn push_string(arr: Value, val: String) -> Value;
+    /// Push a float onto an array. Returns the array.
+    fn push_float(arr: Value, val: f64) -> Value;
+    /// Push a boolean onto an array. Returns the array.
+    fn push_bool(arr: Value, val: bool) -> Value;
+    /// Push null onto an array. Returns the array.
+    fn push_null(arr: Value) -> Value;
 }
 
 impl ValueMethods for Value {
-    /// Serialize the value back to a JSON string.
     fn stringify(val: Value) -> String { hew_json_stringify(val) }
-    /// Return the type tag of this value.
     fn type_of(val: Value) -> i32 { hew_json_type(val) }
-    /// Extract the boolean value (0 or 1).
     fn get_bool(val: Value) -> i32 { hew_json_get_bool(val) }
-    /// Extract the integer value.
     fn get_int(val: Value) -> i64 { hew_json_get_int(val) }
-    /// Extract the floating-point value.
     fn get_float(val: Value) -> f64 { hew_json_get_float(val) }
-    /// Extract the string value.
     fn get_string(val: Value) -> String { hew_json_get_string(val) }
-    /// Look up a field by key in a JSON object.
     fn get_field(val: Value, key: String) -> Value { hew_json_get_field(val, key) }
-    /// Return the number of elements in a JSON array.
     fn array_len(val: Value) -> i32 { hew_json_array_len(val) }
-    /// Return the element at the given index in a JSON array.
     fn array_get(val: Value, index: i32) -> Value { hew_json_array_get(val, index) }
-    /// Return a JSON array of the object's keys.
     fn keys(val: Value) -> Value { hew_json_object_keys(val) }
-    /// Release the value resources.
     fn free(val: Value) { hew_json_free(val); }
+
+    fn with_string(obj: Value, key: String, val: String) -> Value {
+        hew_json_object_set_string(obj, key, val); obj
+    }
+    fn with_int(obj: Value, key: String, val: i64) -> Value {
+        hew_json_object_set_int(obj, key, val); obj
+    }
+    fn with_float(obj: Value, key: String, val: f64) -> Value {
+        hew_json_object_set_float(obj, key, val); obj
+    }
+    fn with_bool(obj: Value, key: String, val: bool) -> Value {
+        hew_json_object_set_bool(obj, key, val as i32); obj
+    }
+    fn with_null(obj: Value, key: String) -> Value {
+        hew_json_object_set_null(obj, key); obj
+    }
+    fn with(obj: Value, key: String, child: Value) -> Value {
+        hew_json_object_set(obj, key, child); obj
+    }
+    fn push(arr: Value, child: Value) -> Value {
+        hew_json_array_push(arr, child); arr
+    }
+    fn push_int(arr: Value, val: i64) -> Value {
+        hew_json_array_push_int(arr, val); arr
+    }
+    fn push_string(arr: Value, val: String) -> Value {
+        hew_json_array_push_string(arr, val); arr
+    }
+    fn push_float(arr: Value, val: f64) -> Value {
+        hew_json_array_push_float(arr, val); arr
+    }
+    fn push_bool(arr: Value, val: bool) -> Value {
+        hew_json_array_push_bool(arr, val as i32); arr
+    }
+    fn push_null(arr: Value) -> Value {
+        hew_json_array_push_null(arr); arr
+    }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -99,15 +133,34 @@ impl ValueMethods for Value {
 /// Parse a JSON string into a `Value`.
 ///
 /// Panics if the input is not valid JSON.
-///
-/// # Examples
-///
-/// ```
-/// let obj = json.parse("{\"key\": [1, 2, 3]}");
-/// ```
 pub fn parse(s: String) -> Value {
     hew_json_parse(s)
 }
+
+/// Create a new empty JSON object.
+pub fn object() -> Value {
+    hew_json_object_new()
+}
+
+/// Create a new empty JSON array.
+pub fn array() -> Value {
+    hew_json_array_new()
+}
+
+/// Create a JSON Value from an integer.
+pub fn from_int(val: i64) -> Value { hew_json_from_int(val) }
+
+/// Create a JSON Value from a float.
+pub fn from_float(val: f64) -> Value { hew_json_from_float(val) }
+
+/// Create a JSON Value from a string.
+pub fn from_string(val: String) -> Value { hew_json_from_string(val) }
+
+/// Create a JSON Value from a boolean.
+pub fn from_bool(val: bool) -> Value { hew_json_from_bool(val as i32) }
+
+/// Create a JSON null Value.
+pub fn null() -> Value { hew_json_from_null() }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 
@@ -124,4 +177,24 @@ extern "C" {
     fn hew_json_array_get(val: Value, index: i32) -> Value;
     fn hew_json_object_keys(val: Value) -> Value;
     fn hew_json_free(val: Value);
+    // Builders
+    fn hew_json_object_new() -> Value;
+    fn hew_json_array_new() -> Value;
+    fn hew_json_object_set_string(obj: Value, key: String, val: String);
+    fn hew_json_object_set_int(obj: Value, key: String, val: i64);
+    fn hew_json_object_set_float(obj: Value, key: String, val: f64);
+    fn hew_json_object_set_bool(obj: Value, key: String, val: i32);
+    fn hew_json_object_set_null(obj: Value, key: String);
+    fn hew_json_object_set(obj: Value, key: String, child: Value);
+    fn hew_json_array_push(arr: Value, child: Value);
+    fn hew_json_array_push_int(arr: Value, val: i64);
+    fn hew_json_array_push_string(arr: Value, val: String);
+    fn hew_json_array_push_float(arr: Value, val: f64);
+    fn hew_json_array_push_bool(arr: Value, val: i32);
+    fn hew_json_array_push_null(arr: Value);
+    fn hew_json_from_int(val: i64) -> Value;
+    fn hew_json_from_float(val: f64) -> Value;
+    fn hew_json_from_string(val: String) -> Value;
+    fn hew_json_from_bool(val: i32) -> Value;
+    fn hew_json_from_null() -> Value;
 }

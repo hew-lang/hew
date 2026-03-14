@@ -36,6 +36,7 @@
 .PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
+.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -301,17 +302,81 @@ lint:
 	cargo clippy --workspace
 
 # ── Coverage ───────────────────────────────────────────────────────────────
+#
+# Three coverage modes:
+#   make coverage         — Rust unit/integration tests only (cargo llvm-cov)
+#   make coverage-e2e     — E2E tests exercising the full compile pipeline
+#   make coverage-combined — both merged into a single report
+#
+# E2E coverage instruments the hew CLI binary and runtime, then runs all 424+
+# ctest E2E tests. Each `hew compile` invocation and each compiled binary
+# execution generates profraw data.
+#
+# Requires: cargo-llvm-cov, llvm-profdata-22, llvm-cov-22
 
+COV_DIR          := coverage-out
+COV_PROFRAW_DIR  := $(COV_DIR)/profraw
+COV_E2E_DIR      := $(COV_DIR)/e2e-profraw
+COV_PROFDATA     := $(COV_DIR)/combined.profdata
+LLVM_PROFDATA    ?= llvm-profdata-22
+LLVM_COV         ?= llvm-cov-22
+
+# Rust-only coverage (cargo test)
 coverage:
-	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir coverage-html
-	@echo "==> Open coverage-html/html/index.html"
+	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
+	@echo "==> Open $(COV_DIR)/html/index.html"
 
 coverage-summary:
 	cargo llvm-cov --workspace --exclude hew-wasm report --summary-only
 
 coverage-lcov:
-	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path lcov.info
-	@echo "==> Wrote lcov.info"
+	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info
+	@echo "==> Wrote $(COV_DIR)/lcov.info"
+
+# E2E coverage: instruments hew CLI + runtime, runs ctest, generates report
+coverage-e2e: codegen stdlib
+	@echo "==> Building hew CLI + runtime with coverage instrumentation"
+	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
+	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
+	@echo "==> Running $(words $(wildcard hew-codegen/tests/examples/**/*.hew)) E2E tests with instrumented binary"
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Merging profraw data"
+	$(LLVM_PROFDATA) merge -sparse $(COV_E2E_DIR)/*.profraw -o $(COV_DIR)/e2e.profdata
+	@echo "==> E2E coverage summary (Rust frontend):"
+	$(LLVM_COV) report target/debug/hew \
+	  -instr-profile=$(COV_DIR)/e2e.profdata \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -summary-only
+	@echo "==> For full file report: $(LLVM_COV) report target/debug/hew -instr-profile=$(COV_DIR)/e2e.profdata --ignore-filename-regex='(\\.cargo|rustc|/usr/)'"
+
+# Combined coverage: cargo tests + E2E tests merged into one report
+coverage-combined: codegen stdlib
+	@echo "==> Phase 1: Running cargo tests with coverage"
+	cargo llvm-cov --workspace --exclude hew-wasm --no-report
+	@echo "==> Phase 2: Building hew CLI with coverage instrumentation"
+	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
+	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
+	@echo "==> Phase 3: Running E2E tests with instrumented binary"
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Phase 4: Merging all profraw data (cargo tests + E2E)"
+	@mkdir -p $(COV_DIR)/merged
+	@cp target/llvm-cov-target/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
+	@cp $(COV_E2E_DIR)/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
+	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/merged/*.profraw -o $(COV_PROFDATA)
+	@echo "==> Combined coverage summary:"
+	$(LLVM_COV) report target/debug/hew \
+	  -instr-profile=$(COV_PROFDATA) \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -summary-only
+	@echo "==> Generating HTML report"
+	$(LLVM_COV) show target/debug/hew \
+	  -instr-profile=$(COV_PROFDATA) \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -format=html -output-dir=$(COV_DIR)/combined-html
+	@echo "==> Open $(COV_DIR)/combined-html/index.html"
+	@rm -rf $(COV_DIR)/merged
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Checks that every hew_* function name referenced in C++ codegen has a
@@ -409,3 +474,4 @@ clean:
 	rm -rf hew-codegen/build
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
+	rm -rf $(COV_DIR)

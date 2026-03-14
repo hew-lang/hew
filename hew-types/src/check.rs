@@ -9,11 +9,11 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Pattern, Program,
-    ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod,
-    TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
-    WireDecl, WireDeclKind,
+    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl,
+    FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
+    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind,
+    WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -2805,6 +2805,10 @@ impl Checker {
     }
 
     fn check_actor(&mut self, ad: &ActorDecl) {
+        // Type-check init body if present
+        if let Some(init) = &ad.init {
+            self.check_actor_init(&ad.name, init, &ad.fields);
+        }
         for rf in &ad.receive_fns {
             self.check_receive_fn(&ad.name, rf, &ad.fields);
         }
@@ -2824,6 +2828,44 @@ impl Checker {
             self.check_function(method);
             self.env.pop_scope();
         }
+    }
+
+    /// Type-check an actor's `init()` block. The init body runs once when
+    /// the actor is spawned and has access to actor fields and init
+    /// parameters, but not to receive fn parameters.
+    fn check_actor_init(&mut self, actor_name: &str, init: &ActorInit, fields: &[FieldDecl]) {
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::init");
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        // Bind `self` to the actor's type for field access via self.field
+        let self_ty = Ty::Named {
+            name: actor_name.to_string(),
+            args: vec![],
+        };
+        self.env.define("self".to_string(), self_ty, true);
+
+        // Bind actor fields directly in scope (mutable in init body)
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty.0);
+            self.env.define(field.name.clone(), field_ty, true);
+        }
+
+        // Bind init parameters
+        for p in &init.params {
+            let ty = self.resolve_type_expr(&p.ty.0);
+            self.env.define(p.name.clone(), ty, p.is_mutable);
+        }
+
+        // Init returns unit — no meaningful return type
+        self.current_return_type = Some(Ty::Unit);
+        self.check_block(&init.body);
+        self.current_return_type = None;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
     }
 
     fn check_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl, fields: &[FieldDecl]) {

@@ -1,0 +1,48 @@
+// Test: Nested scope blocks with spawn and cleanup ordering.
+// Exercises: scope within scope, spawn tasks in inner and outer scopes,
+// mutable state across scope boundaries, deterministic cleanup.
+
+fn main() {
+    var outer_done = 0;
+    var inner_done = 0;
+    var task_count = 0;
+
+    scope |s1| {
+        s1.spawn {
+            task_count = task_count + 1;
+        };
+
+        // Nested scope inside outer scope
+        scope |s2| {
+            s2.spawn {
+                inner_done = 1;
+                task_count = task_count + 1;
+            };
+            s2.spawn {
+                task_count = task_count + 1;
+            };
+        }
+        // Inner scope fully joined here
+        println(f"inner done: {inner_done}");
+
+        s1.spawn {
+            outer_done = 1;
+            task_count = task_count + 1;
+        };
+    }
+    // Outer scope fully joined here
+    println(f"outer done: {outer_done}");
+    println(f"tasks ran: {task_count}");
+
+    // Second top-level scope to verify cleanup isolation
+    var second_count = 0;
+    scope |s| {
+        s.spawn {
+            second_count = second_count + 1;
+        };
+        s.spawn {
+            second_count = second_count + 1;
+        };
+    }
+    println(f"second scope: {second_count}");
+}

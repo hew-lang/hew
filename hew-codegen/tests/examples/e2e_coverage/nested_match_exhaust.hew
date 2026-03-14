@@ -1,0 +1,95 @@
+// Test: Nested match expressions — match within match arms.
+// Exercises: exhaustiveness across two independent enums,
+// nested match returning values, deeply nested decision trees.
+
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+enum Size {
+    Small;
+    Large;
+}
+
+enum Shape {
+    Circle(int);
+    Square(int);
+}
+
+fn colour_size_label(c: Colour, s: Size) -> string {
+    match c {
+        Red => match s {
+            Small => "small red",
+            Large => "large red",
+        },
+        Green => match s {
+            Small => "small green",
+            Large => "large green",
+        },
+        Blue => match s {
+            Small => "small blue",
+            Large => "large blue",
+        },
+    }
+}
+
+fn priority(c: Colour, s: Size) -> int {
+    match c {
+        Red => match s {
+            Small => 1,
+            Large => 3,
+        },
+        Green => match s {
+            Small => 2,
+            Large => 4,
+        },
+        Blue => match s {
+            Small => 0,
+            Large => 5,
+        },
+    }
+}
+
+// Three-level nesting: colour -> size -> shape
+fn classify(c: Colour, s: Size, sh: Shape) -> string {
+    match c {
+        Red => match s {
+            Small => match sh {
+                Circle(_) => "small red circle",
+                Square(_) => "small red square",
+            },
+            Large => "large red shape",
+        },
+        Green => match sh {
+            Circle(r) => {
+                if r > 5 {
+                    "big green circle"
+                } else {
+                    "small green circle"
+                }
+            },
+            Square(_) => "green square",
+        },
+        Blue => "blue shape",
+    }
+}
+
+fn main() {
+    println(colour_size_label(Red, Small));
+    println(colour_size_label(Green, Large));
+    println(colour_size_label(Blue, Small));
+
+    println(priority(Red, Large));
+    println(priority(Green, Small));
+    println(priority(Blue, Large));
+
+    println(classify(Red, Small, Circle(3)));
+    println(classify(Red, Small, Square(4)));
+    println(classify(Red, Large, Circle(1)));
+    println(classify(Green, Small, Circle(10)));
+    println(classify(Green, Large, Circle(2)));
+    println(classify(Green, Small, Square(1)));
+    println(classify(Blue, Small, Circle(1)));
+}

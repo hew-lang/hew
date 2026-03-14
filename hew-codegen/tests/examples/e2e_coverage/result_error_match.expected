@@ -1,0 +1,8 @@
+ok: 2
+err: not a digit: x
+err: too large to double
+err: divide by zero
+ok: 30
+err: second failed: bad
+err: first failed: oops
+chain result: 2

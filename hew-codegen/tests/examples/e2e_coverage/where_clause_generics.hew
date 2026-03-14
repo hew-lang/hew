@@ -1,0 +1,96 @@
+// Test: Complex generic patterns — wrapper structs, multi-type-param
+// generics, and trait dispatch on concrete types after generic extraction.
+// Exercises: generic struct construction, multi-param monomorphisation,
+// trait method calls on extracted concrete types, generic identity/wrapping.
+
+trait Printable {
+    fn to_str(val: Self) -> string;
+}
+
+type Dog {
+    name: string;
+}
+
+type Cat {
+    name: string;
+    lives: int;
+}
+
+type Box {
+    label: string;
+    width: int;
+}
+
+impl Printable for Dog {
+    fn to_str(d: Dog) -> string {
+        "Dog: " + d.name
+    }
+}
+
+impl Printable for Cat {
+    fn to_str(c: Cat) -> string {
+        "Cat: " + c.name
+    }
+}
+
+impl Printable for Box {
+    fn to_str(b: Box) -> string {
+        "Box: " + b.label
+    }
+}
+
+type Wrapper<T> {
+    inner: T;
+}
+
+fn wrap<T>(val: T) -> Wrapper<T> {
+    Wrapper { inner: val }
+}
+
+fn unwrap<T>(w: Wrapper<T>) -> T {
+    w.inner
+}
+
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn make_pair<A, B>(a: A, b: B) -> Pair<A, B> {
+    Pair { first: a, second: b }
+}
+
+fn identity<T>(x: T) -> T { x }
+
+fn main() {
+    // Wrap and unwrap Dog, then call trait method on concrete type
+    let wd = wrap<Dog>(Dog { name: "Rex" });
+    let d = unwrap<Dog>(wd);
+    println(d.to_str());
+
+    // Same with Cat
+    let wc = wrap<Cat>(Cat { name: "Whiskers", lives: 9 });
+    let c = unwrap<Cat>(wc);
+    println(c.to_str());
+
+    // Pair with two different trait-impl types
+    let p = make_pair<Dog, Cat>(
+        Dog { name: "Buddy" },
+        Cat { name: "Luna", lives: 7 },
+    );
+    println(p.first.to_str());
+    println(p.second.to_str());
+
+    // Identity preserves type for method dispatch
+    let b = identity<Box>(Box { label: "cargo", width: 10 });
+    println(b.to_str());
+
+    // Nested generics: Wrapper<Pair<Dog, Cat>>
+    let nested = wrap<Pair<Dog, Cat>>(make_pair<Dog, Cat>(
+        Dog { name: "Max" },
+        Cat { name: "Milo", lives: 5 },
+    ));
+    let inner = unwrap<Pair<Dog, Cat>>(nested);
+    println(inner.first.to_str());
+    println(inner.second.to_str());
+}

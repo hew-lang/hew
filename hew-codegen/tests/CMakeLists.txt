@@ -813,6 +813,15 @@ add_e2e_file_test(coverage_enum_patterns       e2e_coverage enum_complex_pattern
 add_e2e_file_test(coverage_loop_control        e2e_coverage loop_control_flow)
 add_e2e_file_test(coverage_hashmap_option      e2e_coverage hashmap_option_integration)
 add_e2e_file_test(coverage_trait_dispatch      e2e_coverage trait_dispatch_generic)
+add_e2e_file_test(coverage_where_clause_gen    e2e_coverage where_clause_generics)
+add_e2e_file_test(coverage_nested_match        e2e_coverage nested_match_exhaust)
+add_e2e_file_test(coverage_dyn_param           e2e_coverage dyn_param_dispatch)
+add_e2e_file_test(coverage_result_error        e2e_coverage result_error_match)
+add_e2e_file_test(coverage_vec_functional      e2e_coverage vec_functional_ops)
+add_e2e_file_test(coverage_string_interp       e2e_coverage string_interp_complex)
+add_e2e_file_test(coverage_enum_data           e2e_coverage enum_data_methods)
+add_e2e_file_test(coverage_nested_scope        e2e_coverage nested_scope_cleanup)
+add_e2e_file_test(coverage_generic_multi       e2e_coverage generic_multi_bound)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

@@ -1,0 +1,59 @@
+// Test: String interpolation with complex expressions inside braces.
+// Exercises: f-string with arithmetic, comparisons, method calls,
+// field access, and nested function calls in interpolation braces.
+
+type Point {
+    x: int;
+    y: int;
+}
+
+impl Point {
+    fn magnitude(p: Point) -> int {
+        p.x * p.x + p.y * p.y
+    }
+}
+
+fn square(n: int) -> int {
+    n * n
+}
+
+fn label(n: int) -> string {
+    if n > 10 {
+        "big"
+    } else {
+        "small"
+    }
+}
+
+fn main() {
+    // Arithmetic in interpolation
+    let a = 7;
+    let b = 3;
+    println(f"sum: {a + b}");
+    println(f"product: {a * b}");
+    println(f"complex: {a * b + 2}");
+
+    // Method call in interpolation
+    let p = Point { x: 3, y: 4 };
+    println(f"magnitude: {p.magnitude()}");
+
+    // Field access in interpolation
+    println(f"point: ({p.x}, {p.y})");
+
+    // Function call in interpolation
+    println(f"square of 6: {square(6)}");
+    println(f"label for 15: {label(15)}");
+    println(f"label for 5: {label(5)}");
+
+    // Multiple expressions in one string
+    let name = "Hew";
+    let ver = 1;
+    println(f"{name} version {ver} says {a + b}");
+
+    // Nested function calls
+    println(f"square of sum: {square(a + b)}");
+
+    // Bool expression
+    println(f"a > b: {a > b}");
+    println(f"equal: {a == b}");
+}

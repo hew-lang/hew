@@ -1,0 +1,12 @@
+sum: 10
+product: 21
+complex: 23
+magnitude: 25
+point: (3, 4)
+square of 6: 36
+label for 15: big
+label for 5: small
+Hew version 1 says 10
+square of sum: 100
+a > b: true
+equal: false

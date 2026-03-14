@@ -1,0 +1,102 @@
+// Test: dyn Trait used as function parameters with multiple types.
+// Exercises: dynamic dispatch through function params, multiple dyn calls,
+// trait return values routed through dyn, chained dyn functions.
+
+trait Describable {
+    fn describe(val: Self) -> string;
+}
+
+trait Weighted {
+    fn weight(val: Self) -> int;
+}
+
+type Apple {
+    variety: string;
+    grams: int;
+}
+
+type Book {
+    title: string;
+    pages: int;
+}
+
+type Stone {
+    mass: int;
+}
+
+impl Describable for Apple {
+    fn describe(a: Apple) -> string {
+        "Apple: " + a.variety
+    }
+}
+
+impl Describable for Book {
+    fn describe(b: Book) -> string {
+        "Book: " + b.title
+    }
+}
+
+impl Describable for Stone {
+    fn describe(s: Stone) -> string {
+        "Stone"
+    }
+}
+
+impl Weighted for Apple {
+    fn weight(a: Apple) -> int {
+        a.grams
+    }
+}
+
+impl Weighted for Book {
+    fn weight(b: Book) -> int {
+        b.pages * 3
+    }
+}
+
+impl Weighted for Stone {
+    fn weight(s: Stone) -> int {
+        s.mass
+    }
+}
+
+// Accept dyn Describable
+fn print_desc(obj: dyn Describable) {
+    println(obj.describe());
+}
+
+// Accept dyn Weighted and return int
+fn get_weight(obj: dyn Weighted) -> int {
+    obj.weight()
+}
+
+// Chain: describe then check weight threshold
+fn is_heavy(obj: dyn Weighted) -> bool {
+    obj.weight() > 500
+}
+
+fn main() {
+    let a = Apple { variety: "Gala", grams: 180 };
+    let b = Book { title: "Hew Guide", pages: 200 };
+    let s = Stone { mass: 5000 };
+
+    // Single-trait dyn dispatch - Describable
+    print_desc(a);
+    print_desc(b);
+    print_desc(s);
+
+    // Single-trait dyn dispatch - Weighted (returning values)
+    println(get_weight(Apple { variety: "Fuji", grams: 160 }));
+    println(get_weight(Book { title: "Manual", pages: 100 }));
+    println(get_weight(Stone { mass: 3000 }));
+
+    // Dyn dispatch through bool-returning function
+    println(is_heavy(Apple { variety: "Small", grams: 100 }));
+    println(is_heavy(Stone { mass: 2000 }));
+
+    // Multiple dyn calls on same constructed values
+    print_desc(Apple { variety: "Honeycrisp", grams: 200 });
+    println(get_weight(Apple { variety: "Honeycrisp", grams: 200 }));
+    print_desc(Book { title: "Compiler Book", pages: 400 });
+    println(get_weight(Book { title: "Compiler Book", pages: 400 }));
+}

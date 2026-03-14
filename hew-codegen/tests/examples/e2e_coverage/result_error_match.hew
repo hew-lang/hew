@@ -1,0 +1,89 @@
+// Test: Result<T,E> error propagation with complex match patterns.
+// Exercises: nested match on Result, error conversion, chained fallible
+// functions, match arms returning Results, exhaustive Result matching.
+
+fn parse_digit(s: String) -> Result<int, String> {
+    if s == "0" { Ok(0) }
+    else { if s == "1" { Ok(1) }
+    else { if s == "2" { Ok(2) }
+    else { if s == "3" { Ok(3) }
+    else { if s == "4" { Ok(4) }
+    else { if s == "5" { Ok(5) }
+    else { Err("not a digit: " + s) }
+    }}}}}
+}
+
+fn double_if_small(n: int) -> Result<int, String> {
+    if n <= 3 {
+        Ok(n * 2)
+    } else {
+        Err("too large to double")
+    }
+}
+
+fn safe_div(a: int, b: int) -> Result<int, String> {
+    if b == 0 {
+        Err("divide by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+// Chain: parse -> double -> divide using ? operator
+fn chain_ops(input: String, divisor: int) -> Result<int, String> {
+    let parsed = parse_digit(input)?;
+    let doubled = double_if_small(parsed)?;
+    let result = safe_div(doubled, divisor)?;
+    Ok(result)
+}
+
+fn show(r: Result<int, String>) {
+    match r {
+        Ok(v) => println(f"ok: {v}"),
+        Err(e) => println(f"err: {e}"),
+    }
+}
+
+// Nested match: match on two Results together
+fn combine_results(a: Result<int, String>, b: Result<int, String>) -> Result<int, String> {
+    match a {
+        Ok(va) => match b {
+            Ok(vb) => Ok(va + vb),
+            Err(eb) => Err("second failed: " + eb),
+        },
+        Err(ea) => Err("first failed: " + ea),
+    }
+}
+
+fn main() {
+    // Successful chain
+    show(chain_ops("2", 2));
+    // Parse failure
+    show(chain_ops("x", 1));
+    // Double failure (too large)
+    show(chain_ops("5", 1));
+    // Division by zero
+    show(chain_ops("1", 0));
+
+    // Nested match: both Ok
+    let r_ok1: Result<int, String> = Ok(10);
+    let r_ok2: Result<int, String> = Ok(20);
+    show(combine_results(r_ok1, r_ok2));
+
+    // Nested match: second Err
+    let r_ok3: Result<int, String> = Ok(10);
+    let r_err1: Result<int, String> = Err("bad");
+    show(combine_results(r_ok3, r_err1));
+
+    // Nested match: first Err
+    let r_err2: Result<int, String> = Err("oops");
+    let r_ok4: Result<int, String> = Ok(5);
+    show(combine_results(r_err2, r_ok4));
+
+    // Direct match on chained result
+    let r = chain_ops("3", 3);
+    match r {
+        Ok(v) => println(f"chain result: {v}"),
+        Err(e) => println(f"chain error: {e}"),
+    }
+}

@@ -1,0 +1,64 @@
+// Test: Enum with data variants and method dispatch via free functions
+// and trait implementations using pattern matching.
+// Exercises: enum payloads, pattern matching in functions operating
+// on enums, f-string interpolation with enum-derived values.
+//
+// NOTE: Direct method-call syntax (val.method()) on enum values is not
+// yet supported in codegen; use free functions with match instead.
+
+enum Expr {
+    Lit(int);
+    Add(int, int);
+    Mul(int, int);
+    Neg(int);
+}
+
+fn eval(e: Expr) -> int {
+    match e {
+        Lit(n) => n,
+        Add(a, b) => a + b,
+        Mul(a, b) => a * b,
+        Neg(n) => 0 - n,
+    }
+}
+
+fn display_kind(e: Expr) -> string {
+    match e {
+        Lit(_) => "literal",
+        Add(_, _) => "addition",
+        Mul(_, _) => "multiplication",
+        Neg(_) => "negation",
+    }
+}
+
+fn is_zero(e: Expr) -> bool {
+    eval(e) == 0
+}
+
+fn describe_and_eval(e: Expr) {
+    let kind = display_kind(e);
+    let result = eval(e);
+    println(f"{kind} = {result}");
+}
+
+fn main() {
+    // Direct eval calls
+    println(eval(Lit(42)));
+    println(eval(Add(10, 20)));
+    println(eval(Mul(3, 7)));
+    println(eval(Neg(5)));
+
+    // Display kind
+    println(display_kind(Lit(1)));
+    println(display_kind(Add(1, 2)));
+
+    // Combined describe and eval
+    describe_and_eval(Lit(99));
+    describe_and_eval(Add(100, 200));
+    describe_and_eval(Mul(6, 8));
+    describe_and_eval(Neg(15));
+
+    // Bool check
+    println(is_zero(Lit(0)));
+    println(is_zero(Add(1, 2)));
+}

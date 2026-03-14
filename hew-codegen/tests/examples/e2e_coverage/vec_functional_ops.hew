@@ -1,0 +1,56 @@
+// Test: Vec functional operations — map, filter, and combined patterns.
+// Exercises: .map() with closures, .filter() with predicates,
+// chained functional operations, index access on results.
+
+fn main() {
+    // map: double each element
+    let nums: Vec<int> = [1, 2, 3, 4, 5];
+    let doubled = nums.map((x: int) => x * 2);
+    for i in 0..doubled.len() {
+        print(f"{doubled[i]} ");
+    }
+    println("");
+
+    // filter: keep evens
+    let all: Vec<int> = [1, 2, 3, 4, 5, 6, 7, 8];
+    let evens = all.filter((x: int) => x % 2 == 0);
+    for i in 0..evens.len() {
+        print(f"{evens[i]} ");
+    }
+    println("");
+
+    // map then filter: square, then keep those > 10
+    let base: Vec<int> = [1, 2, 3, 4, 5];
+    let squared = base.map((x: int) => x * x);
+    let big = squared.filter((x: int) => x > 10);
+    for i in 0..big.len() {
+        print(f"{big[i]} ");
+    }
+    println("");
+
+    // filter then map: keep positives, then add 100
+    let mixed: Vec<int> = [3, 0, 7, 0, 2];
+    let nonzero = mixed.filter((x: int) => x > 0);
+    let shifted = nonzero.map((x: int) => x + 100);
+    for i in 0..shifted.len() {
+        print(f"{shifted[i]} ");
+    }
+    println("");
+
+    // Build vec with push, then map
+    let built: Vec<int> = Vec::new();
+    built.push(10);
+    built.push(20);
+    built.push(30);
+    let halved = built.map((x: int) => x / 2);
+    println(f"len: {halved.len()}");
+    println(f"first: {halved[0]}");
+    println(f"last: {halved[2]}");
+
+    // Empty vec operations
+    let empty: Vec<int> = Vec::new();
+    let mapped_empty = empty.map((x: int) => x + 1);
+    let filtered_empty = empty.filter((x: int) => x > 0);
+    println(f"empty map len: {mapped_empty.len()}");
+    println(f"empty filter len: {filtered_empty.len()}");
+}

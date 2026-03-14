@@ -1395,92 +1395,93 @@ mod tests {
         assert_eq!(guard.as_deref(), Some(&[10, 20][..]));
 
         handle.join().expect("completer thread panicked");
-    #[test]
-    fn remote_lookup_via_registry_gossip() {
-        // Verify that a registry gossip callback populates remote_names
-        // and that hew_node_lookup falls through to it.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        crate::registry::hew_registry_clear();
+        #[test]
+        fn remote_lookup_via_registry_gossip() {
+            // Verify that a registry gossip callback populates remote_names
+            // and that hew_node_lookup falls through to it.
+            let _guard = match NODE_TEST_LOCK.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            crate::registry::hew_registry_clear();
 
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is a valid C string.
-        let node = unsafe { TestNode::new(110, &bind_addr) };
-        assert!(!node.as_ptr().is_null());
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string.
+            let node = unsafe { TestNode::new(110, &bind_addr) };
+            assert!(!node.as_ptr().is_null());
 
-        // SAFETY: pointer is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node.as_ptr()), 0);
+            // SAFETY: pointer is valid for each call in this scope.
+            unsafe {
+                assert_eq!(hew_node_start(node.as_ptr()), 0);
 
-            // Simulate a remote registry gossip event arriving.
-            let n = &*node.as_ptr();
-            let remote_name = c"remote_counter";
-            let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
+                // Simulate a remote registry gossip event arriving.
+                let n = &*node.as_ptr();
+                let remote_name = c"remote_counter";
+                let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
 
-            // Invoke the callback directly (as the cluster would).
-            node_registry_gossip_callback(
-                remote_name.as_ptr(),
-                remote_pid,
-                true,
-                n.registry.cast::<c_void>(),
-            );
+                // Invoke the callback directly (as the cluster would).
+                node_registry_gossip_callback(
+                    remote_name.as_ptr(),
+                    remote_pid,
+                    true,
+                    n.registry.cast::<c_void>(),
+                );
 
-            // Local lookup should not find it (not registered locally).
-            assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
+                // Local lookup should not find it (not registered locally).
+                assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
 
-            // Node lookup should find it via remote_names.
-            assert_eq!(
-                hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
-                remote_pid
-            );
+                // Node lookup should find it via remote_names.
+                assert_eq!(
+                    hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
+                    remote_pid
+                );
 
-            // Simulate removal.
-            node_registry_gossip_callback(
-                remote_name.as_ptr(),
-                0,
-                false,
-                n.registry.cast::<c_void>(),
-            );
-            assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
+                // Simulate removal.
+                node_registry_gossip_callback(
+                    remote_name.as_ptr(),
+                    0,
+                    false,
+                    n.registry.cast::<c_void>(),
+                );
+                assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
 
-            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+                assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            }
+            crate::registry::hew_registry_clear();
         }
-        crate::registry::hew_registry_clear();
-    }
 
-    #[test]
-    fn register_emits_gossip_event() {
-        // Verify that hew_node_register queues a gossip event in the cluster.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        crate::registry::hew_registry_clear();
+        #[test]
+        fn register_emits_gossip_event() {
+            // Verify that hew_node_register queues a gossip event in the cluster.
+            let _guard = match NODE_TEST_LOCK.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            crate::registry::hew_registry_clear();
 
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is a valid C string.
-        let node = unsafe { TestNode::new(111, &bind_addr) };
-        assert!(!node.as_ptr().is_null());
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string.
+            let node = unsafe { TestNode::new(111, &bind_addr) };
+            assert!(!node.as_ptr().is_null());
 
-        // SAFETY: pointer is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node.as_ptr()), 0);
+            // SAFETY: pointer is valid for each call in this scope.
+            unsafe {
+                assert_eq!(hew_node_start(node.as_ptr()), 0);
 
-            let name = c"gossip_actor";
-            let pid: u64 = (u64::from(111u16) << 48) | 42;
-            assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
+                let name = c"gossip_actor";
+                let pid: u64 = (u64::from(111u16) << 48) | 42;
+                assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
 
-            // The cluster should have a pending registry gossip event.
-            let n = &*node.as_ptr();
-            assert!(!n.cluster.is_null());
-            assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
+                // The cluster should have a pending registry gossip event.
+                let n = &*node.as_ptr();
+                assert!(!n.cluster.is_null());
+                assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
 
-            let _ = crate::registry::hew_registry_unregister(name.as_ptr());
-            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+                let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+                assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            }
+            crate::registry::hew_registry_clear();
         }
-        crate::registry::hew_registry_clear();
     }
 }
 

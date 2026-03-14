@@ -5,7 +5,7 @@ actor Worker {
     receive fn compute(n: int) -> int {
         let result = n * n;
         print("Worker ");
-        print(self.id);
+        print(id);
         print(": ");
         print(n);
         println(f"^2 = {result}");

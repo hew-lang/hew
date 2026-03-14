@@ -26,43 +26,43 @@ type Semaphore {}
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
     /// Block until a permit is available, then acquire it.
-    fn acquire(self: Semaphore);
+    fn acquire(sem: Semaphore);
 
     /// Try to acquire a permit without blocking.
     ///
     /// Returns `true` if a permit was acquired, `false` otherwise.
-    fn try_acquire(self: Semaphore) -> bool;
+    fn try_acquire(sem: Semaphore) -> bool;
 
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     ///
     /// Returns `true` if a permit was acquired before the timeout.
-    fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool;
+    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool;
 
     /// Release a previously acquired permit.
-    fn release(self: Semaphore);
+    fn release(sem: Semaphore);
 
     /// Return the current number of available permits.
-    fn count(self: Semaphore) -> i32;
+    fn count(sem: Semaphore) -> i32;
 
     /// Release the semaphore resources.
-    fn free(self: Semaphore);
+    fn free(sem: Semaphore);
 }
 
 impl SemaphoreMethods for Semaphore {
     /// Block until a permit is available, then acquire it.
-    fn acquire(self: Semaphore) { hew_semaphore_acquire(self); }
+    fn acquire(sem: Semaphore) { hew_semaphore_acquire(sem); }
     /// Try to acquire a permit without blocking.
-    fn try_acquire(self: Semaphore) -> bool { hew_semaphore_try_acquire(self) }
+    fn try_acquire(sem: Semaphore) -> bool { hew_semaphore_try_acquire(sem) }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    fn acquire_timeout(self: Semaphore, timeout_ms: i64) -> bool {
-        hew_semaphore_acquire_timeout(self, timeout_ms)
+    fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
+        hew_semaphore_acquire_timeout(sem, timeout_ms)
     }
     /// Release a previously acquired permit.
-    fn release(self: Semaphore) { hew_semaphore_release(self); }
+    fn release(sem: Semaphore) { hew_semaphore_release(sem); }
     /// Return the current number of available permits.
-    fn count(self: Semaphore) -> i32 { hew_semaphore_count(self) }
+    fn count(sem: Semaphore) -> i32 { hew_semaphore_count(sem) }
     /// Release the semaphore resources.
-    fn free(self: Semaphore) { hew_semaphore_free(self); }
+    fn free(sem: Semaphore) { hew_semaphore_free(sem); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

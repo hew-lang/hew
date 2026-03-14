@@ -61,22 +61,22 @@ actor ConnWorker {
     let role: i32; // 0 = reader, 1 = writer
     let port: i32;
     receive fn handle(request_id: i32) {
-        if self.role == 0 {
+        if role == 0 {
             print("  [reader:");
         } else {
             print("  [writer:");
         }
-        print(self.port);
+        print(port);
         print("] handling request ");
         println(request_id);
     }
     receive fn fail() {
-        if self.role == 0 {
+        if role == 0 {
             print("  [reader:");
         } else {
             print("  [writer:");
         }
-        print(self.port);
+        print(port);
         println("] connection lost!");
         panic("connection failure");
     }

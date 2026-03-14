@@ -1,0 +1,8 @@
+=== This Keyword ===
+Worker 1 registering
+Manager registered worker 1
+Worker 1 got task: build widgets
+Worker 2 registering
+Manager registered worker 2
+Worker 2 got task: build widgets
+Done

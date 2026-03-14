@@ -1169,7 +1169,7 @@ static void test_select_emits_send_failure_cleanup() {
 actor Fast {
     let value: int;
     receive fn get() -> int {
-        self.value
+        value
     }
 }
 
@@ -1177,7 +1177,7 @@ actor Slow {
     let value: int;
     receive fn get() -> int {
         sleep_ms(50);
-        self.value
+        value
     }
 }
 
@@ -1239,7 +1239,7 @@ static void test_join_emits_send_failure_cleanup() {
 actor Worker {
     let id: int;
     receive fn compute() -> int {
-        self.id * 10
+        id * 10
     }
 }
 

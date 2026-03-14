@@ -110,7 +110,7 @@ const categoryMap = {
     // Extra lines after the keyword line (not from syntax-data)
     extraLines: [
       'syn keyword hewNone        None',
-      'syn keyword hewSelf        self',
+      'syn keyword hewSelf        this',
       'syn keyword hewSelfType    Self',
     ],
   },

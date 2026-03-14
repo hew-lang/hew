@@ -57,14 +57,14 @@ wire enum Command {
 actor Counter {
     let count: i32;
     receive fn increment() {
-        self.count = self.count + 1;
+        count = count + 1;
     }
     receive fn get() -> i32 {
-        self.count
+        count
     }
     receive fn add(n: i32) -> i32 {
-        self.count = self.count + n;
-        self.count
+        count = count + n;
+        count
     }
 }
 

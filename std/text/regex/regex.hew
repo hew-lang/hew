@@ -33,12 +33,12 @@ trait PatternMethods {
     /// let re = regex.new("^[a-z]+$");
     /// assert(re.is_match("hello"));
     /// ```
-    fn is_match(self: Pattern, input: String) -> bool;
+    fn is_match(pat: Pattern, input: String) -> bool;
 
     /// Find the first match of the pattern in the input string.
     ///
     /// Returns the matched substring, or an empty string if no match.
-    fn find(self: Pattern, input: String) -> String;
+    fn find(pat: Pattern, input: String) -> String;
 
     /// Replace all occurrences of the pattern with the replacement string.
     ///
@@ -49,23 +49,23 @@ trait PatternMethods {
     /// let result = re.replace("abc123def456", "N");
     /// // result == "abcNdefN"
     /// ```
-    fn replace(self: Pattern, input: String, replacement: String) -> String;
+    fn replace(pat: Pattern, input: String, replacement: String) -> String;
 
     /// Release the compiled pattern resources.
-    fn free(self: Pattern);
+    fn free(pat: Pattern);
 }
 
 impl PatternMethods for Pattern {
     /// Test whether the pattern matches anywhere in the input string.
-    fn is_match(self: Pattern, input: String) -> bool { hew_regex_is_match(self, input) }
+    fn is_match(pat: Pattern, input: String) -> bool { hew_regex_is_match(pat, input) }
     /// Find the first match of the pattern in the input string.
-    fn find(self: Pattern, input: String) -> String { hew_regex_find(self, input) }
+    fn find(pat: Pattern, input: String) -> String { hew_regex_find(pat, input) }
     /// Replace all occurrences of the pattern with the replacement string.
-    fn replace(self: Pattern, input: String, replacement: String) -> String {
-        hew_regex_replace(self, input, replacement)
+    fn replace(pat: Pattern, input: String, replacement: String) -> String {
+        hew_regex_replace(pat, input, replacement)
     }
     /// Release the compiled pattern resources.
-    fn free(self: Pattern) { hew_regex_free(self); }
+    fn free(pat: Pattern) { hew_regex_free(pat); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

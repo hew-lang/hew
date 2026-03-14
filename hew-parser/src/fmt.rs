@@ -1670,6 +1670,7 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::Cooperate => self.write("cooperate"),
+            Expr::This => self.write("this"),
             Expr::FieldAccess { object, field } => {
                 self.format_expr(&object.0);
                 self.write(".");

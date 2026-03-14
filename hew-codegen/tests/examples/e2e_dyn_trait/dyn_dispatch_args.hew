@@ -1,5 +1,5 @@
 trait Scalable {
-    fn scale(self: Self, factor: int) -> int;
+    fn scale(val: Self, factor: int) -> int;
 }
 
 type Circle {
@@ -11,14 +11,14 @@ type Square {
 }
 
 impl Scalable for Circle {
-    fn scale(self: Circle, factor: int) -> int {
-        self.radius * factor
+    fn scale(circ: Circle, factor: int) -> int {
+        circ.radius * factor
     }
 }
 
 impl Scalable for Square {
-    fn scale(self: Square, factor: int) -> int {
-        self.side * factor
+    fn scale(sq: Square, factor: int) -> int {
+        sq.side * factor
     }
 }
 

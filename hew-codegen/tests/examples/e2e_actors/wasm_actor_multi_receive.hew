@@ -4,15 +4,15 @@ actor Store {
     let value: int;
 
     receive fn set(x: int) {
-        self.value = x;
+        value = x;
     }
 
     receive fn add(x: int) {
-        self.value = self.value + x;
+        value = value + x;
     }
 
     receive fn print() {
-        println(self.value);
+        println(value);
     }
 }
 

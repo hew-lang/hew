@@ -10,8 +10,8 @@ actor Adder {
     let amount: int;
     let target: Printer;
     receive fn add(n: int) {
-        let result = n + self.amount;
-        self.target.print_result(result);
+        let result = n + amount;
+        target.print_result(result);
     }
 }
 
@@ -19,7 +19,7 @@ actor Doubler {
     let target: Adder;
     receive fn process(n: int) {
         let result = n * 2;
-        self.target.add(result);
+        target.add(result);
     }
 }
 

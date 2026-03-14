@@ -3,10 +3,10 @@
 actor Counter {
     let count: int;
     receive fn increment(n: int) {
-        self.count = self.count + n;
+        count = count + n;
     }
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 

@@ -19,7 +19,7 @@ actor Handler {
         if path.contains("..") {
             req.respond_text(403, "403 Forbidden");
         } else {
-            var file_path = self.root + path;
+            var file_path = root + path;
             if path.ends_with("/") {
                 file_path = file_path + "index.html";
             }

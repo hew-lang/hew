@@ -882,14 +882,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     auto operandType = operandVal.getType();
     if (isPointerLikeType(operandType)) {
       auto fieldName = fa->field;
-      // When accessing self.field, use currentActorName for precise lookup
       std::string targetStructName;
-      if (!currentActorName.empty()) {
-        if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-          if (baseIdent->name == "self")
-            targetStructName = currentActorName;
-        }
-      }
       for (const auto &[typeName, stInfo] : structTypes) {
         if (!targetStructName.empty() && typeName != targetStructName)
           continue;
@@ -1077,8 +1070,38 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
   if (!rhs)
     return;
 
-  // Inside actor init/receive, bare field names (e.g. `handle = ...`) map to
-  // actor state fields via GEP into the actor state struct.
+  // Check local variables first — mirrors the read path in MLIRGenExpr so that
+  // reads and writes target the same storage when a local shadows a field.
+  auto existingVar = lookupVariable(name);
+  if (existingVar) {
+    // Assign to local variable
+    if (stmt.op) {
+      rhs = coerceType(rhs, existingVar.getType(), location);
+      auto type = existingVar.getType();
+      bool isFloat = llvm::isa<mlir::FloatType>(type);
+      bool isUnsigned = false;
+      if (mlir::isa<mlir::IntegerType>(type))
+        if (auto *ty = resolvedTypeOf(stmt.target.span))
+          isUnsigned = isUnsignedTypeExpr(*ty);
+
+      auto result = emitCompoundArithOp(*stmt.op, existingVar, rhs, isFloat, isUnsigned, location);
+      if (!result)
+        return;
+      storeVariable(name, result);
+    } else {
+      rhs = coerceType(rhs, existingVar.getType(), location);
+      // Drop old owned value before overwriting to prevent memory leaks.
+      // Only safe when RHS is a fresh allocation (not loaded from another
+      // variable), to avoid double-free from shared ownership.
+      if (rhs && !rhs.getDefiningOp<mlir::memref::LoadOp>() && !mlir::isa<mlir::BlockArgument>(rhs))
+        emitDropForVariable(name);
+      storeVariable(name, rhs);
+    }
+    return;
+  }
+
+  // Inside actor init/receive, bare field names (e.g. `handle = ...`) fall
+  // through to actor state fields via GEP into the actor state struct.
   if (!currentActorName.empty()) {
     auto selfVal = lookupVariable("self");
     if (selfVal) {
@@ -1115,35 +1138,7 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
     }
   }
 
-  // Handle compound assignment operators
-  if (stmt.op) {
-    mlir::Value current = lookupVariable(name);
-    if (!current)
-      return;
-
-    rhs = coerceType(rhs, current.getType(), location);
-    auto type = current.getType();
-    bool isFloat = llvm::isa<mlir::FloatType>(type);
-    bool isUnsigned = false;
-    if (mlir::isa<mlir::IntegerType>(type))
-      if (auto *ty = resolvedTypeOf(stmt.target.span))
-        isUnsigned = isUnsignedTypeExpr(*ty);
-
-    auto result = emitCompoundArithOp(*stmt.op, current, rhs, isFloat, isUnsigned, location);
-    if (!result)
-      return;
-    storeVariable(name, result);
-  } else {
-    mlir::Value current = lookupVariable(name);
-    if (current)
-      rhs = coerceType(rhs, current.getType(), location);
-    // Drop old owned value before overwriting to prevent memory leaks.
-    // Only safe when RHS is a fresh allocation (not loaded from another
-    // variable), to avoid double-free from shared ownership.
-    if (rhs && !rhs.getDefiningOp<mlir::memref::LoadOp>() && !mlir::isa<mlir::BlockArgument>(rhs))
-      emitDropForVariable(name);
-    storeVariable(name, rhs);
-  }
+  emitError(location) << "undefined variable '" << name << "' in assignment";
 }
 
 void MLIRGen::generateIfStmt(const ast::StmtIf &stmt) {
@@ -2096,18 +2091,15 @@ void MLIRGen::generateForCollectionStmt(const ast::StmtFor &stmt) {
   if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
     collType = typeExprToCollectionString(
         *typeExpr, [this](const std::string &n) { return resolveTypeAlias(n); });
-  // Also check self.field access for actor collection fields
+  // Check bare field access for actor collection fields
   if (collType.empty() && !currentActorName.empty()) {
-    if (auto *fieldAccess = std::get_if<ast::ExprFieldAccess>(&stmt.iterable.value.kind)) {
-      if (fieldAccess->object) {
-        if (auto *objIdent = std::get_if<ast::ExprIdentifier>(&fieldAccess->object->value.kind)) {
-          if (objIdent->name == "self") {
-            auto key = currentActorName + "." + fieldAccess->field;
-            auto cit = collectionFieldTypes.find(key);
-            if (cit != collectionFieldTypes.end())
-              collType = cit->second;
-          }
-        }
+    // Bare field name (e.g. `for item in items`)
+    if (collType.empty()) {
+      if (auto *ident = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
+        auto key = currentActorName + "." + ident->name;
+        auto cit = collectionFieldTypes.find(key);
+        if (cit != collectionFieldTypes.end())
+          collType = cit->second;
       }
     }
   }

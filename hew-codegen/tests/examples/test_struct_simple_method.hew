@@ -4,12 +4,12 @@ type Point {
 }
 
 trait PointOps {
-    fn sum(self: Point) -> f64;
+    fn sum(pt: Point) -> f64;
 }
 
 impl PointOps for Point {
-    fn sum(self: Point) -> f64 {
-        self.x + self.y
+    fn sum(pt: Point) -> f64 {
+        pt.x + pt.y
     }
 }
 

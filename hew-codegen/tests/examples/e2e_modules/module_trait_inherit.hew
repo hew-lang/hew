@@ -1,7 +1,7 @@
 import "trait_base_lib.hew";
 
 trait Pet: Animal {
-    fn name(self: Self) -> int;
+    fn name(val: Self) -> int;
 }
 
 type Dog {
@@ -10,14 +10,14 @@ type Dog {
 }
 
 impl Animal for Dog {
-    fn legs(self: Dog) -> int {
-        return self.leg_count;
+    fn legs(d: Dog) -> int {
+        return d.leg_count;
     }
 }
 
 impl Pet for Dog {
-    fn name(self: Dog) -> int {
-        return self.name_id;
+    fn name(d: Dog) -> int {
+        return d.name_id;
     }
 }
 

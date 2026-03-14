@@ -5,10 +5,10 @@ actor Counter {
     let count: int;
 
     receive fn increment(n: int) -> int {
-        self.count = self.count + n;
+        count = count + n;
         print("Count is now: ");
-        println(self.count);
-        self.count
+        println(count);
+        count
     }
 }
 

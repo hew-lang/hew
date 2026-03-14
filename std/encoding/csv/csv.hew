@@ -25,44 +25,44 @@ type Table {
 /// Methods available on a CSV `Table`.
 trait TableMethods {
     /// Return the number of data rows (excluding the header row).
-    fn rows(self: Table) -> i32;
+    fn rows(tbl: Table) -> i32;
 
     /// Return the number of columns.
-    fn cols(self: Table) -> i32;
+    fn cols(tbl: Table) -> i32;
 
     /// Return the header name for the given column index.
-    fn header(self: Table, col: i32) -> String;
+    fn header(tbl: Table, col: i32) -> String;
 
     /// Return the cell value at the given row and column index.
-    fn get(self: Table, row: i32, col: i32) -> String;
+    fn get(tbl: Table, row: i32, col: i32) -> String;
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(self: Table, row: i32, col_name: String) -> String;
+    fn get_by_name(tbl: Table, row: i32, col_name: String) -> String;
 
     /// No-op for compatibility (struct tables don't need manual freeing).
-    fn free(self: Table);
+    fn free(tbl: Table);
 }
 
 impl TableMethods for Table {
     /// Return the number of data rows (excluding the header row).
-    fn rows(self: Table) -> i32 { self.data.len() }
+    fn rows(tbl: Table) -> i32 { tbl.data.len() }
     /// Return the number of columns.
-    fn cols(self: Table) -> i32 { self.hdrs.len() }
+    fn cols(tbl: Table) -> i32 { tbl.hdrs.len() }
 
     /// Return the header name for the given column index.
-    fn header(self: Table, col: i32) -> String {
-        if col < 0 || col >= self.hdrs.len() {
+    fn header(tbl: Table, col: i32) -> String {
+        if col < 0 || col >= tbl.hdrs.len() {
             return "";
         }
-        self.hdrs.get(col)
+        tbl.hdrs.get(col)
     }
 
     /// Return the cell value at the given row and column index.
-    fn get(self: Table, row: i32, col: i32) -> String {
-        if row < 0 || row >= self.data.len() {
+    fn get(tbl: Table, row: i32, col: i32) -> String {
+        if row < 0 || row >= tbl.data.len() {
             return "";
         }
-        let r = self.data.get(row);
+        let r = tbl.data.get(row);
         if col < 0 || col >= r.len() {
             return "";
         }
@@ -70,16 +70,16 @@ impl TableMethods for Table {
     }
 
     /// Return the cell value at the given row for the named column.
-    fn get_by_name(self: Table, row: i32, col_name: String) -> String {
-        let col = find_header(self.hdrs, col_name);
+    fn get_by_name(tbl: Table, row: i32, col_name: String) -> String {
+        let col = find_header(tbl.hdrs, col_name);
         if col < 0 {
             return "";
         }
-        self.get(row, col)
+        tbl.get(row, col)
     }
 
     /// No-op for compatibility (struct tables don't need manual freeing).
-    fn free(self: Table) {
+    fn free(tbl: Table) {
         // No-op: struct tables are value types, no manual freeing needed.
     }
 }

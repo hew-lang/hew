@@ -17,18 +17,18 @@ actor Worker {
     let id: i32;
     let count: i32;
     receive fn process(item: i32) {
-        self.count = self.count + 1;
+        count = count + 1;
         print("[worker ");
-        print(self.id);
+        print(id);
         print("] processed item ");
         print(item);
         print(" (total: ");
-        print(self.count);
+        print(count);
         println(")");
     }
     receive fn fail() {
         print("[worker ");
-        print(self.id);
+        print(id);
         println("] crashing!");
         panic("worker failure");
     }
@@ -38,13 +38,13 @@ actor Cache {
     let capacity: i32;
     let entries: i32;
     receive fn store(key: i32) {
-        self.entries = self.entries + 1;
+        entries = entries + 1;
         print("[cache] stored key=");
         print(key);
         print(" (");
-        print(self.entries);
+        print(entries);
         print("/");
-        print(self.capacity);
+        print(capacity);
         println(")");
     }
 }

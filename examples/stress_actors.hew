@@ -7,8 +7,8 @@ actor SystemCoordinator {
     let active_workers: i32;
     let total_tasks: i32;
     receive fn start_system(num_workers: i32) -> i32 {
-        self.active_workers = num_workers;
-        self.total_tasks = 0;
+        active_workers = num_workers;
+        total_tasks = 0;
         // Spawn worker pool
         // for i in 0..num_workers {
         //     spawn WorkerActor;
@@ -16,14 +16,14 @@ actor SystemCoordinator {
         0
     }
     receive fn task_completed(worker_id: i32) -> i32 {
-        self.total_tasks = self.total_tasks + 1;
+        total_tasks = total_tasks + 1;
         0
     }
     receive fn worker_failed(worker_id: i32) -> i32 {
-        self.active_workers = self.active_workers - 1;
+        active_workers = active_workers - 1;
         // Restart worker
         // spawn WorkerActor;
-        self.active_workers = self.active_workers + 1;
+        active_workers = active_workers + 1;
         0
     }
 }
@@ -36,11 +36,11 @@ actor WorkerActor {
 
         // Simulate work by doing some computation
         let result = compute_fibonacci(task_data);
-        self.tasks_processed = self.tasks_processed + 1;
+        tasks_processed = tasks_processed + 1;
         result
     }
     receive fn get_stats() -> i32 {
-        self.tasks_processed
+        tasks_processed
     }
 }
 
@@ -49,19 +49,19 @@ actor DatabaseActor {
     let connection_count: i32;
     let query_count: i32;
     receive fn execute_query(query: i32) -> i32 {
-        self.query_count = self.query_count + 1;
+        query_count = query_count + 1;
         // Simulate database operation
         query * 2
     }
     receive fn get_connection() -> i32 {
-        self.connection_count = self.connection_count + 1;
-        self.connection_count
+        connection_count = connection_count + 1;
+        connection_count
     }
     receive fn release_connection() -> i32 {
-        if self.connection_count > 0 {
-            self.connection_count = self.connection_count - 1;
+        if connection_count > 0 {
+            connection_count = connection_count - 1;
         }
-        self.connection_count
+        connection_count
     }
 }
 
@@ -73,10 +73,10 @@ actor CacheActor {
 
         // Simulate cache lookup
         if key % 2 == 0 {
-            self.cache_hits = self.cache_hits + 1;
+            cache_hits = cache_hits + 1;
             key * 10 // Cache hit
         } else {
-            self.cache_misses = self.cache_misses + 1;
+            cache_misses = cache_misses + 1;
             -1 // Cache miss
         }
     }
@@ -85,8 +85,8 @@ actor CacheActor {
         key + value
     }
     receive fn clear_cache() -> i32 {
-        self.cache_hits = 0;
-        self.cache_misses = 0;
+        cache_hits = 0;
+        cache_misses = 0;
         0
     }
 }
@@ -96,14 +96,14 @@ actor LoggerActor {
     let log_count: i32;
     let error_count: i32;
     receive fn log_message(level: i32, message: i32) -> i32 {
-        self.log_count = self.log_count + 1;
+        log_count = log_count + 1;
         if level > 3 { // Error level
-            self.error_count = self.error_count + 1;
+            error_count = error_count + 1;
         }
         0
     }
     receive fn get_log_stats() -> i32 {
-        self.log_count * 1000 + self.error_count
+        log_count * 1000 + error_count
     }
 }
 
@@ -112,11 +112,11 @@ actor MonitorActor {
     let monitored_actors: i32;
     let restart_count: i32;
     receive fn monitor_actor(actor_id: i32) -> i32 {
-        self.monitored_actors = self.monitored_actors + 1;
+        monitored_actors = monitored_actors + 1;
         0
     }
     receive fn actor_died(actor_id: i32, reason: i32) -> i32 {
-        self.restart_count = self.restart_count + 1;
+        restart_count = restart_count + 1;
         // Handle actor failure
         if reason == 1 { // Critical error
             // Shutdown system
@@ -127,7 +127,7 @@ actor MonitorActor {
         }
     }
     receive fn get_monitor_stats() -> i32 {
-        self.monitored_actors * 100 + self.restart_count
+        monitored_actors * 100 + restart_count
     }
 }
 

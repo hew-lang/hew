@@ -9,14 +9,14 @@ actor Counter {
     let value: i32;
     init() {
         print("Counter started at ");
-        println(self.value);
-        self.value = self.value + 10;
+        println(value);
+        value = value + 10;
         print("Counter computed ");
-        println(self.value);
+        println(value);
     }
     receive fn tick() {
-        self.value = self.value + 1;
-        println(self.value);
+        value = value + 1;
+        println(value);
     }
     receive fn crash_me() {
         println("Counter crashing!");
@@ -28,11 +28,11 @@ actor Logger {
     let level: i32;
     init() {
         print("Logger level=");
-        println(self.level);
+        println(level);
     }
     receive fn log() {
         print("[LOG ");
-        print(self.level);
+        print(level);
         println("] event");
     }
 }

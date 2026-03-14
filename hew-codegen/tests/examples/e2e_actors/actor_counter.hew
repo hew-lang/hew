@@ -3,15 +3,15 @@
 actor Counter {
     let value: int;
     receive fn increment(amount: int) {
-        self.value = self.value + amount;
-        println(f"Incremented by {amount}, now {self.value}");
+        value = value + amount;
+        println(f"Incremented by {amount}, now {value}");
     }
     receive fn decrement(amount: int) {
-        self.value = self.value - amount;
-        println(f"Decremented by {amount}, now {self.value}");
+        value = value - amount;
+        println(f"Decremented by {amount}, now {value}");
     }
     receive fn report() -> int {
-        self.value
+        value
     }
 }
 

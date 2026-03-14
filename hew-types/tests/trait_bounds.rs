@@ -5,7 +5,7 @@ use hew_types::Checker;
 fn trait_bound_violation_reports_error() {
     let source = r"
         trait Describable {
-            fn describe(self) -> string;
+            fn describe(val: Self) -> string;
         }
 
         type Dog {
@@ -13,8 +13,8 @@ fn trait_bound_violation_reports_error() {
         }
 
         impl Describable for Dog {
-            fn describe(self) -> string {
-                self.name
+            fn describe(d: Dog) -> string {
+                d.name
             }
         }
 

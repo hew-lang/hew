@@ -131,41 +131,41 @@ trait QUICEndpointMethods {
     /// used to verify the server's certificate.
     ///
     /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn connect(self: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
+    fn connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection;
 
     /// Block until a remote peer opens an incoming connection (server side).
     ///
     /// Returns an established `QUICConnection` or a zero-value on failure.
-    fn accept(self: QUICEndpoint) -> QUICConnection;
+    fn accept(ep: QUICEndpoint) -> QUICConnection;
 
     /// Close the endpoint and release all associated resources.
-    fn close(self: QUICEndpoint);
+    fn close(ep: QUICEndpoint);
 
     /// Block until the next queued QUIC event on this endpoint.
     ///
     /// Events are recorded by successful `connect()` and `accept()` calls and
     /// by connection failures observed by the runtime.
-    fn on_event(self: QUICEndpoint) -> QUICEvent;
+    fn on_event(ep: QUICEndpoint) -> QUICEvent;
 
     /// Return a non-destructive snapshot of endpoint state.
-    fn observe(self: QUICEndpoint) -> QUICEndpointObservation;
+    fn observe(ep: QUICEndpoint) -> QUICEndpointObservation;
 }
 
 impl QUICEndpointMethods for QUICEndpoint {
-    fn connect(self: QUICEndpoint, addr: String, server_name: String) -> QUICConnection {
-        hew_quic_endpoint_connect(self, addr, server_name)
+    fn connect(ep: QUICEndpoint, addr: String, server_name: String) -> QUICConnection {
+        hew_quic_endpoint_connect(ep, addr, server_name)
     }
-    fn accept(self: QUICEndpoint) -> QUICConnection {
-        hew_quic_endpoint_accept(self)
+    fn accept(ep: QUICEndpoint) -> QUICConnection {
+        hew_quic_endpoint_accept(ep)
     }
-    fn close(self: QUICEndpoint) {
-        hew_quic_endpoint_close(self);
+    fn close(ep: QUICEndpoint) {
+        hew_quic_endpoint_close(ep);
     }
-    fn on_event(self: QUICEndpoint) -> QUICEvent {
-        hew_quic_endpoint_on_event(self)
+    fn on_event(ep: QUICEndpoint) -> QUICEvent {
+        hew_quic_endpoint_on_event(ep)
     }
-    fn observe(self: QUICEndpoint) -> QUICEndpointObservation {
-        endpoint_observe(self)
+    fn observe(ep: QUICEndpoint) -> QUICEndpointObservation {
+        endpoint_observe(ep)
     }
 }
 
@@ -176,43 +176,43 @@ trait QUICConnectionMethods {
     /// Open a new bidirectional stream on this connection.
     ///
     /// Returns a `QUICStream` or a zero-value on failure.
-    fn open_stream(self: QUICConnection) -> QUICStream;
+    fn open_stream(conn: QUICConnection) -> QUICStream;
 
     /// Block until the remote peer opens an incoming stream.
     ///
     /// Returns a `QUICStream` or a zero-value on failure.
-    fn accept_stream(self: QUICConnection) -> QUICStream;
+    fn accept_stream(conn: QUICConnection) -> QUICStream;
 
     /// Gracefully close this connection and release its resources.
     ///
     /// Returns 0 on success or −1 on error.
-    fn disconnect(self: QUICConnection) -> i32;
+    fn disconnect(conn: QUICConnection) -> i32;
 
     /// Block until the next queued QUIC event on this connection.
     ///
     /// Events are recorded when streams open, when the peer disconnects, and
     /// when stream operations fail.
-    fn on_event(self: QUICConnection) -> QUICEvent;
+    fn on_event(conn: QUICConnection) -> QUICEvent;
 
     /// Return a non-destructive snapshot of connection state and telemetry.
-    fn observe(self: QUICConnection) -> QUICConnectionObservation;
+    fn observe(conn: QUICConnection) -> QUICConnectionObservation;
 }
 
 impl QUICConnectionMethods for QUICConnection {
-    fn open_stream(self: QUICConnection) -> QUICStream {
-        hew_quic_conn_open_stream(self)
+    fn open_stream(conn: QUICConnection) -> QUICStream {
+        hew_quic_conn_open_stream(conn)
     }
-    fn accept_stream(self: QUICConnection) -> QUICStream {
-        hew_quic_conn_accept_stream(self)
+    fn accept_stream(conn: QUICConnection) -> QUICStream {
+        hew_quic_conn_accept_stream(conn)
     }
-    fn disconnect(self: QUICConnection) -> i32 {
-        hew_quic_conn_disconnect(self)
+    fn disconnect(conn: QUICConnection) -> i32 {
+        hew_quic_conn_disconnect(conn)
     }
-    fn on_event(self: QUICConnection) -> QUICEvent {
-        hew_quic_conn_on_event(self)
+    fn on_event(conn: QUICConnection) -> QUICEvent {
+        hew_quic_conn_on_event(conn)
     }
-    fn observe(self: QUICConnection) -> QUICConnectionObservation {
-        connection_observe(self)
+    fn observe(conn: QUICConnection) -> QUICConnectionObservation {
+        connection_observe(conn)
     }
 }
 
@@ -223,12 +223,12 @@ trait QUICStreamMethods {
     /// Send raw bytes on this stream.
     ///
     /// Returns 0 on success or −1 on error.
-    fn send(self: QUICStream, data: bytes) -> i32;
+    fn send(strm: QUICStream, data: bytes) -> i32;
 
     /// Block until data arrives and return the received bytes.
     ///
     /// Returns an empty buffer on stream close or error.
-    fn recv(self: QUICStream) -> bytes;
+    fn recv(strm: QUICStream) -> bytes;
 
     /// Signal that no more data will be sent on this stream.
     ///
@@ -236,31 +236,31 @@ trait QUICStreamMethods {
     /// data has been delivered. This does not release the local stream handle;
     /// call `close()` when you are finished with the stream. Returns 0 on
     /// success or −1 on error.
-    fn finish(self: QUICStream) -> i32;
+    fn finish(strm: QUICStream) -> i32;
 
     /// Abruptly stop this stream with an application-defined error code.
     ///
     /// Unlike `finish`, pending data is discarded. Call `close()` afterwards to
     /// release the local stream handle. Returns 0 on success or −1 on error.
-    fn stop(self: QUICStream, error_code: i64) -> i32;
+    fn stop(strm: QUICStream, error_code: i64) -> i32;
 
     /// Release the local stream handle.
     ///
     /// Call `finish()` first if you want the peer to observe a graceful EOF.
-    fn close(self: QUICStream) -> i32;
+    fn close(strm: QUICStream) -> i32;
 
     /// Return a non-destructive snapshot of stream state.
-    fn observe(self: QUICStream) -> QUICStreamObservation;
+    fn observe(strm: QUICStream) -> QUICStreamObservation;
 }
 
 impl QUICStreamMethods for QUICStream {
-    fn send(self: QUICStream, data: bytes) -> i32 { hew_quic_stream_send(self, data) }
-    fn recv(self: QUICStream) -> bytes { hew_quic_stream_recv(self) }
-    fn finish(self: QUICStream) -> i32 { hew_quic_stream_finish(self) }
-    fn stop(self: QUICStream, error_code: i64) -> i32 { hew_quic_stream_stop(self, error_code) }
-    fn close(self: QUICStream) -> i32 { hew_quic_stream_close(self) }
-    fn observe(self: QUICStream) -> QUICStreamObservation {
-        stream_observe(self)
+    fn send(strm: QUICStream, data: bytes) -> i32 { hew_quic_stream_send(strm, data) }
+    fn recv(strm: QUICStream) -> bytes { hew_quic_stream_recv(strm) }
+    fn finish(strm: QUICStream) -> i32 { hew_quic_stream_finish(strm) }
+    fn stop(strm: QUICStream, error_code: i64) -> i32 { hew_quic_stream_stop(strm, error_code) }
+    fn close(strm: QUICStream) -> i32 { hew_quic_stream_close(strm) }
+    fn observe(strm: QUICStream) -> QUICStreamObservation {
+        stream_observe(strm)
     }
 }
 
@@ -273,15 +273,15 @@ trait QUICEventMethods {
     /// Event kinds:
     ///   0 — connected, 1 — disconnected, 2 — stream opened,
     ///   3 — stream closed, −1 — error.
-    fn kind(self: QUICEvent) -> i32;
+    fn kind(evt: QUICEvent) -> i32;
 
     /// Release the event and its resources.
-    fn free(self: QUICEvent);
+    fn free(evt: QUICEvent);
 }
 
 impl QUICEventMethods for QUICEvent {
-    fn kind(self: QUICEvent) -> i32 { hew_quic_event_kind(self) }
-    fn free(self: QUICEvent) { hew_quic_event_free(self); }
+    fn kind(evt: QUICEvent) -> i32 { hew_quic_event_kind(evt) }
+    fn free(evt: QUICEvent) { hew_quic_event_free(evt); }
 }
 
 // ── Module-level constructors ─────────────────────────────────────────

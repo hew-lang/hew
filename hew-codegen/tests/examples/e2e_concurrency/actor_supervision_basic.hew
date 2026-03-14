@@ -6,8 +6,8 @@ actor Guardian {
         if status == 0 {
             println("Guardian: child OK");
         } else {
-            self.restarts = self.restarts + 1;
-            println(f"Guardian: child failed, restarts = {self.restarts}");
+            restarts = restarts + 1;
+            println(f"Guardian: child failed, restarts = {restarts}");
         }
     }
 }
@@ -17,11 +17,11 @@ actor ChildWorker {
     receive fn work(difficulty: int) {
         if difficulty > 5 {
             print("Worker ");
-            print(self.id);
+            print(id);
             println(": task too hard, reporting failure");
         } else {
             print("Worker ");
-            print(self.id);
+            print(id);
             println(": task completed");
         }
     }

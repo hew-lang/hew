@@ -1,5 +1,5 @@
 trait Greetable {
-    fn greet(self: Self) -> String;
+    fn greet(val: Self) -> String;
 }
 
 type Person {
@@ -7,8 +7,8 @@ type Person {
 }
 
 impl Greetable for Person {
-    fn greet(self: Person) -> String {
-        string_concat("Hello, ", self.name)
+    fn greet(p: Person) -> String {
+        string_concat("Hello, ", p.name)
     }
 }
 

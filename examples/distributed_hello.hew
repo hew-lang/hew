@@ -6,8 +6,8 @@
 actor Counter {
     let count: int;
     receive fn increment(n: int) {
-        self.count = self.count + n;
-        println(self.count);
+        count = count + n;
+        println(count);
     }
 }
 

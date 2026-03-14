@@ -17,27 +17,27 @@ actor ChatRoom {
     let handlers: Vec<ActorRef<ClientHandler>>;
     let names: Vec<String>;
     receive fn register(handler: ActorRef<ClientHandler>, name: String) {
-        self.handlers.push(handler);
-        self.names.push(name);
+        handlers.push(handler);
+        names.push(name);
         println(f"{name} joined the chat");
     }
     receive fn unregister(name: String) {
         var new_handlers: Vec<ActorRef<ClientHandler>> = Vec::new();
         var new_names: Vec<String> = Vec::new();
-        for i in 0..self.names.len() {
-            if self.names.get(i) != name {
-                new_handlers.push(self.handlers.get(i));
-                new_names.push(self.names.get(i));
+        for i in 0..names.len() {
+            if names.get(i) != name {
+                new_handlers.push(handlers.get(i));
+                new_names.push(names.get(i));
             }
         }
-        self.handlers = new_handlers;
-        self.names = new_names;
+        handlers = new_handlers;
+        names = new_names;
         println(f"{name} left the chat");
     }
     receive fn broadcast(sender_name: String, msg: String) {
-        for i in 0..self.names.len() {
-            if self.names.get(i) != sender_name {
-                self.handlers.get(i).deliver(msg);
+        for i in 0..names.len() {
+            if names.get(i) != sender_name {
+                handlers.get(i).deliver(msg);
             }
         }
     }
@@ -48,23 +48,23 @@ actor ClientHandler {
     let name: String;
     let room: ActorRef<ChatRoom>;
     receive fn start(unused: i32) {
-        self.conn.write_string(f"[server] welcome {self.name}");
+        conn.write_string(f"[server] welcome {name}");
         var running = true;
         while running {
-            let data = self.conn.read_string();
+            let data = conn.read_string();
             if data.contains("__HEW_TCP_DISCONNECT__") {
-                self.room.unregister(self.name);
-                let _ = self.conn.close();
+                room.unregister(name);
+                let _ = conn.close();
                 running = false;
             } else {
-                let line = f"{self.name}: {data}";
+                let line = f"{name}: {data}";
                 println(line);
-                self.room.broadcast(self.name, line);
+                room.broadcast(name, line);
             }
         }
     }
     receive fn deliver(msg: String) {
-        self.conn.write_string(msg);
+        conn.write_string(msg);
     }
 }
 

@@ -13,13 +13,13 @@ actor ChatRoom {
     let messages: Vec<String>;
 
     receive fn enter(username: String) {
-        self.users.push(username);
-        println(f"[room] {username} entered ({self.users.len()} online)");
+        users.push(username);
+        println(f"[room] {username} entered ({users.len()} online)");
     }
 
     receive fn say(username: String, text: String) {
         let msg = f"{username}: {text}";
-        self.messages.push(msg);
+        messages.push(msg);
         println(f"[room] {msg}");
     }
 
@@ -28,11 +28,11 @@ actor ChatRoom {
     }
 
     receive fn history() -> int {
-        let total = self.messages.len();
+        let total = messages.len();
         println(f"[room] {total} messages total");
         var i = 0;
         while i < total {
-            println(f"  {self.messages.get(i)}");
+            println(f"  {messages.get(i)}");
             i = i + 1;
         }
         total

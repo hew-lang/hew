@@ -5,16 +5,16 @@ actor Worker {
     let id: int;
     let value: int;
     receive fn tick() -> int {
-        self.value = self.value + 1;
+        value = value + 1;
         print("worker ");
-        print(self.id);
+        print(id);
         print(" value=");
-        println(self.value);
-        self.value
+        println(value);
+        value
     }
     receive fn crash() {
         print("worker ");
-        print(self.id);
+        print(id);
         println(" crashing!");
         panic("");
     }

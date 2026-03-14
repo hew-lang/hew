@@ -30,19 +30,19 @@ trait ChildMethods {
     /// Block until the child process exits and return its exit code.
     ///
     /// Returns 0 for success, non-zero for failure.
-    fn wait(self: Child) -> i32;
+    fn wait(child: Child) -> i32;
 
     /// Terminate the child process.
     ///
     /// Returns 0 on success, non-zero on error.
-    fn kill(self: Child) -> i32;
+    fn kill(child: Child) -> i32;
 }
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(self: Child) -> i32 { hew_process_wait(self) }
+    fn wait(child: Child) -> i32 { hew_process_wait(child) }
     /// Terminate the child process.
-    fn kill(self: Child) -> i32 { hew_process_kill(self) }
+    fn kill(child: Child) -> i32 { hew_process_kill(child) }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

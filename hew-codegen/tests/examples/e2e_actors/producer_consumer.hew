@@ -3,7 +3,7 @@
 actor Consumer {
     let consumed: int;
     receive fn consume(item: int) {
-        self.consumed = self.consumed + 1;
+        consumed = consumed + 1;
         println(f"Consumed item {item}");
     }
 }
@@ -13,8 +13,8 @@ actor Producer {
     receive fn produce(count: int) {
         var i: int = 0;
         while i < count {
-            self.produced = self.produced + 1;
-            println(f"Produced item {self.produced}");
+            produced = produced + 1;
+            println(f"Produced item {produced}");
             i = i + 1;
         }
     }

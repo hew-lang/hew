@@ -869,6 +869,7 @@ fn rewrite_builtin_calls_in_expr(expr: &mut Spanned<Expr>) {
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::ScopeCancel
+        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -1290,6 +1291,7 @@ fn normalize_expr_types_inner(
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::ScopeCancel
+        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -1787,6 +1789,7 @@ fn enrich_expr_with_diagnostics(
         | Expr::Identifier(_)
         | Expr::Cooperate
         | Expr::ScopeCancel
+        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

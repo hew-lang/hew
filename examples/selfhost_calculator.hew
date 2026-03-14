@@ -310,5 +310,5 @@ fn main() {
     println("4. No array/Vec - cannot build token streams");
     println("5. No string indexing - cannot parse source text char by char");
     println("6. Actor spawn not in codegen - actors defined but not instantiated");
-    println("7. No self.field assignment in codegen - actor state mutation is TODO");
+    println("7. No actor-field assignment in codegen - actor state mutation is TODO");
 }

@@ -32,61 +32,61 @@ trait ValueMethods {
     ///
     /// 0 = string, 1 = int, 2 = float, 3 = bool, 4 = array,
     /// 5 = table, 6 = datetime.
-    fn type_of(self: Value) -> i32;
+    fn type_of(val: Value) -> i32;
 
     /// Extract the string value.
-    fn get_string(self: Value) -> String;
+    fn get_string(val: Value) -> String;
 
     /// Extract the integer value.
-    fn get_int(self: Value) -> i64;
+    fn get_int(val: Value) -> i64;
 
     /// Extract the floating-point value.
-    fn get_float(self: Value) -> f64;
+    fn get_float(val: Value) -> f64;
 
     /// Extract the boolean value (0 or 1).
-    fn get_bool(self: Value) -> i32;
+    fn get_bool(val: Value) -> i32;
 
     /// Look up a field by key in a TOML table.
     ///
     /// Returns a new `Value` that must be freed separately.
-    fn get_field(self: Value, key: String) -> Value;
+    fn get_field(val: Value, key: String) -> Value;
 
     /// Return the number of elements in a TOML array.
-    fn array_len(self: Value) -> i32;
+    fn array_len(val: Value) -> i32;
 
     /// Return the element at the given index in a TOML array.
     ///
     /// Returns a new `Value` that must be freed separately.
-    fn array_get(self: Value, index: i32) -> Value;
+    fn array_get(val: Value, index: i32) -> Value;
 
     /// Serialize the value back to a TOML string.
-    fn stringify(self: Value) -> String;
+    fn stringify(val: Value) -> String;
 
     /// Release the value resources.
-    fn free(self: Value);
+    fn free(val: Value);
 }
 
 impl ValueMethods for Value {
     /// Return the type tag of this value.
-    fn type_of(self: Value) -> i32 { hew_toml_type(self) }
+    fn type_of(val: Value) -> i32 { hew_toml_type(val) }
     /// Extract the string value.
-    fn get_string(self: Value) -> String { hew_toml_get_string(self) }
+    fn get_string(val: Value) -> String { hew_toml_get_string(val) }
     /// Extract the integer value.
-    fn get_int(self: Value) -> i64 { hew_toml_get_int(self) }
+    fn get_int(val: Value) -> i64 { hew_toml_get_int(val) }
     /// Extract the floating-point value.
-    fn get_float(self: Value) -> f64 { hew_toml_get_float(self) }
+    fn get_float(val: Value) -> f64 { hew_toml_get_float(val) }
     /// Extract the boolean value (0 or 1).
-    fn get_bool(self: Value) -> i32 { hew_toml_get_bool(self) }
+    fn get_bool(val: Value) -> i32 { hew_toml_get_bool(val) }
     /// Look up a field by key in a TOML table.
-    fn get_field(self: Value, key: String) -> Value { hew_toml_get_field(self, key) }
+    fn get_field(val: Value, key: String) -> Value { hew_toml_get_field(val, key) }
     /// Return the number of elements in a TOML array.
-    fn array_len(self: Value) -> i32 { hew_toml_array_len(self) }
+    fn array_len(val: Value) -> i32 { hew_toml_array_len(val) }
     /// Return the element at the given index in a TOML array.
-    fn array_get(self: Value, index: i32) -> Value { hew_toml_array_get(self, index) }
+    fn array_get(val: Value, index: i32) -> Value { hew_toml_array_get(val, index) }
     /// Serialize the value back to a TOML string.
-    fn stringify(self: Value) -> String { hew_toml_stringify(self) }
+    fn stringify(val: Value) -> String { hew_toml_stringify(val) }
     /// Release the value resources.
-    fn free(self: Value) { hew_toml_free(self); }
+    fn free(val: Value) { hew_toml_free(val); }
 }
 
 // ── Module-level functions ────────────────────────────────────────────

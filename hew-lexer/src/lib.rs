@@ -204,6 +204,8 @@ pub enum Token<'src> {
     Init,
     #[token("type")]
     Type,
+    #[token("this")]
+    This,
     #[token("dyn")]
     Dyn,
     #[token("move")]
@@ -497,6 +499,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Receive => f.write_str("`receive`"),
             Token::Init => f.write_str("`init`"),
             Token::Type => f.write_str("`type`"),
+            Token::This => f.write_str("`this`"),
             Token::Dyn => f.write_str("`dyn`"),
             Token::Move => f.write_str("`move`"),
             Token::Try => f.write_str("`try`"),
@@ -650,6 +653,7 @@ impl Token<'_> {
             Token::Receive => Some("receive"),
             Token::Init => Some("init"),
             Token::Type => Some("type"),
+            Token::This => Some("this"),
             Token::Dyn => Some("dyn"),
             Token::Move => Some("move"),
             Token::Try => Some("try"),
@@ -825,6 +829,7 @@ pub const ALL_KEYWORDS: &[&str] = &[
     "receive",
     "init",
     "type",
+    "this",
     "dyn",
     "move",
     "try",
@@ -889,14 +894,14 @@ mod tests {
                    import pub package super struct enum trait impl wire actor \
                    supervisor child restart budget strategy permanent transient temporary \
                    one_for_one one_for_all rest_for_one scope spawn async await receive \
-                   init type dyn move try true false reserved optional deprecated \
+                   init type this dyn move try true false reserved optional deprecated \
                    default unsafe extern foreign in select race join from after gen yield \
                    where cooperate catch defer";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 65);
+        assert_eq!(toks.len(), 66);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[64], Token::Defer);
+        assert_eq!(toks[65], Token::Defer);
     }
 
     #[test]

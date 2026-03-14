@@ -9,8 +9,8 @@ type HttpReq {
 }
 
 impl Drop for HttpReq {
-    fn drop(self: HttpReq) {
-        println(f"drop {self.path}");
+    fn drop(req: HttpReq) {
+        println(f"drop {req.path}");
     }
 }
 

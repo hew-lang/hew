@@ -3,7 +3,7 @@
 actor Worker {
     let id: int;
     receive fn work(x: int) {
-        println(f"Worker {self.id} processing {x}");
+        println(f"Worker {id} processing {x}");
     }
 }
 

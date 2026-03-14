@@ -13,8 +13,8 @@ actor Logger {
     let count: i32;
 
     receive fn log_event(source: String, msg: String) {
-        self.count = self.count + 1;
-        println(f"[log #{self.count}] {source}: {msg}");
+        count = count + 1;
+        println(f"[log #{count}] {source}: {msg}");
     }
 }
 
@@ -24,19 +24,19 @@ actor Monitor {
     let threshold: i32;
 
     receive fn reading(sensor_id: String, temp: i32) {
-        self.readings.push(temp);
+        readings.push(temp);
 
-        if temp > self.threshold {
-            self.logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {self.threshold}");
+        if temp > threshold {
+            logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
 
-        if self.readings.len() % 3 == 0 {
+        if readings.len() % 3 == 0 {
             var sum = 0;
-            for i in 0..self.readings.len() {
-                sum = sum + self.readings.get(i);
+            for i in 0..readings.len() {
+                sum = sum + readings.get(i);
             }
-            let avg = sum / self.readings.len();
-            self.logger.log_event("monitor", f"avg={avg} over {self.readings.len()} readings");
+            let avg = sum / readings.len();
+            logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
         }
     }
 }
@@ -48,8 +48,8 @@ actor Sensor {
 
     receive fn tick(cycle: i32) {
         // Simulate temperature with variation
-        let temp = self.base_temp + cycle % 5 - 2;
-        self.monitor.reading(self.sensor_id, temp);
+        let temp = base_temp + cycle % 5 - 2;
+        monitor.reading(sensor_id, temp);
     }
 }
 

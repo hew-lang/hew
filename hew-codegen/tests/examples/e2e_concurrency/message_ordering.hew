@@ -3,14 +3,14 @@
 actor OrderChecker {
     let next_expected: int;
     receive fn check(n: int) {
-        if n == self.next_expected {
+        if n == next_expected {
             println(f"OK: received {n}");
         } else {
             print("ERROR: expected ");
-            print(self.next_expected);
+            print(next_expected);
             println(f" got {n}");
         }
-        self.next_expected = self.next_expected + 1;
+        next_expected = next_expected + 1;
     }
 }
 

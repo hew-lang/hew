@@ -48,10 +48,10 @@ fn divide(a: int, b: int) -> int {
 actor Counter {
     let count: int;
     receive fn increment() {
-        self.count = self.count + 1;
+        count = count + 1;
     }
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 

@@ -4,13 +4,13 @@ type Point {
 }
 
 impl Point {
-    // Mix of bare `self` and explicit `self: Point`
-    fn sum(self) -> int {
-        self.x + self.y
+    // Named receiver with explicit type annotation
+    fn sum(pt: Point) -> int {
+        pt.x + pt.y
     }
     
-    fn double(self: Point) -> int {
-        self.sum() * 2
+    fn double(pt: Point) -> int {
+        pt.sum() * 2
     }
 }
 

@@ -4,7 +4,7 @@ actor Node {
     let id: int;
     receive fn token(value: int) {
         print("Node ");
-        print(self.id);
+        print(id);
         println(f" received token {value}");
     }
 }

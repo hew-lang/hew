@@ -9,6 +9,26 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 
 This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
 
+**Changes in v0.9.1:**
+
+_Removed `self` keyword; named receivers; bare field access in actors; `this` for actor self-reference._
+
+- §2.1.1: Actor handlers access fields by bare name (`count += 1` not `self.count += 1`)
+- §3.2.1: Purity rule updated — "assignment to actor fields" replaces "assignment to `self.field`"
+- §3.6: Trait methods use named receivers (`fn display(val: Self) -> String`), not `self`
+- §3.6: `impl` methods use Go-style named receivers (`fn display(p: Point) -> String`)
+- §3.6: Removed SelfParam — `self` is no longer a keyword or special identifier
+- §3.6: Added `this` keyword documentation for actor self-reference (read-only handle)
+- §3.7.3: `Drop` trait uses `fn drop(val: Self)` named receiver
+- §3.8.2: Object safety updated — receiver must be a named parameter of type `Self`
+- §3.10.2–3.10.4: All core trait and stdlib method signatures updated to named receivers
+- §4.12.5: Cross-actor generator examples use bare field access
+- §7.2: Coalesce example uses bare field access
+- §9.1: Actor lifecycle — `stop()` not `self.stop()`
+- §11: Grammar updated — removed SelfParam from FnSig
+- Variable shadowing is now a hard error (prerequisite for bare field names in actors)
+- `Self` (capital S) type alias remains valid in trait/impl blocks
+
 **Changes in v0.9.0:**
 
 _Task model unification, actor lifecycle fix, RAII streams, duration type, syntax cleanup._
@@ -127,7 +147,7 @@ Semantic clarifications:
 - Cancellation is a regular error: `await` returns `Result<T, CancellationError>`, not a trap (C-2)
 - Trap in scoped `receive fn` causes actor crash → supervisor restart (C-5)
 - Renamed `scope.spawn` to `s.launch` (inside `scope |s| { ... }`) — distinguishes task launching from actor spawning (S-2)
-- Normative `self` semantics: by-value in struct impl, by-mutable-reference in actor methods (S-3)
+- Named receiver semantics: by-value in struct impl, bare field access in actor methods (S-3)
 
 Compilation model:
 
@@ -138,7 +158,7 @@ Compilation model:
 - `Send` is now a marker trait; removed `clone_for_send` method (SA-2)
 - Added Send/Frozen automatic derivation rules for user-defined types (TM-4)
 - Strengthened §4.3 with normative two-level scheduling model for intra-actor tasks (TM-5)
-- Documented `self` parameter handling in trait/impl methods; added SelfParam to FnSig grammar (SA-7)
+- Documented named receiver handling in trait/impl methods (SA-7)
 
 **Changes in v0.5.1:**
 
@@ -236,12 +256,12 @@ actor Counter {
 
     // Fire-and-forget: no return type, caller does not await
     receive fn increment(n: i32) {
-        self.count += n;
+        count += n;
     }
 
     // Request-response: has return type, caller must await
     receive fn get() -> i32 {
-        self.count
+        count
     }
 
     // Internal method - not accessible to other actors
@@ -457,7 +477,7 @@ pure fn add(a: i32, b: i32) -> i32 {
 
 1. Only other `pure` functions may be called.
 2. The `spawn`, `scope`, `select`, `join` expressions are forbidden.
-3. Assignment to actor state (`self.field = …`) is forbidden.
+3. Assignment to actor fields (bare field names) is forbidden.
 4. Local `var` mutations _are_ allowed — they do not escape the function.
 
 `pure` may appear before `fn`, `gen fn`, `receive fn`, or `receive gen fn`,
@@ -465,7 +485,7 @@ and in trait method signatures:
 
 ```hew
 trait Math {
-    pure fn square(self: Point) -> f64;
+    pure fn square(p: Point) -> f64;
 }
 
 actor Calculator {
@@ -747,13 +767,13 @@ actor Example {
 
     receive fn demo() {
         // Multiple mutable references - ALLOWED (single-threaded)
-        let ref1 = self.data;
-        let ref2 = self.data;
+        let ref1 = data;
+        let ref2 = data;
         ref1.push(1);
         ref2.push(2);     // ok - no data race possible
 
         // Aliasing mutable data - ALLOWED
-        var x = self.data;
+        var x = data;
         var y = x;
         x.push(3);
         y.push(4);        // ok - same actor, sequential execution
@@ -773,8 +793,8 @@ actor Example {
 
     receive fn bad_examples(other: ActorRef<Other>) {
         // Sending without move - ERROR (implicit move makes source invalid)
-        other.handle(self.data);
-        self.data.push(1);     // compile error: data was moved
+        other.handle(data);
+        data.push(1);     // compile error: data was moved
 
         // Using value after send - ERROR
         let msg = Message::new();
@@ -884,16 +904,16 @@ Traits define shared behaviour that types can implement. Hew has built-in marker
 
 ```hew
 trait Display {
-    fn display(self) -> String;
+    fn display(val: Self) -> String;
 }
 
 trait Iterator {
     type Item;
-    fn next(self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self::Item>;
 }
 
 trait Clone {
-    fn clone(self) -> Self;
+    fn clone(val: Self) -> Self;
 }
 ```
 
@@ -903,8 +923,8 @@ trait Clone {
 type Point { x: f64; y: f64 }
 
 impl Display for Point {
-    fn display(self) -> String {
-        f"({self.x}, {self.y})"
+    fn display(p: Point) -> String {
+        f"({p.x}, {p.y})"
     }
 }
 ```
@@ -925,56 +945,90 @@ impl Display for Point {
   - Only value types (integers, floats, bool, char)
   - Small fixed-size aggregates
 
-**The `self` parameter:**
+**Named receivers (Go-style):**
 
-In trait declarations and `impl` blocks, the first parameter of a method MAY be `self`, which refers to the receiver value:
+Hew uses **named receivers** instead of a `self` keyword. In trait declarations and `impl` blocks, the first parameter whose type matches the implementing type (or `Self` in traits) is the **receiver**. The receiver is what makes a function callable with dot-syntax:
 
 ```hew
 trait Display {
-    fn display(self) -> String;       // self by value (consumes)
+    fn display(val: Self) -> String;       // val is the receiver (type Self)
 }
 
 impl Display for Point {
-    fn display(self) -> String {      // self: Point (inferred)
-        f"({self.x}, {self.y})"
+    fn display(p: Point) -> String {       // p is the receiver (type Point)
+        f"({p.x}, {p.y})"
     }
 }
 ```
 
-`self` is syntactic sugar — the compiler treats it as a parameter with the implementing type. However, `self` has **two distinct semantics** depending on context:
+The compiler identifies the receiver by matching the parameter type against the impl target. The parameter name is chosen by the programmer — use short, descriptive names (`p` for Point, `v` for Vec, `iter` for Iterator, etc.).
 
-**1. In `impl` blocks for structs/enums (by-value):**
-
-`self` is passed by value — the receiver is consumed (ownership transfer):
-
-- `fn display(self)` is equivalent to `fn display(self: Point)` in an `impl` for `Point`
-- The caller gives up ownership of the value
-- After calling a consuming method, the original binding is no longer usable
+**Calling methods:**
 
 ```hew
 let p = Point { x: 1.0, y: 2.0 };
-p.display();    // desugars to Point::display(p) — p is consumed
+p.display();    // desugars to Point::display(p) — p is consumed (by-value)
 // p is no longer valid here
 ```
 
-**2. In actor `receive fn` and `fn` methods (by-mutable-reference):**
+**In `impl` blocks for structs/enums (by-value):**
 
-`self` is an implicit mutable reference to the actor's persistent state — the actor is NOT consumed:
+The receiver is passed by value — the receiver is consumed (ownership transfer):
 
-- `fn modify(self)` in a `receive fn` means the method can read and mutate the actor's fields
-- The actor persists after the method returns; it continues processing messages
-- `self` is always available in actor methods without explicit declaration
+- `fn display(p: Point)` takes `p` by value in an `impl` for `Point`
+- The caller gives up ownership of the value
+- After calling a consuming method, the original binding is no longer usable
+
+**In actor `receive fn` and `fn` methods (bare field access):**
+
+Actors do not use receivers at all. Actor handler methods access fields by their bare names — no prefix, no receiver parameter. The actor's persistent state is implicitly available:
 
 ```hew
 actor Counter {
     var count: i32 = 0;
     receive fn increment() {
-        self.count += 1;  // self refers to actor state, actor persists
+        count += 1;  // bare field access — actor persists after handler returns
     }
 }
 ```
 
-There is no `&self` or `&mut self` syntax — Hew does not have references in its surface syntax (see §3.4.1). The by-value vs by-reference distinction is determined by the context (struct `impl` vs actor body), not by annotation.
+There is no `&self` or `&mut self` syntax — Hew does not have references in its surface syntax (see §3.4.1). The by-value vs implicit-state distinction is determined by the context (struct `impl` vs actor body), not by annotation.
+
+**The `this` keyword (actor self-reference):**
+
+Inside an actor body, the `this` keyword provides a read-only handle to the actor itself. Use `this` when you need to pass the actor's reference to another actor or store it:
+
+```hew
+actor Worker {
+    var manager: ActorRef<Manager>;
+
+    receive fn register(mgr: ActorRef<Manager>) {
+        manager = mgr;
+        mgr.add_worker(this);  // pass this actor's reference to the manager
+    }
+}
+```
+
+`this` is:
+
+- Available only inside actor bodies (`receive fn` and `fn` methods)
+- Read-only — you cannot assign to `this`
+- Of type `ActorRef<Self>` — a sendable handle to the enclosing actor
+- Not valid in struct `impl` blocks or free functions
+
+**Variable shadowing:**
+
+Variable shadowing is a **hard error** in Hew. This is a prerequisite for bare field access in actors — if a parameter or local variable could shadow an actor field, bare names would be ambiguous. The compiler rejects any binding that shadows an existing name in scope:
+
+```hew
+actor Example {
+    var count: i32 = 0;
+
+    receive fn update(count: i32) {
+        // compile error: parameter 'count' shadows actor field 'count'
+    }
+}
+```
 
 **Trait bounds on generics:**
 
@@ -1085,7 +1139,7 @@ The `Drop` trait enables RAII-style resource cleanup:
 
 ```hew
 trait Drop {
-    fn drop(self);
+    fn drop(val: Self);
 }
 
 type FileHandle {
@@ -1093,8 +1147,8 @@ type FileHandle {
 }
 
 impl Drop for FileHandle {
-    fn drop(self) {
-        close(self.fd);
+    fn drop(fh: FileHandle) {
+        close(fh.fd);
     }
 }
 ```
@@ -1203,9 +1257,9 @@ Hew provides an explicit allocator interface for fine-grained memory control:
 
 ```hew
 trait Allocator {
-    fn alloc(self, size: usize, align: usize) -> Result<*var u8, AllocError>;
-    fn dealloc(self, ptr: *var u8, size: usize, align: usize);
-    fn realloc(self, ptr: *var u8, old_size: usize, new_size: usize, align: usize)
+    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, AllocError>;
+    fn dealloc(a: Self, ptr: *var u8, size: usize, align: usize);
+    fn realloc(a: Self, ptr: *var u8, old_size: usize, new_size: usize, align: usize)
         -> Result<*var u8, AllocError>;
 }
 ```
@@ -1278,7 +1332,7 @@ actor B {
     var parent: Weak<ActorRef<A>>;  // weak ref — does not prevent A from being freed
 
     receive fn notify_parent() {
-        if let Some(parent) = self.parent.upgrade() {
+        if let Some(parent) = parent.upgrade() {
             parent.notify(Notification);
         }
     }
@@ -1390,7 +1444,7 @@ fn render_dynamic(item: dyn Display) {
 **Object safety rules:**
 A trait is object-safe if:
 
-- All methods have `self` as the receiver
+- All methods have a named receiver parameter of type `Self`
 - No methods return `Self`
 - No methods have generic type parameters
 - No associated functions (only methods)
@@ -1439,24 +1493,24 @@ Traits can declare associated types that implementors must specify:
 ```hew
 trait Iterator {
     type Item;
-    fn next(self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self::Item>;
 }
 
 trait Container {
     type Item;
     type Iter: Iterator[Item = Self::Item];
 
-    fn iter(self) -> Self::Iter;
-    fn len(self) -> usize;
+    fn iter(c: Self) -> Self::Iter;
+    fn len(c: Self) -> usize;
 }
 
 impl Iterator for RangeIter {
     type Item = i32;
 
-    fn next(self) -> Option<i32> {
-        if self.current < self.end {
-            let value = self.current;
-            self.current = self.current + 1;
+    fn next(iter: RangeIter) -> Option<i32> {
+        if iter.current < iter.end {
+            let value = iter.current;
+            iter.current = iter.current + 1;
             Some(value)
         } else {
             None
@@ -1581,7 +1635,7 @@ actor Calculator {
 
     // receive fn signature provides context for message arguments
     receive fn apply_operation(op: fn(i32, i32) -> i32, value: i32) {
-        self.result = op(self.result, value);
+        result = op(result, value);
     }
 }
 
@@ -1801,8 +1855,8 @@ impl File {
 }
 
 impl Drop for File {
-    fn drop(self) {
-        unsafe { close(self.fd); }
+    fn drop(f: File) {
+        unsafe { close(f.fd); }
     }
 }
 ```
@@ -1864,19 +1918,19 @@ Hew's standard library follows a three-tier architecture, enabling use in contex
 ```hew
 trait Iterator {
     type Item;
-    fn next(self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self::Item>;
 
     // Provided combinators
-    fn map<B>(self, f: fn(Self::Item) -> B) -> Map<Self, B>;
-    fn filter(self, pred: fn(Self::Item) -> bool) -> Filter<Self>;
-    fn collect<C: FromIterator<Self::Item>>(self) -> C;
-    fn fold<B>(self, init: B, f: fn(B, Self::Item) -> B) -> B;
+    fn map<B>(iter: Self, f: fn(Self::Item) -> B) -> Map<Self, B>;
+    fn filter(iter: Self, pred: fn(Self::Item) -> bool) -> Filter<Self>;
+    fn collect<C: FromIterator<Self::Item>>(iter: Self) -> C;
+    fn fold<B>(iter: Self, init: B, f: fn(B, Self::Item) -> B) -> B;
 }
 
 trait IntoIterator {
     type Item;
     type IntoIter: Iterator[Item = Self::Item];
-    fn into_iter(self) -> Self::IntoIter;
+    fn into_iter(val: Self) -> Self::IntoIter;
 }
 ```
 
@@ -1884,12 +1938,12 @@ trait IntoIterator {
 
 ```hew
 trait Hash {
-    fn hash<H: Hasher>(self, state: H);
+    fn hash<H: Hasher>(val: Self, state: H);
 }
 
 trait Hasher {
-    fn write(self, bytes: [u8]);
-    fn finish(self) -> u64;
+    fn write(h: Self, bytes: [u8]);
+    fn finish(h: Self) -> u64;
 }
 ```
 
@@ -1897,11 +1951,11 @@ trait Hasher {
 
 ```hew
 trait Display {
-    fn display(self) -> String;
+    fn display(val: Self) -> String;
 }
 
 trait Debug {
-    fn debug(self) -> String;
+    fn debug(val: Self) -> String;
 }
 ```
 
@@ -1909,7 +1963,7 @@ trait Debug {
 
 ```hew
 trait Clone {
-    fn clone(self) -> Self;
+    fn clone(val: Self) -> Self;
 }
 
 // Marker trait - types are copied on assignment, not moved
@@ -1920,8 +1974,8 @@ trait Copy: Clone {}
 
 ```hew
 trait Allocator {
-    fn alloc(self, size: usize, align: usize) -> Result<*var u8, AllocError>;
-    fn dealloc(self, ptr: *var u8, size: usize, align: usize);
+    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, AllocError>;
+    fn dealloc(a: Self, ptr: *var u8, size: usize, align: usize);
 }
 ```
 
@@ -1952,33 +2006,33 @@ type String {
 impl String {
     fn new() -> String;
     fn from(s: str) -> String;
-    fn len(self) -> i64;
-    fn push(self, c: char);
-    fn push_str(self, s: str);
-    fn as_str(self) -> str;
+    fn len(s: String) -> i64;
+    fn push(s: String, c: char);
+    fn push_str(s: String, other: str);
+    fn as_str(s: String) -> str;
 }
 
 // String methods (called on string values with dot-syntax)
-fn contains(self, sub: string) -> bool;
-fn starts_with(self, prefix: string) -> bool;
-fn ends_with(self, suffix: string) -> bool;
-fn trim(self) -> string;
-fn to_lower(self) -> string;
-fn to_upper(self) -> string;
-fn replace(self, old: string, new: string) -> string;
-fn split(self, sep: string) -> Vec<string>;
-fn find(self, sub: string) -> i64;          // Returns index or -1
-fn slice(self, start: i64, end: i64) -> string;
-fn len(self) -> i64;
-fn repeat(self, n: i64) -> string;
-fn char_at(self, i: i64) -> i64;            // Returns character code
-fn chars(self) -> Vec<char>;                // Split into individual characters
-fn index_of(self, sub: string) -> i64;      // Returns index or -1
-fn lines(self) -> Vec<string>;              // Split on newlines (strips \r)
-fn is_digit(self) -> bool;                  // All chars are ASCII digits
-fn is_alpha(self) -> bool;                  // All chars are ASCII alphabetic
-fn is_alphanumeric(self) -> bool;           // All chars are ASCII alphanumeric
-fn is_empty(self) -> bool;                  // Zero-length string
+fn contains(s: string, sub: string) -> bool;
+fn starts_with(s: string, prefix: string) -> bool;
+fn ends_with(s: string, suffix: string) -> bool;
+fn trim(s: string) -> string;
+fn to_lower(s: string) -> string;
+fn to_upper(s: string) -> string;
+fn replace(s: string, old: string, new: string) -> string;
+fn split(s: string, sep: string) -> Vec<string>;
+fn find(s: string, sub: string) -> i64;          // Returns index or -1
+fn slice(s: string, start: i64, end: i64) -> string;
+fn len(s: string) -> i64;
+fn repeat(s: string, n: i64) -> string;
+fn char_at(s: string, i: i64) -> i64;            // Returns character code
+fn chars(s: string) -> Vec<char>;                // Split into individual characters
+fn index_of(s: string, sub: string) -> i64;      // Returns index or -1
+fn lines(s: string) -> Vec<string>;              // Split on newlines (strips \r)
+fn is_digit(s: string) -> bool;                  // All chars are ASCII digits
+fn is_alpha(s: string) -> bool;                  // All chars are ASCII alphabetic
+fn is_alphanumeric(s: string) -> bool;           // All chars are ASCII alphanumeric
+fn is_empty(s: string) -> bool;                  // Zero-length string
 
 // Built-in string functions (available in std::prelude)
 fn string_length(s: String) -> i64;
@@ -2027,18 +2081,18 @@ type Vec<T> {
 impl<T> Vec<T> {
     fn new() -> Vec<T>;
     fn with_capacity(cap: i64) -> Vec<T>;
-    fn push(self, item: T);
-    fn pop(self) -> Option<T>;
-    fn len(self) -> i64;
-    fn get(self, index: i64) -> Option<T>;
-    fn truncate(self, len: i64);
-    fn clone(self) -> Vec<T>;
-    fn swap(self, a: i64, b: i64);
-    fn sort(self) where T: Ord;
-    fn join(self, sep: string) -> string where T: string;  // Join Vec<String> with separator
-    fn map<U>(self, f: fn(T) -> U) -> Vec<U>;              // Transform each element
-    fn filter(self, f: fn(T) -> bool) -> Vec<T>;           // Keep elements where f returns true
-    fn fold<U>(self, init: U, f: fn(U, T) -> U) -> U;     // Reduce to a single value
+    fn push(v: Vec<T>, item: T);
+    fn pop(v: Vec<T>) -> Option<T>;
+    fn len(v: Vec<T>) -> i64;
+    fn get(v: Vec<T>, index: i64) -> Option<T>;
+    fn truncate(v: Vec<T>, len: i64);
+    fn clone(v: Vec<T>) -> Vec<T>;
+    fn swap(v: Vec<T>, a: i64, b: i64);
+    fn sort(v: Vec<T>) where T: Ord;
+    fn join(v: Vec<T>, sep: string) -> string where T: string;  // Join Vec<String> with separator
+    fn map<U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U>;              // Transform each element
+    fn filter(v: Vec<T>, f: fn(T) -> bool) -> Vec<T>;           // Keep elements where f returns true
+    fn fold<U>(v: Vec<T>, init: U, f: fn(U, T) -> U) -> U;     // Reduce to a single value
 }
 ```
 
@@ -2051,14 +2105,14 @@ type HashMap<K: Hash + Eq, V> {
 
 impl<K: Hash + Eq, V> HashMap<K, V> {
     fn new() -> HashMap<K, V>;
-    fn insert(self, key: K, value: V) -> Option<V>;
-    fn get(self, key: K) -> Option<V>;
-    fn remove(self, key: K) -> Option<V>;
-    fn contains_key(self, key: K) -> bool;
-    fn keys(self) -> Vec<K>;
-    fn values(self) -> Vec<V>;
-    fn len(self) -> i64;
-    fn is_empty(self) -> bool;
+    fn insert(m: HashMap<K, V>, key: K, value: V) -> Option<V>;
+    fn get(m: HashMap<K, V>, key: K) -> Option<V>;
+    fn remove(m: HashMap<K, V>, key: K) -> Option<V>;
+    fn contains_key(m: HashMap<K, V>, key: K) -> bool;
+    fn keys(m: HashMap<K, V>) -> Vec<K>;
+    fn values(m: HashMap<K, V>) -> Vec<V>;
+    fn len(m: HashMap<K, V>) -> i64;
+    fn is_empty(m: HashMap<K, V>) -> bool;
 }
 ```
 
@@ -2071,12 +2125,12 @@ type HashSet<T: Hash + Eq> {
 
 impl<T: Hash + Eq> HashSet<T> {
     fn new() -> HashSet<T>;
-    fn insert(self, elem: T) -> bool;
-    fn contains(self, elem: T) -> bool;
-    fn remove(self, elem: T) -> bool;
-    fn len(self) -> i64;
-    fn is_empty(self) -> bool;
-    fn clear(self);
+    fn insert(s: HashSet<T>, elem: T) -> bool;
+    fn contains(s: HashSet<T>, elem: T) -> bool;
+    fn remove(s: HashSet<T>, elem: T) -> bool;
+    fn len(s: HashSet<T>) -> i64;
+    fn is_empty(s: HashSet<T>) -> bool;
+    fn clear(s: HashSet<T>);
 }
 ```
 
@@ -2084,26 +2138,26 @@ impl<T: Hash + Eq> HashSet<T> {
 
 ```hew
 trait Read {
-    fn read(self, buf: [u8]) -> Result<usize, IoError>;
+    fn read(r: Self, buf: [u8]) -> Result<usize, IoError>;
 
     // Provided methods
-    fn read_exact(self, buf: [u8]) -> Result<(), IoError>;
-    fn read_to_end(self, buf: Vec<u8>) -> Result<usize, IoError>;
-    fn read_to_string(self, buf: String) -> Result<usize, IoError>;
+    fn read_exact(r: Self, buf: [u8]) -> Result<(), IoError>;
+    fn read_to_end(r: Self, buf: Vec<u8>) -> Result<usize, IoError>;
+    fn read_to_string(r: Self, buf: String) -> Result<usize, IoError>;
 }
 
 trait Write {
-    fn write(self, buf: [u8]) -> Result<usize, IoError>;
-    fn flush(self) -> Result<(), IoError>;
+    fn write(w: Self, buf: [u8]) -> Result<usize, IoError>;
+    fn flush(w: Self) -> Result<(), IoError>;
 
     // Provided methods
-    fn write_all(self, buf: [u8]) -> Result<(), IoError>;
+    fn write_all(w: Self, buf: [u8]) -> Result<(), IoError>;
 }
 
 trait BufRead: Read {
-    fn fill_buf(self) -> Result<[u8], IoError>;
-    fn consume(self, amt: usize);
-    fn read_line(self, buf: String) -> Result<usize, IoError>;
+    fn fill_buf(r: Self) -> Result<[u8], IoError>;
+    fn consume(r: Self, amt: usize);
+    fn read_line(r: Self, buf: String) -> Result<usize, IoError>;
 }
 ```
 
@@ -2298,9 +2352,9 @@ Task<T>
 
 **Task methods:**
 
-| Method    | Signature                   | Description                                                 |
-| --------- | --------------------------- | ----------------------------------------------------------- |
-| `is_done` | `fn is_done(&self) -> bool` | Returns `true` if task has completed, cancelled, or trapped |
+| Method    | Signature                        | Description                                                 |
+| --------- | -------------------------------- | ----------------------------------------------------------- |
+| `is_done` | `fn is_done(t: Task<T>) -> bool` | Returns `true` if task has completed, cancelled, or trapped |
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
@@ -2326,11 +2380,11 @@ scope {
 
 Within a `scope` block, the implicit `scope` binding has type `Scope`. This binding is only valid inside the scope block.
 
-| Method   | Signature                                      | Description                                         |
-| -------- | ---------------------------------------------- | --------------------------------------------------- |
-| `launch` | `fn launch<T>(&self, f: fn() -> T) -> Task<T>` | Launch a cooperative task (coroutine) in this scope |
-| `spawn`  | `fn spawn<T>(&self, f: fn() -> T) -> Task<T>`  | Spawn a parallel task (OS thread) in this scope     |
-| `cancel` | `fn cancel(&self)`                             | Request cancellation of all tasks in this scope     |
+| Method   | Signature                                         | Description                                         |
+| -------- | ------------------------------------------------- | --------------------------------------------------- |
+| `launch` | `fn launch<T>(s: Scope, f: fn() -> T) -> Task<T>` | Launch a cooperative task (coroutine) in this scope |
+| `spawn`  | `fn spawn<T>(s: Scope, f: fn() -> T) -> Task<T>`  | Spawn a parallel task (OS thread) in this scope     |
+| `cancel` | `fn cancel(s: Scope)`                             | Request cancellation of all tasks in this scope     |
 
 ### 4.3 Spawning Tasks
 
@@ -2648,7 +2702,7 @@ actor DataProcessor {
             var results: Vec<Task<Data>> = Vec::new();
 
             for id in ids {
-                // s.spawn: data passed explicitly — task body cannot access self
+                // s.spawn: data passed explicitly — task body cannot access actor state
                 let task = s.spawn {
                     fetch_data(id)
                 };
@@ -2903,7 +2957,7 @@ type Generator<Y> { /* compiler-generated coroutine frame */ }
 
 impl<Y> Iterator for Generator<Y> {
     type Item = Y;
-    fn next(self) -> Option<Y>;
+    fn next(g: Generator<Y>) -> Option<Y>;
 }
 ```
 
@@ -3009,7 +3063,7 @@ type AsyncGenerator<Y> { /* coroutine frame with async suspend points */ }
 
 impl<Y> AsyncIterator for AsyncGenerator<Y> {
     type Item = Y;
-    async fn next(self) -> Option<Y>;
+    async fn next(g: AsyncGenerator<Y>) -> Option<Y>;
 }
 ```
 
@@ -3041,12 +3095,12 @@ actor DatabaseActor {
     var db: Connection;
 
     init(conn_string: String) {
-        self.db = connect(conn_string);
+        db = connect(conn_string);
     }
 
     // Streaming receive: yields rows lazily to the caller
     receive gen fn query(sql: String) -> Row {
-        let cursor = self.db.execute(sql);
+        let cursor = db.execute(sql);
         while let Some(row) = cursor.next() {
             yield row;
         }
@@ -3100,7 +3154,7 @@ The streaming protocol MAY use a **prefetch window** to amortize message-passing
 actor DataSource {
     #[prefetch(8)]
     receive gen fn stream_events() -> Event {
-        for event in self.event_log {
+        for event in event_log {
             yield event;
         }
     }
@@ -3175,18 +3229,18 @@ Generators integrate into the trait system:
 // Synchronous iterator protocol (existing — §3.6)
 trait Iterator {
     type Item;
-    fn next(self) -> Option<Self::Item>;
+    fn next(iter: Self) -> Option<Self::Item>;
 }
 
 // Asynchronous iterator protocol
 trait AsyncIterator {
     type Item;
-    async fn next(self) -> Option<Self::Item>;
+    async fn next(iter: Self) -> Option<Self::Item>;
 }
 
 // Generator — an Iterator backed by a coroutine
 trait Generator: Iterator {
-    fn resume(self) -> GeneratorState<Self::Item>;
+    fn resume(g: Self) -> GeneratorState<Self::Item>;
 }
 
 enum GeneratorState<Y> {
@@ -3375,7 +3429,7 @@ actor PriceTracker {
     mailbox 100 overflow coalesce(symbol);
 
     receive fn update_price(symbol: String, price: f64) {
-        self.prices.insert(symbol, price);
+        prices.insert(symbol, price);
     }
 }
 ```
@@ -4175,7 +4229,7 @@ The actor state machine governs the lifecycle of an actor instance within the ru
 Idle ──────► Runnable       message arrives in mailbox or timer fires
 Runnable ──► Running        scheduler picks actor for execution on a worker thread
 Running ───► Idle           message budget exhausted or no more messages; yields to scheduler
-Running ───► Stopping       supervisor requests shutdown, or actor calls self.stop()
+Running ───► Stopping       supervisor requests shutdown, or actor calls stop()
 Stopping ──► Stopped        cleanup finished, normal exit
 Running/Idle/Stopping ──► Crashed   unrecoverable trap occurs
 Crashed ───► Stopped        crash finalized, supervisor notified
@@ -4464,11 +4518,11 @@ actor Counter {
     let count: int;
 
     receive fn increment(n: int) {
-        self.count = self.count + n;
+        count = count + n;
     }
 
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 
@@ -4843,6 +4897,18 @@ If you want this to be directly executable as an engineering project, the next m
 ---
 
 ## Changelog
+
+### v0.9.1
+
+- **Removed:** `self` keyword — no longer a keyword or special identifier in Hew
+- **Added:** Named receivers (Go-style) for trait and impl methods (`fn display(p: Point)`)
+- **Added:** Bare field access in actors (`count += 1` instead of `self.count += 1`)
+- **Added:** `this` keyword for actor self-reference (read-only `ActorRef<Self>` handle)
+- **Changed:** Variable shadowing is now a hard error (prerequisite for bare field names)
+- **Changed:** `Drop` trait uses `fn drop(val: Self)` named receiver
+- **Changed:** Object safety requires a named receiver of type `Self` (not `self`)
+- **Changed:** All stdlib trait and impl method signatures updated to named receivers
+- **Unchanged:** `Self` (capital S) type alias remains valid in trait/impl blocks
 
 ### v0.9.0
 

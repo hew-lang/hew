@@ -11,14 +11,14 @@ actor Fragile {
     let lives: i32;
     receive fn work() {
         print("fragile ");
-        print(self.id);
+        print(id);
         print(" working (lives left: ");
-        print(self.lives);
+        print(lives);
         println(")");
     }
     receive fn break_it() {
         print("fragile ");
-        print(self.id);
+        print(id);
         println(" crashing!");
         panic("actor failure");
     }

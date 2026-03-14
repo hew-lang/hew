@@ -1,5 +1,5 @@
 trait Describable {
-    fn describe(self: Self) -> String;
+    fn describe(val: Self) -> String;
 }
 
 type Dog {
@@ -11,14 +11,14 @@ type Cat {
 }
 
 impl Describable for Dog {
-    fn describe(self: Dog) -> String {
-        string_concat("Dog: ", self.name)
+    fn describe(d: Dog) -> String {
+        string_concat("Dog: ", d.name)
     }
 }
 
 impl Describable for Cat {
-    fn describe(self: Cat) -> String {
-        string_concat("Cat: ", self.name)
+    fn describe(cat: Cat) -> String {
+        string_concat("Cat: ", cat.name)
     }
 }
 

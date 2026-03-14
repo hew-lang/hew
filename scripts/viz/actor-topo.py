@@ -68,6 +68,14 @@ class AskEdge:
 
 
 @dataclass
+class LinkEdge:
+    source: str
+    target_actor: str
+    kind: str = "link"  # "link" or "monitor"
+    source_is_actor: bool = False
+
+
+@dataclass
 class SupervisorEdge:
     supervisor: str
     child: str
@@ -99,16 +107,35 @@ RE_ACTOR_ASK = re.compile(
 )
 
 RE_ACTOR_STOP = re.compile(r"hew\.actor_stop\s+(?P<target>%\S+)")
+RE_ACTOR_AWAIT = re.compile(r"hew\.actor_await\s+(?P<target>%\S+)")
+RE_ACTOR_LINK = re.compile(r"hew\.actor_link\s+(?P<target>%\S+)")
+RE_ACTOR_UNLINK = re.compile(r"hew\.actor_unlink\s+(?P<target>%\S+)")
+RE_ACTOR_MONITOR = re.compile(r"hew\.actor_monitor\s+(?P<target>%\S+)")
+RE_ACTOR_DEMONITOR = re.compile(r"hew\.actor_demonitor\s+(?P<target>%\S+)")
 
 RE_RECEIVE = re.compile(
     r"hew\.receive\([^)]*\)\s*\{handlers\s*=\s*\[(?P<handlers>[^\]]+)\]\}"
 )
 
-RE_SUPERVISOR_SPAWN = re.compile(
-    r'hew\.supervisor\.start_child\s+(?P<target>%\S+)\s*\{[^}]*strategy\s*=\s*"(?P<strategy>[^"]+)"'
+# SSA flow tracking: bitcast propagates actor identity, memref.store/load
+# tracks spilled actor refs
+RE_BITCAST = re.compile(
+    r"(?P<dst>%\S+)\s*=\s*hew\.bitcast\s+(?P<src>%\S+)"
 )
-RE_SUPERVISOR_DISPATCH = re.compile(
-    r'supervisor_dispatch'
+RE_MEMREF_STORE = re.compile(
+    r"memref\.store\s+(?P<val>%\S+),\s*(?P<ptr>%\S+)\[\]"
+)
+RE_MEMREF_LOAD = re.compile(
+    r"(?P<dst>%\S+)\s*=\s*memref\.load\s+(?P<ptr>%\S+)\[\]"
+)
+
+RE_SUPERVISOR_NEW = re.compile(r"hew\.supervisor\.new")
+RE_SUPERVISOR_START = re.compile(r"hew\.supervisor\.start")
+RE_SUPERVISOR_ADD_CHILD = re.compile(
+    r"hew\.supervisor\.add_child(?:_supervisor)?"
+)
+RE_SUPERVISOR_CHILD_SPEC = re.compile(
+    r'hew\.supervisor\.child_spec_create'
 )
 RE_CLOSE_BRACE = re.compile(r"^\s*\}")
 
@@ -156,6 +183,7 @@ def parse_mlir(text: str):
     spawns: list[SpawnEdge] = []
     sends: list[SendEdge] = []
     asks: list[AskEdge] = []
+    links: list[LinkEdge] = []
     stops: list[tuple[str, str]] = []  # (source, target_actor)
     supervisor_edges: list[SupervisorEdge] = []
     supervisor_names: set[str] = set()
@@ -171,6 +199,8 @@ def parse_mlir(text: str):
 
     # SSA → actor name mapping, scoped per function
     func_ssa_map: dict[str, dict[str, str]] = {}  # func_name -> {ssa -> actor}
+    # memref ptr → actor name (tracks spilled actor refs via memref.store/load)
+    func_memref_map: dict[str, dict[str, str]] = {}  # func_name -> {ptr -> actor}
 
     current_func = None
     brace_depth = 0
@@ -213,6 +243,7 @@ def parse_mlir(text: str):
                         handler_sigs[current_func] = hi
 
             func_ssa_map.setdefault(current_func, {})
+            func_memref_map.setdefault(current_func, {})
             continue
 
         # Function end
@@ -256,6 +287,34 @@ def parse_mlir(text: str):
             spawns.append(SpawnEdge(
                 source=source, target=actor_name, source_is_actor=is_actor,
             ))
+            continue
+
+        # SSA flow: propagate actor identity through bitcasts and memref
+        m = RE_BITCAST.search(stripped)
+        if m:
+            src_ssa = m.group("src")
+            dst_ssa = m.group("dst")
+            actor = func_ssa_map.get(current_func, {}).get(src_ssa)
+            if actor:
+                func_ssa_map[current_func][dst_ssa] = actor
+            continue
+
+        m = RE_MEMREF_STORE.search(stripped)
+        if m:
+            val_ssa = m.group("val")
+            ptr_ssa = m.group("ptr")
+            actor = func_ssa_map.get(current_func, {}).get(val_ssa)
+            if actor:
+                func_memref_map.setdefault(current_func, {})[ptr_ssa] = actor
+            continue
+
+        m = RE_MEMREF_LOAD.search(stripped)
+        if m:
+            dst_ssa = m.group("dst")
+            ptr_ssa = m.group("ptr")
+            actor = func_memref_map.get(current_func, {}).get(ptr_ssa)
+            if actor:
+                func_ssa_map.setdefault(current_func, {})[dst_ssa] = actor
             continue
 
         # Actor send
@@ -324,12 +383,59 @@ def parse_mlir(text: str):
                 stops.append((source, target_actor))
             continue
 
+        # Actor await
+        m = RE_ACTOR_AWAIT.search(stripped)
+        if m:
+            target_ssa = m.group("target")
+            target_actor = func_ssa_map.get(current_func, {}).get(target_ssa, "")
+            source, is_actor = _resolve_source(current_func, actors)
+            # Await is like an ask — it's a blocking wait on actor completion
+            if target_actor:
+                asks.append(AskEdge(
+                    source=source,
+                    target_actor=target_actor,
+                    handler_name="await",
+                    source_is_actor=is_actor,
+                ))
+            continue
+
+        # Actor link/unlink
+        for pattern, kind in [
+            (RE_ACTOR_LINK, "link"),
+            (RE_ACTOR_UNLINK, "unlink"),
+            (RE_ACTOR_MONITOR, "monitor"),
+            (RE_ACTOR_DEMONITOR, "demonitor"),
+        ]:
+            m = pattern.search(stripped)
+            if m:
+                target_ssa = m.group("target")
+                target_actor = func_ssa_map.get(current_func, {}).get(target_ssa, "")
+                source, is_actor = _resolve_source(current_func, actors)
+                if target_actor:
+                    links.append(LinkEdge(
+                        source=source,
+                        target_actor=target_actor,
+                        kind=kind,
+                        source_is_actor=is_actor,
+                    ))
+                break
+        else:
+            # Only reach here if no link/monitor pattern matched
+            pass
+        if m:
+            continue
+
+        # Supervisor formal ops
+        if RE_SUPERVISOR_NEW.search(stripped):
+            # Mark the containing actor as a supervisor
+            source, _ = _resolve_source(current_func, actors)
+            supervisor_names.add(source)
+            continue
+
     # Detect supervisors: actors whose dispatch functions contain
-    # "supervisor" in their name or that spawn multiple child actors
+    # "supervisor" in their name, or that use formal supervisor ops
     for dispatch_func in dispatch_funcs:
         actor_name = dispatch_func.replace("_dispatch", "")
-        # Heuristic: if the function name contains "supervisor" or if the actor
-        # spawns other actors in its handlers, mark as supervisor
         if "supervisor" in actor_name.lower() or "supervisor" in dispatch_func.lower():
             supervisor_names.add(actor_name)
 
@@ -402,7 +508,7 @@ def parse_mlir(text: str):
     sends = _dedup_sends(sends)
     asks = _dedup_asks(asks)
 
-    return actors, spawns, sends, asks, stops, supervisor_edges, supervisor_names
+    return actors, spawns, sends, asks, links, stops, supervisor_edges, supervisor_names
 
 
 def _resolve_source(func_name: str, actors: dict[str, ActorInfo]) -> tuple[str, bool]:
@@ -467,13 +573,18 @@ def generate_dot(
     spawns: list[SpawnEdge],
     sends: list[SendEdge],
     asks: list[AskEdge],
-    stops: list[tuple[str, str]],
+    links: list[LinkEdge] | None = None,
+    stops: list[tuple[str, str]] | None = None,
     supervisor_edges: list[SupervisorEdge] | None = None,
     supervisor_names: set[str] | None = None,
     *,
     show_types: bool = True,
     show_state: bool = True,
 ) -> str:
+    if links is None:
+        links = []
+    if stops is None:
+        stops = []
     if supervisor_edges is None:
         supervisor_edges = []
     if supervisor_names is None:
@@ -500,6 +611,9 @@ def generate_dot(
     for ae in asks:
         if ae.source not in actor_names:
             non_actor_sources.add(ae.source)
+    for le in links:
+        if le.source not in actor_names:
+            non_actor_sources.add(le.source)
 
     # ── Entry point / non-actor nodes ────────────────────────────────
     for src in sorted(non_actor_sources):
@@ -640,6 +754,27 @@ def generate_dot(
             f'fontcolor="#880E4F", style=bold, penwidth=2];'
         )
 
+    # ── Link / monitor edges (solid/dashed teal) ──────────────────────
+    seen_links: set[tuple[str, str, str]] = set()
+    for le in links:
+        key = (le.source, le.target_actor, le.kind)
+        if key in seen_links:
+            continue
+        seen_links.add(key)
+        src = sanitize_id(le.source)
+        tgt = sanitize_id(le.target_actor)
+        if le.kind == "link":
+            lines.append(
+                f'  {src} -> {tgt} [label="link", color="#00897B", '
+                f'fontcolor="#004D40", style=solid, arrowhead=diamond, penwidth=1.5];'
+            )
+        elif le.kind == "monitor":
+            lines.append(
+                f'  {src} -> {tgt} [label="monitor", color="#00897B", '
+                f'fontcolor="#004D40", style=dashed, arrowhead=odot, penwidth=1.5];'
+            )
+        # unlink/demonitor are inverses — skip rendering to avoid clutter
+
     # ── Stop edges (dotted red) ──────────────────────────────────────
     for source, target in stops:
         src = sanitize_id(source)
@@ -718,13 +853,13 @@ def main():
         sys.exit(1)
 
     # Parse and generate DOT
-    actors, spawns, sends, asks, stops, supervisor_edges, supervisor_names = parse_mlir(mlir_text)
+    actors, spawns, sends, asks, links, stops, supervisor_edges, supervisor_names = parse_mlir(mlir_text)
 
     if not actors:
         print("Warning: no actors found in input", file=sys.stderr)
 
     dot = generate_dot(
-        actors, spawns, sends, asks, stops,
+        actors, spawns, sends, asks, links, stops,
         supervisor_edges, supervisor_names,
         show_types=not args.no_types,
         show_state=not args.no_state,

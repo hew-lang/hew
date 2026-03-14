@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::set_last_error;
 use std::thread::{self, JoinHandle};
@@ -31,6 +31,93 @@ const _: () = assert!(
 /// Only one `HewNode` may be active per process. Starting a second node
 /// while one is running is undefined behaviour.
 static CURRENT_NODE: RwLock<usize> = RwLock::new(0);
+
+// ---------------------------------------------------------------------------
+// Reply routing table for distributed ask/reply
+// ---------------------------------------------------------------------------
+
+/// A single pending remote ask waiting for its reply.
+struct PendingReply {
+    data: Mutex<Option<Vec<u8>>>,
+    cond: Condvar,
+}
+
+/// Process-global reply routing table for correlating remote ask/reply pairs.
+///
+/// Each outbound remote ask registers a `PendingReply` keyed by a unique
+/// request ID. When the reply envelope arrives, the reader thread deposits
+/// the payload and signals the condvar to wake the blocked caller.
+struct ReplyRoutingTable {
+    next_id: AtomicU64,
+    pending: Mutex<HashMap<u64, Arc<PendingReply>>>,
+}
+
+impl ReplyRoutingTable {
+    fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Allocate a new request ID and register a pending reply slot.
+    fn register(&self) -> (u64, Arc<PendingReply>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let entry = Arc::new(PendingReply {
+            data: Mutex::new(None),
+            cond: Condvar::new(),
+        });
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.insert(id, Arc::clone(&entry));
+        (id, entry)
+    }
+
+    /// Complete a pending reply by depositing the payload and signalling
+    /// the waiting thread. Returns `true` if the request ID was found.
+    fn complete(&self, request_id: u64, payload: Vec<u8>) -> bool {
+        let entry = {
+            let mut map = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.remove(&request_id)
+        };
+        if let Some(pending) = entry {
+            let mut guard = pending
+                .data
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = Some(payload);
+            pending.cond.notify_one();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a pending entry (used on timeout to prevent leaks).
+    fn remove(&self, request_id: u64) {
+        let mut map = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map.remove(&request_id);
+    }
+}
+
+static REPLY_TABLE: std::sync::LazyLock<ReplyRoutingTable> =
+    std::sync::LazyLock::new(ReplyRoutingTable::new);
+
+/// Deposit a reply payload for a pending remote ask.
+///
+/// Called by the reader thread when a reply envelope arrives. Returns
+/// `true` if the request ID was matched.
+pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
+    REPLY_TABLE.complete(request_id, payload.to_vec())
+}
 
 /// Route a message to a remote actor via the current node.
 ///
@@ -120,10 +207,158 @@ unsafe extern "C" fn node_inbound_router(
     msg_type: i32,
     data: *mut u8,
     size: usize,
+    request_id: u64,
+    source_node_id: u16,
 ) {
-    // SAFETY: hew_actor_send_by_id deep-copies payload and validates actor presence.
-    let _ =
-        unsafe { crate::actor::hew_actor_send_by_id(target_actor_id, msg_type, data.cast(), size) };
+    if request_id > 0 && source_node_id > 0 {
+        // Inbound remote ask — dispatch locally and send the reply back.
+        // Deep-copy the payload so we can hand it to a background thread.
+        let payload = if size > 0 && !data.is_null() {
+            // SAFETY: data is valid for `size` bytes (reader_loop contract).
+            unsafe { std::slice::from_raw_parts(data, size) }.to_vec()
+        } else {
+            Vec::new()
+        };
+        thread::spawn(move || {
+            handle_inbound_ask(
+                target_actor_id,
+                msg_type,
+                &payload,
+                request_id,
+                source_node_id,
+            );
+        });
+    } else {
+        // Fire-and-forget message — route to local actor.
+        // SAFETY: hew_actor_send_by_id deep-copies payload and validates actor presence.
+        let _ = unsafe {
+            crate::actor::hew_actor_send_by_id(target_actor_id, msg_type, data.cast(), size)
+        };
+    }
+}
+
+/// Handle an inbound remote ask by performing a local blocking ask and
+/// sending the reply envelope back to the requesting node.
+fn handle_inbound_ask(
+    target_actor_id: u64,
+    msg_type: i32,
+    payload: &[u8],
+    request_id: u64,
+    source_node_id: u16,
+) {
+    // Perform a local blocking ask against the target actor.
+    let reply_ptr = {
+        let data_ptr = if payload.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            payload.as_ptr().cast_mut().cast::<c_void>()
+        };
+        // SAFETY: data_ptr is valid for payload.len() bytes.
+        unsafe {
+            crate::actor::hew_actor_ask_by_id(target_actor_id, msg_type, data_ptr, payload.len())
+        }
+    };
+
+    // Build the reply payload from the returned data.
+    let reply_data: Vec<u8> = if reply_ptr.is_null() {
+        Vec::new()
+    } else {
+        // The reply is a malloc'd buffer. We need to determine its size.
+        // hew_actor_ask returns a pointer to the reply value, but the
+        // reply_channel stores the size internally. We pass the raw
+        // pointer through; the size was recorded alongside it.
+        // SAFETY: reply_ptr came from hew_reply which malloc'd size bytes.
+        let size = unsafe { crate::actor::hew_reply_data_size(reply_ptr) };
+        if size > 0 {
+            // SAFETY: reply_ptr is valid for `size` bytes as returned by hew_reply_data_size.
+            let slice = unsafe { std::slice::from_raw_parts(reply_ptr.cast::<u8>(), size) };
+            let v = slice.to_vec();
+            // SAFETY: reply_ptr was malloc'd by hew_reply.
+            unsafe { libc::free(reply_ptr) };
+            v
+        } else {
+            // SAFETY: reply_ptr was malloc'd by hew_reply.
+            unsafe { libc::free(reply_ptr) };
+            Vec::new()
+        }
+    };
+
+    // Send the reply envelope back to the requesting node.
+    send_reply_envelope(source_node_id, request_id, &reply_data);
+}
+
+/// Encode and send a reply envelope back to the source node.
+fn send_reply_envelope(target_node_id: u16, request_id: u64, reply_data: &[u8]) {
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if *guard == 0 {
+        return;
+    }
+    let node = *guard as *mut HewNode;
+    // SAFETY: read lock pins the node pointer.
+    let node_ref = unsafe { &*node };
+    if node_ref.conn_mgr.is_null() {
+        return;
+    }
+
+    // Find the connection for the target node.
+    let conn_id = {
+        let map = match node_ref.conn_by_node.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        match map.get(&target_node_id) {
+            Some(&id) => id,
+            None => return,
+        }
+    };
+
+    // Encode the reply envelope with request_id set and source_node_id = 0
+    // to mark it as a reply (not a new request).
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "reply payload size bounded by wire buffer limits"
+    )]
+    let env = crate::wire::HewWireEnvelope {
+        target_actor_id: 0,
+        source_actor_id: 0,
+        msg_type: 0,
+        payload_size: reply_data.len() as u32,
+        payload: reply_data.as_ptr().cast_mut(),
+        request_id,
+        source_node_id: 0,
+    };
+    // SAFETY: zeroed is valid for HewWireBuf.
+    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+    // SAFETY: wire_buf is a valid stack allocation.
+    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+    // SAFETY: wire_buf and env are valid stack locals.
+    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // SAFETY: wire_buf was initialised above.
+        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+        return;
+    }
+
+    // SAFETY: transport pointer is valid while node is running.
+    let t = unsafe { &*node_ref.transport };
+    // SAFETY: transport ops are valid.
+    if let Some(ops) = unsafe { t.ops.as_ref() } {
+        if let Some(send_fn) = ops.send {
+            // SAFETY: wire_buf contains the encoded envelope.
+            unsafe {
+                send_fn(
+                    t.r#impl,
+                    conn_id,
+                    wire_buf.data.cast::<c_void>(),
+                    wire_buf.len,
+                )
+            };
+        }
+    }
+    // SAFETY: wire_buf was initialised above.
+    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
 }
 
 /// Callback invoked by the cluster when a registry gossip event arrives
@@ -1099,92 +1334,154 @@ mod tests {
         unsafe { hew_node_free(node) };
     }
 
+    // ── Reply routing table unit tests ─────────────────────────────────
+
     #[test]
-    fn remote_lookup_via_registry_gossip() {
-        // Verify that a registry gossip callback populates remote_names
-        // and that hew_node_lookup falls through to it.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        crate::registry::hew_registry_clear();
+    fn reply_table_register_and_complete() {
+        let (id, pending) = REPLY_TABLE.register();
+        assert!(id > 0);
 
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is a valid C string.
-        let node = unsafe { TestNode::new(110, &bind_addr) };
-        assert!(!node.as_ptr().is_null());
+        // Complete the pending reply.
+        let payload = vec![1, 2, 3, 4];
+        assert!(REPLY_TABLE.complete(id, payload.clone()));
 
-        // SAFETY: pointer is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node.as_ptr()), 0);
-
-            // Simulate a remote registry gossip event arriving.
-            let n = &*node.as_ptr();
-            let remote_name = c"remote_counter";
-            let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
-
-            // Invoke the callback directly (as the cluster would).
-            node_registry_gossip_callback(
-                remote_name.as_ptr(),
-                remote_pid,
-                true,
-                n.registry.cast::<c_void>(),
-            );
-
-            // Local lookup should not find it (not registered locally).
-            assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
-
-            // Node lookup should find it via remote_names.
-            assert_eq!(
-                hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
-                remote_pid
-            );
-
-            // Simulate removal.
-            node_registry_gossip_callback(
-                remote_name.as_ptr(),
-                0,
-                false,
-                n.registry.cast::<c_void>(),
-            );
-            assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
-
-            assert_eq!(hew_node_stop(node.as_ptr()), 0);
-        }
-        crate::registry::hew_registry_clear();
+        // The condvar should be signalled and data deposited.
+        let guard = pending
+            .data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(guard.as_deref(), Some(payload.as_slice()));
     }
 
     #[test]
-    fn register_emits_gossip_event() {
-        // Verify that hew_node_register queues a gossip event in the cluster.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
-        crate::registry::hew_registry_clear();
+    fn reply_table_complete_unknown_returns_false() {
+        assert!(!REPLY_TABLE.complete(u64::MAX - 1, vec![42]));
+    }
 
-        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
-        // SAFETY: bind_addr is a valid C string.
-        let node = unsafe { TestNode::new(111, &bind_addr) };
-        assert!(!node.as_ptr().is_null());
+    #[test]
+    fn reply_table_remove_prevents_completion() {
+        let (id, _pending) = REPLY_TABLE.register();
+        REPLY_TABLE.remove(id);
+        assert!(!REPLY_TABLE.complete(id, vec![99]));
+    }
 
-        // SAFETY: pointer is valid for each call in this scope.
-        unsafe {
-            assert_eq!(hew_node_start(node.as_ptr()), 0);
+    #[test]
+    fn reply_table_concurrent_complete_wakes_waiter() {
+        let (id, pending) = REPLY_TABLE.register();
+        let pending_clone = Arc::clone(&pending);
 
-            let name = c"gossip_actor";
-            let pid: u64 = (u64::from(111u16) << 48) | 42;
-            assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            REPLY_TABLE.complete(id, vec![10, 20]);
+        });
 
-            // The cluster should have a pending registry gossip event.
-            let n = &*node.as_ptr();
-            assert!(!n.cluster.is_null());
-            assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
-
-            let _ = crate::registry::hew_registry_unregister(name.as_ptr());
-            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        // Wait on the condvar.
+        let mut guard = pending_clone
+            .data
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while guard.is_none() {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (g, _) = pending_clone
+                .cond
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = g;
         }
-        crate::registry::hew_registry_clear();
+        assert_eq!(guard.as_deref(), Some(&[10, 20][..]));
+
+        handle.join().expect("completer thread panicked");
+        #[test]
+        fn remote_lookup_via_registry_gossip() {
+            // Verify that a registry gossip callback populates remote_names
+            // and that hew_node_lookup falls through to it.
+            let _guard = match NODE_TEST_LOCK.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            crate::registry::hew_registry_clear();
+
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string.
+            let node = unsafe { TestNode::new(110, &bind_addr) };
+            assert!(!node.as_ptr().is_null());
+
+            // SAFETY: pointer is valid for each call in this scope.
+            unsafe {
+                assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+                // Simulate a remote registry gossip event arriving.
+                let n = &*node.as_ptr();
+                let remote_name = c"remote_counter";
+                let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
+
+                // Invoke the callback directly (as the cluster would).
+                node_registry_gossip_callback(
+                    remote_name.as_ptr(),
+                    remote_pid,
+                    true,
+                    n.registry.cast::<c_void>(),
+                );
+
+                // Local lookup should not find it (not registered locally).
+                assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
+
+                // Node lookup should find it via remote_names.
+                assert_eq!(
+                    hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
+                    remote_pid
+                );
+
+                // Simulate removal.
+                node_registry_gossip_callback(
+                    remote_name.as_ptr(),
+                    0,
+                    false,
+                    n.registry.cast::<c_void>(),
+                );
+                assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
+
+                assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            }
+            crate::registry::hew_registry_clear();
+        }
+
+        #[test]
+        fn register_emits_gossip_event() {
+            // Verify that hew_node_register queues a gossip event in the cluster.
+            let _guard = match NODE_TEST_LOCK.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            crate::registry::hew_registry_clear();
+
+            let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+            // SAFETY: bind_addr is a valid C string.
+            let node = unsafe { TestNode::new(111, &bind_addr) };
+            assert!(!node.as_ptr().is_null());
+
+            // SAFETY: pointer is valid for each call in this scope.
+            unsafe {
+                assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+                let name = c"gossip_actor";
+                let pid: u64 = (u64::from(111u16) << 48) | 42;
+                assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
+
+                // The cluster should have a pending registry gossip event.
+                let n = &*node.as_ptr();
+                assert!(!n.cluster.is_null());
+                assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
+
+                let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+                assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            }
+            crate::registry::hew_registry_clear();
+        }
     }
 }
 
@@ -1211,12 +1508,15 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         return -1;
     }
     let node_id = NODE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: addr was null-checked above and is a valid C string.
     let node = unsafe { hew_node_new(node_id, addr) };
     if node.is_null() {
         return -1;
     }
+    // SAFETY: node was just created successfully by hew_node_new.
     let rc = unsafe { hew_node_start(node) };
     if rc != 0 {
+        // SAFETY: node is valid but not started; free the allocation.
         unsafe { hew_node_free(node) };
         return rc;
     }
@@ -1224,6 +1524,12 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 }
 
 /// `Node::shutdown()` — Stop and free the current node.
+///
+/// # Safety
+///
+/// Must only be called when a node was previously started via
+/// [`hew_node_api_start`]. The global `CURRENT_NODE` pointer must still be
+/// valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     // Read the current node pointer (hew_node_stop will clear CURRENT_NODE).
@@ -1237,7 +1543,9 @@ pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     if ptr.is_null() {
         return -1;
     }
+    // SAFETY: ptr is non-null and was created by hew_node_api_start.
     unsafe { hew_node_stop(ptr) };
+    // SAFETY: ptr is valid; the node has been stopped.
     unsafe { hew_node_free(ptr) };
     0
 }
@@ -1261,6 +1569,7 @@ pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
         set_last_error("Node::connect: no active node");
         return -1;
     }
+    // SAFETY: node and addr are non-null and validated above.
     unsafe { hew_node_connect(node, addr) }
 }
 
@@ -1278,6 +1587,7 @@ pub unsafe extern "C" fn hew_node_api_register(
     if name.is_null() || actor.is_null() {
         return -1;
     }
+    // SAFETY: actor was null-checked above and is a valid HewActor pointer.
     let actor_id = unsafe { (*actor).pid };
     let guard = match CURRENT_NODE.read() {
         Ok(g) => g,
@@ -1288,6 +1598,7 @@ pub unsafe extern "C" fn hew_node_api_register(
         set_last_error("Node::register: no active node");
         return -1;
     }
+    // SAFETY: node, name, and actor_id are validated above.
     unsafe { hew_node_register(node, name, actor_id) }
 }
 
@@ -1309,6 +1620,7 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     if node.is_null() {
         return 0;
     }
+    // SAFETY: node and name are non-null and validated above.
     unsafe { hew_node_lookup(node, name) }
 }
 
@@ -1325,6 +1637,7 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     if name.is_null() {
         return -1;
     }
+    // SAFETY: name was null-checked above and is a valid C string.
     let Ok(s) = unsafe { CStr::from_ptr(name) }.to_str() else {
         return -1;
     };
@@ -1342,4 +1655,191 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
             -1
         }
     }
+}
+
+/// Default timeout for remote ask operations (5 seconds).
+const REMOTE_ASK_TIMEOUT_MS: u64 = 5_000;
+/// Minimum allocation for zeroed fallback replies (covers any scalar type).
+const FALLBACK_REPLY_SIZE: usize = 8;
+
+/// Allocate a zeroed fallback buffer for failed remote asks.
+///
+/// The codegen unconditionally loads from the reply pointer, so we must
+/// never return null for non-void ask results. A zeroed buffer produces
+/// a zero/null value which is a safe default on failure.
+fn alloc_zeroed_reply() -> *mut c_void {
+    // SAFETY: calloc is safe with any positive size.
+    unsafe { libc::calloc(1, FALLBACK_REPLY_SIZE) }
+}
+
+/// Perform a blocking ask against a PID, handling local and remote actors.
+///
+/// If the PID targets the local node, delegates to `hew_actor_ask`.
+/// If remote, sends the message with a `request_id` over the mesh and
+/// blocks until the reply arrives (or times out).
+///
+/// Returns a `malloc`'d reply buffer on success. On failure or timeout,
+/// returns a zeroed allocation (never null) so the codegen can safely
+/// load the result value. The caller must `free` the returned pointer.
+///
+/// # Safety
+///
+/// - `pid` must be a valid actor PID.
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+#[expect(
+    clippy::too_many_lines,
+    reason = "local + remote ask paths are clearer in one function"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_ask(
+    pid: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> *mut c_void {
+    let target_node_id = crate::pid::hew_pid_node(pid);
+    let local_node_id = crate::pid::hew_pid_local_node();
+
+    // Local path: delegate to the by-ID ask (which packs a reply channel).
+    if target_node_id == 0 || target_node_id == local_node_id {
+        // SAFETY: data/size are caller-validated; local actor ask is safe here.
+        return unsafe { crate::actor::hew_actor_ask_by_id(pid, msg_type, data, size) };
+    }
+
+    // Remote path: send message over mesh with request_id, wait for reply.
+    let guard = match CURRENT_NODE.read() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let node_ptr = *guard as *mut HewNode;
+    if node_ptr.is_null() {
+        return alloc_zeroed_reply();
+    }
+    // SAFETY: read lock pins CURRENT_NODE.
+    let node = unsafe { &*node_ptr };
+    if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING || node.conn_mgr.is_null() {
+        return alloc_zeroed_reply();
+    }
+
+    // Look up the connection for the target node.
+    let conn_id = {
+        let mut cid =
+            // SAFETY: routing_table is valid while node is running.
+            unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
+        if cid < 0 {
+            let map = match node.conn_by_node.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            match map.get(&target_node_id) {
+                Some(&id) => cid = id,
+                None => return alloc_zeroed_reply(),
+            }
+        }
+        cid
+    };
+
+    // Register a pending reply slot.
+    let (request_id, pending) = REPLY_TABLE.register();
+
+    // Encode the ask envelope with request_id and source_node_id.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "payload size bounded by wire buffer limits"
+    )]
+    let env = crate::wire::HewWireEnvelope {
+        target_actor_id: pid,
+        source_actor_id: 0,
+        msg_type,
+        payload_size: size as u32,
+        payload: data.cast::<u8>(),
+        request_id,
+        source_node_id: node.node_id,
+    };
+    // SAFETY: HewWireBuf is a plain-old-data struct; zeroing is valid initialisation.
+    let mut wire_buf: crate::wire::HewWireBuf = unsafe { std::mem::zeroed() };
+    // SAFETY: wire_buf is a valid stack allocation.
+    unsafe { crate::wire::hew_wire_buf_init(&raw mut wire_buf) };
+    // SAFETY: wire_buf and env are valid stack locals.
+    if unsafe { crate::wire::hew_wire_encode_envelope(&raw mut wire_buf, &raw const env) } != 0 {
+        // SAFETY: wire_buf was initialised above.
+        unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+        REPLY_TABLE.remove(request_id);
+        return alloc_zeroed_reply();
+    }
+
+    // Send the encoded envelope.
+    // SAFETY: transport pointer is valid while node is running.
+    let send_ok = unsafe {
+        let t = &*node.transport;
+        if let Some(ops) = t.ops.as_ref() {
+            if let Some(send_fn) = ops.send {
+                send_fn(
+                    t.r#impl,
+                    conn_id,
+                    wire_buf.data.cast::<c_void>(),
+                    wire_buf.len,
+                ) > 0
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    // SAFETY: wire_buf was initialised above.
+    unsafe { crate::wire::hew_wire_buf_free(&raw mut wire_buf) };
+
+    if !send_ok {
+        REPLY_TABLE.remove(request_id);
+        return alloc_zeroed_reply();
+    }
+
+    // Drop the read lock before blocking so other threads can use the node.
+    drop(guard);
+
+    // Block until the reply arrives or the timeout elapses.
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(REMOTE_ASK_TIMEOUT_MS);
+    let mut data_guard = pending
+        .data
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while data_guard.is_none() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            // Timeout — remove the pending entry and return a zeroed fallback.
+            REPLY_TABLE.remove(request_id);
+            return alloc_zeroed_reply();
+        }
+        let (new_guard, wait_result) = match pending.cond.wait_timeout(data_guard, remaining) {
+            Ok(r) => r,
+            Err(e) => e.into_inner(),
+        };
+        data_guard = new_guard;
+        if wait_result.timed_out() && data_guard.is_none() {
+            REPLY_TABLE.remove(request_id);
+            return alloc_zeroed_reply();
+        }
+    }
+
+    // Reply received — copy into a malloc'd buffer for the caller.
+    let reply_data = data_guard.take().unwrap_or_default();
+    drop(data_guard);
+
+    if reply_data.is_empty() {
+        return alloc_zeroed_reply();
+    }
+
+    // SAFETY: malloc for reply buffer.
+    let result = unsafe { libc::malloc(reply_data.len()) };
+    if result.is_null() {
+        return alloc_zeroed_reply();
+    }
+    // SAFETY: result was just allocated with reply_data.len() bytes.
+    unsafe {
+        ptr::copy_nonoverlapping(reply_data.as_ptr(), result.cast::<u8>(), reply_data.len());
+    }
+    result
 }

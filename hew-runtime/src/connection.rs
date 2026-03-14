@@ -194,7 +194,11 @@ struct ReconnectPlan {
 }
 
 /// Inbound message routing callback.
-type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize);
+///
+/// Parameters: `(target_actor_id, msg_type, data, size, request_id, source_node_id)`.
+/// `request_id` > 0 with `source_node_id` > 0 means this is an ask that expects
+/// a reply. `request_id` == 0 is fire-and-forget.
+type InboundRouter = unsafe extern "C" fn(u64, i32, *mut u8, usize, u64, u16);
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that
 // serialize access via the internal Mutex. The transport pointer is
@@ -673,6 +677,8 @@ unsafe fn hew_conn_encode_envelope(
         msg_type,
         payload_size: payload_len as u32,
         payload,
+        request_id: 0,
+        source_node_id: 0,
     };
     // SAFETY: zeroed is valid for HewWireBuf.
     let mut wire_buf: HewWireBuf = unsafe { std::mem::zeroed() };
@@ -892,12 +898,30 @@ fn reader_loop(
                 let mut envelope: HewWireEnvelope = std::mem::zeroed();
                 let rc = hew_wire_decode_envelope(&raw mut wire_buf, &raw mut envelope);
                 if rc == 0 {
-                    router_fn(
-                        envelope.target_actor_id,
-                        envelope.msg_type,
-                        envelope.payload,
-                        envelope.payload_size as usize,
-                    );
+                    // Reply envelopes (request_id > 0, source_node_id == 0) are
+                    // deposited directly into the reply routing table, bypassing
+                    // the normal inbound router.
+                    if envelope.request_id > 0 && envelope.source_node_id == 0 {
+                        let reply_payload =
+                            if envelope.payload_size > 0 && !envelope.payload.is_null() {
+                                std::slice::from_raw_parts(
+                                    envelope.payload,
+                                    envelope.payload_size as usize,
+                                )
+                            } else {
+                                &[]
+                            };
+                        crate::hew_node::complete_remote_reply(envelope.request_id, reply_payload);
+                    } else {
+                        router_fn(
+                            envelope.target_actor_id,
+                            envelope.msg_type,
+                            envelope.payload,
+                            envelope.payload_size as usize,
+                            envelope.request_id,
+                            envelope.source_node_id,
+                        );
+                    }
                 }
             }
         }
@@ -1157,6 +1181,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         #[cfg(feature = "quic")]
         {
             // QUIC provides TLS 1.3 encryption — skip Noise when using QUIC transport.
+            // SAFETY: mgr.transport is valid while the connection manager is alive.
             unsafe { crate::quic_transport::hew_transport_is_quic(mgr.transport) }
         }
         #[cfg(not(feature = "quic"))]

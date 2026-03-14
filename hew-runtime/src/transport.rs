@@ -175,6 +175,8 @@ pub(crate) unsafe fn wire_send_envelope(
         msg_type,
         payload_size: payload_len as u32,
         payload,
+        request_id: 0,
+        source_node_id: 0,
     };
     // SAFETY: zeroed is valid for HewWireBuf (null data pointer, zero lengths).
     let mut buf: HewWireBuf = unsafe { mem::zeroed() };

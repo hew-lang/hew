@@ -1372,6 +1372,118 @@ pub unsafe extern "C" fn hew_actor_ask_with_channel(
     send_result
 }
 
+/// Perform a blocking ask against an actor identified by PID.
+///
+/// Looks up the actor in `LIVE_ACTORS`, packs a reply channel into the
+/// message, and waits for the reply. Returns the reply pointer and writes
+/// the reply size to `*out_size`.
+///
+/// Returns null if the actor is not found locally or the send fails.
+///
+/// # Safety
+///
+/// - `data` must point to at least `size` readable bytes, or be null when
+///   `size` is 0.
+/// - `out_size` must be a valid, non-null writable pointer.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn hew_actor_ask_by_id(
+    actor_id: u64,
+    msg_type: i32,
+    data: *mut c_void,
+    size: usize,
+) -> *mut c_void {
+    let ptr_size = std::mem::size_of::<*mut c_void>();
+    let Some(total) = size.checked_add(ptr_size) else {
+        return std::ptr::null_mut();
+    };
+
+    let ch = reply_channel::hew_reply_channel_new();
+
+    // Pack: [original_data | reply_channel_ptr]
+    // SAFETY: malloc for packed buffer.
+    let packed = unsafe { libc::malloc(total) };
+    if packed.is_null() {
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        return ptr::null_mut();
+    }
+    // SAFETY: copying data into packed buffer; write_unaligned handles the
+    // potentially-misaligned channel slot.
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "write_unaligned on the next line handles misalignment"
+    )]
+    unsafe {
+        if size > 0 && !data.is_null() {
+            ptr::copy_nonoverlapping(data.cast::<u8>(), packed.cast::<u8>(), size);
+        }
+        let ch_slot = packed.cast::<u8>().add(size).cast::<*mut c_void>();
+        ptr::write_unaligned(ch_slot, ch.cast());
+    }
+
+    // SAFETY: the actor now holds the sender-side reference until it replies.
+    unsafe { reply_channel::hew_reply_channel_retain(ch) };
+
+    // Look up actor and send packed message.
+    let sent = {
+        let guard = match LIVE_ACTORS.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        guard.as_ref().is_some_and(|set| {
+            set.iter().any(|actor_ptr| {
+                let actor = actor_ptr.0;
+                if actor.is_null() {
+                    return false;
+                }
+                // SAFETY: LIVE_ACTORS pointers are valid while locked.
+                let matches = unsafe { (*actor).id == actor_id };
+                if matches {
+                    // SAFETY: actor and packed data are valid.
+                    let rc = unsafe { actor_send_result_internal(actor, msg_type, packed, total) };
+                    rc == HewError::Ok as i32
+                } else {
+                    false
+                }
+            })
+        })
+    };
+
+    // SAFETY: packed was malloc'd above.
+    unsafe { libc::free(packed) };
+
+    if !sent {
+        // SAFETY: release the sender-side reference retained for the failed send.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        // SAFETY: ch was created by hew_reply_channel_new.
+        unsafe { reply_channel::hew_reply_channel_free(ch) };
+        return std::ptr::null_mut();
+    }
+
+    let mut reply_size: usize = 0;
+    // SAFETY: ch is valid and single-reader; reply_size is a valid stack pointer.
+    let result = unsafe { reply_channel::hew_reply_wait_with_size(ch, &raw mut reply_size) };
+
+    // Store the reply size in a thread-local so the caller can retrieve it.
+    LAST_REPLY_SIZE.set(reply_size);
+
+    // SAFETY: ch was created by hew_reply_channel_new.
+    unsafe { reply_channel::hew_reply_channel_free(ch) };
+
+    result
+}
+
+// Thread-local storage for the reply size from the last `hew_actor_ask_by_id`.
+std::thread_local! {
+    static LAST_REPLY_SIZE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Retrieve the size of the reply data from the most recent
+/// `hew_actor_ask_by_id` call on the current thread.
+pub(crate) unsafe fn hew_reply_data_size(_ptr: *mut c_void) -> usize {
+    LAST_REPLY_SIZE.get()
+}
+
 // ── Trap / Error ────────────────────────────────────────────────────────
 
 /// Trap (panic) an actor: store an error code, close the mailbox, and

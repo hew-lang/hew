@@ -1340,24 +1340,32 @@ impl<'src> Parser<'src> {
     fn parse_type_body_item(&mut self, kind: TypeDeclKind) -> Option<TypeBodyItem> {
         match kind {
             TypeDeclKind::Struct => {
+                // Collect any #[...] attributes before the field or method
+                let attributes = self.parse_attributes();
+
                 if self.peek() == Some(&Token::Fn) {
                     self.advance();
+                    // Attributes on methods are passed to parse_function
                     Some(TypeBodyItem::Method(self.parse_function(
                         false,
                         false,
                         Visibility::Private,
                         false,
-                        Vec::new(),
+                        attributes,
                     )?))
                 } else {
-                    // Field
+                    // Field with optional attributes (e.g. #[encode(rename = "x")])
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
                     if !self.eat(&Token::Semicolon) {
                         self.eat(&Token::Comma);
                     }
-                    Some(TypeBodyItem::Field { name, ty })
+                    Some(TypeBodyItem::Field {
+                        name,
+                        ty,
+                        attributes,
+                    })
                 }
             }
             TypeDeclKind::Enum => {
@@ -2331,6 +2339,7 @@ impl<'src> Parser<'src> {
             fields.push(TypeBodyItem::Field {
                 name: field_name.clone(),
                 ty,
+                attributes: Vec::new(),
             });
             field_meta.push((
                 field_name,

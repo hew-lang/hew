@@ -282,7 +282,7 @@ impl<'a> Formatter<'a> {
         self.indent += 1;
         for item in &decl.body {
             match item {
-                TypeBodyItem::Field { name, ty } => {
+                TypeBodyItem::Field { name, ty, .. } => {
                     self.write_indent();
                     self.write(name);
                     self.write(": ");
@@ -314,7 +314,7 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
         for (i, item) in decl.body.iter().enumerate() {
-            if let TypeBodyItem::Field { name, ty } = item {
+            if let TypeBodyItem::Field { name, ty, .. } = item {
                 self.write_indent();
                 self.write(name);
                 self.write(": ");

@@ -226,7 +226,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .body
                     .iter()
                     .filter_map(|item| {
-                        if let hew_parser::ast::TypeBodyItem::Field { name, ty } = item {
+                        if let hew_parser::ast::TypeBodyItem::Field { name, ty, .. } = item {
                             Some((name.clone(), format_type(&ty.0)))
                         } else {
                             None

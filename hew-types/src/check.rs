@@ -878,7 +878,7 @@ impl Checker {
 
         for item in &td.body {
             match item {
-                TypeBodyItem::Field { name, ty } => {
+                TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_type_expr(&ty.0);
                     fields.insert(name.clone(), field_ty);
                 }
@@ -10234,6 +10234,7 @@ fn main() {
                     },
                     0..0,
                 ),
+                attributes: Vec::new(),
             }],
             doc_comment: None,
             wire: None,

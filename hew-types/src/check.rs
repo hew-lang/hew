@@ -10,8 +10,8 @@ use crate::unify::unify;
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
     ActorDecl, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl, ImplDecl,
-    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Pattern, Program,
-    ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod,
+    ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern,
+    Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem, TraitMethod,
     TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
     WireDecl, WireDeclKind,
 };
@@ -1751,16 +1751,15 @@ impl Checker {
                                 .collect();
                             for m in defaults {
                                 let method_key = format!("{type_name}::{}", m.name);
-                                let param_names: Vec<String> = m
-                                    .params
-                                    .iter()
-                                    .filter(|p| p.name != "self")
-                                    .map(|p| p.name.clone())
-                                    .collect();
+                                let skip = usize::from(
+                                    m.params.first().is_some_and(|p| self.is_receiver_param(p)),
+                                );
+                                let param_names: Vec<String> =
+                                    m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
                                 let params: Vec<Ty> = m
                                     .params
                                     .iter()
-                                    .filter(|p| p.name != "self")
+                                    .skip(skip)
                                     .map(|p| self.resolve_type_expr(&p.ty.0))
                                     .collect();
                                 let return_type = m
@@ -1812,16 +1811,22 @@ impl Checker {
                     if let TypeBodyItem::Method(method) = item {
                         let method_key = format!("{}::{}", td.name, method.name);
                         self.register_fn_sig_with_name(&method_key, method);
+                        let skip = usize::from(
+                            method
+                                .params
+                                .first()
+                                .is_some_and(|p| self.is_receiver_param(p)),
+                        );
                         let param_names: Vec<String> = method
                             .params
                             .iter()
-                            .filter(|p| p.name != "self")
+                            .skip(skip)
                             .map(|p| p.name.clone())
                             .collect();
                         let params: Vec<Ty> = method
                             .params
                             .iter()
-                            .filter(|p| p.name != "self")
+                            .skip(skip)
                             .map(|p| self.resolve_type_expr(&p.ty.0))
                             .collect();
                         let return_type = method
@@ -1920,20 +1925,40 @@ impl Checker {
         }
     }
 
+    /// Check whether a parameter is the receiver (i.e. the implicit first
+    /// parameter of an impl/trait method).  A parameter is a receiver if its
+    /// name is `self` *or* if its declared type matches the current impl
+    /// target type.
+    fn is_receiver_param(&self, p: &Param) -> bool {
+        if p.name == "self" {
+            return true;
+        }
+        if let Some((self_name, _)) = &self.current_self_type {
+            matches!(&p.ty.0, TypeExpr::Named { name, .. } if name == self_name)
+        } else {
+            false
+        }
+    }
+
     fn register_fn_sig_with_name(&mut self, name: &str, fd: &FnDecl) {
-        // Only filter out `self` for methods (Type::method), not free functions
-        // that happen to have a parameter named `self`.
+        // Only filter out the receiver for methods (Type::method), not free
+        // functions that happen to have a parameter named `self`.
         let is_method = name.contains("::");
+        let skip = if is_method {
+            usize::from(fd.params.first().is_some_and(|p| self.is_receiver_param(p)))
+        } else {
+            0
+        };
         let param_names = fd
             .params
             .iter()
-            .filter(|p| !is_method || p.name != "self")
+            .skip(skip)
             .map(|p| p.name.clone())
             .collect();
         let params = fd
             .params
             .iter()
-            .filter(|p| !is_method || p.name != "self")
+            .skip(skip)
             .map(|p| self.resolve_type_expr(&p.ty.0))
             .collect();
         let declared_return = fd
@@ -1974,10 +1999,16 @@ impl Checker {
     fn register_impl_method(&mut self, type_name: &str, method: &FnDecl) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
         self.register_fn_sig_with_name(&method_key, method);
+        let skip = usize::from(
+            method
+                .params
+                .first()
+                .is_some_and(|p| self.is_receiver_param(p)),
+        );
         let params: Vec<Ty> = method
             .params
             .iter()
-            .filter(|p| p.name != "self")
+            .skip(skip)
             .map(|p| self.resolve_type_expr(&p.ty.0))
             .collect();
         let return_type = method
@@ -1987,7 +2018,7 @@ impl Checker {
         let param_names: Vec<String> = method
             .params
             .iter()
-            .filter(|p| p.name != "self")
+            .skip(skip)
             .map(|p| p.name.clone())
             .collect();
         let sig = FnSig {
@@ -2757,7 +2788,7 @@ impl Checker {
         // Bind params
         for p in &fd.params {
             let mut ty = self.resolve_type_expr(&p.ty.0);
-            if p.name == "self" {
+            if self.is_receiver_param(p) {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     ty = Ty::Named {
                         name: self_name.clone(),
@@ -2969,14 +3000,14 @@ impl Checker {
                     if let Some(self_param) = method
                         .params
                         .iter()
-                        .find(|param| param.name == "self" && param.is_mutable)
+                        .find(|param| self.is_receiver_param(param) && param.is_mutable)
                     {
                         self.report_error_with_suggestions(
                             TypeErrorKind::MutabilityError,
                             &self_param.ty.1,
                             "`var self` in struct impl methods has no effect — struct methods receive self by value".to_string(),
                             vec![
-                                "return a modified copy of `self` instead".to_string(),
+                                "return a modified copy of the receiver instead".to_string(),
                                 "convert this type to an actor if you need mutable shared state".to_string(),
                             ],
                         );
@@ -7297,7 +7328,7 @@ impl Checker {
     }
 
     /// Look up a method on a trait, walking super-traits if needed.
-    /// Returns a `FnSig` with self filtered out.
+    /// Returns a `FnSig` with the receiver filtered out.
     fn lookup_trait_method(&mut self, trait_name: &str, method: &str) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
         let found_method = self
@@ -7305,22 +7336,19 @@ impl Checker {
             .get(trait_name)
             .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
         if let Some(m) = found_method {
+            let skip = usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)));
             let params: Vec<Ty> = m
                 .params
                 .iter()
-                .filter(|p| p.name != "self")
+                .skip(skip)
                 .map(|p| self.resolve_type_expr(&p.ty.0))
                 .collect();
             let return_type = m
                 .return_type
                 .as_ref()
                 .map_or(Ty::Unit, |(te, _)| self.resolve_type_expr(te));
-            let param_names: Vec<String> = m
-                .params
-                .iter()
-                .filter(|p| p.name != "self")
-                .map(|p| p.name.clone())
-                .collect();
+            let param_names: Vec<String> =
+                m.params.iter().skip(skip).map(|p| p.name.clone()).collect();
             return Some(FnSig {
                 type_params: vec![],
                 type_param_bounds: HashMap::new(),

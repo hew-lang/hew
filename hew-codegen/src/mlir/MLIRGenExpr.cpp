@@ -416,12 +416,16 @@ mlir::Value MLIRGen::generateExpression(const ast::Expr &expr) {
         }
       }
 
-      // When accessing self.field, use currentActorName for precise lookup
+      // Legacy self.field access — should no longer appear in Hew source.
+      // Actors use bare field names resolved via lookupVariable → GEP fallback above.
       std::string targetStructName;
       if (!currentActorName.empty()) {
         if (auto *selfIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-          if (selfIdent->name == "self")
+          if (selfIdent->name == "self") {
+            llvm::errs() << "ICE: encountered self.field in codegen — "
+                         << "bare field names should be used instead\n";
             targetStructName = currentActorName;
+          }
         }
       }
 
@@ -3517,11 +3521,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
       }
     }
     handleType = normalizeHandleType(handleType);
-    // Check field access (e.g. self.conn or bare field name)
+    // Check field access (bare field name as receiver, e.g. conn.method())
     if (handleType.empty() && !currentActorName.empty()) {
       if (auto *fa = std::get_if<ast::ExprFieldAccess>(&mc.receiver->value.kind)) {
         if (auto *baseIdent = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
           if (baseIdent->name == "self") {
+            llvm::errs() << "ICE: encountered self.field method receiver in codegen — "
+                         << "bare field names should be used instead\n";
             auto key = currentActorName + "." + fa->field;
             auto aft = actorFieldTypes.find(key);
             if (aft != actorFieldTypes.end())
@@ -4780,9 +4786,11 @@ std::string MLIRGen::resolveActorTypeName(const ast::Expr &expr, const ast::Span
   if (auto *fa = std::get_if<ast::ExprFieldAccess>(&expr.kind)) {
     std::string baseName;
     if (auto *baseIE = std::get_if<ast::ExprIdentifier>(&fa->object->value.kind)) {
-      if (baseIE->name == "self" && !currentActorName.empty())
+      if (baseIE->name == "self" && !currentActorName.empty()) {
+        llvm::errs() << "ICE: encountered self.field in actor type resolution — "
+                     << "bare field names should be used instead\n";
         baseName = currentActorName;
-      else {
+      } else {
         auto baseIt = actorVarTypes.find(baseIE->name);
         if (baseIt != actorVarTypes.end())
           baseName = baseIt->second;

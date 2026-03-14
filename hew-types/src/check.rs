@@ -1933,13 +1933,10 @@ impl Checker {
 
     /// Check whether a parameter is the receiver (i.e. the implicit first
     /// parameter of an impl/trait method).  A parameter is a receiver if its
-    /// name is `self` *or* if its declared type matches the current impl
-    /// target type.
+    /// declared type matches `Self` or the current impl target type.
+    /// Note: name-based matching (`p.name == "self"`) has been intentionally
+    /// removed — receivers are identified by type, not by name.
     fn is_receiver_param(&self, p: &Param) -> bool {
-        if p.name == "self" {
-            return true;
-        }
-        // In trait/impl context, recognise a first param typed as `Self` or as the impl target
         match &p.ty.0 {
             TypeExpr::Named { name, .. } => {
                 if name == "Self" {
@@ -3029,12 +3026,6 @@ impl Checker {
                     }
                 }
                 self.env.push_scope();
-                // Bind self for methods that take it
-                let self_ty = Ty::Named {
-                    name: type_name.clone(),
-                    args: self_type_args.clone(),
-                };
-                self.env.define("self".to_string(), self_ty, true);
                 // Use qualified name (e.g. Connection::close) so the fn_sigs
                 // lookup finds the impl method, not a same-named builtin or
                 // inlined function from another module.
@@ -3300,19 +3291,7 @@ impl Checker {
             Stmt::Assign { target, op, value } => {
                 // Purity check: pure functions cannot assign to actor fields
                 if self.in_pure_function {
-                    // Check `self.field` pattern (legacy)
-                    if let Expr::FieldAccess { object, field } = &target.0 {
-                        if let Expr::Identifier(name) = &object.0 {
-                            if name == "self" {
-                                self.report_error(
-                                    TypeErrorKind::PurityViolation,
-                                    span,
-                                    format!("cannot assign to `self.{field}` in a pure function"),
-                                );
-                            }
-                        }
-                    }
-                    // Check bare field name assignment
+                    // Check bare field name assignment (actor fields in scope)
                     if let Expr::Identifier(name) = &target.0 {
                         if self.current_actor_fields.contains(name) {
                             self.report_error(
@@ -10726,8 +10705,8 @@ fn main() {
                     return Pair { first: first, second: second };
                 }
 
-                fn swap(self) -> Self {
-                    return Pair { first: self.second, second: self.first };
+                fn swap(p: Pair<T>) -> Self {
+                    return Pair { first: p.second, second: p.first };
                 }
             }
         ";
@@ -10766,7 +10745,7 @@ fn main() {
         // Bug 2: Test that dyn Trait<Args> methods get correct substitutions
         let source = r"
             trait Iterator<T> {
-                fn next(self: dyn Iterator<T>) -> Option<T>;
+                fn next(iter: Self) -> Option<T>;
             }
 
             type Counter {
@@ -10774,7 +10753,7 @@ fn main() {
             }
 
             impl Iterator<int> for Counter {
-                fn next(self: dyn Iterator<int>) -> Option<int> {
+                fn next(c: Counter) -> Option<int> {
                     Some(42)
                 }
             }

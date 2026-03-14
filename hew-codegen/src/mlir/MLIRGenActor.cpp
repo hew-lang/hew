@@ -312,9 +312,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         // Load the args struct from the args pointer
         auto argsStruct = mlir::LLVM::LoadOp::create(builder, location, argsStructType, argsPtr);
 
-        // Extract self pointer (field 0) and bind as an internal variable.
-        // Field reads and writes resolve through this entry (see
-        // MLIRGenExpr.cpp bare-field path and MLIRGenStmt.cpp assignment path).
+        // Extract actor state pointer (field 0) and bind as internal variable "self".
+        // NOTE: "self" is an internal codegen name for the actor state pointer, NOT
+        // a Hew language concept. Hew source uses bare field names; codegen resolves
+        // them via lookupVariable("self") + GEP. See MLIRGenExpr.cpp bare-field path.
         auto selfPtr = mlir::LLVM::ExtractValueOp::create(builder, location, argsStruct,
                                                           llvm::ArrayRef<int64_t>{0});
         declareVariable("self", selfPtr);
@@ -1209,11 +1210,14 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
   llvm::SmallVector<mlir::Value, 4> argVals;
   for (const auto &arg : args) {
     const auto &argSpanned = ast::callArgExpr(arg);
-    // When passing `self` as an argument (ActorRef<Self>), use hew_actor_self()
-    // instead of the raw state pointer
+    // Legacy: passing `self` as argument for actor self-reference.
+    // New code uses `this` (Expr::This → ActorSelfOp).  If we see a bare
+    // identifier named "self" here, something is wrong.
     if (!currentActorName.empty()) {
       if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
         if (identExpr->name == "self") {
+          llvm::errs() << "ICE: encountered bare `self` as actor argument — "
+                       << "use `this` keyword instead\n";
           auto selfRef = hew::ActorSelfOp::create(builder, location, ptrType).getResult();
           argVals.push_back(selfRef);
           continue;

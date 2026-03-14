@@ -9,9 +9,9 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl, FnDecl,
-    ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param,
-    Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
+    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl,
+    FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm,
+    Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
     TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind,
     WhereClause, WireDecl, WireDeclKind,
 };

@@ -65,6 +65,11 @@ pub const HEW_MEMBERSHIP_EVENT_NODE_DEAD: u8 = 3;
 /// Membership callback event: node left gracefully.
 pub const HEW_MEMBERSHIP_EVENT_NODE_LEFT: u8 = 4;
 
+/// Gossip event: a registry name was added (actor registered).
+pub const GOSSIP_REGISTRY_ADD: u8 = 5;
+/// Gossip event: a registry name was removed (actor unregistered).
+pub const GOSSIP_REGISTRY_REMOVE: u8 = 6;
+
 // ── SWIM message types ─────────────────────────────────────────────────
 
 /// Ping request.
@@ -112,6 +117,27 @@ struct MemberEvent {
     /// How many times this event has been piggybacked.
     dissemination_count: u32,
 }
+
+/// A registry event for gossip dissemination.
+///
+/// Propagates actor name registrations and removals across the cluster
+/// so that [`crate::hew_node::hew_node_lookup`] can resolve remote actors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryEvent {
+    /// The registered actor name.
+    pub name: String,
+    /// PID of the actor (0 for removals).
+    pub actor_pid: u64,
+    /// Whether this is an add (`true`) or remove (`false`) event.
+    pub is_add: bool,
+    /// How many times this event has been piggybacked.
+    dissemination_count: u32,
+}
+
+/// Callback for registry gossip notifications.
+///
+/// Signature: `fn(name: *const c_char, actor_pid: u64, is_add: bool, user_data: *mut c_void)`.
+pub type HewRegistryGossipCallback = extern "C" fn(*const c_char, u64, bool, *mut c_void);
 
 /// Cluster configuration.
 #[repr(C)]
@@ -163,6 +189,8 @@ pub struct HewCluster {
     members: Mutex<Vec<ClusterMember>>,
     /// Recent membership events for gossip dissemination.
     events: Mutex<VecDeque<MemberEvent>>,
+    /// Recent registry events for gossip dissemination.
+    registry_events: Mutex<VecDeque<RegistryEvent>>,
     /// Our own incarnation number.
     local_incarnation: u64,
     /// Membership change callback.
@@ -171,6 +199,10 @@ pub struct HewCluster {
     membership_callback: Option<HewMembershipCallback>,
     /// User data for [`HewMembershipCallback`].
     membership_callback_user_data: *mut c_void,
+    /// Registry gossip callback.
+    registry_callback: Option<HewRegistryGossipCallback>,
+    /// User data for [`HewRegistryGossipCallback`].
+    registry_callback_user_data: *mut c_void,
     /// Monotonic timestamp of last tick.
     last_tick_ms: u64,
     /// Index for round-robin ping target selection.
@@ -189,10 +221,13 @@ impl HewCluster {
             config,
             members: Mutex::new(Vec::with_capacity(16)),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
+            registry_events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
             local_incarnation: 1,
             callback: None,
             membership_callback: None,
             membership_callback_user_data: std::ptr::null_mut(),
+            registry_callback: None,
+            registry_callback_user_data: std::ptr::null_mut(),
             last_tick_ms: 0,
             ping_index: 0,
         }
@@ -490,6 +525,90 @@ impl HewCluster {
         self.ping_index = (self.ping_index + 1) % alive_members.len();
         Some(target)
     }
+
+    // ── Registry gossip ────────────────────────────────────────────────
+
+    /// Queue a registry add event for gossip dissemination.
+    pub fn emit_registry_add(&self, name: &str, actor_pid: u64) {
+        let mut events = match self.registry_events.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        // Deduplicate: remove prior event for the same name.
+        events.retain(|e| e.name != name);
+        if events.len() >= MAX_GOSSIP_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(RegistryEvent {
+            name: name.to_owned(),
+            actor_pid,
+            is_add: true,
+            dissemination_count: 0,
+        });
+    }
+
+    /// Queue a registry remove event for gossip dissemination.
+    pub fn emit_registry_remove(&self, name: &str) {
+        let mut events = match self.registry_events.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        events.retain(|e| e.name != name);
+        if events.len() >= MAX_GOSSIP_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(RegistryEvent {
+            name: name.to_owned(),
+            actor_pid: 0,
+            is_add: false,
+            dissemination_count: 0,
+        });
+    }
+
+    /// Get pending registry gossip events (up to `max_count`),
+    /// incrementing dissemination counters and pruning expired events.
+    pub fn take_registry_gossip(&self, max_count: usize) -> Vec<RegistryEvent> {
+        let mut events = match self.registry_events.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let mut result = Vec::with_capacity(max_count);
+        for event in events.iter_mut() {
+            if result.len() >= max_count {
+                break;
+            }
+            result.push(event.clone());
+            event.dissemination_count += 1;
+        }
+        events.retain(|e| e.dissemination_count < 8);
+        result
+    }
+
+    /// Get the number of pending registry gossip events.
+    pub fn registry_gossip_count(&self) -> usize {
+        let events = match self.registry_events.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        events.len()
+    }
+
+    /// Process an inbound registry gossip event received from a peer.
+    pub fn apply_registry_event(&self, name: &str, actor_pid: u64, is_add: bool) {
+        let Some(cb) = self.registry_callback else {
+            return;
+        };
+        let c_name = match std::ffi::CString::new(name) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        cb(
+            c_name.as_ptr(),
+            actor_pid,
+            is_add,
+            self.registry_callback_user_data,
+        );
+    }
 }
 
 // ── C ABI ──────────────────────────────────────────────────────────────
@@ -688,6 +807,95 @@ pub unsafe extern "C" fn hew_cluster_set_membership_callback(
     let cluster = unsafe { &mut *cluster };
     cluster.membership_callback = Some(callback);
     cluster.membership_callback_user_data = user_data;
+}
+
+/// Register a callback for registry gossip events.
+///
+/// The callback receives `(name, actor_pid, is_add, user_data)`.
+///
+/// # Safety
+///
+/// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+/// - `callback` must remain valid for the cluster lifetime.
+/// - `user_data` must remain valid while callback is registered.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_set_registry_callback(
+    cluster: *mut HewCluster,
+    callback: HewRegistryGossipCallback,
+    user_data: *mut c_void,
+) {
+    if cluster.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &mut *cluster };
+    cluster.registry_callback = Some(callback);
+    cluster.registry_callback_user_data = user_data;
+}
+
+/// Queue a registry-add gossip event for dissemination.
+///
+/// # Safety
+///
+/// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+/// - `name` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_registry_add(
+    cluster: *mut HewCluster,
+    name: *const c_char,
+    actor_pid: u64,
+) {
+    if cluster.is_null() || name.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    // SAFETY: caller guarantees `name` is a valid null-terminated C string.
+    let name_str = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    cluster.emit_registry_add(&name_str, actor_pid);
+}
+
+/// Queue a registry-remove gossip event for dissemination.
+///
+/// # Safety
+///
+/// - `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+/// - `name` must be a valid null-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_registry_remove(
+    cluster: *mut HewCluster,
+    name: *const c_char,
+) {
+    if cluster.is_null() || name.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    // SAFETY: caller guarantees `name` is a valid null-terminated C string.
+    let name_str = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+    cluster.emit_registry_remove(&name_str);
+}
+
+/// Get the number of pending registry gossip events.
+///
+/// # Safety
+///
+/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_cluster_registry_gossip_count(cluster: *mut HewCluster) -> c_int {
+    if cluster.is_null() {
+        return 0;
+    }
+    // SAFETY: caller guarantees `cluster` is valid.
+    let cluster = unsafe { &*cluster };
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "registry gossip count will not exceed c_int range in practice"
+    )]
+    {
+        cluster.registry_gossip_count() as c_int
+    }
 }
 
 /// Notify SWIM membership that a connection to `node_id` has been lost.
@@ -1120,5 +1328,109 @@ mod tests {
             hew_cluster_free(cluster);
         }
         assert_eq!(events, vec![(2, HEW_MEMBERSHIP_EVENT_NODE_SUSPECT)]);
+    }
+
+    // ── Registry gossip tests ──────────────────────────────────────────
+
+    #[test]
+    fn registry_add_event_queued() {
+        let cluster = HewCluster::new(make_config(1));
+        assert_eq!(cluster.registry_gossip_count(), 0);
+
+        cluster.emit_registry_add("counter", 0x1234);
+        assert_eq!(cluster.registry_gossip_count(), 1);
+
+        let events = cluster.take_registry_gossip(10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "counter");
+        assert_eq!(events[0].actor_pid, 0x1234);
+        assert!(events[0].is_add);
+    }
+
+    #[test]
+    fn registry_remove_event_queued() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.emit_registry_remove("counter");
+        assert_eq!(cluster.registry_gossip_count(), 1);
+
+        let events = cluster.take_registry_gossip(10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "counter");
+        assert_eq!(events[0].actor_pid, 0);
+        assert!(!events[0].is_add);
+    }
+
+    #[test]
+    fn registry_events_deduplicate_by_name() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.emit_registry_add("counter", 0x1111);
+        cluster.emit_registry_add("counter", 0x2222);
+        assert_eq!(cluster.registry_gossip_count(), 1);
+
+        let events = cluster.take_registry_gossip(10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].actor_pid, 0x2222);
+    }
+
+    #[test]
+    fn registry_events_pruned_after_dissemination() {
+        let cluster = HewCluster::new(make_config(1));
+        cluster.emit_registry_add("alpha", 1);
+        // Disseminate 8 times to reach the prune threshold.
+        for _ in 0..8 {
+            let _ = cluster.take_registry_gossip(10);
+        }
+        assert_eq!(cluster.registry_gossip_count(), 0);
+    }
+
+    #[test]
+    fn registry_callback_invoked_on_apply() {
+        use std::ffi::CStr;
+
+        extern "C" fn collect_registry(
+            name: *const c_char,
+            pid: u64,
+            is_add: bool,
+            user_data: *mut c_void,
+        ) {
+            // SAFETY: test passes a valid Vec pointer.
+            let vec = unsafe { &mut *user_data.cast::<Vec<(String, u64, bool)>>() };
+            let s = unsafe { CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned();
+            vec.push((s, pid, is_add));
+        }
+
+        let mut cluster = HewCluster::new(make_config(1));
+        let mut collected: Vec<(String, u64, bool)> = Vec::new();
+        cluster.registry_callback = Some(collect_registry);
+        cluster.registry_callback_user_data = (&raw mut collected).cast();
+
+        cluster.apply_registry_event("counter", 0x42, true);
+        cluster.apply_registry_event("timer", 0, false);
+
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0], ("counter".to_owned(), 0x42, true));
+        assert_eq!(collected[1], ("timer".to_owned(), 0, false));
+    }
+
+    #[test]
+    fn registry_gossip_cabi_round_trip() {
+        let config = make_config(1);
+        // SAFETY: test context.
+        unsafe {
+            let cluster = hew_cluster_new(&raw const config);
+            assert_eq!(hew_cluster_registry_gossip_count(cluster), 0);
+
+            let name = c"my_actor";
+            hew_cluster_registry_add(cluster, name.as_ptr(), 0xABCD);
+            assert_eq!(hew_cluster_registry_gossip_count(cluster), 1);
+
+            hew_cluster_registry_remove(cluster, name.as_ptr());
+            // Dedup replaces the add with a remove.
+            assert_eq!(hew_cluster_registry_gossip_count(cluster), 1);
+
+            hew_cluster_free(cluster);
+        }
     }
 }

@@ -126,6 +126,35 @@ unsafe extern "C" fn node_inbound_router(
         unsafe { crate::actor::hew_actor_send_by_id(target_actor_id, msg_type, data.cast(), size) };
 }
 
+/// Callback invoked by the cluster when a registry gossip event arrives
+/// from a remote peer. Updates the node's `remote_names` map.
+extern "C" fn node_registry_gossip_callback(
+    name: *const c_char,
+    actor_pid: u64,
+    is_add: bool,
+    user_data: *mut c_void,
+) {
+    if name.is_null() || user_data.is_null() {
+        return;
+    }
+    // SAFETY: user_data is a *mut HewRegistry pointer set during hew_node_start,
+    // valid for the node's lifetime.
+    let registry = unsafe { &*(user_data.cast::<HewRegistry>()) };
+    // SAFETY: caller guarantees name is a valid C string.
+    let key = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    let mut map = match registry.remote_names.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    if is_add {
+        map.insert(key, actor_pid);
+    } else {
+        map.remove(&key);
+    }
+}
+
 fn next_peer_node_id(node: &HewNode) -> u16 {
     let mut id = node.next_peer_node.fetch_add(1, Ordering::Relaxed);
     if id == 0 || id == node.node_id {
@@ -411,6 +440,19 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.node_id, node.bind_addr) };
     joined_cluster = true;
 
+    // Wire the registry gossip callback so remote name events update our
+    // remote_names map.
+    if !node.registry.is_null() {
+        // SAFETY: cluster and registry pointers are valid for the node lifetime.
+        unsafe {
+            cluster::hew_cluster_set_registry_callback(
+                node.cluster,
+                node_registry_gossip_callback,
+                node.registry.cast::<c_void>(),
+            );
+        }
+    }
+
     node.accept_stop.store(false, Ordering::Release);
     let stop = Arc::clone(&node.accept_stop);
     let transport = SendTransport(node.transport);
@@ -598,7 +640,14 @@ pub unsafe extern "C" fn hew_node_register(
         Ok(g) => g,
         Err(e) => e.into_inner(),
     };
-    map.insert(key, actor);
+    map.insert(key.clone(), actor);
+
+    // Propagate to cluster gossip so remote nodes learn about this actor.
+    if !node.cluster.is_null() {
+        // SAFETY: cluster pointer is valid while the node is alive.
+        unsafe { cluster::hew_cluster_registry_add(node.cluster, name, actor) };
+    }
+
     0
 }
 
@@ -634,6 +683,13 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         Err(e) => e.into_inner(),
     };
     map.remove(&key);
+
+    // Propagate removal to cluster gossip.
+    if !node.cluster.is_null() {
+        // SAFETY: cluster pointer is valid while the node is alive.
+        unsafe { cluster::hew_cluster_registry_remove(node.cluster, name) };
+    }
+
     0
 }
 
@@ -1041,6 +1097,94 @@ mod tests {
 
         // SAFETY: node was allocated by hew_node_new above.
         unsafe { hew_node_free(node) };
+    }
+
+    #[test]
+    fn remote_lookup_via_registry_gossip() {
+        // Verify that a registry gossip callback populates remote_names
+        // and that hew_node_lookup falls through to it.
+        let _guard = match NODE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string.
+        let node = unsafe { TestNode::new(110, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        // SAFETY: pointer is valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+            // Simulate a remote registry gossip event arriving.
+            let n = &*node.as_ptr();
+            let remote_name = c"remote_counter";
+            let remote_pid: u64 = (u64::from(200u16) << 48) | 0x99;
+
+            // Invoke the callback directly (as the cluster would).
+            node_registry_gossip_callback(
+                remote_name.as_ptr(),
+                remote_pid,
+                true,
+                n.registry.cast::<c_void>(),
+            );
+
+            // Local lookup should not find it (not registered locally).
+            assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
+
+            // Node lookup should find it via remote_names.
+            assert_eq!(
+                hew_node_lookup(node.as_ptr(), remote_name.as_ptr()),
+                remote_pid
+            );
+
+            // Simulate removal.
+            node_registry_gossip_callback(
+                remote_name.as_ptr(),
+                0,
+                false,
+                n.registry.cast::<c_void>(),
+            );
+            assert_eq!(hew_node_lookup(node.as_ptr(), remote_name.as_ptr()), 0);
+
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
+    }
+
+    #[test]
+    fn register_emits_gossip_event() {
+        // Verify that hew_node_register queues a gossip event in the cluster.
+        let _guard = match NODE_TEST_LOCK.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        crate::registry::hew_registry_clear();
+
+        let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
+        // SAFETY: bind_addr is a valid C string.
+        let node = unsafe { TestNode::new(111, &bind_addr) };
+        assert!(!node.as_ptr().is_null());
+
+        // SAFETY: pointer is valid for each call in this scope.
+        unsafe {
+            assert_eq!(hew_node_start(node.as_ptr()), 0);
+
+            let name = c"gossip_actor";
+            let pid: u64 = (u64::from(111u16) << 48) | 42;
+            assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
+
+            // The cluster should have a pending registry gossip event.
+            let n = &*node.as_ptr();
+            assert!(!n.cluster.is_null());
+            assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
+
+            let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+            assert_eq!(hew_node_stop(node.as_ptr()), 0);
+        }
+        crate::registry::hew_registry_clear();
     }
 }
 

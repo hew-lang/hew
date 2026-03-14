@@ -327,7 +327,8 @@ coverage:
 	@echo "==> Open $(COV_DIR)/html/index.html"
 
 coverage-summary:
-	cargo llvm-cov --workspace --exclude hew-wasm report --summary-only
+	cargo llvm-cov --workspace --exclude hew-wasm --no-report
+	cargo llvm-cov report --summary-only
 
 coverage-lcov:
 	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info

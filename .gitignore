@@ -43,3 +43,6 @@ docs/tasks.md
 docs/plans/
 docs/archive/
 .playwright-mcp/
+*.profraw
+coverage-out/
+*.profdata

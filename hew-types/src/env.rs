@@ -216,6 +216,19 @@ impl TypeEnv {
         self.scopes.len()
     }
 
+    /// Check if `name` already exists in the current (innermost) scope.
+    ///
+    /// Returns `Some(Some(span))` when the binding has a source span,
+    /// `Some(None)` when found but synthetic, or `None` when the name
+    /// is not bound in the current scope.
+    #[must_use]
+    pub fn find_in_current_scope(&self, name: &str) -> Option<Option<Span>> {
+        self.scopes
+            .last()
+            .and_then(|scope| scope.get(name))
+            .map(|b| b.def_span.clone())
+    }
+
     /// Check if a variable name exists in any outer scope (not the current one).
     ///
     /// Returns `Some(Some(span))` when the binding has a source span,

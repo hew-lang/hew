@@ -4,7 +4,7 @@ actor TempWorker {
     let id: int;
     receive fn process(n: int) {
         print("TempWorker ");
-        print(self.id);
+        print(id);
         println(f" processing {n}");
     }
 }

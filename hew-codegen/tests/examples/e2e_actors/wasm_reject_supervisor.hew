@@ -2,7 +2,7 @@
 actor Worker {
     let id: i32;
     receive fn ping() {
-        println(self.id);
+        println(id);
     }
 }
 

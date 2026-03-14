@@ -3,20 +3,20 @@
 actor Counter {
     let count: int;
     receive fn increment() {
-        self.count = self.count + 1;
+        count = count + 1;
     }
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 
 actor Accumulator {
     let total: int;
     receive fn add(n: int) {
-        self.total = self.total + n;
+        total = total + n;
     }
     receive fn get_total() -> int {
-        self.total
+        total
     }
 }
 

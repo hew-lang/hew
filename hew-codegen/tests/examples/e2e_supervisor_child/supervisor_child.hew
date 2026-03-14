@@ -4,14 +4,14 @@ actor Worker {
     let id: i32;
     init() {
         print("Worker ");
-        print(self.id);
+        print(id);
         println(" ready");
     }
     receive fn ping() -> int {
         print("Worker ");
-        print(self.id);
+        print(id);
         println(" ponged");
-        self.id
+        id
     }
 }
 

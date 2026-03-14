@@ -6,7 +6,7 @@ actor Worker {
 
     receive fn work(x: int) -> int {
         print("Worker ");
-        print(self.id);
+        print(id);
         print(" processing ");
         println(x);
         x

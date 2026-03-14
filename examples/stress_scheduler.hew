@@ -15,17 +15,17 @@ actor Worker {
 
         // Do some real computation to exercise the scheduler
         let result = fib(x % 15);
-        let combined = result + self.id;
+        let combined = result + id;
     }
 }
 
 actor Collector {
     let count: i32;
     receive fn tick() {
-        self.count = self.count + 1;
+        count = count + 1;
     }
     receive fn report() {
-        println(f"Collector count: {self.count}");
+        println(f"Collector count: {count}");
     }
 }
 

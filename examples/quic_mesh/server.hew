@@ -12,12 +12,12 @@ actor Counter {
     let count: int;
 
     receive fn increment(n: int) {
-        self.count = self.count + n;
-        println(f"[server] counter incremented by {n} → {self.count}");
+        count = count + n;
+        println(f"[server] counter incremented by {n} → {count}");
     }
 
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 

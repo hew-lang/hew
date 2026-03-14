@@ -3,14 +3,14 @@ actor Accumulator {
     let count: int;
 
     receive fn add(x: int) {
-        self.total = self.total + x;
-        self.count = self.count + 1;
+        total = total + x;
+        count = count + 1;
     }
 
     receive fn print_result() -> int {
-        println(self.total);
-        println(self.count);
-        self.total
+        println(total);
+        println(count);
+        total
     }
 }
 

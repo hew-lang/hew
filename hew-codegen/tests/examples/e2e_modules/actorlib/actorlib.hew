@@ -2,11 +2,11 @@ pub actor Worker {
     var total: int = 0;
 
     receive fn add(n: int) -> int {
-        self.total = self.total + n;
-        self.total
+        total = total + n;
+        total
     }
 
     receive fn get_total() -> int {
-        self.total
+        total
     }
 }

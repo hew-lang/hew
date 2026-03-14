@@ -3,7 +3,7 @@
 actor Router {
     let processed: int;
     receive fn route(msg_type: int) {
-        self.processed = self.processed + 1;
+        processed = processed + 1;
         if msg_type == 1 {
             println("Route: login");
         } else {

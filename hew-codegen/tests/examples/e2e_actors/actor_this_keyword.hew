@@ -11,7 +11,7 @@ actor Relay {
     receive fn forward(msg: string) {
         // Use `this` — it resolves to the actor's own handle
         let _me = this;
-        self.target.print(msg);
+        target.print(msg);
     }
 }
 

@@ -20,19 +20,19 @@ actor Worker {
     let id: i32;
     let processed: i32;
     receive fn process(item: i32) {
-        self.processed = self.processed + 1;
+        processed = processed + 1;
         print("worker ");
-        print(self.id);
+        print(id);
         print(" processed item ");
         print(item);
         print(" (total: ");
-        print(self.processed);
+        print(processed);
         println(")");
     }
     receive fn crash_on(bad_item: i32) {
         // Simulates a bug: worker panics on bad input
         print("worker ");
-        print(self.id);
+        print(id);
         print(" hit bad item ");
         println(bad_item);
         panic("bad input");

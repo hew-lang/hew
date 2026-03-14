@@ -8,11 +8,11 @@ actor Logger {
     let tag: i32;
     init() {
         print("init:");
-        println(self.tag);
+        println(tag);
     }
     receive fn log() {
         print("log:");
-        println(self.tag);
+        println(tag);
     }
 }
 

@@ -4,10 +4,10 @@
 actor Collector {
     let count: int;
     receive fn done() {
-        self.count = self.count + 1;
+        count = count + 1;
     }
     receive fn get_count() -> int {
-        self.count
+        count
     }
 }
 
@@ -15,7 +15,7 @@ actor Worker {
     let id: int;
     let collector: Collector;
     receive fn work() {
-        self.collector.done();
+        collector.done();
     }
 }
 

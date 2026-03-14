@@ -5,8 +5,8 @@ actor PriceTracker {
     mailbox 2 overflow coalesce(symbol);
 
     receive fn update_price(symbol: int, price: int) -> int {
-        self.symbol = symbol;
-        self.price = price;
+        symbol = symbol;
+        price = price;
         price
     }
 }

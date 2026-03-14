@@ -2,7 +2,7 @@
 actor Worker {
     let id: int;
     receive fn compute() -> int {
-        self.id * 10
+        id * 10
     }
 }
 

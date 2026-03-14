@@ -4,10 +4,10 @@
 actor Consumer {
     let total: int;
     receive fn add(x: int) {
-        self.total = self.total + x;
+        total = total + x;
     }
     receive fn get_total() -> int {
-        self.total
+        total
     }
 }
 

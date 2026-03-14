@@ -2,7 +2,7 @@
 actor Fast {
     let value: int;
     receive fn get() -> int {
-        self.value
+        value
     }
 }
 
@@ -10,7 +10,7 @@ actor Slow {
     let value: int;
     receive fn get() -> int {
         sleep_ms(200);
-        self.value
+        value
     }
 }
 

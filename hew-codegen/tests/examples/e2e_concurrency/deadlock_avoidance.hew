@@ -4,12 +4,12 @@ actor Resource {
     let id: int;
     receive fn acquire(requester: int) {
         print("Resource ");
-        print(self.id);
+        print(id);
         println(f" acquired by {requester}");
     }
     receive fn release(requester: int) {
         print("Resource ");
-        print(self.id);
+        print(id);
         println(f" released by {requester}");
     }
 }

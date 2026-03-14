@@ -6,12 +6,12 @@ actor Counter {
 
     mailbox 4 overflow block;
     receive fn increment() -> int {
-        self.count = self.count + 1;
-        self.count
+        count = count + 1;
+        count
     }
     receive fn report() -> int {
-        println(f"Counter count: {self.count}");
-        self.count
+        println(f"Counter count: {count}");
+        count
     }
 }
 

@@ -3,15 +3,15 @@
 actor Accumulator {
     let total: int;
     receive fn add(n: int) {
-        self.total = self.total + n;
-        println(f"Added {n}, total = {self.total}");
+        total = total + n;
+        println(f"Added {n}, total = {total}");
     }
     receive fn multiply(n: int) {
-        self.total = self.total * n;
-        println(f"Multiplied by {n}, total = {self.total}");
+        total = total * n;
+        println(f"Multiplied by {n}, total = {total}");
     }
     receive fn report() -> int {
-        self.total
+        total
     }
 }
 

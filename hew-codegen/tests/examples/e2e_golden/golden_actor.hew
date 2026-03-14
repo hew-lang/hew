@@ -4,11 +4,11 @@ actor Counter {
     let count: int;
 
     receive fn increment(amount: int) {
-        self.count = self.count + amount;
+        count = count + amount;
     }
 
     receive fn print_count() {
-        println(self.count);
+        println(count);
     }
 }
 

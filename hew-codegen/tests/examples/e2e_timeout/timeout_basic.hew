@@ -2,7 +2,7 @@
 actor Worker {
     let value: int;
     receive fn get() -> int {
-        self.value
+        value
     }
 }
 

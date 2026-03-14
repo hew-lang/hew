@@ -12,7 +12,7 @@ actor Worker {
     let id: i32;
     receive fn compute(n: i32) {
         print("  [Worker ");
-        print(self.id);
+        print(id);
         print("] fib(");
         print(n);
         print(") = ");

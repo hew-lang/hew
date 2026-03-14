@@ -9,7 +9,7 @@ actor Printer {
 actor Doubler {
     let next: Printer;
     receive fn double(x: int) {
-        self.next.print_result(x * 2);
+        next.print_result(x * 2);
     }
 }
 

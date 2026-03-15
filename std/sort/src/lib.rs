@@ -163,6 +163,7 @@ mod tests {
     }
 
     unsafe fn read_i64_vec(v: *mut HewVec) -> Vec<i64> {
+        // SAFETY: `v` is a valid, non-null HewVec pointer; data is properly aligned and length matches the array size.
         unsafe {
             let len = (*v).len;
             if len == 0 {
@@ -173,6 +174,7 @@ mod tests {
     }
 
     unsafe fn make_f64_vec(vals: &[f64]) -> *mut HewVec {
+        // SAFETY: test-only helper; all hew_vec_* calls match expected types.
         unsafe {
             let v = hew_runtime::vec::hew_vec_new_f64();
             for &val in vals {
@@ -183,6 +185,7 @@ mod tests {
     }
 
     unsafe fn read_f64_vec(v: *mut HewVec) -> Vec<f64> {
+        // SAFETY: `v` is a valid, non-null HewVec pointer; data is properly aligned and length matches the array size.
         unsafe {
             let len = (*v).len;
             if len == 0 {
@@ -193,6 +196,7 @@ mod tests {
     }
 
     unsafe fn make_str_vec(vals: &[&str]) -> *mut HewVec {
+        // SAFETY: test-only helper; all hew_vec_* calls match expected types and CStrings are valid.
         unsafe {
             let v = hew_runtime::vec::hew_vec_new_str();
             for val in vals {
@@ -204,6 +208,7 @@ mod tests {
     }
 
     unsafe fn read_str_vec(v: *mut HewVec) -> Vec<String> {
+        // SAFETY: `v` is a valid, non-null HewVec pointer; string pointers are valid NUL-terminated C strings.
         unsafe {
             let len = (*v).len;
             if len == 0 {
@@ -218,6 +223,7 @@ mod tests {
 
     #[test]
     fn sort_ints_ascending() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[3, 1, 4, 1, 5, 9, 2, 6]);
             let sorted = hew_sort_ints(v);
@@ -231,6 +237,7 @@ mod tests {
 
     #[test]
     fn sort_strings_alphabetical() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_str_vec(&["banana", "apple", "cherry", "date"]);
             let sorted = hew_sort_strings(v);
@@ -245,10 +252,14 @@ mod tests {
 
     #[test]
     fn sort_floats_ascending() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
-            let v = make_f64_vec(&[3.14, 1.0, 2.71, 0.5]);
+            let v = make_f64_vec(&[std::f64::consts::PI, 1.0, std::f64::consts::E, 0.5]);
             let sorted = hew_sort_floats(v);
-            assert_eq!(read_f64_vec(sorted), vec![0.5, 1.0, 2.71, 3.14]);
+            assert_eq!(
+                read_f64_vec(sorted),
+                vec![0.5, 1.0, std::f64::consts::E, std::f64::consts::PI]
+            );
             hew_runtime::vec::hew_vec_free(sorted);
             hew_runtime::vec::hew_vec_free(v);
         }
@@ -256,6 +267,7 @@ mod tests {
 
     #[test]
     fn reverse_ints() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[1, 2, 3, 4, 5]);
             let rev = hew_sort_reverse(v);
@@ -267,6 +279,7 @@ mod tests {
 
     #[test]
     fn empty_vec_sort() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[]);
             let sorted = hew_sort_ints(v);
@@ -278,6 +291,7 @@ mod tests {
 
     #[test]
     fn single_element_sort() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[42]);
             let sorted = hew_sort_ints(v);
@@ -289,6 +303,7 @@ mod tests {
 
     #[test]
     fn sort_ints_already_sorted() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[1, 2, 3, 4, 5]);
             let sorted = hew_sort_ints(v);
@@ -300,6 +315,7 @@ mod tests {
 
     #[test]
     fn sort_ints_reverse_sorted() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[5, 4, 3, 2, 1]);
             let sorted = hew_sort_ints(v);
@@ -311,6 +327,7 @@ mod tests {
 
     #[test]
     fn sort_ints_duplicates() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[3, 1, 3, 1, 2]);
             let sorted = hew_sort_ints(v);
@@ -322,6 +339,7 @@ mod tests {
 
     #[test]
     fn sort_strings_empty() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_str_vec(&[]);
             let sorted = hew_sort_strings(v);
@@ -333,6 +351,7 @@ mod tests {
 
     #[test]
     fn sort_floats_negative() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_f64_vec(&[-3.0, -1.0, -2.0]);
             let sorted = hew_sort_floats(v);
@@ -344,6 +363,7 @@ mod tests {
 
     #[test]
     fn sort_floats_with_zero() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_f64_vec(&[1.0, 0.0, -1.0]);
             let sorted = hew_sort_floats(v);
@@ -355,6 +375,7 @@ mod tests {
 
     #[test]
     fn reverse_empty() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[]);
             let rev = hew_sort_reverse(v);
@@ -366,6 +387,7 @@ mod tests {
 
     #[test]
     fn reverse_single() {
+        // SAFETY: FFI calls with valid, non-null pointers returned by test helpers.
         unsafe {
             let v = make_i64_vec(&[42]);
             let rev = hew_sort_reverse(v);
@@ -377,6 +399,7 @@ mod tests {
 
     #[test]
     fn null_returns_null() {
+        // SAFETY: passing null pointers to FFI sort functions that explicitly handle null.
         unsafe {
             assert!(hew_sort_ints(std::ptr::null_mut()).is_null());
             assert!(hew_sort_strings(std::ptr::null_mut()).is_null());

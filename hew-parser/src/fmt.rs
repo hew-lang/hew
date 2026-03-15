@@ -14,6 +14,26 @@ use crate::ast::{
     WireDeclKind, WireFieldDecl, WireMetadata,
 };
 
+/// Format a duration in nanoseconds to the most natural unit suffix.
+fn format_duration_ns(ns: i64) -> String {
+    if ns == 0 {
+        return "0ns".to_string();
+    }
+    if ns % 3_600_000_000_000 == 0 {
+        format!("{}h", ns / 3_600_000_000_000)
+    } else if ns % 60_000_000_000 == 0 {
+        format!("{}m", ns / 60_000_000_000)
+    } else if ns % 1_000_000_000 == 0 {
+        format!("{}s", ns / 1_000_000_000)
+    } else if ns % 1_000_000 == 0 {
+        format!("{}ms", ns / 1_000_000)
+    } else if ns % 1_000 == 0 {
+        format!("{}us", ns / 1_000)
+    } else {
+        format!("{ns}ns")
+    }
+}
+
 /// Format an AST [`Program`] as canonical Hew source text (comments are not preserved).
 #[must_use]
 pub fn format_program(program: &Program) -> String {
@@ -1020,6 +1040,9 @@ impl<'a> Formatter<'a> {
                             self.write(key);
                             self.write(" = ");
                             self.write(value);
+                        }
+                        AttributeArg::Duration(ns) => {
+                            self.write(&format_duration_ns(*ns));
                         }
                     }
                 }

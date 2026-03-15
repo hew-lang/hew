@@ -404,7 +404,7 @@ fn crash_report_has_metadata() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let log_after = hew_crash_log_count();
+        let _log_after = hew_crash_log_count();
 
         // Get the latest crash report — it should be ours
         let report = hew_crash_log_last();

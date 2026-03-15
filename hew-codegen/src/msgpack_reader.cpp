@@ -1538,6 +1538,28 @@ static ast::ReceiveFnDecl parseReceiveFnDecl(const msgpack::object &obj) {
     rf.where_clause = parseWhereClause(*wc);
   rf.body = parseBlock(mapReq(obj, "body"));
   rf.span = parseSpan(mapReq(obj, "span"));
+
+  // Extract periodic interval from #[every(duration)] attributes.
+  const auto *attrs = mapGet(obj, "attributes");
+  if (attrs && !isNil(*attrs) && attrs->type == msgpack::type::ARRAY) {
+    for (uint32_t i = 0; i < attrs->via.array.size; ++i) {
+      const auto &attrObj = attrs->via.array.ptr[i];
+      auto attrName = getString(mapReq(attrObj, "name"));
+      if (attrName == "every") {
+        const auto *argsArr = mapGet(attrObj, "args");
+        if (argsArr && !isNil(*argsArr) && argsArr->type == msgpack::type::ARRAY &&
+            argsArr->via.array.size == 1) {
+          // AttributeArg::Duration is serialized as {"Duration": i64}
+          const auto &argObj = argsArr->via.array.ptr[0];
+          auto [variantName, payload] = getEnumVariant(argObj);
+          if (variantName == "Duration" && payload) {
+            rf.periodic_interval_ns = getInt(*payload);
+          }
+        }
+      }
+    }
+  }
+
   return rf;
 }
 

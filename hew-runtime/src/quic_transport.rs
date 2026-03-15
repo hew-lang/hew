@@ -764,48 +764,62 @@ mod tests {
 
     impl TestTransport {
         fn new() -> Self {
+            // SAFETY: FFI constructor returns a valid, non-null transport pointer.
             let ptr = unsafe { hew_transport_quic_new() };
             assert!(!ptr.is_null(), "transport allocation failed");
             Self { ptr }
         }
 
         fn ops(&self) -> &HewTransportOps {
+            // SAFETY: self.ptr is non-null (asserted in new); ops is initialised by the FFI layer.
             unsafe { &*(*self.ptr).ops }
         }
 
         fn impl_ptr(&self) -> *mut c_void {
+            // SAFETY: self.ptr is non-null (asserted in new); impl is initialised by the FFI layer.
             unsafe { (*self.ptr).r#impl }
         }
 
         fn qt(&self) -> &QuicTransport {
+            // SAFETY: impl_ptr points to a valid QuicTransport allocated by hew_transport_quic_new.
             unsafe { &*self.impl_ptr().cast::<QuicTransport>() }
         }
 
+        #[expect(
+            clippy::mut_from_ref,
+            reason = "QUIC context requires interior mutability via C FFI"
+        )]
         fn qt_mut(&self) -> &mut QuicTransport {
+            // SAFETY: impl_ptr points to a valid QuicTransport; single-threaded test access.
             unsafe { &mut *self.impl_ptr().cast::<QuicTransport>() }
         }
 
         fn listen(&self, addr: &str) -> c_int {
             let c_addr = CString::new(addr).unwrap();
+            // SAFETY: impl_ptr and ops are valid; c_addr is a valid NUL-terminated C string.
             unsafe { (self.ops().listen.unwrap())(self.impl_ptr(), c_addr.as_ptr()) }
         }
 
         fn connect(&self, addr: &str) -> c_int {
             let c_addr = CString::new(addr).unwrap();
+            // SAFETY: impl_ptr and ops are valid; c_addr is a valid NUL-terminated C string.
             unsafe { (self.ops().connect.unwrap())(self.impl_ptr(), c_addr.as_ptr()) }
         }
 
         fn accept(&self, timeout_ms: c_int) -> c_int {
+            // SAFETY: impl_ptr and ops are valid; timeout_ms is a plain integer.
             unsafe { (self.ops().accept.unwrap())(self.impl_ptr(), timeout_ms) }
         }
 
         fn send(&self, conn: c_int, data: &[u8]) -> c_int {
+            // SAFETY: impl_ptr and ops are valid; data slice pointer/len are valid for the call.
             unsafe {
                 (self.ops().send.unwrap())(self.impl_ptr(), conn, data.as_ptr().cast(), data.len())
             }
         }
 
         fn recv_into(&self, conn: c_int, buf: &mut [u8]) -> c_int {
+            // SAFETY: impl_ptr and ops are valid; buf slice pointer/len are valid and writable.
             unsafe {
                 (self.ops().recv.unwrap())(
                     self.impl_ptr(),
@@ -817,6 +831,7 @@ mod tests {
         }
 
         fn close_conn(&self, conn: c_int) {
+            // SAFETY: impl_ptr and ops are valid; conn may be invalid but close_conn handles that.
             unsafe { (self.ops().close_conn.unwrap())(self.impl_ptr(), conn) }
         }
 
@@ -846,6 +861,7 @@ mod tests {
 
     impl Drop for TestTransport {
         fn drop(&mut self) {
+            // SAFETY: self.ptr was allocated by hew_transport_quic_new and has not been freed.
             unsafe { hew_transport_quic_free(self.ptr) };
         }
     }
@@ -853,10 +869,11 @@ mod tests {
     // SAFETY: Test transports are used from a single test thread plus
     // dedicated connect/accept helper threads.
     unsafe impl Send for TestTransport {}
+    // SAFETY: No concurrent mutable access occurs; tests serialise operations.
     unsafe impl Sync for TestTransport {}
 
     /// Set up a connected server+client pair. Returns (server, client,
-    /// server_conn_id, client_conn_id).
+    /// `server_conn_id`, `client_conn_id`).
     ///
     /// Uses a background thread for accept so the blocking connect and accept
     /// can proceed concurrently (QUIC handshake requires both sides).
@@ -949,12 +966,18 @@ mod tests {
 
     #[test]
     fn destroy_null_is_noop() {
+        // SAFETY: Null pointer passed deliberately to verify graceful handling.
         unsafe { hew_transport_quic_free(std::ptr::null_mut()) };
     }
 
     // -- Connection slot management tests -------------------------------------
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded by QUIC protocol limits"
+    )]
+    #[expect(clippy::cast_possible_wrap, reason = "bounded by QUIC protocol limits")]
     fn remove_conn_invalid_ids_no_panic() {
         let rt = Arc::new(
             tokio::runtime::Builder::new_current_thread()
@@ -972,6 +995,7 @@ mod tests {
 
     #[test]
     fn connect_null_impl_returns_invalid() {
+        // SAFETY: Null impl pointer passed to verify graceful error return.
         let result = unsafe { quic_connect(std::ptr::null_mut(), std::ptr::null()) };
         assert_eq!(result, HEW_CONN_INVALID);
     }
@@ -979,6 +1003,7 @@ mod tests {
     #[test]
     fn connect_null_address_returns_invalid() {
         let t = TestTransport::new();
+        // SAFETY: impl_ptr is valid; null address tests graceful error return.
         let result = unsafe { quic_connect(t.impl_ptr(), std::ptr::null()) };
         assert_eq!(result, HEW_CONN_INVALID);
     }
@@ -987,18 +1012,21 @@ mod tests {
     fn connect_without_endpoint_returns_invalid() {
         let t = TestTransport::new();
         let addr = CString::new("127.0.0.1:9999").unwrap();
+        // SAFETY: impl_ptr is valid; addr is a valid C string. No endpoint configured.
         let result = unsafe { quic_connect(t.impl_ptr(), addr.as_ptr()) };
         assert_eq!(result, HEW_CONN_INVALID);
     }
 
     #[test]
     fn listen_null_impl_returns_error() {
+        // SAFETY: Null pointers passed to verify graceful error return.
         let result = unsafe { quic_listen(std::ptr::null_mut(), std::ptr::null()) };
         assert_eq!(result, -1);
     }
 
     #[test]
     fn accept_null_impl_returns_invalid() {
+        // SAFETY: Null impl pointer passed to verify graceful error return.
         let result = unsafe { quic_accept(std::ptr::null_mut(), 100) };
         assert_eq!(result, HEW_CONN_INVALID);
     }
@@ -1006,12 +1034,14 @@ mod tests {
     #[test]
     fn accept_without_endpoint_returns_invalid() {
         let t = TestTransport::new();
+        // SAFETY: impl_ptr is valid; no endpoint configured.
         let result = unsafe { quic_accept(t.impl_ptr(), 100) };
         assert_eq!(result, HEW_CONN_INVALID);
     }
 
     #[test]
     fn send_null_impl_returns_error() {
+        // SAFETY: Null impl pointer passed to verify graceful error return.
         let result = unsafe { quic_send(std::ptr::null_mut(), 0, std::ptr::null(), 0) };
         assert_eq!(result, -1);
     }
@@ -1019,6 +1049,7 @@ mod tests {
     #[test]
     fn send_null_data_returns_error() {
         let t = TestTransport::new();
+        // SAFETY: impl_ptr is valid; null data pointer tests graceful error return.
         let result = unsafe { quic_send(t.impl_ptr(), 0, std::ptr::null(), 10) };
         assert_eq!(result, -1);
     }
@@ -1027,12 +1058,14 @@ mod tests {
     fn send_invalid_conn_returns_error() {
         let t = TestTransport::new();
         let data = [1u8; 4];
+        // SAFETY: impl_ptr is valid; data slice is valid. Invalid conn ID 99.
         let result = unsafe { quic_send(t.impl_ptr(), 99, data.as_ptr().cast(), data.len()) };
         assert_eq!(result, -1);
     }
 
     #[test]
     fn recv_null_impl_returns_error() {
+        // SAFETY: Null impl pointer passed to verify graceful error return.
         let result = unsafe { quic_recv(std::ptr::null_mut(), 0, std::ptr::null_mut(), 0) };
         assert_eq!(result, -1);
     }
@@ -1040,6 +1073,7 @@ mod tests {
     #[test]
     fn recv_null_buf_returns_error() {
         let t = TestTransport::new();
+        // SAFETY: impl_ptr is valid; null buffer pointer tests graceful error return.
         let result = unsafe { quic_recv(t.impl_ptr(), 0, std::ptr::null_mut(), 64) };
         assert_eq!(result, -1);
     }
@@ -1048,24 +1082,29 @@ mod tests {
     fn recv_invalid_conn_returns_error() {
         let t = TestTransport::new();
         let mut buf = [0u8; 64];
+        // SAFETY: impl_ptr is valid; buf is a valid writable region. Invalid conn ID 99.
         let result = unsafe { quic_recv(t.impl_ptr(), 99, buf.as_mut_ptr().cast(), buf.len()) };
         assert_eq!(result, -1);
     }
 
     #[test]
     fn close_conn_null_is_noop() {
+        // SAFETY: Null impl pointer passed to verify graceful no-op behaviour.
         unsafe { quic_close_conn(std::ptr::null_mut(), 0) };
     }
 
     #[test]
     fn close_conn_invalid_id_is_noop() {
         let t = TestTransport::new();
+        // SAFETY: impl_ptr is valid; invalid conn IDs should be no-ops.
         unsafe { quic_close_conn(t.impl_ptr(), -1) };
+        // SAFETY: impl_ptr is valid; out-of-range conn ID should be a no-op.
         unsafe { quic_close_conn(t.impl_ptr(), 99) };
     }
 
     #[test]
     fn destroy_null_is_noop_via_vtable() {
+        // SAFETY: Null pointer passed to verify graceful no-op behaviour.
         unsafe { quic_destroy(std::ptr::null_mut()) };
     }
 
@@ -1085,6 +1124,11 @@ mod tests {
     // -- Loopback integration tests -------------------------------------------
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded by QUIC protocol limits"
+    )]
+    #[expect(clippy::cast_possible_wrap, reason = "bounded by QUIC protocol limits")]
     fn loopback_listen_connect_send_recv() {
         let (server, client, sc, cc) = setup_loopback();
 
@@ -1173,6 +1217,12 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded by QUIC protocol limits"
+    )]
+    #[expect(clippy::cast_possible_wrap, reason = "bounded by QUIC protocol limits")]
+    #[expect(clippy::cast_sign_loss, reason = "QUIC error code is non-negative")]
     fn large_frame_send_recv() {
         let (server, client, sc, cc) = setup_loopback();
 
@@ -1205,6 +1255,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "bounded by QUIC protocol limits"
+    )]
+    #[expect(clippy::cast_possible_wrap, reason = "bounded by QUIC protocol limits")]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "recv return value is non-negative on success"
+    )]
     fn multiple_sequential_messages() {
         let (server, client, sc, cc) = setup_loopback();
 

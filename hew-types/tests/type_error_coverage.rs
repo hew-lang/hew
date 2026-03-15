@@ -227,7 +227,7 @@ fn test_lambda_arity_mismatch() {
 #[test]
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
-        r#"
+        r"
         type Box<T> { value: T; }
         impl Box<int> {
             fn bad(b: Box<string>) -> int { 0 }
@@ -236,7 +236,7 @@ fn test_receiver_param_rejects_mismatched_generics() {
             let b = Box { value: 42 };
             b.bad();
         }
-        "#,
+        ",
     );
     assert!(
         !output.errors.is_empty(),

@@ -124,8 +124,8 @@ OverflowPolicy = "overflow" OverflowKind ;
 OverflowKind   = "block" | "drop_new" | "drop_old" | "fail"
                | "coalesce" "(" Ident ")" CoalesceFallback? ;
 CoalesceFallback = "fallback" OverflowKind ;
-ReceiveFnDecl  = "pure"? "receive" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
-ReceiveGenFnDecl = "pure"? "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
+ReceiveFnDecl  = Attribute* "pure"? "receive" "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? Block ;
+ReceiveGenFnDecl = Attribute* "pure"? "receive" "gen" "fn" Ident TypeParams? "(" Params? ")" "->" Type WhereClause? Block ;
 
 (* Supervisors *)
 SupervisorDecl = "supervisor" Ident "{"

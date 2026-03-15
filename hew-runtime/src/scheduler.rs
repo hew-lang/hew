@@ -27,6 +27,7 @@ use crate::mailbox::{
     self, hew_mailbox_has_messages, hew_mailbox_try_recv, hew_msg_node_free, HewMailbox,
 };
 use crate::set_last_error;
+use crate::tracing::HewTraceContext;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -484,6 +485,10 @@ fn activate_actor(actor: *mut HewActor) {
             // Dispatch the message (with profiling and crash recovery).
             if let Some(dispatch) = a.dispatch {
                 let t0 = std::time::Instant::now();
+                // SAFETY: `msg` is exclusively owned by this worker.
+                let msg_ref = unsafe { &*msg };
+                crate::tracing::set_context(msg_ref.trace_context);
+                crate::tracing::hew_trace_begin(a.id, msg_ref.msg_type);
 
                 // Prepare crash recovery context (stores actor/msg metadata).
                 //
@@ -538,12 +543,12 @@ fn activate_actor(actor: *mut HewActor) {
                     // SAFETY: `dispatch` and `a.state` are valid; message fields
                     // come from a well-formed `HewMsgNode`.
                     unsafe {
-                        let msg_ref = &*msg;
                         dispatch(a.state, msg_ref.msg_type, msg_ref.data, msg_ref.data_size);
                     }
 
                     // Dispatch completed successfully — clear recovery point.
                     crate::signal::clear_dispatch_recovery();
+                    crate::tracing::hew_trace_end(a.id, msg_ref.msg_type);
 
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -614,6 +619,7 @@ fn activate_actor(actor: *mut HewActor) {
     }
 
     // Restore previous CURRENT_ACTOR and arena.
+    crate::tracing::set_context(HewTraceContext::default());
     actor::set_current_actor(prev_actor);
     crate::arena::set_current_arena(prev_arena);
 
@@ -644,6 +650,7 @@ fn activate_actor(actor: *mut HewActor) {
             )
             .is_ok()
         {
+            crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
             crate::actor_group::notify_actor_death(a.id);
         }
         return;
@@ -734,6 +741,7 @@ fn activate_actor(actor: *mut HewActor) {
                     )
                     .is_ok()
                 {
+                    crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
                     crate::actor_group::notify_actor_death(a.id);
                 }
             }
@@ -996,5 +1004,76 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert_ne!(a, c);
+    }
+
+    unsafe extern "C" fn noop_dispatch(
+        _state: *mut std::ffi::c_void,
+        _msg_type: i32,
+        _data: *mut std::ffi::c_void,
+        _size: usize,
+    ) {
+    }
+
+    #[test]
+    fn activate_records_dispatch_span_events() {
+        crate::tracing::hew_trace_reset();
+        crate::tracing::hew_trace_enable(1);
+
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            unsafe { mailbox::hew_mailbox_send(mailbox, 77, ptr::null_mut(), 0) },
+            0
+        );
+
+        let actor = HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: 42,
+            pid: 0,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: Some(noop_dispatch),
+            mailbox: mailbox.cast(),
+            actor_state: AtomicI32::new(HewActorState::Runnable as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(actor::HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+        };
+        let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
+
+        activate_actor(actor_ptr);
+
+        let mut events = [crate::tracing::HewTraceEvent {
+            trace_id_hi: 0,
+            trace_id_lo: 0,
+            span_id: 0,
+            parent_span_id: 0,
+            actor_id: 0,
+            event_type: 0,
+            msg_type: 0,
+            timestamp_ns: 0,
+        }; 4];
+        let count = unsafe { crate::tracing::hew_trace_drain(events.as_mut_ptr(), 4) };
+        assert_eq!(count, 2);
+        assert_eq!(events[0].event_type, crate::tracing::SPAN_BEGIN);
+        assert_eq!(events[0].actor_id, 42);
+        assert_eq!(events[0].msg_type, 77);
+        assert_eq!(events[1].event_type, crate::tracing::SPAN_END);
+        assert_eq!(events[1].msg_type, 77);
+
+        unsafe { mailbox::hew_mailbox_free(mailbox) };
+        crate::tracing::hew_trace_reset();
     }
 }

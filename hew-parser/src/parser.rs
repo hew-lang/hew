@@ -875,6 +875,14 @@ impl<'src> Parser<'src> {
                         let val = unquote_str(s).to_string();
                         self.advance();
                         args.push(AttributeArg::Positional(val));
+                    } else if let Some(Token::Duration(s)) = self.peek() {
+                        let s = s.to_string();
+                        self.advance();
+                        if let Some(nanos) = parse_duration_literal(&s) {
+                            args.push(AttributeArg::Duration(nanos));
+                        } else {
+                            self.error(format!("invalid duration literal: {s}"));
+                        }
                     } else {
                         break;
                     }
@@ -1640,7 +1648,13 @@ impl<'src> Parser<'src> {
         let mut overflow_policy = None;
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            // Parse optional attributes (e.g. #[every(5s)]) before receive fns.
+            let attrs = self.parse_attributes();
+
             if self.peek() == Some(&Token::Init) {
+                if !attrs.is_empty() {
+                    self.error("attributes are not supported on init blocks".to_string());
+                }
                 self.advance();
                 self.expect(&Token::LeftParen)?;
                 let params = self.parse_params();
@@ -1686,6 +1700,7 @@ impl<'src> Parser<'src> {
                         where_clause,
                         body,
                         span: recv_start..recv_end,
+                        attributes: attrs,
                     });
                 } else if self.peek() == Some(&Token::Fn) {
                     self.advance();
@@ -1699,6 +1714,9 @@ impl<'src> Parser<'src> {
                     return None;
                 }
             } else if self.peek() == Some(&Token::Fn) {
+                if !attrs.is_empty() {
+                    self.error("attributes are not supported on actor methods; use them on receive fn declarations".to_string());
+                }
                 self.advance();
                 if let Some(method) =
                     self.parse_function(false, false, Visibility::Private, false, Vec::new())
@@ -1706,6 +1724,9 @@ impl<'src> Parser<'src> {
                     methods.push(method);
                 }
             } else if self.peek() == Some(&Token::Let) {
+                if !attrs.is_empty() {
+                    self.error("attributes are not supported on field declarations".to_string());
+                }
                 self.advance();
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;

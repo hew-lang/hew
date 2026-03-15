@@ -95,7 +95,9 @@ mod tests {
     /// Helper: read a C string pointer and free it.
     unsafe fn read_and_free(ptr: *mut c_char) -> String {
         assert!(!ptr.is_null());
+        // SAFETY: ptr is non-null (asserted above) and points to a valid NUL-terminated C string.
         let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+        // SAFETY: ptr was allocated with libc::malloc by the FFI layer.
         unsafe { libc::free(ptr.cast()) };
         s
     }
@@ -103,30 +105,37 @@ mod tests {
     #[test]
     fn resolve_localhost() {
         let host = CString::new("localhost").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
 
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
         let len = unsafe { hew_cabi::vec::hew_vec_len(vec) };
         // localhost should resolve to at least one address (127.0.0.1 or ::1).
         assert!(len > 0, "expected at least one address for localhost");
 
+        // SAFETY: vec is valid and index 0 is within bounds (len > 0).
         let first = unsafe { hew_cabi::vec::hew_vec_get_str(vec, 0) };
         assert!(!first.is_null());
+        // SAFETY: first is a non-null, valid NUL-terminated C string from the vec.
         let first_str = unsafe { CStr::from_ptr(first) }.to_str().unwrap();
         assert!(
             first_str == "127.0.0.1" || first_str == "::1",
             "expected 127.0.0.1 or ::1, got {first_str}"
         );
 
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
     }
 
     #[test]
     fn lookup_host_localhost() {
         let host = CString::new("localhost").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(!result.is_null());
 
+        // SAFETY: result is non-null and was returned by hew_dns_lookup_host.
         let ip = unsafe { read_and_free(result) };
         assert!(
             ip == "127.0.0.1" || ip == "::1",
@@ -136,14 +145,18 @@ mod tests {
 
     #[test]
     fn resolve_null_returns_empty_vec() {
+        // SAFETY: Null pointer is explicitly handled by hew_dns_resolve.
         let vec = unsafe { hew_dns_resolve(std::ptr::null()) };
         assert!(!vec.is_null());
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
         assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 0);
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
     }
 
     #[test]
     fn lookup_host_null_returns_null() {
+        // SAFETY: Null pointer is explicitly handled by hew_dns_lookup_host.
         let result = unsafe { hew_dns_lookup_host(std::ptr::null()) };
         assert!(result.is_null());
     }
@@ -151,15 +164,19 @@ mod tests {
     #[test]
     fn resolve_invalid_hostname_returns_empty() {
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
         assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 0);
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
     }
 
     #[test]
     fn lookup_host_invalid_returns_null() {
         let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(result.is_null());
     }
@@ -167,15 +184,19 @@ mod tests {
     #[test]
     fn resolve_empty_string_returns_empty() {
         let host = CString::new("").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string (empty).
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
+        // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
         assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 0);
+        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
     }
 
     #[test]
     fn lookup_host_empty_string_returns_null() {
         let host = CString::new("").unwrap();
+        // SAFETY: host is a valid NUL-terminated C string (empty).
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(result.is_null());
     }

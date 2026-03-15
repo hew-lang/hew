@@ -29,7 +29,7 @@
 #   make test-codegen — just hew-codegen ctest (native E2E + unit)
 #   make test-hew     — run Hew test files (std/ *_test.hew)
 #   make test-wasm    — just WASM E2E tests (requires wasmtime)
-#   make lint         — cargo clippy
+#   make lint         — cargo clippy (workspace + tests, warnings are errors)
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
@@ -324,7 +324,7 @@ test-cpp: test-codegen
 # ── Lint ────────────────────────────────────────────────────────────────────
 
 lint:
-	cargo clippy --workspace
+	cargo clippy --workspace --tests -- -D warnings
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #

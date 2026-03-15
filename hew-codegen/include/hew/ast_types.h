@@ -821,6 +821,8 @@ struct ReceiveFnDecl {
   std::optional<WhereClause> where_clause;
   Block body;
   Span span;
+  /// Periodic interval in nanoseconds from `#[every(duration)]`, or empty.
+  std::optional<int64_t> periodic_interval_ns;
 };
 
 struct ActorInit {

@@ -1,5 +1,25 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-15 observe wiring pass
+
+### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries
+
+The tracing module already had a usable C ABI, but nothing meaningful happened until the
+dispatch loop itself called begin/end around real message execution. Observability features
+that span runtime components usually fail at the integration boundary, not in the leaf
+module that implements the data structure or HTTP endpoint.
+
+### 2. Trace context must ride with the mailbox payload, not with the worker thread
+
+Worker threads are reused across unrelated actor activations, so thread-local context alone
+is not enough for causal tracing. The durable handoff point is the mailbox node: capture
+context when enqueuing, restore it when dequeuing, then derive the child dispatch span.
+
+### 3. Profiler-backed UIs need activation semantics, not just endpoints
+
+Serving `/api/traces` was not sufficient because tracing was still disabled by default.
+For debugging tooling, tying trace activation to `HEW_PPROF` keeps the operator workflow
+simple: one flag starts the HTTP server and turns on the event stream the UI expects.
 ## From the 2026-03-15 `hew test` hardening pass
 
 ### 1. Test discovery must never discard parser diagnostics
@@ -449,32 +469,21 @@ codegen tracks them through other mechanisms, but that does not justify a silent
 fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
 by span in the CLI so developers see the unsupported conversion exactly once.
 
-## From the OTel OTLP exporter (2026-07)
+### 56. Greedy transitive resolution still needs restartable passes
 
-### 56. Don't pull in an async runtime for a synchronous side-channel
+Even without a SAT solver, a dependency resolver cannot stop at the first chosen version.
+A later edge in the graph can tighten a package from `^1.0` to `^1.2`, forcing the chosen
+version downward and potentially changing that package's own dependencies. Rebuilding the
+pass when a previously expanded package changes version is a simple, reliable v1 strategy.
 
-The `opentelemetry-otlp` crate's HTTP transport requires tokio. But the Hew
-runtime already runs its own M:N scheduler; adding tokio would create two
-competing async runtimes. The right call is a thin synchronous HTTP client
-(`ureq`) on a dedicated OS thread — the same pattern the profiler uses.
-Async is the right tool for the hot path; background telemetry is not the
-hot path.
+### 57. Lockfile staleness must compare requirements, not just names
 
-### 57. Span reconstruction is the exporter's job, not the recording path
+Once a lockfile records transitive packages, comparing raw package-name sets will always
+misclassify valid lockfiles as stale. Record the root manifest requirements alongside the
+resolved package versions, then compare that direct-dependency map against the manifest so
+transitive entries do not create false positives.
 
-Recording raw `SPAN_BEGIN` / `SPAN_END` events is fast and lock-minimal.
-Pairing them into full spans with start/end timestamps is done once, in the
-background exporter thread, when it drains the ring buffer. This keeps the
-recording fast path free of HashMap bookkeeping and defers allocation to a
-point where latency doesn't matter.
-
-### 58. Feature flags should be opt-in for observability integrations
-
-The `otel` feature is off by default and not included in `full`. Observability
-integrations depend on external infrastructure (a running collector), so they
-should never be compiled into programs that don't need them. Prefer a
-clear opt-in (`--features otel`) over silently enlarging the default binary.
-### 59. Inferred type arguments must be persisted for downstream passes
+### 58. Inferred type arguments must be persisted for downstream passes
 
 The type checker successfully infers concrete type arguments via unification, but if those
 resolved types are not written back into the AST (or a side-channel map), downstream

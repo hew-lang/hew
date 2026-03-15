@@ -1,8 +1,9 @@
 //! Application state for the TUI observer.
 
 use crate::client::{
-    ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus, HistoryEntry,
-    Metrics, RouteEntry, RoutingSnapshot, TraceEvent,
+    ActorInfo, ClusterClient, ClusterMember, ConnectionInfo, ConnectionStatus,
+    CrashEntry as ClientCrashEntry, HistoryEntry, Metrics, RouteEntry, RoutingSnapshot,
+    SupervisorRow as ClientSupervisorRow, TraceEvent,
 };
 
 /// Active tab.
@@ -54,7 +55,6 @@ const SORT_COLUMNS: [SortColumn; 5] = [
     SortColumn::ProcessingTime,
 ];
 
-/// Demo crash entry (runtime doesn't expose crash data via HTTP yet).
 #[derive(Debug, Clone)]
 pub struct CrashEntry {
     pub time_s: f64,
@@ -84,7 +84,29 @@ pub struct TreeChild {
 pub struct TreeRow {
     pub depth: u16,
     pub label: String,
-    pub state: &'static str,
+    pub state: String,
+}
+
+impl From<ClientCrashEntry> for CrashEntry {
+    fn from(entry: ClientCrashEntry) -> Self {
+        Self {
+            time_s: entry.time_s,
+            actor_id: entry.actor_id,
+            signal: entry.signal,
+            msg_type: entry.msg_type,
+            fault_addr: entry.fault_addr,
+        }
+    }
+}
+
+impl From<ClientSupervisorRow> for TreeRow {
+    fn from(row: ClientSupervisorRow) -> Self {
+        Self {
+            depth: row.depth,
+            label: row.label,
+            state: row.state,
+        }
+    }
 }
 
 /// Main application state.
@@ -423,6 +445,18 @@ impl App {
             None
         };
 
+        let supervisors = if self.active_tab == Tab::Supervisors {
+            first.client.fetch_supervisors()
+        } else {
+            None
+        };
+
+        let crashes = if self.active_tab == Tab::Crashes {
+            first.client.fetch_crashes()
+        } else {
+            None
+        };
+
         // Cluster tab: fetch cluster data from first connected node
         let (cluster_members, connections, routing) =
             if self.active_tab == Tab::Cluster || self.active_tab == Tab::Timeline {
@@ -481,6 +515,14 @@ impl App {
         if let Some(h) = history {
             self.update_sparklines(&h);
             self.history = h;
+        }
+
+        if let Some(rows) = supervisors {
+            self.tree_rows = rows.into_iter().map(Into::into).collect();
+        }
+
+        if let Some(entries) = crashes {
+            self.crashes = entries.into_iter().map(Into::into).collect();
         }
 
         if let Some(members) = cluster_members {
@@ -847,7 +889,7 @@ fn flatten_node(
     rows.push(TreeRow {
         depth,
         label: format!("⊞ {} [{}]", node.name, node.strategy),
-        state: "Supervisor",
+        state: "Supervisor".to_owned(),
     });
     for child in &node.children {
         // Check if child is also a supervisor
@@ -857,7 +899,7 @@ fn flatten_node(
             rows.push(TreeRow {
                 depth: depth + 1,
                 label: format!("  {} (restarts: {})", child.name, child.restarts),
-                state: child.state,
+                state: child.state.to_owned(),
             });
         }
     }

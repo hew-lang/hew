@@ -757,5 +757,5 @@ The following features are explicitly deferred to future versions:
 - [1] Pony Language Tutorial — [tutorial.ponylang.io](https://tutorial.ponylang.io)
 - [2] Erlang Supervision Principles — [erlang.org](https://www.erlang.org/doc/design_principles/sup_princ.html)
 - [3] Statecharts — David Harel, 1987
-- [4] Hew Language Specification v0.9.0 — `hew-machine/docs/specs/HEW-SPEC.md`
+- [4] Hew Language Specification (audited for v0.2.0) — `docs/specs/HEW-SPEC.md`
 - [5] RFC: First-Class State Machines in Hew — `examples/machine-design.md`

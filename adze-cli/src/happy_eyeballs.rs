@@ -250,7 +250,10 @@ impl Transport for HewTcpTransport {
 
 // The Debug impl intentionally shows only the peer address — buffers and cached
 // timeouts are internal bookkeeping with no useful debug representation.
-#[allow(clippy::missing_fields_in_debug)]
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "HappyEyeballs internal state is not suitable for Debug output"
+)]
 impl fmt::Debug for HewTcpTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HewTcpTransport")

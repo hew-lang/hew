@@ -1026,9 +1026,9 @@ mod tests {
             let tags_field = hew_toml_get_field(reparsed, k_tags.as_ptr());
             assert!(!tags_field.is_null());
             assert_eq!(hew_toml_array_len(tags_field), 2);
-            let tag0 = hew_toml_array_get(tags_field, 0);
-            assert_eq!(read_and_free_cstr(hew_toml_get_string(tag0)), "fast");
-            hew_toml_free(tag0);
+            let first_tag = hew_toml_array_get(tags_field, 0);
+            assert_eq!(read_and_free_cstr(hew_toml_get_string(first_tag)), "fast");
+            hew_toml_free(first_tag);
             hew_toml_free(tags_field);
 
             hew_toml_free(reparsed);

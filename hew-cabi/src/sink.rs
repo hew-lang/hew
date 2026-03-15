@@ -169,7 +169,7 @@ mod tests {
 
     // ── SinkBacking / HewSink / into_sink_ptr ────────────────────────────
 
-    /// Test double that records calls to write_item, flush, and close.
+    /// Test double that records calls to `write_item`, flush, and close.
     #[derive(Debug)]
     struct MockSink {
         written: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
@@ -178,6 +178,10 @@ mod tests {
     }
 
     impl MockSink {
+        #[expect(
+            clippy::type_complexity,
+            reason = "Test helper return type; splitting would reduce clarity"
+        )]
         fn new() -> (
             Self,
             Arc<std::sync::Mutex<Vec<Vec<u8>>>>,

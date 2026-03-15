@@ -8,6 +8,10 @@ pub mod discovery;
 pub mod output;
 pub mod runner;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Top-level CLI argument parser; splitting into helpers would obscure the flag-to-field mapping"
+)]
 pub fn cmd_test(args: &[String]) {
     let mut filter: Option<String> = None;
     let mut use_color = true;

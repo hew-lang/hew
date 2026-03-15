@@ -1633,6 +1633,7 @@ mod tests {
         let sep = CString::new(",").unwrap();
         // SAFETY: Both args are valid NUL-terminated C strings.
         let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        // SAFETY: v is a valid HewVec from hew_string_split; sep is a valid C string.
         let joined = unsafe { hew_string_join(v, sep.as_ptr()) };
         assert!(!joined.is_null());
         // SAFETY: joined is a valid malloc'd C string.

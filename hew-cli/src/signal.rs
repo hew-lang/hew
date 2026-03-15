@@ -86,6 +86,7 @@ mod tests {
 
             // Call the handler directly so the test exercises the forwarding
             // logic without mutating process-global signal handlers.
+            // SAFETY: `forward_to_child` sends a signal to the child process whose PID was set above; the child is alive and the signal number is valid.
             unsafe { forward_to_child(sig) };
 
             let status = wait_for_child_exit(&mut child);

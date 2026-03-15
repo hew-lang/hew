@@ -179,6 +179,30 @@ pub struct TraceEvent {
     pub timestamp_ns: u64,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SupervisorRow {
+    #[serde(default)]
+    pub depth: u16,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CrashEntry {
+    #[serde(default)]
+    pub time_s: f64,
+    #[serde(default)]
+    pub actor_id: u64,
+    #[serde(default)]
+    pub signal: i32,
+    #[serde(default)]
+    pub msg_type: i32,
+    #[serde(default)]
+    pub fault_addr: u64,
+}
+
 /// Connection status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
@@ -314,6 +338,40 @@ impl ProfilerClient {
         match self
             .http
             .get(format!("{}/api/traces", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+
+    pub fn fetch_supervisors(&mut self) -> Option<Vec<SupervisorRow>> {
+        match self
+            .http
+            .get(format!("{}/api/supervisors", self.base_url))
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => {
+                self.status = ConnectionStatus::Connected;
+                resp.json().ok()
+            }
+            _ => {
+                self.status = ConnectionStatus::Disconnected;
+                None
+            }
+        }
+    }
+
+    pub fn fetch_crashes(&mut self) -> Option<Vec<CrashEntry>> {
+        match self
+            .http
+            .get(format!("{}/api/crashes", self.base_url))
             .send()
         {
             Ok(resp) if resp.status().is_success() => {

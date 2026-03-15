@@ -1,5 +1,36 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Runtime observe wiring (2026-03-15)
+
+### Goal
+
+Replace hew-observe demo-only Messages, Timeline, Supervisors, and Crashes data with
+live runtime data from the actor scheduler and profiler HTTP server.
+
+### Changes made
+
+- Wired `hew_trace_begin`/`hew_trace_end` into the scheduler dispatch loop so each
+  dispatched message now produces real span timing events.
+- Captured trace context in mailbox nodes at enqueue time and restored it before
+  dispatch so trace IDs survive actor-to-actor message hops.
+- Emitted lifecycle events for actor spawn, crash, stop, and message send from the
+  runtime paths that already own those transitions.
+- Enabled tracing automatically when `HEW_PPROF` starts the profiler so
+  `hew-observe --addr ...` shows data without an extra tracing flag.
+- Added `/api/supervisors` and `/api/crashes` endpoints and taught hew-observe to
+  fetch them instead of relying on demo placeholders.
+
+### Validation
+
+- `cargo fmt --all --check`
+- `make lint`
+- `make test`
+- Built a temporary Hew workload with a supervised counter that crashes once, then:
+  - confirmed `/api/traces` returns live events
+  - confirmed `/api/supervisors` returns the real tree
+  - confirmed `/api/crashes` returns the recorded crash
+  - connected `hew-observe` and captured live Supervisors, Crashes, Messages, and
+    Timeline panes showing runtime-backed data
 ## Phase 0.5: `hew test` hardening audit (2026-03-15)
 
 ### What I audited
@@ -844,46 +875,6 @@ coverage.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
 
-
-## Phase N: OpenTelemetry OTLP Exporter (2026-07)
-
-### Motivation
-
-The runtime already had W3C Trace Context-compatible 128-bit trace IDs and per-actor span recording, but no way to export spans to external backends (Jaeger, Grafana Tempo, OpenTelemetry Collector). Developers had to either instrument their programs manually or grep raw JSON from `/api/traces` in the profiler.
-
-### Design decisions
-
-- **OTLP/HTTP JSON, not gRPC** — avoids tonic + protobuf codegen; JSON is universally supported by Jaeger, Tempo, and the OTel Collector.
-- **`ureq` (sync HTTP), not tokio** — the Hew runtime runs its own M:N scheduler; pulling in tokio just for the exporter would add ~1.5 MB and create two competing async runtimes on the same thread pool. `ureq` is ~150 KB, pure Rust, and entirely synchronous.
-- **Background OS thread** — mirrors the profiler pattern exactly (`hew-pprof-sampler` / `hew-pprof-server`). The thread wakes on a configurable interval, drains the event ring buffer, reconstructs spans, and POSTs them.
-- **`otel` feature flag** — off by default, so existing users incur zero compile-time or link-time overhead until they opt in.
-- **Span reconstruction** — `SPAN_BEGIN`/`SPAN_END` events are matched by `span_id` inside the exporter; unpaired begins (still in flight when the batch window closes) are exported as incomplete spans rather than dropped.
-
-### Outcome
-
-- `hew-runtime/src/otel.rs` — exporter module (~400 LOC, no unsafe)
-- `hew-runtime/src/tracing.rs` — added `pub fn drain_events(max: usize) -> Vec<HewTraceEvent>`
-- `hew-runtime/Cargo.toml` — `otel = ["dep:ureq"]` feature; `ureq 3.x` with `default-features = false`
-- 13 unit tests (span reconstruction + OTLP JSON correctness)
-- 2 integration tests (mock OTLP receiver, timing invariants)
-- Zero new dependencies when `otel` is not enabled
-### Service pattern examples
-
-Added `examples/services/` with six distributed service patterns that demonstrate Hew's
-actor model advantages over Go channels + mutexes and Rust `Arc<Mutex>`:
-
-- **`circuit_breaker.hew`** — Actor as state machine: Closed → Open → HalfOpen transitions
-  with failure tracking, fast-fail rejection, and probe-based recovery.
-- **`rate_limiter.hew`** — Token bucket rate limiter as an actor. Workers use ask/reply to
-  acquire tokens; a timer actor handles periodic refills.
-- **`worker_pool.hew`** — Supervised worker pool with `join`-based scatter/gather. Crashed
-  workers are automatically restarted by the supervisor.
-- **`pub_sub.hew`** — Topic-based publish/subscribe broker. Subscribers register for topics;
-  the broker fans out published messages to all matching subscribers.
-- **`health_monitor.hew`** — Periodic health checker using `select` with timeout to detect
-  unresponsive services without blocking.
-- **`distributed_counter.hew`** — Replicated counter with coordinator-based merge. Local
-  reads are instant; writes sync through a coordinator actor.
 
 ## Structured Error Types — Error Handling Story
 

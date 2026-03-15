@@ -1,0 +1,151 @@
+// Test: Structured error types with enums and the ? operator
+// Exercises: custom error enums as Result<T, E> error types, ? operator
+// propagation with enum errors, pattern matching on error variants,
+// qualified and unqualified construction, error chaining across functions.
+
+// ── Error enum with int payloads (known to work) ──────────────────────
+
+enum MathError {
+    DivideByZero;
+    Overflow(int);
+    NegativeInput(int);
+}
+
+fn safe_divide(a: int, b: int) -> Result<int, MathError> {
+    if b == 0 {
+        Err(DivideByZero)
+    } else {
+        Ok(a / b)
+    }
+}
+
+fn safe_sqrt_int(n: int) -> Result<int, MathError> {
+    if n < 0 {
+        Err(NegativeInput(n))
+    } else {
+        // Integer square root via successive approximation
+        if n == 0 {
+            Ok(0)
+        } else {
+            var guess = n / 2;
+            if guess == 0 {
+                guess = 1;
+            }
+            var i = 0;
+            while i < 20 {
+                let next = (guess + n / guess) / 2;
+                if next >= guess {
+                    return Ok(guess);
+                }
+                guess = next;
+                i = i + 1;
+            }
+            Ok(guess)
+        }
+    }
+}
+
+// ── ? operator with enum errors ──────────────────────────────────────
+
+fn divide_then_sqrt(a: int, b: int) -> Result<int, MathError> {
+    let quotient = safe_divide(a, b)?;
+    let root = safe_sqrt_int(quotient)?;
+    Ok(root)
+}
+
+// ── Error matching ───────────────────────────────────────────────────
+
+fn describe_math_error(e: MathError) -> int {
+    match e {
+        DivideByZero => 1,
+        Overflow(val) => val,
+        NegativeInput(val) => val,
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+fn test_ok_path() {
+    let result = divide_then_sqrt(100, 1);
+    match result {
+        Ok(v) => println(f"sqrt(100/1) = {v}"),
+        Err(_) => println("unexpected error"),
+    }
+}
+
+fn test_divide_by_zero() {
+    let result = divide_then_sqrt(100, 0);
+    match result {
+        Ok(_) => println("unexpected success"),
+        Err(e) => {
+            let code = describe_math_error(e);
+            println(f"divide by zero: code {code}");
+        },
+    }
+}
+
+fn test_negative_input() {
+    let result = safe_sqrt_int(-42);
+    match result {
+        Ok(_) => println("unexpected success"),
+        Err(e) => {
+            match e {
+                NegativeInput(val) => println(f"negative input: {val}"),
+                _ => println("wrong error kind"),
+            }
+        },
+    }
+}
+
+fn test_chained_question_mark() {
+    // 64 / 4 = 16, sqrt(16) = 4
+    let result = divide_then_sqrt(64, 4);
+    match result {
+        Ok(v) => println(f"chained ok: {v}"),
+        Err(_) => println("unexpected error"),
+    }
+}
+
+fn test_question_mark_first_err() {
+    // divide by zero propagates through ?
+    let result = divide_then_sqrt(10, 0);
+    match result {
+        Ok(_) => println("unexpected success"),
+        Err(e) => {
+            match e {
+                DivideByZero => println("propagated: divide by zero"),
+                _ => println("wrong error"),
+            }
+        },
+    }
+}
+
+fn test_question_mark_second_err() {
+    // -100 / 1 = -100, sqrt(-100) propagates NegativeInput
+    let result = divide_then_sqrt(-100, 1);
+    match result {
+        Ok(_) => println("unexpected success"),
+        Err(e) => {
+            match e {
+                NegativeInput(v) => println(f"propagated: negative {v}"),
+                _ => println("wrong error"),
+            }
+        },
+    }
+}
+
+fn test_qualified_construction() {
+    let e = MathError::Overflow(999);
+    let code = describe_math_error(e);
+    println(f"qualified overflow: {code}");
+}
+
+fn main() {
+    test_ok_path();
+    test_divide_by_zero();
+    test_negative_input();
+    test_chained_question_mark();
+    test_question_mark_first_err();
+    test_question_mark_second_err();
+    test_qualified_construction();
+}

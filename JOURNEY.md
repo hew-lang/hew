@@ -31,6 +31,45 @@ live runtime data from the actor scheduler and profiler HTTP server.
   - confirmed `/api/crashes` returns the recorded crash
   - connected `hew-observe` and captured live Supervisors, Crashes, Messages, and
     Timeline panes showing runtime-backed data
+## Phase 0.5: `hew test` hardening audit (2026-03-15)
+
+### What I audited
+
+- Read the full `hew-cli/src/test_runner/` implementation and `hew-cli/src/main.rs` wiring.
+- Exercised `hew test` manually against passing, failing, compile-error, timeout,
+  empty-directory, no-test-function, nested-directory, and malformed-source cases.
+- Added focused Rust tests plus CLI end-to-end coverage for the test runner itself.
+
+### Findings
+
+- **Silent parse failures:** malformed `_test.hew` files were reported as
+  "No test functions found." with exit code 0 because discovery discarded parser
+  diagnostics.
+- **Non-deterministic execution order:** discovered tests were grouped in a
+  `HashMap`, so multi-file runs printed results in unstable order.
+- **Ambiguous empty-suite reporting:** an empty directory and a valid file with no
+  `#[test]` functions produced the same message.
+- **Timeouts existed but were fixed at 30 seconds:** the runner supported timeouts
+  internally, but there was no CLI control, which made the behaviour harder to
+  exercise and slower to test.
+
+### Decisions
+
+- Treat parser errors during discovery as fatal test-runner diagnostics and exit
+  non-zero before executing the suite.
+- Preserve discovery order all the way through execution and reporting so repeated
+  runs are stable and trustworthy.
+- Distinguish "No test files found." from "No test functions found." for clearer UX.
+- Add `--timeout <seconds>` so timeout behaviour is explicit, configurable, and
+  practical to test end-to-end.
+
+### Implementation summary
+
+- `discover_tests_in_file()` now returns both discovered tests and parser diagnostics.
+- `hew test` now renders parse diagnostics with source spans and exits 1 on parser errors.
+- The runner now preserves file/test order instead of relying on `HashMap` iteration.
+- Output formatting gained render helpers so unit tests can assert on exact text and `JUnit`.
+- Added end-to-end CLI tests for passing, failing, mixed, parse-error, and timeout suites.
 
 ## Phase 0: Multi-Agent Audit (2026-02-24)
 
@@ -835,3 +874,111 @@ coverage.
   submission before any wait path can hang.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
+
+### Service pattern examples
+
+Added `examples/services/` with six distributed service patterns that demonstrate Hew's
+actor model advantages over Go channels + mutexes and Rust `Arc<Mutex>`:
+
+- **`circuit_breaker.hew`** — Actor as state machine: Closed → Open → HalfOpen transitions
+  with failure tracking, fast-fail rejection, and probe-based recovery.
+- **`rate_limiter.hew`** — Token bucket rate limiter as an actor. Workers use ask/reply to
+  acquire tokens; a timer actor handles periodic refills.
+- **`worker_pool.hew`** — Supervised worker pool with `join`-based scatter/gather. Crashed
+  workers are automatically restarted by the supervisor.
+- **`pub_sub.hew`** — Topic-based publish/subscribe broker. Subscribers register for topics;
+  the broker fans out published messages to all matching subscribers.
+- **`health_monitor.hew`** — Periodic health checker using `select` with timeout to detect
+  unresponsive services without blocking.
+- **`distributed_counter.hew`** — Replicated counter with coordinator-based merge. Local
+  reads are instant; writes sync through a coordinator actor.
+
+## Structured Error Types — Error Handling Story
+
+### Design rationale
+
+Hew already has the infrastructure for proper error handling:
+
+- `Result<T, E>` is a built-in generic enum
+- The `?` operator propagates errors from `Result` (and `Option`)
+- Enums with payload variants support pattern matching
+
+What was missing was a **convention**: stdlib modules returned bare
+`i32` error codes or `Result<T, String>` with unstructured messages.
+Services need to match on error *kinds* (not found vs permission denied
+vs timeout), not parse error strings.
+
+### Approach: pure-enum error types (Option C)
+
+We chose the simplest approach that requires **no language changes** —
+define error enums as regular Hew enums in each stdlib domain:
+
+```hew
+enum IoError {
+    NotFound(int);
+    PermissionDenied(int);
+    AlreadyExists(int);
+    Other(int);
+}
+```
+
+User code wraps existing operations in `Result<T, IoError>` and gains
+structured matching via the `?` operator:
+
+```hew
+fn load_config(path: String) -> Result<String, IoError> {
+    if fs.exists(path) {
+        Ok(fs.read(path))
+    } else {
+        Err(IoError::NotFound(1))
+    }
+}
+
+fn init() -> Result<String, IoError> {
+    let cfg = load_config("app.toml")?;   // propagates IoError
+    Ok(cfg)
+}
+```
+
+### What shipped
+
+- **`IoError` enum** in `std/fs.hew` — canonical error type for
+  file-system operations (`NotFound`, `PermissionDenied`,
+  `AlreadyExists`, `Other`), each carrying an `int` error code.
+- **E2E test suite** (`e2e_structured_errors/structured_errors.hew`) —
+  exercises custom `MathError` enum with the `?` operator: Ok-path
+  propagation, first-error and second-error propagation through chained
+  `?`, pattern matching on specific error variants, and qualified
+  construction (`MathError::Overflow(999)`).
+
+### Known limitation — `Result<T, UserEnum>` in imported modules
+
+The codegen currently cannot lower `Result<T, E>` where `E` is a
+user-defined enum when that type appears in a function signature inside
+an imported module.  Standalone files work fine (the E2E test proves
+this).  Once the MLIR monomorphisation handles heterogeneous Result
+instantiations in module scope, `std/fs.hew` can export `try_*`
+functions returning `Result<T, IoError>` directly.
+
+### Future work
+
+- Add `NetError`, `ParseError`, `CryptoError` enums to their respective
+  stdlib modules following the same pattern.
+- Lift the imported-module codegen restriction so stdlib functions can
+  return `Result<T, IoError>` natively.
+- Add an `Error` trait with `message()` and `kind()` methods once trait
+  objects are fully supported in codegen.
+
+### Implicit generic monomorphization
+
+- Added implicit type-argument inference for generic function calls so that
+  `identity(42)` works without requiring `identity<int>(42)`.
+- **Root cause:** the type checker inferred concrete types via unification but never
+  wrote them back into the AST's `call.type_args`; the C++ codegen only specialised
+  when `type_args` was present, falling through to "undefined function" for implicit calls.
+- **Fix (enrichment-stage):** added a `call_type_args` map to `TypeCheckOutput` that
+  records inferred type arguments per call site. During enrichment, calls with missing
+  `type_args` are backfilled from this map before serialization, so the codegen sees
+  explicit type args and handles them through the existing monomorphization path.
+- Added E2E tests: `generic_implicit_identity` (single-param, int + string) and
+  `generic_implicit_multi` (multi-arg generic with int + string specializations).

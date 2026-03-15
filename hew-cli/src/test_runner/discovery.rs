@@ -1,6 +1,7 @@
 //! Discover `#[test]` functions in Hew source files.
 
 use hew_parser::ast::{Item, Program};
+use hew_parser::{ParseError, Severity};
 
 /// A discovered test case.
 #[derive(Debug, Clone)]
@@ -13,6 +14,29 @@ pub struct TestCase {
     pub ignored: bool,
     /// Whether the test has `#[should_panic]`.
     pub should_panic: bool,
+}
+
+/// The result of inspecting a single source file for tests.
+#[derive(Debug)]
+pub struct DiscoveredTestFile {
+    /// Source file path.
+    pub path: String,
+    /// Source contents.
+    pub source: String,
+    /// Discovered `#[test]` functions.
+    pub tests: Vec<TestCase>,
+    /// Parser diagnostics found while reading the file.
+    pub parse_errors: Vec<ParseError>,
+}
+
+impl DiscoveredTestFile {
+    /// Whether the file has any parser errors that should fail the test run.
+    #[must_use]
+    pub fn has_parse_errors(&self) -> bool {
+        self.parse_errors
+            .iter()
+            .any(|error| error.severity == Severity::Error)
+    }
 }
 
 /// Walk a parsed program's AST and collect all `#[test]` functions.
@@ -42,11 +66,15 @@ pub fn discover_tests(program: &Program, file: &str) -> Vec<TestCase> {
 /// # Errors
 ///
 /// Returns an error string if the file cannot be read.
-pub fn discover_tests_in_file(path: &str) -> Result<Vec<TestCase>, String> {
+pub fn discover_tests_in_file(path: &str) -> Result<DiscoveredTestFile, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let result = hew_parser::parse(&source);
-    // We don't fail on parse errors here — the runner will report them.
-    Ok(discover_tests(&result.program, path))
+    Ok(DiscoveredTestFile {
+        path: path.to_string(),
+        tests: discover_tests(&result.program, path),
+        source,
+        parse_errors: result.errors,
+    })
 }
 
 /// Recursively discover test files in a directory.
@@ -104,6 +132,7 @@ fn collect_test_files(dir: &std::path::Path, out: &mut Vec<String>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn discover_test_functions() {
@@ -148,5 +177,71 @@ fn test_panic() {
         let result = hew_parser::parse(source);
         let tests = discover_tests(&result.program, "main.hew");
         assert!(tests.is_empty());
+    }
+
+    #[test]
+    fn discover_test_files_respects_layout_rules() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("alpha_test.hew"),
+            "#[test]\nfn alpha() { assert(true); }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("nested")).unwrap();
+        std::fs::write(
+            dir.path().join("nested").join("beta_test.hew"),
+            "#[test]\nfn beta() { assert(true); }\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("gamma.hew"),
+            "#[test]\nfn gamma() { assert(true); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("helper.hew"),
+            "fn helper() {}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("plain.hew"), "fn helper() {}\n").unwrap();
+
+        let mut files = discover_test_files(dir.path().to_str().unwrap()).unwrap();
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![
+                dir.path().join("alpha_test.hew").display().to_string(),
+                dir.path()
+                    .join("nested")
+                    .join("beta_test.hew")
+                    .display()
+                    .to_string(),
+                dir.path()
+                    .join("tests")
+                    .join("gamma.hew")
+                    .display()
+                    .to_string(),
+                dir.path()
+                    .join("tests")
+                    .join("helper.hew")
+                    .display()
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_tests_in_file_preserves_parse_errors() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("broken_test.hew");
+        std::fs::write(&file, "#[test]\nfn broken( {\n    assert(true);\n}\n").unwrap();
+
+        let discovered = discover_tests_in_file(file.to_str().unwrap()).unwrap();
+
+        assert!(discovered.tests.is_empty());
+        assert!(discovered.has_parse_errors());
+        assert!(!discovered.parse_errors.is_empty());
     }
 }

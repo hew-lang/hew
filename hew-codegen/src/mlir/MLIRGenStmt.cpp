@@ -496,6 +496,53 @@ void MLIRGen::generateStatement(const ast::Stmt &stmt) {
   }
 }
 
+void MLIRGen::bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
+                                mlir::Location location) {
+  if (auto *identPat = std::get_if<ast::PatIdentifier>(&pattern.kind)) {
+    declareVariable(identPat->name, value);
+  } else if (std::holds_alternative<ast::PatWildcard>(pattern.kind)) {
+    // Wildcard — discard the value
+  } else if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
+    for (uint32_t i = 0; i < tuplePat->elements.size(); i++) {
+      mlir::Value elemVal;
+      if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(value.getType())) {
+        elemVal = hew::TupleExtractOp::create(builder, location, hewTuple.getElementTypes()[i],
+                                              value, static_cast<int64_t>(i));
+      } else {
+        elemVal = mlir::LLVM::ExtractValueOp::create(
+            builder, location, value, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
+      }
+      bindLetSubPattern(tuplePat->elements[i]->value, elemVal, location);
+    }
+  } else if (auto *structPat = std::get_if<ast::PatStruct>(&pattern.kind)) {
+    auto structIt = structTypes.find(structPat->name);
+    if (structIt != structTypes.end()) {
+      const auto &info = structIt->second;
+      for (const auto &pf : structPat->fields) {
+        for (const auto &fi : info.fields) {
+          if (fi.name == pf.name) {
+            auto fieldVal = hew::FieldGetOp::create(
+                builder, location,
+                mlir::cast<mlir::LLVM::LLVMStructType>(value.getType()).getBody()[fi.index],
+                value, builder.getStringAttr(fi.name), static_cast<int64_t>(fi.index));
+            if (pf.pattern) {
+              bindLetSubPattern(pf.pattern->value, fieldVal, location);
+            } else {
+              declareVariable(pf.name, fieldVal);
+            }
+            break;
+          }
+        }
+      }
+    } else {
+      emitError(location) << "unknown struct type '" << structPat->name
+                          << "' in let pattern";
+    }
+  } else {
+    emitError(location) << "unsupported sub-pattern in let destructuring";
+  }
+}
+
 void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
   auto location = currentLoc;
   // Set the declared type so constructors (Vec::new, HashMap::new, None, Ok,
@@ -786,6 +833,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         continue;
       }
     }
+  } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
+    bindLetSubPattern(pattern, value, location);
   } else {
     emitError(location) << "only simple identifier patterns supported for let";
   }

@@ -72,10 +72,7 @@ fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
 ///
 /// `host` must be a valid NUL-terminated UTF-8 string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_connect(
-    host: *const c_char,
-    port: c_int,
-) -> *mut HewTlsStream {
+pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *mut HewTlsStream {
     // SAFETY: `host` is a valid NUL-terminated C string per caller contract.
     let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
         return std::ptr::null_mut();
@@ -135,10 +132,7 @@ pub unsafe extern "C" fn hew_tls_write(
 ///
 /// `stream` must be a valid pointer returned by [`hew_tls_connect`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_read(
-    stream: *mut HewTlsStream,
-    size: c_int,
-) -> HewVec {
+pub unsafe extern "C" fn hew_tls_read(stream: *mut HewTlsStream, size: c_int) -> HewVec {
     let empty = HewVec {
         data: std::ptr::null_mut(),
         len: 0,
@@ -149,7 +143,9 @@ pub unsafe extern "C" fn hew_tls_read(
     if stream.is_null() {
         return empty;
     }
-    let buf_size = usize::try_from(size).unwrap_or(READ_BUFFER_SIZE).min(READ_BUFFER_SIZE);
+    let buf_size = usize::try_from(size)
+        .unwrap_or(READ_BUFFER_SIZE)
+        .min(READ_BUFFER_SIZE);
     let mut buf = vec![0u8; buf_size];
     // SAFETY: `stream` is a valid HewTlsStream pointer per caller contract.
     let s = unsafe { &mut *stream };

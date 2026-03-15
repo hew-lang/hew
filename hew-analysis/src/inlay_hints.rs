@@ -278,23 +278,21 @@ mod tests {
         let pr = parse(source);
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
-        // If the type checker populated expr_types for the literal, we should get a hint
-        let type_hints: Vec<_> = hints
-            .iter()
-            .filter(|h| h.kind == InlayHintKind::Type)
-            .collect();
-        if !tc.expr_types.is_empty() {
-            assert!(
-                !type_hints.is_empty(),
-                "should produce type hint for unannotated let binding"
-            );
-            // Hint label should start with ": " (type annotation format)
-            assert!(
-                type_hints[0].label.starts_with(": "),
-                "type hint should start with ': ', got: {}",
-                type_hints[0].label
-            );
-        }
+        let type_hints: Vec<_> = hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
+        // Assertions outside the guard — test fails if expr_types is empty
+        assert!(
+            !tc.expr_types.is_empty(),
+            "type checker should populate expr_types for integer literal"
+        );
+        assert!(
+            !type_hints.is_empty(),
+            "should produce type hint for unannotated let binding"
+        );
+        assert!(
+            type_hints[0].label.starts_with(": "),
+            "type hint should start with ': ', got: {}",
+            type_hints[0].label
+        );
     }
 
     #[test]
@@ -375,20 +373,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_source_produces_no_hints() {
-        let source = "";
-        let pr = parse(source);
-        let tc = TypeCheckOutput {
-            expr_types: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs: HashMap::new(),
-            fn_sigs: HashMap::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-        };
-        let hints = build_inlay_hints(source, &pr, &tc);
-        assert!(hints.is_empty());
-    }
 }

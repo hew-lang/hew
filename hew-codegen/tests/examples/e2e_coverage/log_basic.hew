@@ -1,4 +1,8 @@
 // Test: log function calls — exercises generateLogCall, generateLogEmit
+// NOTE: log output goes to stderr (with timestamps), so the E2E harness
+// (which only compares stdout) cannot verify the log lines directly.
+// This test still validates that log calls compile and execute without
+// crashing — the compile-path coverage is the primary value.
 import std::misc::log;
 
 fn main() {

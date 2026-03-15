@@ -1,5 +1,7 @@
 // Tests CooperateOpLowering — zero E2E coverage.
 // cooperate() yields the current thread to the scheduler.
+// NOTE: Scheduler yield is not observable from user code, so this test
+// only confirms the operation compiles and executes without error.
 fn main() {
     cooperate();
     println("cooperated");

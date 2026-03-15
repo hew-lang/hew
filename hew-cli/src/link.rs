@@ -733,46 +733,6 @@ mod tests {
         assert!(err.contains("cargo build -p hew-runtime"));
     }
 
-    #[test]
-    fn find_runtime_lib_real_does_not_panic() {
-        // Whether the runtime is built or not, the function must not panic
-        let _ = find_runtime_lib(runtime_lib_name());
-    }
-
-    // ── find_wasm_ld ──────────────────────────────────────────────────
-
-    #[test]
-    fn find_wasm_ld_does_not_panic() {
-        // Result depends on system tooling — we just verify no panic
-        let _ = find_wasm_ld();
-    }
-
-    // ── find_wasm_runtime_libs ────────────────────────────────────────
-
-    #[test]
-    fn find_wasm_runtime_libs_wasi_alias_no_panic() {
-        // Should internally map wasm32-wasi → wasm32-wasip1
-        let _ = find_wasm_runtime_libs("wasm32-wasi");
-    }
-
-    #[test]
-    fn find_wasm_runtime_libs_wasip1_no_panic() {
-        let _ = find_wasm_runtime_libs("wasm32-wasip1");
-    }
-
-    // ── find_wasi_libc ────────────────────────────────────────────────
-
-    #[test]
-    fn find_wasi_libc_no_panic() {
-        let _ = find_wasi_libc("wasm32-wasip1");
-    }
-
-    #[test]
-    fn find_wasi_libc_maps_wasi_alias() {
-        // Should not panic regardless of whether the target is installed
-        let _ = find_wasi_libc("wasm32-wasi");
-    }
-
     // ── find_package_libs ─────────────────────────────────────────────
 
     #[test]

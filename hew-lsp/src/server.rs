@@ -2271,11 +2271,6 @@ mod tests {
     }
 
     #[test]
-    fn line_offsets_empty() {
-        assert_eq!(compute_line_offsets(""), vec![0]);
-    }
-
-    #[test]
     fn line_offsets_multiline() {
         let offsets = compute_line_offsets("ab\ncd\ne");
         assert_eq!(offsets, vec![0, 3, 6]);

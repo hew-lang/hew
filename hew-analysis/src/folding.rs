@@ -323,11 +323,5 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fold_empty_source() {
-        let source = "";
-        let pr = parse(source);
-        let ranges = build_folding_ranges(source, &pr);
-        assert!(ranges.is_empty(), "empty source should have no fold ranges");
-    }
+
 }

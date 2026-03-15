@@ -1,5 +1,7 @@
 // Tests SleepOp — zero E2E coverage.
 // sleep_ms(ms) pauses execution for the given milliseconds.
+// NOTE: Verifying actual timing is inherently fragile in CI, so this
+// test only confirms the operation compiles and completes without error.
 fn main() {
     println("before");
     sleep_ms(1);

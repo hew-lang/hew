@@ -1,23 +1,27 @@
 // Tests AssertOp, AssertEqOp, AssertNeOp — all have zero E2E coverage.
 fn main() {
-    // assert(cond) — passes when true
-    assert(true);
-    assert(1 == 1);
-    assert(42 > 0);
+    // assert(cond) — passes when condition is computed
+    let sum = 2 + 3;
+    assert(sum == 5);
+    let positive = 42 - 10;
+    assert(positive > 0);
 
     // assert_eq(a, b) — passes when equal (integers)
-    assert_eq(1, 1);
-    assert_eq(100, 100);
+    let doubled = 50 * 2;
+    assert_eq(doubled, 100);
 
     // assert_eq with floats
-    assert_eq(3.14, 3.14);
+    let pi = 3.0 + 0.14;
+    assert_eq(pi, 3.14);
 
     // assert_ne(a, b) — passes when not equal
-    assert_ne(1, 2);
-    assert_ne(0, 42);
+    let a = 1;
+    let b = a + 1;
+    assert_ne(a, b);
 
     // assert_eq with strings
-    assert_eq("hello", "hello");
+    let greeting = "hello";
+    assert_eq(greeting, "hello");
 
     // assert_ne with strings
     assert_ne("hello", "world");

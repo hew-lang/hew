@@ -127,20 +127,29 @@ fn scope_spawn_tracks_actors() {
 /// Exceeding `HEW_SCOPE_MAX_ACTORS` returns -1.
 #[test]
 fn scope_spawn_rejects_when_full() {
+    ensure_scheduler();
+
     unsafe {
         let mut scope = hew_scope_new();
 
-        // Fill the scope to capacity with dummy (null) pointers.
-        // We cheat slightly: directly set the count to max.
-        scope.actor_count = HEW_SCOPE_MAX_ACTORS as i32;
+        // Fill the scope to capacity with real actor spawns.
+        let mut actors = Vec::new();
+        for _ in 0..HEW_SCOPE_MAX_ACTORS {
+            let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!actor.is_null());
+            let rc = hew_scope_spawn(&raw mut scope, actor.cast());
+            assert_eq!(rc, 0, "spawn should succeed while under capacity");
+            actors.push(actor);
+        }
+        assert_eq!(scope.actor_count, HEW_SCOPE_MAX_ACTORS as i32);
 
-        let actor = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        let rc = hew_scope_spawn(&raw mut scope, actor.cast());
+        // The (MAX+1)th spawn must be rejected.
+        let extra = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
+        let rc = hew_scope_spawn(&raw mut scope, extra.cast());
         assert_eq!(rc, -1, "scope should reject when full");
 
-        // Reset count and clean up.
-        scope.actor_count = 0;
-        hew_actor_free(actor);
+        hew_actor_free(extra);
+        hew_scope_wait_all(&raw mut scope);
         hew_scope_destroy(&raw mut scope);
     }
 }

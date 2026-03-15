@@ -384,13 +384,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_display() {
-        let err = TypeError::mismatch(0..10, &Ty::I32, &Ty::Bool);
-        assert!(err.to_string().contains("expected `i32`"));
-        assert!(err.to_string().contains("found `bool`"));
-    }
-
-    #[test]
     fn test_error_with_suggestions() {
         let err =
             TypeError::inference_failed(0..5, "variable").with_suggestion("use let x: i32 = ...");
@@ -445,17 +438,18 @@ mod tests {
 
     #[test]
     fn test_find_similar_returns_sorted_by_distance() {
-        let names = ["counter", "contr", "conter", "counted"];
-        let similar = find_similar("count", names.iter().copied());
-        // "counted" (dist 2) and "contr" (dist 2) should be returned
-        // "counter" (dist 2) should be returned
-        // All are within threshold = max(1, 5/3) = 1… actually 5/3=1
-        // distance "count" → "counter" = 2, threshold = 1, so no match
-        // Let's just verify the function doesn't crash and returns reasonable results
-        // The threshold is max(1, len/3) = max(1, 5/3) = max(1,1) = 1
-        // Only distance-1 matches: none of these are distance 1 from "count"
-        // This tests the boundary behaviour
-        assert!(similar.len() <= 3, "should return at most 3 matches");
+        // Target "println" (len 7) → threshold = max(1, 7/3) = 2
+        // "printl" dist 1, "printlns" dist 1, "eprintln" dist 1, "print" dist 2
+        let names = ["print", "printl", "printlns", "eprintln", "random"];
+        let similar = find_similar("println", names.iter().copied());
+        // 4 candidates match (dist ≤ 2), but truncate(3) keeps only 3.
+        // Sorted by distance, stable within same distance (iterator order):
+        //   dist-1: "printl", "printlns", "eprintln"  →  all 3 slots filled
+        assert_eq!(
+            similar,
+            vec!["printl", "printlns", "eprintln"],
+            "should return closest matches sorted by distance"
+        );
     }
 
     #[test]

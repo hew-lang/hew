@@ -255,6 +255,10 @@ private:
   /// Bind constructor sub-pattern variables by extracting enum payloads.
   void bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::Value scrutinee,
                                   mlir::Location location);
+  /// Recursively bind sub-patterns in let destructuring (struct fields,
+  /// tuple elements, identifiers, wildcards).
+  void bindLetSubPattern(const ast::Pattern &pattern, mlir::Value value,
+                         mlir::Location location);
   /// Emit a tag-equality comparison: extract tag, compare with variantIndex.
   mlir::Value emitTagEqualCondition(mlir::Value scrutinee, int64_t variantIndex,
                                     mlir::Location location);

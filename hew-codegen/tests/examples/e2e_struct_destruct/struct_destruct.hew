@@ -1,0 +1,50 @@
+// E2E test: struct pattern destructuring in let bindings
+
+type Point {
+    x: int;
+    y: int;
+}
+
+type Colour {
+    r: int;
+    g: int;
+    b: int;
+}
+
+type Wrapper {
+    label: int;
+    point: Point;
+}
+
+fn main() {
+    // Basic struct destructuring
+    let p = Point { x: 10, y: 20 };
+    let Point { x, y } = p;
+    println(x);
+    println(y);
+
+    // Destructuring with field renaming
+    let p2 = Point { x: 30, y: 40 };
+    let Point { x: a, y: b } = p2;
+    println(a);
+    println(b);
+
+    // Three-field struct
+    let c = Colour { r: 100, g: 150, b: 200 };
+    let Colour { r, g, b: blue } = c;
+    println(r);
+    println(g);
+    println(blue);
+
+    // Partial destructuring (only some fields)
+    let p3 = Point { x: 50, y: 60 };
+    let Point { x: px } = p3;
+    println(px);
+
+    // Nested struct destructuring
+    let w = Wrapper { label: 99, point: Point { x: 70, y: 80 } };
+    let Wrapper { label, point: Point { x: inner_x, y: inner_y } } = w;
+    println(label);
+    println(inner_x);
+    println(inner_y);
+}

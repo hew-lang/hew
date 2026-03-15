@@ -420,6 +420,7 @@ add_e2e_file_test(vec_join             e2e_collections vec_join)
 add_e2e_file_test(vec_map              e2e_collections vec_map)
 add_e2e_file_test(vec_filter           e2e_collections vec_filter)
 add_e2e_file_test(vec_fold             e2e_collections vec_fold)
+add_e2e_file_test(deque                e2e_collections deque)
 
 # String.lines() — split on newlines
 add_e2e_file_test(string_lines         e2e_strings string_lines)

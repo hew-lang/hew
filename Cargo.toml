@@ -9,6 +9,7 @@ members = [
   "std/encoding/msgpack",
   "std/encoding/protobuf",
   "std/encoding/toml",
+  "std/encoding/xml",
   "std/encoding/yaml",
   "std/crypto/crypto",
   "std/crypto/jwt",

@@ -188,7 +188,7 @@ jobs:
             -p hew-std-encoding-csv -p hew-std-encoding-json \
             -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
             -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
-            -p hew-std-encoding-yaml \
+            -p hew-std-encoding-xml -p hew-std-encoding-yaml \
             -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
             -p hew-std-crypto-password \
             -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-quic \

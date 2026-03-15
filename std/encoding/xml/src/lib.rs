@@ -361,10 +361,7 @@ pub unsafe extern "C" fn hew_xml_children_count(node: *const HewXmlNode) -> i32 
 ///
 /// `node` must be a valid pointer to a [`HewXmlNode`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_xml_get_child(
-    node: *const HewXmlNode,
-    index: i32,
-) -> *mut HewXmlNode {
+pub unsafe extern "C" fn hew_xml_get_child(node: *const HewXmlNode, index: i32) -> *mut HewXmlNode {
     if node.is_null() || index < 0 {
         return std::ptr::null_mut();
     }
@@ -375,9 +372,9 @@ pub unsafe extern "C" fn hew_xml_get_child(
         reason = "C ABI: negative values checked before cast"
     )]
     match &n.inner {
-        XmlNodeKind::Element { children, .. } => {
-            children.get(index as usize).map_or(std::ptr::null_mut(), |c| boxed_node(c.clone()))
-        }
+        XmlNodeKind::Element { children, .. } => children
+            .get(index as usize)
+            .map_or(std::ptr::null_mut(), |c| boxed_node(c.clone())),
         XmlNodeKind::Text(_) => std::ptr::null_mut(),
     }
 }

@@ -3768,6 +3768,14 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
   // in std::bench but called from bench_basic).
   if (!callee)
     callee = lookupImportedFunc(structType.getName(), methodName);
+  // Try specializing a generic impl method (e.g. impl<T> Box<T> { fn unwrap … }).
+  if (!callee) {
+    auto originIt = structTypeOrigin.find(structType.getName().str());
+    if (originIt != structTypeOrigin.end()) {
+      const auto &[baseName, typeArgs] = originIt->second;
+      callee = specializeGenericImplMethod(baseName, typeArgs, methodName);
+    }
+  }
   if (!callee) {
     emitError(location) << "undefined method '" << methodName << "' on type '"
                         << structType.getName() << "'";

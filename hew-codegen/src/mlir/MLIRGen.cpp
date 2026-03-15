@@ -373,6 +373,8 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
           info.name = mangledName;
           info.mlirType = mangledStructType;
           structTypes[mangledName] = std::move(info);
+          // Record origin for generic impl method specialization.
+          structTypeOrigin[mangledName] = {name, typeArgNames};
           typeParamSubstitutions = std::move(prevSubstitutions);
           return mangledStructType;
         }
@@ -2019,6 +2021,9 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (auto *fn = std::get_if<ast::FnDecl>(&item.kind)) {
       registerFunctionSignature(*fn);
     } else if (auto *impl = std::get_if<ast::ImplDecl>(&item.kind)) {
+      // Skip generic impl blocks — they are deferred for specialization.
+      if (impl->type_params && !impl->type_params->empty())
+        return;
       // Pre-register impl methods with mangled names
       std::string typeName;
       if (auto *named = std::get_if<ast::TypeNamed>(&impl->target_type.value.kind)) {
@@ -2176,6 +2181,26 @@ mlir::ModuleOp MLIRGen::generate(const ast::Program &program) {
     if (auto *md = std::get_if<ast::MachineDecl>(&item.kind)) {
       generateMachineDecl(*md);
     }
+  });
+
+  // Pass 1k1: Register generic impl blocks so that method specialization
+  // is available when function bodies trigger method calls on monomorphized
+  // generic structs (e.g. Box_int::unwrap from impl<T> Box<T>).
+  forEachItem([&](const auto &spannedItem) {
+    const auto &item = spannedItem.value;
+    auto *impl = std::get_if<ast::ImplDecl>(&item.kind);
+    if (!impl || !impl->type_params || impl->type_params->empty())
+      return;
+    std::string typeName;
+    if (auto *named = std::get_if<ast::TypeNamed>(&impl->target_type.value.kind))
+      typeName = named->name;
+    if (typeName.empty())
+      return;
+    GenericImplInfo info;
+    info.typeParams = &*impl->type_params;
+    for (const auto &method : impl->methods)
+      info.methods.push_back(&method);
+    genericImplMethods[typeName] = std::move(info);
   });
 
   // Pass 1k: Generate regular function bodies before actor bodies so that
@@ -3132,6 +3157,16 @@ void MLIRGen::generateImplDecl(const ast::ImplDecl &decl) {
   if (typeName.empty())
     return;
 
+  // Generic impl: defer method generation until concrete instantiation.
+  if (decl.type_params && !decl.type_params->empty()) {
+    GenericImplInfo info;
+    info.typeParams = &*decl.type_params;
+    for (const auto &method : decl.methods)
+      info.methods.push_back(&method);
+    genericImplMethods[typeName] = std::move(info);
+    return;
+  }
+
   // Set Self substitution so bare self parameters resolve to the target type
   typeParamSubstitutions["Self"] = typeName;
 
@@ -3954,6 +3989,63 @@ mlir::func::FuncOp MLIRGen::specializeGenericFunction(const std::string &baseNam
   // Restore previous substitutions
   typeParamSubstitutions = std::move(prevSubstitutions);
   specializedFunctions.insert(mangled);
+  return funcOp;
+}
+
+mlir::func::FuncOp MLIRGen::specializeGenericImplMethod(
+    const std::string &baseTypeName,
+    const std::vector<std::string> &typeArgs,
+    const std::string &methodName) {
+  auto implIt = genericImplMethods.find(baseTypeName);
+  if (implIt == genericImplMethods.end())
+    return nullptr;
+
+  const auto &implInfo = implIt->second;
+
+  // Build the monomorphized type name (e.g. "Box_int")
+  std::string mangledTypeName = baseTypeName;
+  for (const auto &ta : typeArgs)
+    mangledTypeName += "_" + ta;
+
+  std::string mangledMethod = mangleName(currentModulePath, mangledTypeName, methodName);
+
+  // Already specialized?
+  if (specializedFunctions.count(mangledMethod))
+    return module.lookupSymbol<mlir::func::FuncOp>(mangledMethod);
+
+  // Find the method in the generic impl
+  const ast::FnDecl *fn = nullptr;
+  for (const auto *m : implInfo.methods) {
+    if (m->name == methodName) {
+      fn = m;
+      break;
+    }
+  }
+  if (!fn) {
+    emitError(builder.getUnknownLoc())
+        << "no method '" << methodName << "' in generic impl for '" << baseTypeName << "'";
+    return nullptr;
+  }
+
+  if (typeArgs.size() != implInfo.typeParams->size()) {
+    emitError(builder.getUnknownLoc())
+        << "generic impl for '" << baseTypeName << "' expects "
+        << implInfo.typeParams->size() << " type arguments, got " << typeArgs.size();
+    return nullptr;
+  }
+
+  // Set up type parameter substitutions (T→int, U→string, …)
+  auto prevSubstitutions = std::move(typeParamSubstitutions);
+  typeParamSubstitutions.clear();
+  for (size_t i = 0; i < implInfo.typeParams->size(); ++i)
+    typeParamSubstitutions[(*implInfo.typeParams)[i].name] = typeArgs[i];
+  // Also map Self → monomorphized type name
+  typeParamSubstitutions["Self"] = mangledTypeName;
+
+  auto funcOp = generateFunction(*fn, mangledMethod);
+
+  typeParamSubstitutions = std::move(prevSubstitutions);
+  specializedFunctions.insert(mangledMethod);
   return funcOp;
 }
 

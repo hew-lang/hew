@@ -531,6 +531,8 @@ add_e2e_file_test(trait_multi_impl      e2e_traits trait_multi_impl)
 
 # ── Inherent impl tests ─────────────────────────────────────────────────────
 add_e2e_file_test(struct_impl_method    e2e_impl struct_impl_method)
+add_e2e_file_test(generic_impl_method   e2e_impl generic_impl_method)
+add_e2e_file_test(generic_impl_multi    e2e_impl generic_impl_multi)
 add_e2e_file_test(self_sugar            e2e_self_sugar self_sugar)
 add_e2e_file_test(self_sugar_mixed      e2e_self_sugar self_sugar_mixed)
 

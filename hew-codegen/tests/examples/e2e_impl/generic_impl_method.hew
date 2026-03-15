@@ -1,0 +1,19 @@
+// Generic impl block monomorphization (issue #178).
+// Methods on impl<T> are specialized for each concrete type argument.
+
+type Box<T> { value: T }
+
+impl<T> Box<T> {
+    fn unwrap(b: Box<T>) -> T { b.value }
+}
+
+fn make_box<T>(v: T) -> Box<T> {
+    Box { value: v }
+}
+
+fn main() {
+    let b = make_box<int>(42);
+    println(b.unwrap());
+    let s = make_box<string>("hello");
+    println(s.unwrap());
+}

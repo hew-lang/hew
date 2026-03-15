@@ -1800,6 +1800,10 @@ impl Checker {
                     type_args,
                 } = &id.target_type.0
                 {
+                    // Do NOT push generic_ctx here — type params like T should remain
+                    // as Ty::Named so that substitute_named_param can replace them
+                    // at method call sites with concrete type arguments.
+
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
                     let self_type_args = type_args
@@ -1815,7 +1819,7 @@ impl Checker {
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     for method in &id.methods {
-                        self.register_impl_method(type_name, method);
+                        self.register_impl_method(type_name, method, id.type_params.as_ref());
                     }
 
                     // Register default trait methods not overridden in this impl
@@ -2011,6 +2015,22 @@ impl Checker {
         }
     }
 
+    /// Push impl-level type params into `generic_ctx`.
+    /// Returns `true` if a scope was pushed (caller must pop).
+    fn push_impl_type_params(&mut self, type_params: Option<&Vec<TypeParam>>) -> bool {
+        let mut bindings = std::collections::HashMap::new();
+        if let Some(tps) = type_params {
+            for tp in tps {
+                bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+            }
+        }
+        if bindings.is_empty() {
+            return false;
+        }
+        self.generic_ctx.push(bindings);
+        true
+    }
+
     /// Check whether a parameter is the receiver (i.e. the implicit first
     /// parameter of an impl/trait method).  A parameter is a receiver if its
     /// declared type matches `Self` or the current impl target type.
@@ -2102,9 +2122,20 @@ impl Checker {
 
     /// Register an impl method on a type's method table and `fn_sigs`.
     ///
+    /// `impl_type_params` carries the enclosing `impl<T, U, …>` type
+    /// parameter names so they are included in the resulting `FnSig`.
+    ///
+    /// **Important**: the caller must have already pushed the impl-level type
+    /// params into `self.generic_ctx` so that type resolution sees them.
+    ///
     /// Returns the built `FnSig` for callers that need to insert it
     /// on additional type names (e.g., qualified aliases).
-    fn register_impl_method(&mut self, type_name: &str, method: &FnDecl) -> FnSig {
+    fn register_impl_method(
+        &mut self,
+        type_name: &str,
+        method: &FnDecl,
+        impl_type_params: Option<&Vec<TypeParam>>,
+    ) -> FnSig {
         let method_key = format!("{type_name}::{}", method.name);
         self.register_fn_sig_with_name(&method_key, method);
         let skip = usize::from(
@@ -2129,9 +2160,23 @@ impl Checker {
             .skip(skip)
             .map(|p| p.name.clone())
             .collect();
+
+        // Collect type param names: impl-level + method-level.
+        let mut all_type_params: Vec<String> = impl_type_params
+            .map(|tps| tps.iter().map(|tp| tp.name.clone()).collect())
+            .unwrap_or_default();
+        if let Some(method_tps) = &method.type_params {
+            all_type_params.extend(method_tps.iter().map(|tp| tp.name.clone()));
+        }
+
+        let type_param_bounds = self.collect_type_param_bounds(
+            impl_type_params,
+            method.where_clause.as_ref(),
+        );
+
         let sig = FnSig {
-            type_params: vec![],
-            type_param_bounds: HashMap::new(),
+            type_params: all_type_params,
+            type_param_bounds,
             param_names,
             params,
             return_type,
@@ -2452,7 +2497,7 @@ impl Checker {
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     for method in &id.methods {
-                        let sig = self.register_impl_method(type_name, method);
+                        let sig = self.register_impl_method(type_name, method, id.type_params.as_ref());
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {
@@ -2543,7 +2588,7 @@ impl Checker {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            self.register_impl_method(type_name, method);
+                            self.register_impl_method(type_name, method, id.type_params.as_ref());
                         }
                         // Track trait implementations
                         if let Some(tb) = &id.trait_bound {
@@ -2670,7 +2715,7 @@ impl Checker {
                             if !method.visibility.is_pub() {
                                 continue;
                             }
-                            self.register_impl_method(type_name, method);
+                            self.register_impl_method(type_name, method, id.type_params.as_ref());
                         }
 
                         // Restore previous self type
@@ -3146,6 +3191,19 @@ impl Checker {
                 }
             }
 
+            // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)
+            // so method bodies can reference them.
+            let mut generic_bindings = std::collections::HashMap::new();
+            if let Some(tps) = &id.type_params {
+                for tp in tps {
+                    generic_bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
+                }
+            }
+            let pushed_generic = !generic_bindings.is_empty();
+            if pushed_generic {
+                self.generic_ctx.push(generic_bindings);
+            }
+
             // Set current_self_type for resolving `Self` in parameters
             let prev_self_type = self.current_self_type.take();
             let self_type_args: Vec<Ty> = type_args
@@ -3193,6 +3251,9 @@ impl Checker {
             self.current_self_type = prev_self_type;
             if scope_pushed {
                 self.exit_impl_scope();
+            }
+            if pushed_generic {
+                self.generic_ctx.pop();
             }
         }
     }

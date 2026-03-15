@@ -74,8 +74,7 @@ fn append_tree_row(json: &mut String, first: &mut bool, depth: u16, label: &str,
     *first = false;
     let _ = write!(
         json,
-        r#"{{"depth":{},"label":"{}","state":"{}"}}"#,
-        depth, label, state,
+        r#"{{"depth":{depth},"label":"{label}","state":"{state}"}}"#,
     );
 }
 
@@ -128,6 +127,7 @@ fn append_supervisor_rows(
 }
 
 #[cfg(feature = "profiler")]
+#[must_use]
 pub fn snapshot_tree_json() -> String {
     let roots = crate::shutdown::registered_supervisors_snapshot();
     let mut json = String::from("[");

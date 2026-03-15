@@ -3995,6 +3995,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "test constructs a full AST literal for thorough normalization coverage"
+    )]
     fn test_normalize_actor_types() {
         let registry = test_registry();
         let mut items: Vec<Spanned<Item>> = vec![(

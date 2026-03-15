@@ -53,8 +53,8 @@ pub enum ResolveError {
         package: String,
         /// The selected version.
         version: String,
-        /// The underlying manifest error.
-        source: manifest::ManifestError,
+        /// The underlying manifest error (boxed to keep the enum small).
+        source: Box<manifest::ManifestError>,
     },
     /// The selected dependency graph contains a cycle.
     CircularDependency {
@@ -116,7 +116,7 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidVersionReq { source, .. } => Some(source),
-            Self::ManifestRead { source, .. } => Some(source),
+            Self::ManifestRead { source, .. } => Some(&**source),
             Self::NoMatchingVersion { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. } => None,
@@ -302,7 +302,9 @@ impl<'a> ResolverPass<'a> {
             let state = self.package_states.entry(request.name.clone()).or_default();
             state.requirements.insert(request.requirement.clone());
             if state.direct_requirement.is_none() {
-                state.direct_requirement = request.direct_requirement.clone();
+                state
+                    .direct_requirement
+                    .clone_from(&request.direct_requirement);
             }
             state.requested_features.extend(request.features);
             state.use_default_features |= request.use_default_features;
@@ -382,7 +384,7 @@ impl<'a> ResolverPass<'a> {
                 ResolveError::ManifestRead {
                     package: package.to_string(),
                     version: version.to_string(),
-                    source,
+                    source: Box::new(source),
                 }
             })?;
             self.manifest_cache.insert(key.clone(), manifest);
@@ -622,7 +624,10 @@ fn best_matching_entry<'a>(
 /// # Errors
 ///
 /// Returns [`ResolveError::InvalidVersionReq`] if `requirement` cannot be parsed.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "reserved for future single-requirement resolution API"
+)]
 pub fn resolve_version_from_entries(
     entries: &[IndexEntry],
     requirement: &str,
@@ -688,6 +693,8 @@ pub fn resolve_all(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use crate::manifest::{DepTable, Package};
 
@@ -733,15 +740,17 @@ mod tests {
                     && dependency.features.is_empty()
                     && dependency.default_features
                 {
-                    content.push_str(&format!(
-                        "\"{}\" = \"{}\"\n",
+                    let _ = writeln!(
+                        content,
+                        "\"{}\" = \"{}\"",
                         dependency.name, dependency.version
-                    ));
+                    );
                 } else {
-                    content.push_str(&format!(
+                    let _ = write!(
+                        content,
                         "\"{}\" = {{ version = \"{}\"",
                         dependency.name, dependency.version
-                    ));
+                    );
                     if dependency.optional {
                         content.push_str(", optional = true");
                     }
@@ -752,7 +761,7 @@ mod tests {
                             .map(|feature| format!("\"{feature}\""))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        content.push_str(&format!(", features = [{features}]"));
+                        let _ = write!(content, ", features = [{features}]");
                     }
                     if !dependency.default_features {
                         content.push_str(", default_features = false");
@@ -770,7 +779,7 @@ mod tests {
                     .map(|item| format!("\"{item}\""))
                     .collect::<Vec<_>>()
                     .join(", ");
-                content.push_str(&format!("{feature_name} = [{enabled}]\n"));
+                let _ = writeln!(content, "{feature_name} = [{enabled}]");
             }
         }
 

@@ -1,0 +1,48 @@
+trait Base {
+    fn id(val: Self) -> int;
+}
+
+trait Left: Base {
+    fn left_val(val: Self) -> int;
+}
+
+trait Right: Base {
+    fn right_val(val: Self) -> int;
+}
+
+type Diamond {
+    x: int;
+}
+
+impl Base for Diamond {
+    fn id(d: Diamond) -> int {
+        d.x
+    }
+}
+
+impl Left for Diamond {
+    fn left_val(d: Diamond) -> int {
+        d.x * 2
+    }
+}
+
+impl Right for Diamond {
+    fn right_val(d: Diamond) -> int {
+        d.x * 3
+    }
+}
+
+fn use_left(obj: dyn Left) -> int {
+    return obj.left_val() + obj.id();
+}
+
+fn use_right(obj: dyn Right) -> int {
+    return obj.right_val() + obj.id();
+}
+
+fn main() {
+    let d1 = Diamond { x: 5 };
+    let d2 = Diamond { x: 5 };
+    println(use_left(d1));
+    println(use_right(d2));
+}

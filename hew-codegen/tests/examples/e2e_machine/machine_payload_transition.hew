@@ -1,0 +1,53 @@
+// Test: Machine payload fields transferred between states on transition
+// Exercises: state payload, field transfer, match on state variants
+machine Elevator {
+    state Stopped { floor: Int; }
+    state Moving  { from: Int; to: Int; }
+
+    event GoTo { floor: Int; }
+    event Arrive;
+
+    on GoTo: Stopped -> Moving {
+        Moving { from: state.floor, to: event.floor }
+    }
+    on Arrive: Moving -> Stopped {
+        Stopped { floor: state.to }
+    }
+
+    default { state }
+}
+
+fn main() -> Int {
+    var e = Elevator::Stopped { floor: 1 };
+
+    // Go from floor 1 to floor 5
+    e.step(GoTo { floor: 5 });
+    match e {
+        Moving { from, to } => println(f"moving {from} -> {to}"),
+        _ => println("FAIL: expected Moving"),
+    }
+
+    // Arrive at floor 5
+    e.step(Arrive);
+    match e {
+        Stopped { floor } => println(f"stopped at {floor}"),
+        _ => println("FAIL: expected Stopped"),
+    }
+
+    // Go from floor 5 to floor 3
+    e.step(GoTo { floor: 3 });
+    match e {
+        Moving { from, to } => println(f"moving {from} -> {to}"),
+        _ => println("FAIL: expected Moving"),
+    }
+
+    // Arrive at floor 3
+    e.step(Arrive);
+    match e {
+        Stopped { floor } => {
+            println(f"stopped at {floor}");
+            if floor == 3 { println("PASS"); 0 } else { println("FAIL"); 1 }
+        },
+        _ => { println("FAIL: expected Stopped"); 1 },
+    }
+}

@@ -1,0 +1,36 @@
+// Spec §12.2: const declarations are compile-time values.
+// They can appear in arithmetic expressions, function arguments,
+// and conditions — behaving identically to literal values.
+
+const BASE: int = 10;
+const FACTOR: int = 3;
+const PI: f64 = 3.14;
+const ENABLED: bool = true;
+const GREETING: string = "hello";
+
+fn scale(x: int) -> int {
+    x * FACTOR
+}
+
+fn area(radius: f64) -> f64 {
+    PI * radius * radius
+}
+
+fn main() {
+    // Const in arithmetic
+    println(BASE + FACTOR);
+    println(BASE * FACTOR);
+
+    // Const as function argument
+    println(scale(BASE));
+    println(area(2.0));
+
+    // Const in condition
+    if ENABLED {
+        println(GREETING);
+    }
+
+    // Const with different types
+    println(ENABLED);
+    println(PI);
+}

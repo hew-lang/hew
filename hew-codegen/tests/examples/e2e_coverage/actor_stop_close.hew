@@ -15,11 +15,17 @@ fn main() {
     sleep_ms(50);
     stop(w);
     sleep_ms(50);
+    // Message after stop — should be rejected (mailbox closed)
+    w.tick();
+    sleep_ms(50);
 
     let w2 = spawn Worker(count: 10);
     w2.tick();
     sleep_ms(50);
     close(w2);
+    sleep_ms(50);
+    // Message after close — should be rejected (mailbox closed)
+    w2.tick();
     sleep_ms(50);
     println("done");
 }

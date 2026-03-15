@@ -1,0 +1,58 @@
+// Test: Actor close and await lifecycle — proves actors drain cleanly.
+// Exercises: close(), await on closed actor, multiple actor coordination,
+// fire-and-forget then drain pattern.
+
+actor Accumulator {
+    let sum: int;
+
+    receive fn add(n: int) {
+        sum = sum + n;
+    }
+
+    receive fn get() -> int {
+        sum
+    }
+}
+
+fn main() {
+    // Single actor: send, close, await
+    let a = spawn Accumulator(sum: 0);
+    a.add(10);
+    a.add(20);
+    a.add(30);
+    close(a);
+    await a;
+    println("single done");
+
+    // Multiple actors: fan out, close all, await all
+    let a1 = spawn Accumulator(sum: 0);
+    let a2 = spawn Accumulator(sum: 0);
+    let a3 = spawn Accumulator(sum: 0);
+
+    for i in 0..5 {
+        a1.add(i);
+    }
+    for i in 0..5 {
+        a2.add(i * 2);
+    }
+    for i in 0..5 {
+        a3.add(i * 3);
+    }
+
+    // Query before close
+    let s1 = await a1.get();
+    let s2 = await a2.get();
+    let s3 = await a3.get();
+    println(s1);
+    println(s2);
+    println(s3);
+
+    // Close and await all
+    close(a1);
+    close(a2);
+    close(a3);
+    await a1;
+    await a2;
+    await a3;
+    println("multi done");
+}

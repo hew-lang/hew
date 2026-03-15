@@ -494,3 +494,92 @@ fn collect_refs_in_pattern(pattern: &Pattern, span: &Span, name: &str, spans: &m
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    #[test]
+    fn find_refs_local_variable() {
+        // Variable declared and used in the same scope
+        let source = "fn main() {\n    let x = 1;\n    let y = x + 2;\n}";
+        let pr = parse(source);
+        let offset = source.find("let x").unwrap() + 4;
+        let result = find_all_references(source, &pr, offset);
+        assert!(result.is_some(), "should find references to x");
+        let (name, spans) = result.unwrap();
+        assert_eq!(name, "x");
+        assert!(
+            spans.len() >= 2,
+            "should find definition and at least one usage, got {}",
+            spans.len()
+        );
+    }
+
+    #[test]
+    fn find_refs_function_name() {
+        // Function defined and called — a top-level name
+        // Note: references only captures usage sites (in bodies), not the definition name
+        let source = "fn greet() {}\nfn main() {\n    greet()\n}";
+        let pr = parse(source);
+        let offset = source.find("greet").unwrap();
+        let result = find_all_references(source, &pr, offset);
+        assert!(result.is_some(), "should find references to greet");
+        let (name, spans) = result.unwrap();
+        assert_eq!(name, "greet");
+        assert!(
+            !spans.is_empty(),
+            "should find at least one reference to greet"
+        );
+    }
+
+    #[test]
+    fn no_refs_at_whitespace() {
+        let source = "fn main() { }";
+        let pr = parse(source);
+        // Offset 3 is the space between "fn" and "main"
+        let result = find_all_references(source, &pr, 3);
+        assert!(result.is_none(), "no identifier at whitespace");
+    }
+
+    #[test]
+    fn is_top_level_detects_function() {
+        let source = "fn greet() {}\nfn main() {}";
+        let pr = parse(source);
+        assert!(is_top_level_name(&pr, "greet"));
+        assert!(is_top_level_name(&pr, "main"));
+        assert!(!is_top_level_name(&pr, "unknown"));
+    }
+
+    #[test]
+    fn refs_scoped_to_enclosing_function() {
+        // Same variable name in two different functions — references should be scoped
+        let source =
+            "fn foo() {\n    let x = 1;\n    let a = x;\n}\nfn bar() {\n    let x = 2;\n    let b = x;\n}";
+        let pr = parse(source);
+        let x_in_foo = source.find("let x = 1").unwrap() + 4;
+        let result = find_all_references(source, &pr, x_in_foo);
+        assert!(result.is_some());
+        let (_name, spans) = result.unwrap();
+        let bar_start = source.find("fn bar").unwrap();
+        for span in &spans {
+            assert!(
+                span.end <= bar_start,
+                "reference at {}..{} should be within foo's scope (before bar at {bar_start})",
+                span.start,
+                span.end,
+            );
+        }
+    }
+
+    #[test]
+    fn is_top_level_detects_actor() {
+        let source = "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
+        let pr = parse(source);
+        assert!(is_top_level_name(&pr, "Counter"));
+    }
+}

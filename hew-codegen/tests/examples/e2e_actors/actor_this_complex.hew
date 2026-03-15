@@ -1,0 +1,43 @@
+// Test: Actor passes this to multiple actors who each call back
+// Verifies: this works correctly with fan-out patterns
+
+actor Hub {
+    receive fn register(worker: ActorRef<Worker>, id: int) {
+        println(f"hub: registered worker {id}");
+        worker.callback(f"task-{id}");
+    }
+
+    receive fn report(id: int) {
+        println(f"hub: report from worker {id}");
+    }
+}
+
+actor Worker {
+    let id: int;
+    let hub: Hub;
+
+    receive fn start() {
+        println(f"worker {id}: starting");
+        hub.register(this, id);
+    }
+
+    receive fn callback(task: string) {
+        println(f"worker {id}: got {task}");
+        hub.report(id);
+    }
+}
+
+fn main() {
+    println("=== This Complex ===");
+    let hub = spawn Hub;
+    let w1 = spawn Worker(id: 1, hub: hub);
+    let w2 = spawn Worker(id: 2, hub: hub);
+    let w3 = spawn Worker(id: 3, hub: hub);
+    await w1.start();
+    sleep_ms(100);
+    await w2.start();
+    sleep_ms(100);
+    await w3.start();
+    sleep_ms(100);
+    println("done");
+}

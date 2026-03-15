@@ -1,0 +1,23 @@
+// Spec §3.7: defer executes on ALL return paths (normal and early).
+// This test verifies the deferred expression fires before return
+// regardless of which branch is taken.
+
+fn classify(x: int) -> int {
+    defer println(99);
+    if x > 0 {
+        println(1);
+        return x;
+    }
+    if x < 0 {
+        println(2);
+        return -x;
+    }
+    println(3);
+    return 0;
+}
+
+fn main() {
+    println(classify(5));
+    println(classify(-3));
+    println(classify(0));
+}

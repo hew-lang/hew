@@ -1,0 +1,52 @@
+// Test: Actor ask/reply with different return types.
+// Exercises: await actor.method() (ask pattern), multiple receive fns
+// with return values, actors responding with computed values.
+
+actor Calculator {
+    let total: int;
+
+    receive fn add(n: int) {
+        total = total + n;
+    }
+
+    receive fn subtract(n: int) {
+        total = total - n;
+    }
+
+    receive fn get_total() -> int {
+        total
+    }
+
+    receive fn is_positive() -> bool {
+        total > 0
+    }
+}
+
+fn main() {
+    let calc = spawn Calculator(total: 0);
+
+    // Add values and query
+    calc.add(10);
+    calc.add(25);
+    let t1 = await calc.get_total();
+    println(t1);
+
+    // Subtract and check
+    calc.subtract(5);
+    let t2 = await calc.get_total();
+    println(t2);
+
+    // Boolean ask
+    let pos = await calc.is_positive();
+    println(pos);
+
+    // Drive total negative
+    calc.subtract(100);
+    let neg = await calc.is_positive();
+    println(neg);
+
+    let t3 = await calc.get_total();
+    println(t3);
+
+    println("done");
+}

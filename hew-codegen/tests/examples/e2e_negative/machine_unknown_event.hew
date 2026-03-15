@@ -1,0 +1,12 @@
+// Negative test: transition references an event that was never declared.
+machine Broken {
+    state A;
+    state B;
+    event X;
+
+    on X: A -> B;
+    on X: B -> A;
+    on Ghost: A -> B;
+}
+
+fn main() -> int { 0 }

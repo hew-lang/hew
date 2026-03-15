@@ -69,3 +69,79 @@ pub fn rename(
 
     Some(edits)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    #[test]
+    fn rename_local_variable() {
+        let source = "fn main() {\n    let x = 1;\n    let y = x + 2;\n}";
+        let pr = parse(source);
+        let offset = source.find("let x").unwrap() + 4;
+        let result = rename(source, &pr, offset, "z");
+        assert!(result.is_some(), "should produce rename edits");
+        let edits = result.unwrap();
+        assert!(
+            edits.len() >= 2,
+            "should rename definition and usage, got {}",
+            edits.len()
+        );
+        for edit in &edits {
+            assert_eq!(edit.new_text, "z");
+        }
+    }
+
+    #[test]
+    fn prepare_rename_at_whitespace() {
+        let source = "fn main() { }";
+        let pr = parse(source);
+        // Offset 3 is whitespace
+        let result = prepare_rename(source, &pr, 3);
+        assert!(result.is_none(), "cannot rename at whitespace");
+    }
+
+    #[test]
+    fn prepare_rename_rejects_qualified_name() {
+        // Place cursor on "bar" (after the dot) so word_at_offset returns "foo.bar"
+        let source = "fn main() {\n    foo.bar();\n}";
+        let pr = parse(source);
+        let offset = source.find("bar").unwrap();
+        let result = prepare_rename(source, &pr, offset);
+        assert!(result.is_none(), "cannot rename qualified name");
+    }
+
+    #[test]
+    fn rename_function_name() {
+        let source = "fn greet() {}\nfn main() {\n    greet()\n}";
+        let pr = parse(source);
+        let offset = source.find("greet").unwrap();
+        let result = rename(source, &pr, offset, "hello");
+        assert!(result.is_some(), "should produce rename edits for function");
+        let edits = result.unwrap();
+        for edit in &edits {
+            assert_eq!(edit.new_text, "hello");
+        }
+        // Should rename at both definition and call sites
+        assert!(
+            edits.len() >= 2,
+            "should rename at definition and call site, got {}",
+            edits.len()
+        );
+    }
+
+    #[test]
+    fn prepare_rename_returns_span() {
+        let source = "fn main() {\n    let x = 1;\n    let y = x + 2;\n}";
+        let pr = parse(source);
+        let offset = source.find("let x").unwrap() + 4;
+        let result = prepare_rename(source, &pr, offset);
+        assert!(result.is_some(), "prepare_rename should return a span");
+        let span = result.unwrap();
+        assert_eq!(&source[span.start..span.end], "x");
+    }
+}

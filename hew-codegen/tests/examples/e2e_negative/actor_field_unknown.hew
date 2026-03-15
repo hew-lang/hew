@@ -1,0 +1,12 @@
+// Negative test: accessing a nonexistent actor field.
+actor Worker {
+    let name: String;
+
+    receive fn work() {
+        println(f"{missing_field}");
+    }
+}
+
+fn main() {
+    let w = spawn Worker(name: "test");
+}

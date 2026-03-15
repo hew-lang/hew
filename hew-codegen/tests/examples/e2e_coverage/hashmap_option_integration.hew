@@ -1,0 +1,51 @@
+// Test: HashMap with Option returns — proves HashMap.get() returns
+// Option<T> and pattern matching on it works correctly.
+// Exercises: HashMap construction, insert, get, Option matching,
+// Some/None patterns, HashMap.contains_key, HashMap.remove.
+
+fn main() {
+    let m: HashMap<String, int> = HashMap::new();
+
+    // Insert and retrieve
+    m.insert("alpha", 1);
+    m.insert("beta", 2);
+    m.insert("gamma", 3);
+
+    // get returns Option<int>
+    let a = m.get("alpha");
+    match a {
+        Some(v) => println(f"alpha = {v}"),
+        None => println("alpha missing"),
+    }
+
+    let missing = m.get("delta");
+    match missing {
+        Some(v) => println(f"delta = {v}"),
+        None => println("delta missing"),
+    }
+
+    // contains_key
+    println(m.contains_key("beta"));
+    println(m.contains_key("omega"));
+
+    // remove
+    m.remove("beta");
+    let after_remove = m.get("beta");
+    match after_remove {
+        Some(_) => println("beta still exists"),
+        None => println("beta removed"),
+    }
+
+    // Size check
+    println(m.len());
+
+    // Overwrite existing key
+    m.insert("alpha", 100);
+    let updated = m.get("alpha");
+    match updated {
+        Some(v) => println(f"alpha updated = {v}"),
+        None => println("alpha gone"),
+    }
+
+    println("done");
+}

@@ -1,0 +1,72 @@
+// Test: Match with tuple destructuring and wildcard guards.
+// Exercises: MLIRGenMatch — tuple patterns, wildcard arm, match on
+// enum variants with data, guards via nested if in arms.
+
+enum Shape {
+    Circle(int);
+    Rect(int, int);
+    Point;
+}
+
+fn area(s: Shape) -> int {
+    match s {
+        Circle(r) => r * r * 3,
+        Rect(w, h) => w * h,
+        Point => 0,
+    }
+}
+
+fn classify_area(s: Shape) -> string {
+    let a = area(s);
+    match s {
+        Circle(_) => {
+            if a > 100 {
+                "large circle"
+            } else {
+                "small circle"
+            }
+        },
+        Rect(_, _) => {
+            if a > 50 {
+                "large rect"
+            } else {
+                "small rect"
+            }
+        },
+        Point => "point",
+    }
+}
+
+fn match_int_ranges(x: int) -> string {
+    match x {
+        0 => "zero",
+        1 => "one",
+        _ => {
+            if x < 0 {
+                "negative"
+            } else if x < 10 {
+                "small"
+            } else {
+                "big"
+            }
+        },
+    }
+}
+
+fn main() {
+    println(area(Circle(5)));
+    println(area(Rect(4, 6)));
+    println(area(Point));
+
+    println(classify_area(Circle(7)));
+    println(classify_area(Circle(3)));
+    println(classify_area(Rect(10, 8)));
+    println(classify_area(Rect(2, 3)));
+    println(classify_area(Point));
+
+    println(match_int_ranges(0));
+    println(match_int_ranges(1));
+    println(match_int_ranges(-5));
+    println(match_int_ranges(7));
+    println(match_int_ranges(42));
+}

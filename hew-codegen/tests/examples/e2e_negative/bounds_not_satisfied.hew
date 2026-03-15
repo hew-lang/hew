@@ -1,0 +1,23 @@
+// Negative test: calling a generic function with a type that does not
+// satisfy the trait bound.
+trait Printable {
+    fn describe(val: Self) -> string;
+}
+
+type Dog { name: string; }
+
+impl Printable for Dog {
+    fn describe(d: Dog) -> string { d.name }
+}
+
+type Rock { weight: int; }
+
+fn show<T: Printable>(val: T) -> string {
+    val.describe()
+}
+
+fn main() {
+    // Rock does not implement Printable — should be rejected.
+    let r = Rock { weight: 42 };
+    println(show<Rock>(r));
+}

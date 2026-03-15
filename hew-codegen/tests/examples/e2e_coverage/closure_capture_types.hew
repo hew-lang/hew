@@ -1,0 +1,33 @@
+// Test: Closure captures with different value types.
+// Exercises: lambda capture of int, struct fields, mutable var.
+
+type Pair {
+    a: int;
+    b: int;
+}
+
+fn make_adder(base: int) -> fn(int) -> int {
+    (x: int) => base + x
+}
+
+fn main() {
+    // capture int via returned closure
+    let add10 = make_adder(10);
+    println(add10(5));
+    println(add10(20));
+
+    // capture struct fields
+    let p = Pair { a: 3, b: 7 };
+    let sum_pair = () => p.a + p.b;
+    println(sum_pair());
+
+    // capture mutable var
+    var counter = 0;
+    let inc = () => {
+        counter = counter + 1;
+        counter
+    };
+    println(inc());
+    println(inc());
+    println(inc());
+}

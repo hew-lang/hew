@@ -1,0 +1,22 @@
+// Test: Actor init() executes before first message
+// Verifies: init body runs on spawn before any receive fn processes
+
+actor Greeter {
+    let name: int;
+
+    init() {
+        println(f"init: name={name}");
+    }
+
+    receive fn hello() {
+        println(f"hello: name={name}");
+    }
+}
+
+fn main() {
+    let g = spawn Greeter(name: 42);
+    sleep_ms(50);
+    await g.hello();
+    await g.hello();
+    println("done");
+}

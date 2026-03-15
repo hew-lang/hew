@@ -1,0 +1,94 @@
+// Test: valid program with same variable names in non-overlapping scopes
+// Regression test for the shadowing-is-error rule: confirms that reusing
+// variable names in genuinely distinct scopes compiles without error.
+
+fn compute_a(x: int) -> int {
+    let y = x * 2;
+    y + 1
+}
+
+fn compute_b(x: int) -> int {
+    // Same parameter name 'x' as compute_a — different function scope
+    let y = x + 5;
+    y
+}
+
+enum Tag {
+    Alpha(int);
+    Beta(int);
+}
+
+fn tag_value(t: Tag) -> int {
+    match t {
+        Alpha(n) => n,
+        Beta(n) => n * 10,
+    }
+}
+
+fn tag_label(t: Tag) -> String {
+    // Same binding name 'n' in match arms — different function from tag_value
+    match t {
+        Alpha(_) => "alpha",
+        Beta(_) => "beta",
+    }
+}
+
+fn classify(n: int) -> String {
+    match n {
+        0 => {
+            let label = "zero";
+            label
+        },
+        1 => {
+            // Same name 'label' in different match arm — non-overlapping
+            let label = "one";
+            label
+        },
+        _ => {
+            let label = "other";
+            label
+        },
+    }
+}
+
+fn branch_scopes(flag: bool) -> int {
+    if flag {
+        let val = 42;
+        val
+    } else {
+        // Same name 'val' in else branch — non-overlapping with if branch
+        let val = 99;
+        val
+    }
+}
+
+fn loop_reuse() -> int {
+    var total = 0;
+    // For-loop variables are explicitly allowed to reuse names
+    for i in 0..3 {
+        total = total + i;
+    }
+    for i in 10..13 {
+        total = total + i;
+    }
+    total
+}
+
+fn main() {
+    println(compute_a(10));
+    println(compute_b(10));
+
+    println(tag_value(Alpha(5)));
+    println(tag_value(Beta(5)));
+    println(tag_label(Alpha(0)));
+    println(tag_label(Beta(0)));
+
+    println(classify(0));
+    println(classify(1));
+    println(classify(99));
+
+    println(branch_scopes(true));
+    println(branch_scopes(false));
+
+    println(loop_reuse());
+}

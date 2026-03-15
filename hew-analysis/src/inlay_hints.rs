@@ -233,3 +233,146 @@ fn find_var_name_end(source: &str, value_span: &Span, name: &str) -> usize {
     }
     value_span.start.saturating_sub(3)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_types::Ty;
+    use std::collections::{HashMap, HashSet};
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    /// Build a TypeCheckOutput using the real type checker.
+    fn type_check(pr: &hew_parser::ParseResult) -> TypeCheckOutput {
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut checker = hew_types::Checker::new(registry);
+        checker.check_program(&pr.program)
+    }
+
+    /// Build a TypeCheckOutput with a single manually placed expression type.
+    fn make_tc_with_expr_type(span_start: usize, span_end: usize, ty: Ty) -> TypeCheckOutput {
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey {
+                start: span_start,
+                end: span_end,
+            },
+            ty,
+        );
+        TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn hint_for_unannotated_let_binding() {
+        let source = "fn main() {\n    let x = 42;\n}";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| h.kind == InlayHintKind::Type)
+            .collect();
+        // Assertions outside the guard — test fails if expr_types is empty
+        assert!(
+            !tc.expr_types.is_empty(),
+            "type checker should populate expr_types for integer literal"
+        );
+        assert!(
+            !type_hints.is_empty(),
+            "should produce type hint for unannotated let binding"
+        );
+        assert!(
+            type_hints[0].label.starts_with(": "),
+            "type hint should start with ': ', got: {}",
+            type_hints[0].label
+        );
+    }
+
+    #[test]
+    fn no_hint_when_type_is_annotated() {
+        let source = "fn main() {\n    let x: i32 = 42;\n}";
+        let pr = parse(source);
+        let tc = type_check(&pr);
+        let hints = build_inlay_hints(source, &pr, &tc);
+        // Annotated bindings should not get type hints
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| h.kind == InlayHintKind::Type)
+            .collect();
+        assert!(
+            type_hints.is_empty(),
+            "annotated let binding should not get a type hint"
+        );
+    }
+
+    #[test]
+    fn hint_for_var_binding_with_manual_tc() {
+        // Parse and extract the value expression span for manual TypeCheckOutput
+        let source = "fn main() {\n    var count = 0;\n}";
+        let pr = parse(source);
+        // Navigate the AST to find the var statement's value span
+        if let Some((Item::Function(f), _)) = pr.program.items.first() {
+            if let Some((
+                Stmt::Var {
+                    value: Some(val), ..
+                },
+                _,
+            )) = f.body.stmts.first()
+            {
+                let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::I32);
+                let hints = build_inlay_hints(source, &pr, &tc);
+                let type_hints: Vec<_> = hints
+                    .iter()
+                    .filter(|h| h.kind == InlayHintKind::Type)
+                    .collect();
+                assert!(!type_hints.is_empty(), "var binding should get a type hint");
+                assert!(type_hints[0].label.contains("i32"));
+            } else {
+                panic!("expected var statement with value");
+            }
+        } else {
+            panic!("expected function item");
+        }
+    }
+
+    #[test]
+    fn hint_for_let_binding_with_manual_tc() {
+        let source = "fn main() {\n    let name = \"hello\";\n}";
+        let pr = parse(source);
+        if let Some((Item::Function(f), _)) = pr.program.items.first() {
+            if let Some((
+                Stmt::Let {
+                    value: Some(val), ..
+                },
+                _,
+            )) = f.body.stmts.first()
+            {
+                let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::String);
+                let hints = build_inlay_hints(source, &pr, &tc);
+                let type_hints: Vec<_> = hints
+                    .iter()
+                    .filter(|h| h.kind == InlayHintKind::Type)
+                    .collect();
+                assert!(
+                    !type_hints.is_empty(),
+                    "unannotated let should get type hint"
+                );
+                assert!(type_hints[0].label.contains("String"));
+            } else {
+                panic!("expected let statement with value");
+            }
+        } else {
+            panic!("expected function item");
+        }
+    }
+}

@@ -1,0 +1,67 @@
+// Test: Trait dispatch — direct and through generic wrappers.
+// Exercises: trait definition, multiple impls, method resolution,
+// trait methods after flowing through generic functions.
+
+trait Measurable {
+    fn measure(val: Self) -> int;
+}
+
+type Circle {
+    radius: int;
+}
+
+type Square {
+    side: int;
+}
+
+type Line {
+    length: int;
+}
+
+impl Measurable for Circle {
+    fn measure(c: Circle) -> int {
+        c.radius * c.radius * 3
+    }
+}
+
+impl Measurable for Square {
+    fn measure(s: Square) -> int {
+        s.side * s.side
+    }
+}
+
+impl Measurable for Line {
+    fn measure(l: Line) -> int {
+        l.length
+    }
+}
+
+// Generic identity — preserves type, proves trait dispatch after generic
+fn id<T>(x: T) -> T { x }
+
+fn main() {
+    // Direct trait method calls
+    let c = Circle { radius: 5 };
+    let s = Square { side: 7 };
+    let l = Line { length: 10 };
+
+    println(c.measure());
+    println(s.measure());
+    println(l.measure());
+
+    // Through generic identity — dispatch still works on concrete result
+    let c2 = id<Circle>(Circle { radius: 10 });
+    println(c2.measure());
+
+    let s2 = id<Square>(Square { side: 3 });
+    println(s2.measure());
+
+    // Compare measurements
+    let cm = Circle { radius: 4 }.measure();
+    let sm = Square { side: 5 }.measure();
+    if cm > sm {
+        println("circle bigger");
+    } else {
+        println("square bigger");
+    }
+}

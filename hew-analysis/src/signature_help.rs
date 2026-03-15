@@ -149,3 +149,108 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
         .unwrap_or(name);
     crate::hover::format_fn_sig_line(display_name, &params, sig)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hew_types::Ty;
+    use std::collections::{HashMap, HashSet};
+
+    fn make_tc_with_fn(
+        name: &str,
+        param_names: Vec<&str>,
+        params: Vec<Ty>,
+        ret: Ty,
+    ) -> TypeCheckOutput {
+        let sig = FnSig {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names: param_names.into_iter().map(String::from).collect(),
+            params,
+            return_type: ret,
+            is_async: false,
+            is_pure: false,
+            accepts_kwargs: false,
+            doc_comment: None,
+        };
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(name.to_string(), sig);
+        TypeCheckOutput {
+            expr_types: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs,
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn sig_help_first_param() {
+        // Cursor right after the opening paren — first parameter active
+        let source = "greet(";
+        let tc = make_tc_with_fn("greet", vec!["name"], vec![Ty::String], Ty::Unit);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some(), "should provide signature help");
+        let sh = result.unwrap();
+        assert_eq!(sh.active_parameter, Some(0));
+        assert_eq!(sh.signatures.len(), 1);
+        assert!(sh.signatures[0].label.contains("fn greet("));
+    }
+
+    #[test]
+    fn sig_help_second_param() {
+        // After the first comma — second parameter active
+        let source = "add(1, ";
+        let tc = make_tc_with_fn("add", vec!["x", "y"], vec![Ty::I32, Ty::I32], Ty::I32);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some());
+        let sh = result.unwrap();
+        assert_eq!(sh.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn no_sig_help_outside_call() {
+        let source = "let x = 42";
+        let tc = make_tc_with_fn("greet", vec!["name"], vec![Ty::String], Ty::Unit);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_none(), "no signature help outside function call");
+    }
+
+    #[test]
+    fn sig_help_with_nested_parens() {
+        // Inner call is closed — cursor is in the outer call's second parameter
+        let source = "add(inner(1), ";
+        let tc = make_tc_with_fn("add", vec!["x", "y"], vec![Ty::I32, Ty::I32], Ty::I32);
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some());
+        let sh = result.unwrap();
+        assert_eq!(sh.active_parameter, Some(1));
+    }
+
+    #[test]
+    fn sig_help_parameter_labels_have_offsets() {
+        let source = "greet(";
+        let tc = make_tc_with_fn(
+            "greet",
+            vec!["name", "age"],
+            vec![Ty::String, Ty::I32],
+            Ty::Unit,
+        );
+        let result = build_signature_help(source, &tc, source.len());
+        assert!(result.is_some());
+        let sh = result.unwrap();
+        let sig = &sh.signatures[0];
+        assert!(
+            !sig.parameters.is_empty(),
+            "should have parameter info entries"
+        );
+        for param in &sig.parameters {
+            assert!(
+                param.label_end > param.label_start,
+                "parameter label should have non-zero length"
+            );
+        }
+    }
+}

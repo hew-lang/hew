@@ -1,0 +1,29 @@
+// Test: Nested struct Drop — outer struct with Drop'd field
+// Exercises: impl Drop for two types, struct composition, outer destructor runs
+type Inner {
+    id: int;
+}
+
+impl Drop for Inner {
+    fn drop(inner: Inner) {
+        println(f"drop Inner {inner.id}");
+    }
+}
+
+type Outer {
+    id: int;
+    child: Inner;
+}
+
+impl Drop for Outer {
+    fn drop(outer: Outer) {
+        println(f"drop Outer {outer.id}");
+    }
+}
+
+fn main() -> int {
+    println("before create");
+    let _o = Outer { id: 1, child: Inner { id: 10 } };
+    println("after create");
+    return 0;
+}

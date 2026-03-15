@@ -166,3 +166,237 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
         parts
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    fn make_fn_sig(param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> FnSig {
+        FnSig {
+            type_params: vec![],
+            type_param_bounds: HashMap::new(),
+            param_names: param_names.into_iter().map(String::from).collect(),
+            params,
+            return_type: ret,
+            is_async: false,
+            is_pure: false,
+            accepts_kwargs: false,
+            doc_comment: None,
+        }
+    }
+
+    fn make_tc_with_fn(name: &str, sig: FnSig) -> TypeCheckOutput {
+        let mut fn_sigs = HashMap::new();
+        fn_sigs.insert(name.to_string(), sig);
+        TypeCheckOutput {
+            expr_types: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs,
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn format_sig_line_basic() {
+        let sig = make_fn_sig(vec!["x", "y"], vec![Ty::I32, Ty::Bool], Ty::String);
+        let line = format_fn_sig_line("greet", &["x: i32".into(), "y: bool".into()], &sig);
+        assert!(line.starts_with("fn greet("));
+        assert!(line.contains("-> String"));
+    }
+
+    #[test]
+    fn format_sig_line_unit_return_omitted() {
+        let sig = make_fn_sig(vec![], vec![], Ty::Unit);
+        let line = format_fn_sig_line("run", &[], &sig);
+        assert_eq!(line, "fn run()");
+        assert!(!line.contains("->"));
+    }
+
+    #[test]
+    fn format_sig_line_async() {
+        let mut sig = make_fn_sig(vec![], vec![], Ty::Unit);
+        sig.is_async = true;
+        let line = format_fn_sig_line("fetch", &[], &sig);
+        assert!(line.starts_with("async fn fetch"));
+    }
+
+    #[test]
+    fn format_sig_line_pure() {
+        let mut sig = make_fn_sig(vec![], vec![], Ty::I32);
+        sig.is_pure = true;
+        let line = format_fn_sig_line("compute", &[], &sig);
+        assert!(line.starts_with("pure fn compute"));
+    }
+
+    #[test]
+    fn format_fn_signature_wraps_in_code_block() {
+        let sig = make_fn_sig(vec!["n"], vec![Ty::I32], Ty::I32);
+        let text = format_fn_signature("factorial", &sig);
+        assert!(text.contains("```hew"));
+        assert!(text.contains("fn factorial("));
+    }
+
+    #[test]
+    fn format_fn_signature_includes_doc_comment() {
+        let mut sig = make_fn_sig(vec![], vec![], Ty::Unit);
+        sig.doc_comment = Some("Runs the main loop.".to_string());
+        let text = format_fn_signature("run", &sig);
+        assert!(text.contains("Runs the main loop."));
+        assert!(text.contains("```hew"));
+    }
+
+    #[test]
+    fn format_type_def_struct() {
+        let mut fields = HashMap::new();
+        fields.insert("x".to_string(), Ty::F64);
+        fields.insert("y".to_string(), Ty::F64);
+        let td = TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Point".to_string(),
+            type_params: vec![],
+            fields,
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        };
+        let text = format_type_def_hover(&td);
+        assert!(text.contains("type Point"));
+        assert!(text.contains("f64"), "should contain field types");
+    }
+
+    #[test]
+    fn format_type_def_enum_with_variants() {
+        let mut variants = HashMap::new();
+        variants.insert("Red".to_string(), VariantDef::Unit);
+        variants.insert(
+            "Rgb".to_string(),
+            VariantDef::Tuple(vec![Ty::U8, Ty::U8, Ty::U8]),
+        );
+        let td = TypeDef {
+            kind: TypeDefKind::Enum,
+            name: "Colour".to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            variants,
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        };
+        let text = format_type_def_hover(&td);
+        assert!(text.contains("enum Colour"));
+        assert!(text.contains("Red"));
+    }
+
+    #[test]
+    fn format_type_def_with_type_params() {
+        let td = TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Pair".to_string(),
+            type_params: vec!["A".to_string(), "B".to_string()],
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        };
+        let text = format_type_def_hover(&td);
+        assert!(text.contains("Pair<A, B>"));
+    }
+
+    #[test]
+    fn hover_returns_none_without_type_output() {
+        let source = "fn main() {}";
+        let pr = hew_parser::parse(source);
+        let result = hover(source, &pr, None, 3);
+        assert!(result.is_none(), "hover without type output returns None");
+    }
+
+    #[test]
+    fn hover_finds_function_signature() {
+        let source = "fn add(x: i32, y: i32) -> i32 {\n    x + y\n}";
+        let pr = hew_parser::parse(source);
+        let sig = make_fn_sig(vec!["x", "y"], vec![Ty::I32, Ty::I32], Ty::I32);
+        let tc = make_tc_with_fn("add", sig);
+        let offset = source.find("add").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(result.is_some(), "should find hover for add");
+        let hr = result.unwrap();
+        assert!(
+            hr.contents.contains("fn add("),
+            "should show function signature"
+        );
+    }
+
+    #[test]
+    fn hover_finds_type_def() {
+        let source = "type Point {\n    x: f64;\n    y: f64;\n}";
+        let pr = hew_parser::parse(source);
+        let mut type_defs = HashMap::new();
+        type_defs.insert(
+            "Point".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Point".to_string(),
+                type_params: vec![],
+                fields: {
+                    let mut f = HashMap::new();
+                    f.insert("x".to_string(), Ty::F64);
+                    f.insert("y".to_string(), Ty::F64);
+                    f
+                },
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        let tc = TypeCheckOutput {
+            expr_types: HashMap::new(),
+            errors: vec![],
+            warnings: vec![],
+            type_defs,
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        };
+        let offset = source.find("Point").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset);
+        assert!(result.is_some(), "should find hover for Point");
+        let hr = result.unwrap();
+        assert!(hr.contents.contains("type Point"));
+    }
+
+    #[test]
+    fn hover_falls_back_to_expr_type() {
+        let source = "fn main() {\n    let x = 42;\n}";
+        let pr = hew_parser::parse(source);
+        // Manually populate expr_types for the identifier "x"
+        let x_offset = source.find("let x").unwrap() + 4;
+        let mut expr_types = HashMap::new();
+        expr_types.insert(
+            SpanKey {
+                start: x_offset,
+                end: x_offset + 1,
+            },
+            Ty::I32,
+        );
+        let tc = TypeCheckOutput {
+            expr_types,
+            errors: vec![],
+            warnings: vec![],
+            type_defs: HashMap::new(),
+            fn_sigs: HashMap::new(),
+            cycle_capable_actors: HashSet::new(),
+            user_modules: HashSet::new(),
+        };
+        let result = hover(source, &pr, Some(&tc), x_offset);
+        assert!(result.is_some(), "should find hover via expr_types");
+        let hr = result.unwrap();
+        assert!(hr.contents.contains("i32"), "should show expression type");
+    }
+}

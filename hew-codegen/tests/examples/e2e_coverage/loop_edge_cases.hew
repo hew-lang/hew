@@ -1,0 +1,75 @@
+// Test: Loop edge cases — empty loop with immediate break, for-loop
+// over empty range, continue in nested loops, break with accumulation.
+// Exercises: MLIRGenStmt — loop bodies, break, continue, nested control flow.
+
+fn empty_loop_break() -> int {
+    let count = 0;
+    loop {
+        break;
+    }
+    count
+}
+
+fn for_empty_range() -> int {
+    // 0..0 should execute zero iterations
+    var sum = 0;
+    for i in 0..0 {
+        sum = sum + i;
+    }
+    sum
+}
+
+fn continue_nested() -> int {
+    var count = 0;
+    for i in 0..4 {
+        for j in 0..4 {
+            if i == j {
+                continue;
+            }
+            count = count + 1;
+        }
+    }
+    count
+}
+
+fn break_accumulate() -> int {
+    // Sum 1+2+3+...+N until sum exceeds 100
+    var sum = 0;
+    var n = 0;
+    loop {
+        n = n + 1;
+        sum = sum + n;
+        if sum > 100 {
+            break;
+        }
+    }
+    n
+}
+
+fn while_false() -> int {
+    // Body should never execute
+    var x = 42;
+    while false {
+        x = 0;
+    }
+    x
+}
+
+fn countdown() -> int {
+    var n = 10;
+    var steps = 0;
+    while n > 0 {
+        n = n - 1;
+        steps = steps + 1;
+    }
+    steps
+}
+
+fn main() {
+    println(empty_loop_break());
+    println(for_empty_range());
+    println(continue_nested());
+    println(break_accumulate());
+    println(while_false());
+    println(countdown());
+}

@@ -36,6 +36,7 @@
 .PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
+.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -300,6 +301,113 @@ test-cpp: test-codegen
 lint:
 	cargo clippy --workspace
 
+# ── Coverage ───────────────────────────────────────────────────────────────
+#
+#   make coverage         — Rust unit/integration tests only (cargo llvm-cov)
+#   make coverage-e2e     — E2E tests exercising the full compile pipeline
+#   make coverage-cpp     — C++ codegen coverage (llvm-cov profiling)
+#   make coverage-combined — both merged into a single report
+#
+# E2E coverage instruments the hew CLI binary and runtime, then runs all 424+
+# ctest E2E tests. Each `hew compile` invocation and each compiled binary
+# execution generates profraw data.
+#
+# Requires: cargo-llvm-cov, llvm-profdata-22, llvm-cov-22
+
+COV_DIR          := coverage-out
+COV_PROFRAW_DIR  := $(COV_DIR)/profraw
+COV_E2E_DIR      := $(COV_DIR)/e2e-profraw
+COV_PROFDATA     := $(COV_DIR)/combined.profdata
+LLVM_PROFDATA    ?= llvm-profdata-22
+LLVM_COV         ?= llvm-cov-22
+
+# Rust-only coverage (cargo test)
+coverage:
+	cargo llvm-cov --workspace --exclude hew-wasm --html --output-dir $(COV_DIR)/html
+	@echo "==> Open $(COV_DIR)/html/index.html"
+
+coverage-summary:
+	cargo llvm-cov --workspace --exclude hew-wasm --no-report
+	cargo llvm-cov report --summary-only
+
+coverage-lcov:
+	cargo llvm-cov --workspace --exclude hew-wasm --lcov --output-path $(COV_DIR)/lcov.info
+	@echo "==> Wrote $(COV_DIR)/lcov.info"
+
+# E2E coverage: instruments hew CLI + runtime, runs ctest, generates report
+coverage-e2e: codegen stdlib
+	@echo "==> Building hew CLI + runtime with coverage instrumentation"
+	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
+	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
+	@echo "==> Running $(words $(wildcard hew-codegen/tests/examples/**/*.hew)) E2E tests with instrumented binary"
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Merging profraw data"
+	$(LLVM_PROFDATA) merge -sparse $(COV_E2E_DIR)/*.profraw -o $(COV_DIR)/e2e.profdata
+	@echo "==> E2E coverage summary (Rust frontend):"
+	$(LLVM_COV) report target/debug/hew \
+	  -instr-profile=$(COV_DIR)/e2e.profdata \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -summary-only
+	@echo "==> For full file report: $(LLVM_COV) report target/debug/hew -instr-profile=$(COV_DIR)/e2e.profdata --ignore-filename-regex='(\\.cargo|rustc|/usr/)'"
+
+# Combined coverage: cargo tests + E2E tests merged into one report
+coverage-combined: codegen stdlib
+	@echo "==> Phase 1: Running cargo tests with coverage"
+	cargo llvm-cov --workspace --exclude hew-wasm --no-report
+	@echo "==> Phase 2: Building hew CLI with coverage instrumentation"
+	RUSTFLAGS="-C instrument-coverage" cargo build -p hew-cli -p hew-runtime
+	@rm -rf $(COV_E2E_DIR) && mkdir -p $(COV_E2E_DIR)
+	@echo "==> Phase 3: Running E2E tests with instrumented binary"
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_E2E_DIR)/e2e_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Phase 4: Merging all profraw data (cargo tests + E2E)"
+	@mkdir -p $(COV_DIR)/merged
+	@cp target/llvm-cov-target/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
+	@cp $(COV_E2E_DIR)/*.profraw $(COV_DIR)/merged/ 2>/dev/null || true
+	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/merged/*.profraw -o $(COV_PROFDATA)
+	@echo "==> Combined coverage summary:"
+	$(LLVM_COV) report target/debug/hew \
+	  -instr-profile=$(COV_PROFDATA) \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -summary-only
+	@echo "==> Generating HTML report"
+	$(LLVM_COV) show target/debug/hew \
+	  -instr-profile=$(COV_PROFDATA) \
+	  --ignore-filename-regex='(\.cargo|rustc|/usr/)' \
+	  -format=html -output-dir=$(COV_DIR)/combined-html
+	@echo "==> Open $(COV_DIR)/combined-html/index.html"
+	@rm -rf $(COV_DIR)/merged
+
+# C++ codegen coverage: instruments hew-codegen, runs unit + E2E tests, reports
+coverage-cpp: stdlib
+	@echo "==> Building hew-codegen with coverage instrumentation"
+ifeq ($(shell uname -s),Darwin)
+	cmake -B hew-codegen/build-cov -G Ninja \
+		$(CMAKE_EXTRA_ARGS) \
+		-DHEW_COVERAGE=ON \
+		-S hew-codegen
+else
+	cmake -B hew-codegen/build-cov -G Ninja \
+		-DCMAKE_C_COMPILER=$(CC) \
+		-DCMAKE_CXX_COMPILER=$(CXX) \
+		$(CMAKE_EXTRA_ARGS) \
+		-DHEW_COVERAGE=ON \
+		-S hew-codegen
+endif
+	cmake --build hew-codegen/build-cov
+	@echo "==> Running C++ tests with coverage"
+	@rm -rf $(COV_DIR)/cpp-profraw && mkdir -p $(COV_DIR)/cpp-profraw
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_DIR)/cpp-profraw/unit_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build-cov && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Merging profdata"
+	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/cpp-profraw/*.profraw -o $(COV_DIR)/cpp.profdata
+	@echo "==> C++ codegen coverage summary:"
+	$(LLVM_COV) report hew-codegen/build-cov/src/hew-codegen \
+	  -instr-profile=$(COV_DIR)/cpp.profdata \
+	  --ignore-filename-regex='(llvm/|mlir/include|mlir/lib|/usr/|msgpack\.h|nlohmann|json\.hpp|_deps/)' \
+	  -summary-only
+
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Checks that every hew_* function name referenced in C++ codegen has a
 # matching #[no_mangle] export in hew-runtime (or is in a known exception
@@ -393,6 +501,7 @@ uninstall:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf hew-codegen/build
+	rm -rf hew-codegen/build hew-codegen/build-cov
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
+	rm -rf $(COV_DIR)

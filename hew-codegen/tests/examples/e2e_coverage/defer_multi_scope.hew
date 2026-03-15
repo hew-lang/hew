@@ -1,0 +1,64 @@
+// Test: Multiple defers in different scopes, defer with side effects,
+// defer in functions that return values.
+// Exercises: MLIRGenStmt (defer codegen) — LIFO ordering, defer in
+// nested functions, defer with mutable state.
+
+fn lifo_defers() {
+    println("start");
+    defer println("d3");
+    defer println("d2");
+    defer println("d1");
+    println("middle");
+}
+
+fn defer_with_return() -> int {
+    defer println("cleanup-a");
+    defer println("cleanup-b");
+    return 42;
+}
+
+fn defer_true_path() -> int {
+    defer println("true-cleanup");
+    return 1;
+}
+
+fn defer_false_path() -> int {
+    defer println("false-cleanup");
+    return 0;
+}
+
+fn defer_in_nested_calls() {
+    defer println("outer-fn-defer");
+    println("outer start");
+    inner_a();
+    inner_b();
+    println("outer end");
+}
+
+fn inner_a() {
+    defer println("inner-a-defer");
+    println("inner-a body");
+}
+
+fn inner_b() {
+    defer println("inner-b-defer");
+    println("inner-b body");
+}
+
+fn main() {
+    lifo_defers();
+    println("---");
+
+    let r = defer_with_return();
+    println(r);
+    println("---");
+
+    let t = defer_true_path();
+    println(t);
+    println("---");
+    let f = defer_false_path();
+    println(f);
+    println("---");
+
+    defer_in_nested_calls();
+}

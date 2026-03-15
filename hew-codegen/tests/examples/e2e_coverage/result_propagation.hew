@@ -1,0 +1,84 @@
+// Test: Result error propagation with the ? operator
+// Exercises: Result<T,E>, Ok/Err construction, ? operator,
+// chained fallible functions, match destructuring, error message flow.
+
+fn parse_input(s: String) -> Result<int, String> {
+    if s == "one" {
+        Ok(1)
+    } else {
+        if s == "two" {
+            Ok(2)
+        } else {
+            if s == "ten" {
+                Ok(10)
+            } else {
+                Err(f"unknown: {s}")
+            }
+        }
+    }
+}
+
+fn validate(n: int) -> Result<int, String> {
+    if n > 0 {
+        if n <= 100 {
+            Ok(n)
+        } else {
+            Err("too large")
+        }
+    } else {
+        Err("non-positive")
+    }
+}
+
+fn safe_divide(a: int, b: int) -> Result<int, String> {
+    if b == 0 {
+        Err("division by zero")
+    } else {
+        Ok(a / b)
+    }
+}
+
+// Uses ? to propagate errors through three steps
+fn parse_validate_divide(s: String, divisor: int) -> Result<int, String> {
+    let n = parse_input(s)?;
+    let v = validate(n)?;
+    let r = safe_divide(v * 10, divisor)?;
+    Ok(r)
+}
+
+fn show_result(r: Result<int, String>) {
+    match r {
+        Ok(v) => println(f"ok: {v}"),
+        Err(e) => println(f"err: {e}"),
+    }
+}
+
+fn main() {
+    // All three steps succeed: parse "two"=2, validate=2, divide 20/4=5
+    show_result(parse_validate_divide("two", 4));
+
+    // Parse fails
+    show_result(parse_validate_divide("bad", 4));
+
+    // Validate succeeds but divide by zero
+    show_result(parse_validate_divide("ten", 0));
+
+    // Direct Result matching
+    let r1 = safe_divide(100, 5);
+    match r1 {
+        Ok(v) => println(f"100/5 = {v}"),
+        Err(e) => println(e),
+    }
+
+    // Accumulate two parsed values via nested match
+    let a = parse_input("one");
+    let b = parse_input("two");
+    let sum = match a {
+        Ok(x) => match b {
+            Ok(y) => Ok(x + y),
+            Err(e) => Err(e),
+        },
+        Err(e) => Err(e),
+    };
+    show_result(sum);
+}

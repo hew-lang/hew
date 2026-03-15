@@ -490,3 +490,300 @@ fn has_tool(name: &str) -> bool {
         .status()
         .is_ok_and(|s| s.success())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── module_to_staticlib_name ──────────────────────────────────────
+
+    #[test]
+    fn staticlib_name_three_segments() {
+        let name = module_to_staticlib_name("std::encoding::hex");
+        if cfg!(target_os = "windows") {
+            assert_eq!(name, "hew_std_encoding_hex.lib");
+        } else {
+            assert_eq!(name, "libhew_std_encoding_hex.a");
+        }
+    }
+
+    #[test]
+    fn staticlib_name_single_segment() {
+        let name = module_to_staticlib_name("json");
+        if cfg!(target_os = "windows") {
+            assert_eq!(name, "hew_json.lib");
+        } else {
+            assert_eq!(name, "libhew_json.a");
+        }
+    }
+
+    // ── extract_undefined_hew_symbol ──────────────────────────────────
+
+    #[test]
+    fn extract_symbol_gnu_ld_format() {
+        let line = "foo.o: undefined reference to `hew_json_parse'";
+        assert_eq!(extract_undefined_hew_symbol(line), Some("hew_json_parse"));
+    }
+
+    #[test]
+    fn extract_symbol_gnu_ld_with_section_info() {
+        let line = "foo.o:(.text+0x1a): undefined reference to `hew_http_get'";
+        assert_eq!(extract_undefined_hew_symbol(line), Some("hew_http_get"));
+    }
+
+    #[test]
+    fn extract_symbol_macos_ld64_format() {
+        let line = "\"_hew_http_get\", referenced from:";
+        assert_eq!(extract_undefined_hew_symbol(line), Some("hew_http_get"));
+    }
+
+    #[test]
+    fn extract_symbol_msvc_lld_link_format() {
+        let line = "error: unresolved external symbol hew_redis_connect";
+        assert_eq!(
+            extract_undefined_hew_symbol(line),
+            Some("hew_redis_connect")
+        );
+    }
+
+    #[test]
+    fn extract_symbol_msvc_with_trailing_punct() {
+        // lld-link may add extra context after the symbol
+        let line = "error: unresolved external symbol hew_tcp_bind, referenced in foo.obj";
+        assert_eq!(extract_undefined_hew_symbol(line), Some("hew_tcp_bind"));
+    }
+
+    #[test]
+    fn extract_symbol_no_match_non_hew_undefined() {
+        assert_eq!(
+            extract_undefined_hew_symbol("undefined reference to `foo_bar'"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_symbol_no_match_empty_string() {
+        assert_eq!(extract_undefined_hew_symbol(""), None);
+    }
+
+    // ── symbol_to_feature_hint ────────────────────────────────────────
+
+    #[test]
+    fn feature_hint_json() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_json_parse"),
+            Some(("json", "serialization"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_yaml() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_yaml_load"),
+            Some(("yaml", "serialization"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_postgres() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_postgres_connect"),
+            Some(("postgres", "db"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_mysql() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_mysql_query"),
+            Some(("mysql", "db"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_redis() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_redis_get"),
+            Some(("redis", "db"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_http() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_http_get"),
+            Some(("http", "http"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_grpc() {
+        assert_eq!(
+            symbol_to_feature_hint("hew_grpc_call"),
+            Some(("grpc", "http"))
+        );
+    }
+
+    #[test]
+    fn feature_hint_tcp() {
+        assert_eq!(symbol_to_feature_hint("hew_tcp_bind"), Some(("tcp", "net")));
+    }
+
+    #[test]
+    fn feature_hint_unknown_prefix() {
+        assert_eq!(symbol_to_feature_hint("hew_unknown_func"), None);
+    }
+
+    #[test]
+    fn feature_hint_non_hew_symbol() {
+        assert_eq!(symbol_to_feature_hint("some_other_symbol"), None);
+    }
+
+    // ── diagnose_linker_errors ────────────────────────────────────────
+
+    #[test]
+    fn diagnose_single_feature_hint() {
+        let stderr = "foo.o: undefined reference to `hew_json_parse'\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("json"));
+        assert!(hints[0].contains("serialization"));
+    }
+
+    #[test]
+    fn diagnose_multiple_distinct_features() {
+        let stderr = "\
+            foo.o: undefined reference to `hew_json_parse'\n\
+            foo.o: undefined reference to `hew_http_get'\n\
+            foo.o: undefined reference to `hew_tcp_bind'\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 3);
+    }
+
+    #[test]
+    fn diagnose_deduplicates_same_feature() {
+        // Both symbols map to ("json", "serialization") — only one hint expected
+        let stderr = "\
+            foo.o: undefined reference to `hew_json_parse'\n\
+            foo.o: undefined reference to `hew_json_serialize'\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+    }
+
+    #[test]
+    fn diagnose_empty_stderr() {
+        let hints = diagnose_linker_errors("");
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn diagnose_no_hew_symbols() {
+        let hints = diagnose_linker_errors("undefined reference to `some_lib_func'\n");
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn diagnose_mixed_linker_formats() {
+        // GNU ld + macOS ld64 + MSVC in the same stderr (unlikely but exercises all paths)
+        let stderr = "\
+            foo.o: undefined reference to `hew_json_parse'\n\
+            \"_hew_http_get\", referenced from:\n\
+            error: unresolved external symbol hew_tcp_bind\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 3);
+    }
+
+    #[test]
+    fn diagnose_hint_includes_rebuild_command() {
+        let stderr = "foo.o: undefined reference to `hew_postgres_connect'\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert_eq!(hints.len(), 1);
+        assert!(hints[0].contains("cargo build -p hew-runtime --features db"));
+    }
+
+    #[test]
+    fn diagnose_unknown_hew_symbol_ignored() {
+        // hew_foobar_ doesn't map to any known feature
+        let stderr = "foo.o: undefined reference to `hew_foobar_something'\n";
+        let hints = diagnose_linker_errors(stderr);
+        assert!(hints.is_empty());
+    }
+
+    // ── has_tool ──────────────────────────────────────────────────────
+
+    #[test]
+    fn has_tool_finds_true_command() {
+        // `true` is a standard Unix utility that always succeeds
+        assert!(has_tool("true"));
+    }
+
+    #[test]
+    fn has_tool_rejects_nonexistent_tool() {
+        assert!(!has_tool("definitely_not_a_real_tool_abc123xyz"));
+    }
+
+    // ── find_runtime_lib ──────────────────────────────────────────────
+
+    #[test]
+    fn find_runtime_lib_nonexistent_returns_error() {
+        let result = find_runtime_lib("nonexistent_lib_xyz.a");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("cannot find nonexistent_lib_xyz.a"));
+        assert!(err.contains("cargo build -p hew-runtime"));
+    }
+
+    // ── find_package_libs ─────────────────────────────────────────────
+
+    #[test]
+    fn find_package_libs_nonexistent_module() {
+        let modules = vec!["nonexistent::module::xyz".to_string()];
+        let libs = find_package_libs(&modules, None);
+        assert!(libs.is_empty());
+    }
+
+    #[test]
+    fn find_package_libs_with_pkg_path_nonexistent() {
+        let modules = vec!["std::encoding::hex".to_string()];
+        let pkg = std::path::Path::new("/tmp/hew_test_nonexistent_pkg_path");
+        let libs = find_package_libs(&modules, Some(pkg));
+        assert!(libs.is_empty());
+    }
+
+    // ── output-path sanitisation (extracted from link_executable) ─────
+
+    #[test]
+    fn output_path_dash_prefix_is_sanitised() {
+        let output_path = "-evil";
+        let safe = if output_path.starts_with('-') {
+            format!("./{output_path}")
+        } else {
+            output_path.to_string()
+        };
+        assert_eq!(safe, "./-evil");
+    }
+
+    // ── find_package_libs with real temp directory ─────────────────────
+
+    #[test]
+    fn find_package_libs_discovers_lib_in_pkg_path() {
+        use std::fs;
+        let tmp = std::env::temp_dir().join("hew_test_find_pkg_libs");
+        let debug_dir = tmp.join("target/debug");
+        let _ = fs::create_dir_all(&debug_dir);
+
+        // Create a fake staticlib file
+        let lib_name = module_to_staticlib_name("fake::test::mod");
+        let lib_path = debug_dir.join(&lib_name);
+        let _ = fs::write(&lib_path, b"fake");
+
+        let modules = vec!["fake::test::mod".to_string()];
+        let libs = find_package_libs(&modules, Some(&tmp));
+
+        // Clean up before asserting so the directory doesn't linger on failure
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert_eq!(libs.len(), 1);
+        assert!(libs[0].contains("fake"));
+    }
+}

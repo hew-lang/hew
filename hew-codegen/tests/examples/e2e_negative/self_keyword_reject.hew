@@ -1,0 +1,12 @@
+// Negative test: self parameter was removed from the language.
+type Foo {
+    x: int;
+}
+
+impl Foo {
+    fn bar(self) -> int {
+        self.x
+    }
+}
+
+fn main() {}

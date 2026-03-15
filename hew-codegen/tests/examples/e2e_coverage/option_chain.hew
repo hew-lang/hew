@@ -1,0 +1,72 @@
+// Test: chaining Option operations with map, unwrap_or, and manual and_then
+// Exercises: Option<T>, std::option helpers, match-based and_then pattern,
+// lambda closures, multi-step Option pipelines.
+
+import std::option;
+
+fn find_even(n: int) -> Option<int> {
+    if n % 2 == 0 {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn double_positive(n: int) -> Option<int> {
+    if n > 0 {
+        Some(n * 2)
+    } else {
+        None
+    }
+}
+
+fn main() {
+    // map + unwrap_or chain: Some path
+    let a = find_even(4);
+    let b = option.map_int(a, (x: int) => x + 10);
+    println(option.unwrap_or_int(b, -1));
+
+    // map + unwrap_or chain: None path
+    let c = find_even(3);
+    let d = option.map_int(c, (x: int) => x + 10);
+    println(option.unwrap_or_int(d, -1));
+
+    // Manual and_then: both succeed
+    let e = find_even(6);
+    let f = match e {
+        Some(v) => double_positive(v),
+        None => None,
+    };
+    println(option.unwrap_or_int(f, -1));
+
+    // Manual and_then: second step fails (negative result)
+    let g = find_even(4);
+    let h = option.map_int(g, (x: int) => 0 - x);
+    let i = match h {
+        Some(v) => double_positive(v),
+        None => None,
+    };
+    println(option.unwrap_or_int(i, -1));
+
+    // Manual and_then: first step fails
+    let j = find_even(5);
+    let k = match j {
+        Some(v) => double_positive(v),
+        None => None,
+    };
+    println(option.unwrap_or_int(k, -1));
+
+    // Multiple maps in sequence
+    let m = find_even(10);
+    let n1 = option.map_int(m, (x: int) => x / 2);
+    let n2 = option.map_int(n1, (x: int) => x * 3);
+    println(option.unwrap_or_int(n2, -1));
+
+    // contains after map
+    let p = option.map_int(find_even(8), (x: int) => x + 2);
+    println(option.contains_int(p, 10));
+
+    // is_some / is_none checks
+    println(option.is_some_int(find_even(2)));
+    println(option.is_none_int(find_even(3)));
+}

@@ -1,0 +1,7 @@
+// Negative test: a machine must declare at least 1 event.
+machine Broken {
+    state A;
+    state B;
+}
+
+fn main() -> int { 0 }

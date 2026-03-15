@@ -16,6 +16,7 @@ import lldb  # type: ignore[import-untyped]
 # Type Summary Providers
 # ---------------------------------------------------------------------------
 
+
 def hew_string_summary(valobj, _internal_dict):
     """Pretty-print hew_string_t { data: *const char, len: usize } as "string content"."""
     try:
@@ -68,6 +69,7 @@ def hew_actor_ref_summary(valobj, _internal_dict):
 # Custom LLDB Commands
 # ---------------------------------------------------------------------------
 
+
 def hew_actors_command(debugger, command, result, _internal_dict):
     """List active Hew actors.
 
@@ -103,9 +105,15 @@ def hew_actors_command(debugger, command, result, _internal_dict):
     result.AppendMessage("The runtime was likely built in release mode.")
     result.AppendMessage("")
     result.AppendMessage("Tip: You can still debug your Hew program:")
-    result.AppendMessage("  - Set breakpoints on your functions: (lldb) break set -n main")
-    result.AppendMessage("  - Break on actor dispatch: (lldb) break set -n hew_actor_send")
-    result.AppendMessage("  - Break on actor creation: (lldb) break set -n hew_actor_spawn")
+    result.AppendMessage(
+        "  - Set breakpoints on your functions: (lldb) break set -n main"
+    )
+    result.AppendMessage(
+        "  - Break on actor dispatch: (lldb) break set -n hew_actor_send"
+    )
+    result.AppendMessage(
+        "  - Break on actor creation: (lldb) break set -n hew_actor_spawn"
+    )
 
 
 def hew_break_receive_command(debugger, command, result, _internal_dict):
@@ -209,15 +217,14 @@ def hew_bt_command(debugger, command, result, _internal_dict):
 # Registration
 # ---------------------------------------------------------------------------
 
+
 def __lldb_init_module(debugger, _internal_dict):
     """Called by LLDB when this script is imported."""
     # Type summaries
     debugger.HandleCommand(
         'type summary add -F hew_lldb.hew_string_summary -x "hew_string"'
     )
-    debugger.HandleCommand(
-        'type summary add -F hew_lldb.hew_vec_summary -x "hew_vec"'
-    )
+    debugger.HandleCommand('type summary add -F hew_lldb.hew_vec_summary -x "hew_vec"')
     debugger.HandleCommand(
         'type summary add -F hew_lldb.hew_hashmap_summary -x "hew_hashmap"'
     )
@@ -232,8 +239,6 @@ def __lldb_init_module(debugger, _internal_dict):
     debugger.HandleCommand(
         "command script add -f hew_lldb.hew_break_receive_command hew-break-receive"
     )
-    debugger.HandleCommand(
-        "command script add -f hew_lldb.hew_bt_command hew-bt"
-    )
+    debugger.HandleCommand("command script add -f hew_lldb.hew_bt_command hew-bt")
 
     print("Hew LLDB extensions loaded. Commands: hew-actors, hew-break-receive, hew-bt")

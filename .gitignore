@@ -33,9 +33,6 @@ node_modules/
 .claude/
 Testing/
 
-# Local git-hook overrides (per-developer, not tracked)
-lefthook-local.yml
-
 # AI assistant configs (machine-specific)
 CLAUDE.md
 .claude.local.md

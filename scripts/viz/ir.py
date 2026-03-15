@@ -75,7 +75,7 @@ RE_GLOBAL_STRING = re.compile(
 RE_ACTOR_SPAWN = re.compile(
     r"(?P<ssa>%\S+)\s*=\s*hew\.actor_spawn\s+@(?P<dispatch>\S+)\((?P<init>[^)]*)\)"
     r'\s*\{[^}]*actor_name\s*=\s*"(?P<actor>[^"]+)"'
-    r'[^}]*state_type\s*=\s*(?P<state>![^}]+)\}'
+    r"[^}]*state_type\s*=\s*(?P<state>![^}]+)\}"
 )
 RE_ACTOR_SEND = re.compile(
     r"hew\.actor_send\s+(?P<target>%\S+)\s*\{msg_type\s*=\s*(?P<msg>\d+)"
@@ -91,7 +91,9 @@ RE_ACTOR_LIFECYCLE = re.compile(
 )
 RE_SCHED_INIT = re.compile(r"hew\.sched\.init")
 RE_SCHED_SHUTDOWN = re.compile(r"hew\.sched\.shutdown")
-RE_VEC_NEW = re.compile(r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)")
+RE_VEC_NEW = re.compile(
+    r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)"
+)
 RE_HASHMAP_NEW = re.compile(
     r"(?P<ssa>%\S+)\s*=\s*hew\.hashmap\.new.*:\s*(?P<ty>!hew\.hashmap<[^>]+>)"
 )
@@ -103,7 +105,7 @@ RE_ENUM_CONSTRUCT = re.compile(
     r'hew\.enum_construct.*enum_name\s*=\s*"(?P<enum>[^"]+)"'
     r'.*variant_name\s*=\s*"(?P<variant>[^"]+)"'
 )
-RE_RUNTIME_CALL = re.compile(r'hew\.runtime_call\s+@(?P<fn>\w+)')
+RE_RUNTIME_CALL = re.compile(r"hew\.runtime_call\s+@(?P<fn>\w+)")
 RE_RECEIVE = re.compile(r"hew\.receive")
 RE_SLEEP = re.compile(r"hew\.sleep")
 RE_PANIC = re.compile(r"hew\.panic")
@@ -198,7 +200,9 @@ def parse_mlir(text: str):
                 actors[actor_name] = ActorInfo(name=actor_name, state_type=state)
             else:
                 actors[actor_name].state_type = state
-            spawns.append(SpawnEdge(source_func=fn_name, actor_name=actor_name, ssa_var=ssa))
+            spawns.append(
+                SpawnEdge(source_func=fn_name, actor_name=actor_name, ssa_var=ssa)
+            )
             current_func.ops.append(f"spawn {actor_name}")
             continue
 
@@ -232,7 +236,9 @@ def parse_mlir(text: str):
         if m:
             target_actor = ssa_to_actor.get(m.group("target"), m.group("target"))
             msg = int(m.group("msg"))
-            sends.append(SendEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg))
+            sends.append(
+                SendEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg)
+            )
             current_func.ops.append(f"send msg#{msg}")
             continue
 
@@ -241,7 +247,9 @@ def parse_mlir(text: str):
         if m:
             target_actor = ssa_to_actor.get(m.group("target"), m.group("target"))
             msg = int(m.group("msg"))
-            asks.append(AskEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg))
+            asks.append(
+                AskEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg)
+            )
             current_func.ops.append(f"ask msg#{msg}")
             continue
 
@@ -422,7 +430,7 @@ def parse_mlir(text: str):
         prefix = actor_name + "_"
         for fname in funcs:
             if fname.startswith(prefix) and fname != f"{actor_name}_dispatch":
-                handler = fname[len(prefix):]
+                handler = fname[len(prefix) :]
                 actor.handlers.append(handler)
 
     return funcs, actors, spawns, sends, asks, global_strings
@@ -436,7 +444,12 @@ def sanitize_id(s: str) -> str:
 
 
 def escape_dot(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def ops_to_rows(ops: list[str], max_rows: int = 12) -> str:
@@ -451,8 +464,15 @@ def ops_to_rows(ops: list[str], max_rows: int = 12) -> str:
             color = "#2196F3"
         elif op.startswith(("send", "ask", "actor_await")):
             color = "#FF9800"
-        elif op.startswith(("actor_link", "actor_unlink", "actor_monitor",
-                            "actor_demonitor", "actor_self")):
+        elif op.startswith(
+            (
+                "actor_link",
+                "actor_unlink",
+                "actor_monitor",
+                "actor_demonitor",
+                "actor_self",
+            )
+        ):
             color = "#0D47A1"
         elif op.startswith(("vec.", "hashmap.", "tuple.", "array.")):
             color = "#9C27B0"
@@ -494,11 +514,11 @@ def ops_to_rows(ops: list[str], max_rows: int = 12) -> str:
 def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
     lines = [
         "digraph hew_ir {",
-        '  rankdir=TB;',
+        "  rankdir=TB;",
         '  fontname="Helvetica";',
         '  node [fontname="Helvetica", fontsize=10];',
         '  edge [fontname="Helvetica", fontsize=9];',
-        '  compound=true;',
+        "  compound=true;",
         "",
     ]
 
@@ -508,9 +528,9 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
         state_label = escape_dot(actor.state_type) if actor.state_type else ""
 
         lines.append(f"  subgraph cluster_{sid} {{")
-        lines.append(f'    label=<<B>{escape_dot(actor_name)}</B>>;')
+        lines.append(f"    label=<<B>{escape_dot(actor_name)}</B>>;")
         lines.append('    style=filled; fillcolor="#E3F2FD"; color="#1565C0";')
-        lines.append('    fontsize=12;')
+        lines.append("    fontsize=12;")
 
         if state_label:
             lines.append(
@@ -536,7 +556,7 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
 
             label_parts = [
                 f'<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">',
-                f'<TR><TD><B>{escape_dot(handler)}</B></TD></TR>',
+                f"<TR><TD><B>{escape_dot(handler)}</B></TD></TR>",
             ]
             if func_info and func_info.args:
                 # Show only non-self params
@@ -551,7 +571,7 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
                         f'<TR><TD><FONT POINT-SIZE="8" COLOR="#666">({escape_dot(p_str)})</FONT></TD></TR>'
                     )
             if ops_html:
-                label_parts.append('<HR/>')
+                label_parts.append("<HR/>")
                 label_parts.append(ops_html)
             label_parts.append("</TABLE>")
 
@@ -561,7 +581,9 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
             )
             # Edge from dispatch to handler
             if dispatch_func in funcs:
-                lines.append(f"    {sid}_dispatch -> {hid} [style=dashed, color=\"#666\"];")
+                lines.append(
+                    f'    {sid}_dispatch -> {hid} [style=dashed, color="#666"];'
+                )
 
         lines.append("  }")
         lines.append("")
@@ -587,7 +609,7 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
 
         label_parts = [
             f'<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="1">',
-            f'<TR><TD><B>fn {escape_dot(fname)}</B></TD></TR>',
+            f"<TR><TD><B>fn {escape_dot(fname)}</B></TD></TR>",
         ]
         if finfo.args:
             label_parts.append(
@@ -598,12 +620,12 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
                 f'<TR><TD><FONT POINT-SIZE="8" COLOR="#666">→ {escape_dot(finfo.result)}</FONT></TD></TR>'
             )
         if ops_html:
-            label_parts.append('<HR/>')
+            label_parts.append("<HR/>")
             label_parts.append(ops_html)
         label_parts.append("</TABLE>")
 
         lines.append(
-            f'  {fid} [label=<{"".join(label_parts)}>, '
+            f"  {fid} [label=<{''.join(label_parts)}>, "
             f'shape=box, style="filled,rounded", fillcolor="{fillcolor}", color="{border_color}"];'
         )
 
@@ -618,7 +640,9 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
         if f"{sp.actor_name}_dispatch" not in funcs:
             # Point to first handler or state
             if actors[sp.actor_name].handlers:
-                tgt_node = sanitize_id(f"{sp.actor_name}_{actors[sp.actor_name].handlers[0]}")
+                tgt_node = sanitize_id(
+                    f"{sp.actor_name}_{actors[sp.actor_name].handlers[0]}"
+                )
             else:
                 tgt_node = f"{tgt_actor}_state"
         lines.append(
@@ -634,10 +658,14 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
             tgt = sanitize_id(target_actor) + "_dispatch"
             if f"{target_actor}_dispatch" not in funcs:
                 if actors[target_actor].handlers:
-                    tgt = sanitize_id(f"{target_actor}_{actors[target_actor].handlers[0]}")
+                    tgt = sanitize_id(
+                        f"{target_actor}_{actors[target_actor].handlers[0]}"
+                    )
             label = f"send msg#{se.msg_type}"
             # Try to resolve msg_type to handler name
-            if target_actor in actors and se.msg_type < len(actors[target_actor].handlers):
+            if target_actor in actors and se.msg_type < len(
+                actors[target_actor].handlers
+            ):
                 handler = actors[target_actor].handlers[se.msg_type]
                 label = f"send .{handler}()"
             lines.append(
@@ -653,9 +681,13 @@ def generate_dot(funcs, actors, spawns, sends, asks, global_strings) -> str:
             tgt = sanitize_id(target_actor) + "_dispatch"
             if f"{target_actor}_dispatch" not in funcs:
                 if actors[target_actor].handlers:
-                    tgt = sanitize_id(f"{target_actor}_{actors[target_actor].handlers[0]}")
+                    tgt = sanitize_id(
+                        f"{target_actor}_{actors[target_actor].handlers[0]}"
+                    )
             label = f"ask msg#{ae.msg_type}"
-            if target_actor in actors and ae.msg_type < len(actors[target_actor].handlers):
+            if target_actor in actors and ae.msg_type < len(
+                actors[target_actor].handlers
+            ):
                 handler = actors[target_actor].handlers[ae.msg_type]
                 label = f"ask .{handler}()"
             lines.append(
@@ -698,12 +730,14 @@ def main():
         help="Input MLIR file (default: stdin)",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default=None,
         help="Output file (default: stdout for DOT, required for rendered formats)",
     )
     parser.add_argument(
-        "-f", "--format",
+        "-f",
+        "--format",
         default="dot",
         choices=["dot", "svg", "png", "pdf"],
         help="Output format (default: dot)",

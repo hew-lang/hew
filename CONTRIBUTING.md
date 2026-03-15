@@ -31,6 +31,17 @@ See the [Building from Source](README.md#building-from-source) section of the RE
 - **C++:** LLVM style (see `hew-codegen/.clang-format`). Use C++20 features where appropriate.
 - **Commit messages:** Use imperative mood ("Add feature" not "Added feature"). Keep the first line under 72 characters.
 
+## Formatting
+
+All code should pass the project's formatters (`rustfmt`, `clang-format`, `taplo`, `shfmt`, `prettier`). The easiest way to enforce this automatically is to symlink the formatting script into your local hooks:
+
+```bash
+mkdir -p .git/hooks/pre-commit.d
+ln -sf ../../../scripts/pre-commit-fmt.sh .git/hooks/pre-commit.d/format
+```
+
+This formats staged files and re-stages them on every commit.
+
 ## Build System
 
 Always use `make` targets instead of running `cargo`, `cmake`, or `ctest` directly. See the [Makefile](Makefile) header for all available targets.

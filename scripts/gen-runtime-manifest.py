@@ -11,7 +11,9 @@ import sys
 from pathlib import Path
 
 RUNTIME_DIR = Path(__file__).resolve().parent.parent / "hew-runtime" / "src"
-OUTPUT_FILE = Path(__file__).resolve().parent.parent / "hew-codegen" / "runtime_manifest.json"
+OUTPUT_FILE = (
+    Path(__file__).resolve().parent.parent / "hew-codegen" / "runtime_manifest.json"
+)
 
 # Map Rust types to C ABI types used by the compiler
 RUST_TO_C_TYPE = {
@@ -40,9 +42,17 @@ RUST_TO_C_TYPE = {
 
 # Internal-only modules not useful for user-facing stdlib imports
 INTERNAL_MODULES = {
-    "scheduler", "mailbox", "node", "transport", "wire",
-    "reply_channel", "task_scope", "blocking_pool", "timer_wheel",
-    "scope", "internal",
+    "scheduler",
+    "mailbox",
+    "node",
+    "transport",
+    "wire",
+    "reply_channel",
+    "task_scope",
+    "blocking_pool",
+    "timer_wheel",
+    "scope",
+    "internal",
 }
 
 
@@ -62,14 +72,14 @@ def extract_functions(source: str) -> list[dict]:
     results = []
 
     # Find each #[no_mangle] attribute, then look forward for the fn signature.
-    for m in re.finditer(r'#\[no_mangle\]', source):
+    for m in re.finditer(r"#\[no_mangle\]", source):
         start = m.end()
         # Look ahead up to 500 chars for the fn signature (handles interleaved attrs)
-        window = source[start:start + 500]
+        window = source[start : start + 500]
         fn_match = re.match(
-            r'(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*'  # skip other attributes
+            r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip other attributes
             r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
-            r'(\w+)\s*\(((?:[^()]*|\([^()]*\))*)\)\s*(?:->\s*([^{]+?))?\s*\{',
+            r"(\w+)\s*\(((?:[^()]*|\([^()]*\))*)\)\s*(?:->\s*([^{]+?))?\s*\{",
             window,
             re.DOTALL,
         )
@@ -88,20 +98,24 @@ def extract_functions(source: str) -> list[dict]:
                     continue
                 if ":" in p:
                     pname, ptype = p.split(":", 1)
-                    params.append({
-                        "name": pname.strip(),
-                        "type": normalize_type(ptype.strip()),
-                    })
+                    params.append(
+                        {
+                            "name": pname.strip(),
+                            "type": normalize_type(ptype.strip()),
+                        }
+                    )
 
         ret = "void"
         if raw_return:
             ret = normalize_type(raw_return.strip())
 
-        results.append({
-            "name": fn_name,
-            "params": params,
-            "returns": ret,
-        })
+        results.append(
+            {
+                "name": fn_name,
+                "params": params,
+                "returns": ret,
+            }
+        )
 
     return results
 
@@ -142,7 +156,9 @@ def main():
     }
 
     OUTPUT_FILE.write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"Generated {OUTPUT_FILE} with {total_fns} functions across {len(modules)} modules.")
+    print(
+        f"Generated {OUTPUT_FILE} with {total_fns} functions across {len(modules)} modules."
+    )
 
 
 if __name__ == "__main__":

@@ -803,3 +803,17 @@ coverage.
   submission before any wait path can hang.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
+
+### Implicit generic monomorphization
+
+- Added implicit type-argument inference for generic function calls so that
+  `identity(42)` works without requiring `identity<int>(42)`.
+- **Root cause:** the type checker inferred concrete types via unification but never
+  wrote them back into the AST's `call.type_args`; the C++ codegen only specialised
+  when `type_args` was present, falling through to "undefined function" for implicit calls.
+- **Fix (enrichment-stage):** added a `call_type_args` map to `TypeCheckOutput` that
+  records inferred type arguments per call site. During enrichment, calls with missing
+  `type_args` are backfilled from this map before serialization, so the codegen sees
+  explicit type args and handles them through the existing monomorphization path.
+- Added E2E tests: `generic_implicit_identity` (single-param, int + string) and
+  `generic_implicit_multi` (multi-arg generic with int + string specializations).

@@ -428,3 +428,12 @@ Some inferred `Ty` shapes (notably generator forms) are intentionally left impli
 codegen tracks them through other mechanisms, but that does not justify a silent `None`
 fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
 by span in the CLI so developers see the unsupported conversion exactly once.
+
+### 56. Inferred type arguments must be persisted for downstream passes
+
+The type checker successfully infers concrete type arguments via unification, but if those
+resolved types are not written back into the AST (or a side-channel map), downstream
+consumers like codegen only see `type_args: None` and cannot specialize. Storing inferred
+type arguments in `TypeCheckOutput` and backfilling during enrichment keeps the codegen
+simple — it only has to handle one path (explicit type args) instead of re-inferring
+types at the MLIR level.

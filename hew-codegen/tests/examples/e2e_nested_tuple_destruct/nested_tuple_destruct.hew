@@ -1,0 +1,27 @@
+// E2E test: nested tuple destructuring in let bindings
+fn main() {
+    // Basic nested destructuring
+    let (a, (b, c)) = (1, (2, 3));
+    println(a);
+    println(b);
+    println(c);
+
+    // Symmetric nested destructuring
+    let ((d, e), (f, g)) = ((10, 20), (30, 40));
+    println(d);
+    println(e);
+    println(f);
+    println(g);
+
+    // 3-level nesting
+    let (h, (i, (j, k))) = (100, (200, (300, 400)));
+    println(h);
+    println(i);
+    println(j);
+    println(k);
+
+    // Nested with wildcard
+    let (x, (_, z)) = (7, (8, 9));
+    println(x);
+    println(z);
+}

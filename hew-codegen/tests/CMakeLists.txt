@@ -593,6 +593,7 @@ add_e2e_file_test(struct_assign         e2e_struct_assign struct_assign)
 
 # ── Tuple destructuring tests ────────────────────────────────────────────────
 add_e2e_file_test(tuple_destruct        e2e_tuple_destruct tuple_destruct)
+add_e2e_file_test(nested_tuple_destruct e2e_nested_tuple_destruct nested_tuple_destruct)
 
 # ── Struct destructuring tests ───────────────────────────────────────────────
 add_e2e_file_test(struct_destruct       e2e_struct_destruct struct_destruct)

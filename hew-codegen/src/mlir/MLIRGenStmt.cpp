@@ -817,22 +817,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     }
 
   } else if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
-    for (uint32_t i = 0; i < tuplePat->elements.size(); i++) {
-      const auto &elem = tuplePat->elements[i];
-      if (auto *ei = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
-        mlir::Value elemVal;
-        if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(value.getType())) {
-          elemVal = hew::TupleExtractOp::create(builder, location, hewTuple.getElementTypes()[i],
-                                                value, static_cast<int64_t>(i));
-        } else {
-          elemVal = mlir::LLVM::ExtractValueOp::create(
-              builder, location, value, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
-        }
-        declareVariable(ei->name, elemVal);
-      } else if (std::holds_alternative<ast::PatWildcard>(elem->value.kind)) {
-        continue;
-      }
-    }
+    bindTuplePatternFields(*tuplePat, value, location);
   } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
     bindLetSubPattern(pattern, value, location);
   } else {

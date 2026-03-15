@@ -20,7 +20,7 @@
 
 /// Return the current time as milliseconds since the Unix epoch.
 pub fn now_ms() -> i64 {
-    hew_datetime_now_ms()
+    unsafe { hew_datetime_now_ms() }
 }
 
 /// Return the current time as seconds since the Unix epoch.
@@ -36,7 +36,7 @@ pub fn now_secs() -> i64 {
 /// let s = datetime.format(now, "%Y-%m-%d");
 /// ```
 pub fn format(epoch_ms: i64, fmt: String) -> String {
-    hew_datetime_format(epoch_ms, fmt)
+    unsafe { hew_datetime_format(epoch_ms, fmt) }
 }
 
 /// Parse a date string using the given format and return epoch milliseconds.
@@ -47,42 +47,42 @@ pub fn format(epoch_ms: i64, fmt: String) -> String {
 /// let ms = datetime.parse("2025-01-15", "%Y-%m-%d");
 /// ```
 pub fn parse(s: String, fmt: String) -> i64 {
-    hew_datetime_parse(s, fmt)
+    unsafe { hew_datetime_parse(s, fmt) }
 }
 
 /// Extract the year component from an epoch-millisecond timestamp.
 pub fn year(epoch_ms: i64) -> i32 {
-    hew_datetime_year(epoch_ms)
+    unsafe { hew_datetime_year(epoch_ms) }
 }
 
 /// Extract the month (1–12) from an epoch-millisecond timestamp.
 pub fn month(epoch_ms: i64) -> i32 {
-    hew_datetime_month(epoch_ms)
+    unsafe { hew_datetime_month(epoch_ms) }
 }
 
 /// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
 pub fn day(epoch_ms: i64) -> i32 {
-    hew_datetime_day(epoch_ms)
+    unsafe { hew_datetime_day(epoch_ms) }
 }
 
 /// Extract the hour (0–23) from an epoch-millisecond timestamp.
 pub fn hour(epoch_ms: i64) -> i32 {
-    hew_datetime_hour(epoch_ms)
+    unsafe { hew_datetime_hour(epoch_ms) }
 }
 
 /// Extract the minute (0–59) from an epoch-millisecond timestamp.
 pub fn minute(epoch_ms: i64) -> i32 {
-    hew_datetime_minute(epoch_ms)
+    unsafe { hew_datetime_minute(epoch_ms) }
 }
 
 /// Extract the second (0–59) from an epoch-millisecond timestamp.
 pub fn second(epoch_ms: i64) -> i32 {
-    hew_datetime_second(epoch_ms)
+    unsafe { hew_datetime_second(epoch_ms) }
 }
 
 /// Return the day of the week (0 = Monday, 6 = Sunday).
 pub fn weekday(epoch_ms: i64) -> i32 {
-    hew_datetime_weekday(epoch_ms)
+    unsafe { hew_datetime_weekday(epoch_ms) }
 }
 
 /// Add a number of days to an epoch-millisecond timestamp.
@@ -117,7 +117,7 @@ pub fn to_iso8601(epoch_ms: i64) -> String {
 /// Uses a monotonic clock not affected by wall-clock adjustments,
 /// suitable for high-resolution benchmarking and timing measurements.
 pub fn now_nanos() -> i64 {
-    hew_datetime_now_nanos()
+    unsafe { hew_datetime_now_nanos() }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

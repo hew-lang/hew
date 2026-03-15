@@ -21,10 +21,10 @@
 /// Map an algorithm name (e.g. "HS256") to its integer code for the FFI layer.
 fn algo_to_i32(algorithm: String) -> i32 {
     match algorithm {
-        "HS256" => 0,
-        "HS384" => 1,
-        "HS512" => 2,
-        _ => -1,
+        "HS256" => 0 as i32,
+        "HS384" => 1 as i32,
+        "HS512" => 2 as i32,
+        _ => -1 as i32,
     }
 }
 
@@ -36,7 +36,7 @@ fn algo_to_i32(algorithm: String) -> i32 {
 /// let token = jwt.encode("{\"sub\":\"user1\"}", "my_secret", "HS256");
 /// ```
 pub fn encode(payload: String, secret: String, algorithm: String) -> String {
-    hew_jwt_encode(payload, secret, algo_to_i32(algorithm))
+    unsafe { hew_jwt_encode(payload, secret, algo_to_i32(algorithm)) }
 }
 
 /// Decode and verify a JWT, returning its payload as a JSON string.
@@ -49,7 +49,7 @@ pub fn encode(payload: String, secret: String, algorithm: String) -> String {
 /// let payload = jwt.decode(token, "my_secret", "HS256");
 /// ```
 pub fn decode(token: String, secret: String, algorithm: String) -> String {
-    hew_jwt_decode(token, secret, algo_to_i32(algorithm))
+    unsafe { hew_jwt_decode(token, secret, algo_to_i32(algorithm)) }
 }
 
 /// Decode a JWT without verifying its signature.
@@ -63,7 +63,7 @@ pub fn decode(token: String, secret: String, algorithm: String) -> String {
 /// let payload = jwt.decode_insecure(token);
 /// ```
 pub fn decode_insecure(token: String) -> String {
-    hew_jwt_decode_insecure(token)
+    unsafe { hew_jwt_decode_insecure(token) }
 }
 
 /// Validate a JWT signature and expiration.
@@ -78,7 +78,7 @@ pub fn decode_insecure(token: String) -> String {
 /// }
 /// ```
 pub fn validate(token: String, secret: String, algorithm: String) -> bool {
-    hew_jwt_validate(token, secret, algo_to_i32(algorithm)) == 1
+    unsafe { hew_jwt_validate(token, secret, algo_to_i32(algorithm)) } == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

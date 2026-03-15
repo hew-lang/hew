@@ -1,0 +1,75 @@
+//! Testing assertion library for Hew.
+//!
+//! Provides assertion functions that panic with descriptive messages on
+//! failure.  No Rust FFI — pure Hew only.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::testing;
+//!
+//! fn main() {
+//!     testing.assert_eq(1 + 1, 2);
+//!     testing.assert_true(10 > 5);
+//!     testing.assert_eq_str("hello", "hello");
+//! }
+//! ```
+
+// ── Equality ──────────────────────────────────────────────────────────
+
+/// Assert that two integers are equal.  Panics with a message showing
+/// the expected and actual values when they differ.
+pub fn assert_eq(actual: int, expected: int) {
+    if actual != expected {
+        panic(f"assertion failed: expected {expected}, got {actual}");
+    }
+}
+
+/// Assert that two strings are equal.  Panics with a message showing
+/// the expected and actual values when they differ.
+pub fn assert_eq_str(actual: String, expected: String) {
+    if actual != expected {
+        panic(f"assertion failed: expected \"{expected}\", got \"{actual}\"");
+    }
+}
+
+// ── Inequality ────────────────────────────────────────────────────────
+
+/// Assert that two integers are not equal.  Panics when `a == b`.
+pub fn assert_ne(a: int, b: int) {
+    if a == b {
+        panic(f"assertion failed: expected {a} != {b}, but they are equal");
+    }
+}
+
+// ── Boolean ───────────────────────────────────────────────────────────
+
+/// Assert that a condition is true.  Panics when `condition` is false.
+pub fn assert_true(condition: bool) {
+    if !condition {
+        panic("assertion failed: expected true, got false");
+    }
+}
+
+/// Assert that a condition is false.  Panics when `condition` is true.
+pub fn assert_false(condition: bool) {
+    if condition {
+        panic("assertion failed: expected false, got true");
+    }
+}
+
+// ── Ordering ──────────────────────────────────────────────────────────
+
+/// Assert that `a` is strictly greater than `b`.
+pub fn assert_gt(a: int, b: int) {
+    if a <= b {
+        panic(f"assertion failed: expected {a} > {b}");
+    }
+}
+
+/// Assert that `a` is strictly less than `b`.
+pub fn assert_lt(a: int, b: int) {
+    if a >= b {
+        panic(f"assertion failed: expected {a} < {b}");
+    }
+}

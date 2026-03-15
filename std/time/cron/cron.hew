@@ -37,11 +37,11 @@ trait ExprMethods {
 
 impl ExprMethods for Expr {
     /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(expr: Expr, after_epoch_secs: i64) -> i64 { hew_cron_next(expr, after_epoch_secs) }
+    fn next(expr: Expr, after_epoch_secs: i64) -> i64 { unsafe { hew_cron_next(expr, after_epoch_secs) } }
     /// Return the cron expression as a string.
-    fn to_string(expr: Expr) -> String { hew_cron_to_string(expr) }
+    fn to_string(expr: Expr) -> String { unsafe { hew_cron_to_string(expr) } }
     /// Release the parsed expression resources.
-    fn free(expr: Expr) { hew_cron_free(expr); }
+    fn free(expr: Expr) { unsafe { hew_cron_free(expr) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -57,7 +57,7 @@ impl ExprMethods for Expr {
 /// let weekdays_9am = cron.parse("0 9 * * 1-5");
 /// ```
 pub fn parse(expr: String) -> Expr {
-    hew_cron_parse(expr)
+    unsafe { hew_cron_parse(expr) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

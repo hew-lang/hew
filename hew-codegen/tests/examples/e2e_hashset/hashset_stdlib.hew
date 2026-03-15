@@ -1,0 +1,45 @@
+import std::collections::hashset;
+
+fn main() {
+    let s = hashset.new();
+
+    // empty set
+    println(s.is_empty());
+    println(s.len());
+
+    // insert integers
+    let added = s.insert_int(10);
+    println(added);
+    let dup = s.insert_int(10);
+    println(dup);
+    s.insert_int(20);
+    s.insert_int(30);
+    println(s.len());
+
+    // contains
+    println(s.contains_int(10));
+    println(s.contains_int(99));
+
+    // remove
+    let removed = s.remove_int(20);
+    println(removed);
+    let removed2 = s.remove_int(20);
+    println(removed2);
+    println(s.len());
+
+    // insert strings
+    let s2 = hashset.new();
+    s2.insert_string("hello");
+    s2.insert_string("world");
+    println(s2.len());
+    println(s2.contains_string("hello"));
+    println(s2.contains_string("missing"));
+
+    // clear
+    s2.clear();
+    println(s2.is_empty());
+    println(s2.len());
+
+    s.free();
+    s2.free();
+}

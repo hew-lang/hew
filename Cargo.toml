@@ -79,6 +79,9 @@ style = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 undocumented_unsafe_blocks = "warn"
 allow_attributes_without_reason = "warn"
+# Rust 1.94 lints — allow until next sweep; tracked for v0.2.1
+ref_as_ptr = "allow"
+decimal_bitwise_operands = "allow"
 
 [profile.dev]
 panic = "abort"

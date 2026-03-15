@@ -473,14 +473,14 @@ jobs:
           -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"
 
       - name: Upload Rust test reports
-        if: always()
+        if: false  # disabled — macOS test results are part of the job status
         uses: mikepenz/action-junit-report@v5
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Rust Test Results (macOS ${{ matrix.target }})
 
       - name: Upload codegen test reports
-        if: always() && matrix.run_codegen
+        if: false  # disabled — macOS codegen results are part of the job status
         uses: mikepenz/action-junit-report@v5
         with:
           report_paths: |

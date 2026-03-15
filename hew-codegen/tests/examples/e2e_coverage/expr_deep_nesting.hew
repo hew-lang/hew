@@ -1,0 +1,82 @@
+// Test: Deeply nested expressions — chained operations, nested calls,
+// complex arithmetic with operator precedence.
+// Exercises: MLIRGenExpr — binary ops, unary ops, nested function calls,
+// method chains, complex expression evaluation.
+
+fn square(x: int) -> int {
+    x * x
+}
+
+fn add(a: int, b: int) -> int {
+    a + b
+}
+
+fn max(a: int, b: int) -> int {
+    if a > b { a } else { b }
+}
+
+fn min(a: int, b: int) -> int {
+    if a < b { a } else { b }
+}
+
+fn clamp(val: int, lo: int, hi: int) -> int {
+    max(lo, min(val, hi))
+}
+
+fn deeply_nested() -> int {
+    // Nested function calls 4 levels deep
+    add(square(add(2, 3)), square(add(1, 1)))
+}
+
+fn precedence_test() -> int {
+    // Verify: 2 + 3 * 4 = 14 (not 20)
+    2 + 3 * 4
+}
+
+fn complex_arithmetic() -> int {
+    let a = 10;
+    let b = 3;
+    let c = 7;
+    // (10 + 3) * 7 - 10 / 3 = 91 - 3 = 88
+    (a + b) * c - a / b
+}
+
+fn boolean_chain() -> bool {
+    let x = 5;
+    let y = 10;
+    let z = 15;
+    // Complex boolean: (5 < 10) && (10 < 15) && (5 + 10 == 15)
+    x < y && y < z && x + y == z
+}
+
+fn main() {
+    // Nested function calls
+    println(deeply_nested());
+
+    // Operator precedence
+    println(precedence_test());
+
+    // Complex arithmetic
+    println(complex_arithmetic());
+
+    // Boolean chain
+    println(boolean_chain());
+
+    // Clamp: nested max/min
+    println(clamp(5, 0, 10));
+    println(clamp(-5, 0, 10));
+    println(clamp(15, 0, 10));
+
+    // Inline nested expressions
+    let result = add(square(3), add(square(2), square(1)));
+    println(result);
+
+    // Long chain of operations
+    var v = 1;
+    v = v + 1;  // 2
+    v = v * 3;  // 6
+    v = v - 1;  // 5
+    v = v * v;  // 25
+    v = v + v;  // 50
+    println(v);
+}

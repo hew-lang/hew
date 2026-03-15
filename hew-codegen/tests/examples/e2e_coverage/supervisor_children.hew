@@ -1,0 +1,53 @@
+// Test: Supervisor with multiple child actors, query children, then stop.
+// Exercises: MLIRGenSupervisor — supervisor declaration, child specs,
+// supervisor_child access, supervisor_stop lifecycle.
+
+actor Worker {
+    let id: int;
+
+    receive fn greet() -> string {
+        f"worker-{id}"
+    }
+
+    receive fn double(n: int) -> int {
+        n * 2
+    }
+}
+
+supervisor WorkerGroup {
+    strategy: one_for_one;
+    max_restarts: 5;
+    window: 30;
+    child w1: Worker(1);
+    child w2: Worker(2);
+    child w3: Worker(3);
+}
+
+fn main() {
+    let group = spawn WorkerGroup;
+    sleep_ms(100);
+
+    // Access each child and query it
+    let w1 = supervisor_child(group, 0);
+    let w2 = supervisor_child(group, 1);
+    let w3 = supervisor_child(group, 2);
+
+    let g1 = await w1.greet();
+    let g2 = await w2.greet();
+    let g3 = await w3.greet();
+    println(g1);
+    println(g2);
+    println(g3);
+
+    // Use child actors for computation
+    let r1 = await w1.double(5);
+    let r2 = await w2.double(10);
+    let r3 = await w3.double(15);
+    println(r1);
+    println(r2);
+    println(r3);
+
+    supervisor_stop(group);
+    sleep_ms(100);
+    println("stopped");
+}

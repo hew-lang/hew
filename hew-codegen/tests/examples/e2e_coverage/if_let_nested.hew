@@ -1,0 +1,83 @@
+// Test: Nested if-let expressions and if-let as expression returning values.
+// Exercises: MLIRGenIfLet — nested if-let, if-let used as expression,
+// chained if-let with different Option states.
+
+fn unwrap_or(opt: Option<int>, fallback: int) -> int {
+    if let Some(v) = opt {
+        return v;
+    }
+    return fallback;
+}
+
+fn nested_if_let(outer: Option<Option<int>>) -> int {
+    if let Some(inner) = outer {
+        if let Some(val) = inner {
+            return val;
+        } else {
+            return -1;
+        }
+    } else {
+        return -2;
+    }
+}
+
+fn if_let_chain(a: Option<int>, b: Option<int>) -> int {
+    var result = 0;
+    if let Some(va) = a {
+        result = result + va;
+    }
+    if let Some(vb) = b {
+        result = result + vb;
+    }
+    result
+}
+
+fn if_let_with_computation(opt: Option<int>) -> int {
+    if let Some(v) = opt {
+        return v * v + 1;
+    }
+    return 0;
+}
+
+fn if_let_statement_only(opt: Option<int>) {
+    if let Some(v) = opt {
+        println(f"got: {v}");
+    }
+}
+
+fn main() {
+    // Basic if-let as expression
+    println(unwrap_or(Some(42), 0));
+    let none_int: Option<int> = None;
+    println(unwrap_or(none_int, 99));
+
+    // Nested if-let: Some(Some(7))
+    println(nested_if_let(Some(Some(7))));
+    // Nested if-let: Some(None)
+    let none_inner: Option<int> = None;
+    println(nested_if_let(Some(none_inner)));
+    // Nested if-let: None
+    let none_outer: Option<Option<int>> = None;
+    println(nested_if_let(none_outer));
+
+    // Chained if-let
+    let na: Option<int> = None;
+    println(if_let_chain(Some(10), Some(20)));
+    println(if_let_chain(Some(10), na));
+    let na2: Option<int> = None;
+    println(if_let_chain(na2, Some(20)));
+    let na3: Option<int> = None;
+    let nb3: Option<int> = None;
+    println(if_let_chain(na3, nb3));
+
+    // If-let with computation
+    println(if_let_with_computation(Some(5)));
+    let empty: Option<int> = None;
+    println(if_let_with_computation(empty));
+
+    // If-let as statement only (no else)
+    if_let_statement_only(Some(77));
+    let no_val: Option<int> = None;
+    if_let_statement_only(no_val);
+    println("end");
+}

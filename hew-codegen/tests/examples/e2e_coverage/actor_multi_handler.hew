@@ -1,0 +1,61 @@
+// Test: Actor with multiple receive handlers and state transitions.
+// Exercises: MLIRGenActor — multiple receive fns, mutable actor state,
+// ask pattern returning different types, actor lifecycle.
+
+actor Counter {
+    let count: int;
+    let name: string;
+
+    receive fn increment() {
+        count = count + 1;
+    }
+
+    receive fn increment_by(n: int) {
+        count = count + n;
+    }
+
+    receive fn reset() {
+        count = 0;
+    }
+
+    receive fn get_count() -> int {
+        count
+    }
+
+    receive fn get_name() -> string {
+        name
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0, name: "alpha");
+
+    // Basic increment
+    c.increment();
+    c.increment();
+    c.increment();
+    let v1 = await c.get_count();
+    println(v1);
+
+    // Increment by amount
+    c.increment_by(10);
+    let v2 = await c.get_count();
+    println(v2);
+
+    // Reset
+    c.reset();
+    let v3 = await c.get_count();
+    println(v3);
+
+    // Get string field
+    let n = await c.get_name();
+    println(n);
+
+    // Final sequence
+    c.increment_by(100);
+    c.increment();
+    let v4 = await c.get_count();
+    println(v4);
+
+    println("done");
+}

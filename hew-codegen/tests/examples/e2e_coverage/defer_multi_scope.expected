@@ -1,0 +1,23 @@
+start
+middle
+d1
+d2
+d3
+---
+cleanup-b
+cleanup-a
+42
+---
+true-cleanup
+1
+---
+false-cleanup
+0
+---
+outer start
+inner-a body
+inner-a-defer
+inner-b body
+inner-b-defer
+outer end
+outer-fn-defer

@@ -47,7 +47,7 @@ pub fn from_bool(b: bool) -> String {
 /// let newline = string.from_char(10);
 /// ```
 pub fn from_char(code: i32) -> String {
-    hew_char_to_string(code)
+    unsafe { hew_char_to_string(code) }
 }
 
 /// Parse a string as an integer. Returns 0 if parsing fails.
@@ -91,15 +91,15 @@ pub fn to_int(s: String) -> i32 {
         }
         result = result * 10 + d;
     }
-    if negative { 0 - result } else { result }
+    (if negative { 0 - result } else { result }) as i32
 }
 
 /// Return the numeric value of a single-character digit string, or `-1` if not a digit.
 fn digit_value(ch: String) -> i32 {
     match ch {
-        "0" => 0, "1" => 1, "2" => 2, "3" => 3, "4" => 4,
-        "5" => 5, "6" => 6, "7" => 7, "8" => 8, "9" => 9,
-        _ => -1,
+        "0" => 0 as i32, "1" => 1 as i32, "2" => 2 as i32, "3" => 3 as i32, "4" => 4 as i32,
+        "5" => 5 as i32, "6" => 6 as i32, "7" => 7 as i32, "8" => 8 as i32, "9" => 9 as i32,
+        _ => -1 as i32,
     }
 }
 
@@ -143,7 +143,7 @@ pub fn pad_left(s: String, width: i32, pad: String) -> String {
     if slen >= width {
         return s;
     }
-    repeat(pad, width - slen) + s
+    repeat(pad, (width - slen) as i32) + s
 }
 
 /// Pad a string on the right to reach the given width.
@@ -160,7 +160,7 @@ pub fn pad_right(s: String, width: i32, pad: String) -> String {
     if slen >= width {
         return s;
     }
-    s + repeat(pad, width - slen)
+    s + repeat(pad, (width - slen) as i32)
 }
 
 /// Check if a string contains only ASCII digits (0-9).
@@ -208,12 +208,12 @@ pub fn count(haystack: String, needle: String) -> i32 {
         let rest = haystack.slice(pos, hlen);
         let idx = rest.find(needle);
         if idx < 0 {
-            return n;
+            return n as i32;
         }
         n = n + 1;
         pos = pos + idx + nlen;
     }
-    n
+    n as i32
 }
 
 /// Check if a string starts with the given prefix.
@@ -265,7 +265,7 @@ pub fn is_ascii(s: String) -> bool {
     var i = 0;
     while i < len {
         let ch = string_char_at(s, i);
-        if ch < 0 || ch > 127 {
+        if ch > '~' {
             return false;
         }
         i = i + 1;
@@ -303,7 +303,7 @@ pub fn replace(s: String, old: String, new_val: String) -> String {
 /// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
 /// ```
 pub fn split(s: String, sep: String) -> Vec<String> {
-    hew_string_split(s, sep)
+    unsafe { hew_string_split(s, sep) }
 }
 
 /// Split a string into lines, stripping `\r\n` or `\n` endings.
@@ -316,7 +316,7 @@ pub fn split(s: String, sep: String) -> Vec<String> {
 /// let lines = string.lines("foo\nbar");  // ["foo", "bar"]
 /// ```
 pub fn lines(s: String) -> Vec<String> {
-    hew_string_lines(s)
+    unsafe { hew_string_lines(s) }
 }
 
 /// Join a list of strings with `sep` between each element.
@@ -329,7 +329,7 @@ pub fn lines(s: String) -> Vec<String> {
 /// let s = string.join(parts, ", ");
 /// ```
 pub fn join(parts: Vec<String>, sep: String) -> String {
-    hew_string_join(parts, sep)
+    unsafe { hew_string_join(parts, sep) }
 }
 
 // ── Trait: ToString ──────────────────────────────────────────────────

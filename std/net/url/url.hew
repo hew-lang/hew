@@ -54,23 +54,23 @@ trait UrlMethods {
 
 impl UrlMethods for Url {
     /// Return the URL scheme (e.g. `"https"`).
-    fn scheme(u: Url) -> String { hew_url_scheme(u) }
+    fn scheme(u: Url) -> String { unsafe { hew_url_scheme(u) } }
     /// Return the host name.
-    fn host(u: Url) -> String { hew_url_host(u) }
+    fn host(u: Url) -> String { unsafe { hew_url_host(u) } }
     /// Return the port number, or -1 if not specified.
-    fn port(u: Url) -> i32 { hew_url_port(u) }
+    fn port(u: Url) -> i32 { unsafe { hew_url_port(u) } }
     /// Return the path component.
-    fn path(u: Url) -> String { hew_url_path(u) }
+    fn path(u: Url) -> String { unsafe { hew_url_path(u) } }
     /// Return the query string (without the leading `?`).
-    fn query(u: Url) -> String { hew_url_query(u) }
+    fn query(u: Url) -> String { unsafe { hew_url_query(u) } }
     /// Return the fragment (without the leading `#`).
-    fn fragment(u: Url) -> String { hew_url_fragment(u) }
+    fn fragment(u: Url) -> String { unsafe { hew_url_fragment(u) } }
     /// Return the full URL as a string.
-    fn to_string(u: Url) -> String { hew_url_to_string(u) }
+    fn to_string(u: Url) -> String { unsafe { hew_url_to_string(u) } }
     /// Resolve a relative path onto this URL, returning a new `Url`.
-    fn resolve(u: Url, path: String) -> Url { hew_url_join(u, path) }
+    fn resolve(u: Url, path: String) -> Url { unsafe { hew_url_join(u, path) } }
     /// Release the parsed URL resources.
-    fn free(u: Url) { hew_url_free(u); }
+    fn free(u: Url) { unsafe { hew_url_free(u) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -85,7 +85,7 @@ impl UrlMethods for Url {
 /// let u = url.parse("https://example.com/api/v1");
 /// ```
 pub fn parse(s: String) -> Url {
-    hew_url_parse(s)
+    unsafe { hew_url_parse(s) }
 }
 
 // ── Percent-encoding ──────────────────────────────────────────────────
@@ -100,7 +100,7 @@ pub fn parse(s: String) -> Url {
 /// let encoded = url.encode("hello world");  // "hello%20world"
 /// ```
 pub fn encode(s: String) -> String {
-    hew_url_encode(s)
+    unsafe { hew_url_encode(s) }
 }
 
 /// Decode a percent-encoded string.
@@ -115,7 +115,7 @@ pub fn encode(s: String) -> String {
 /// let decoded = url.decode("hello%20world");  // "hello world"
 /// ```
 pub fn decode(s: String) -> String {
-    hew_url_decode(s)
+    unsafe { hew_url_decode(s) }
 }
 
 /// Build a percent-encoded query string from a newline-separated list of
@@ -133,7 +133,7 @@ pub fn decode(s: String) -> String {
 /// // "name=hello%20world&page=1"
 /// ```
 pub fn encode_query(params: String) -> String {
-    hew_url_encode_query(params)
+    unsafe { hew_url_encode_query(params) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

@@ -1,0 +1,164 @@
+//! Number formatting and string padding utilities.
+//!
+//! Provides integer-to-string conversions for hexadecimal, binary, and octal
+//! bases, plus helpers for padding and repeating strings.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::fmt;
+//!
+//! fn main() {
+//!     println(fmt.to_hex(255));         // "ff"
+//!     println(fmt.to_binary(10));       // "1010"
+//!     println(fmt.to_octal(8));         // "10"
+//!     println(fmt.pad_left("7", 3, "0"));  // "007"
+//! }
+//! ```
+
+
+// ── Number-to-string conversions ─────────────────────────────────────
+
+/// Convert an integer to its lowercase hexadecimal string representation.
+///
+/// Negative numbers are prefixed with `-`.
+///
+/// # Examples
+///
+/// ```
+/// fmt.to_hex(255)   // "ff"
+/// fmt.to_hex(0)     // "0"
+/// fmt.to_hex(-16)   // "-10"
+/// ```
+pub fn to_hex(n: int) -> String {
+    if n == 0 {
+        return "0";
+    }
+    if n < 0 {
+        return "-" + to_hex(0 - n);
+    }
+    var result = "";
+    var val = n;
+    while val > 0 {
+        let digit = val % 16;
+        result = hex_digit(digit) + result;
+        val = val / 16;
+    }
+    result
+}
+
+/// Convert an integer to its binary string representation.
+///
+/// Negative numbers are prefixed with `-`.
+///
+/// # Examples
+///
+/// ```
+/// fmt.to_binary(10)   // "1010"
+/// fmt.to_binary(0)    // "0"
+/// fmt.to_binary(-5)   // "-101"
+/// ```
+pub fn to_binary(n: int) -> String {
+    if n == 0 {
+        return "0";
+    }
+    if n < 0 {
+        return "-" + to_binary(0 - n);
+    }
+    var result = "";
+    var val = n;
+    while val > 0 {
+        let digit = val % 2;
+        result = f"{digit}" + result;
+        val = val / 2;
+    }
+    result
+}
+
+/// Convert an integer to its octal string representation.
+///
+/// Negative numbers are prefixed with `-`.
+///
+/// # Examples
+///
+/// ```
+/// fmt.to_octal(8)    // "10"
+/// fmt.to_octal(0)    // "0"
+/// fmt.to_octal(-9)   // "-11"
+/// ```
+pub fn to_octal(n: int) -> String {
+    if n == 0 {
+        return "0";
+    }
+    if n < 0 {
+        return "-" + to_octal(0 - n);
+    }
+    var result = "";
+    var val = n;
+    while val > 0 {
+        let digit = val % 8;
+        result = f"{digit}" + result;
+        val = val / 8;
+    }
+    result
+}
+
+/// Map a digit value (0–15) to its lowercase hex character.
+fn hex_digit(d: int) -> String {
+    match d {
+        0 => "0", 1 => "1", 2 => "2", 3 => "3",
+        4 => "4", 5 => "5", 6 => "6", 7 => "7",
+        8 => "8", 9 => "9", 10 => "a", 11 => "b",
+        12 => "c", 13 => "d", 14 => "e", 15 => "f",
+        _ => "?",
+    }
+}
+
+// ── String padding and repetition ────────────────────────────────────
+
+/// Pad a string on the left to reach the given width.
+///
+/// If `s` is already at least `width` characters, returns `s` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// fmt.pad_left("42", 5, " ")   // "   42"
+/// fmt.pad_left("42", 5, "0")   // "00042"
+/// ```
+pub fn pad_left(s: String, width: int, fill: String) -> String {
+    let slen = s.len();
+    if slen >= width {
+        return s;
+    }
+    repeat(fill, width - slen) + s
+}
+
+/// Pad a string on the right to reach the given width.
+///
+/// If `s` is already at least `width` characters, returns `s` unchanged.
+///
+/// # Examples
+///
+/// ```
+/// fmt.pad_right("hi", 5, ".")   // "hi..."
+/// ```
+pub fn pad_right(s: String, width: int, fill: String) -> String {
+    let slen = s.len();
+    if slen >= width {
+        return s;
+    }
+    s + repeat(fill, width - slen)
+}
+
+/// Repeat a string `count` times.
+///
+/// # Examples
+///
+/// ```
+/// fmt.repeat("ab", 3)   // "ababab"
+/// fmt.repeat("*", 5)    // "*****"
+/// ```
+pub fn repeat(s: String, count: int) -> String {
+    s.repeat(count)
+}

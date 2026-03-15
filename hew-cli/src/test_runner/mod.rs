@@ -13,6 +13,7 @@ pub fn cmd_test(args: &[String]) {
     let mut use_color = true;
     let mut include_ignored = false;
     let mut format = output::OutputFormat::Text;
+    let mut timeout = runner::DEFAULT_TEST_TIMEOUT;
     let mut paths: Vec<String> = Vec::new();
     let mut i = 0;
 
@@ -28,6 +29,25 @@ pub fn cmd_test(args: &[String]) {
             }
             "--no-color" => use_color = false,
             "--include-ignored" => include_ignored = true,
+            "--timeout" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --timeout requires an argument in seconds");
+                    std::process::exit(1);
+                }
+                let seconds = args[i].parse::<u64>().unwrap_or_else(|_| {
+                    eprintln!(
+                        "Error: invalid timeout '{}'; expected a positive integer number of seconds",
+                        args[i]
+                    );
+                    std::process::exit(1);
+                });
+                if seconds == 0 {
+                    eprintln!("Error: --timeout must be at least 1 second");
+                    std::process::exit(1);
+                }
+                timeout = std::time::Duration::from_secs(seconds);
+            }
             "--format" => {
                 i += 1;
                 if i >= args.len() {
@@ -55,11 +75,21 @@ pub fn cmd_test(args: &[String]) {
 
     // Discover test files and test cases.
     let mut all_tests = Vec::new();
+    let mut discovered_files = 0usize;
+    let mut had_parse_errors = false;
     for path in &paths {
         let p = std::path::Path::new(path);
+        if !p.exists() {
+            eprintln!("Error: path not found: {path}");
+            std::process::exit(1);
+        }
         if p.is_file() {
             match discovery::discover_tests_in_file(path) {
-                Ok(tests) => all_tests.extend(tests),
+                Ok(discovered) => {
+                    discovered_files += 1;
+                    had_parse_errors |= handle_discovered_file(&discovered);
+                    all_tests.extend(discovered.tests);
+                }
                 Err(e) => {
                     eprintln!("Error: {e}");
                     std::process::exit(1);
@@ -70,7 +100,11 @@ pub fn cmd_test(args: &[String]) {
                 Ok(files) => {
                     for file in files {
                         match discovery::discover_tests_in_file(&file) {
-                            Ok(tests) => all_tests.extend(tests),
+                            Ok(discovered) => {
+                                discovered_files += 1;
+                                had_parse_errors |= handle_discovered_file(&discovered);
+                                all_tests.extend(discovered.tests);
+                            }
                             Err(e) => eprintln!("Warning: {e}"),
                         }
                     }
@@ -81,6 +115,15 @@ pub fn cmd_test(args: &[String]) {
                 }
             }
         }
+    }
+
+    if had_parse_errors {
+        std::process::exit(1);
+    }
+
+    if discovered_files == 0 {
+        eprintln!("No test files found.");
+        std::process::exit(0);
     }
 
     if all_tests.is_empty() {
@@ -104,12 +147,42 @@ pub fn cmd_test(args: &[String]) {
         filter.as_deref(),
         include_ignored,
         ffi_lib.as_deref(),
+        timeout,
     );
     output::output_results(&summary, use_color, format);
 
     if summary.failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn handle_discovered_file(file: &discovery::DiscoveredTestFile) -> bool {
+    let mut had_errors = false;
+    for error in &file.parse_errors {
+        let hints: Vec<String> = error.hint.iter().cloned().collect();
+        match error.severity {
+            hew_parser::Severity::Warning => crate::diagnostic::render_warning(
+                &file.source,
+                &file.path,
+                &error.span,
+                &error.message,
+                &[],
+                &hints,
+            ),
+            hew_parser::Severity::Error => {
+                had_errors = true;
+                crate::diagnostic::render_diagnostic(
+                    &file.source,
+                    &file.path,
+                    &error.span,
+                    &error.message,
+                    &[],
+                    &hints,
+                );
+            }
+        }
+    }
+    had_errors
 }
 
 /// Detect whether the current directory (or a close ancestor) is an FFI-backed

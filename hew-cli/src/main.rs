@@ -669,6 +669,7 @@ Watch options:
 Test options:
   --filter <pattern>              Run only tests matching pattern
   --format <text|junit>           Output format (default: text)
+  --timeout <seconds>             Per-test timeout (default: 30)
   --no-color                      Disable coloured output
   --include-ignored               Run ignored tests too
 

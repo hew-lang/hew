@@ -197,6 +197,7 @@ mod tests {
             fn_sigs,
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
         }
     }
 
@@ -363,6 +364,7 @@ mod tests {
             fn_sigs: HashMap::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -393,6 +395,7 @@ mod tests {
             fn_sigs: HashMap::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");

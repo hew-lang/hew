@@ -272,6 +272,7 @@ mod tests {
             fn_sigs: HashMap::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
         }
     }
 

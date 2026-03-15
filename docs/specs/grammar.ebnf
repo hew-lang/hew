@@ -184,7 +184,7 @@ WhileStmt      = ("@" Ident ":")? "while" Expr Block ;
 BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ReturnStmt     = "return" Expr? ";" ;
-DeferStmt      = "defer" Expr ";" ;
+DeferStmt      = "defer" ( Block | Expr ";" ) ;
 ExprStmt       = Expr ";" ;
 
 (* Expressions *)

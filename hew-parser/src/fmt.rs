@@ -1417,7 +1417,12 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write("defer ");
                 self.format_expr(&expr.0);
-                self.write(";\n");
+                // Block expressions already end with `}`, no semicolon.
+                if matches!(expr.0, Expr::Block(_)) {
+                    self.write("\n");
+                } else {
+                    self.write(";\n");
+                }
             }
         }
     }

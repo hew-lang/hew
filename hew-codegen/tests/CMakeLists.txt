@@ -726,6 +726,7 @@ add_e2e_file_test(const_expressions     e2e_const const_expressions)
 add_e2e_file_test(defer                 e2e_defer defer)
 add_e2e_file_test(defer_multi_return    e2e_defer defer_multi_return)
 add_e2e_file_test(defer_cleanup_call    e2e_defer defer_cleanup_call)
+add_e2e_file_test(defer_block           e2e_defer defer_block)
 
 # ── Loop tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(for_range_break       e2e_loops for_range_break)

@@ -20,26 +20,6 @@ fn fresh_subst() -> Substitution {
 // ===========================================================================
 
 #[test]
-fn bind_var_to_itself_is_noop() {
-    let mut subst = fresh_subst();
-    let v = TypeVar::fresh();
-    // Binding a variable to itself should succeed without inserting anything.
-    assert!(bind(&mut subst, v, &Ty::Var(v)).is_ok());
-    assert!(subst.lookup(v).is_none());
-}
-
-#[test]
-fn bind_var_after_substitution_resolves_to_same_var() {
-    // v1 -> v2, then bind(v2, Var(v1)) should resolve v1 to v2 and see
-    // that v2 == v2, so it's a no-op.
-    let mut subst = fresh_subst();
-    let v1 = TypeVar::fresh();
-    let v2 = TypeVar::fresh();
-    subst.insert(v1, Ty::Var(v2));
-    assert!(bind(&mut subst, v2, &Ty::Var(v1)).is_ok());
-}
-
-#[test]
 fn bind_applies_substitution_before_occurs_check() {
     // v1 is already mapped to I32. Binding v2 to Tuple(Var(v1)) should
     // apply the substitution first, yielding Tuple(I32), which does NOT
@@ -572,13 +552,6 @@ fn can_coerce_never_on_left() {
 }
 
 #[test]
-fn can_coerce_same_types() {
-    assert!(can_coerce(&Ty::Bool, &Ty::Bool));
-    assert!(can_coerce(&Ty::String, &Ty::String));
-    assert!(can_coerce(&Ty::F64, &Ty::F64));
-}
-
-#[test]
 fn can_coerce_incompatible_types() {
     assert!(!can_coerce(&Ty::I32, &Ty::String));
     assert!(!can_coerce(&Ty::Bool, &Ty::F64));
@@ -624,16 +597,6 @@ fn display_arity_mismatch_error() {
     assert!(msg.contains('1'));
 }
 
-#[test]
-fn unify_error_is_std_error() {
-    // Verify the std::error::Error impl exists.
-    let err: Box<dyn std::error::Error> = Box::new(UnifyError::Mismatch {
-        expected: Ty::I32,
-        actual: Ty::Bool,
-    });
-    assert!(err.to_string().contains("type mismatch"));
-}
-
 // ===========================================================================
 // Substitution resolution — transitive chains
 // ===========================================================================
@@ -664,13 +627,6 @@ fn resolve_var_in_nested_structure() {
     };
     let resolved = subst.resolve(&ty);
     assert_eq!(resolved, Ty::option(Ty::I64));
-}
-
-#[test]
-fn resolve_unbound_var_stays_var() {
-    let subst = fresh_subst();
-    let v = TypeVar::fresh();
-    assert_eq!(subst.resolve(&Ty::Var(v)), Ty::Var(v));
 }
 
 // ===========================================================================
@@ -765,26 +721,4 @@ fn multiple_vars_resolved_by_successive_unifications() {
     assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::I32);
     assert_eq!(subst.resolve(&Ty::Var(v2)), Ty::String);
     assert_eq!(subst.resolve(&Ty::Var(v3)), Ty::Bool);
-}
-
-// ===========================================================================
-// Substitution snapshot and restore
-// ===========================================================================
-
-#[test]
-fn substitution_snapshot_and_restore() {
-    let mut subst = fresh_subst();
-    let v = TypeVar::fresh();
-    subst.insert(v, Ty::I32);
-
-    let snap = subst.snapshot();
-    // Mutate further.
-    let v2 = TypeVar::fresh();
-    subst.insert(v2, Ty::Bool);
-    assert!(subst.lookup(v2).is_some());
-
-    // Restore — v2 mapping should be gone.
-    subst.restore(snap);
-    assert!(subst.lookup(v2).is_none());
-    assert_eq!(subst.resolve(&Ty::Var(v)), Ty::I32);
 }

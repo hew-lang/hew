@@ -390,14 +390,21 @@ fn crash_report_has_metadata() {
         let actor_id = (*actor).id;
         hew_fault_inject_crash(actor_id, 1);
         hew_actor_send(actor, 1, std::ptr::null_mut(), 0);
-        std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // Verify a new crash was recorded
+        // Poll until the crash is recorded (Windows CI can be slow).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if hew_crash_log_count() > log_before {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for crash log entry (before={log_before})"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
         let log_after = hew_crash_log_count();
-        assert!(
-            log_after > log_before,
-            "crash log should have new entries (before={log_before}, after={log_after})"
-        );
 
         // Get the latest crash report — it should be ours
         let report = hew_crash_log_last();

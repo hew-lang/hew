@@ -4,124 +4,83 @@
 
 ## [0.2.0] - 2026-03-15
 
-### Added
+The largest Hew release to date. The `self` keyword is removed in favour of named receivers, the generics system is now usable end-to-end, 12 new stdlib modules ship, and the tooling story gets macOS CI, OpenTelemetry, and a hardened test runner.
 
-#### Language Features
+### Breaking Changes
 
-- `while let` pattern loops for ergonomic `Option`/`Result` consumption (#196)
-- `defer` blocks for guaranteed cleanup at scope exit (#197)
-- Struct pattern destructuring in `let` bindings (#195)
-- Nested tuple destructuring in `let` patterns (#194)
-- Implicit generic type argument inference for function calls (#221)
-- Auto-derived JSON/YAML/TOML serialization for `struct` types (#181)
-- Duration as a distinct primitive type (#104)
+- **`self` keyword removed.** Impl and trait methods now use named receivers: `fn area(r: Rectangle) -> int` instead of `fn area(self) -> int`. Actor fields are accessed by bare name; use `this` for actor self-reference. Existing code must be updated.
+- **Variable shadowing is now enforced.** Same-scope shadowing is a hard error; nested-scope shadowing is a warning.
 
-#### Standard Library Modules
+### Language
 
-- `std::testing` assertion library (#201)
-- `std::io` for stdin/stdout/stderr operations (#202)
-- `std::collections::hashset` module (#203)
-- `std::net::dns` for hostname resolution (#204)
-- `std::net::tls` for TLS client connections (#205)
-- `std::iter` with functional-style `Vec<int>` operations (#206)
-- `std::fmt` module for number formatting utilities (#207)
-- `std::sort` module with `sort` and `reverse` for `Vec` (#208)
-- `std::encoding::xml` for XML parsing and serialization (#209)
-- `std::collections::deque` module (#210)
-- `std::math` module with integer and float operations (#212)
-- `std::channel` MPSC channel module (#213)
-- Stdlib gap fill: `string.split`/`lines`/`join`, filesystem directory helpers, URL encoding, HTTP response accessors (#132)
+- **Implicit generic type inference** — `identity(42)` works without writing `identity<int>(42)`.
+- **Generic `impl<T>` blocks** — monomorphization now works through enrichment and codegen.
+- **Trait-bounded method dispatch** — `fn show<T: Display>(item: T) { item.display(); }` resolves methods from bounds.
+- **`while let` patterns** — `while let Some(x) = iter.next() { ... }` for ergonomic iteration.
+- **`defer` blocks** — `defer { cleanup(); }` for guaranteed LIFO cleanup at scope exit.
+- **Nested and struct destructuring** — `let (a, (b, c)) = ...` and `let Point { x, y } = p`.
+- **Labelled loops** — `@label: loop { break @label; }` with type-checked label validation.
+- **Periodic actor timers** — `receive fn tick() @every(5s) { ... }` for scheduled work.
+- **Enum variant constructors** — `Shape::Circle(5)` now callable directly.
+- **Closure return coercion** — closures returning `i32` correctly widen to `int` when expected.
+- **Numeric literal inference** — `let b: Box<i32> = Box { value: 42 }` infers the literal type from context.
+- **Structured error types** — `IoError` enum pattern with `Result<T, IoError>` and `?` propagation.
+- **Stream operators** — `.map()`, `.filter()`, `.take()` on `Stream` for functional data pipelines.
+- **Auto-derived serialization** — structs automatically gain JSON/YAML/TOML serialization.
 
-#### Networking & Distribution
+### Standard Library
 
-- QUIC transport for inter-node messaging in the Node mesh (#152, #163)
-- Happy Eyeballs (RFC 8305) TCP connector in adze package manager (#162)
-- Distributed reply channels for remote `await` across nodes (#169)
-- Cross-node registry gossip for `Node::lookup` (#168)
-- Remote actor dispatch through the Node mesh (#163)
-- Node API builtins wired through typechecker and MLIR codegen (#163)
+12 new modules:
 
-#### Tooling & Infrastructure
+- `std::math` — abs, min, max, clamp, sqrt, pow, floor, ceil, round, PI, E
+- `std::sort` — sort_ints, sort_strings, sort_floats, reverse
+- `std::io` — read_line, write, write_err, read_all (stdin/stdout/stderr)
+- `std::testing` — assert_eq, assert_ne, assert_true, assert_false, assert_gt, assert_lt
+- `std::collections::hashset` — insert, contains, remove, len, clear
+- `std::collections::deque` — push_front, push_back, pop_front, pop_back
+- `std::channel` — MPSC channels with send, recv, try_recv, close
+- `std::net::dns` — hostname resolution
+- `std::net::tls` — TLS client connections via rustls
+- `std::encoding::xml` — XML parsing and serialization via quick-xml
+- `std::fmt` — to_hex, to_binary, to_octal, pad_left, pad_right, repeat
+- `std::iter` — map_int, filter_int, fold_int, any, all, sum for Vec
 
-- Version bumped to 0.2.0 with build metadata in `--version` output (#199)
-- macOS CI testing added to PR workflow (#223)
-- `make test-stdlib` target for stdlib type-check verification (#200)
-- `make test-hew` Makefile target and stdlib test files (#219)
-- `make coverage-cpp` target for C++ codegen coverage (#180)
-- `make coverage-e2e` and `make coverage-combined` Makefile targets (#180)
-- `hew test` runner with hardened failure detection (#220)
-- `hew fmt` semantic verification script (#185)
-- `hew-analysis` crate extracted; `hew-wasm` brought to feature parity with `hew-lsp` (#111)
-- Schema version field added to MessagePack AST boundary (#124)
-- Grammar fuzzer for TextMate and tree-sitter grammars (#120)
-- Centralized downstream generator and sync script for editor integrations (#118)
+### Networking and Distribution
 
-#### Testing
+- QUIC transport for inter-node messaging with SPIFFE/SPIRE identity
+- Distributed reply channels for remote `await` across nodes
+- Cross-node registry gossip for `Node::lookup`
+- Happy Eyeballs (RFC 8305) TCP connector in adze
 
-- Test suite expanded with 59 new tests across E2E, negative, and lifecycle categories (#180)
-- E2E and unit tests for all new stdlib modules (#214)
-- Rust unit tests for all new stdlib modules (#215)
-- Comprehensive unit tests for hew-cabi (#217)
-- 67 unit tests across all hew-astgen modules (#218)
+### Runtime and Observability
 
-#### Documentation
+- **OpenTelemetry OTLP/HTTP trace exporter** — `HEW_OTEL_ENDPOINT=http://localhost:4318`
+- **Live tracing in hew-observe** — Messages, Timeline, Supervisors, and Crashes tabs show real runtime data
+- **Clean panic handling** — `panic()` exits with code 101 instead of segfault
+- Duration as a distinct primitive type with literal syntax (`100ms`, `5s`, `1m`)
 
-- Comprehensive doc comments added to stdlib modules; improved doc renderer template and markdown rendering (#170)
-- Duration type design document and implementation plan
-- Two-process QUIC mesh demo with transport cleanup (#163)
+### Tooling
 
-### Fixed
+- `hew --version` shows build metadata: `hew 0.2.0 (release, abc1234)`
+- `hew test` runner hardened with `--timeout`, parse-error detection, stable ordering
+- `hew fmt` — 7 semantic corruption bugs fixed
+- `make test` now covers: Rust, E2E, WASM, stdlib type-check, C++ unit tests, FFI verification
+- `make coverage-e2e` and `make coverage-cpp` for pipeline and C++ coverage measurement
+- macOS CI testing (arm64 and x86_64) added to PR workflow
+- Docker clean-room test gates release publishing
+- Clippy warnings now fail CI (strict linting enforced)
+- Adze: transitive dependency resolution with cycle detection
 
-- Clean exit on panic instead of segfault (#191)
-- Closure return type coercion at MLIR codegen (#187)
-- Enum variant constructors registered as callable functions (#192)
-- Numeric literal inference in generic struct construction (#193)
-- Generic `impl<T>` blocks not monomorphized (#188)
-- Trait-bounded method dispatch on generic type parameters (#186)
-- `hew fmt` semantic corruption — 7 bugs fixed (#190)
-- `--emit-ast` JSON serialization of `ModuleGraph` (#175)
-- Validate labelled loop `break`/`continue` targets (#198)
-- Type-check errors in 7 new stdlib `.hew` modules (#216)
-- Unsafe wrappers and type coercions for stdlib type-check compliance (#211)
-- Allow `await` on void receive handlers (#156, #159)
-- Mark module as used when spawning `module.Actor()` (#160)
-- MLIR codegen lowering for `to_float()` builtin (#158)
-- Forward direct SIGTERM/SIGINT to `hew run` child process (#151)
-- Emit error instead of silently defaulting `None` to `Option<i32>` (#115)
-- Eliminate silent type fallbacks in codegen (#117)
-- Close type-checker inference gaps found in audit (#116)
-- Improve integer literal type inference and coercion (#114)
-- Array literal to `Vec` coercion for enum variant elements (#112)
-- Ecosystem package resolution for `--pkg-path` and lib search; module resolution and actor field access in codegen (#146, #148, #149)
-- Suppress unused-import warnings for sub-module imports (#161)
-- Replace catch-all match arms in `enrich.rs` with exhaustive variants (#122)
-- Eliminate silent fallbacks in deserializer, codegen, and parser (#129)
-- Convert warnings to errors and remove dead string dispatch (#126)
-- Release packaging — scope `zlib`/`zstd` static link to Linux, fix stdlib sources and static libs (#147)
-- Resolve all pre-existing Clippy warnings in workspace (#133)
-- Remove stale `isolated`/`and`/`or` keywords from tmLanguage generator (#131)
-- Refactor `convertType` validation into `convertTypeOrError` helper (#119)
-- Unused import fixes (#140, #141)
+### Bug Fixes
 
-### Changed
-
-- **Breaking:** `self` keyword removed; methods use named receivers, actors use `this` for self-reference (#172)
-- **Breaking:** Same-scope variable shadowing enforced as a hard error (#177)
-- Type-check actor `init` bodies (#173)
-- Migrate actor examples away from sleep-based synchronization (#157)
-- Homogeneous module resolution and stdlib pure-Hew migration (#128)
-- Observer TUI polish — theme, clamping, and UX fixes (#130)
-- Remove façade example files that misrepresent language capabilities (#184)
-- Replace lefthook with `git-multi-hook` and `scripts/pre-commit-fmt.sh` (#185)
-- Update viz scripts for current language and MLIR dialect (#174)
-- Deduplicate `Ty` mapping and add FFI symbol verification (#127)
-- Replace raw `is_null()` + return boilerplate with `cabi_guard!` macro (#125)
-- Unify `vecElemSuffix` and `vecElemSuffixWithPtr` into a single function (#123)
-- Canadian English `-our` spellings adopted across codebase (#113)
-- Sync spec and grammars to v0.9.0 against implementation (#103)
-- Prune superseded lessons and consolidate duplicates (#121)
-- Remove stale plan docs for completed features (#110)
-
+- Generic `impl<T>` blocks not monomorphized in codegen
+- Trait-bounded method dispatch not resolving through bounds
+- Closure return type coercion at MLIR level (i32 to i64 widening)
+- `hew fmt` stripping `pub` visibility, emitting Rust turbofish syntax, losing wire metadata
+- `self: Type` parameter form silently accepted after self removal
+- Void-typed nested match expressions crashing codegen
+- Generator malloc signature mismatch in WASM builds
+- FreeBSD 15 `kevent` struct compatibility
 ## [0.1.9] - 2026-03-07
 
 ### Added

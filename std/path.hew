@@ -39,11 +39,11 @@ trait GlobResultMethods {
 
 impl GlobResultMethods for GlobResult {
     /// Return the number of matched paths.
-    fn count(res: GlobResult) -> i32 { hew_glob_count(res) }
+    fn count(res: GlobResult) -> i32 { unsafe { hew_glob_count(res) } }
     /// Return the matched path at the given index.
-    fn get(res: GlobResult, index: i32) -> String { hew_glob_get(res, index) }
+    fn get(res: GlobResult, index: i32) -> String { unsafe { hew_glob_get(res, index) } }
     /// Release the glob result resources.
-    fn free(res: GlobResult) { hew_glob_free(res); }
+    fn free(res: GlobResult) { unsafe { hew_glob_free(res) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -56,7 +56,7 @@ impl GlobResultMethods for GlobResult {
 /// let files = path.glob("src/**/*.hew");
 /// ```
 pub fn glob(pattern: String) -> GlobResult {
-    hew_glob(pattern)
+    unsafe { hew_glob(pattern) }
 }
 
 /// Combine two path segments with the platform path separator.
@@ -132,22 +132,22 @@ pub fn extension(p: String) -> String {
 
 /// Test whether a path exists on the filesystem.
 pub fn exists(p: String) -> bool {
-    hew_path_exists(p)
+    unsafe { hew_path_exists(p) }
 }
 
 /// Test whether a path refers to a regular file.
 pub fn is_file(p: String) -> bool {
-    hew_path_is_file(p)
+    unsafe { hew_path_is_file(p) }
 }
 
 /// Test whether a path refers to a directory.
 pub fn is_dir(p: String) -> bool {
-    hew_path_is_dir(p)
+    unsafe { hew_path_is_dir(p) }
 }
 
 /// Return the absolute form of a path.
 pub fn absolute(p: String) -> String {
-    hew_path_absolute(p)
+    unsafe { hew_path_absolute(p) }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -175,12 +175,12 @@ fn last_slash_pos(s: String) -> i32 {
         let rest = s.slice(search_from, s.len());
         let next = rest.find("/");
         if next < 0 {
-            return last;
+            return last as i32;
         }
         last = search_from + next;
         search_from = last + 1;
     }
-    last
+    last as i32
 }
 
 /// Return the index of the last `.` in `s`, or `-1` if none.
@@ -195,12 +195,12 @@ fn last_dot_pos(s: String) -> i32 {
         let rest = s.slice(search_from, s.len());
         let next = rest.find(".");
         if next < 0 {
-            return last;
+            return last as i32;
         }
         last = search_from + next;
         search_from = last + 1;
     }
-    last
+    last as i32
 }
 
 // ── FFI bindings (filesystem operations only) ────────────────────────

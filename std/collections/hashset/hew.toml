@@ -1,0 +1,6 @@
+[package]
+name = "std::collections::hashset"
+version = "0.1.0"
+description = "Hew std::collections::hashset package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

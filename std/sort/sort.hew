@@ -1,0 +1,58 @@
+//! Sorting utilities for vectors.
+//!
+//! Provides type-specific sort and reverse functions. Each returns a
+//! new vector — the original is never modified.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::sort;
+//!
+//! fn main() {
+//!     let nums: Vec<int> = Vec::new();
+//!     nums.push(3);
+//!     nums.push(1);
+//!     nums.push(2);
+//!     let sorted = sort.sort_ints(nums);
+//!     // sorted is [1, 2, 3]
+//! }
+//! ```
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Sort a vector of integers in ascending order.
+///
+/// Returns a new sorted vector; the original is unchanged.
+pub fn sort_ints(v: Vec<int>) -> Vec<int> {
+    hew_sort_ints(v)
+}
+
+/// Sort a vector of strings in alphabetical order.
+///
+/// Returns a new sorted vector; the original is unchanged.
+pub fn sort_strings(v: Vec<String>) -> Vec<String> {
+    hew_sort_strings(v)
+}
+
+/// Sort a vector of floats in ascending order.
+///
+/// Returns a new sorted vector; the original is unchanged.
+pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
+    hew_sort_floats(v)
+}
+
+/// Reverse a vector of integers.
+///
+/// Returns a new reversed vector; the original is unchanged.
+pub fn reverse(v: Vec<int>) -> Vec<int> {
+    hew_sort_reverse(v)
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_sort_ints(v: Vec<int>) -> Vec<int>;
+    fn hew_sort_strings(v: Vec<String>) -> Vec<String>;
+    fn hew_sort_floats(v: Vec<f64>) -> Vec<f64>;
+    fn hew_sort_reverse(v: Vec<int>) -> Vec<int>;
+}

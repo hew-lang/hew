@@ -45,11 +45,11 @@ trait ConnMethods {
 
 impl ConnMethods for Conn {
     /// Send a text message over the connection.
-    fn send_text(conn: Conn, msg: String) -> i32 { hew_ws_send_text(conn, msg) }
+    fn send_text(conn: Conn, msg: String) -> i32 { unsafe { hew_ws_send_text(conn, msg) } }
     /// Block until a message is received and return it.
-    fn recv(conn: Conn) -> Message { hew_ws_recv(conn) }
+    fn recv(conn: Conn) -> Message { unsafe { hew_ws_recv(conn) } }
     /// Close the WebSocket connection.
-    fn close(conn: Conn) { hew_ws_close(conn); }
+    fn close(conn: Conn) { unsafe { hew_ws_close(conn) }; }
 }
 
 // ── Message methods ───────────────────────────────────────────────────
@@ -62,7 +62,7 @@ trait MessageMethods {
 
 impl MessageMethods for Message {
     /// Release the message resources.
-    fn free(msg: Message) { hew_ws_message_free(msg); }
+    fn free(msg: Message) { unsafe { hew_ws_message_free(msg) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -75,7 +75,7 @@ impl MessageMethods for Message {
 /// let ws = websocket.connect("ws://localhost:8080/ws");
 /// ```
 pub fn connect(url: String) -> Conn {
-    hew_ws_connect(url)
+    unsafe { hew_ws_connect(url) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

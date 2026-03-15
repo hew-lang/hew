@@ -59,6 +59,61 @@ mod tests {
     use super::*;
     use std::ffi::c_void;
 
+    /// Helper: free a malloc'd pointer (reduces boilerplate).
+    unsafe fn free_ptr(ptr: *mut c_char) {
+        unsafe { libc::free(ptr.cast::<c_void>()) };
+    }
+
+    // ── malloc_cstring ───────────────────────────────────────────────────
+
+    #[test]
+    fn malloc_cstring_copies_exact_bytes() {
+        let src = b"ABC";
+        // SAFETY: src points to 3 valid bytes.
+        let ptr = unsafe { malloc_cstring(src.as_ptr(), src.len()) };
+        assert!(!ptr.is_null());
+        // Verify each byte individually, plus the NUL terminator.
+        let raw = ptr.cast::<u8>();
+        // SAFETY: ptr is freshly allocated with 4 bytes (3 + NUL).
+        unsafe {
+            assert_eq!(*raw, b'A');
+            assert_eq!(*raw.add(1), b'B');
+            assert_eq!(*raw.add(2), b'C');
+            assert_eq!(*raw.add(3), 0u8, "missing NUL terminator");
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn malloc_cstring_zero_length_produces_empty_cstr() {
+        // SAFETY: len=0 means src is never read.
+        let ptr = unsafe { malloc_cstring(std::ptr::null(), 0) };
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated string of length 0.
+        unsafe {
+            assert_eq!(*ptr.cast::<u8>(), 0u8, "should be only a NUL byte");
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(recovered, "");
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn malloc_cstring_single_byte() {
+        let src = b"X";
+        // SAFETY: src points to 1 valid byte.
+        let ptr = unsafe { malloc_cstring(src.as_ptr(), 1) };
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a freshly allocated 2-byte buffer.
+        unsafe {
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(recovered, "X");
+            free_ptr(ptr);
+        }
+    }
+
+    // ── str_to_malloc ────────────────────────────────────────────────────
+
     #[test]
     fn str_to_malloc_roundtrip() {
         let input = "hello, hew!";
@@ -68,7 +123,7 @@ mod tests {
         let recovered = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
         assert_eq!(recovered, input);
         // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { free_ptr(ptr) };
     }
 
     #[test]
@@ -79,8 +134,57 @@ mod tests {
         let recovered = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
         assert_eq!(recovered, "");
         // SAFETY: ptr was allocated with libc::malloc.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        unsafe { free_ptr(ptr) };
     }
+
+    #[test]
+    fn str_to_malloc_multibyte_utf8() {
+        // Covers multi-byte sequences: 2-byte (é), 3-byte (€), 4-byte (🍁).
+        let input = "café €42 🍁";
+        let ptr = str_to_malloc(input);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated string.
+        unsafe {
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(recovered, input);
+            assert_eq!(recovered.len(), input.len(), "byte length must match");
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn str_to_malloc_embedded_nul_bytes_are_not_special() {
+        // Rust &str can't contain NUL, but we verify the contract: the full
+        // byte content of the str is copied and the result is NUL-terminated.
+        let input = "ab";
+        let ptr = str_to_malloc(input);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a freshly allocated 3-byte buffer ("ab\0").
+        unsafe {
+            let raw = ptr.cast::<u8>();
+            assert_eq!(*raw, b'a');
+            assert_eq!(*raw.add(1), b'b');
+            assert_eq!(*raw.add(2), 0u8);
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn str_to_malloc_long_string() {
+        // Exercise a longer allocation to catch off-by-one in the copy.
+        let input: String = "hew".repeat(1000);
+        let ptr = str_to_malloc(&input);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated string.
+        unsafe {
+            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            assert_eq!(recovered.len(), 3000);
+            assert_eq!(recovered, input);
+            free_ptr(ptr);
+        }
+    }
+
+    // ── cstr_to_str ──────────────────────────────────────────────────────
 
     #[test]
     fn cstr_to_str_null_returns_none() {
@@ -94,5 +198,70 @@ mod tests {
         // SAFETY: s is a valid C string literal.
         let result = unsafe { cstr_to_str(s.as_ptr()) };
         assert_eq!(result, Some("hello"));
+    }
+
+    #[test]
+    fn cstr_to_str_empty_cstring() {
+        let s = c"";
+        // SAFETY: s is a valid (empty) C string literal.
+        let result = unsafe { cstr_to_str(s.as_ptr()) };
+        assert_eq!(result, Some(""));
+    }
+
+    #[test]
+    fn cstr_to_str_invalid_utf8_returns_none() {
+        // 0xFF is not valid in any UTF-8 sequence.
+        let bytes: &[u8] = &[0xFF, 0xFE, 0x00];
+        // SAFETY: bytes is a NUL-terminated buffer; invalid UTF-8 is intentional.
+        let result = unsafe { cstr_to_str(bytes.as_ptr().cast::<c_char>()) };
+        assert_eq!(result, None, "invalid UTF-8 should produce None");
+    }
+
+    #[test]
+    fn cstr_to_str_multibyte_utf8() {
+        let s = c"héllo 🍁";
+        // SAFETY: s is a valid C string literal.
+        let result = unsafe { cstr_to_str(s.as_ptr()) };
+        assert_eq!(result, Some("héllo 🍁"));
+    }
+
+    // ── roundtrip: str_to_malloc → cstr_to_str ───────────────────────────
+
+    #[test]
+    fn str_to_malloc_then_cstr_to_str_roundtrip() {
+        let original = "roundtrip through the ABI boundary";
+        let ptr = str_to_malloc(original);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
+        unsafe {
+            let recovered = cstr_to_str(ptr);
+            assert_eq!(recovered, Some(original));
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn roundtrip_empty_string() {
+        let ptr = str_to_malloc("");
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
+        unsafe {
+            let recovered = cstr_to_str(ptr);
+            assert_eq!(recovered, Some(""));
+            free_ptr(ptr);
+        }
+    }
+
+    #[test]
+    fn roundtrip_unicode() {
+        let original = "日本語テスト 🎵";
+        let ptr = str_to_malloc(original);
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a valid NUL-terminated C string from str_to_malloc.
+        unsafe {
+            let recovered = cstr_to_str(ptr);
+            assert_eq!(recovered, Some(original));
+            free_ptr(ptr);
+        }
     }
 }

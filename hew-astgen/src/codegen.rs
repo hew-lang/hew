@@ -832,3 +832,444 @@ fn transitive_deps(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_type_map() -> TypeMap {
+        TypeMap::new()
+    }
+
+    // ── Simple enum codegen ────────────────────────────────────────────────
+
+    #[test]
+    fn generates_simple_enum_string_dispatch() {
+        let types = vec![TypeDef::SimpleEnum(SimpleEnum {
+            name: "Visibility".to_string(),
+            variants: vec![
+                "Public".to_string(),
+                "Private".to_string(),
+                "Crate".to_string(),
+            ],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(
+            output.contains("static ast::Visibility parseVisibility(const msgpack::object &obj)"),
+            "Should declare the parser function"
+        );
+        assert!(
+            output.contains(r#"if (s == "Public") return ast::Visibility::Public;"#),
+            "Should dispatch on string value"
+        );
+        assert!(output.contains(r#"if (s == "Private")"#));
+        assert!(output.contains(r#"if (s == "Crate")"#));
+        assert!(
+            output.contains(r#"fail("unknown Visibility: " + s);"#),
+            "Should have a fallback error"
+        );
+    }
+
+    // ── Struct codegen ─────────────────────────────────────────────────────
+
+    #[test]
+    fn generates_struct_field_parsing() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "WhereClause".to_string(),
+            fields: vec![FieldDef {
+                name: "predicates".to_string(),
+                ty: RustType::Vec(Box::new(RustType::Named("WherePredicate".to_string()))),
+                serde_skip: false,
+                serde_default: false,
+                serde_rename: None,
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("static ast::WhereClause parseWhereClause("));
+        assert!(
+            output.contains(r#"result.predicates = parseVec<ast::WherePredicate>(mapReq(obj, "predicates"), parseWherePredicate)"#),
+            "Should parse Vec<Named> field with mapReq"
+        );
+    }
+
+    #[test]
+    fn generates_serde_skip_omits_field() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "Node".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "value".to_string(),
+                    ty: RustType::String,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "cached".to_string(),
+                    ty: RustType::Bool,
+                    serde_skip: true,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+            ],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("result.value = getString("));
+        assert!(
+            !output.contains("result.cached"),
+            "Skipped field should not appear in generated code"
+        );
+    }
+
+    #[test]
+    fn generates_optional_field_with_mapget() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "FnSig".to_string(),
+            fields: vec![FieldDef {
+                name: "return_type".to_string(),
+                ty: RustType::Option(Box::new(RustType::Named("TypeExpr".to_string()))),
+                serde_skip: false,
+                serde_default: false,
+                serde_rename: None,
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        // Optional fields use mapGet instead of mapReq
+        assert!(
+            output.contains(r#"mapGet(obj, "return_type")"#),
+            "Optional field should use mapGet"
+        );
+        assert!(
+            output.contains("if (return_type && !isNil(*return_type))"),
+            "Should guard with nil check"
+        );
+    }
+
+    #[test]
+    fn generates_serde_rename_uses_renamed_key() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "Field".to_string(),
+            fields: vec![FieldDef {
+                name: "ty".to_string(),
+                ty: RustType::String,
+                serde_skip: false,
+                serde_default: false,
+                serde_rename: Some("type".to_string()),
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(
+            output.contains(r#"mapReq(obj, "type")"#),
+            "Should use the serde-renamed key 'type' instead of 'ty'"
+        );
+    }
+
+    // ── Tagged enum codegen ────────────────────────────────────────────────
+
+    #[test]
+    fn generates_tagged_enum_variant_dispatch() {
+        let types = vec![TypeDef::TaggedEnum(TaggedEnum {
+            name: "CallArg".to_string(),
+            variants: vec![
+                EnumVariant::Unit {
+                    name: "Positional".to_string(),
+                },
+                EnumVariant::Newtype {
+                    name: "Named".to_string(),
+                    ty: RustType::Named("NamedArg".to_string()),
+                },
+            ],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("static ast::CallArg parseCallArg("));
+        assert!(output.contains("auto [name, payload] = getEnumVariant(obj)"));
+        assert!(
+            output.contains(r#"if (name == "Positional")"#),
+            "Should dispatch unit variant"
+        );
+        assert!(
+            output.contains(r#"if (name == "Named")"#),
+            "Should dispatch newtype variant"
+        );
+    }
+
+    #[test]
+    fn generates_struct_variant_with_field_parsing() {
+        let types = vec![TypeDef::TaggedEnum(TaggedEnum {
+            name: "Stmt".to_string(),
+            variants: vec![EnumVariant::Struct {
+                name: "Let".to_string(),
+                fields: vec![
+                    FieldDef {
+                        name: "name".to_string(),
+                        ty: RustType::String,
+                        serde_skip: false,
+                        serde_default: false,
+                        serde_rename: None,
+                    },
+                    FieldDef {
+                        name: "mutable".to_string(),
+                        ty: RustType::Bool,
+                        serde_skip: false,
+                        serde_default: false,
+                        serde_rename: None,
+                    },
+                ],
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("ast::StmtLet e;"));
+        assert!(output.contains(r#"e.name = getString(mapReq(*payload, "name"))"#));
+        assert!(output.contains(r#"e.mutable = getBool(mapReq(*payload, "mutable"))"#));
+    }
+
+    // ── Forward declarations ───────────────────────────────────────────────
+
+    #[test]
+    fn generates_forward_declarations_for_recursive_types() {
+        let types = vec![];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("static ast::Expr parseExpr(const msgpack::object &obj);"));
+        assert!(output.contains("static ast::Stmt parseStmt(const msgpack::object &obj);"));
+        assert!(output.contains("static ast::Block parseBlock(const msgpack::object &obj);"));
+    }
+
+    // ── Special-cased types are emitted in correct positions ───────────────
+
+    #[test]
+    fn skips_literal_from_auto_generation() {
+        // Literal is special-cased and should not be auto-generated,
+        // but should appear via the hard-coded parser
+        let types = vec![TypeDef::SimpleEnum(SimpleEnum {
+            name: "Literal".to_string(),
+            variants: vec!["Integer".to_string()],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        // Hard-coded literal parser should be present
+        assert!(output.contains("parseLiteral("));
+        // Auto-generated simple enum dispatch should NOT be present
+        assert!(
+            !output.contains("static ast::Literal parseLiteral(const msgpack::object &obj) {\n  auto s = getString(obj);"),
+            "Literal should not be auto-generated as a simple enum"
+        );
+    }
+
+    #[test]
+    fn output_has_correct_structure_order() {
+        let types = vec![TypeDef::SimpleEnum(SimpleEnum {
+            name: "Visibility".to_string(),
+            variants: vec!["Public".to_string()],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        // Verify structural ordering
+        let header_pos = output.find("namespace hew {").unwrap();
+        let helpers_pos = output.find("getString(").unwrap();
+        let fwd_decl_pos = output
+            .find("static ast::Expr parseExpr(const msgpack::object &obj);")
+            .unwrap();
+        let template_pos = output.find("parseSpan(").unwrap();
+        let literal_pos = output.find("parseLiteral(").unwrap();
+        let api_pos = output.find("parseMsgpackAST(").unwrap();
+        let close_pos = output.find("} // namespace hew").unwrap();
+
+        assert!(header_pos < helpers_pos);
+        assert!(helpers_pos < fwd_decl_pos);
+        assert!(fwd_decl_pos < template_pos);
+        assert!(template_pos < literal_pos);
+        assert!(literal_pos < api_pos);
+        assert!(api_pos < close_pos);
+    }
+
+    // ── Primitive type parse expressions ───────────────────────────────────
+
+    #[test]
+    fn generates_correct_primitive_parse_calls() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "AllPrimitives".to_string(),
+            fields: vec![
+                FieldDef {
+                    name: "flag".to_string(),
+                    ty: RustType::Bool,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "count".to_string(),
+                    ty: RustType::I64,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "size".to_string(),
+                    ty: RustType::U64,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "ratio".to_string(),
+                    ty: RustType::F64,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "label".to_string(),
+                    ty: RustType::String,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+                FieldDef {
+                    name: "span".to_string(),
+                    ty: RustType::Range(Box::new(RustType::Usize)),
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                },
+            ],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(output.contains("result.flag = getBool("));
+        assert!(output.contains("result.count = getInt("));
+        assert!(output.contains("result.size = getUint("));
+        assert!(output.contains("result.ratio = getFloat("));
+        assert!(output.contains("result.label = getString("));
+        assert!(output.contains("result.span = parseSpan("));
+    }
+
+    // ── Box<T> generates unique_ptr ────────────────────────────────────────
+
+    #[test]
+    fn generates_unique_ptr_for_box_field() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "IfExpr".to_string(),
+            fields: vec![FieldDef {
+                name: "body".to_string(),
+                ty: RustType::Box(Box::new(RustType::Named("Block".to_string()))),
+                serde_skip: false,
+                serde_default: false,
+                serde_rename: None,
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(
+            output.contains("std::make_unique<ast::Block>(parseBlock("),
+            "Box<Block> should generate make_unique"
+        );
+    }
+
+    // ── serde(default) on non-Option uses mapGet ───────────────────────────
+
+    #[test]
+    fn generates_mapget_for_serde_default_non_option() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "Config".to_string(),
+            fields: vec![FieldDef {
+                name: "flags".to_string(),
+                ty: RustType::Vec(Box::new(RustType::String)),
+                serde_skip: false,
+                serde_default: true,
+                serde_rename: None,
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(
+            output.contains(r#"mapGet(obj, "flags")"#),
+            "serde(default) non-Option field should use mapGet"
+        );
+    }
+
+    // ── Dependency ordering ────────────────────────────────────────────────
+
+    #[test]
+    fn dependency_order_puts_deps_before_dependents() {
+        // B depends on A, so A should come first
+        let types = vec![
+            TypeDef::Struct(StructDef {
+                name: "B".to_string(),
+                fields: vec![FieldDef {
+                    name: "inner".to_string(),
+                    ty: RustType::Named("A".to_string()),
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                }],
+            }),
+            TypeDef::Struct(StructDef {
+                name: "A".to_string(),
+                fields: vec![FieldDef {
+                    name: "val".to_string(),
+                    ty: RustType::String,
+                    serde_skip: false,
+                    serde_default: false,
+                    serde_rename: None,
+                }],
+            }),
+        ];
+        let tm = default_type_map();
+        let ordered = dependency_order(&types, &tm);
+
+        let a_pos = ordered.iter().position(|t| t.name() == "A").unwrap();
+        let b_pos = ordered.iter().position(|t| t.name() == "B").unwrap();
+        assert!(
+            a_pos < b_pos,
+            "A should be ordered before B (A at {a_pos}, B at {b_pos})"
+        );
+    }
+
+    // ── Vec<String> generates parseVec with getString lambda ───────────────
+
+    #[test]
+    fn generates_vec_string_with_get_string_lambda() {
+        let types = vec![TypeDef::Struct(StructDef {
+            name: "Names".to_string(),
+            fields: vec![FieldDef {
+                name: "items".to_string(),
+                ty: RustType::Vec(Box::new(RustType::String)),
+                serde_skip: false,
+                serde_default: false,
+                serde_rename: None,
+            }],
+        })];
+        let tm = default_type_map();
+        let output = generate(&types, &tm);
+
+        assert!(
+            output.contains("parseVec<std::string>("),
+            "Vec<String> should use parseVec<std::string>"
+        );
+        assert!(
+            output.contains("getString(o)"),
+            "Should use getString lambda for string elements"
+        );
+    }
+}

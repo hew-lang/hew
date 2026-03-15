@@ -2018,22 +2018,6 @@ impl Checker {
         }
     }
 
-    /// Push impl-level type params into `generic_ctx`.
-    /// Returns `true` if a scope was pushed (caller must pop).
-    fn push_impl_type_params(&mut self, type_params: Option<&Vec<TypeParam>>) -> bool {
-        let mut bindings = std::collections::HashMap::new();
-        if let Some(tps) = type_params {
-            for tp in tps {
-                bindings.insert(tp.name.clone(), Ty::Var(TypeVar::fresh()));
-            }
-        }
-        if bindings.is_empty() {
-            return false;
-        }
-        self.generic_ctx.push(bindings);
-        true
-    }
-
     /// Check whether a parameter is the receiver (i.e. the implicit first
     /// parameter of an impl/trait method).  A parameter is a receiver if its
     /// declared type matches `Self` or the current impl target type.
@@ -3427,11 +3411,7 @@ impl Checker {
                 }
                 Ty::Never
             }
-            Stmt::Break { .. } => {
-                self.check_stmt(stmt, span);
-                Ty::Never
-            }
-            Stmt::Continue { .. } => {
+            Stmt::Break { .. } | Stmt::Continue { .. } => {
                 self.check_stmt(stmt, span);
                 Ty::Never
             }

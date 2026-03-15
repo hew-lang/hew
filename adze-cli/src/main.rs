@@ -570,32 +570,30 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
         return;
     }
 
-    // Resolve dependencies to exact versions.
-    // First pass: try resolving against locally installed packages.
-    let resolved = match resolver::resolve_all(&m, registry) {
-        Ok(r) => r,
-        Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
-            // Second pass: fetch missing packages from the remote registry.
-            fetch_missing_packages(&failures, &m, registry, &make_client(registry_name));
-            // Re-resolve now that packages are installed.
-            match resolver::resolve_all(&m, registry) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("adze install: {e}");
+    // Resolve dependencies to exact versions, fetching any missing transitive
+    // packages until the graph resolves cleanly.
+    let api_client = make_client(registry_name);
+    let resolved = loop {
+        match resolver::resolve_all(&m, registry) {
+            Ok(resolved) => break resolved,
+            Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
+                if !fetch_missing_packages(&failures, registry, &api_client) {
+                    eprintln!("adze install: could not resolve the dependency graph");
                     std::process::exit(1);
                 }
             }
-        }
-        Err(e) => {
-            eprintln!("adze install: {e}");
-            std::process::exit(1);
+            Err(e) => {
+                eprintln!("adze install: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
     // Build lockfile entries from resolved versions.
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
 
-    for (name, version) in &resolved {
+    for (name, package) in &resolved {
+        let version = &package.version;
         let target = registry.package_dir(name, version);
         if !registry.is_installed(name, version) {
             eprintln!("warning: {name}@{version} not found in global registry (~/.adze/packages/)");
@@ -616,6 +614,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
         lock_packages.push(lockfile::LockedPackage {
             name: name.clone(),
+            requirement: package.direct_requirement.clone(),
             version: version.clone(),
             checksum: pkg_checksum,
             signature: None,
@@ -663,7 +662,7 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
 
 /// Fetch missing packages from the remote registry.
 ///
-/// For each `(name, requirement)` in `failures`, queries the remote API
+/// For each unresolved package in `failures`, queries the remote API
 /// for available versions, finds the best match, downloads the tarball,
 /// and unpacks it into the global registry.
 #[expect(
@@ -671,17 +670,16 @@ fn cmd_install(locked: bool, registry: &registry::Registry, registry_name: Optio
     reason = "CLI command handler requires many steps"
 )]
 fn fetch_missing_packages(
-    failures: &[(String, String)],
-    manifest: &manifest::HewManifest,
+    failures: &[resolver::UnresolvedDep],
     registry: &registry::Registry,
     api_client: &client::RegistryClient,
-) {
-    for (name, _req_from_error) in failures {
-        // Look up the original version requirement from the manifest.
-        let Some(dep_spec) = manifest.dependencies.get(name) else {
-            continue;
-        };
-        let requirement = dep_spec.version_req();
+) -> bool {
+    let mut fetched_any = false;
+
+    for failure in failures {
+        let name = &failure.package;
+        let requirements = &failure.requirements;
+        let requirement_summary = requirements.join(", ");
 
         eprint!("Fetching {name} from registry... ");
 
@@ -706,7 +704,10 @@ fn fetch_missing_packages(
         };
 
         // Find the best matching version.
-        let matched = match resolver::resolve_version_from_entries(&entries, requirement) {
+        let matched = match resolver::resolve_version_from_entries_with_requirements(
+            &entries,
+            requirements,
+        ) {
             Ok(result) => result,
             Err(e) => {
                 eprintln!("failed");
@@ -716,7 +717,7 @@ fn fetch_missing_packages(
         };
         let Some(resolved) = matched else {
             eprintln!("no matching version");
-            eprintln!("  warning: no version of {name} matches {requirement}");
+            eprintln!("  warning: no version of {name} matches [{requirement_summary}]");
             continue;
         };
         let version = &resolved.version;
@@ -795,8 +796,11 @@ fn fetch_missing_packages(
             continue;
         }
 
+        fetched_any = true;
         eprintln!("{name}@{version}");
     }
+
+    fetched_any
 }
 
 /// Verify an Ed25519 signature over a checksum by fetching the public key

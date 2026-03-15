@@ -1017,9 +1017,11 @@ mod tests {
         crate::tracing::hew_trace_reset();
         crate::tracing::hew_trace_enable(1);
 
+        // SAFETY: creating a new mailbox with no preconditions.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
         assert_eq!(
+            // SAFETY: mailbox is non-null and was just created above.
             unsafe { mailbox::hew_mailbox_send(mailbox, 77, ptr::null_mut(), 0) },
             0
         );
@@ -1063,6 +1065,7 @@ mod tests {
             msg_type: 0,
             timestamp_ns: 0,
         }; 4];
+        // SAFETY: events buffer is valid and large enough for 4 entries.
         let count = unsafe { crate::tracing::hew_trace_drain(events.as_mut_ptr(), 4) };
         assert_eq!(count, 2);
         assert_eq!(events[0].event_type, crate::tracing::SPAN_BEGIN);
@@ -1071,6 +1074,7 @@ mod tests {
         assert_eq!(events[1].event_type, crate::tracing::SPAN_END);
         assert_eq!(events[1].msg_type, 77);
 
+        // SAFETY: mailbox was created in this test and is not used afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
         crate::tracing::hew_trace_reset();
     }

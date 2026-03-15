@@ -3995,6 +3995,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "comprehensive test covering all actor type normalization variants"
+    )]
     fn test_normalize_actor_types() {
         let registry = test_registry();
         let mut items: Vec<Spanned<Item>> = vec![(

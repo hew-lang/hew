@@ -116,10 +116,15 @@ impl CoroStack {
                 return None;
             }
 
-            // Set the guard page at the bottom to PAGE_NOACCESS.
+            // SAFETY: `base` is a valid pointer from `VirtualAlloc` (checked
+            // non-null above). `GUARD_SIZE` is within the allocation. Marks
+            // the bottom page as inaccessible for stack overflow detection.
             let mut old_protect: u32 = 0;
             let ret = unsafe { VirtualProtect(base, GUARD_SIZE, PAGE_NOACCESS, &mut old_protect) };
             if ret == 0 {
+                // SAFETY: `base` was returned by the preceding `VirtualAlloc`
+                // with `MEM_COMMIT | MEM_RESERVE`. Passing 0 and `MEM_RELEASE`
+                // releases the entire region.
                 unsafe { VirtualFree(base, 0, MEM_RELEASE) };
                 return None;
             }

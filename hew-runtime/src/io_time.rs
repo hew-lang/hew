@@ -593,6 +593,8 @@ mod platform {
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
+        // SAFETY: `libc::kevent` is a C struct of integer and pointer fields;
+        // an all-zeroes bit pattern is a valid representation.
         let mut kq_events: [libc::kevent; MAX_EVENTS] = unsafe { std::mem::zeroed() };
 
         // Build timeout: negative means block indefinitely (pass null).

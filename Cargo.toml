@@ -13,6 +13,7 @@ members = [
   "std/crypto/crypto",
   "std/crypto/jwt",
   "std/crypto/password",
+  "std/net/dns",
   "std/net/http",
   "std/net/ipnet",
   "std/net/mime",

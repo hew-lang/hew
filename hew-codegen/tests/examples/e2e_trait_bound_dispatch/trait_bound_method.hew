@@ -1,0 +1,23 @@
+// Test: method call on bounded generic type parameter.
+trait Show {
+    fn show(s: Self) -> String;
+}
+
+type Point {
+    x: int,
+    y: int,
+}
+
+impl Show for Point {
+    fn show(p: Point) -> String {
+        return f"({p.x}, {p.y})";
+    }
+}
+
+fn display<T: Show>(item: T) {
+    println(item.show());
+}
+
+fn main() {
+    display<Point>(Point { x: 1, y: 2 });
+}

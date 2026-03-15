@@ -5123,6 +5123,45 @@ impl Checker {
             return self.check_call_with_type(&func_ty, args, span);
         }
 
+        // Qualified trait method call: e.g. `Measurable::measure(item)`.
+        // If the function name has the form `TraitName::method` and TraitName
+        // is a known trait, resolve the method from the trait definition.
+        if let Some((trait_name, method_name)) = func_name.split_once("::") {
+            if self.trait_defs.contains_key(trait_name) {
+                // Use the full signature (receiver included) for qualified calls.
+                if let Some(sig) =
+                    self.lookup_trait_method_inner(trait_name, method_name, false)
+                {
+                    // The trait sig includes all non-receiver params.
+                    // For qualified calls the first positional arg is the receiver.
+                    if args.len() != sig.params.len() {
+                        self.report_error(
+                            TypeErrorKind::ArityMismatch,
+                            span,
+                            format!(
+                                "`{func_name}` expects {} argument(s), found {}",
+                                sig.params.len(),
+                                args.len(),
+                            ),
+                        );
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(param_ty) = sig.params.get(i) {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, param_ty);
+                        }
+                    }
+                    return sig.return_type;
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method_name}` in trait `{trait_name}`"),
+                );
+                return Ty::Error;
+            }
+        }
+
         let similar = crate::error::find_similar(
             &func_name,
             self.fn_sigs
@@ -6409,6 +6448,60 @@ impl Checker {
                     }
                     return sig.return_type;
                 }
+                // Type-parameter method dispatch: resolve from trait bounds.
+                // When the receiver is a generic type parameter (e.g. `T` in
+                // `fn report<T: Measurable>(item: T)`), look up the method
+                // from the traits that bound that parameter.
+                let bounds_for_type_param =
+                    self.current_function.as_ref().and_then(|fn_name| {
+                        self.fn_sigs.get(fn_name).and_then(|sig| {
+                            if sig.type_params.contains(name) {
+                                sig.type_param_bounds.get(name).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                if let Some(bounds) = bounds_for_type_param {
+                    for bound_trait in &bounds {
+                        if let Some(mut trait_sig) =
+                            self.lookup_trait_method(bound_trait, method)
+                        {
+                            // Replace `Self` references with the type parameter type.
+                            let self_ty = resolved.clone();
+                            for param_ty in &mut trait_sig.params {
+                                *param_ty = self.substitute_named_param(
+                                    param_ty, "Self", &self_ty,
+                                );
+                            }
+                            trait_sig.return_type = self.substitute_named_param(
+                                &trait_sig.return_type,
+                                "Self",
+                                &self_ty,
+                            );
+
+                            if args.len() != trait_sig.params.len() {
+                                self.report_error(
+                                    TypeErrorKind::ArityMismatch,
+                                    span,
+                                    format!(
+                                        "method '{}' expects {} argument(s), found {}",
+                                        method,
+                                        trait_sig.params.len(),
+                                        args.len(),
+                                    ),
+                                );
+                            }
+                            for (i, arg) in args.iter().enumerate() {
+                                if let Some(param_ty) = trait_sig.params.get(i) {
+                                    let (expr, sp) = arg.expr();
+                                    self.check_against(expr, sp, param_ty);
+                                }
+                            }
+                            return trait_sig.return_type;
+                        }
+                    }
+                }
                 // Synthesize args even if method unknown (for error recovery)
                 for arg in args {
                     let (expr, sp) = arg.expr();
@@ -7299,6 +7392,18 @@ impl Checker {
             .map(|param| self.freshen_inner(param, &mut mapping))
             .collect();
         let freshened_ret = self.freshen_inner(&ret, &mut mapping);
+
+        // Link original type-arg variables to their freshened counterparts so
+        // that unification on the freshened params propagates back, allowing
+        // enforce_type_param_bounds to resolve concrete types from the args.
+        for ta in &resolved_type_args {
+            if let Ty::Var(v) = ta {
+                if let Some(fresh_ty) = mapping.get(&v.0) {
+                    self.subst.insert(*v, fresh_ty.clone());
+                }
+            }
+        }
+
         (freshened_params, freshened_ret, resolved_type_args)
     }
 
@@ -7410,13 +7515,29 @@ impl Checker {
     /// Look up a method on a trait, walking super-traits if needed.
     /// Returns a `FnSig` with the receiver filtered out.
     fn lookup_trait_method(&mut self, trait_name: &str, method: &str) -> Option<FnSig> {
+        self.lookup_trait_method_inner(trait_name, method, true)
+    }
+
+    /// Look up a method on a trait, optionally keeping the receiver parameter.
+    /// `skip_receiver` = true gives the form used by method-call syntax;
+    /// `skip_receiver` = false gives the full signature for qualified calls.
+    fn lookup_trait_method_inner(
+        &mut self,
+        trait_name: &str,
+        method: &str,
+        skip_receiver: bool,
+    ) -> Option<FnSig> {
         // Check the trait's own methods — clone data to release borrow before resolve_type_expr
         let found_method = self
             .trait_defs
             .get(trait_name)
             .and_then(|info| info.methods.iter().find(|m| m.name == method).cloned());
         if let Some(m) = found_method {
-            let skip = usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)));
+            let skip = if skip_receiver {
+                usize::from(m.params.first().is_some_and(|p| self.is_receiver_param(p)))
+            } else {
+                0
+            };
             let params: Vec<Ty> = m
                 .params
                 .iter()
@@ -7445,7 +7566,9 @@ impl Checker {
         let supers = self.trait_super.get(trait_name).cloned();
         if let Some(supers) = supers {
             for super_trait in &supers {
-                if let Some(sig) = self.lookup_trait_method(super_trait, method) {
+                if let Some(sig) =
+                    self.lookup_trait_method_inner(super_trait, method, skip_receiver)
+                {
                     return Some(sig);
                 }
             }

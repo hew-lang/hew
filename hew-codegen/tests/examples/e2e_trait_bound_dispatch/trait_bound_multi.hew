@@ -1,0 +1,33 @@
+// Test: multiple trait bounds on a single type parameter.
+trait Named {
+    fn name(n: Self) -> String;
+}
+
+trait Measured {
+    fn size(s: Self) -> int;
+}
+
+type Box {
+    label: String,
+    width: int,
+}
+
+impl Named for Box {
+    fn name(b: Box) -> String {
+        return b.label;
+    }
+}
+
+impl Measured for Box {
+    fn size(b: Box) -> int {
+        return b.width;
+    }
+}
+
+fn describe<T: Named + Measured>(item: T) {
+    println(f"{item.name()}: {item.size()}");
+}
+
+fn main() {
+    describe<Box>(Box { label: "crate", width: 42 });
+}

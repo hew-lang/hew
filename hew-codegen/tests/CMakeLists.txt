@@ -529,6 +529,10 @@ add_e2e_file_test(trait_inherit         e2e_trait_inherit trait_inherit)
 add_e2e_file_test(trait_impl            e2e_traits trait_impl)
 add_e2e_file_test(trait_multi_impl      e2e_traits trait_multi_impl)
 
+# ── Trait-bounded generic dispatch tests ────────────────────────────────────
+add_e2e_file_test(trait_bound_method    e2e_trait_bound_dispatch trait_bound_method)
+add_e2e_file_test(trait_bound_multi     e2e_trait_bound_dispatch trait_bound_multi)
+
 # ── Inherent impl tests ─────────────────────────────────────────────────────
 add_e2e_file_test(struct_impl_method    e2e_impl struct_impl_method)
 add_e2e_file_test(self_sugar            e2e_self_sugar self_sugar)

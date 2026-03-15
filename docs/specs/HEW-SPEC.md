@@ -12,7 +12,10 @@ This document specifies: goals, core semantics, type/effects model, module and t
 **Changes in v0.9.1:**
 
 _Removed `self` keyword; named receivers; bare field access in actors; `this` for actor self-reference._
+_Added §11.4: Labelled loops (`@label:`) and break-with-value._
 
+- §11.4: Documented labelled loop syntax (`@label: loop/while/for`) and `break @label`/`continue @label`
+- §11.4: Documented break-with-value (`break expr;`) for value-producing loops
 - §2.1.1: Actor handlers access fields by bare name (`count += 1` not `self.count += 1`)
 - §3.2.1: Purity rule updated — "assignment to actor fields" replaces "assignment to `self.field`"
 - §3.6: Trait methods use named receivers (`fn display(val: Self) -> String`), not `self`
@@ -4704,6 +4707,52 @@ let result = await task | after 5s;        // Timeout after 5 seconds
 
 ```ebnf
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
+```
+
+### 11.4 Labelled Loops and Break-with-Value
+
+Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`. Labels allow `break` and `continue` to target a specific enclosing loop in nested contexts.
+
+**Syntax:**
+
+```hew
+@outer: loop {
+    @inner: while condition {
+        if done {
+            break @outer;      // exits the outer loop
+        }
+        if skip {
+            continue @outer;   // continues the outer loop
+        }
+    }
+}
+```
+
+Labels are scoped to the loop they annotate. Using an undefined label is a compile-time error.
+
+**Break-with-value:**
+
+`break` may carry an expression whose value becomes the result of the loop when used in a value-producing position (e.g., the last statement in a block):
+
+```hew
+var result: int = 0;
+loop {
+    if found {
+        break result;    // the loop "returns" result via the break value
+    }
+}
+```
+
+The break value is stored in a compiler-managed temporary and loaded after the loop exits.
+
+**Grammar:**
+
+```ebnf
+LoopStmt       = ("@" Ident ":")? "loop" Block ;
+WhileStmt      = ("@" Ident ":")? "while" Expr Block ;
+ForStmt        = ("@" Ident ":")? "for" Pattern "in" Expr Block ;
+BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
+ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ```
 
 ---

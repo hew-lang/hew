@@ -159,6 +159,20 @@ function(add_e2e_file_test_sorted TEST_NAME CATEGORY HEW_NAME)
   )
 endfunction()
 
+# Helper: verify a .hew file compiles but panics at runtime with expected stderr
+function(add_e2e_panic_test TEST_NAME CATEGORY HEW_NAME EXPECTED_STDERR)
+  set(HEW_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.hew)
+  add_test(
+    NAME panic_${CATEGORY}_${HEW_NAME}
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DHEW_FILE=${HEW_FILE}
+      -DEXPECTED_STDERR=${EXPECTED_STDERR}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/panic_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_e2e_panic_test.cmake
+  )
+endfunction()
+
 # Helper: verify a .hew file FAILS to compile with an expected error message
 function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
   set(HEW_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.hew)
@@ -175,6 +189,9 @@ endfunction()
 
 # ── Negative tests (verify compile-time error detection) ─────────────────────
 add_e2e_reject_test(undefined_var  e2e_negative undefined_var "undefined variable")
+
+# ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
+add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
 
 # ── WASM target tests (compile with --target=wasm32-wasi, run with wasmtime) ──
 # These validate that Hew programs produce identical output on native and WASM.

@@ -1594,11 +1594,13 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { CURRENT_ACTOR_WASM }
 }
 
-/// Deliberately crash the current actor by writing to null.
+/// Trigger a panic in the current execution context.
 ///
-/// The crash signal handler catches the SIGSEGV, marks the actor as
-/// `Crashed`, and longjmps back to the scheduler. The supervisor (if
-/// any) will restart the actor according to its restart strategy.
+/// Inside an actor: longjmps back to the scheduler, which marks the
+/// actor as `Crashed`. The supervisor (if any) will restart the actor
+/// according to its restart strategy.
+///
+/// Outside an actor (e.g. `main`): exits the process with code 101.
 ///
 /// This function never returns.
 #[no_mangle]
@@ -1610,19 +1612,15 @@ pub extern "C" fn hew_panic() {
     // SAFETY: Called from actor dispatch context (stack chain includes the
     // scheduler's sigsetjmp frame). If recovery context exists, longjmps
     // directly — never returns. If no context, returns and we fall through
-    // to the null dereference.
+    // to a clean process exit.
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
         crate::signal::try_direct_longjmp();
     }
 
-    // No recovery context — trigger a crash signal as fallback.
-    //
-    // SAFETY: Intentional null dereference to trigger SIGSEGV, which the
-    // crash signal handler catches and recovers from via siglongjmp.
-    unsafe {
-        core::ptr::write_volatile(core::ptr::null_mut::<i32>(), 0xDEAD_i32);
-    }
+    // No recovery context (e.g. panic called from main) — exit cleanly.
+    // Exit code 101 follows Rust's convention for panics.
+    std::process::exit(101);
 }
 
 /// Crash the current actor after printing a message.

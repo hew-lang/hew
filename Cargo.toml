@@ -18,6 +18,7 @@ members = [
   "std/net/mime",
   "std/net/quic",
   "std/net/smtp",
+  "std/net/tls",
   "std/net/url",
   "std/net/websocket",
   "std/time/cron",

@@ -50,6 +50,9 @@ trait StreamMethods {
 
     /// Consume the entire stream and concatenate as a single string.
     fn collect(strm: Stream) -> String;
+
+    /// Yield at most `n` items from this stream.
+    fn take(strm: Stream, n: i64) -> Stream;
 }
 
 impl StreamMethods for Stream {
@@ -63,6 +66,8 @@ impl StreamMethods for Stream {
     fn chunks(strm: Stream, size: i64) -> Stream { unsafe { hew_stream_chunks(strm, size) } }
     /// Consume the entire stream and concatenate as a single string.
     fn collect(strm: Stream) -> String { unsafe { hew_stream_collect_string(strm) } }
+    /// Yield at most `n` items from this stream.
+    fn take(strm: Stream, n: i64) -> Stream { unsafe { hew_stream_take(strm, n) } }
 }
 
 // ── Sink methods ──────────────────────────────────────────────────────
@@ -182,6 +187,7 @@ extern "C" {
     fn hew_stream_lines(stream: Stream) -> Stream;
     fn hew_stream_chunks(stream: Stream, size: i64) -> Stream;
     fn hew_stream_pipe(source: Stream, dest: Sink);
+    fn hew_stream_take(stream: Stream, n: i64) -> Stream;
     fn hew_sink_write_string(sink: Sink, data: String);
     fn hew_sink_flush(sink: Sink);
     fn hew_sink_close(sink: Sink);

@@ -153,6 +153,15 @@ fn collect_inlay_hints_from_stmt(
                 collect_inlay_hints_from_expr(source, &arm.body.0, tc, hints);
             }
         }
+        Stmt::Defer(expr) => {
+            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+        }
+        Stmt::Assign { value, .. } => {
+            collect_inlay_hints_from_expr(source, &value.0, tc, hints);
+        }
+        Stmt::Return(Some(val)) => {
+            collect_inlay_hints_from_expr(source, &val.0, tc, hints);
+        }
         Stmt::Expression(expr) => {
             collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
         }

@@ -359,6 +359,12 @@ fn collect_locals_from_stmt(
         Stmt::Defer(expr) => {
             collect_locals_from_expr(&expr.0, offset, locals);
         }
+        Stmt::Assign { value, .. } => {
+            collect_locals_from_expr(&value.0, offset, locals);
+        }
+        Stmt::Return(Some(val)) => {
+            collect_locals_from_expr(&val.0, offset, locals);
+        }
         _ => {}
     }
 }
@@ -478,6 +484,10 @@ fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
 
 /// Snippet completions for common language constructs.
 #[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "each snippet entry is a simple data tuple; splitting would fragment the table"
+)]
 pub fn keyword_snippets() -> Vec<CompletionItem> {
     let snippets = [
         (
@@ -560,6 +570,16 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "defer",
             "defer ${0:expr};",
             "defer expr;",
+        ),
+        (
+            "while let",
+            "while let ${1:Some(value)} = ${2:expr} {\n\t$0\n}",
+            "while let pattern = expr { ... }",
+        ),
+        (
+            "if let",
+            "if let ${1:Some(value)} = ${2:expr} {\n\t$0\n}",
+            "if let pattern = expr { ... }",
         ),
         (
             "scope",

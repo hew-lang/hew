@@ -3740,8 +3740,25 @@ struct FuncPtrOpLowering : public mlir::OpConversionPattern<hew::FuncPtrOp> {
     // Create func.constant to get a typed function reference, then
     // use the type converter's materialization to bridge to !llvm.ptr.
     // FuncToLLVM + ReconcileUnrealizedCasts will resolve this cleanly.
+    //
+    // Use the type converter to build the FunctionType so it matches the
+    // function's signature after partial conversion (e.g. !hew.string_ref
+    // becomes !llvm.ptr).
+    auto *tc = getTypeConverter();
+    auto origFuncType = funcOp.getFunctionType();
+    llvm::SmallVector<mlir::Type> convertedInputs, convertedResults;
+    for (auto t : origFuncType.getInputs()) {
+      auto ct = tc->convertType(t);
+      convertedInputs.push_back(ct ? ct : t);
+    }
+    for (auto t : origFuncType.getResults()) {
+      auto ct = tc->convertType(t);
+      convertedResults.push_back(ct ? ct : t);
+    }
+    auto convertedFuncType = mlir::FunctionType::get(
+        rewriter.getContext(), convertedInputs, convertedResults);
     auto funcRef =
-        mlir::func::ConstantOp::create(rewriter, loc, funcOp.getFunctionType(),
+        mlir::func::ConstantOp::create(rewriter, loc, convertedFuncType,
                                        mlir::SymbolRefAttr::get(rewriter.getContext(), funcName));
     // Bridge func type -> !llvm.ptr via UnrealizedConversionCast.
     // This is the standard MLIR pattern: the FuncToLLVM pass + reconcile

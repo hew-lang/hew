@@ -1,0 +1,15 @@
+// Test closure return-type coercion: a closure returning i32
+// (e.g. String.len()) is passed where fn(String) -> int (i64) is expected.
+// The codegen must widen the return value automatically.
+
+fn apply(f: fn(String) -> int, s: String) -> int {
+    f(s)
+}
+
+fn main() {
+    // Closure stored in a variable infers i32 from String.len(),
+    // then coerced to fn(String) -> int (i64) at the call site.
+    let len_fn = (s: String) => s.len();
+    let result = apply(len_fn, "hello");
+    println(f"{result}");
+}

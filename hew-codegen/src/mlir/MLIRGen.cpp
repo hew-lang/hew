@@ -670,6 +670,139 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
     }
   }
 
+  // ClosureType → ClosureType coercion: return-type widening via wrapper thunk.
+  // When a closure's inferred return type (e.g. i32 from String.len()) differs
+  // from the expected return type (e.g. i64), generate a thin wrapper that
+  // forwards the call and coerces the result.
+  if (auto srcClosure = mlir::dyn_cast<hew::ClosureType>(value.getType())) {
+    if (auto dstClosure = mlir::dyn_cast<hew::ClosureType>(targetType)) {
+      if (srcClosure.getInputTypes() == dstClosure.getInputTypes() &&
+          srcClosure.getResultType() != dstClosure.getResultType()) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto srcRet = srcClosure.getResultType();
+        auto dstRet = dstClosure.getResultType();
+
+        std::string thunkName =
+            "__closure_coerce_" + std::to_string(closureCoercionCounter++);
+
+        // Wrapper env layout: { ptr fnPtr, ptr envPtr } — stores the
+        // original closure's function pointer and environment.
+        auto envStructType =
+            mlir::LLVM::LLVMStructType::getLiteral(&context, {ptrType, ptrType});
+
+        // Build thunk signature: (ptr %env, user_params...) -> dstRet
+        // Use LLVM storage types for the thunk signature and the inner
+        // indirect call so that func.call_indirect passes legality checks.
+        auto llvmSrcRet = toLLVMStorageType(srcRet);
+        auto llvmDstRet = toLLVMStorageType(dstRet);
+
+        llvm::SmallVector<mlir::Type, 8> thunkParams;
+        thunkParams.push_back(ptrType);
+        for (auto inTy : dstClosure.getInputTypes())
+          thunkParams.push_back(toLLVMStorageType(inTy));
+
+        bool dstHasReturn = dstRet && !mlir::isa<mlir::NoneType>(dstRet);
+        auto thunkFuncType =
+            dstHasReturn ? mlir::FunctionType::get(&context, thunkParams, {llvmDstRet})
+                         : mlir::FunctionType::get(&context, thunkParams, {});
+
+        auto savedIP = builder.saveInsertionPoint();
+        builder.setInsertionPointToEnd(module.getBody());
+        auto thunkOp =
+            mlir::func::FuncOp::create(builder, location, thunkName, thunkFuncType);
+        thunkOp.setVisibility(mlir::SymbolTable::Visibility::Private);
+
+        auto &entry = *thunkOp.addEntryBlock();
+        builder.setInsertionPointToStart(&entry);
+
+        auto envArg = entry.getArgument(0);
+
+        // Extract the original closure's function pointer from the wrapper env.
+        auto fnGep = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, envStructType, envArg,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0),
+                                                static_cast<int32_t>(0)});
+        auto origFnPtr =
+            mlir::LLVM::LoadOp::create(builder, location, ptrType, fnGep);
+
+        // Extract the original closure's environment pointer.
+        auto envGep = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, envStructType, envArg,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0),
+                                                static_cast<int32_t>(1)});
+        auto origEnvPtr =
+            mlir::LLVM::LoadOp::create(builder, location, ptrType, envGep);
+
+        // Build the original closure's indirect-call signature.
+        llvm::SmallVector<mlir::Type, 8> origCallParams;
+        origCallParams.push_back(ptrType);
+        for (auto inTy : srcClosure.getInputTypes())
+          origCallParams.push_back(toLLVMStorageType(inTy));
+
+        bool srcHasReturn = srcRet && !mlir::isa<mlir::NoneType>(srcRet);
+        auto origCallFuncType =
+            srcHasReturn
+                ? mlir::FunctionType::get(&context, origCallParams, {llvmSrcRet})
+                : mlir::FunctionType::get(&context, origCallParams, {});
+
+        auto fnRef =
+            hew::BitcastOp::create(builder, location, origCallFuncType, origFnPtr);
+
+        llvm::SmallVector<mlir::Value, 8> callArgs;
+        callArgs.push_back(origEnvPtr);
+        for (unsigned i = 1; i < entry.getNumArguments(); ++i)
+          callArgs.push_back(entry.getArgument(i));
+
+        auto callOp =
+            mlir::func::CallIndirectOp::create(builder, location, fnRef, callArgs);
+
+        if (dstHasReturn && srcHasReturn) {
+          auto result = callOp.getResult(0);
+          auto coerced = coerceType(result, llvmDstRet, location);
+          mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{coerced});
+        } else {
+          mlir::func::ReturnOp::create(builder, location);
+        }
+
+        builder.restoreInsertionPoint(savedIP);
+
+        // Populate the wrapper env with the original closure's pointers.
+        auto srcFnPtr =
+            hew::ClosureGetFnOp::create(builder, location, ptrType, value);
+        auto srcEnvPtr =
+            hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
+
+        // RC-clone the original env so it stays alive while the wrapper exists.
+        hew::RcCloneOp::create(builder, location, ptrType, srcEnvPtr);
+
+        auto envSize = hew::SizeOfOp::create(builder, location, sizeType(),
+                                             mlir::TypeAttr::get(envStructType));
+        auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+        auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+        auto wrapperEnv = hew::RcNewOp::create(builder, location, ptrType,
+                                               nullData, envSize, nullDropFn);
+
+        auto fnStore = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, envStructType, wrapperEnv,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0),
+                                                static_cast<int32_t>(0)});
+        mlir::LLVM::StoreOp::create(builder, location, srcFnPtr, fnStore);
+
+        auto envStore = mlir::LLVM::GEPOp::create(
+            builder, location, ptrType, envStructType, wrapperEnv,
+            llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0),
+                                                static_cast<int32_t>(1)});
+        mlir::LLVM::StoreOp::create(builder, location, srcEnvPtr, envStore);
+
+        auto thunkFnPtr = hew::FuncPtrOp::create(
+            builder, location, ptrType,
+            mlir::SymbolRefAttr::get(&context, thunkName));
+        return hew::ClosureCreateOp::create(builder, location, dstClosure,
+                                            thunkFnPtr, wrapperEnv);
+      }
+    }
+  }
+
   // [T; N] → Vec<T> coercion: create Vec, push each array element
   if (auto arrayType = mlir::dyn_cast<hew::HewArrayType>(value.getType())) {
     if (auto vecType = mlir::dyn_cast<hew::VecType>(targetType)) {

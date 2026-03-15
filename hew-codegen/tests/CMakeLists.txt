@@ -510,6 +510,9 @@ add_e2e_file_test(coalesce_basic        e2e_coalesce coalesce_basic)
 # ── Closure first-class tests ─────────────────────────────────────────────────
 add_e2e_file_test(closure_firstclass    e2e_closure_firstclass closure_firstclass)
 
+# ── Closure return-type coercion tests ────────────────────────────────────────
+add_e2e_file_test(closure_return_coercion  e2e_closure_coercion closure_return_coercion)
+
 # ── Closure env Rc memory management tests ────────────────────────────────────
 add_e2e_file_test(closure_env_rc        e2e_closure_env_rc closure_env_rc)
 

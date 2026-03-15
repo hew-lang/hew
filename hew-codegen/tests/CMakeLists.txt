@@ -799,6 +799,9 @@ add_e2e_file_test(indirect_expr              e2e_indirect_enum indirect_expr)
 add_e2e_file_test(indirect_list              e2e_indirect_enum indirect_list)
 add_e2e_file_test(indirect_option_tree       e2e_indirect_enum indirect_option_tree)
 
+# ── Qualified enum constructor tests ──────────────────────────────────────
+add_e2e_file_test(enum_qualified_construct   e2e_enum_qualified enum_qualified_construct)
+
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).
 # These compile raw .ll files with coroutine intrinsics and verify output.

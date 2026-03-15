@@ -294,6 +294,7 @@ void MLIRGen::generateWireDecl(const ast::WireDecl &decl) {
     std::string enumName = decl.name;
     for (const auto &variant : info.variants) {
       variantLookup[variant.name] = {enumName, variant.index};
+      variantLookup[enumName + "::" + variant.name] = {enumName, variant.index};
     }
     enumTypes[enumName] = std::move(info);
 

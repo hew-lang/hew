@@ -2589,8 +2589,10 @@ void MLIRGen::registerTypeDecl(const ast::TypeDecl &decl) {
       pendingIndirectEnums.erase(declName);
 
     // Register variant name → (enum, index) for quick lookup
+    // Both unqualified ("Circle") and qualified ("Shape::Circle") forms.
     for (const auto &v : info.variants) {
       variantLookup[v.name] = {info.name, v.index};
+      variantLookup[info.name + "::" + v.name] = {info.name, v.index};
     }
 
     // Determine if any variant has payloads

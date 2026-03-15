@@ -1,0 +1,37 @@
+// Test: nested/child scope shadowing produces a warning but the program compiles and runs.
+// A variable declared in an outer scope whose name is reused in a nested block
+// should emit a shadowing warning, not a compile error.
+
+fn compute(n: int) -> int {
+    let result = n * 2;
+    if n > 5 {
+        // 'result' in this nested scope shadows the outer 'result' — warning expected.
+        let result = n + 100;
+        result
+    } else {
+        result
+    }
+}
+
+fn multi_level(n: int) -> int {
+    let val = n;
+    if n > 0 {
+        if n > 10 {
+            // Two levels deep — still a warning, not an error.
+            let val = n * 3;
+            val
+        } else {
+            val + 1
+        }
+    } else {
+        val
+    }
+}
+
+fn main() {
+    println(compute(3));
+    println(compute(10));
+    println(multi_level(0));
+    println(multi_level(5));
+    println(multi_level(15));
+}

@@ -145,8 +145,8 @@ fn duplicate_definition_same_function() {
 }
 
 // ── 7. Shadowing — inner scope binding shadows outer scope ───────────
-// The checker only fires Shadowing when a binding in an inner scope
-// shadows one from an outer scope (find_in_outer_scope skips current).
+// Nested/child scope shadowing emits a warning (not an error); only same-scope
+// rebinding and actor field shadowing are hard errors.
 
 #[test]
 fn shadowing_inner_scope_shadows_outer_binding() {
@@ -164,10 +164,19 @@ fn shadowing_inner_scope_shadows_outer_binding() {
     );
     assert!(
         output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::Shadowing),
+        "Expected Shadowing warning, got warnings: {:?}, errors: {:?}",
+        output.warnings,
+        output.errors
+    );
+    assert!(
+        !output
             .errors
             .iter()
             .any(|e| e.kind == TypeErrorKind::Shadowing),
-        "Expected Shadowing error, got errors: {:?}",
+        "Nested scope shadowing should be a warning, not an error, got: {:?}",
         output.errors
     );
 }

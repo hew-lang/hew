@@ -1,0 +1,130 @@
+//! Tests for the std::option helper functions.
+
+import std::option;
+import std::testing;
+
+// ── Predicates ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_is_some_int_with_value() {
+    let x = Some(42);
+    testing.assert_true(option.is_some_int(x));
+}
+
+#[test]
+fn test_is_some_int_with_none() {
+    let x: Option<int> = None;
+    testing.assert_false(option.is_some_int(x));
+}
+
+#[test]
+fn test_is_none_int_with_none() {
+    let x: Option<int> = None;
+    testing.assert_true(option.is_none_int(x));
+}
+
+#[test]
+fn test_is_none_int_with_value() {
+    let x = Some(10);
+    testing.assert_false(option.is_none_int(x));
+}
+
+// ── Unwrap ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_unwrap_int_some() {
+    let x = Some(42);
+    testing.assert_eq(option.unwrap_int(x), 42);
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_int_none_panics() {
+    let x: Option<int> = None;
+    option.unwrap_int(x);
+}
+
+#[test]
+fn test_unwrap_or_int_some() {
+    let x = Some(42);
+    testing.assert_eq(option.unwrap_or_int(x, 0), 42);
+}
+
+#[test]
+fn test_unwrap_or_int_none() {
+    let x: Option<int> = None;
+    testing.assert_eq(option.unwrap_or_int(x, -1), -1);
+}
+
+// ── Contains ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_contains_int_match() {
+    let x = Some(42);
+    testing.assert_true(option.contains_int(x, 42));
+}
+
+#[test]
+fn test_contains_int_no_match() {
+    let x = Some(42);
+    testing.assert_false(option.contains_int(x, 99));
+}
+
+#[test]
+fn test_contains_int_none() {
+    let x: Option<int> = None;
+    testing.assert_false(option.contains_int(x, 42));
+}
+
+// ── String variants ────────────────────────────────────────────────────
+
+#[test]
+fn test_is_some_str_with_value() {
+    let x = Some("hello");
+    testing.assert_true(option.is_some_str(x));
+}
+
+#[test]
+fn test_is_none_str_with_none() {
+    let x: Option<String> = None;
+    testing.assert_true(option.is_none_str(x));
+}
+
+#[test]
+fn test_unwrap_or_str_some() {
+    let x = Some("hello");
+    testing.assert_eq_str(option.unwrap_or_str(x, "default"), "hello");
+}
+
+#[test]
+fn test_unwrap_or_str_none() {
+    let x: Option<String> = None;
+    testing.assert_eq_str(option.unwrap_or_str(x, "fallback"), "fallback");
+}
+
+#[test]
+fn test_contains_str_match() {
+    let x = Some("hello");
+    testing.assert_true(option.contains_str(x, "hello"));
+}
+
+#[test]
+fn test_contains_str_no_match() {
+    let x = Some("hello");
+    testing.assert_false(option.contains_str(x, "world"));
+}
+
+// ── unwrap_str ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_unwrap_str_some() {
+    let x = Some("hello");
+    testing.assert_eq_str(option.unwrap_str(x), "hello");
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_str_none_panics() {
+    let x: Option<String> = None;
+    option.unwrap_str(x);
+}

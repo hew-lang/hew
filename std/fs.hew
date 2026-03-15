@@ -2,20 +2,50 @@
 //!
 //! Read, write, and query files on the local file system.
 //!
-//! # Examples
+//! # Error Handling
+//!
+//! `IoError` is a structured error enum for file-system failures.
+//! Use it in your own code with `Result<T, IoError>` and the `?`
+//! operator for clean error propagation:
 //!
 //! ```
-//! import std::fs;
+//! fn load_config(path: String) -> Result<String, IoError> {
+//!     if fs.exists(path) {
+//!         Ok(fs.read(path))
+//!     } else {
+//!         Err(IoError::NotFound(1))
+//!     }
+//! }
 //!
 //! fn main() {
-//!     let contents = fs.read("config.toml");
-//!     fs.write("output.txt", "hello");
-//!     if fs.exists("data.csv") {
-//!         let size = fs.size("data.csv");
-//!         println(size);
+//!     match load_config("config.toml") {
+//!         Ok(data) => println(data),
+//!         Err(e) => {
+//!             match e {
+//!                 IoError::NotFound(_) => println("missing"),
+//!                 _ => println("i/o error"),
+//!             }
+//!         },
 //!     }
 //! }
 //! ```
+
+// ── Error type ───────────────────────────────────────────────────────
+
+/// Structured error type for file-system operations.
+///
+/// Define `Result<T, IoError>` return types in your own functions for
+/// structured error handling with the `?` operator.
+pub enum IoError {
+    // The target path does not exist.
+    NotFound(int);
+    // The process lacks permission for the operation.
+    PermissionDenied(int);
+    // A file or directory already exists at the target path.
+    AlreadyExists(int);
+    // Any other OS-level I/O failure.
+    Other(int);
+}
 
 /// Read the entire contents of a file as a UTF-8 string.
 ///

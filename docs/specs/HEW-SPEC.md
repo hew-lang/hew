@@ -1,4 +1,4 @@
-# Hew Language Specification v0.9.0 (Draft)
+# Hew Language Specification (audited for v0.2.0)
 
 Hew is a **high-performance, network-native, machine-code compiled** language for building long-lived services. Its design is anchored in four proven pillars:
 
@@ -9,210 +9,23 @@ Hew is a **high-performance, network-native, machine-code compiled** language fo
 
 This document specifies: goals, core semantics, type/effects model, module and trait systems, memory management, runtime state machines, compilation model, and an EBNF grammar sufficient to implement a working compiler and runtime.
 
-**Changes in v0.9.1:**
+**Release alignment note (v0.2.0):**
 
-_Removed `self` keyword; named receivers; bare field access in actors; `this` for actor self-reference._
-_Added §11.4: Labelled loops (`@label:`) and break-with-value._
+This document has been re-audited against the shipped compiler/runtime in
+release **v0.2.0**. Where earlier drafts described aspirational APIs, the text
+below now prefers what the parser, type-checker, codegen, runtime, and shipped
+stdlib implement today.
 
-- §11.4: Documented labelled loop syntax (`@label: loop/while/for`) and `break @label`/`continue @label`
-- §11.4: Documented break-with-value (`break expr;`) for value-producing loops
-- §2.1.1: Actor handlers access fields by bare name (`count += 1` not `self.count += 1`)
-- §3.2.1: Purity rule updated — "assignment to actor fields" replaces "assignment to `self.field`"
-- §3.6: Trait methods use named receivers (`fn display(val: Self) -> String`), not `self`
-- §3.6: `impl` methods use Go-style named receivers (`fn display(p: Point) -> String`)
-- §3.6: Removed SelfParam — `self` is no longer a keyword or special identifier
-- §3.6: Added `this` keyword documentation for actor self-reference (read-only handle)
-- §3.7.3: `Drop` trait uses `fn drop(val: Self)` named receiver
-- §3.8.2: Object safety updated — receiver must be a named parameter of type `Self`
-- §3.10.2–3.10.4: All core trait and stdlib method signatures updated to named receivers
-- §4.12.5: Cross-actor generator examples use bare field access
-- §7.2: Coalesce example uses bare field access
-- §9.1: Actor lifecycle — `stop()` not `self.stop()`
-- §11: Grammar updated — removed SelfParam from FnSig
-- Variable shadowing is now a hard error (prerequisite for bare field names in actors)
-- `Self` (capital S) type alias remains valid in trait/impl blocks
+Key corrections in this audit:
 
-**Changes in v0.9.0:**
-
-_Task model unification, actor lifecycle fix, RAII streams, duration type, syntax cleanup._
-
-- §4.3: Unified task model — `s.launch` for cooperative micro-coroutines, `s.spawn` for parallel OS threads
-- §4.5: Cancellation is automatic at safepoints; removed manual `is_cancelled()` polling
-- §4.7/§4.8: Fixed contradiction — cooperative tasks share actor state, parallel tasks do not
-- §4.10: Added `await actor`, `await close(actor)`, and actor reply barriers
-- §6.5.3: Streams/sinks auto-close via RAII (Drop); explicit `.close()` optional
-- §9.0: Documented 3-level preemption hierarchy (message budget, reduction budget, coroutine yield)
-- §9.1: Actor lifecycle reduced from 8 states to 6 (removed Init and Blocked)
-- §11.3: Duration literals documented (compile to `i64` nanoseconds; `duration` is a distinct primitive type)
-- Removed `isolated` keyword (all actors are isolated by definition)
-- Removed template literal syntax (f-strings are the sole interpolation form)
-- Removed `and`/`or` keyword operators (`&&`/`||` only)
-- Removed `foreign` keyword alias for `extern` (`extern` is the sole FFI keyword)
-
-**Changes in v0.8.0:**
-
-_Spec accuracy — documented implemented features, removed stale aliases, clarified semantics._
-
-- §3.5: Clarified module alias pattern — `import std::net::http;` makes the module available as `http` (short name)
-- §4.12.1: Clarified that `gen fn` and `async gen fn` return types (`Generator<Y>`, `AsyncGenerator<Y>`) are compiler-inferred from the yield type annotation, not written explicitly
-- §4.12.4: `async fn` is supported by the parser (in addition to `async gen fn`)
-- §11: Removed `ActorStream<Y>` from the `Type` production (no prior release, no backward compatibility needed)
-- §11.3: Added Duration literals section documenting `100ms`, `5s`, `1m`, `1h` syntax
-- Changelog: Added v0.8.0 entry
-
-**Changes in v0.7.1:**
-
-_First-class `Stream<T>` and `Sink<T>` types for sequential I/O._
-
-- §6.5: Added `Stream<T>` and `Sink<T>` as first-class move-only types for sequential I/O
-- §3 (Types): `Stream<T>` and `Sink<T>` added to the type grammar; both are `Send`
-- §6.5.4: Documented difference between `ActorStream<Y>` (mailbox-backed) and `Stream<T>` (I/O-backed)
-- `import std::stream;` makes channel, file, and byte-buffer stream constructors available
-- Grammar: Added `Stream<T>` and `Sink<T>` to the `Type` production in §11 EBNF
-- §4.12: `ActorStream<Y>` was a deprecated alias for `Stream<Y>` and has been removed as of v0.8.0. `receive gen fn` return type is `Stream<Y>`.
-
-**Changes in v0.7.0:**
-
-_Typed handles, regex literals, and match operators._
-
-- §3.10.7: Added typed handle types (`http.Server`, `http.Request`, `net.Listener`, `net.Connection`, `regex.Pattern`, `process.Child`)
-- §3.10.8: Added regex literals (`re"pattern"`), match operators (`=~`, `!~`), and regex methods
-- §11.2: Updated operator precedence to include `=~` and `!~` at equality level
-- §11 (EBNF): Added `RegexLiteral` production and updated `EqExpr`
-
-**Changes in v0.6.4:**
-
-_Module dot-syntax, string methods, and f-string expressions._
-
-- §3.5: Added module dot-syntax for stdlib imports (`import std::net::http;` then `http.listen(addr)`)
-- §3.10.3: Added string method syntax (`s.contains()`, `s.trim()`, etc.) and operators (`+`, `==`, `!=`)
-- §3.10.5: Updated string interpolation to document expression support in f-strings
-- §3.10.1: Updated stdlib tier with module names (`std::fs`, `std::net`, `std::text::regex`, etc.)
-- §3.10.5: Documented `bool` return types for predicate functions
-- §11: Updated EBNF with f-string expression grammar productions
-
-**Changes in v0.6.3:**
-
-_Spec accuracy — corrected compilation model and runtime references throughout._
-
-- §8: Corrected to describe Rust frontend + C++ MLIR codegen pipeline (hew-codegen has no lexer/parser)
-- §8.5: Clarified MLIRGen receives MessagePack AST from Rust frontend
-- §8.7: Fixed library name to `libhew_runtime.a` from `hew-runtime/`
-- §8.8: Corrected runtime from "pure C library" to "pure Rust staticlib"
-- §2.1: Updated implementation note to remove C codegen references
-- §7.1: Removed stale C codegen implementation note
-- §11: Updated closure implementation note to reflect lambda lifting
-- §12.3, §12.7: Updated bootstrap chain to reflect current architecture
-
-**Changes in v0.6.2:**
-
-_Spec accuracy — updated §8 to reflect the actual C++/MLIR compilation model._
-
-- Rewrote §8 (Compilation Model) to describe the hew-codegen pipeline: lexer, parser, type checker, MLIRGen, codegen, linking
-- Reorganized into §8.1–8.8: pipeline overview, lexical analysis, parsing, type checking, MLIR generation, code generation, linking, runtime
-- Documented `--Werror`, `--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj` compiler flags
-- Removed old §8.1 (Rust Frontend as bootstrap) — Rust workspace is now noted as a separate tooling frontend
-
-**Changes in v0.6.1:**
-
-_Generator release — first-class generator/yield support for sync, async, and cross-actor streaming._
-
-- Added §4.12 Generators with `gen fn`, `async gen fn`, and `receive gen fn` declarations
-- `yield` expression produces values from generator bodies; `cooperate` remains scheduler yield
-- `for await` loop syntax for consuming async generators and actor streams
-- Generator types: `Generator<Y>` (sync), `AsyncGenerator<Y>` (async), `Stream<Y>` (cross-actor)
-- `receive gen fn` enables cross-actor streaming via `Stream<Y>` over the mailbox protocol
-- Generator trait hierarchy: `Generator<Y> : Iterator<Y>`, `AsyncGenerator<Y> : AsyncIterator<Y>`
-- Grammar: added GenFnDecl, AsyncGenFnDecl, ReceiveGenFnDecl, YieldExpr, updated ForStmt with `await`
-
-**Changes in v0.6.0:**
-
-_Consolidation release — "one way to do it" principle applied to remove redundant syntax._
-
-Syntax consolidations:
-
-- Removed pipe lambda syntax `|x| ...`; arrow `(x) => ...` is the sole lambda form (R-1)
-- Removed `race` keyword; `select` is the sole multi-branch completion primitive (R-2)
-- `&&`/`||` are the sole boolean operators (R-3)
-- Unified print to `print(dyn Display)` + `println(dyn Display)`; type-specific variants are implementation detail (R-4)
-- Removed `foreign` keyword; `extern` is the sole FFI keyword (R-5)
-- Removed `check_cancelled()` from grammar; `is_cancelled()` is the sole cancellation check (R-6)
-
-Simplifications:
-
-- Removed `async fn` from grammar (P-1) — later re-added; `async fn` is supported as of v0.8.0
-- Removed top-level `let`/`var` from Item production (contradicts no-global-mutable-state) (P-2)
-- Renamed cooperative yield to `cooperate`; reserved `yield` for generators (P-5)
-
-Semantic clarifications:
-
-- Scopes manage lambda actor lifetime only — no cancellation/trap propagation across actor boundary (C-1)
-- Cancellation is a regular error: `await` returns `Result<T, CancellationError>`, not a trap (C-2)
-- Trap in scoped `receive fn` causes actor crash → supervisor restart (C-5)
-- Renamed `scope.spawn` to `s.launch` (inside `scope |s| { ... }`) — distinguishes task launching from actor spawning (S-2)
-- Named receiver semantics: by-value in struct impl, bare field access in actor methods (S-3)
-
-Compilation model:
-
-- Added §8.2 C++/MLIR Compiler with Hew MLIR dialect ops table, progressive lowering, runtime linkage (SA-6+TM-6)
-
-**Changes in v0.5.2:**
-
-- `Send` is now a marker trait; removed `clone_for_send` method (SA-2)
-- Added Send/Frozen automatic derivation rules for user-defined types (TM-4)
-- Strengthened §4.3 with normative two-level scheduling model for intra-actor tasks (TM-5)
-- Documented named receiver handling in trait/impl methods (SA-7)
-
-**Changes in v0.5.1:**
-
-- Standardized actor spawn syntax on parenthesized form: `spawn Counter(0)` (SA-1)
-- Distinguished type field syntax (semicolons, no prefix) from actor field syntax (semicolons, let/var prefix) (SA-4)
-- Extended MailboxDecl grammar with overflow policy syntax (SA-8)
-- Added normative 4-parameter dispatch signature to §9.1 (TM-1)
-- Expanded coalesce overflow policy with full semantics: key function, matching rules, fallback policy (TM-2)
-- Distinguished actor state machine (§9.1) from task state machine (§4.1) with normative definitions (TM-3)
-
-**Changes in v0.5.0:**
-
-- Replaced `.send()` / `.ask()` messaging with direct method calls on named actors (Section 2.1.1)
-- Added `<-` send operator for lambda actors and explicit message sending (Section 2.1.1, 2.1.2)
-- `receive fn` without return type = fire-and-forget (no await needed)
-- `receive fn` with return type = request-response (requires `await`)
-- Added `select`, `race`, `join` concurrency expressions (Section 4.10)
-- Added `after` keyword for timeouts in select/race arms
-- Added `| after` timeout combinator for individual await expressions
-- Updated EBNF with SendExpr, SelectExpr, RaceExpr, JoinExpr, TimeoutExpr (Section 10)
-
-**Changes in v0.4.1:**
-
-- Fixed move vs deep-copy contradiction: `send()` moves at language level, deep-copies at runtime level (Sections 3.4.4, 3.7.2)
-- Removed redundant `isolated` keyword from examples (Section 3.4.6)
-- Clarified `await` traps on cancellation; use `try` for graceful handling (Section 4.4)
-- Documented await-point atomicity and state safety (Section 4.8)
-- Added actor reference cycle leak strategy with `Weak<ActorRef>` (Section 3.7.8)
-- Added arena `Drop` performance cliff warning (Section 3.7.6)
-- Unified FFI keyword to `foreign` everywhere (Sections 3.9, 8.6, 10 EBNF)
-
-**Changes in v0.3:**
-
-- Added generics and monomorphization section (Section 3.8)
-- Expanded memory management with per-actor ownership, allocators, and arenas (Section 3.7)
-- Added FFI section with foreign functions and C interop (Section 3.9)
-- Added standard library architecture section (Section 3.10)
-- Added self-hosting roadmap section (Section 11)
-- Updated EBNF with foreign fn, where clauses, and dyn Trait syntax
-
-**Changes in v0.2:**
-
-- Added module system (Section 3.5)
-- Added trait system with marker traits (Section 3.6)
-- Added memory management model (Section 3.7)
-- Added closure syntax to EBNF
-- Clarified actor message protocol with `receive fn`
-- Enhanced async/await semantics with structured concurrency
-- Added `?` operator for error propagation
-- Expanded pattern matching
-- Updated compilation and runtime models based on research
+- `self` is no longer a Hew keyword; methods use named receivers and actors use
+  bare field access plus `this` for actor self-reference
+- `while let`, nested struct destructuring, generic `impl<T>`, labelled loops,
+  enum-path constructors such as `Shape::Circle(5)`, and implicit generic
+  monomorphization are all implemented and documented
+- stdlib references now use the shipped module layout and current APIs
+- speculative shared error types such as `IoError` have been removed in favour
+  of the actual `Result<T, E>` model and current stdlib conventions
 
 ---
 
@@ -434,7 +247,7 @@ Specifically:
 The `?` operator propagates errors from Result types:
 
 ```hew
-fn read_file(path: String) -> Result<String, IoError> {
+fn read_file(path: String) -> Result<String, String> {
     let handle = open(path)?;  // Early return on error
     let content = read(handle)?;
     Ok(content)
@@ -1260,10 +1073,10 @@ Hew provides an explicit allocator interface for fine-grained memory control:
 
 ```hew
 trait Allocator {
-    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, AllocError>;
+    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, String>;
     fn dealloc(a: Self, ptr: *var u8, size: usize, align: usize);
     fn realloc(a: Self, ptr: *var u8, old_size: usize, new_size: usize, align: usize)
-        -> Result<*var u8, AllocError>;
+        -> Result<*var u8, String>;
 }
 ```
 
@@ -1827,10 +1640,10 @@ fn allocate_buffer(size: usize) -> *var u8 {
     }
 }
 
-fn safe_read(fd: i32, buf: *var u8, count: usize) -> Result<usize, IoError> {
+fn safe_read(fd: i32, buf: *var u8, count: usize) -> Result<usize, String> {
     let result = unsafe { read(fd, buf, count) };
     if result < 0 {
-        Err(IoError::from_errno())
+        Err("read failed")
     } else {
         Ok(result as usize)
     }
@@ -1860,11 +1673,11 @@ pub type File {
 }
 
 impl File {
-    pub fn open(path: String) -> Result<File, IoError> {
+    pub fn open(path: String) -> Result<File, String> {
         let c_path = path.to_c_string();
         let fd = unsafe { open(c_path.as_ptr(), O_RDONLY) };
         if fd < 0 {
-            Err(IoError::from_errno())
+            Err("open failed")
         } else {
             Ok(File { fd })
         }
@@ -1882,123 +1695,55 @@ impl Drop for File {
 
 ### 3.10 Standard Library Architecture
 
-Hew's standard library follows a three-tier architecture, enabling use in contexts ranging from bare-metal to full OS environments.
+Hew ships its standard library as Hew source under `std/`. Modules are imported
+by path (`import std::math;`, `import std::net::dns;`,
+`import std::collections::hashset;`) and most high-level APIs are defined in
+those source modules rather than by a separate metadata system.
 
 #### 3.10.1 Library Tiers
 
-```
-┌─────────────────────────────────────────────┐
-│                    std                       │
-│  (Full OS integration: fs, net, io, env)     │
-├─────────────────────────────────────────────┤
-│                   alloc                      │
-│    (Heap allocation: Vec, String, Box)       │
-├─────────────────────────────────────────────┤
-│                   core                       │
-│  (No allocation: Option, Result, iterators)  │
-└─────────────────────────────────────────────┘
-```
+The current release does **not** expose a user-visible `core`/`alloc`/`std`
+tier split in Hew source. Instead, the shipped library is organised by module
+path.
 
-**core (no allocation, no OS):**
+Commonly used modules in v0.2.0 include:
 
-- Works on bare metal (embedded, OS kernels)
-- Primitive types and operations
-- `Option<T>`, `Result<T, E>`
-- Iterator trait and combinators
-- Marker traits (`Send`, `Frozen`, `Copy`)
-- Memory intrinsics (`mem::size_of`, `mem::align_of`)
-
-**alloc (heap allocation, no OS):**
-
-- Works anywhere with a heap
-- `Vec<T>`, `String`, `Box<T>`
-- `Arc<T>`, `Rc<T>`
-- `HashMap<K, V>`, `HashSet<T>`
-- Formatting infrastructure
-
-**std (full OS integration):**
-
-- Requires a full OS
-- `std::fs` (file system: `fs.read`, `fs.write`, `fs.exists`, `fs.delete`, `fs.size`)
-- `std::net` (networking: `net.listen`, `net.accept`, `net.connect`, `net.read`, `net.write`)
-- `std::net::http` (HTTP: `http.listen`, `http.accept`, `http.respond`, `http.respond_json`)
-- `std::io` (Read/Write traits, stdin/stdout)
-- `std::os` (environment: `os.args`, `os.env`, `os.cwd`, `os.hostname`, `os.pid`)
-- `std::process` (process spawning: `process.run`, `process.spawn`, `process.wait`)
-- `std::text::regex` (regular expressions: `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`)
-- `std::net::mime` (MIME types: `mime.from_path`, `mime.from_ext`, `mime.is_text`)
+- Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `String`,
+  `HashMap<K, V>`, `print`, `println`, `panic`
+- Collections and helpers: `std::collections::hashset`, `std::deque`,
+  `std::iter`, `std::sort`
+- System and I/O: `std::fs`, `std::io`, `std::os`, `std::path`,
+  `std::process`, `std::stream`
+- Networking: `std::net`, `std::net::http`, `std::net::dns`,
+  `std::net::tls`, `std::net::url`, `std::net::quic`, `std::net::websocket`
+- Data encoding and formatting: `std::encoding::xml`, `std::encoding::json`,
+  `std::encoding::yaml`, `std::encoding::toml`, `std::encoding::csv`,
+  `std::encoding::msgpack`, `std::fmt`
+- Utilities: `std::math`, `std::testing`, `std::time`, `std::text::regex`,
+  `std::text::semver`
 
 #### 3.10.2 Core Traits
 
-**Iterator protocol:**
+The language supports user-defined traits, associated types, and named
+receivers. The current stdlib in v0.2.0 does **not** ship a full generic
+iterator-trait hierarchy yet; modules such as `std::iter` expose concrete helper
+functions instead.
 
-```hew
-trait Iterator {
-    type Item;
-    fn next(iter: Self) -> Option<Self::Item>;
-
-    // Provided combinators
-    fn map<B>(iter: Self, f: fn(Self::Item) -> B) -> Map<Self, B>;
-    fn filter(iter: Self, pred: fn(Self::Item) -> bool) -> Filter<Self>;
-    fn collect<C: FromIterator<Self::Item>>(iter: Self) -> C;
-    fn fold<B>(iter: Self, init: B, f: fn(B, Self::Item) -> B) -> B;
-}
-
-trait IntoIterator {
-    type Item;
-    type IntoIter: Iterator[Item = Self::Item];
-    fn into_iter(val: Self) -> Self::IntoIter;
-}
-```
-
-**Hashing:**
-
-```hew
-trait Hash {
-    fn hash<H: Hasher>(val: Self, state: H);
-}
-
-trait Hasher {
-    fn write(h: Self, bytes: [u8]);
-    fn finish(h: Self) -> u64;
-}
-```
-
-**Display and Debug:**
+The following traits are representative of the current trait style:
 
 ```hew
 trait Display {
     fn display(val: Self) -> String;
 }
 
-trait Debug {
-    fn debug(val: Self) -> String;
-}
-```
-
-**Clone and Copy:**
-
-```hew
-trait Clone {
-    fn clone(val: Self) -> Self;
-}
-
-// Marker trait - types are copied on assignment, not moved
-trait Copy: Clone {}
-```
-
-**Allocator:**
-
-```hew
-trait Allocator {
-    fn alloc(a: Self, size: usize, align: usize) -> Result<*var u8, AllocError>;
-    fn dealloc(a: Self, ptr: *var u8, size: usize, align: usize);
+trait Drop {
+    fn drop(val: Self);
 }
 ```
 
 #### 3.10.3 Core Types
 
-**Option and Result:**
+**Option and Result** are first-class generic enums:
 
 ```hew
 enum Option<T> {
@@ -2012,226 +1757,94 @@ enum Result<T, E> {
 }
 ```
 
-**String:**
+Any error type `E` may be used with `Result<T, E>`. In practice, the current
+stdlib mixes `Result<T, String>` with sentinel-value APIs (for example, empty
+strings or `-1` on failure) depending on the module. There is no shared
+stdlib-wide `IoError` or `AllocError` family in v0.2.0.
+
+**String and Vec** are built-in generic/runtime-backed types with dot-syntax
+methods:
 
 ```hew
-// Owned, heap-allocated UTF-8 string
-type String {
-    // Internal: Vec<u8> guaranteed to be valid UTF-8
-}
-
-impl String {
-    fn new() -> String;
-    fn from(s: str) -> String;
-    fn len(s: String) -> i64;
-    fn push(s: String, c: char);
-    fn push_str(s: String, other: str);
-    fn as_str(s: String) -> str;
-}
-
-// String methods (called on string values with dot-syntax)
-fn contains(s: string, sub: string) -> bool;
-fn starts_with(s: string, prefix: string) -> bool;
-fn ends_with(s: string, suffix: string) -> bool;
-fn trim(s: string) -> string;
-fn to_lower(s: string) -> string;
-fn to_upper(s: string) -> string;
-fn replace(s: string, old: string, new: string) -> string;
-fn split(s: string, sep: string) -> Vec<string>;
-fn find(s: string, sub: string) -> i64;          // Returns index or -1
-fn slice(s: string, start: i64, end: i64) -> string;
-fn len(s: string) -> i64;
-fn repeat(s: string, n: i64) -> string;
-fn char_at(s: string, i: i64) -> i64;            // Returns character code
-fn chars(s: string) -> Vec<char>;                // Split into individual characters
-fn index_of(s: string, sub: string) -> i64;      // Returns index or -1
-fn lines(s: string) -> Vec<string>;              // Split on newlines (strips \r)
-fn is_digit(s: string) -> bool;                  // All chars are ASCII digits
-fn is_alpha(s: string) -> bool;                  // All chars are ASCII alphabetic
-fn is_alphanumeric(s: string) -> bool;           // All chars are ASCII alphanumeric
-fn is_empty(s: string) -> bool;                  // Zero-length string
-
-// Built-in string functions (available in std::prelude)
-fn string_length(s: String) -> i64;
-fn string_char_at(s: String, index: i64) -> char;  // Returns character
-fn string_equals(a: String, b: String) -> bool;
-fn string_concat(a: String, b: String) -> String;
-```
-
-**String operators:**
-
-The `+` operator concatenates strings. The `==` and `!=` operators compare strings by value.
-
-```hew
-let greeting = "hello" + " " + "world";   // String concatenation
-let same = greeting == "hello world";       // true (value equality)
-let diff = greeting != "goodbye";           // true
-```
-
-**String methods (dot-syntax):**
-
-String values support method-call syntax for common operations:
-
-```hew
-let s = "Hello, World!";
-let has_hello = s.contains("Hello");       // true (bool)
-let upper = s.to_upper();                  // "HELLO, WORLD!"
-let trimmed = "  hi  ".trim();             // "hi"
-let parts = "a,b,c".split(",");            // Vec<string> ["a", "b", "c"]
-let replaced = s.replace("World", "Hew");  // "Hello, Hew!"
-let sub = s.slice(0, 5);                   // "Hello"
-let n = s.len();                           // 13
-let lines = "a\nb\nc".lines();             // Vec<string> ["a", "b", "c"]
-let is_num = "123".is_digit();             // true
-let is_abc = "hello".is_alpha();           // true
-```
-
-Methods returning a yes/no answer (`contains`, `starts_with`, `ends_with`, `is_digit`, `is_alpha`, `is_alphanumeric`, `is_empty`) return `bool`.
-
-**Vec:**
-
-```hew
-type Vec<T> {
-    // Internal: pointer, length, capacity
-}
+type String {}
+type Vec<T> {}
 
 impl<T> Vec<T> {
     fn new() -> Vec<T>;
-    fn with_capacity(cap: i64) -> Vec<T>;
     fn push(v: Vec<T>, item: T);
     fn pop(v: Vec<T>) -> Option<T>;
     fn len(v: Vec<T>) -> i64;
-    fn get(v: Vec<T>, index: i64) -> Option<T>;
-    fn truncate(v: Vec<T>, len: i64);
-    fn clone(v: Vec<T>) -> Vec<T>;
-    fn swap(v: Vec<T>, a: i64, b: i64);
-    fn sort(v: Vec<T>) where T: Ord;
-    fn join(v: Vec<T>, sep: string) -> string where T: string;  // Join Vec<String> with separator
-    fn map<U>(v: Vec<T>, f: fn(T) -> U) -> Vec<U>;              // Transform each element
-    fn filter(v: Vec<T>, f: fn(T) -> bool) -> Vec<T>;           // Keep elements where f returns true
-    fn fold<U>(v: Vec<T>, init: U, f: fn(U, T) -> U) -> U;     // Reduce to a single value
+    fn get(v: Vec<T>, index: i64) -> T;
 }
 ```
 
-**HashMap:**
+Commonly used string operations include `+`, `==`, `!=`, `.len()`,
+`.contains()`, `.trim()`, `.replace()`, `.split()`, `.lines()`,
+`.is_digit()`, `.is_alpha()`, and `.is_alphanumeric()`.
+
+`HashMap<K, V>` is also built in. In v0.2.0, `HashMap.get()` returns
+`Option<V>`.
+
+#### 3.10.4 Shipped Collections, I/O, and Utility Modules
+
+The current release exposes concrete stdlib modules rather than a large trait
+hierarchy. Representative APIs include:
 
 ```hew
-type HashMap<K: Hash + Eq, V> {
-    // Internal: Robin Hood hashing
-}
+import std::collections::hashset;
+import std::channel::channel;
+import std::deque;
+import std::encoding::xml;
+import std::fmt;
+import std::io;
+import std::iter;
+import std::math;
+import std::net::dns;
+import std::net::tls;
+import std::sort;
+import std::testing;
 
-impl<K: Hash + Eq, V> HashMap<K, V> {
-    fn new() -> HashMap<K, V>;
-    fn insert(m: HashMap<K, V>, key: K, value: V) -> Option<V>;
-    fn get(m: HashMap<K, V>, key: K) -> Option<V>;
-    fn remove(m: HashMap<K, V>, key: K) -> Option<V>;
-    fn contains_key(m: HashMap<K, V>, key: K) -> bool;
-    fn keys(m: HashMap<K, V>) -> Vec<K>;
-    fn values(m: HashMap<K, V>) -> Vec<V>;
-    fn len(m: HashMap<K, V>) -> i64;
-    fn is_empty(m: HashMap<K, V>) -> bool;
-}
+let ints: Vec<int> = Vec::new();
+let set: HashSet<int> = HashSet::new();
+let dq = deque.new();
+let (tx, rx) = channel.new(8);
+let root = xml.parse("<root/>");
+
+println(math.abs(-5));
+println(fmt.to_hex(255));
+println(iter.sum(ints));
+testing.assert_true(true);
+println(dns.lookup_host("localhost"));
+let tls_stream = tls.connect("example.com", 443);
+println(io.read_all());
 ```
 
-**HashSet:**
+Important current details:
 
-```hew
-type HashSet<T: Hash + Eq> {
-    // Internal: hash-based set
-}
+- `std::io` currently provides plain functions (`read_line`, `write`,
+  `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
+- `std::collections::hashset` currently supports the surface forms
+  `HashSet<int>` and `HashSet<String>`; the underlying stdlib source lowers
+  these through type-specific runtime entry points
+- `std::iter` is presently specialised to `Vec<int>` helpers such as
+  `map_int`, `filter_int`, `fold_int`, `any`, `all`, and `sum`
+- `std::sort` exposes concrete helpers like `sort_ints`, `sort_strings`,
+  `sort_floats`, and `reverse`
+- `std::testing` is a pure-Hew assertion library layered on top of `panic()`
 
-impl<T: Hash + Eq> HashSet<T> {
-    fn new() -> HashSet<T>;
-    fn insert(s: HashSet<T>, elem: T) -> bool;
-    fn contains(s: HashSet<T>, elem: T) -> bool;
-    fn remove(s: HashSet<T>, elem: T) -> bool;
-    fn len(s: HashSet<T>) -> i64;
-    fn is_empty(s: HashSet<T>) -> bool;
-    fn clear(s: HashSet<T>);
-}
-```
+#### 3.10.5 Printing, Formatting, and Strings
 
-#### 3.10.4 IO Traits
+`print` and `println` are builtins. The current compiler lowers them through
+type-specific runtime intrinsics; that lowering is an implementation detail.
 
-```hew
-trait Read {
-    fn read(r: Self, buf: [u8]) -> Result<usize, IoError>;
-
-    // Provided methods
-    fn read_exact(r: Self, buf: [u8]) -> Result<(), IoError>;
-    fn read_to_end(r: Self, buf: Vec<u8>) -> Result<usize, IoError>;
-    fn read_to_string(r: Self, buf: String) -> Result<usize, IoError>;
-}
-
-trait Write {
-    fn write(w: Self, buf: [u8]) -> Result<usize, IoError>;
-    fn flush(w: Self) -> Result<(), IoError>;
-
-    // Provided methods
-    fn write_all(w: Self, buf: [u8]) -> Result<(), IoError>;
-}
-
-trait BufRead: Read {
-    fn fill_buf(r: Self) -> Result<[u8], IoError>;
-    fn consume(r: Self, amt: usize);
-    fn read_line(r: Self, buf: String) -> Result<usize, IoError>;
-}
-```
-
-#### 3.10.5 String Primitives and I/O
-
-**Console output:**
-
-The spec defines two polymorphic print functions that accept any type implementing `Display`:
-
-```hew
-fn print(value: dyn Display);    // Print value (no newline)
-fn println(value: dyn Display);  // Print value with newline
-```
-
-These dispatch to `value.display()` to produce a string, then write it to stdout. All built-in types (`i32`, `f64`, `bool`, `String`, etc.) implement `Display`.
-
-**Implementation note:** The current compiler provides type-specific intrinsics (`hew_print_i64`, `hew_print_str`, etc.) as the implementation of `print`/`println`. These are implementation details, not part of the language specification.
-
-**File I/O:**
-
-All IO APIs return `Result<T, IoError>` for error handling.
-
-```hew
-fn read_file(path: String) -> Result<String, IoError>;  // Read entire file to string
-fn write_file(path: String, content: String) -> Result<(), IoError>;  // Write string to file
-```
-
-**String operations:**
-
-```hew
-fn string_length(s: String) -> i64;              // Get string length
-fn string_char_at(s: String, index: i64) -> char; // Get character at index
-fn string_equals(a: String, b: String) -> bool;  // Compare strings
-fn string_concat(a: String, b: String) -> String; // Concatenate strings
-fn string_from_char(code: i32) -> String;            // Create 1-char string from char code
-```
-
-These legacy functions remain available but the preferred style is to use string operators and methods:
-
-```hew
-// Preferred: operator and method syntax
-let greeting = "hello" + " " + "world";   // + for concatenation
-let eq = greeting == "hello world";        // == for equality
-let n = greeting.len();                    // .len() method
-let has = greeting.contains("world");      // .contains() returns bool
-```
-
-**String interpolation (f-strings):**
-
-F-strings support arbitrary expressions inside `{}` delimiters, not just variable names:
+F-strings support arbitrary expressions inside `{}`:
 
 ```hew
 let name = "world";
 let x = 10;
-let msg = f"hello {name}";                 // Variable reference
-let computed = f"result: {x + 1}";         // Arithmetic expression
-let nested = f"len: {name.len()}";         // Method call in interpolation
+let msg = f"hello {name}";
+let computed = f"result: {x + 1}";
+let nested = f"len: {name.len()}";
 ```
 
 F-strings are the sole string interpolation syntax in Hew.
@@ -2487,23 +2100,27 @@ let result = await task;
 | ------------------ | ----------------------------------------------------------- |
 | Completed          | Returns `Ok(value)` immediately                             |
 | Running/Pending    | Suspends current task until completion, returns `Ok(value)` |
-| Cancelled          | Returns `Err(CancellationError)`                            |
+| Cancelled          | Returns `Err(...)`                                         |
 | Trapped            | Propagates the trap to the awaiting task                    |
 
 **Type:**
 
 ```
-await : Task<T> -> Result<T, CancellationError>
+await : Task<T> -> Result<T, E>
 ```
 
-Cancellation is an **expected** outcome (it is explicitly requested via `s.cancel()`) and MUST be modeled as a recoverable error, not a trap. Traps are reserved for unexpected, unrecoverable failures (Section 2.2).
+Cancellation is an **expected** outcome (it is explicitly requested via
+`s.cancel()`) and MUST be modeled as a recoverable error, not a trap. The
+current release does not expose a named `CancellationError` type in source;
+callers should handle the `Err(...)` branch of the `await` result. Traps are
+reserved for unexpected, unrecoverable failures (Section 2.2).
 
 ```hew
 // Cancellation returns Err, not a trap:
 let result = await task;
 match result {
     Ok(v) => use_value(v),
-    Err(e) => handle_cancellation(e),
+    Err(_) => handle_cancellation(),
 }
 
 // Use ? to propagate cancellation errors:
@@ -2673,7 +2290,7 @@ scope |s| {
 All IO operations in Hew are explicit and return `Result` types:
 
 ```hew
-fn read_config(path: String) -> Result<Config, IoError> {
+fn read_config(path: String) -> Result<Config, String> {
     let file = fs::open(path)?;
     let content = file.read_to_string()?;
     json::parse(content)
@@ -4567,14 +4184,18 @@ fn main() {
 
 ---
 
-## 11. Syntax and EBNF (v0.9.0)
+## 11. Syntax and EBNF (audited for v0.2.0)
 
 The complete formal grammar is maintained in two files:
 
 - **`docs/specs/grammar.ebnf`** — Authoritative ISO 14977 EBNF grammar (the canonical reference)
 - **`docs/specs/Hew.g4`** — ANTLR4 grammar derived from the EBNF, validated against example programs
 
-Both files cover the full v0.9.0 syntax: modules, traits, closures, pattern matching, control flow, structured concurrency, actor messaging operators, concurrency expressions (select/join), generators (sync, async, cross-actor streaming), FFI, where clauses, f-string expressions, regex literals, match operators, and duration literals.
+Both files cover the currently documented v0.2.0 syntax: modules, traits,
+closures, pattern matching, control flow, `while let`, labelled loops,
+structured concurrency, actor messaging operators, concurrency expressions,
+generators, FFI, where clauses, f-string expressions, regex literals, match
+operators, and duration literals.
 
 When the grammar files and this specification disagree, the parser implementation (`hew-parser/src/parser.rs`) is the authoritative source of truth.
 
@@ -4748,12 +4369,21 @@ The break value is stored in a compiler-managed temporary and loaded after the l
 **Grammar:**
 
 ```ebnf
-LoopStmt       = ("@" Ident ":")? "loop" Block ;
-WhileStmt      = ("@" Ident ":")? "while" Expr Block ;
-ForStmt        = ("@" Ident ":")? "for" Pattern "in" Expr Block ;
+LabelledLoopStmt = Label? LoopStmt ;
+LabelledWhileStmt = Label? WhileStmt ;
+LabelledWhileLetStmt = Label? WhileLetStmt ;
+LabelledForStmt = Label? ForStmt ;
+Label          = "@" Ident ":" ;
+LoopStmt       = "loop" Block ;
+WhileStmt      = "while" Expr Block ;
+WhileLetStmt   = "while" "let" Pattern "=" Expr Block ;
+ForStmt        = "for" Pattern "in" Expr Block ;
 BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ```
+
+The lexer tokenizes `@outer`-style labels as a dedicated label token; the EBNF
+above shows their surface spelling.
 
 ---
 
@@ -4960,6 +4590,14 @@ If you want this to be directly executable as an engineering project, the next m
 ---
 
 ## Changelog
+
+### v0.2.0
+
+- Audited the specification against the shipped compiler/runtime and stdlib
+- Documented the removal of `self` and the use of named receivers plus `this`
+- Added `while let` to the syntax chapter and aligned labelled-loop grammar
+- Updated standard-library documentation to match the shipped module layout
+- Removed speculative shared error-type references such as `IoError`
 
 ### v0.9.1
 

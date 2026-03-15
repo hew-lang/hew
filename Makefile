@@ -105,10 +105,12 @@ STDLIB_PACKAGES := \
     hew-std-encoding-msgpack hew-std-encoding-protobuf hew-std-encoding-toml \
     hew-std-encoding-xml hew-std-encoding-yaml \
     hew-std-crypto-crypto hew-std-crypto-jwt hew-std-crypto-password \
-    hew-std-net-http hew-std-net-ipnet hew-std-net-quic hew-std-net-smtp \
-    hew-std-net-url hew-std-net-websocket \
+    hew-std-net-dns hew-std-net-http hew-std-net-ipnet hew-std-net-quic hew-std-net-smtp \
+    hew-std-net-tls hew-std-net-url hew-std-net-websocket \
     hew-std-time-cron hew-std-time-datetime \
     hew-std-text-regex hew-std-text-semver \
+    hew-std-math \
+    hew-std-sort \
     hew-std-misc-uuid hew-std-misc-log
 
 stdlib:

@@ -18,7 +18,7 @@
 
 /// Returns the number of command-line arguments.
 pub fn args_count() -> i32 {
-    hew_args_count()
+    unsafe { hew_args_count() }
 }
 
 /// Returns the command-line argument at the given index.
@@ -32,7 +32,7 @@ pub fn args_count() -> i32 {
 /// let first_arg = os.args(1);
 /// ```
 pub fn args(index: i32) -> String {
-    hew_args_get(index)
+    unsafe { hew_args_get(index) }
 }
 
 /// Get the value of an environment variable.
@@ -45,42 +45,42 @@ pub fn args(index: i32) -> String {
 /// let path = os.env("PATH");
 /// ```
 pub fn env(name: String) -> String {
-    hew_env_get(name)
+    unsafe { hew_env_get(name) }
 }
 
 /// Set an environment variable for the current process.
 pub fn set_env(name: String, value: String) {
-    hew_env_set(name, value);
+    unsafe { hew_env_set(name, value) };
 }
 
 /// Remove an environment variable.
 pub fn remove_env(name: String) {
-    hew_env_remove(name);
+    unsafe { hew_env_remove(name) };
 }
 
 /// Check whether an environment variable is set.
 pub fn has_env(name: String) -> bool {
-    hew_env_has(name)
+    unsafe { hew_env_has(name) }
 }
 
 /// Returns the current working directory.
 pub fn cwd() -> String {
-    hew_cwd()
+    unsafe { hew_cwd() }
 }
 
 /// Returns the user's home directory.
 pub fn home_dir() -> String {
-    hew_home_dir()
+    unsafe { hew_home_dir() }
 }
 
 /// Returns the system hostname.
 pub fn hostname() -> String {
-    hew_hostname()
+    unsafe { hew_hostname() }
 }
 
 /// Returns the current process ID.
 pub fn pid() -> i32 {
-    hew_pid()
+    unsafe { hew_pid() }
 }
 
 /// Returns the system temporary directory path.
@@ -95,7 +95,7 @@ pub fn pid() -> i32 {
 /// let path = tmp + "/myfile.txt";
 /// ```
 pub fn temp_dir() -> String {
-    hew_temp_dir()
+    unsafe { hew_temp_dir() }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

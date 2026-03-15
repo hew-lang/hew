@@ -19,14 +19,14 @@
 ///
 /// Returns the ciphertext (nonce + encrypted data) as bytes.
 pub fn seal(key: bytes, plaintext: String) -> bytes {
-    hew_encrypt_seal(key, plaintext)
+    unsafe { hew_encrypt_seal(key, plaintext) }
 }
 
 /// Decrypt ciphertext using AES-256-GCM with the given key.
 ///
 /// Returns the decrypted plaintext string.
 pub fn open(key: bytes, ciphertext: bytes) -> String {
-    hew_encrypt_open(key, ciphertext)
+    unsafe { hew_encrypt_open(key, ciphertext) }
 }
 
 // -- FFI bindings --

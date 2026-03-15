@@ -27,21 +27,21 @@
 /// let src = fs.read("main.hew");
 /// ```
 pub fn read(path: String) -> String {
-    hew_file_read(path)
+    unsafe { hew_file_read(path) }
 }
 
 /// Write a string to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
 pub fn write(path: String, content: String) -> i32 {
-    hew_file_write(path, content)
+    unsafe { hew_file_write(path, content) }
 }
 
 /// Append a string to the end of a file.
 ///
 /// Creates the file if it does not exist. Returns 0 on success.
 pub fn append(path: String, content: String) -> i32 {
-    hew_file_append(path, content)
+    unsafe { hew_file_append(path, content) }
 }
 
 /// Check whether a file exists at the given path.
@@ -54,17 +54,17 @@ pub fn append(path: String, content: String) -> i32 {
 /// }
 /// ```
 pub fn exists(path: String) -> bool {
-    hew_file_exists(path)
+    unsafe { hew_file_exists(path) }
 }
 
 /// Delete a file. Returns 0 on success.
 pub fn delete(path: String) -> i32 {
-    hew_file_delete(path)
+    unsafe { hew_file_delete(path) }
 }
 
 /// Returns the size of a file in bytes.
 pub fn size(path: String) -> i64 {
-    hew_file_size(path)
+    unsafe { hew_file_size(path) }
 }
 
 /// Read a single line from standard input.
@@ -78,7 +78,7 @@ pub fn size(path: String) -> i64 {
 /// let name = fs.read_line();
 /// ```
 pub fn read_line() -> String {
-    hew_stdin_read_line()
+    unsafe { hew_stdin_read_line() }
 }
 
 /// Read the raw bytes of a file into a `bytes` value.
@@ -92,14 +92,14 @@ pub fn read_line() -> String {
 /// println(data.len());
 /// ```
 pub fn read_bytes(path: String) -> bytes {
-    hew_file_read_bytes(path)
+    unsafe { hew_file_read_bytes(path) }
 }
 
 /// Write a `bytes` value to a file, creating or overwriting it.
 ///
 /// Returns 0 on success, non-zero on error.
 pub fn write_bytes(path: String, data: bytes) -> i32 {
-    hew_file_write_bytes(path, data)
+    unsafe { hew_file_write_bytes(path, data) }
 }
 
 // ── Directory operations ──────────────────────────────────────────────
@@ -109,14 +109,14 @@ pub fn write_bytes(path: String, data: bytes) -> i32 {
 /// Fails if any parent directory does not exist. Use `mkdir_all` to create
 /// parent directories automatically.
 pub fn mkdir(path: String) -> i32 {
-    hew_fs_mkdir(path)
+    unsafe { hew_fs_mkdir(path) }
 }
 
 /// Create a directory and all its parent components.
 ///
 /// Returns 0 on success, -1 on error.
 pub fn mkdir_all(path: String) -> i32 {
-    hew_fs_mkdir_all(path)
+    unsafe { hew_fs_mkdir_all(path) }
 }
 
 /// List the entries in a directory.
@@ -133,26 +133,26 @@ pub fn mkdir_all(path: String) -> i32 {
 /// }
 /// ```
 pub fn list_dir(path: String) -> Vec<String> {
-    hew_fs_list_dir(path)
+    unsafe { hew_fs_list_dir(path) }
 }
 
 /// Rename or move a file or directory.
 ///
 /// Returns 0 on success, -1 on error.
 pub fn rename(from: String, to: String) -> i32 {
-    hew_fs_rename(from, to)
+    unsafe { hew_fs_rename(from, to) }
 }
 
 /// Copy a file.
 ///
 /// Returns 0 on success, -1 on error.
 pub fn copy(from: String, to: String) -> i32 {
-    hew_fs_copy(from, to)
+    unsafe { hew_fs_copy(from, to) }
 }
 
 /// Check whether a path is a directory.
 pub fn is_dir(path: String) -> bool {
-    hew_fs_is_dir(path)
+    unsafe { hew_fs_is_dir(path) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

@@ -1,0 +1,56 @@
+// Test: std::fmt number formatting and string padding utilities.
+import std::fmt;
+
+fn main() {
+    // ── to_hex ───────────────────────────────────────────────────
+    println(fmt.to_hex(0));
+    println(fmt.to_hex(1));
+    println(fmt.to_hex(10));
+    println(fmt.to_hex(15));
+    println(fmt.to_hex(16));
+    println(fmt.to_hex(255));
+    println(fmt.to_hex(256));
+    println(fmt.to_hex(4096));
+    println(fmt.to_hex(-1));
+    println(fmt.to_hex(-255));
+
+    // ── to_binary ────────────────────────────────────────────────
+    println(fmt.to_binary(0));
+    println(fmt.to_binary(1));
+    println(fmt.to_binary(2));
+    println(fmt.to_binary(5));
+    println(fmt.to_binary(10));
+    println(fmt.to_binary(255));
+    println(fmt.to_binary(-1));
+    println(fmt.to_binary(-10));
+
+    // ── to_octal ─────────────────────────────────────────────────
+    println(fmt.to_octal(0));
+    println(fmt.to_octal(7));
+    println(fmt.to_octal(8));
+    println(fmt.to_octal(9));
+    println(fmt.to_octal(64));
+    println(fmt.to_octal(255));
+    println(fmt.to_octal(-8));
+    println(fmt.to_octal(-64));
+
+    // ── pad_left ─────────────────────────────────────────────────
+    println(fmt.pad_left("7", 3, "0"));
+    println(fmt.pad_left("42", 5, " "));
+    println(fmt.pad_left("hello", 3, "x"));
+
+    // ── pad_right ────────────────────────────────────────────────
+    println(fmt.pad_right("hi", 5, "."));
+    println(fmt.pad_right("hello", 3, "x"));
+
+    // ── repeat ───────────────────────────────────────────────────
+    println(fmt.repeat("ab", 3));
+    println(fmt.repeat("*", 5));
+    println(fmt.repeat("x", 0));
+
+    // ── Combined: zero-padded hex ────────────────────────────────
+    println(fmt.pad_left(fmt.to_hex(10), 4, "0"));
+    println(fmt.pad_left(fmt.to_hex(255), 4, "0"));
+
+    println("=== Done ===");
+}

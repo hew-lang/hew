@@ -371,6 +371,8 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
         }
         // Handle blocks that wrap a call (e.g. `{ hew_foo(x); }`)
         Expr::Block(block) => extract_call_target(block),
+        // Handle unsafe blocks that wrap an FFI call (e.g. `unsafe { hew_foo(x) }`)
+        Expr::Unsafe(block) => extract_call_target(block),
         _ => None,
     }
 }

@@ -73,46 +73,46 @@ trait ValueMethods {
 }
 
 impl ValueMethods for Value {
-    fn type_of(val: Value) -> i32 { hew_toml_type(val) }
-    fn get_string(val: Value) -> String { hew_toml_get_string(val) }
-    fn get_int(val: Value) -> i64 { hew_toml_get_int(val) }
-    fn get_float(val: Value) -> f64 { hew_toml_get_float(val) }
-    fn get_bool(val: Value) -> i32 { hew_toml_get_bool(val) }
-    fn get_field(val: Value, key: String) -> Value { hew_toml_get_field(val, key) }
-    fn array_len(val: Value) -> i32 { hew_toml_array_len(val) }
-    fn array_get(val: Value, index: i32) -> Value { hew_toml_array_get(val, index) }
-    fn stringify(val: Value) -> String { hew_toml_stringify(val) }
-    fn free(val: Value) { hew_toml_free(val); }
+    fn type_of(val: Value) -> i32 { unsafe { hew_toml_type(val) } }
+    fn get_string(val: Value) -> String { unsafe { hew_toml_get_string(val) } }
+    fn get_int(val: Value) -> i64 { unsafe { hew_toml_get_int(val) } }
+    fn get_float(val: Value) -> f64 { unsafe { hew_toml_get_float(val) } }
+    fn get_bool(val: Value) -> i32 { unsafe { hew_toml_get_bool(val) } }
+    fn get_field(val: Value, key: String) -> Value { unsafe { hew_toml_get_field(val, key) } }
+    fn array_len(val: Value) -> i32 { unsafe { hew_toml_array_len(val) } }
+    fn array_get(val: Value, index: i32) -> Value { unsafe { hew_toml_array_get(val, index) } }
+    fn stringify(val: Value) -> String { unsafe { hew_toml_stringify(val) } }
+    fn free(val: Value) { unsafe { hew_toml_free(val) }; }
 
     fn with_string(tbl: Value, key: String, val: String) -> Value {
-        hew_toml_table_set_string(tbl, key, val); tbl
+        unsafe { hew_toml_table_set_string(tbl, key, val) }; tbl
     }
     fn with_int(tbl: Value, key: String, val: i64) -> Value {
-        hew_toml_table_set_int(tbl, key, val); tbl
+        unsafe { hew_toml_table_set_int(tbl, key, val) }; tbl
     }
     fn with_float(tbl: Value, key: String, val: f64) -> Value {
-        hew_toml_table_set_float(tbl, key, val); tbl
+        unsafe { hew_toml_table_set_float(tbl, key, val) }; tbl
     }
     fn with_bool(tbl: Value, key: String, val: bool) -> Value {
-        hew_toml_table_set_bool(tbl, key, val as i32); tbl
+        unsafe { hew_toml_table_set_bool(tbl, key, val as i32) }; tbl
     }
     fn with(tbl: Value, key: String, child: Value) -> Value {
-        hew_toml_table_set(tbl, key, child); tbl
+        unsafe { hew_toml_table_set(tbl, key, child) }; tbl
     }
     fn push(arr: Value, child: Value) -> Value {
-        hew_toml_array_push(arr, child); arr
+        unsafe { hew_toml_array_push(arr, child) }; arr
     }
     fn push_int(arr: Value, val: i64) -> Value {
-        hew_toml_array_push_int(arr, val); arr
+        unsafe { hew_toml_array_push_int(arr, val) }; arr
     }
     fn push_string(arr: Value, val: String) -> Value {
-        hew_toml_array_push_string(arr, val); arr
+        unsafe { hew_toml_array_push_string(arr, val) }; arr
     }
     fn push_float(arr: Value, val: f64) -> Value {
-        hew_toml_array_push_float(arr, val); arr
+        unsafe { hew_toml_array_push_float(arr, val) }; arr
     }
     fn push_bool(arr: Value, val: bool) -> Value {
-        hew_toml_array_push_bool(arr, val as i32); arr
+        unsafe { hew_toml_array_push_bool(arr, val as i32) }; arr
     }
 }
 
@@ -122,30 +122,30 @@ impl ValueMethods for Value {
 ///
 /// Panics if the input is not valid TOML.
 pub fn parse(s: String) -> Value {
-    hew_toml_parse(s)
+    unsafe { hew_toml_parse(s) }
 }
 
 /// Create a new empty TOML table.
 pub fn table() -> Value {
-    hew_toml_table_new()
+    unsafe { hew_toml_table_new() }
 }
 
 /// Create a new empty TOML array.
 pub fn array() -> Value {
-    hew_toml_array_new()
+    unsafe { hew_toml_array_new() }
 }
 
 /// Create a TOML Value from an integer.
-pub fn from_int(val: i64) -> Value { hew_toml_from_int(val) }
+pub fn from_int(val: i64) -> Value { unsafe { hew_toml_from_int(val) } }
 
 /// Create a TOML Value from a float.
-pub fn from_float(val: f64) -> Value { hew_toml_from_float(val) }
+pub fn from_float(val: f64) -> Value { unsafe { hew_toml_from_float(val) } }
 
 /// Create a TOML Value from a string.
-pub fn from_string(val: String) -> Value { hew_toml_from_string(val) }
+pub fn from_string(val: String) -> Value { unsafe { hew_toml_from_string(val) } }
 
 /// Create a TOML Value from a boolean.
-pub fn from_bool(val: bool) -> Value { hew_toml_from_bool(val as i32) }
+pub fn from_bool(val: bool) -> Value { unsafe { hew_toml_from_bool(val as i32) } }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 

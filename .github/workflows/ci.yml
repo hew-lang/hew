@@ -195,6 +195,7 @@ jobs:
             -p hew-std-net-smtp -p hew-std-net-url -p hew-std-net-websocket \
             -p hew-std-time-cron -p hew-std-time-datetime \
             -p hew-std-text-regex -p hew-std-text-semver \
+            -p hew-std-sort \
             -p hew-std-misc-uuid -p hew-std-misc-log
 
       - name: Run Rust workspace tests

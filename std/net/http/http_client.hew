@@ -51,15 +51,15 @@ trait ResponseMethods {
 
 impl ResponseMethods for Response {
     /// Return the HTTP status code (e.g. 200, 404).
-    fn status(resp: Response) -> i32 { hew_http_response_status(resp) }
+    fn status(resp: Response) -> i32 { unsafe { hew_http_response_status(resp) } }
     /// Return a copy of the response body as a string.
-    fn body(resp: Response) -> String { hew_http_response_body(resp) }
+    fn body(resp: Response) -> String { unsafe { hew_http_response_body(resp) } }
     /// Look up a response header by name (case-insensitive).
-    fn header(resp: Response, name: String) -> String { hew_http_response_header(resp, name) }
+    fn header(resp: Response, name: String) -> String { unsafe { hew_http_response_header(resp, name) } }
     /// Return the `Content-Type` response header.
-    fn content_type(resp: Response) -> String { hew_http_response_content_type(resp) }
+    fn content_type(resp: Response) -> String { unsafe { hew_http_response_content_type(resp) } }
     /// Release the response resources.
-    fn free(resp: Response) { hew_http_response_free(resp); }
+    fn free(resp: Response) { unsafe { hew_http_response_free(resp) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -74,7 +74,7 @@ impl ResponseMethods for Response {
 /// resp.free();
 /// ```
 pub fn get(url: String) -> Response {
-    hew_http_get(url)
+    unsafe { hew_http_get(url) }
 }
 
 /// Perform an HTTP POST request and return a `Response` handle.
@@ -86,7 +86,7 @@ pub fn get(url: String) -> Response {
 /// resp.free();
 /// ```
 pub fn post(url: String, content_type: String, body: String) -> Response {
-    hew_http_post(url, content_type, body)
+    unsafe { hew_http_post(url, content_type, body) }
 }
 
 /// Perform an HTTP GET request and return the response body as a string.
@@ -101,7 +101,7 @@ pub fn post(url: String, content_type: String, body: String) -> Response {
 /// println(body);
 /// ```
 pub fn get_string(url: String) -> String {
-    hew_http_get_string(url)
+    unsafe { hew_http_get_string(url) }
 }
 
 /// Perform an HTTP POST request and return the response body as a string.
@@ -119,7 +119,7 @@ pub fn get_string(url: String) -> String {
 /// println(body);
 /// ```
 pub fn post_string(url: String, content_type: String, body: String) -> String {
-    hew_http_post_string(url, content_type, body)
+    unsafe { hew_http_post_string(url, content_type, body) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

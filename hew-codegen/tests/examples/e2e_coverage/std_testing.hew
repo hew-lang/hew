@@ -1,0 +1,50 @@
+// Test: std::testing assertion library.
+// Exercises every assertion function with passing cases.
+
+import std::testing;
+
+fn main() {
+    // assert_eq — integer equality
+    testing.assert_eq(1 + 1, 2);
+    testing.assert_eq(0, 0);
+    testing.assert_eq(-5, -5);
+    println("assert_eq passed");
+
+    // assert_eq_str — string equality
+    testing.assert_eq_str("hello", "hello");
+    testing.assert_eq_str("", "");
+    testing.assert_eq_str("hello world", "hello world");
+    println("assert_eq_str passed");
+
+    // assert_true — boolean true
+    testing.assert_true(true);
+    testing.assert_true(10 > 5);
+    testing.assert_true(1 == 1);
+    println("assert_true passed");
+
+    // assert_false — boolean false
+    testing.assert_false(false);
+    testing.assert_false(5 > 10);
+    testing.assert_false(1 == 2);
+    println("assert_false passed");
+
+    // assert_ne — integer inequality
+    testing.assert_ne(1, 2);
+    testing.assert_ne(-1, 1);
+    testing.assert_ne(0, 100);
+    println("assert_ne passed");
+
+    // assert_gt — greater than
+    testing.assert_gt(10, 5);
+    testing.assert_gt(1, 0);
+    testing.assert_gt(0, -1);
+    println("assert_gt passed");
+
+    // assert_lt — less than
+    testing.assert_lt(5, 10);
+    testing.assert_lt(0, 1);
+    testing.assert_lt(-1, 0);
+    println("assert_lt passed");
+
+    println("all std::testing assertions passed");
+}

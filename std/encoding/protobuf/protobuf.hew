@@ -56,26 +56,26 @@ trait MessageMethods {
 impl MessageMethods for Message {
     /// Set a string field by field number.
     fn set_string(msg: Message, field_number: i32, value: String) {
-        hew_proto_msg_set_string(msg, field_number, value);
+        unsafe { hew_proto_msg_set_string(msg, field_number, value) };
     }
     /// Get a string field by field number.
     fn get_string(msg: Message, field_number: i32) -> String {
-        hew_proto_msg_get_string(msg, field_number)
+        unsafe { hew_proto_msg_get_string(msg, field_number) }
     }
     /// Set a varint (integer) field by field number.
     fn set_varint(msg: Message, field_number: i32, value: i64) {
-        hew_proto_msg_set_varint(msg, field_number, value);
+        unsafe { hew_proto_msg_set_varint(msg, field_number, value) };
     }
     /// Get a varint (integer) field by field number.
     fn get_varint(msg: Message, field_number: i32, fallback: i64) -> i64 {
-        hew_proto_msg_get_varint(msg, field_number, fallback)
+        unsafe { hew_proto_msg_get_varint(msg, field_number, fallback) }
     }
     /// Test whether a field is present in the message.
     fn has_field(msg: Message, field_number: i32) -> bool {
-        hew_proto_msg_has_field(msg, field_number)
+        unsafe { hew_proto_msg_has_field(msg, field_number) }
     }
     /// Release the message resources.
-    fn free(msg: Message) { hew_proto_msg_free(msg); }
+    fn free(msg: Message) { unsafe { hew_proto_msg_free(msg) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -90,7 +90,7 @@ impl MessageMethods for Message {
 /// msg.free();
 /// ```
 pub fn new() -> Message {
-    hew_proto_msg_new()
+    unsafe { hew_proto_msg_new() }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

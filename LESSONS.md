@@ -428,3 +428,17 @@ Some inferred `Ty` shapes (notably generator forms) are intentionally left impli
 codegen tracks them through other mechanisms, but that does not justify a silent `None`
 fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
 by span in the CLI so developers see the unsupported conversion exactly once.
+
+### 56. Greedy transitive resolution still needs restartable passes
+
+Even without a SAT solver, a dependency resolver cannot stop at the first chosen version.
+A later edge in the graph can tighten a package from `^1.0` to `^1.2`, forcing the chosen
+version downward and potentially changing that package's own dependencies. Rebuilding the
+pass when a previously expanded package changes version is a simple, reliable v1 strategy.
+
+### 57. Lockfile staleness must compare requirements, not just names
+
+Once a lockfile records transitive packages, comparing raw package-name sets will always
+misclassify valid lockfiles as stale. Record the root manifest requirements alongside the
+resolved package versions, then compare that direct-dependency map against the manifest so
+transitive entries do not create false positives.

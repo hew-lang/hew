@@ -181,6 +181,13 @@ add_e2e_reject_test(return_type_wrong    e2e_negative return_type_wrong    "type
 add_e2e_reject_test(arity_mismatch       e2e_negative arity_mismatch       "takes 2 argument(s) but 1")
 add_e2e_reject_test(self_keyword_reject  e2e_negative self_keyword_reject  "parameter is no longer supported")
 add_e2e_reject_test(actor_field_unknown  e2e_negative actor_field_unknown  "undefined variable")
+add_e2e_reject_test(machine_one_state    e2e_negative machine_one_state    "must declare at least 2 states")
+add_e2e_reject_test(machine_no_events    e2e_negative machine_no_events    "must declare at least 1 event")
+add_e2e_reject_test(machine_unknown_event e2e_negative machine_unknown_event "references unknown event")
+add_e2e_reject_test(machine_unknown_state e2e_negative machine_unknown_state "references unknown state")
+add_e2e_reject_test(machine_dup_wildcard e2e_negative machine_dup_wildcard "duplicate wildcard transition")
+add_e2e_reject_test(machine_dup_transition e2e_negative machine_dup_transition "duplicate transition for event")
+add_e2e_reject_test(bounds_not_satisfied e2e_negative bounds_not_satisfied "does not implement trait")
 
 # ── WASM target tests (compile with --target=wasm32-wasi, run with wasmtime) ──
 # These validate that Hew programs produce identical output on native and WASM.

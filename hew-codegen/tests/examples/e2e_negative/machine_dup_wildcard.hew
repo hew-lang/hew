@@ -1,0 +1,11 @@
+// Negative test: duplicate wildcard transition for the same event.
+machine Broken {
+    state A;
+    state B;
+    event X;
+
+    on X: _ -> _ { state }
+    on X: _ -> _ { state }
+}
+
+fn main() -> int { 0 }

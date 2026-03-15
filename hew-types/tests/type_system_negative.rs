@@ -288,3 +288,273 @@ fn unused_variable_warning_for_unread_binding() {
         output.warnings
     );
 }
+
+// ── 13. NonExhaustiveMatch — Option missing None arm (warning) ──────
+
+#[test]
+fn nonexhaustive_match_option_missing_none() {
+    let output = typecheck(
+        r"
+        fn check(x: Option<int>) -> int {
+            match x {
+                Some(v) => v,
+            }
+        }
+        fn main() {
+            check(Some(1));
+        }
+    ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch warning for Option, got warnings: {:?}",
+        output.warnings
+    );
+}
+
+// ── 14. NonExhaustiveMatch — Result missing Err arm (warning) ───────
+
+#[test]
+fn nonexhaustive_match_result_missing_err() {
+    let output = typecheck(
+        r"
+        fn check(r: Result<int, string>) -> int {
+            match r {
+                Ok(v) => v,
+            }
+        }
+        fn main() {
+            check(Ok(1));
+        }
+    ",
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch warning for Result, got warnings: {:?}",
+        output.warnings
+    );
+}
+
+// ── 15. NonExhaustiveMatch — enum missing variant (warning) ─────────
+
+#[test]
+fn nonexhaustive_match_enum_missing_variant() {
+    let output = typecheck(
+        r#"
+        enum Colour { Red; Green; Blue; }
+        fn label(c: Colour) -> string {
+            match c {
+                Red => "red",
+                Green => "green",
+            }
+        }
+        fn main() {
+            println(label(Red));
+        }
+    "#,
+    );
+    assert!(
+        output
+            .warnings
+            .iter()
+            .any(|w| w.kind == TypeErrorKind::NonExhaustiveMatch),
+        "Expected NonExhaustiveMatch warning for missing Blue, got warnings: {:?}",
+        output.warnings
+    );
+}
+
+// ── 16. MachineExhaustivenessError — fewer than 2 states ────────────
+
+#[test]
+fn machine_exhaustiveness_too_few_states() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state Only;
+            event Ping;
+            on Ping: Only -> Only;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
+        "Expected MachineExhaustivenessError for < 2 states, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 17. MachineExhaustivenessError — no events declared ─────────────
+
+#[test]
+fn machine_exhaustiveness_no_events() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
+        "Expected MachineExhaustivenessError for 0 events, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 18. MachineExhaustivenessError — unknown event in transition ────
+
+#[test]
+fn machine_exhaustiveness_unknown_event() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+            event X;
+            on X: A -> B;
+            on X: B -> A;
+            on Ghost: A -> B;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                  && e.message.contains("unknown event")),
+        "Expected MachineExhaustivenessError for unknown event, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 19. MachineExhaustivenessError — unknown state in transition ────
+
+#[test]
+fn machine_exhaustiveness_unknown_state() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+            event X;
+            on X: A -> B;
+            on X: B -> Phantom;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                  && e.message.contains("unknown state")),
+        "Expected MachineExhaustivenessError for unknown state, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 20. MachineExhaustivenessError — duplicate wildcard ─────────────
+
+#[test]
+fn machine_exhaustiveness_duplicate_wildcard() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+            event X;
+            on X: _ -> _ { state }
+            on X: _ -> _ { state }
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                  && e.message.contains("duplicate wildcard")),
+        "Expected MachineExhaustivenessError for duplicate wildcard, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 21. MachineExhaustivenessError — duplicate explicit transition ──
+
+#[test]
+fn machine_exhaustiveness_duplicate_explicit() {
+    let output = typecheck(
+        r"
+        machine Broken {
+            state A;
+            state B;
+            event X;
+            on X: A -> B;
+            on X: A -> A;
+            on X: B -> A;
+        }
+        fn main() {}
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError
+                  && e.message.contains("duplicate transition")),
+        "Expected MachineExhaustivenessError for duplicate transition, got errors: {:?}",
+        output.errors
+    );
+}
+
+// ── 22. BoundsNotSatisfied — type missing required trait ────────────
+
+#[test]
+fn bounds_not_satisfied_missing_trait_impl() {
+    let output = typecheck(
+        r#"
+        trait Printable {
+            fn describe(val: Self) -> string;
+        }
+        type Dog { name: string; }
+        impl Printable for Dog {
+            fn describe(d: Dog) -> string { d.name }
+        }
+        type Rock { weight: int; }
+        fn show<T: Printable>(val: T) -> string {
+            val.describe()
+        }
+        fn main() {
+            let r = Rock { weight: 42 };
+            println(show<Rock>(r));
+        }
+    "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied),
+        "Expected BoundsNotSatisfied, got errors: {:?}",
+        output.errors
+    );
+}

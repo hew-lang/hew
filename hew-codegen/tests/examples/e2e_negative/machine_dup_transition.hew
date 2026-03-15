@@ -1,0 +1,12 @@
+// Negative test: duplicate explicit transition for the same state/event pair.
+machine Broken {
+    state A;
+    state B;
+    event X;
+
+    on X: A -> B;
+    on X: A -> A;
+    on X: B -> A;
+}
+
+fn main() -> int { 0 }

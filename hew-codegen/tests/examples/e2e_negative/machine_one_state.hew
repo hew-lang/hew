@@ -1,0 +1,8 @@
+// Negative test: a machine must declare at least 2 states.
+machine Broken {
+    state Only;
+    event Ping;
+    on Ping: Only -> Only;
+}
+
+fn main() -> int { 0 }

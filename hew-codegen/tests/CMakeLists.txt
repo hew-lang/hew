@@ -260,8 +260,10 @@ function(add_wasm_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
   )
 endfunction()
 
-# Type aliases (1 test)
-add_e2e_file_test(type_aliases         e2e_type_aliases type_aliases)
+# Type aliases
+add_e2e_file_test(type_aliases            e2e_type_aliases type_aliases)
+add_e2e_file_test(type_alias_signatures   e2e_type_aliases type_alias_signatures)
+add_e2e_file_test(type_alias_tuple        e2e_type_aliases type_alias_tuple)
 
 # Type coverage (1 test)
 add_e2e_file_test(type_coverage        e2e_types type_coverage)
@@ -697,8 +699,13 @@ set_tests_properties(
     PROCESSORS   2
 )
 
+# ── Const tests ────────────────────────────────────────────────────────────
+add_e2e_file_test(const_expressions     e2e_const const_expressions)
+
 # ── Defer tests ────────────────────────────────────────────────────────────
 add_e2e_file_test(defer                 e2e_defer defer)
+add_e2e_file_test(defer_multi_return    e2e_defer defer_multi_return)
+add_e2e_file_test(defer_cleanup_call    e2e_defer defer_cleanup_call)
 
 # ── Loop tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(for_range_break       e2e_loops for_range_break)
@@ -910,6 +917,8 @@ add_wasm_test(break_with_value test_break_with_value.hew "7\n")
 
 # File-based WASM tests (category/name with .expected file)
 add_wasm_file_test(type_aliases         e2e_type_aliases type_aliases)
+add_wasm_file_test(type_alias_signatures e2e_type_aliases type_alias_signatures)
+add_wasm_file_test(type_alias_tuple    e2e_type_aliases type_alias_tuple)
 add_wasm_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
 add_wasm_file_test(hex_literals         e2e_hex_literals hex_literals)
 add_wasm_file_test(array_repeat         e2e_array array_repeat)
@@ -993,6 +1002,11 @@ add_wasm_file_test(try_operator         e2e_try_operator try_operator)
 add_wasm_file_test(for_range_break      e2e_loops for_range_break)
 add_wasm_file_test(loop_return          e2e_loops loop_return)
 add_wasm_file_test(defer                e2e_defer defer)
+add_wasm_file_test(defer_multi_return   e2e_defer defer_multi_return)
+add_wasm_file_test(defer_cleanup_call   e2e_defer defer_cleanup_call)
+
+# Const
+add_wasm_file_test(const_expressions    e2e_const const_expressions)
 
 # Canonicalization
 add_wasm_file_test(string_concat_id     e2e_canonicalize string_concat_identity)

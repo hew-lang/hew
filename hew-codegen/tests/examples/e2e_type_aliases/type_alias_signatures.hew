@@ -1,0 +1,25 @@
+// Spec §11.1: type aliases used as function parameter and return types.
+// Aliases are transparent — they resolve to the underlying type and
+// participate normally in arithmetic and comparisons.
+
+type Metres = int;
+type Seconds = float;
+type Velocity = float;
+
+fn speed(d: Metres, t: Seconds) -> Velocity {
+    d as float / t
+}
+
+fn double_distance(d: Metres) -> Metres {
+    d * 2
+}
+
+fn main() {
+    let d: Metres = 100;
+    let t: Seconds = 4.0;
+    let v: Velocity = speed(d, t);
+    println(d);
+    println(t);
+    println(v);
+    println(double_distance(d));
+}

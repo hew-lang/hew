@@ -1,0 +1,30 @@
+// Spec §11.1: type aliases may name tuple types.
+// The alias is transparent — destructuring and construction work normally.
+
+type Count = int;
+type Rate = float;
+type Pair = (Count, Rate);
+
+fn make_pair(c: Count, r: Rate) -> Pair {
+    (c, r)
+}
+
+fn get_count(p: Pair) -> Count {
+    let (c, _) = p;
+    c
+}
+
+fn get_rate(p: Pair) -> Rate {
+    let (_, r) = p;
+    r
+}
+
+fn main() {
+    let p: Pair = make_pair(42, 3.14);
+    println(get_count(p));
+    println(get_rate(p));
+
+    let (a, b) = make_pair(10, 2.5);
+    println(a);
+    println(b);
+}

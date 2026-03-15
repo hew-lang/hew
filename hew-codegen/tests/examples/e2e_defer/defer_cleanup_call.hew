@@ -1,0 +1,18 @@
+// Spec §3.7: defer commonly schedules function calls for cleanup.
+// Multiple defers execute in LIFO order; each may call a separate function.
+
+fn release(id: int) {
+    println(id);
+}
+
+fn acquire_resources() {
+    defer release(3);
+    defer release(2);
+    defer release(1);
+    println(100);
+}
+
+fn main() {
+    acquire_resources();
+    println(0);
+}

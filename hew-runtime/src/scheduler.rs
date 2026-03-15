@@ -224,6 +224,8 @@ pub extern "C" fn hew_sched_init() {
 
     // Start the profiler if HEW_PPROF is set.
     crate::profiler::maybe_start();
+    // Start the OTel exporter if HEW_OTEL_ENDPOINT is set.
+    crate::otel::maybe_start();
 }
 
 /// Gracefully shut down the scheduler.

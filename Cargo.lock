@@ -1518,6 +1518,7 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
+ "ureq",
  "zeroize",
 ]
 

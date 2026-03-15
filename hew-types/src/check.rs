@@ -2169,10 +2169,8 @@ impl Checker {
             all_type_params.extend(method_tps.iter().map(|tp| tp.name.clone()));
         }
 
-        let type_param_bounds = self.collect_type_param_bounds(
-            impl_type_params,
-            method.where_clause.as_ref(),
-        );
+        let type_param_bounds =
+            self.collect_type_param_bounds(impl_type_params, method.where_clause.as_ref());
 
         let sig = FnSig {
             type_params: all_type_params,
@@ -2497,7 +2495,8 @@ impl Checker {
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
                     for method in &id.methods {
-                        let sig = self.register_impl_method(type_name, method, id.type_params.as_ref());
+                        let sig =
+                            self.register_impl_method(type_name, method, id.type_params.as_ref());
                         // Also register on qualified type name
                         let qualified_type = format!("{module_short}.{type_name}");
                         if let Some(td) = self.lookup_type_def_mut(&qualified_type) {

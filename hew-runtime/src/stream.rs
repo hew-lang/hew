@@ -362,6 +362,154 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
 
 // into_sink_ptr is defined in hew_cabi::sink and re-exported above.
 
+// ── Map adapter ───────────────────────────────────────────────────────────────
+
+/// Calling convention matching the Hew closure ABI: (env, string) → owned C string.
+type StringMapFn = unsafe extern "C" fn(*const c_void, *const c_char) -> *mut c_char;
+
+/// Wraps a stream and lazily applies a `fn(String) -> String` closure to every item.
+#[derive(Debug)]
+struct MapStringStream {
+    upstream: Box<dyn StreamBacking>,
+    fn_ptr: StringMapFn,
+    env_ptr: *const c_void,
+}
+
+// SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure environment
+// that is only accessed from one thread at a time (stream ownership is single-threaded).
+unsafe impl Send for MapStringStream {}
+
+impl StreamBacking for MapStringStream {
+    fn next(&mut self) -> Option<Item> {
+        let item = self.upstream.next()?;
+        // Build a null-terminated copy for the closure.
+        let mut with_nul = item.clone();
+        with_nul.push(0);
+        // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
+        let result_ptr = unsafe { (self.fn_ptr)(self.env_ptr, with_nul.as_ptr().cast::<c_char>()) };
+        if result_ptr.is_null() {
+            return Some(Vec::new());
+        }
+        // Convert the malloc'd result string to an owned Vec<u8> (without the NUL).
+        // SAFETY: result_ptr is a valid null-terminated C string from the closure.
+        let result_cstr = unsafe { std::ffi::CStr::from_ptr(result_ptr) };
+        let bytes = result_cstr.to_bytes().to_vec();
+        // SAFETY: result_ptr was malloc'd by the closure; we own it now.
+        unsafe { libc::free(result_ptr.cast::<c_void>()) };
+        Some(bytes)
+    }
+
+    fn close(&mut self) {
+        self.upstream.close();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.upstream.is_closed()
+    }
+}
+
+impl Drop for MapStringStream {
+    fn drop(&mut self) {
+        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
+        unsafe { hew_rc_drop_env(self.env_ptr) };
+    }
+}
+
+// ── Filter adapter ────────────────────────────────────────────────────────────
+
+/// Calling convention: (env, string) → i32 (non-zero means keep the item).
+type StringFilterFn = unsafe extern "C" fn(*const c_void, *const c_char) -> i32;
+
+/// Wraps a stream and lazily skips items for which the predicate returns false.
+#[derive(Debug)]
+struct FilterStringStream {
+    upstream: Box<dyn StreamBacking>,
+    fn_ptr: StringFilterFn,
+    env_ptr: *const c_void,
+    done: bool,
+}
+
+// SAFETY: same as MapStringStream.
+unsafe impl Send for FilterStringStream {}
+
+impl StreamBacking for FilterStringStream {
+    fn next(&mut self) -> Option<Item> {
+        loop {
+            if self.done {
+                return None;
+            }
+            let item = self.upstream.next()?;
+            let mut with_nul = item.clone();
+            with_nul.push(0);
+            // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
+            let keep = unsafe { (self.fn_ptr)(self.env_ptr, with_nul.as_ptr().cast::<c_char>()) };
+            if keep != 0 {
+                return Some(item);
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.done = true;
+        self.upstream.close();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.done || self.upstream.is_closed()
+    }
+}
+
+impl Drop for FilterStringStream {
+    fn drop(&mut self) {
+        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
+        unsafe { hew_rc_drop_env(self.env_ptr) };
+    }
+}
+
+// ── Take adapter ──────────────────────────────────────────────────────────────
+
+/// Wraps a stream and yields at most `limit` items.
+#[derive(Debug)]
+struct TakeStream {
+    upstream: Box<dyn StreamBacking>,
+    remaining: usize,
+}
+
+impl StreamBacking for TakeStream {
+    fn next(&mut self) -> Option<Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let item = self.upstream.next()?;
+        self.remaining -= 1;
+        Some(item)
+    }
+
+    fn close(&mut self) {
+        self.remaining = 0;
+        self.upstream.close();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.remaining == 0 || self.upstream.is_closed()
+    }
+}
+
+/// Decrement the RC reference count of a closure environment pointer.
+///
+/// A null pointer is a no-op (matches `hew_rc_drop`'s null-safe contract).
+///
+/// # Safety
+///
+/// `env_ptr` must be null or a valid Hew RC block pointer.
+unsafe fn hew_rc_drop_env(env_ptr: *const c_void) {
+    extern "C" {
+        fn hew_rc_drop(ptr: *mut u8);
+    }
+    // SAFETY: hew_rc_drop handles null and expects a valid RC block pointer.
+    unsafe { hew_rc_drop(env_ptr.cast_mut().cast::<u8>()) };
+}
+
 // ── C ABI ─────────────────────────────────────────────────────────────────────
 
 /// Create a bounded in-memory channel.
@@ -830,4 +978,89 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
     // SAFETY: stream is valid per caller contract.
     let s = unsafe { &*stream };
     i32::from(s.inner.is_closed())
+}
+
+/// Wrap a stream with a lazy map adapter.
+///
+/// Every item yielded by `stream` is transformed by calling `fn_ptr(env_ptr, item)`.
+/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`
+/// (the caller must have RC-cloned before passing here).
+///
+/// Returns a new `HewStream*`. Takes ownership of `stream`.
+///
+/// # Safety
+///
+/// - `stream` must be a valid `HewStream` pointer.
+/// - `fn_ptr` must be a valid Hew closure function pointer matching the
+///   `(env: *const c_void, s: *const c_char) -> *mut c_char` ABI.
+/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_map_string(
+    stream: *mut HewStream,
+    fn_ptr: *const c_void,
+    env_ptr: *const c_void,
+) -> *mut HewStream {
+    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
+    let fn_typed: StringMapFn = unsafe { std::mem::transmute(fn_ptr) };
+    into_stream_ptr(MapStringStream {
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        fn_ptr: fn_typed,
+        env_ptr,
+    })
+}
+
+/// Wrap a stream with a lazy filter adapter.
+///
+/// Items for which `fn_ptr(env_ptr, item)` returns zero are skipped.
+/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
+///
+/// Returns a new `HewStream*`. Takes ownership of `stream`.
+///
+/// # Safety
+///
+/// - `stream` must be a valid `HewStream` pointer.
+/// - `fn_ptr` must match the `(env: *const c_void, s: *const c_char) -> i32` ABI.
+/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_filter_string(
+    stream: *mut HewStream,
+    fn_ptr: *const c_void,
+    env_ptr: *const c_void,
+) -> *mut HewStream {
+    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
+    let fn_typed: StringFilterFn = unsafe { std::mem::transmute(fn_ptr) };
+    into_stream_ptr(FilterStringStream {
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        fn_ptr: fn_typed,
+        env_ptr,
+        done: false,
+    })
+}
+
+/// Wrap a stream with a take adapter that yields at most `n` items.
+///
+/// Returns a new `HewStream*`. Takes ownership of `stream`.
+///
+/// # Safety
+///
+/// `stream` must be a valid `HewStream` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut HewStream {
+    cabi_guard!(stream.is_null(), ptr::null_mut());
+    let limit = usize::try_from(n.max(0)).unwrap_or(0);
+    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    into_stream_ptr(TakeStream {
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        remaining: limit,
+    })
 }

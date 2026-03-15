@@ -715,6 +715,10 @@ add_e2e_file_test(stream_idiomatic       e2e_bytes stream_idiomatic)
 add_e2e_file_test(stream_actor_fs        e2e_bytes stream_actor_fileserver)
 add_e2e_file_test(stream_pipe            e2e_bytes stream_pipe)
 add_e2e_file_test(stream_result          e2e_bytes stream_result)
+add_e2e_file_test(stream_map             e2e_bytes stream_map)
+add_e2e_file_test(stream_filter          e2e_bytes stream_filter)
+add_e2e_file_test(stream_take            e2e_bytes stream_take)
+add_e2e_file_test(stream_map_filter_collect e2e_bytes stream_map_filter_collect)
 
 # ── Link/Monitor tests ──────────────────────────────────────────────────────
 add_e2e_file_test(link_monitor          e2e_link_monitor link_monitor)

@@ -2928,6 +2928,74 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
     }
   }
 
+  // ── Stream<T> functional operators: map, filter, take ──────────────────────
+  // Stream maps to raw LLVM pointer; use the resolved type to identify stream receivers.
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(receiverType)) {
+    bool isStream = false;
+    if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
+      isStream = typeExprStreamKind(*typeExpr) == "Stream";
+    if (!isStream) {
+      if (auto *ie = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
+        auto sit = streamHandleVarTypes.find(ie->name);
+        isStream = (sit != streamHandleVarTypes.end() && sit->second == "Stream");
+      }
+    }
+    if (isStream) {
+      auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+      auto strType = hew::StringRefType::get(&context);
+      if (method == "map" || method == "filter") {
+        if (mc.args.empty()) {
+          emitError(location) << "Stream::" << method << " requires a closure argument";
+          return mlir::Value{};
+        }
+        // Set the expected closure type so that parameter types in unannotated
+        // lambdas can be inferred (e.g. `(s) => s + "!"` infers s: String).
+        mlir::Type retType = (method == "map") ? strType : mlir::Type{builder.getI1Type()};
+        auto expectedClosure = hew::ClosureType::get(&context, {strType}, retType);
+        pendingLambdaExpectedType = expectedClosure;
+        auto closureVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        pendingLambdaExpectedType.reset();
+        if (!closureVal)
+          return mlir::Value{};
+        auto closureType = mlir::dyn_cast<hew::ClosureType>(closureVal.getType());
+        if (!closureType) {
+          emitError(location) << "Stream::" << method << " argument must be a closure";
+          return mlir::Value{};
+        }
+        // Extract the function pointer and environment pointer from the closure struct.
+        auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
+        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
+        // RC-clone env_ptr so the lazy stream adapter keeps its own reference alive.
+        auto clonedEnv = hew::RcCloneOp::create(builder, location, ptrType, envPtr).getResult();
+        // Call the runtime adapter constructor.
+        std::string runtimeFn =
+            (method == "map") ? "hew_stream_map_string" : "hew_stream_filter_string";
+        auto calleeAttr = mlir::SymbolRefAttr::get(&context, runtimeFn);
+        auto resultStream =
+            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
+                                       mlir::ValueRange{receiver, fnPtr, clonedEnv})
+                .getResult();
+        // Drop the caller's reference to the closure env (stream adapter holds its own clone).
+        hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+        return resultStream;
+      }
+      if (method == "take") {
+        if (mc.args.empty()) {
+          emitError(location) << "Stream::take requires a count argument";
+          return mlir::Value{};
+        }
+        auto countVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
+        if (!countVal)
+          return mlir::Value{};
+        countVal = coerceType(countVal, i64Type, location);
+        auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_take");
+        return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
+                                          mlir::ValueRange{receiver, countVal})
+            .getResult();
+      }
+    }
+  }
+
   if (method == "trim") {
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("trim"), receiver, mlir::ValueRange{})

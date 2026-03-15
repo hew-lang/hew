@@ -173,6 +173,8 @@ pub struct Checker {
     current_return_type: Option<Ty>,
     in_generator: bool,
     loop_depth: u32,
+    /// Labels of enclosing loops, for validating `break @label` / `continue @label`.
+    loop_labels: Vec<String>,
     modules: HashSet<String>,
     known_types: HashSet<String>,
     type_aliases: HashMap<String, Ty>,
@@ -447,6 +449,7 @@ impl Checker {
             current_return_type: None,
             in_generator: false,
             loop_depth: 0,
+            loop_labels: Vec::new(),
             modules: HashSet::new(),
             known_types: HashSet::new(),
             type_aliases: HashMap::new(),
@@ -3424,7 +3427,14 @@ impl Checker {
                 }
                 Ty::Never
             }
-            Stmt::Break { .. } | Stmt::Continue { .. } => Ty::Never,
+            Stmt::Break { .. } => {
+                self.check_stmt(stmt, span);
+                Ty::Never
+            }
+            Stmt::Continue { .. } => {
+                self.check_stmt(stmt, span);
+                Ty::Never
+            }
             _ => {
                 self.check_stmt(stmt, span);
                 Ty::Unit
@@ -3588,12 +3598,19 @@ impl Checker {
                     }
                 }
             }
-            Stmt::Loop { body, .. } => {
+            Stmt::Loop { label, body } => {
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
             }
             Stmt::For {
+                label,
                 pattern,
                 iterable,
                 body,
@@ -3627,13 +3644,21 @@ impl Checker {
                 self.in_for_binding = true;
                 self.bind_pattern(&pattern.0, &elem_ty, true, &pattern.1);
                 self.in_for_binding = false;
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
                 self.env.pop_scope();
             }
             Stmt::While {
-                condition, body, ..
+                label,
+                condition,
+                body,
             } => {
                 // Detect `while true` — suggest `loop` instead
                 if matches!(&condition.0, Expr::Literal(Literal::Bool(true))) {
@@ -3649,17 +3674,51 @@ impl Checker {
                     });
                 }
                 self.check_against(&condition.0, &condition.1, &Ty::Bool);
+                if let Some(lbl) = label {
+                    self.loop_labels.push(lbl.clone());
+                }
                 self.loop_depth += 1;
                 self.check_block(body);
                 self.loop_depth -= 1;
+                if label.is_some() {
+                    self.loop_labels.pop();
+                }
             }
-            Stmt::Break { .. } | Stmt::Continue { .. } => {
+            Stmt::Break { label, value } => {
                 if self.loop_depth == 0 {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         span.clone(),
-                        "break/continue used outside of a loop",
+                        "break used outside of a loop",
                     ));
+                } else if let Some(lbl) = label {
+                    if !self.loop_labels.contains(lbl) {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            format!("unknown loop label `@{lbl}`"),
+                        ));
+                    }
+                }
+                if let Some((val_expr, val_span)) = value {
+                    self.synthesize(val_expr, val_span);
+                }
+            }
+            Stmt::Continue { label } => {
+                if self.loop_depth == 0 {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        "continue used outside of a loop",
+                    ));
+                } else if let Some(lbl) = label {
+                    if !self.loop_labels.contains(lbl) {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::InvalidOperation,
+                            span.clone(),
+                            format!("unknown loop label `@{lbl}`"),
+                        ));
+                    }
                 }
             }
             Stmt::Match { scrutinee, arms } => {

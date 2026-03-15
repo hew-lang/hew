@@ -322,6 +322,4 @@ mod tests {
             "function with if/else should have fold ranges"
         );
     }
-
-
 }

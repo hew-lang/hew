@@ -278,7 +278,10 @@ mod tests {
         let pr = parse(source);
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
-        let type_hints: Vec<_> = hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| h.kind == InlayHintKind::Type)
+            .collect();
         // Assertions outside the guard — test fails if expr_types is empty
         assert!(
             !tc.expr_types.is_empty(),
@@ -372,5 +375,4 @@ mod tests {
             panic!("expected function item");
         }
     }
-
 }

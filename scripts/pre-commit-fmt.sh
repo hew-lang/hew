@@ -18,7 +18,7 @@ fmt_and_restage() {
     # shellcheck disable=SC2178 # nameref, not a regular variable
     local -n files=$1
     shift
-    if (( ${#files[@]} > 0 )); then
+    if ((${#files[@]} > 0)); then
         "$@" "${files[@]}" 2>/dev/null
         git add "${files[@]}"
     fi
@@ -27,7 +27,7 @@ fmt_and_restage() {
 # Rust — cargo fmt formats the whole project; just restage what was staged
 staged_into rs_files '*.rs'
 # shellcheck disable=SC2154 # rs_files set via nameref in staged_into
-if (( ${#rs_files[@]} > 0 )); then
+if ((${#rs_files[@]} > 0)); then
     cargo fmt --quiet 2>/dev/null
     git add "${rs_files[@]}"
 fi

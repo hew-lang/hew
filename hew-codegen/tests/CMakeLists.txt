@@ -530,6 +530,9 @@ add_e2e_file_test(regex_find_replace    e2e_regex regex_find_replace)
 # RegexReplaceOp: focused test for regex pattern .replace() calls
 add_e2e_file_test(regex_replace         e2e_text  regex_replace)
 
+# Sort tests
+add_e2e_file_test(sort_basic            e2e_sort  sort_basic)
+
 # ── Canonicalization tests ──────────────────────────────────────────────────
 add_e2e_file_test(string_concat_identity  e2e_canonicalize string_concat_identity)
 

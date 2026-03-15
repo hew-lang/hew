@@ -25,6 +25,7 @@ members = [
   "std/time/datetime",
   "std/text/regex",
   "std/text/semver",
+  "std/sort",
   "std/encoding/compress",
   "std/misc/uuid",
   "std/misc/log",

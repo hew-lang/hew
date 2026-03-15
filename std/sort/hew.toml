@@ -1,0 +1,6 @@
+[package]
+name = "std::sort"
+version = "0.1.0"
+description = "Hew std::sort package"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

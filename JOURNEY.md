@@ -1,5 +1,45 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 0.5: `hew test` hardening audit (2026-03-15)
+
+### What I audited
+
+- Read the full `hew-cli/src/test_runner/` implementation and `hew-cli/src/main.rs` wiring.
+- Exercised `hew test` manually against passing, failing, compile-error, timeout,
+  empty-directory, no-test-function, nested-directory, and malformed-source cases.
+- Added focused Rust tests plus CLI end-to-end coverage for the test runner itself.
+
+### Findings
+
+- **Silent parse failures:** malformed `_test.hew` files were reported as
+  "No test functions found." with exit code 0 because discovery discarded parser
+  diagnostics.
+- **Non-deterministic execution order:** discovered tests were grouped in a
+  `HashMap`, so multi-file runs printed results in unstable order.
+- **Ambiguous empty-suite reporting:** an empty directory and a valid file with no
+  `#[test]` functions produced the same message.
+- **Timeouts existed but were fixed at 30 seconds:** the runner supported timeouts
+  internally, but there was no CLI control, which made the behaviour harder to
+  exercise and slower to test.
+
+### Decisions
+
+- Treat parser errors during discovery as fatal test-runner diagnostics and exit
+  non-zero before executing the suite.
+- Preserve discovery order all the way through execution and reporting so repeated
+  runs are stable and trustworthy.
+- Distinguish "No test files found." from "No test functions found." for clearer UX.
+- Add `--timeout <seconds>` so timeout behaviour is explicit, configurable, and
+  practical to test end-to-end.
+
+### Implementation summary
+
+- `discover_tests_in_file()` now returns both discovered tests and parser diagnostics.
+- `hew test` now renders parse diagnostics with source spans and exits 1 on parser errors.
+- The runner now preserves file/test order instead of relying on `HashMap` iteration.
+- Output formatting gained render helpers so unit tests can assert on exact text and `JUnit`.
+- Added end-to-end CLI tests for passing, failing, mixed, parse-error, and timeout suites.
+
 ## Phase 0: Multi-Agent Audit (2026-02-24)
 
 ### Agents deployed

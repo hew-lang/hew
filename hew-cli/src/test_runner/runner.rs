@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
+/// Default per-test execution timeout.
+pub const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Result of running a single test.
 #[derive(Debug)]
 pub enum TestOutcome {
@@ -52,29 +55,36 @@ pub fn run_tests(
     filter: Option<&str>,
     include_ignored: bool,
     ffi_lib: Option<&str>,
+    timeout: Duration,
 ) -> TestSummary {
     let mut results = Vec::new();
     let mut passed = 0;
     let mut failed = 0;
     let mut ignored = 0;
 
-    // Group tests by file for efficiency.
-    let mut by_file: std::collections::HashMap<&str, Vec<&TestCase>> =
-        std::collections::HashMap::new();
+    // Group tests by file for efficiency while preserving discovery order.
+    let mut by_file: Vec<(&str, Vec<&TestCase>)> = Vec::new();
     for test in tests {
         if let Some(pat) = filter {
             if !test.name.contains(pat) {
                 continue;
             }
         }
-        by_file.entry(test.file.as_str()).or_default().push(test);
+        if let Some((_, grouped_tests)) = by_file
+            .iter_mut()
+            .find(|(file, _)| *file == test.file.as_str())
+        {
+            grouped_tests.push(test);
+        } else {
+            by_file.push((test.file.as_str(), vec![test]));
+        }
     }
 
-    for (file, file_tests) in &by_file {
+    for (file, file_tests) in by_file {
         let source = match std::fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
-                for test in file_tests {
+                for test in &file_tests {
                     failed += 1;
                     results.push(TestResult {
                         test: (*test).clone(),
@@ -91,7 +101,7 @@ pub fn run_tests(
             if test.ignored && !include_ignored {
                 ignored += 1;
                 results.push(TestResult {
-                    test: (*test).clone(),
+                    test: test.clone(),
                     outcome: TestOutcome::Ignored,
                     output: String::new(),
                     duration: Duration::ZERO,
@@ -99,7 +109,7 @@ pub fn run_tests(
                 continue;
             }
 
-            let result = run_single_test(&source, test, ffi_lib);
+            let result = run_single_test(&source, test, ffi_lib, timeout);
             match &result.outcome {
                 TestOutcome::Passed => passed += 1,
                 TestOutcome::Failed(_) => failed += 1,
@@ -220,7 +230,12 @@ fn compile_test(
 
 /// Build a synthetic program that calls the test function, compile it natively,
 /// and execute the resulting binary.
-fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> TestResult {
+fn run_single_test(
+    source: &str,
+    test: &TestCase,
+    ffi_lib: Option<&str>,
+    timeout: Duration,
+) -> TestResult {
     let start = std::time::Instant::now();
 
     let tmp_binary = match compile_test(source, test, ffi_lib) {
@@ -243,7 +258,7 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
     };
 
     // Execute the compiled binary with a timeout.
-    let run_result = run_binary_with_timeout(&tmp_binary, Duration::from_secs(30));
+    let run_result = run_binary_with_timeout(&tmp_binary, timeout);
 
     let duration = start.elapsed();
     match run_result {
@@ -290,7 +305,10 @@ fn run_single_test(source: &str, test: &TestCase, ffi_lib: Option<&str>) -> Test
         }
         RunOutcome::Timeout => TestResult {
             test: test.clone(),
-            outcome: TestOutcome::Failed("test timed out after 30s".into()),
+            outcome: TestOutcome::Failed(format!(
+                "test timed out after {}",
+                format_timeout(timeout)
+            )),
             output: String::new(),
             duration,
         },
@@ -308,6 +326,14 @@ enum RunOutcome {
     Failed { stdout: String, stderr: String },
     Timeout,
     Error(String),
+}
+
+fn format_timeout(timeout: Duration) -> String {
+    if timeout.as_millis() > 0 && timeout.as_millis() < 1_000 {
+        format!("{}ms", timeout.as_millis())
+    } else {
+        format!("{}s", timeout.as_secs())
+    }
 }
 
 fn run_binary_with_timeout(binary: &std::path::Path, timeout: Duration) -> RunOutcome {
@@ -367,6 +393,7 @@ fn run_binary_with_timeout(binary: &std::path::Path, timeout: Duration) -> RunOu
 mod tests {
     use super::super::discovery;
     use super::*;
+    use std::sync::OnceLock;
 
     /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
     /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
@@ -375,7 +402,9 @@ mod tests {
     /// program. `hew --version` alone is not sufficient because the hew
     /// binary can exist without the separate hew-codegen binary.
     fn require_codegen() -> bool {
-        ensure_hew_binary();
+        if !ensure_test_toolchain() {
+            return false;
+        }
         let Ok(hew) = find_hew_binary() else {
             return false;
         };
@@ -405,27 +434,24 @@ mod tests {
         ok
     }
 
-    /// Ensure the `hew` binary is built before tests that need it.
-    ///
-    /// `cargo test` only builds test harness binaries, not the regular
-    /// `target/debug/hew` binary that `find_hew_binary()` resolves to.
-    /// Build it once per test run so the runner tests work in a clean
-    /// checkout (where `cargo build` hasn't been run separately).
-    fn ensure_hew_binary() {
-        use std::sync::Once;
-        static BUILD: Once = Once::new();
-        BUILD.call_once(|| {
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "--bin", "hew"])
+    /// Ensure the full native test toolchain is available before tests that
+    /// exercise `hew test` end-to-end.
+    fn ensure_test_toolchain() -> bool {
+        static BUILD_OK: OnceLock<bool> = OnceLock::new();
+        *BUILD_OK.get_or_init(|| {
+            Command::new("make")
+                .args(["hew", "codegen", "runtime", "stdlib"])
                 .status()
-                .expect("failed to invoke cargo build");
-            assert!(status.success(), "cargo build --bin hew failed");
-        });
+                .is_ok_and(|status| status.success())
+        })
     }
 
     /// Helper to run tests from inline source.
     fn run_inline(source: &str) -> TestSummary {
-        ensure_hew_binary();
+        run_inline_with_timeout(source, DEFAULT_TEST_TIMEOUT)
+    }
+
+    fn run_inline_with_timeout(source: &str, timeout: Duration) -> TestSummary {
         let result = hew_parser::parse(source);
         let tests = discovery::discover_tests(&result.program, "<inline>");
         // Write source to a unique temp file so the runner can read it.
@@ -442,7 +468,7 @@ mod tests {
                 t
             })
             .collect();
-        run_tests(&tests, None, false, None)
+        run_tests(&tests, None, false, None, timeout)
     }
 
     #[test]
@@ -567,5 +593,61 @@ fn test_skip() {
         assert_eq!(summary.ignored, 1);
         assert_eq!(summary.passed, 0);
         assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn timeout_test() {
+        if !require_codegen() {
+            return;
+        }
+        let summary = run_inline_with_timeout(
+            r#"
+#[test]
+fn test_timeout() {
+    while true {
+        println("spin");
+    }
+}
+"#,
+            Duration::from_millis(100),
+        );
+        assert_eq!(summary.failed, 1);
+        match &summary.results[0].outcome {
+            TestOutcome::Failed(message) => assert!(message.contains("timed out after 100ms")),
+            outcome => panic!("expected timeout failure, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn preserves_discovery_order_across_files() {
+        let tests = vec![
+            TestCase {
+                name: "alpha".into(),
+                file: "alpha_test.hew".into(),
+                ignored: true,
+                should_panic: false,
+            },
+            TestCase {
+                name: "beta".into(),
+                file: "nested/beta_test.hew".into(),
+                ignored: true,
+                should_panic: false,
+            },
+            TestCase {
+                name: "gamma".into(),
+                file: "tests/gamma.hew".into(),
+                ignored: true,
+                should_panic: false,
+            },
+        ];
+
+        let summary = run_tests(&tests, None, false, None, DEFAULT_TEST_TIMEOUT);
+        let names: Vec<_> = summary
+            .results
+            .iter()
+            .map(|result| result.test.name.as_str())
+            .collect();
+
+        assert_eq!(names, vec!["alpha", "beta", "gamma"]);
     }
 }

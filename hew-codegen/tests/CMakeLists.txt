@@ -936,8 +936,10 @@ add_test(
 
 # ── WASM target tests ─────────────────────────────────────────────────────────
 # Mirror of native E2E tests compiled for wasm32-wasi and run with wasmtime.
-# Only tests that use WASM-compatible features (no actors, threads, networking,
-# or ecosystem features like regex/json/yaml/crypto/base64/hex).
+# WASM tests: covers all features that compile and run under wasm32-wasi.
+# Excluded: supervision, scopes, select, linking (require OS threads), and
+# ecosystem FFI that is not linked into the WASM runtime (regex, json/yaml
+# serialization, crypto, sort, file I/O, networking).
 
 # Core language features
 add_wasm_test(struct test_struct.hew "30\n")
@@ -1107,7 +1109,232 @@ add_wasm_file_test(ex_string_edges      e2e_examples test_string_edge_cases)
 add_wasm_file_test(ex_match_patterns    e2e_examples test_match_patterns)
 add_wasm_file_test(ex_lambda_patterns   e2e_examples test_lambda_patterns)
 
-# WASM actor tests
+# Generators (unlocked by the coro malloc/size_t fix for wasm32)
+add_wasm_file_test(simple_generator       e2e_generators       simple_generator)
+add_wasm_file_test(gen_fib                e2e_generators       gen_fib)
+add_wasm_file_test(gen_loop               e2e_generators       gen_loop)
+add_wasm_file_test(for_over_generator     e2e_generators       for_over_generator)
+add_wasm_file_test(async_gen              e2e_async_gen        async_gen)
+add_wasm_file_test(golden_generator       e2e_golden           golden_generator)
+
+# State machines
+add_wasm_file_test(machine_basic          e2e_machine          machine_basic)
+add_wasm_file_test(machine_circuit_br     e2e_machine          machine_circuit_breaker)
+add_wasm_file_test(machine_counter        e2e_machine          machine_counter)
+add_wasm_file_test(machine_event_pay      e2e_machine          machine_event_payload)
+add_wasm_file_test(machine_guard          e2e_machine          machine_guard)
+add_wasm_file_test(machine_match          e2e_machine          machine_match)
+add_wasm_file_test(machine_payload_tr     e2e_machine          machine_payload_transition)
+add_wasm_file_test(machine_qualified      e2e_machine          machine_qualified_event)
+add_wasm_file_test(machine_self_trans     e2e_machine          machine_self_transition)
+add_wasm_file_test(machine_systematic     e2e_machine          machine_systematic)
+add_wasm_file_test(machine_traffic        e2e_machine          machine_traffic)
+add_wasm_file_test(machine_wildcard       e2e_machine          machine_wildcard_ordering)
+
+# Modules
+add_wasm_file_test(module_actor           e2e_modules          module_actor)
+add_wasm_file_test(module_alias           e2e_modules          module_alias)
+add_wasm_file_test(module_basic           e2e_modules          module_basic)
+add_wasm_file_test(module_chain           e2e_modules          module_chain)
+add_wasm_file_test(module_consts          e2e_modules          module_consts)
+add_wasm_file_test(module_diamond         e2e_modules          module_diamond)
+add_wasm_file_test(module_enum            e2e_modules          module_enum)
+add_wasm_file_test(module_glob            e2e_modules          module_glob)
+add_wasm_file_test(module_multi_import    e2e_modules          module_multi_import)
+add_wasm_file_test(module_multifile       e2e_modules          module_multifile)
+add_wasm_file_test(module_named           e2e_modules          module_named)
+add_wasm_file_test(module_qualified       e2e_modules          module_qualified)
+add_wasm_file_test(module_reexport        e2e_modules          module_reexport)
+add_wasm_file_test(module_spawn_qualified e2e_modules          module_spawn_qualified)
+add_wasm_file_test(module_trait_dispatch  e2e_modules          module_trait_dispatch)
+add_wasm_file_test(module_trait_inherit   e2e_modules          module_trait_inherit)
+add_wasm_file_test(module_types           e2e_modules          module_types)
+
+# Control flow: while-let, if-let, for-labels, ranges
+add_wasm_file_test(while_let_basic        e2e_while_let        while_let_basic)
+add_wasm_file_test(if_let_basic           e2e_if_let           if_let_basic)
+add_wasm_file_test(if_let_return          e2e_if_let           if_let_return)
+add_wasm_file_test(for_labels             e2e_for_labels       for_labels)
+add_wasm_file_test(ranges                 e2e_ranges           range_value)
+
+# Pattern matching
+add_wasm_file_test(match_nested_pattern         e2e_match   match_nested_pattern)
+add_wasm_file_test(match_struct_variant_last_arm e2e_match   match_struct_variant_last_arm)
+add_wasm_file_test(tuple_pattern                e2e_match   tuple_pattern)
+
+# Generics (extended)
+add_wasm_file_test(generic_implicit_identity  e2e_generics  generic_implicit_identity)
+add_wasm_file_test(generic_implicit_multi     e2e_generics  generic_implicit_multi)
+add_wasm_file_test(generic_receiver_method    e2e_generics  generic_receiver_method)
+add_wasm_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound_dispatch)
+add_wasm_file_test(generic_impl_method        e2e_impl      generic_impl_method)
+add_wasm_file_test(generic_impl_multi         e2e_impl      generic_impl_multi)
+
+# Traits (extended)
+add_wasm_file_test(trait_default_override     e2e_traits              trait_default_override)
+add_wasm_file_test(trait_inherit_diamond      e2e_traits              trait_inherit_diamond)
+add_wasm_file_test(trait_bound_method         e2e_trait_bound_dispatch trait_bound_method)
+add_wasm_file_test(trait_bound_multi          e2e_trait_bound_dispatch trait_bound_multi)
+add_wasm_file_test(dyn_trait_with_generics    e2e_dyn_trait           dyn_trait_with_generics)
+
+# Closures (extended)
+add_wasm_file_test(closure_return_coercion    e2e_closure_coercion closure_return_coercion)
+
+# Self sugar
+add_wasm_file_test(self_sugar                 e2e_self_sugar       self_sugar)
+add_wasm_file_test(self_sugar_mixed           e2e_self_sugar       self_sugar_mixed)
+
+# Defer (extended)
+add_wasm_file_test(defer_block                e2e_defer            defer_block)
+
+# Loops (extended)
+add_wasm_file_test(labeled_break_drops        e2e_loops            labeled_break_drops)
+
+# Collections
+add_wasm_file_test(deque                      e2e_collections      deque)
+add_wasm_file_test(empty_map_literal          e2e_collections      empty_map_literal)
+add_wasm_file_test(empty_vec_literal          e2e_collections      empty_vec_literal)
+add_wasm_file_test(hashmap_keys               e2e_collections      hashmap_keys)
+add_wasm_file_test(hashmap_keys_method        e2e_collections      hashmap_keys_method)
+add_wasm_file_test(map_literal                e2e_collections      map_literal)
+add_wasm_file_test(vec_filter                 e2e_collections      vec_filter)
+add_wasm_file_test(vec_fold                   e2e_collections      vec_fold)
+add_wasm_file_test(vec_join                   e2e_collections      vec_join)
+add_wasm_file_test(vec_map                    e2e_collections      vec_map)
+add_wasm_file_test(hashset_stdlib             e2e_hashset          hashset_stdlib)
+
+# Bytes
+add_wasm_file_test(bytes_append               e2e_bytes            bytes_append)
+add_wasm_file_test(bytes_basic                e2e_bytes            bytes_basic)
+add_wasm_file_test(bytes_from                 e2e_bytes            bytes_from)
+add_wasm_file_test(bytes_literal              e2e_bytes            bytes_literal)
+
+# Vec (extended)
+add_wasm_file_test(vec_bool                   e2e_vec              vec_bool)
+
+# Indirect enums
+add_wasm_file_test(indirect_expr              e2e_indirect_enum    indirect_expr)
+add_wasm_file_test(indirect_list              e2e_indirect_enum    indirect_list)
+add_wasm_file_test(indirect_option_tree       e2e_indirect_enum    indirect_option_tree)
+
+# Strings (extended)
+add_wasm_file_test(string_lines               e2e_strings          string_lines)
+add_wasm_file_test(string_predicates          e2e_strings          string_predicates)
+add_wasm_file_test(string_ordering            e2e_string_ordering  string_ordering)
+
+# Struct/enum (extended)
+add_wasm_file_test(struct_destruct            e2e_struct_destruct  struct_destruct)
+add_wasm_file_test(struct_enum                e2e_struct_enum      struct_enum)
+add_wasm_file_test(nested_tuple_destruct      e2e_nested_tuple_destruct nested_tuple_destruct)
+
+# Error handling (extended)
+add_wasm_file_test(result_stdlib              e2e_error_handling   result_stdlib)
+add_wasm_file_test(structured_errors          e2e_structured_errors structured_errors)
+
+# Drop/memory (extended)
+add_wasm_file_test(drop_early_return          e2e_drop_scope       drop_early_return)
+add_wasm_file_test(drop_nested_struct         e2e_drop_trait       drop_nested_struct)
+add_wasm_file_test(return_after_drop          e2e_return           return_after_drop)
+add_wasm_file_test(string_lifecycle           e2e_memory           string_lifecycle)
+add_wasm_file_test(large_vec                  e2e_memory           large_vec_lifecycle)
+add_wasm_file_test(closure_capture            e2e_memory           closure_capture_safety)
+add_wasm_file_test(deep_recursion             e2e_memory           deep_recursion)
+add_wasm_file_test(actor_str_owner            e2e_memory           actor_field_string_ownership)
+
+# Types
+add_wasm_file_test(type_coverage              e2e_types            type_coverage)
+add_wasm_file_test(type_dispatch_narrow       e2e_types            type_dispatch_narrow)
+add_wasm_file_test(literal_coercion           e2e_literal_coercion literal_coercion)
+add_wasm_file_test(char_literals              e2e_char_literals    char_literals)
+add_wasm_file_test(indexed_compound           e2e_compound_assign  indexed_compound)
+
+# Tail call, math, iterators
+add_wasm_file_test(tail_call                  e2e_tail_call        tail_call)
+add_wasm_file_test(math_basic                 e2e_math             math_basic)
+add_wasm_file_test(iter_stdlib                e2e_iter_stdlib      iter_stdlib)
+add_wasm_file_test(option_stdlib              e2e_option_stdlib    option_stdlib)
+
+# Stdlib imports (string-only, no FS/IO/OS)
+add_wasm_file_test(import_string              e2e_imports          test_import_string)
+add_wasm_file_test(import_string_ops          e2e_imports          test_import_string_ops)
+
+# Wire (subset that compiles without json/yaml FFI)
+add_wasm_file_test(wire_basic                 e2e_wire             wire_basic)
+add_wasm_file_test(wire_encode_decode         e2e_wire             wire_encode_decode)
+
+# Semver, fmt, csv (pure Hew implementations)
+add_wasm_file_test(semver_test                e2e_semver           semver_test)
+add_wasm_file_test(fmt_test                   e2e_fmt              fmt_test)
+add_wasm_file_test(csv_test                   e2e_csv              csv_test)
+
+# Golden tests (comprehensive language feature exercises)
+add_wasm_file_test(golden_closure             e2e_golden           golden_closure)
+add_wasm_file_test(golden_enum                e2e_golden           golden_enum)
+add_wasm_file_test(golden_hashmap             e2e_golden           golden_hashmap)
+add_wasm_file_test(golden_option_result       e2e_golden           golden_option_result)
+add_wasm_file_test(golden_string              e2e_golden           golden_string)
+add_wasm_file_test(golden_struct              e2e_golden           golden_struct)
+add_wasm_file_test(golden_vec                 e2e_golden           golden_vec)
+
+# Coverage tests (edge cases, integration)
+add_wasm_file_test(coverage_actor_ask_reply       e2e_coverage  actor_ask_reply)
+add_wasm_file_test(coverage_actor_multi_handler   e2e_coverage  actor_multi_handler)
+add_wasm_file_test(coverage_assert_ops            e2e_coverage  assert_ops)
+add_wasm_file_test(coverage_closure_capture       e2e_coverage  closure_capture_types)
+add_wasm_file_test(coverage_closure_edge_cases    e2e_coverage  closure_edge_cases)
+add_wasm_file_test(coverage_dyn_param             e2e_coverage  dyn_param_dispatch)
+add_wasm_file_test(coverage_enum_patterns         e2e_coverage  enum_complex_patterns)
+add_wasm_file_test(coverage_enum_data             e2e_coverage  enum_data_methods)
+add_wasm_file_test(coverage_expr_deep_nesting     e2e_coverage  expr_deep_nesting)
+add_wasm_file_test(coverage_hashmap_option        e2e_coverage  hashmap_option_integration)
+add_wasm_file_test(coverage_hashmap_string_vals   e2e_coverage  hashmap_string_vals)
+add_wasm_file_test(coverage_if_let_nested         e2e_coverage  if_let_nested)
+add_wasm_file_test(coverage_loop_control          e2e_coverage  loop_control_flow)
+add_wasm_file_test(coverage_loop_edge_cases       e2e_coverage  loop_edge_cases)
+add_wasm_file_test(coverage_match_exhaustive      e2e_coverage  match_exhaustive)
+add_wasm_file_test(coverage_match_nested_enum     e2e_coverage  match_nested_enum)
+add_wasm_file_test(coverage_match_tuple_guard     e2e_coverage  match_tuple_guard)
+add_wasm_file_test(coverage_narrowing_check       e2e_coverage  narrowing_check)
+add_wasm_file_test(coverage_nested_match          e2e_coverage  nested_match_exhaust)
+add_wasm_file_test(coverage_option_chain          e2e_coverage  option_chain)
+add_wasm_file_test(coverage_result_error          e2e_coverage  result_error_match)
+add_wasm_file_test(coverage_result_propagation    e2e_coverage  result_propagation)
+add_wasm_file_test(coverage_return_in_loop        e2e_coverage  return_in_loop)
+add_wasm_file_test(coverage_shadowing_scopes      e2e_coverage  shadowing_error_recovery)
+add_wasm_file_test(coverage_std_testing           e2e_coverage  std_testing)
+add_wasm_file_test(coverage_string_case           e2e_coverage  string_case_methods)
+add_wasm_file_test(coverage_string_interp         e2e_coverage  string_interp_complex)
+add_wasm_file_test(coverage_string_methods        e2e_coverage  string_method_calls)
+add_wasm_file_test(coverage_to_string             e2e_coverage  to_string_op)
+add_wasm_file_test(coverage_trait_dispatch        e2e_coverage  trait_dispatch_generic)
+add_wasm_file_test(coverage_var_reassign_drop     e2e_coverage  var_reassign_drop)
+add_wasm_file_test(coverage_vec_functional        e2e_coverage  vec_functional_ops)
+add_wasm_file_test(coverage_vec_remove_clear      e2e_coverage  vec_remove_clear)
+add_wasm_file_test(coverage_vec_string_ops        e2e_coverage  vec_string_ops)
+add_wasm_file_test(coverage_where_clause_gen      e2e_coverage  where_clause_generics)
+add_wasm_file_test(log_basic_cov                  e2e_coverage  log_basic)
+
+# Performance benchmarks
+add_wasm_file_test(collection_bench               e2e_performance  collection_ops_bench)
+add_wasm_file_test(fib_iter_bench                 e2e_performance  fibonacci_iterative_bench)
+add_wasm_file_test(string_bench                   e2e_performance  string_concat_bench)
+
+# Concurrency (cooperative — no OS threads)
+add_wasm_file_test(async_sequential               e2e_concurrency  async_sequential)
+
+# Actors (native tests that also pass under WASM single-threaded scheduler)
+add_wasm_file_test(actor_counter              e2e_actors       actor_counter)
+add_wasm_file_test(actor_lifecycle            e2e_actors       actor_lifecycle)
+add_wasm_file_test(actor_orchestration        e2e_actors       actor_orchestration)
+add_wasm_file_test(actor_pipeline             e2e_actors       actor_pipeline)
+add_wasm_file_test(await_actor_ask            e2e_actors       await_actor_ask)
+add_wasm_file_test(ex_actor_lifecycle         e2e_examples     test_actor_lifecycle)
+add_wasm_file_test(ex_struct_spawn            e2e_examples     struct_spawn_test)
+add_wasm_file_test(ex_lambda_capture          e2e_examples     lambda_capture_basic)
+add_wasm_file_test(ex_showcase                e2e_examples     showcase)
+add_wasm_file_test(enum_qualified_construct   e2e_enum_qualified enum_qualified_construct)
+
+# WASM actor tests (dedicated WASM-specific test files)
 add_wasm_file_test(actor_basic          e2e_actors wasm_actor_basic)
 add_wasm_file_test(actor_ask            e2e_actors wasm_actor_ask)
 add_wasm_file_test(actor_lambda         e2e_actors wasm_actor_lambda)

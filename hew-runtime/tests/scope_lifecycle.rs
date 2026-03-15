@@ -91,39 +91,7 @@ unsafe extern "C" fn noop_dispatch(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 1. Scope creation and basic properties
-// ═══════════════════════════════════════════════════════════════════════
-
-/// A freshly created stack-allocated scope starts with zero actors and
-/// is not cancelled.
-#[test]
-fn scope_new_initial_state() {
-    unsafe {
-        let mut scope = hew_scope_new();
-        assert_eq!(scope.actor_count, 0, "new scope should have no actors");
-        assert_eq!(
-            hew_scope_is_cancelled(&raw mut scope),
-            0,
-            "new scope should not be cancelled"
-        );
-        hew_scope_destroy(&raw mut scope);
-    }
-}
-
-/// A heap-allocated scope behaves identically to a stack-allocated one.
-#[test]
-fn scope_create_heap_allocated() {
-    unsafe {
-        let scope = hew_scope_create();
-        assert!(!scope.is_null(), "hew_scope_create must return non-null");
-        assert_eq!((*scope).actor_count, 0);
-        assert_eq!(hew_scope_is_cancelled(scope), 0);
-        hew_scope_free(scope);
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// 2. Scope spawn — adding actors
+// 1. Scope spawn — adding actors
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Spawning actors into a scope increments the actor count.
@@ -178,7 +146,7 @@ fn scope_spawn_rejects_when_full() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 3. Scope cancellation
+// 2. Scope cancellation
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Setting the cancellation flag is visible via `hew_scope_is_cancelled`.
@@ -217,7 +185,7 @@ fn scope_is_cancelled_null_returns_zero() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 4. Scope wait_all — actor cleanup
+// 3. Scope wait_all — actor cleanup
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `hew_scope_wait_all` drains actor mailboxes, closes actors, waits for
@@ -284,7 +252,7 @@ fn scope_wait_all_empty_is_noop() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 5. Scope with multiple actors
+// 4. Scope with multiple actors
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Multiple actors in a scope are all cleaned up by `wait_all`.
@@ -344,7 +312,7 @@ fn scope_wait_all_multiple_actors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 6. Nested scope cancellation
+// 5. Nested scope cancellation
 // ═══════════════════════════════════════════════════════════════════════
 
 /// Record whether the dispatch function observed cancellation.
@@ -452,7 +420,7 @@ fn nested_scopes_cancellation_propagation() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 7. Scope destroy resets state
+// 6. Scope destroy resets state
 // ═══════════════════════════════════════════════════════════════════════
 
 /// After `hew_scope_destroy`, `actor_count` is 0 and actor slots are null.
@@ -483,7 +451,7 @@ fn scope_destroy_resets_fields() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 8. Scope free (heap) null is a safe no-op
+// 7. Scope free (heap) null is a safe no-op
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]

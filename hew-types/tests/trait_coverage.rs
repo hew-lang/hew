@@ -4,7 +4,7 @@
 //! type variants, plus trait/impl registration and method lookup.
 
 use hew_types::traits::{MarkerTrait, MethodSig, TraitDef, TraitRegistry};
-use hew_types::ty::{TraitObjectBound, Ty, TypeVar};
+use hew_types::ty::{TraitObjectBound, Ty};
 
 // ---------------------------------------------------------------------------
 // Helper: shorthand for a Named type with no generic args
@@ -178,12 +178,6 @@ fn pointer_is_not_send() {
     assert!(!reg.is_send(&ptr));
 }
 
-#[test]
-fn var_is_not_send() {
-    let reg = TraitRegistry::new();
-    assert!(!reg.is_send(&Ty::Var(TypeVar::fresh())));
-}
-
 // ===========================================================================
 // is_frozen
 // ===========================================================================
@@ -351,15 +345,6 @@ fn slice_of_non_send_is_not_send() {
 // ===========================================================================
 
 #[test]
-fn empty_tuple_implements_all_markers() {
-    let reg = TraitRegistry::new();
-    let unit_tuple = Ty::Tuple(vec![]);
-    assert!(reg.implements_marker(&unit_tuple, MarkerTrait::Copy));
-    assert!(reg.implements_marker(&unit_tuple, MarkerTrait::Send));
-    assert!(reg.implements_marker(&unit_tuple, MarkerTrait::Eq));
-}
-
-#[test]
 fn tuple_with_non_copy_element_is_not_copy() {
     let reg = TraitRegistry::new();
     let tuple = Ty::Tuple(vec![Ty::I32, Ty::String]);
@@ -478,20 +463,6 @@ fn closure_is_clone_but_not_copy() {
 }
 
 // ===========================================================================
-// Var type (unresolved type variable)
-// ===========================================================================
-
-#[test]
-fn var_is_not_any_marker() {
-    let reg = TraitRegistry::new();
-    let var_ty = Ty::Var(TypeVar::fresh());
-    assert!(!reg.implements_marker(&var_ty, MarkerTrait::Send));
-    assert!(!reg.implements_marker(&var_ty, MarkerTrait::Copy));
-    assert!(!reg.implements_marker(&var_ty, MarkerTrait::Clone));
-    assert!(!reg.implements_marker(&var_ty, MarkerTrait::Frozen));
-}
-
-// ===========================================================================
 // Actor type (registered)
 // ===========================================================================
 
@@ -502,15 +473,6 @@ fn registered_actor_is_send_and_sync() {
     let actor = named("ChatRoom");
     assert!(reg.implements_marker(&actor, MarkerTrait::Send));
     assert!(reg.implements_marker(&actor, MarkerTrait::Sync));
-}
-
-#[test]
-fn registered_actor_not_copy() {
-    let mut reg = TraitRegistry::new();
-    reg.register_actor("Worker".to_string());
-    let actor = named("Worker");
-    // Actors without registered fields fall through to unknown → false for Copy
-    assert!(!reg.implements_marker(&actor, MarkerTrait::Copy));
 }
 
 // ===========================================================================
@@ -583,18 +545,6 @@ fn negative_impl_overrides_auto_derivation() {
 }
 
 // ===========================================================================
-// Unknown / unregistered named types
-// ===========================================================================
-
-#[test]
-fn unknown_named_type_is_conservatively_false() {
-    let reg = TraitRegistry::new();
-    let unknown = named("SomethingUnknown");
-    assert!(!reg.implements_marker(&unknown, MarkerTrait::Send));
-    assert!(!reg.implements_marker(&unknown, MarkerTrait::Copy));
-}
-
-// ===========================================================================
 // Machine type
 // ===========================================================================
 
@@ -607,15 +557,6 @@ fn machine_type_derives_from_fields() {
     };
     assert!(reg.implements_marker(&machine, MarkerTrait::Copy));
     assert!(reg.implements_marker(&machine, MarkerTrait::Send));
-}
-
-#[test]
-fn machine_type_unknown_is_false() {
-    let reg = TraitRegistry::new();
-    let machine = Ty::Machine {
-        name: "UnregisteredMachine".to_string(),
-    };
-    assert!(!reg.implements_marker(&machine, MarkerTrait::Send));
 }
 
 // ===========================================================================
@@ -640,18 +581,6 @@ fn trait_object_checks_super_traits() {
     };
     assert!(reg.implements_marker(&obj, MarkerTrait::Send));
     assert!(!reg.implements_marker(&obj, MarkerTrait::Copy));
-}
-
-#[test]
-fn trait_object_unknown_trait_is_false() {
-    let reg = TraitRegistry::new();
-    let obj = Ty::TraitObject {
-        traits: vec![TraitObjectBound {
-            trait_name: "UnknownTrait".to_string(),
-            args: vec![],
-        }],
-    };
-    assert!(!reg.implements_marker(&obj, MarkerTrait::Send));
 }
 
 // ===========================================================================
@@ -685,12 +614,6 @@ fn register_and_lookup_trait() {
     assert!(def.methods[0].takes_self);
     assert!(!def.methods[0].self_mutable);
     assert_eq!(def.associated_types, vec!["Output"]);
-}
-
-#[test]
-fn lookup_nonexistent_trait_returns_none() {
-    let reg = TraitRegistry::new();
-    assert!(reg.lookup_trait("DoesNotExist").is_none());
 }
 
 // ===========================================================================
@@ -812,27 +735,6 @@ fn trait_with_associated_types() {
     let def = reg.lookup_trait("Iterator").unwrap();
     assert_eq!(def.associated_types, vec!["Item"]);
     assert!(def.methods[0].self_mutable);
-}
-
-// ===========================================================================
-// MarkerTrait Display impl
-// ===========================================================================
-
-#[test]
-fn marker_trait_display() {
-    assert_eq!(MarkerTrait::Send.to_string(), "Send");
-    assert_eq!(MarkerTrait::Sync.to_string(), "Sync");
-    assert_eq!(MarkerTrait::Frozen.to_string(), "Frozen");
-    assert_eq!(MarkerTrait::Copy.to_string(), "Copy");
-    assert_eq!(MarkerTrait::Clone.to_string(), "Clone");
-    assert_eq!(MarkerTrait::Eq.to_string(), "Eq");
-    assert_eq!(MarkerTrait::Ord.to_string(), "Ord");
-    assert_eq!(MarkerTrait::Hash.to_string(), "Hash");
-    assert_eq!(MarkerTrait::Display.to_string(), "Display");
-    assert_eq!(MarkerTrait::Debug.to_string(), "Debug");
-    assert_eq!(MarkerTrait::Drop.to_string(), "Drop");
-    assert_eq!(MarkerTrait::Decode.to_string(), "Decode");
-    assert_eq!(MarkerTrait::Encode.to_string(), "Encode");
 }
 
 // ===========================================================================

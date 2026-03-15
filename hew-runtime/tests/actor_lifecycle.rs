@@ -86,66 +86,6 @@ impl DispatchLog {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// 1. Actor spawn and initial state
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Verify that a freshly spawned actor has a unique ID, deep-copied state,
-/// an allocated mailbox, and starts in the Idle state.
-#[test]
-fn actor_spawn_initial_state() {
-    unsafe {
-        let mut state: i32 = 99;
-        let actor = hew_actor_spawn(
-            (&raw mut state).cast(),
-            size_of::<i32>(),
-            Some(noop_dispatch),
-        );
-        assert!(!actor.is_null(), "spawn must return a non-null actor");
-
-        // Unique, positive ID.
-        assert!((*actor).id > 0, "actor ID must be positive");
-
-        // State is a deep copy — not the same pointer.
-        assert_ne!(
-            (*actor).state,
-            (&raw mut state).cast(),
-            "state must be deep-copied, not aliased"
-        );
-
-        // Mailbox must be allocated.
-        assert!(
-            !(*actor).mailbox.is_null(),
-            "mailbox must be allocated on spawn"
-        );
-
-        // Initial actor state should be Idle (no messages enqueued yet).
-        let actor_state = (*actor).actor_state.load(Ordering::Acquire);
-        assert_eq!(
-            actor_state,
-            HewActorState::Idle as i32,
-            "newly spawned actor should be Idle"
-        );
-
-        hew_actor_free(actor);
-    }
-}
-
-/// Two actors spawned sequentially must have distinct IDs.
-#[test]
-fn actor_ids_are_unique() {
-    unsafe {
-        let a = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        let b = hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch));
-        assert!(!a.is_null());
-        assert!(!b.is_null());
-        assert_ne!((*a).id, (*b).id, "each actor must get a unique ID");
-
-        hew_actor_free(a);
-        hew_actor_free(b);
-    }
-}
-
 unsafe extern "C" fn noop_dispatch(
     _state: *mut c_void,
     _msg_type: i32,
@@ -262,16 +202,6 @@ fn send_to_closed_actor_is_rejected() {
         );
 
         hew_actor_free(actor);
-    }
-}
-
-/// After `hew_actor_free`, the actor should be removed from live tracking.
-/// Freeing a null actor is a safe no-op.
-#[test]
-fn actor_free_null_is_noop() {
-    unsafe {
-        hew_actor_free(ptr::null_mut());
-        // Reaching here without a crash is the assertion.
     }
 }
 

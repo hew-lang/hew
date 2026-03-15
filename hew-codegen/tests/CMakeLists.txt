@@ -381,6 +381,7 @@ add_e2e_file_test(semver_test         e2e_semver          semver_test)
 add_e2e_file_test(csv_test            e2e_csv             csv_test)
 add_e2e_file_test(fmt_test            e2e_fmt             fmt_test)
 add_e2e_file_test(crypto_test         e2e_crypto          crypto_test)
+add_e2e_file_test(math_basic          e2e_math            math_basic)
 
 # Machine type tests (state machines with compile-time exhaustiveness)
 add_e2e_file_test(machine_basic       e2e_machine machine_basic)

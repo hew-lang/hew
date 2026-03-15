@@ -1643,6 +1643,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-std-math"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+]
+
+[[package]]
 name = "hew-std-misc-log"
 version = "0.2.0"
 dependencies = [

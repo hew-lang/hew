@@ -28,6 +28,7 @@ members = [
   "std/text/semver",
   "std/sort",
   "std/encoding/compress",
+  "std/math",
   "std/misc/uuid",
   "std/misc/log",
   "hew-export-macro",

@@ -1,0 +1,170 @@
+// Distributed Counter — replicated state across actor nodes
+//
+// Models a counter replicated across multiple nodes. Each replica
+// maintains its own state and periodically syncs with a coordinator.
+// Reads are local (fast), writes go through the coordinator (consistent).
+//
+// This is a simplified CRDT-style pattern: each replica tracks local
+// increments, and the coordinator merges them into a global total.
+//
+// In Go you'd need channels between goroutines, a sync.Mutex for the
+// coordinator's map, and careful shutdown signalling. In Rust you'd
+// use tokio tasks with mpsc channels or shared Arc<AtomicI32> state.
+//
+// In Hew each replica is an actor with isolated state. The coordinator
+// is an actor that merges state via message passing. No shared memory,
+// no locks, no data races — the actor model guarantees it.
+//
+// NOTE: The Node API (Node::start, Node::connect, Node::lookup) exists
+// in the runtime but codegen lowering is not yet wired. This example
+// runs all replicas in a single process. When the Node API lands, the
+// only change is adding Node::start/register/lookup calls — the actor
+// code stays identical.
+
+// Coordinator — merges replica counts into a global total.
+actor Coordinator {
+    let replica_names: Vec<String>;
+    let replica_totals: Vec<int>;
+    let global_total: int;
+    let sync_count: int;
+
+    receive fn register_replica(name: String) {
+        replica_names.push(name);
+        replica_totals.push(0);
+        println(f"[coordinator] registered replica: {name}");
+    }
+
+    // Replica reports its local count for merging.
+    receive fn sync(name: String, local_count: int) {
+        sync_count = sync_count + 1;
+        // Find the replica and update its known total
+        for i in 0..replica_names.len() {
+            if replica_names.get(i) == name {
+                replica_totals.set(i, local_count);
+                break;
+            }
+        }
+        // Recompute global total
+        var sum = 0;
+        for j in 0..replica_totals.len() {
+            sum = sum + replica_totals.get(j);
+        }
+        global_total = sum;
+        println(f"[coordinator] sync #{sync_count}: {name} reported {local_count}, global={global_total}");
+    }
+
+    receive fn get_global() -> int {
+        println(f"[coordinator] global total = {global_total}");
+        global_total
+    }
+}
+
+// Replica — maintains a local counter and syncs with the coordinator.
+actor Replica {
+    let name: String;
+    let coordinator: ActorRef<Coordinator>;
+    let local_count: int;
+
+    init() {
+        println(f"[{name}] replica started");
+    }
+
+    // Local increment — fast, no coordination needed.
+    receive fn increment(n: int) {
+        local_count = local_count + n;
+        println(f"  [{name}] +{n} → local={local_count}");
+    }
+
+    // Push local state to coordinator.
+    receive fn sync_to_coordinator() {
+        coordinator.sync(name, local_count);
+    }
+
+    receive fn get_local() -> int {
+        local_count
+    }
+}
+
+fn main() {
+    println("=== Distributed Counter ===");
+    println("");
+
+    // Create coordinator
+    let empty_names: Vec<String> = Vec::new();
+    let empty_totals: Vec<int> = Vec::new();
+    let coord = spawn Coordinator(
+        replica_names: empty_names,
+        replica_totals: empty_totals,
+        global_total: 0,
+        sync_count: 0,
+    );
+
+    // Create replicas (in production these would be on separate nodes)
+    // Node::start("0.0.0.0:9000");
+    let r1 = spawn Replica(name: "node-1", coordinator: coord, local_count: 0);
+    let r2 = spawn Replica(name: "node-2", coordinator: coord, local_count: 0);
+    let r3 = spawn Replica(name: "node-3", coordinator: coord, local_count: 0);
+    // Node::register("counter-1", r1);
+
+    // Register replicas with coordinator
+    coord.register_replica("node-1");
+    coord.register_replica("node-2");
+    coord.register_replica("node-3");
+    sleep_ms(30);
+
+    // ── Local writes (fast, uncoordinated) ──
+    println("--- Local increments (no coordination) ---");
+    r1.increment(5);
+    r1.increment(3);
+    r2.increment(10);
+    r3.increment(7);
+    r3.increment(2);
+    sleep_ms(30);
+
+    // ── Sync to coordinator ──
+    println("");
+    println("--- Sync replicas to coordinator ---");
+    r1.sync_to_coordinator();
+    sleep_ms(10);
+    r2.sync_to_coordinator();
+    sleep_ms(10);
+    r3.sync_to_coordinator();
+    sleep_ms(30);
+
+    // ── Read global total ──
+    let global = await coord.get_global();
+    println(f"Global counter: {global}");
+    // Expected: 5+3 + 10 + 7+2 = 27
+
+    // ── More writes + re-sync ──
+    println("");
+    println("--- More writes + re-sync ---");
+    r1.increment(100);
+    r2.increment(200);
+    sleep_ms(20);
+    r1.sync_to_coordinator();
+    sleep_ms(10);
+    r2.sync_to_coordinator();
+    sleep_ms(10);
+    r3.sync_to_coordinator();
+    sleep_ms(30);
+
+    let global2 = await coord.get_global();
+    println(f"Global counter after update: {global2}");
+    // Expected: 108 + 210 + 9 = 327
+
+    // ── Local reads are always instant ──
+    println("");
+    println("--- Local reads (instant, no coordination) ---");
+    let (l1, l2, l3) = join {
+        r1.get_local(),
+        r2.get_local(),
+        r3.get_local(),
+    };
+    println(f"  node-1: {l1}, node-2: {l2}, node-3: {l3}");
+
+    println("");
+    println("Distributed counter complete.");
+    println("When Node API lands, add Node::start/connect/lookup —");
+    println("the actor code stays exactly the same.");
+}

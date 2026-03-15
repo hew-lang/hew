@@ -1,6 +1,6 @@
 (* ============================================================
    Hew Programming Language — Formal Grammar (EBNF)
-   Version: 0.9.0
+   Version: 0.10.0
    
    This is the authoritative grammar specification for the Hew
    programming language. It is extracted from and kept in sync
@@ -31,6 +31,7 @@ Item           = Attribute* Visibility? ( Import
                              | TraitDecl
                              | ImplDecl
                              | WireDecl
+                             | WireStructDecl
                              | FnDecl
                              | AsyncFnDecl
                              | GenFnDecl
@@ -55,8 +56,9 @@ AttrArg        = Ident ( "=" (StringLit | Ident) )?
 Import         = "import" ( StringLit | ModulePath ( "::" ImportSpec )? ) ";" ;
 ModulePath     = Ident { "::" Ident } ;
 ImportSpec     = Ident
-               | "{" Ident { "," Ident } "}"
+               | "{" ImportName { "," ImportName } "}"
                | "*" ;
+ImportName     = Ident ( "as" Ident )? ;
 
 (* Constants and types *)
 ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
@@ -66,6 +68,9 @@ TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
 (* Struct-level naming: #[json(camelCase)] / #[yaml(snake_case)] before wire decl *)
 (* Valid naming conventions: camelCase, PascalCase, snake_case, SCREAMING_SNAKE, kebab-case *)
 WireDecl       = "wire" ("type" | "enum") Ident WireBody ;
+(* #[wire] struct syntax — alternative wire struct declaration *)
+WireStructDecl = "struct" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
+WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
 
 TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
 TypeParam      = Ident ( ":" TraitBounds )? ;
@@ -79,30 +84,32 @@ WherePredicate = Type ":" TraitBounds ;
 TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
 WireBody       = "{" { WireFieldDecl | VariantDecl } "}" ;
 
-StructFieldDecl = Ident ":" Type ";" ;
+StructFieldDecl = Attribute* Ident ":" Type ( ";" | "," ) ;
 ActorFieldDecl  = ("let" | "var") Ident ":" Type ("=" Expr)? ";" ;
 WireFieldDecl  = Ident ":" Type ( ("@" | "=") IntLit )? WireAttr* ";" ;
 WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
+               | ("since" IntLit)          (* field version: since 2 *)
                | "json" "(" StringLit ")"   (* per-field JSON key override *)
                | "yaml" "(" StringLit ")"   (* per-field YAML key override *)
                | ReservedDecl ;
 ReservedDecl   = "reserved" "(" IntLit { "," IntLit } ")" ;
 
-VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ("," | ";") ;
+VariantDecl    = Ident ( "(" TypeList ")" | "{" { StructFieldDecl } "}" )? ";" ;
 TypeList       = Type { "," Type } ;
 
 (* Traits *)
 TraitDecl      = "trait" Ident TypeParams? TraitSuper? WhereClause? "{" { TraitItem } "}" ;
 TraitSuper     = ":" TraitBounds ;
-TraitItem      = FnSig ";"
+TraitItem      = "pure"? FnSig ( ";" | Block )
                | AssociatedType ;
 AssociatedType = "type" Ident ( ":" TraitBounds )? ( "=" Type )? ";" ;
 FnSig          = "fn" Ident TypeParams? "(" Params? ")" RetType? WhereClause? ;
 (* Note: Receivers use named parameters — first param whose type matches
-   the impl target (or Self) serves as the receiver. No special SelfParam. *)
+   the impl target (or Self) serves as the receiver. Bare `self` is a parse error. *)
 
-ImplDecl       = "impl" TypeParams? TraitBound "for" Type WhereClause? "{" { FnDecl | AssociatedTypeImpl } "}" ;
+ImplDecl       = "impl" TypeParams? TraitBound "for" Type WhereClause? "{" { FnDecl | AssociatedTypeImpl } "}"
+               | "impl" TypeParams? Type WhereClause? "{" { FnDecl | AssociatedTypeImpl } "}" ;
 AssociatedTypeImpl = "type" Ident "=" Type ";" ;
 
 (* Actors *)
@@ -162,8 +169,8 @@ UnsafeBlock    = "unsafe" Block ;
 (* Statements *)
 Block          = "{" { Stmt } Expr? "}" ;
 
-Stmt           = LetStmt | VarStmt | AssignStmt | IfStmt | MatchStmt
-               | LoopStmt | ForStmt | WhileStmt
+Stmt           = LetStmt | VarStmt | AssignStmt | IfStmt | IfLetStmt | MatchStmt
+               | LoopStmt | ForStmt | WhileStmt | WhileLetStmt
                | BreakStmt | ContinueStmt | ReturnStmt | DeferStmt | ExprStmt
                | UnsafeBlock | Scope | Block ;
 
@@ -174,13 +181,15 @@ AssignOp       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "
 LValue         = Ident { "." Ident | "[" Expr "]" } ;
 
 IfStmt         = "if" Expr Block ( "else" (IfStmt | Block) )? ;
+IfLetStmt      = "if" "let" Pattern "=" Expr Block ( "else" Block )? ;
 MatchStmt      = "match" Expr "{" { MatchArm } "}" ;
 MatchArm       = Pattern Guard? "=>" (Expr "," | Block) ;
 Guard          = "if" Expr ;
 
 LoopStmt       = ("@" Ident ":")? "loop" Block ;
-ForStmt        = "for" "await"? Pattern "in" Expr Block ;
+ForStmt        = ("@" Ident ":")? "for" "await"? Pattern "in" Expr Block ;
 WhileStmt      = ("@" Ident ":")? "while" Expr Block ;
+WhileLetStmt   = ("@" Ident ":")? "while" "let" Pattern "=" Expr Block ;
 BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ReturnStmt     = "return" Expr? ";" ;
@@ -204,7 +213,7 @@ ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
 AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
 MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;
 UnaryExpr      = ("!" | "-" | "~" | "await") UnaryExpr | PostfixExpr ;
-PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" } ;
+PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" | "as" Type } ;
 
 Primary        = Literal
                | InterpolatedStr
@@ -212,9 +221,12 @@ Primary        = Literal
                | Ident ( "{" FieldInitList "}" )?   (* Struct init: Point { x: 1, y: 2 } *)
                | "[" ExprList? "]"                  (* Array literal *)
                | "[" Expr ";" Expr "]"              (* Array repeat: [0; 256] *)
+               | "bytes" "[" ExprList? "]"          (* Byte array: bytes[0x41, 0x42] *)
+               | "{" Expr ":" Expr { "," Expr ":" Expr } ","? "}"  (* Map literal *)
                | "(" Expr ")"
                | "(" ExprList ")"                   (* Tuple *)
                | IfExpr
+               | IfLetExpr
                | MatchExpr
                | Lambda
                | Spawn
@@ -228,6 +240,7 @@ FieldInitList  = FieldInit { "," FieldInit } ","? ;
 FieldInit      = Ident ":" Expr ;
 
 IfExpr         = "if" Expr Block ( "else" (IfExpr | Block) )? ;
+IfLetExpr      = "if" "let" Pattern "=" Expr Block ( "else" Block )? ;
 MatchExpr      = "match" Expr "{" { MatchArm } "}" ;
 
 Literal        = IntLit | FloatLit | DurationLit | StringLit | ByteStringLit | CharLit | RegexLiteral | "true" | "false" ;
@@ -242,7 +255,7 @@ LambdaParam    = Ident ( ":" Type )? ;
 
 (* Actor operations *)
 Spawn          = "spawn" ( LambdaActor | ActorSpawn ) ;
-ActorSpawn     = Ident TypeArgs? "(" FieldInitList? ")" ;  (* Named fields: spawn Counter(count: 0) *)
+ActorSpawn     = Ident ( "." Ident )? TypeArgs? ( "(" FieldInitList? ")" )? ;  (* Spawn: spawn Counter(count: 0) or spawn Counter *)
 LambdaActor    = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
 
 (* Concurrency expressions *)
@@ -256,8 +269,8 @@ JoinExpr       = "join" ("{" | "(") Expr { "," Expr } ","? ("}" | ")") ;
 Scope          = "scope" ( "|" Ident "|" )? Block ;
 (* Inside a scope |s| { ... } block, the binding s supports:
    s.launch { expr }      — launch a concurrent task, returns Task<T>
-   s.cancel()             — request cancellation of all tasks
-   s.is_cancelled()       — check cancellation state *)
+   s.spawn { expr }       — spawn a concurrent task
+   s.cancel()             — request cancellation of all tasks *)
 CooperateExpr  = "cooperate" ;
 YieldExpr      = "yield" Expr? ;
 
@@ -289,7 +302,7 @@ Type           = Ident TypeArgs?
                | "*" Type                         (* Immutable raw pointer *)
                | "*" "var" Type                   (* Mutable raw pointer *)
                | "dyn" TraitBound                 (* Trait object *)
-               | "dyn" "(" TraitBounds ")"         (* Multiple trait object *)
+               | "dyn" "(" TraitBounds ")"         (* Multi-trait object *)
                | "_" ;                             (* Infer type from context *)
 
 TypeArgs       = "<" Type { "," Type } ">" ;
@@ -301,13 +314,13 @@ TypeArgs       = "<" Type { "," Type } ">" ;
 Pattern        = "_"
                | LiteralPattern
                | Ident
+               | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)
-               | Ident "::" Ident "(" PatternList? ")" (* Qualified constructor pattern *)
                | Ident "{" PatternFieldList? "}"       (* Struct pattern *)
                | "(" PatternList ")"                   (* Tuple pattern *)
                | Pattern "|" Pattern ;                 (* Or-pattern *)
 
-LiteralPattern = IntLit | StringLit | CharLit | "true" | "false" ;
+LiteralPattern = "-"? IntLit | "-"? FloatLit | StringLit | CharLit | "true" | "false" ;
 PatternList    = Pattern { "," Pattern } ;
 PatternFieldList = PatternField { "," PatternField } ;
 PatternField   = Ident ( ":" Pattern )? ;

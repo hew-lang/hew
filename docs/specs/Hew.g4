@@ -1,6 +1,6 @@
 // ============================================================
 //   Hew Programming Language — Formal Grammar (ANTLR4)
-//   Version: 0.9.0
+//   Version: 0.10.0
 //
 //   Converted from ISO 14977 EBNF (docs/specs/grammar.ebnf) and
 //   validated against all examples/ programs.
@@ -50,7 +50,7 @@ ident
     | 'block' | 'fail' | 'coalesce' | 'fallback'
     | 'drop_new' | 'drop_old'
     | 'launch' | 'cancel' | 'is_cancelled'
-    | 'list' | 'export' | 'repeated'
+    | 'list' | 'export' | 'repeated' | 'since'
     ;
 
 // ----------------------------------------------------------------
@@ -74,6 +74,7 @@ item
       | actorDecl
       | supervisorDecl
       | wireDecl
+      | wireStructDecl
       | machineDecl
       )
     | attribute*
@@ -124,8 +125,12 @@ modulePath
 
 importSpec
     : ident
-    | '{' ident ( ',' ident )* '}'
+    | '{' importName ( ',' importName )* '}'
     | '*'
+    ;
+
+importName
+    : ident ( 'as' ident )?
     ;
 
 // ----------------------------------------------------------------
@@ -148,6 +153,11 @@ typeAliasDecl
 wireDecl
     : 'wire' 'type' ident wireStructBody
     | 'wire' 'enum'   ident wireEnumBody
+    ;
+
+// #[wire] struct syntax — alternative wire struct declaration
+wireStructDecl
+    : 'struct' ident '{' wireStructItem* '}'
     ;
 
 typeParams
@@ -214,7 +224,7 @@ wireEnumItem
     ;
 
 structFieldDecl
-    : ident ':' type_ ( ',' | ';' )?
+    : attribute* ident ':' type_ ( ',' | ';' )?
     ;
 
 actorFieldDecl
@@ -230,8 +240,9 @@ wireAttr
     | 'deprecated'
     | 'repeated'
     | 'default' '(' expr ')'
-    | 'json' '(' STRING_LIT ')'             // per-field JSON key override
-    | 'yaml' '(' STRING_LIT ')'             // per-field YAML key override
+    | 'since' INT_LIT                           // field version: since 2
+    | 'json' '(' STRING_LIT ')'                 // per-field JSON key override
+    | 'yaml' '(' STRING_LIT ')'                 // per-field YAML key override
     | reservedDecl
     ;
 
@@ -240,7 +251,7 @@ reservedDecl
     ;
 
 variantDecl
-    : ident ( '(' typeList ')' )? ( ',' | ';' )?
+    : ident ( '(' typeList ')' | '{' ( ident ':' type_ ( ',' | ';' )? )* '}' )? ( ',' | ';' )?
     ;
 
 typeList
@@ -260,13 +271,12 @@ traitSuper
     ;
 
 traitItem
-    : fnSig ';'                             // Required method (no body)
-    | fnDecl                                // Default method (with body)
+    : 'pure'? fnSig ( ';' | block )            // Required or default method
     | associatedType
     ;
 
 associatedType
-    : 'type' ident ( ':' traitBounds )? ';'
+    : 'type' ident ( ':' traitBounds )? ( '=' type_ )? ';'
     ;
 
 fnSig
@@ -281,9 +291,14 @@ fnSig
 
 implDecl
     : 'impl' typeParams? traitBound 'for' type_ whereClause?
-      '{' fnDecl* '}'                           // Trait impl
-    | 'impl' typeParams? ident whereClause?
-      '{' fnDecl* '}'                           // Inherent impl
+      '{' implBodyItem* '}'                         // Trait impl
+    | 'impl' typeParams? type_ whereClause?
+      '{' implBodyItem* '}'                         // Inherent impl
+    ;
+
+implBodyItem
+    : 'pure'? fnDecl
+    | 'type' ident '=' type_ ';'                    // Associated type impl
     ;
 
 // ----------------------------------------------------------------
@@ -353,12 +368,11 @@ supervisorDecl
     ;
 
 supervisorBody
-    : childSpec*                                // child-spec syntax
-    | supervisorField ( ',' supervisorField )* ','?   // declarative syntax
+    : ( supervisorField | childSpec )*
     ;
 
 supervisorField
-    : ident ':' supervisorFieldValue
+    : ident ':' supervisorFieldValue ( ',' | ';' )?
     ;
 
 supervisorFieldValue
@@ -369,7 +383,7 @@ supervisorFieldValue
     ;
 
 childSpec
-    : 'child' ident ':' ident restartSpec? ';'
+    : 'child' ident ':' ident ( '(' args ')' )? ( 'permanent' | 'transient' | 'temporary' )? ( ',' | ';' )?
     ;
 
 restartSpec
@@ -479,10 +493,12 @@ stmt
     | varStmt
     | assignStmt
     | ifStmt
+    | ifLetStmt
     | matchStmt
     | loopStmt
     | forStmt
     | whileStmt
+    | whileLetStmt
     | breakStmt
     | continueStmt
     | returnStmt
@@ -491,7 +507,6 @@ stmt
     | unsafeBlock
     | block                                 // Standalone block: { ... }
     | scope                                 // scope { ... } without trailing ;
-    // scope.launch is now desugared by the parser inside scope |s| { ... } blocks
     ;
 
 letStmt
@@ -519,6 +534,10 @@ ifStmt
     : 'if' expr block ( 'else' ( ifStmt | block ) )?
     ;
 
+ifLetStmt
+    : 'if' 'let' pattern '=' expr block ( 'else' block )?
+    ;
+
 matchStmt
     : 'match' expr '{' matchArm* '}'
     ;
@@ -532,15 +551,19 @@ guard
     ;
 
 loopStmt
-    : ( LABEL ':' )? ( 'loop' | 'while' expr ) block
+    : ( LABEL ':' )? 'loop' block
     ;
 
 forStmt
-    : 'for' 'await'? pattern 'in' expr block
+    : ( LABEL ':' )? 'for' 'await'? pattern 'in' expr block
     ;
 
 whileStmt
-    : 'while' expr block
+    : ( LABEL ':' )? 'while' expr block
+    ;
+
+whileLetStmt
+    : ( LABEL ':' )? 'while' 'let' pattern '=' expr block
     ;
 
 breakStmt
@@ -642,19 +665,23 @@ unaryExpr
     ;
 
 postfixExpr
-    : primary ( '?' | '.' ident | '.' INT_LIT | '::' typeArgs '(' args? ')' | '::' ident | '(' args? ')' | '[' expr ']' )*
+    : primary ( '?' | '.' ident | '.' INT_LIT | '::' typeArgs '(' args? ')' | '::' ident | '(' args? ')' | '[' expr ']' | 'as' type_ )*
     ;
 
 primary
     : literal
     | INTERPOLATED_STRING
-    | ident '{' fieldInitList '}'       // Struct init: Point { x: 1, y: 2 }
-    | ident                             // Plain identifier
-    | 'this'                            // Actor self-reference
-    | block                             // Block expression: { ... }
-    | '[' exprList? ']'                 // Array literal
-    | '(' expr ( ',' exprList )? ')'    // Grouping or tuple
+    | ident '{' fieldInitList '}'           // Struct init: Point { x: 1, y: 2 }
+    | ident                                 // Plain identifier
+    | 'this'                                // Actor self-reference
+    | '{' expr ':' expr ( ',' expr ':' expr )* ','? '}'  // Map literal: {"key": val}
+    | block                                 // Block expression: { ... }
+    | '[' expr ';' expr ']'                 // Array repeat: [0; 256]
+    | '[' exprList? ']'                     // Array literal
+    | 'bytes' '[' exprList? ']'             // Byte array: bytes[0x41, 0x42]
+    | '(' expr ( ',' exprList )? ')'        // Grouping or tuple
     | ifExpr
+    | ifLetExpr
     | matchExpr
     | lambda
     | spawn
@@ -675,6 +702,10 @@ fieldInit
 
 ifExpr
     : 'if' expr block ( 'else' ( ifExpr | block ) )?
+    ;
+
+ifLetExpr
+    : 'if' 'let' pattern '=' expr block ( 'else' block )?
     ;
 
 matchExpr
@@ -730,7 +761,7 @@ spawn
     ;
 
 actorSpawn
-    : ident typeArgs? '(' fieldInitList? ')'
+    : ident ( '.' ident )? typeArgs? ( '(' fieldInitList? ')' )?
     ;
 
 lambdaActor
@@ -742,12 +773,15 @@ lambdaActor
 // ----------------------------------------------------------------
 
 selectExpr
-    : 'select' '{' selectArm+ '}'
+    : 'select' '{' selectArm* timeoutArm? '}'
     ;
 
 selectArm
     : pattern ( '<-' | 'from' ) expr '=>' expr ','?
-    | 'after' expr '=>' expr ','?
+    ;
+
+timeoutArm
+    : 'after' expr '=>' expr ','?
     ;
 
 joinExpr
@@ -764,8 +798,8 @@ scope
 
 // Inside scope |s| { ... }, the binding supports:
 //   s.launch { expr }      — via identifier desugaring in parser
+//   s.spawn { expr }       — via identifier desugaring in parser
 //   s.cancel()             — via identifier desugaring in parser
-//   s.is_cancelled()       — via identifier desugaring in parser
 
 cooperateExpr
     : 'cooperate'
@@ -796,6 +830,7 @@ type_
     | '*' 'var' type_                       // Mutable raw pointer
     | '*' type_                             // Immutable raw pointer
     | 'dyn' traitBound                      // Trait object (single trait + optional type args)
+    | 'dyn' '(' traitBounds ')'             // Multi-trait object: dyn (Trait1 + Trait2)
     | '_'                                   // Inferred type
     ;
 
@@ -835,7 +870,7 @@ wireType
 
 pattern
     : pattern '|' pattern                       // Or-pattern
-    | ident '::' ident ( '(' patternList? ')' )? // Qualified: Color::Red or Option::Some(x)
+    | ident ( '::' ident )+ ( '(' patternList? ')' )?  // Qualified: Mod::Color::Red or Option::Some(x)
     | ident '(' patternList? ')'                // Constructor: Some(x)
     | ident '{' patternFieldList? '}'           // Struct: Point { x, y }
     | '(' patternList ')'                       // Tuple: (a, b, c)
@@ -845,7 +880,8 @@ pattern
     ;
 
 literalPattern
-    : INT_LIT
+    : '-'? INT_LIT
+    | '-'? FLOAT_LIT
     | STRING_LIT
     | CHAR_LIT
     | 'true'

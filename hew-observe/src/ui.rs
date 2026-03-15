@@ -311,7 +311,7 @@ fn draw_message_swimlanes(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     if events.is_empty() {
-        let msg = Paragraph::new("No trace events. Enable tracing: HEW_TRACE=1")
+        let msg = Paragraph::new("No trace events yet. Run the workload with HEW_PPROF=:6060.")
             .style(theme::dim_style())
             .alignment(Alignment::Center);
         f.render_widget(msg, inner);
@@ -946,7 +946,7 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, row)| {
             let indent = "  ".repeat(row.depth as usize);
-            let colour = match row.state {
+            let colour = match row.state.as_str() {
                 "Running" | "Supervisor" => theme::STATE_HEALTHY,
                 "Idle" => theme::STATE_IDLE,
                 "Crashed" => theme::STATE_ERROR,
@@ -959,7 +959,7 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
             };
             Row::new(vec![
                 Cell::from(format!("{indent}{}", row.label)).style(Style::default().fg(colour)),
-                Cell::from(row.state).style(Style::default().fg(colour)),
+                Cell::from(row.state.as_str()).style(Style::default().fg(colour)),
             ])
             .style(style)
         })

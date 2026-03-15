@@ -77,6 +77,8 @@ fn handle_request(req: Request, ctx: &ProfilerContext) {
         "/api/connections" => serve_connections(req, ctx),
         "/api/routing/table" => serve_routing_table(req, ctx),
         "/api/traces" => serve_traces(req),
+        "/api/supervisors" => serve_supervisors(req),
+        "/api/crashes" => serve_crashes(req),
         "/debug/pprof/heap" => serve_pprof_heap(req),
         "/debug/pprof/profile" => serve_flat_profile(req),
         _ => serve_not_found(req),
@@ -280,5 +282,17 @@ fn serve_routing_table(req: Request, ctx: &ProfilerContext) {
 /// `GET /api/traces` — drain trace events.
 fn serve_traces(req: Request) {
     let json = crate::tracing::drain_events_json();
+    json_response(req, &json);
+}
+
+/// `GET /api/supervisors` — supervision tree rows.
+fn serve_supervisors(req: Request) {
+    let json = crate::supervisor::snapshot_tree_json();
+    json_response(req, &json);
+}
+
+/// `GET /api/crashes` — recent crash log entries.
+fn serve_crashes(req: Request) {
+    let json = crate::crash::snapshot_crashes_json();
     json_response(req, &json);
 }

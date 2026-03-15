@@ -1,5 +1,25 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-15 observe wiring pass
+
+### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries
+
+The tracing module already had a usable C ABI, but nothing meaningful happened until the
+dispatch loop itself called begin/end around real message execution. Observability features
+that span runtime components usually fail at the integration boundary, not in the leaf
+module that implements the data structure or HTTP endpoint.
+
+### 2. Trace context must ride with the mailbox payload, not with the worker thread
+
+Worker threads are reused across unrelated actor activations, so thread-local context alone
+is not enough for causal tracing. The durable handoff point is the mailbox node: capture
+context when enqueuing, restore it when dequeuing, then derive the child dispatch span.
+
+### 3. Profiler-backed UIs need activation semantics, not just endpoints
+
+Serving `/api/traces` was not sufficient because tracing was still disabled by default.
+For debugging tooling, tying trace activation to `HEW_PPROF` keeps the operator workflow
+simple: one flag starts the HTTP server and turns on the event stream the UI expects.
 ## From the 2026-03-15 `hew test` hardening pass
 
 ### 1. Test discovery must never discard parser diagnostics
@@ -449,7 +469,21 @@ codegen tracks them through other mechanisms, but that does not justify a silent
 fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
 by span in the CLI so developers see the unsupported conversion exactly once.
 
-### 56. Inferred type arguments must be persisted for downstream passes
+### 56. Greedy transitive resolution still needs restartable passes
+
+Even without a SAT solver, a dependency resolver cannot stop at the first chosen version.
+A later edge in the graph can tighten a package from `^1.0` to `^1.2`, forcing the chosen
+version downward and potentially changing that package's own dependencies. Rebuilding the
+pass when a previously expanded package changes version is a simple, reliable v1 strategy.
+
+### 57. Lockfile staleness must compare requirements, not just names
+
+Once a lockfile records transitive packages, comparing raw package-name sets will always
+misclassify valid lockfiles as stale. Record the root manifest requirements alongside the
+resolved package versions, then compare that direct-dependency map against the manifest so
+transitive entries do not create false positives.
+
+### 58. Inferred type arguments must be persisted for downstream passes
 
 The type checker successfully infers concrete type arguments via unification, but if those
 resolved types are not written back into the AST (or a side-channel map), downstream

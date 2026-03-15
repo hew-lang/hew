@@ -1,5 +1,36 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 8: Runtime observe wiring (2026-03-15)
+
+### Goal
+
+Replace hew-observe demo-only Messages, Timeline, Supervisors, and Crashes data with
+live runtime data from the actor scheduler and profiler HTTP server.
+
+### Changes made
+
+- Wired `hew_trace_begin`/`hew_trace_end` into the scheduler dispatch loop so each
+  dispatched message now produces real span timing events.
+- Captured trace context in mailbox nodes at enqueue time and restored it before
+  dispatch so trace IDs survive actor-to-actor message hops.
+- Emitted lifecycle events for actor spawn, crash, stop, and message send from the
+  runtime paths that already own those transitions.
+- Enabled tracing automatically when `HEW_PPROF` starts the profiler so
+  `hew-observe --addr ...` shows data without an extra tracing flag.
+- Added `/api/supervisors` and `/api/crashes` endpoints and taught hew-observe to
+  fetch them instead of relying on demo placeholders.
+
+### Validation
+
+- `cargo fmt --all --check`
+- `make lint`
+- `make test`
+- Built a temporary Hew workload with a supervised counter that crashes once, then:
+  - confirmed `/api/traces` returns live events
+  - confirmed `/api/supervisors` returns the real tree
+  - confirmed `/api/crashes` returns the recorded crash
+  - connected `hew-observe` and captured live Supervisors, Crashes, Messages, and
+    Timeline panes showing runtime-backed data
 ## Phase 0.5: `hew test` hardening audit (2026-03-15)
 
 ### What I audited
@@ -844,29 +875,6 @@ coverage.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
 
-### Periodic actor timers
-
-- Added `#[every(duration)]` attribute support for actor receive handlers, enabling
-  periodic self-sends at a fixed interval (e.g. `#[every(5s)]`, `#[every(100ms)]`).
-- Extended `AttributeArg` with a `Duration(i64)` variant and the parser's
-  `parse_attributes()` to recognise duration tokens inside attribute arguments.
-- Added `attributes: Vec<Attribute>` field to `ReceiveFnDecl` in the AST, parsed before
-  `receive fn` declarations inside actor bodies.
-- Type checker validates: single `#[every]` per handler, exactly one duration argument,
-  positive value, no parameters, no return type.
-- C++ codegen reads `periodic_interval_ns` from the serialised attributes, stores it in
-  `ActorReceiveInfo`, and emits `hew_actor_schedule_periodic()` calls after each spawn.
-- New runtime module `timer_periodic.rs` provides a global timer wheel with a 1 ms ticker
-  thread. `hew_actor_schedule_periodic(actor, msg_type, interval_ms)` schedules a repeating
-  self-send that re-arms after each callback.
-- Added E2E test `actor_periodic_timer.hew` verifying tick count after a timed delay.
-- **Design decision:** Used `#[every(duration)]` attribute syntax (Rust-style `#[...]`)
-  rather than `@every(5s)` annotation syntax. This reuses the existing attribute parser
-  infrastructure and keeps the surface language consistent with `#[test]`, `#[wire]`, etc.
-  The `@` sigil was considered but rejected to avoid introducing a second annotation system.
-- **Design decision:** Global timer wheel with a background ticker thread rather than
-  per-actor timers. This amortises the cost of periodic scheduling across all actors and
-  avoids thread-per-timer resource waste.
 
 ## Structured Error Types — Error Handling Story
 

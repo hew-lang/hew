@@ -168,6 +168,21 @@ fn record_event(event: HewTraceEvent) {
     events.push_back(event);
 }
 
+fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
+    let ctx = CURRENT_CONTEXT.with(Cell::get);
+
+    record_event(HewTraceEvent {
+        trace_id_hi: ctx.trace_id_hi,
+        trace_id_lo: ctx.trace_id_lo,
+        span_id: ctx.span_id,
+        parent_span_id: ctx.parent_span_id,
+        actor_id,
+        event_type,
+        msg_type,
+        timestamp_ns: monotonic_ns(),
+    });
+}
+
 // ── C ABI ──────────────────────────────────────────────────────────────
 
 /// Generate a new 128-bit trace ID (returned as two u64 values).
@@ -272,18 +287,7 @@ pub extern "C" fn hew_trace_lifecycle(actor_id: u64, event_type: i32) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let ctx = CURRENT_CONTEXT.with(Cell::get);
-
-    record_event(HewTraceEvent {
-        trace_id_hi: ctx.trace_id_hi,
-        trace_id_lo: ctx.trace_id_lo,
-        span_id: ctx.span_id,
-        parent_span_id: ctx.parent_span_id,
-        actor_id,
-        event_type,
-        msg_type: 0,
-        timestamp_ns: monotonic_ns(),
-    });
+    record_lifecycle_event(actor_id, event_type, 0);
 }
 
 /// Set the current thread's trace context.
@@ -317,6 +321,21 @@ pub unsafe extern "C" fn hew_trace_get_context(out: *mut HewTraceContext) {
     let ctx = CURRENT_CONTEXT.with(Cell::get);
     // SAFETY: caller guarantees `out` is valid.
     unsafe { *out = ctx };
+}
+
+pub(crate) fn current_context() -> HewTraceContext {
+    CURRENT_CONTEXT.with(Cell::get)
+}
+
+pub(crate) fn set_context(ctx: HewTraceContext) {
+    CURRENT_CONTEXT.with(|c| c.set(ctx));
+}
+
+pub(crate) fn record_send(actor_id: u64, msg_type: i32) {
+    if !TRACING_ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    record_lifecycle_event(actor_id, SPAN_SEND, msg_type);
 }
 
 /// Enable or disable tracing globally.

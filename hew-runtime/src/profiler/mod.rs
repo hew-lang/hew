@@ -63,6 +63,7 @@ pub fn maybe_start_with_context(
         Ok(val) if !val.is_empty() => val,
         _ => return,
     };
+    crate::tracing::hew_trace_enable(1);
 
     // Normalize `:port` shorthand to `0.0.0.0:port`.
     let bind_addr = if bind_addr.starts_with(':') {

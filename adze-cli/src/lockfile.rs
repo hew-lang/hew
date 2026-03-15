@@ -15,6 +15,9 @@ use crate::manifest::HewManifest;
 pub struct LockedPackage {
     /// Fully qualified package name (e.g. `ecosystem::db::postgres`).
     pub name: String,
+    /// Root manifest requirement for direct dependencies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<String>,
     /// Exact resolved version string.
     pub version: String,
     /// Optional integrity checksum in `sha256:{hex}` format.
@@ -136,17 +139,27 @@ pub fn write_lockfile(path: &Path, lockfile: &LockFile) -> Result<(), LockError>
 
 /// Returns `true` if the lockfile is stale relative to the manifest.
 ///
-/// A lockfile is stale when:
-/// - A manifest dependency is not present in the lockfile, or
-/// - A lockfile entry has no corresponding manifest dependency.
+/// A lockfile is stale when its recorded direct dependency requirements differ
+/// from the current manifest requirements.
 #[must_use]
 pub fn is_lock_stale(lockfile: &LockFile, manifest: &HewManifest) -> bool {
-    let locked_names: std::collections::BTreeSet<&str> =
-        lockfile.packages.iter().map(|p| p.name.as_str()).collect();
-    let manifest_names: std::collections::BTreeSet<&str> =
-        manifest.dependencies.keys().map(String::as_str).collect();
+    let locked_requirements: std::collections::BTreeMap<&str, &str> = lockfile
+        .packages
+        .iter()
+        .filter_map(|package| {
+            package
+                .requirement
+                .as_deref()
+                .map(|requirement| (package.name.as_str(), requirement))
+        })
+        .collect();
+    let manifest_requirements: std::collections::BTreeMap<&str, &str> = manifest
+        .dependencies
+        .iter()
+        .map(|(name, dep_spec)| (name.as_str(), dep_spec.version_req()))
+        .collect();
 
-    locked_names != manifest_names
+    locked_requirements != manifest_requirements
 }
 
 #[cfg(test)]
@@ -198,6 +211,7 @@ mod tests {
             packages: vec![
                 LockedPackage {
                     name: "std::net::http".to_string(),
+                    requirement: Some("^2.0".to_string()),
                     version: "2.1.0".to_string(),
                     checksum: Some("sha256:def456".to_string()),
                     signature: None,
@@ -205,6 +219,7 @@ mod tests {
                 },
                 LockedPackage {
                     name: "ecosystem::db::postgres".to_string(),
+                    requirement: Some("^1.0".to_string()),
                     version: "1.0.0".to_string(),
                     checksum: Some("sha256:abc123".to_string()),
                     signature: None,
@@ -234,6 +249,7 @@ mod tests {
         let lockfile = LockFile {
             packages: vec![LockedPackage {
                 name: "mypkg".to_string(),
+                requirement: Some("^0.1".to_string()),
                 version: "0.1.0".to_string(),
                 checksum: None,
                 signature: None,
@@ -246,6 +262,7 @@ mod tests {
 
         assert_eq!(read_back.packages.len(), 1);
         assert!(read_back.packages[0].checksum.is_none());
+        assert_eq!(read_back.packages[0].requirement.as_deref(), Some("^0.1"));
     }
 
     #[test]
@@ -277,6 +294,7 @@ mod tests {
         let lockfile = LockFile {
             packages: vec![LockedPackage {
                 name: "std::net::http".to_string(),
+                requirement: Some("1.0".to_string()),
                 version: "1.0.0".to_string(),
                 checksum: None,
                 signature: None,
@@ -297,6 +315,7 @@ mod tests {
             packages: vec![
                 LockedPackage {
                     name: "std::net::http".to_string(),
+                    requirement: Some("1.0".to_string()),
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
@@ -304,6 +323,7 @@ mod tests {
                 },
                 LockedPackage {
                     name: "ecosystem::db::postgres".to_string(),
+                    requirement: Some("2.0".to_string()),
                     version: "2.0.0".to_string(),
                     checksum: None,
                     signature: None,
@@ -317,11 +337,56 @@ mod tests {
     }
 
     #[test]
+    fn not_stale_when_lockfile_has_transitive_packages() {
+        let lockfile = LockFile {
+            packages: vec![
+                LockedPackage {
+                    name: "ecosystem::db::postgres".to_string(),
+                    requirement: Some("^2.0".to_string()),
+                    version: "2.3.0".to_string(),
+                    checksum: None,
+                    signature: None,
+                    source: "registry".to_string(),
+                },
+                LockedPackage {
+                    name: "ecosystem::db::tls".to_string(),
+                    requirement: None,
+                    version: "1.4.0".to_string(),
+                    checksum: None,
+                    signature: None,
+                    source: "registry".to_string(),
+                },
+            ],
+        };
+        let manifest = make_manifest(&[("ecosystem::db::postgres", "^2.0")]);
+
+        assert!(!is_lock_stale(&lockfile, &manifest));
+    }
+
+    #[test]
+    fn stale_when_direct_requirement_changes() {
+        let lockfile = LockFile {
+            packages: vec![LockedPackage {
+                name: "std::net::http".to_string(),
+                requirement: Some("^1.0".to_string()),
+                version: "1.8.0".to_string(),
+                checksum: None,
+                signature: None,
+                source: "registry".to_string(),
+            }],
+        };
+        let manifest = make_manifest(&[("std::net::http", "^1.2")]);
+
+        assert!(is_lock_stale(&lockfile, &manifest));
+    }
+
+    #[test]
     fn not_stale_when_matching() {
         let lockfile = LockFile {
             packages: vec![
                 LockedPackage {
                     name: "ecosystem::db::postgres".to_string(),
+                    requirement: Some("2.0".to_string()),
                     version: "2.0.0".to_string(),
                     checksum: None,
                     signature: None,
@@ -329,6 +394,7 @@ mod tests {
                 },
                 LockedPackage {
                     name: "std::net::http".to_string(),
+                    requirement: Some("^1.0".to_string()),
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
@@ -363,6 +429,7 @@ mod tests {
             packages: vec![
                 LockedPackage {
                     name: "zzz::last".to_string(),
+                    requirement: Some("^1.0".to_string()),
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,
@@ -370,6 +437,7 @@ mod tests {
                 },
                 LockedPackage {
                     name: "aaa::first".to_string(),
+                    requirement: Some("^1.0".to_string()),
                     version: "1.0.0".to_string(),
                     checksum: None,
                     signature: None,

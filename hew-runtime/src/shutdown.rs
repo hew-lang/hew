@@ -266,6 +266,9 @@ pub unsafe fn install_shutdown_signal_handlers() {
         0 // Not handled
     }
 
+    // SAFETY: `ctrl_handler` matches the `PHANDLER_ROUTINE` signature
+    // expected by `SetConsoleCtrlHandler`. Registering it is safe as long
+    // as the handler only performs signal-safe operations (atomic store).
     unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), 1) };
 }
 

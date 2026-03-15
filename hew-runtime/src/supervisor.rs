@@ -16,6 +16,129 @@ use crate::mailbox;
 use crate::scheduler;
 use crate::set_last_error;
 
+#[cfg(feature = "profiler")]
+fn supervisor_strategy_name(strategy: c_int) -> &'static str {
+    match strategy {
+        STRATEGY_ONE_FOR_ONE => "one_for_one",
+        STRATEGY_ONE_FOR_ALL => "one_for_all",
+        STRATEGY_REST_FOR_ONE => "rest_for_one",
+        _ => "unknown",
+    }
+}
+
+#[cfg(feature = "profiler")]
+fn actor_state_name(actor: *mut HewActor) -> &'static str {
+    if actor.is_null() {
+        return "Stopped";
+    }
+    // SAFETY: profiler snapshots only registered live pointers.
+    let state = unsafe { (*actor).actor_state.load(Ordering::Relaxed) };
+    if state == HewActorState::Idle as i32 {
+        "Idle"
+    } else if state == HewActorState::Runnable as i32 {
+        "Runnable"
+    } else if state == HewActorState::Running as i32 {
+        "Running"
+    } else if state == HewActorState::Blocked as i32 {
+        "Blocked"
+    } else if state == HewActorState::Stopping as i32 {
+        "Stopping"
+    } else if state == HewActorState::Crashed as i32 {
+        "Crashed"
+    } else if state == HewActorState::Stopped as i32 {
+        "Stopped"
+    } else {
+        "Unknown"
+    }
+}
+
+#[cfg(feature = "profiler")]
+fn child_name(name: *const c_char, fallback: &str) -> String {
+    if name.is_null() {
+        fallback.to_owned()
+    } else {
+        // SAFETY: supervisor child names are stored as valid C strings.
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(feature = "profiler")]
+fn append_tree_row(json: &mut String, first: &mut bool, depth: u16, label: &str, state: &str) {
+    use std::fmt::Write as _;
+
+    if !*first {
+        json.push(',');
+    }
+    *first = false;
+    let _ = write!(
+        json,
+        r#"{{"depth":{},"label":"{}","state":"{}"}}"#,
+        depth, label, state,
+    );
+}
+
+#[cfg(feature = "profiler")]
+fn append_supervisor_rows(
+    json: &mut String,
+    first: &mut bool,
+    sup: *mut HewSupervisor,
+    depth: u16,
+) {
+    if sup.is_null() {
+        return;
+    }
+
+    // SAFETY: top-level supervisor pointers remain valid while registered.
+    let supervisor = unsafe { &*sup };
+    let self_actor_id = if supervisor.self_actor.is_null() {
+        0
+    } else {
+        // SAFETY: self_actor belongs to the live supervisor.
+        unsafe { (*supervisor.self_actor).id }
+    };
+    let label = format!(
+        "⊞ supervisor:{self_actor_id} [{}]",
+        supervisor_strategy_name(supervisor.strategy)
+    );
+    append_tree_row(json, first, depth, &label, "Supervisor");
+
+    for (index, child) in supervisor
+        .children
+        .iter()
+        .take(supervisor.child_count)
+        .enumerate()
+    {
+        let spec = &supervisor.child_specs[index];
+        let name = child_name(spec.name, &format!("child[{index}]"));
+        let restarts = if spec.circuit_breaker.crash_stats.is_null() {
+            0
+        } else {
+            // SAFETY: crash stats pointer belongs to the child spec.
+            unsafe { (*spec.circuit_breaker.crash_stats).total_crashes }
+        };
+        let label = format!("  {name} (restarts: {restarts})");
+        append_tree_row(json, first, depth + 1, &label, actor_state_name(*child));
+    }
+
+    for child_sup in &supervisor.child_supervisors {
+        append_supervisor_rows(json, first, *child_sup, depth + 1);
+    }
+}
+
+#[cfg(feature = "profiler")]
+pub fn snapshot_tree_json() -> String {
+    let roots = crate::shutdown::registered_supervisors_snapshot();
+    let mut json = String::from("[");
+    let mut first = true;
+    for root in roots {
+        append_supervisor_rows(&mut json, &mut first, root, 0);
+    }
+    json.push(']');
+    json
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------

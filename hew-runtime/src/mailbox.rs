@@ -24,6 +24,7 @@ use std::sync::{Condvar, Mutex};
 use crate::internal::types::{HewError, HewOverflowPolicy};
 use crate::scheduler::{MESSAGES_RECEIVED, MESSAGES_SENT};
 use crate::set_last_error;
+use crate::tracing::HewTraceContext;
 
 /// Re-export of [`HewOverflowPolicy`] for the public mailbox API.
 pub use crate::internal::types::HewOverflowPolicy as OverflowPolicy;
@@ -53,6 +54,8 @@ pub struct HewMsgNode {
     pub data_size: usize,
     /// Optional reply channel for the ask pattern (unused by mailbox).
     pub reply_channel: *mut c_void,
+    /// Trace context captured when the message was enqueued.
+    pub trace_context: HewTraceContext,
 }
 
 /// Allocate a [`HewMsgNode`] via `libc::malloc`, deep-copying `data`.
@@ -74,6 +77,7 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
         (*node).reply_channel = ptr::null_mut();
+        (*node).trace_context = crate::tracing::current_context();
 
         // Deep-copy message data for actor isolation.
         if data_size > 0 && !data.is_null() {
@@ -128,6 +132,7 @@ fn alloc_sentinel() -> *mut HewMsgNode {
         (*node).data = ptr::null_mut();
         (*node).data_size = 0;
         (*node).reply_channel = ptr::null_mut();
+        (*node).trace_context = HewTraceContext::default();
     }
     node
 }

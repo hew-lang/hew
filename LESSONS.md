@@ -1,5 +1,25 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-15 observe wiring pass
+
+### 1. Complete tracing APIs are still dead code until the scheduler owns the boundaries
+
+The tracing module already had a usable C ABI, but nothing meaningful happened until the
+dispatch loop itself called begin/end around real message execution. Observability features
+that span runtime components usually fail at the integration boundary, not in the leaf
+module that implements the data structure or HTTP endpoint.
+
+### 2. Trace context must ride with the mailbox payload, not with the worker thread
+
+Worker threads are reused across unrelated actor activations, so thread-local context alone
+is not enough for causal tracing. The durable handoff point is the mailbox node: capture
+context when enqueuing, restore it when dequeuing, then derive the child dispatch span.
+
+### 3. Profiler-backed UIs need activation semantics, not just endpoints
+
+Serving `/api/traces` was not sufficient because tracing was still disabled by default.
+For debugging tooling, tying trace activation to `HEW_PPROF` keeps the operator workflow
+simple: one flag starts the HTTP server and turns on the event stream the UI expects.
 ## From the 2026-03-15 `hew test` hardening pass
 
 ### 1. Test discovery must never discard parser diagnostics

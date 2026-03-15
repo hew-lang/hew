@@ -1,0 +1,9 @@
+// Negative test: `self` as a typed parameter name must be rejected.
+// Even with an explicit type annotation, `self` is not a valid identifier in Hew.
+type Point { x: int, y: int }
+
+impl Point {
+    fn get_x(self: Point) -> int { 42 }
+}
+
+fn main() {}

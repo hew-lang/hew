@@ -3051,15 +3051,15 @@ impl<'src> Parser<'src> {
                 break;
             };
 
-            // Bare `self` without type annotation is no longer valid Hew syntax.
+            // `self` is not a valid parameter name in Hew — neither bare nor typed.
             // Users must use named receivers: fn method(val: Self) or fn method(p: Point)
-            if name == "self" && !matches!(self.peek(), Some(&Token::Colon)) {
+            if name == "self" {
                 let span = self
                     .tokens
                     .get(self.pos.wrapping_sub(1))
                     .map_or(self.peek_span(), |(_, s)| s.clone());
                 self.errors.push(ParseError {
-                    message: "bare `self` parameter is no longer supported in Hew; \
+                    message: "`self` is not a valid parameter name in Hew; \
                               use a named receiver with explicit type instead: \
                               `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
                         .to_string(),
@@ -3067,7 +3067,11 @@ impl<'src> Parser<'src> {
                     hint: None,
                     severity: Severity::Error,
                 });
-                // Skip past self and any trailing comma to recover
+                // Consume the optional `: Type` annotation so recovery is clean
+                if self.eat(&Token::Colon) {
+                    self.parse_type();
+                }
+                // Skip any trailing comma to continue parsing further params
                 if self.eat(&Token::Comma) {
                     continue;
                 }
@@ -5620,8 +5624,24 @@ mod tests {
             "expected parse error for bare `self` parameter"
         );
         assert!(
-            result.errors[0].message.contains("no longer supported"),
-            "error message should mention self is no longer supported"
+            result.errors[0].message.contains("not a valid parameter name"),
+            "error message should mention self is not a valid parameter name, got: {}",
+            result.errors[0].message,
+        );
+    }
+
+    #[test]
+    fn parse_typed_self_is_error() {
+        let source = "type Foo { x: int } impl Foo { fn bar(self: Foo) -> int { 0 } }";
+        let result = parse(source);
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for `self: Type` parameter"
+        );
+        assert!(
+            result.errors[0].message.contains("not a valid parameter name"),
+            "error message should mention self is not a valid parameter name, got: {}",
+            result.errors[0].message,
         );
     }
 

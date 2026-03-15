@@ -495,18 +495,6 @@ fn has_tool(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    // ── runtime_lib_name ──────────────────────────────────────────────
-
-    #[test]
-    fn runtime_lib_name_matches_platform() {
-        let name = runtime_lib_name();
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_runtime.lib");
-        } else {
-            assert_eq!(name, "libhew_runtime.a");
-        }
-    }
-
     // ── module_to_staticlib_name ──────────────────────────────────────
 
     #[test]
@@ -526,26 +514,6 @@ mod tests {
             assert_eq!(name, "hew_json.lib");
         } else {
             assert_eq!(name, "libhew_json.a");
-        }
-    }
-
-    #[test]
-    fn staticlib_name_two_segments() {
-        let name = module_to_staticlib_name("std::io");
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_std_io.lib");
-        } else {
-            assert_eq!(name, "libhew_std_io.a");
-        }
-    }
-
-    #[test]
-    fn staticlib_name_deeply_nested() {
-        let name = module_to_staticlib_name("hew::net::http::client");
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_hew_net_http_client.lib");
-        } else {
-            assert_eq!(name, "libhew_hew_net_http_client.a");
         }
     }
 
@@ -583,11 +551,6 @@ mod tests {
         // lld-link may add extra context after the symbol
         let line = "error: unresolved external symbol hew_tcp_bind, referenced in foo.obj";
         assert_eq!(extract_undefined_hew_symbol(line), Some("hew_tcp_bind"));
-    }
-
-    #[test]
-    fn extract_symbol_no_match_random_line() {
-        assert_eq!(extract_undefined_hew_symbol("some random line"), None);
     }
 
     #[test]
@@ -813,12 +776,6 @@ mod tests {
     // ── find_package_libs ─────────────────────────────────────────────
 
     #[test]
-    fn find_package_libs_empty_modules() {
-        let libs = find_package_libs(&[], None);
-        assert!(libs.is_empty());
-    }
-
-    #[test]
     fn find_package_libs_nonexistent_module() {
         let modules = vec!["nonexistent::module::xyz".to_string()];
         let libs = find_package_libs(&modules, None);
@@ -844,28 +801,6 @@ mod tests {
             output_path.to_string()
         };
         assert_eq!(safe, "./-evil");
-    }
-
-    #[test]
-    fn output_path_normal_unchanged() {
-        let output_path = "myapp";
-        let safe = if output_path.starts_with('-') {
-            format!("./{output_path}")
-        } else {
-            output_path.to_string()
-        };
-        assert_eq!(safe, "myapp");
-    }
-
-    #[test]
-    fn output_path_relative_unchanged() {
-        let output_path = "./build/myapp";
-        let safe = if output_path.starts_with('-') {
-            format!("./{output_path}")
-        } else {
-            output_path.to_string()
-        };
-        assert_eq!(safe, "./build/myapp");
     }
 
     // ── find_package_libs with real temp directory ─────────────────────

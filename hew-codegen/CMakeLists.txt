@@ -50,6 +50,14 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
+# ── Coverage instrumentation (used by `make coverage-cpp`) ───────────────────
+option(HEW_COVERAGE "Build with coverage instrumentation for llvm-cov profiling" OFF)
+if(HEW_COVERAGE)
+  message(STATUS "Coverage instrumentation enabled")
+  add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+  add_link_options(-fprofile-instr-generate)
+endif()
+
 # ── Static linking option for release builds ─────────────────────────────────
 option(HEW_STATIC_LINK "Statically link LLVM and MLIR for self-contained binaries" OFF)
 

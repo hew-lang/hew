@@ -36,7 +36,7 @@
 .PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
-.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined
+.PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -303,9 +303,9 @@ lint:
 
 # ── Coverage ───────────────────────────────────────────────────────────────
 #
-# Three coverage modes:
 #   make coverage         — Rust unit/integration tests only (cargo llvm-cov)
 #   make coverage-e2e     — E2E tests exercising the full compile pipeline
+#   make coverage-cpp     — C++ codegen coverage (llvm-cov profiling)
 #   make coverage-combined — both merged into a single report
 #
 # E2E coverage instruments the hew CLI binary and runtime, then runs all 424+
@@ -378,6 +378,35 @@ coverage-combined: codegen stdlib
 	  -format=html -output-dir=$(COV_DIR)/combined-html
 	@echo "==> Open $(COV_DIR)/combined-html/index.html"
 	@rm -rf $(COV_DIR)/merged
+
+# C++ codegen coverage: instruments hew-codegen, runs unit + E2E tests, reports
+coverage-cpp: stdlib
+	@echo "==> Building hew-codegen with coverage instrumentation"
+ifeq ($(shell uname -s),Darwin)
+	cmake -B hew-codegen/build-cov -G Ninja \
+		$(CMAKE_EXTRA_ARGS) \
+		-DHEW_COVERAGE=ON \
+		-S hew-codegen
+else
+	cmake -B hew-codegen/build-cov -G Ninja \
+		-DCMAKE_C_COMPILER=$(CC) \
+		-DCMAKE_CXX_COMPILER=$(CXX) \
+		$(CMAKE_EXTRA_ARGS) \
+		-DHEW_COVERAGE=ON \
+		-S hew-codegen
+endif
+	cmake --build hew-codegen/build-cov
+	@echo "==> Running C++ tests with coverage"
+	@rm -rf $(COV_DIR)/cpp-profraw && mkdir -p $(COV_DIR)/cpp-profraw
+	LLVM_PROFILE_FILE="$(CURDIR)/$(COV_DIR)/cpp-profraw/unit_%p_%m.profraw" \
+	  sh -c 'cd hew-codegen/build-cov && ctest --output-on-failure -LE wasm -j8'
+	@echo "==> Merging profdata"
+	$(LLVM_PROFDATA) merge -sparse $(COV_DIR)/cpp-profraw/*.profraw -o $(COV_DIR)/cpp.profdata
+	@echo "==> C++ codegen coverage summary:"
+	$(LLVM_COV) report hew-codegen/build-cov/src/hew-codegen \
+	  -instr-profile=$(COV_DIR)/cpp.profdata \
+	  --ignore-filename-regex='(llvm|mlir|/usr/|msgpack|nlohmann)' \
+	  -summary-only
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Checks that every hew_* function name referenced in C++ codegen has a
@@ -472,7 +501,7 @@ uninstall:
 
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf hew-codegen/build
+	rm -rf hew-codegen/build hew-codegen/build-cov
 	cargo clean
 	rm -rf $(GRAMMAR_OUT) .tmp/Hew.g4
 	rm -rf $(COV_DIR)

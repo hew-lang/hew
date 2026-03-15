@@ -1,0 +1,17 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    sink.write("apple");
+    sink.write("kiwi");
+    sink.write("banana");
+    sink.close();
+
+    // Keep only items longer than 4 characters.
+    let filtered = input.filter((s) => s.len() > 4);
+
+    for await item in filtered {
+        println(item);
+    }
+}

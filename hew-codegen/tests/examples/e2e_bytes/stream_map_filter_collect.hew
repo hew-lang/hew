@@ -1,0 +1,22 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(16);
+
+    sink.write("apple");
+    sink.write("kiwi");
+    sink.write("banana");
+    sink.write("fig");
+    sink.write("mango");
+    sink.close();
+
+    // Map: append "!", filter: keep only items longer than 5 chars after map,
+    // take: at most 2, collect: join into one string.
+    let result = input
+        .map((s) => s + "!")
+        .filter((s) => s.len() > 5)
+        .take(2)
+        .collect();
+
+    println(result);
+}

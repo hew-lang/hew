@@ -6719,6 +6719,41 @@ impl Checker {
                         // Returns Stream<T> where T is inferred; codec type arg not yet resolved
                         Ty::stream(Ty::Var(TypeVar::fresh()))
                     }
+                    // Functional operators — fn(String) -> String / bool, return Stream<String>
+                    "map" => {
+                        // Argument is a closure fn(String) -> String.
+                        // Check the closure against the expected type so that the
+                        // closure parameter type is inferred as String.
+                        let ret_ty = Ty::Var(TypeVar::fresh());
+                        let expected_fn = Ty::Function {
+                            params: vec![Ty::String],
+                            ret: Box::new(ret_ty.clone()),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        Ty::stream(Ty::String)
+                    }
+                    "filter" => {
+                        // Argument is a predicate fn(String) -> bool.
+                        let expected_fn = Ty::Function {
+                            params: vec![Ty::String],
+                            ret: Box::new(Ty::Bool),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        Ty::stream(Ty::String)
+                    }
+                    "take" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I64);
+                        }
+                        Ty::stream(Ty::String)
+                    }
                     _ => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,

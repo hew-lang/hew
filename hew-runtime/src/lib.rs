@@ -142,6 +142,7 @@ pub mod rc;
 pub mod result;
 pub mod string;
 pub mod vec;
+pub mod vecdeque;
 
 pub mod bytes;
 

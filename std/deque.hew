@@ -1,0 +1,66 @@
+//! Double-ended queue (deque).
+//!
+//! A growable ring-buffer that supports efficient insertion and removal
+//! at both ends.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::deque;
+//!
+//! fn main() {
+//!     let dq = deque.new();
+//!     dq.push_back(1);
+//!     dq.push_back(2);
+//!     dq.push_front(0);
+//!     println(dq.len());          // 3
+//!     println(dq.pop_front());    // 0
+//!     println(dq.pop_back());     // 2
+//!     dq.free();
+//! }
+//! ```
+
+/// An opaque double-ended queue handle.
+///
+/// Created by `deque.new()`. Must be freed with `free()` when no longer
+/// needed to avoid leaking memory.
+type Deque {}
+
+/// Methods available on a `Deque`.
+trait DequeMethods {
+    fn push_front(dq: Deque, value: i64);
+    fn push_back(dq: Deque, value: i64);
+    fn pop_front(dq: Deque) -> i64;
+    fn pop_back(dq: Deque) -> i64;
+    fn len(dq: Deque) -> i64;
+    fn is_empty(dq: Deque) -> bool;
+    fn free(dq: Deque);
+}
+
+impl DequeMethods for Deque {
+    fn push_front(dq: Deque, value: i64) { hew_deque_push_front(dq, value); }
+    fn push_back(dq: Deque, value: i64) { hew_deque_push_back(dq, value); }
+    fn pop_front(dq: Deque) -> i64 { hew_deque_pop_front(dq) }
+    fn pop_back(dq: Deque) -> i64 { hew_deque_pop_back(dq) }
+    fn len(dq: Deque) -> i64 { hew_deque_len(dq) }
+    fn is_empty(dq: Deque) -> bool { hew_deque_is_empty(dq) }
+    fn free(dq: Deque) { hew_deque_free(dq); }
+}
+
+/// Create a new, empty deque.
+pub fn new() -> Deque {
+    hew_deque_new()
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_deque_new() -> Deque;
+    fn hew_deque_push_front(dq: Deque, value: i64);
+    fn hew_deque_push_back(dq: Deque, value: i64);
+    fn hew_deque_pop_front(dq: Deque) -> i64;
+    fn hew_deque_pop_back(dq: Deque) -> i64;
+    fn hew_deque_len(dq: Deque) -> i64;
+    fn hew_deque_is_empty(dq: Deque) -> bool;
+    fn hew_deque_free(dq: Deque);
+}

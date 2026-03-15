@@ -865,6 +865,7 @@ add_e2e_file_test(coverage_expr_deep_nesting   e2e_coverage expr_deep_nesting)
 add_e2e_file_test(coverage_loop_edge_cases     e2e_coverage loop_edge_cases)
 add_e2e_file_test(coverage_closure_edge_cases  e2e_coverage closure_edge_cases)
 add_e2e_file_test(coverage_defer_multi_scope   e2e_coverage defer_multi_scope)
+add_e2e_file_test(coverage_std_testing         e2e_coverage std_testing)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

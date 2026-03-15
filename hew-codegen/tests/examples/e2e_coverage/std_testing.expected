@@ -1,0 +1,8 @@
+assert_eq passed
+assert_eq_str passed
+assert_true passed
+assert_false passed
+assert_ne passed
+assert_gt passed
+assert_lt passed
+all std::testing assertions passed

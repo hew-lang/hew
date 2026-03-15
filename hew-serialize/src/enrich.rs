@@ -3187,6 +3187,7 @@ mod tests {
                     where_clause: None,
                     body: make_block_with_expr(make_len_call(make_ident("data"))),
                     span: 0..0,
+                    attributes: vec![],
                 }],
                 methods: vec![],
                 mailbox_capacity: None,
@@ -4054,6 +4055,7 @@ mod tests {
                         trailing_expr: None,
                     },
                     span: 0..0,
+                    attributes: vec![],
                 }],
                 methods: vec![],
                 mailbox_capacity: None,
@@ -5280,6 +5282,7 @@ mod tests {
                             trailing_expr: None,
                         },
                         span: 0..0,
+                        attributes: vec![],
                     }],
                     methods: vec![FnDecl {
                         attributes: vec![],

@@ -186,6 +186,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   for (const auto &recv : decl.receive_fns) {
     ActorReceiveInfo recvInfo;
     recvInfo.name = recv.name;
+    recvInfo.periodicIntervalNs = recv.periodic_interval_ns;
 
     for (const auto &param : recv.params) {
       auto ty = convertTypeOrError(param.ty.value, "cannot resolve type for receive parameter '" +
@@ -994,6 +995,37 @@ mlir::Value MLIRGen::generateSpawnExpr(const ast::ExprSpawn &expr) {
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i32Type},
                                mlir::SymbolRefAttr::get(&context, "hew_scope_spawn"),
                                mlir::ValueRange{currentScopePtr, result});
+  }
+
+  // Schedule periodic timers for #[every(duration)] receive fns.
+  for (size_t i = 0; i < actorInfo.receiveFns.size(); ++i) {
+    const auto &recvFn = actorInfo.receiveFns[i];
+    if (recvFn.periodicIntervalNs.has_value()) {
+      auto i32Type = builder.getI32Type();
+      auto i64Type = builder.getI64Type();
+
+      auto msgTypeVal = mlir::arith::ConstantIntOp::create(
+          builder, location, i32Type, static_cast<int64_t>(i));
+
+      // Convert nanoseconds to milliseconds for the runtime.
+      int64_t intervalMs = *recvFn.periodicIntervalNs / 1'000'000;
+      if (intervalMs <= 0) intervalMs = 1; // minimum 1ms
+      auto intervalVal = mlir::arith::ConstantIntOp::create(
+          builder, location, i64Type, intervalMs);
+
+      // Cast typed_actor_ref → ptr for the runtime call.
+      auto actorPtr = hew::BitcastOp::create(
+          builder, location, ptrType, result).getResult();
+
+      // void* hew_actor_schedule_periodic(ptr actor, i32 msg_type, i64 interval_ms)
+      auto schedFnType = builder.getFunctionType(
+          {ptrType, i32Type, i64Type}, {ptrType});
+      getOrCreateExternFunc("hew_actor_schedule_periodic", schedFnType);
+      mlir::func::CallOp::create(
+          builder, location, "hew_actor_schedule_periodic",
+          mlir::TypeRange{ptrType},
+          mlir::ValueRange{actorPtr, msgTypeVal, intervalVal});
+    }
   }
 
   return result;

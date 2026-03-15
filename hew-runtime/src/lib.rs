@@ -236,6 +236,8 @@ pub mod task_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timer;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod timer_periodic;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod timer_wheel;
 
 #[cfg(not(target_arch = "wasm32"))]

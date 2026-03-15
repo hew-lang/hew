@@ -803,3 +803,27 @@ coverage.
   submission before any wait path can hang.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
+
+### Periodic actor timers
+
+- Added `#[every(duration)]` attribute support for actor receive handlers, enabling
+  periodic self-sends at a fixed interval (e.g. `#[every(5s)]`, `#[every(100ms)]`).
+- Extended `AttributeArg` with a `Duration(i64)` variant and the parser's
+  `parse_attributes()` to recognise duration tokens inside attribute arguments.
+- Added `attributes: Vec<Attribute>` field to `ReceiveFnDecl` in the AST, parsed before
+  `receive fn` declarations inside actor bodies.
+- Type checker validates: single `#[every]` per handler, exactly one duration argument,
+  positive value, no parameters, no return type.
+- C++ codegen reads `periodic_interval_ns` from the serialised attributes, stores it in
+  `ActorReceiveInfo`, and emits `hew_actor_schedule_periodic()` calls after each spawn.
+- New runtime module `timer_periodic.rs` provides a global timer wheel with a 1 ms ticker
+  thread. `hew_actor_schedule_periodic(actor, msg_type, interval_ms)` schedules a repeating
+  self-send that re-arms after each callback.
+- Added E2E test `actor_periodic_timer.hew` verifying tick count after a timed delay.
+- **Design decision:** Used `#[every(duration)]` attribute syntax (Rust-style `#[...]`)
+  rather than `@every(5s)` annotation syntax. This reuses the existing attribute parser
+  infrastructure and keeps the surface language consistent with `#[test]`, `#[wire]`, etc.
+  The `@` sigil was considered but rejected to avoid introducing a second annotation system.
+- **Design decision:** Global timer wheel with a background ticker thread rather than
+  per-actor timers. This amortises the cost of periodic scheduling across all actors and
+  avoids thread-per-timer resource waste.

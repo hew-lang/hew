@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+
 _ = os  # Intentional: keep os import (may be used dynamically)
 import re
 import shutil
@@ -43,9 +44,13 @@ def find_repo_root() -> Path:
 
 def check_deps(hew: Path, grammar: Path) -> None:
     if shutil.which("grammarinator-process") is None:
-        sys.exit("ERROR: grammarinator not found. Install with: pip install grammarinator")
+        sys.exit(
+            "ERROR: grammarinator not found. Install with: pip install grammarinator"
+        )
     if not hew.exists():
-        sys.exit(f"ERROR: hew binary not found at {hew}\n  Build it with: cargo build -p hew-cli")
+        sys.exit(
+            f"ERROR: hew binary not found at {hew}\n  Build it with: cargo build -p hew-cli"
+        )
     if not grammar.exists():
         sys.exit(f"ERROR: Grammar not found at {grammar}")
 
@@ -59,7 +64,13 @@ def process_grammar(grammar: Path, workdir: Path) -> None:
     patched.write_text(text)
 
     subprocess.run(
-        ["grammarinator-process", str(patched), "-o", str(workdir) + "/", "--no-actions"],
+        [
+            "grammarinator-process",
+            str(patched),
+            "-o",
+            str(workdir) + "/",
+            "--no-actions",
+        ],
         capture_output=True,
         check=True,
     )
@@ -115,12 +126,18 @@ def generate_programs(workdir: Path, outdir: Path, num: int, depth: int) -> int:
         [
             "grammarinator-generate",
             "HewGenerator.HewGenerator",
-            "-r", "program",
-            "-o", str(outdir / "%d.hew"),
-            "-n", str(num),
-            "-d", str(depth),
-            "-s", "hew_serializer.hew_serializer",
-            "--sys-path", str(workdir),
+            "-r",
+            "program",
+            "-o",
+            str(outdir / "%d.hew"),
+            "-n",
+            str(num),
+            "-d",
+            str(depth),
+            "-s",
+            "hew_serializer.hew_serializer",
+            "--sys-path",
+            str(workdir),
         ],
         capture_output=True,
         check=True,
@@ -154,11 +171,20 @@ def test_program(hew: str, path: Path, timeout: int) -> tuple[str, int, str]:
             return "crash", code, output
 
         # ICE detection in output
-        ice_patterns = ["internal compiler error", "panicked", "thread '", "RUST_BACKTRACE"]
+        ice_patterns = [
+            "internal compiler error",
+            "panicked",
+            "thread '",
+            "RUST_BACKTRACE",
+        ]
         if any(p in output.lower() for p in ice_patterns):
             return "ice", code, output
 
-        if "parsing failed" in output or "parse error" in output or "unexpected token" in output:
+        if (
+            "parsing failed" in output
+            or "parse error" in output
+            or "unexpected token" in output
+        ):
             return "parse_error", code, output
 
         if output.endswith(": OK"):
@@ -174,14 +200,36 @@ def test_program(hew: str, path: Path, timeout: int) -> tuple[str, int, str]:
 def main() -> None:
     repo = find_repo_root()
 
-    parser = argparse.ArgumentParser(description="Grammar-based fuzzing of the Hew frontend")
-    parser.add_argument("-n", type=int, default=100, help="Number of programs to generate (default: 100)")
-    parser.add_argument("-d", type=int, default=20, help="Max derivation depth (default: 20)")
-    parser.add_argument("-t", type=int, default=5, help="Timeout per program in seconds (default: 5)")
-    parser.add_argument("--max-size", type=int, default=50000,
-                        help="Skip files larger than this (bytes, default: 50000)")
-    parser.add_argument("-k", action="store_true", help="Keep generated files after run")
-    parser.add_argument("--hew", type=str, default=str(repo / "target/debug/hew"), help="Path to hew binary")
+    parser = argparse.ArgumentParser(
+        description="Grammar-based fuzzing of the Hew frontend"
+    )
+    parser.add_argument(
+        "-n",
+        type=int,
+        default=100,
+        help="Number of programs to generate (default: 100)",
+    )
+    parser.add_argument(
+        "-d", type=int, default=20, help="Max derivation depth (default: 20)"
+    )
+    parser.add_argument(
+        "-t", type=int, default=5, help="Timeout per program in seconds (default: 5)"
+    )
+    parser.add_argument(
+        "--max-size",
+        type=int,
+        default=50000,
+        help="Skip files larger than this (bytes, default: 50000)",
+    )
+    parser.add_argument(
+        "-k", action="store_true", help="Keep generated files after run"
+    )
+    parser.add_argument(
+        "--hew",
+        type=str,
+        default=str(repo / "target/debug/hew"),
+        help="Path to hew binary",
+    )
     args = parser.parse_args()
 
     grammar = repo / "docs" / "Hew.g4"
@@ -220,7 +268,14 @@ def main() -> None:
     hang_dir.mkdir(exist_ok=True)
     ice_dir.mkdir(exist_ok=True)
 
-    stats: dict[str, int] = {"pass": 0, "parse_error": 0, "type_error": 0, "crash": 0, "hang": 0, "ice": 0}
+    stats: dict[str, int] = {
+        "pass": 0,
+        "parse_error": 0,
+        "type_error": 0,
+        "crash": 0,
+        "hang": 0,
+        "ice": 0,
+    }
     skipped = 0
     total = 0
     problems = False

@@ -44,6 +44,10 @@ fmt_and_restage toml_files taplo fmt
 staged_into sh_files '*.sh'
 fmt_and_restage sh_files shfmt -i 4 -w
 
-# Markdown, YAML, JSON
-staged_into pretty_files '*.yml' '*.yaml' '*.json' '*.md'
+# Markdown, YAML, JSON, JavaScript
+staged_into pretty_files '*.yml' '*.yaml' '*.json' '*.md' '*.js' '*.jsx' '*.ts' '*.tsx'
 fmt_and_restage pretty_files prettier --write --log-level silent
+
+# Python
+staged_into py_files '*.py'
+fmt_and_restage py_files ruff format

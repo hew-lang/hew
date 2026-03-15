@@ -17,6 +17,7 @@ import re
 # Pretty-printers
 # ---------------------------------------------------------------------------
 
+
 class HewStringPrinter:
     """Pretty-print hew_string_t (a { char* data; size_t len; } struct)."""
 
@@ -91,6 +92,7 @@ gdb.pretty_printers.append(hew_lookup_function)
 # Custom GDB commands
 # ---------------------------------------------------------------------------
 
+
 class HewActorsCommand(gdb.Command):
     """List active Hew actors.
 
@@ -129,7 +131,9 @@ class HewBreakReceiveCommand(gdb.Command):
     """
 
     def __init__(self):
-        super().__init__("hew-break-receive", gdb.COMMAND_BREAKPOINTS, gdb.COMPLETE_SYMBOL)
+        super().__init__(
+            "hew-break-receive", gdb.COMMAND_BREAKPOINTS, gdb.COMPLETE_SYMBOL
+        )
 
     def invoke(self, arg, from_tty):
         args = arg.split()
@@ -176,10 +180,18 @@ class HewBacktraceCommand(gdb.Command):
         while frame is not None:
             name = frame.name() or "<unknown>"
             # Skip runtime internals and system frames
-            if not any(skip in name for skip in [
-                "hew_runtime_", "__pthread", "_start", "__libc",
-                "std::rt", "std::sys", "core::ops",
-            ]):
+            if not any(
+                skip in name
+                for skip in [
+                    "hew_runtime_",
+                    "__pthread",
+                    "_start",
+                    "__libc",
+                    "std::rt",
+                    "std::sys",
+                    "core::ops",
+                ]
+            ):
                 sal = frame.find_sal()
                 loc = ""
                 if sal.symtab:

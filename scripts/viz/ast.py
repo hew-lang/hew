@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 # Type formatting
 # ---------------------------------------------------------------------------
 
+
 def fmt_type(ty) -> str:
     """Format a type annotation to a readable Hew-level string."""
     if ty is None:
@@ -88,6 +89,7 @@ def fmt_params(params: list) -> str:
 # Data structures for graph elements
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ActorInfo:
     name: str
@@ -121,6 +123,7 @@ class Edge:
 # ---------------------------------------------------------------------------
 # AST walking
 # ---------------------------------------------------------------------------
+
 
 class ASTWalker:
     def __init__(self, ast: dict):
@@ -202,7 +205,9 @@ class ASTWalker:
             # Track supervised actors for spawn edges
             actor_type = child.get("actor_type", "")
             if actor_type:
-                self.edges.append(Edge(name, actor_type, f"supervises ({strategy})", "spawn"))
+                self.edges.append(
+                    Edge(name, actor_type, f"supervises ({strategy})", "spawn")
+                )
         # Represent supervisor as an actor-like node with children info
         handlers = [(f"strategy: {strategy}", "")]
         for c in children:
@@ -367,7 +372,11 @@ class ASTWalker:
         elif "Await" in ec:
             inner = ec["Await"]
             # inner is [expr_content, span]
-            if isinstance(inner, list) and len(inner) == 2 and isinstance(inner[1], dict):
+            if (
+                isinstance(inner, list)
+                and len(inner) == 2
+                and isinstance(inner[1], dict)
+            ):
                 inner_content = inner[0]
             else:
                 inner_content = inner
@@ -556,7 +565,11 @@ class ASTWalker:
     def _extract_pattern_name(self, pattern) -> str | None:
         if pattern is None:
             return None
-        if isinstance(pattern, list) and len(pattern) == 2 and isinstance(pattern[1], dict):
+        if (
+            isinstance(pattern, list)
+            and len(pattern) == 2
+            and isinstance(pattern[1], dict)
+        ):
             pc = pattern[0]
         else:
             pc = pattern
@@ -634,14 +647,20 @@ class _BodyContext:
 # DOT generation
 # ---------------------------------------------------------------------------
 
+
 def escape_dot(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def generate_dot(walker: ASTWalker) -> str:
     lines = [
         "digraph HewAST {",
-        '    rankdir=TB;',
+        "    rankdir=TB;",
         '    fontname="Helvetica";',
         '    node [fontname="Helvetica", fontsize=11];',
         '    edge [fontname="Helvetica", fontsize=9];',
@@ -649,10 +668,16 @@ def generate_dot(walker: ASTWalker) -> str:
     ]
 
     # Supervisors — purple, Machines — green
-    supervisor_names = {name for name, a in walker.actors.items()
-                        if any(h[0].startswith("strategy:") for h in a.handlers)}
-    machine_names = {name for name, a in walker.actors.items()
-                     if any("→" in h[1] for h in a.handlers)}
+    supervisor_names = {
+        name
+        for name, a in walker.actors.items()
+        if any(h[0].startswith("strategy:") for h in a.handlers)
+    }
+    machine_names = {
+        name
+        for name, a in walker.actors.items()
+        if any("→" in h[1] for h in a.handlers)
+    }
 
     # Actors / supervisors / machines — rounded boxes with HTML table labels
     for name, actor in walker.actors.items():
@@ -666,18 +691,28 @@ def generate_dot(walker: ASTWalker) -> str:
             heading = name
             handler_prefix = "receive"
 
-        rows = [f'<tr><td><b>{escape_dot(heading)}</b></td></tr>']
+        rows = [f"<tr><td><b>{escape_dot(heading)}</b></td></tr>"]
         for fn, ft in actor.fields:
-            rows.append(f'<tr><td align="left">{escape_dot(fn)}: {escape_dot(ft)}</td></tr>')
+            rows.append(
+                f'<tr><td align="left">{escape_dot(fn)}: {escape_dot(ft)}</td></tr>'
+            )
         if actor.fields and actor.handlers:
-            rows.append('<hr/>')
+            rows.append("<hr/>")
         for hn, hp in actor.handlers:
             prefix = f"{handler_prefix} " if handler_prefix else ""
-            hp_str = f"({escape_dot(hp)})" if hp and not hp.startswith("→") else f" {escape_dot(hp)}" if hp else ""
+            hp_str = (
+                f"({escape_dot(hp)})"
+                if hp and not hp.startswith("→")
+                else f" {escape_dot(hp)}"
+                if hp
+                else ""
+            )
             rows.append(
                 f'<tr><td align="left">{prefix}{escape_dot(hn)}{hp_str}</td></tr>'
             )
-        table = f'<table border="0" cellborder="0" cellspacing="0">{"".join(rows)}</table>'
+        table = (
+            f'<table border="0" cellborder="0" cellspacing="0">{"".join(rows)}</table>'
+        )
         if name in machine_names:
             fillcolor = "#E8F5E9"
         elif name in supervisor_names:
@@ -686,7 +721,7 @@ def generate_dot(walker: ASTWalker) -> str:
             fillcolor = "#D6EAF8"
         lines.append(
             f'    "{name}" [shape=box, style="rounded,filled", fillcolor="{fillcolor}", '
-            f'label=<{table}>];'
+            f"label=<{table}>];"
         )
 
     # Functions — yellow rounded boxes
@@ -706,7 +741,7 @@ def generate_dot(walker: ASTWalker) -> str:
         html = "<br/>".join(parts)
         lines.append(
             f'    "{name}" [shape=box, style="rounded,filled", fillcolor="#FEF9E7", '
-            f'label=<{html}>];'
+            f"label=<{html}>];"
         )
 
     # Type declarations — gray boxes
@@ -717,7 +752,7 @@ def generate_dot(walker: ASTWalker) -> str:
         html = "<br/>".join(parts)
         lines.append(
             f'    "{name}" [shape=box, style="filled", fillcolor="#E5E7E9", '
-            f'label=<{html}>];'
+            f"label=<{html}>];"
         )
 
     lines.append("")
@@ -726,7 +761,9 @@ def generate_dot(walker: ASTWalker) -> str:
     seen_edges: set[tuple[str, str, str, str]] = set()
     for edge in walker.edges:
         # For send/call edges, deduplicate by method name (strip args)
-        dedup_label = edge.label.split("(")[0] if edge.kind in ("send", "call") else edge.label
+        dedup_label = (
+            edge.label.split("(")[0] if edge.kind in ("send", "call") else edge.label
+        )
         key = (edge.src, edge.dst, dedup_label, edge.kind)
         if key in seen_edges:
             continue
@@ -762,6 +799,7 @@ def generate_dot(walker: ASTWalker) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate Graphviz diagrams from Hew AST JSON.",
@@ -770,7 +808,9 @@ def main():
     parser.add_argument("input", nargs="?", help="Input JSON file (default: stdin)")
     parser.add_argument("-o", "--output", help="Output file (default: stdout)")
     parser.add_argument(
-        "-f", "--format", default="dot",
+        "-f",
+        "--format",
+        default="dot",
         choices=["dot", "svg", "png", "pdf"],
         help="Output format (default: dot)",
     )
@@ -802,10 +842,17 @@ def main():
         cmd = ["dot", f"-T{args.format}"]
         try:
             result = subprocess.run(
-                cmd, input=dot_source, capture_output=True, text=True, check=True,
+                cmd,
+                input=dot_source,
+                capture_output=True,
+                text=True,
+                check=True,
             )
         except FileNotFoundError:
-            print("Error: 'dot' (graphviz) not found. Install graphviz or use -f dot.", file=sys.stderr)
+            print(
+                "Error: 'dot' (graphviz) not found. Install graphviz or use -f dot.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         except subprocess.CalledProcessError as e:
             print(f"Error running dot: {e.stderr}", file=sys.stderr)
@@ -813,7 +860,11 @@ def main():
 
         if args.output:
             with open(args.output, "wb") as f:
-                f.write(result.stdout.encode() if isinstance(result.stdout, str) else result.stdout)
+                f.write(
+                    result.stdout.encode()
+                    if isinstance(result.stdout, str)
+                    else result.stdout
+                )
         else:
             sys.stdout.write(result.stdout)
 

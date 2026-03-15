@@ -65,10 +65,10 @@ def extract_runtime_exports() -> set[str]:
     """Scan all hew-runtime .rs files for #[no_mangle] function names."""
     exports = set()
     fn_pattern = re.compile(
-        r'#\[no_mangle\]'
-        r'(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*'  # skip interleaved attrs
+        r"#\[no_mangle\]"
+        r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"  # skip interleaved attrs
         r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
-        r'(\w+)',
+        r"(\w+)",
         re.DOTALL,
     )
     for rs_file in RUNTIME_SRC.rglob("*.rs"):

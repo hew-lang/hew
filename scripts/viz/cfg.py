@@ -22,19 +22,48 @@ from enum import Enum, auto
 # ---------------------------------------------------------------------------
 
 # Ops to always skip (noise)
-NOISE_OPS = frozenset([
-    "arith.constant", "arith.addi", "arith.subi", "arith.muli", "arith.divsi",
-    "arith.remsi", "arith.extsi", "arith.trunci", "arith.andi", "arith.ori",
-    "arith.xori", "arith.addf", "arith.subf", "arith.mulf", "arith.divf",
-    "arith.negf", "arith.sitofp", "arith.fptosi",
-    "llvm.load", "llvm.store", "llvm.getelementptr", "llvm.insertvalue",
-    "llvm.extractvalue", "llvm.alloca", "llvm.bitcast",
-    "memref.alloca", "memref.store", "memref.load",
-    "hew.constant", "hew.bitcast", "hew.drop", "hew.to_string",
-    "hew.sched.init", "hew.sched.shutdown",
-    "hew.pack_args", "hew.func_ptr",
-    "scf.yield", "scf.condition",
-])
+NOISE_OPS = frozenset(
+    [
+        "arith.constant",
+        "arith.addi",
+        "arith.subi",
+        "arith.muli",
+        "arith.divsi",
+        "arith.remsi",
+        "arith.extsi",
+        "arith.trunci",
+        "arith.andi",
+        "arith.ori",
+        "arith.xori",
+        "arith.addf",
+        "arith.subf",
+        "arith.mulf",
+        "arith.divf",
+        "arith.negf",
+        "arith.sitofp",
+        "arith.fptosi",
+        "llvm.load",
+        "llvm.store",
+        "llvm.getelementptr",
+        "llvm.insertvalue",
+        "llvm.extractvalue",
+        "llvm.alloca",
+        "llvm.bitcast",
+        "memref.alloca",
+        "memref.store",
+        "memref.load",
+        "hew.constant",
+        "hew.bitcast",
+        "hew.drop",
+        "hew.to_string",
+        "hew.sched.init",
+        "hew.sched.shutdown",
+        "hew.pack_args",
+        "hew.func_ptr",
+        "scf.yield",
+        "scf.condition",
+    ]
+)
 
 
 def classify_op(line: str, verbose: bool = False) -> str | None:
@@ -47,7 +76,7 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
 
     # Detect the op name (with or without SSA assignment)
     # Patterns:  %x = hew.vec.push ...   or   hew.print ...   or   func.call @name
-    op_match = re.match(r'(?:%\S+\s*=\s*)?([a-zA-Z_][a-zA-Z0-9_.]*)', stripped)
+    op_match = re.match(r"(?:%\S+\s*=\s*)?([a-zA-Z_][a-zA-Z0-9_.]*)", stripped)
     if not op_match:
         return None
     op = op_match.group(1)
@@ -77,7 +106,7 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
 
     # ── Receive / dispatch ────────────────────────────────────────────
     if op == "hew.receive":
-        m = re.search(r'handlers\s*=\s*\[([^\]]*)\]', stripped)
+        m = re.search(r"handlers\s*=\s*\[([^\]]*)\]", stripped)
         if m:
             handlers = [h.strip().lstrip("@") for h in m.group(1).split(",")]
             return "receive [" + ", ".join(handlers) + "]"
@@ -176,7 +205,7 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
 
     # ── Runtime / misc ────────────────────────────────────────────────
     if op == "hew.runtime_call":
-        m = re.search(r'@(\w+)', stripped)
+        m = re.search(r"@(\w+)", stripped)
         name = m.group(1) if m else "?"
         return f"runtime: {name}"
     if op == "hew.cast":
@@ -185,7 +214,7 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
 
     # ── Function calls ────────────────────────────────────────────────
     if op in ("func.call", "call"):
-        m = re.search(r'@(\w+)', stripped)
+        m = re.search(r"@(\w+)", stripped)
         if m:
             name = m.group(1)
             if not verbose and name.startswith("hew_"):
@@ -216,6 +245,7 @@ def classify_op(line: str, verbose: bool = False) -> str | None:
 # ---------------------------------------------------------------------------
 # Block / CFG data structures
 # ---------------------------------------------------------------------------
+
 
 class BlockKind(Enum):
     ENTRY = auto()
@@ -274,7 +304,7 @@ def parse_mlir(text: str) -> list[FunctionCFG]:
     while i < len(lines):
         line = lines[i]
         m = re.match(
-            r'\s*func\.func\s+(private\s+)?@(\w+)\(([^)]*)\)(?:\s*->\s*(\S+))?\s*\{',
+            r"\s*func\.func\s+(private\s+)?@(\w+)\(([^)]*)\)(?:\s*->\s*(\S+))?\s*\{",
             line,
         )
         if m:
@@ -359,8 +389,12 @@ def _build_cfg(
                 b.kind = BlockKind.EXIT
 
     cfg = FunctionCFG(
-        name=name, visibility=vis, args=args, ret=ret,
-        blocks=builder.blocks, edges=builder.edges,
+        name=name,
+        visibility=vis,
+        args=args,
+        ret=ret,
+        blocks=builder.blocks,
+        edges=builder.edges,
     )
     return cfg
 
@@ -408,7 +442,11 @@ def _process_block(
             body_exit = _process_block(builder, do_lines, body_block)
             if body_exit:
                 builder.add_edge(
-                    body_exit.id, loop_hdr.id, label="loop", color="#1565C0", style="dashed"
+                    body_exit.id,
+                    loop_hdr.id,
+                    label="loop",
+                    color="#1565C0",
+                    style="dashed",
                 )
 
             # Exit from loop
@@ -422,7 +460,7 @@ def _process_block(
 
         # --- scf.for ---
         if stripped.startswith("scf.for"):
-            m = re.match(r'scf\.for\s+(%\w+)\s*=\s*(%\w+)\s+to\s+(%\w+)', stripped)
+            m = re.match(r"scf\.for\s+(%\w+)\s*=\s*(%\w+)\s+to\s+(%\w+)", stripped)
             lbl = "for"
             if m:
                 lbl = f"for {m.group(1)} = {m.group(2)} to {m.group(3)}"
@@ -438,7 +476,11 @@ def _process_block(
             body_exit = _process_block(builder, for_body, body_block)
             if body_exit:
                 builder.add_edge(
-                    body_exit.id, loop_hdr.id, label="loop", color="#1565C0", style="dashed"
+                    body_exit.id,
+                    loop_hdr.id,
+                    label="loop",
+                    color="#1565C0",
+                    style="dashed",
                 )
 
             after = builder.add_block("after for", BlockKind.NORMAL)
@@ -450,9 +492,7 @@ def _process_block(
             continue
 
         # --- scf.if ---
-        if stripped.startswith("scf.if") or (
-            re.match(r'%\S+\s*=\s*scf\.if', stripped)
-        ):
+        if stripped.startswith("scf.if") or (re.match(r"%\S+\s*=\s*scf\.if", stripped)):
             true_lines, false_lines, end_i = _parse_if_else(lines, i)
 
             cond_block = builder.add_block("if", BlockKind.CONDITIONAL)
@@ -461,7 +501,11 @@ def _process_block(
             # True branch
             true_block = builder.add_block("then", BlockKind.NORMAL)
             builder.add_edge(
-                cond_block.id, true_block.id, label="true", color="#2E7D32", style="solid"
+                cond_block.id,
+                true_block.id,
+                label="true",
+                color="#2E7D32",
+                style="solid",
             )
             true_exit = _process_block(builder, true_lines, true_block)
 
@@ -474,14 +518,22 @@ def _process_block(
             if false_lines is not None:
                 false_block = builder.add_block("else", BlockKind.NORMAL)
                 builder.add_edge(
-                    cond_block.id, false_block.id, label="false", color="#C62828", style="solid"
+                    cond_block.id,
+                    false_block.id,
+                    label="false",
+                    color="#C62828",
+                    style="solid",
                 )
                 false_exit = _process_block(builder, false_lines, false_block)
                 if false_exit:
                     builder.add_edge(false_exit.id, after.id)
             else:
                 builder.add_edge(
-                    cond_block.id, after.id, label="false", color="#C62828", style="solid"
+                    cond_block.id,
+                    after.id,
+                    label="false",
+                    color="#C62828",
+                    style="solid",
                 )
 
             current = after
@@ -520,9 +572,7 @@ def _parse_braced(lines: list[str], start: int) -> tuple[list[str], int]:
     return lines[start + 1 :], len(lines)
 
 
-def _parse_while(
-    lines: list[str], start: int
-) -> tuple[list[str], list[str], int]:
+def _parse_while(lines: list[str], start: int) -> tuple[list[str], list[str], int]:
     """Parse scf.while { cond } do { body }.
 
     MLIR format:
@@ -692,16 +742,25 @@ BLOCK_COLORS = {
 
 
 def _escape_dot(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def cfg_to_dot(cfg: FunctionCFG) -> str:
     out: list[str] = []
     out.append(f'digraph "{_escape_dot(cfg.name)}" {{')
     out.append("  rankdir=TB;")
-    out.append('  node [shape=record, style=filled, fontname="Helvetica", fontsize=10];')
+    out.append(
+        '  node [shape=record, style=filled, fontname="Helvetica", fontsize=10];'
+    )
     out.append('  edge [fontname="Helvetica", fontsize=9];')
-    out.append(f'  label="fn {_escape_dot(cfg.name)}({_escape_dot(cfg.args)}) → {_escape_dot(cfg.ret)}";')
+    out.append(
+        f'  label="fn {_escape_dot(cfg.name)}({_escape_dot(cfg.args)}) → {_escape_dot(cfg.ret)}";'
+    )
     out.append("  labelloc=t;")
     out.append('  fontname="Helvetica";')
     out.append("  fontsize=12;")
@@ -717,9 +776,7 @@ def cfg_to_dot(cfg: FunctionCFG) -> str:
 
         # Use HTML-like labels for Graphviz
         html_label = "<" + "<br/>".join(label_parts) + ">"
-        out.append(
-            f'  {block.id} [label={html_label}, fillcolor="{color}"];'
-        )
+        out.append(f'  {block.id} [label={html_label}, fillcolor="{color}"];')
 
     out.append("")
 
@@ -743,7 +800,9 @@ def multi_cfg_to_dot(cfgs: list[FunctionCFG]) -> str:
     out: list[str] = []
     out.append("digraph functions {")
     out.append("  rankdir=TB;")
-    out.append('  node [shape=record, style=filled, fontname="Helvetica", fontsize=10];')
+    out.append(
+        '  node [shape=record, style=filled, fontname="Helvetica", fontsize=10];'
+    )
     out.append('  edge [fontname="Helvetica", fontsize=9];')
     out.append("  compound=true;")
     out.append("")
@@ -751,7 +810,9 @@ def multi_cfg_to_dot(cfgs: list[FunctionCFG]) -> str:
     for idx, cfg in enumerate(cfgs):
         prefix = f"f{idx}_"
         out.append(f"  subgraph cluster_{idx} {{")
-        out.append(f'    label="fn {_escape_dot(cfg.name)}({_escape_dot(cfg.args)}) → {_escape_dot(cfg.ret)}";')
+        out.append(
+            f'    label="fn {_escape_dot(cfg.name)}({_escape_dot(cfg.args)}) → {_escape_dot(cfg.ret)}";'
+        )
         out.append('    fontname="Helvetica";')
         out.append("    fontsize=12;")
         out.append('    style="rounded";')
@@ -796,6 +857,7 @@ def multi_cfg_to_dot(cfgs: list[FunctionCFG]) -> str:
 # Rendering
 # ---------------------------------------------------------------------------
 
+
 def render_dot(dot: str, fmt: str, output: str | None) -> None:
     if fmt == "dot":
         if output:
@@ -813,7 +875,10 @@ def render_dot(dot: str, fmt: str, output: str | None) -> None:
             check=True,
         )
     except FileNotFoundError:
-        print("Error: 'dot' (Graphviz) not found. Install graphviz or use -f dot.", file=sys.stderr)
+        print(
+            "Error: 'dot' (Graphviz) not found. Install graphviz or use -f dot.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"Error running Graphviz: {e.stderr.decode()}", file=sys.stderr)
@@ -829,6 +894,7 @@ def render_dot(dot: str, fmt: str, output: str | None) -> None:
 # ---------------------------------------------------------------------------
 # Eliminate empty blocks
 # ---------------------------------------------------------------------------
+
 
 def _simplify_cfg(cfg: FunctionCFG) -> FunctionCFG:
     """Remove empty non-entry blocks that just pass through, and empty conditionals."""
@@ -857,8 +923,15 @@ def _simplify_cfg(cfg: FunctionCFG) -> FunctionCFG:
                 new_edges = []
                 for e in edges:
                     if e.dst == b.id:
-                        new_edges.append(Edge(src=e.src, dst=target,
-                                              label=e.label, color=e.color, style=e.style))
+                        new_edges.append(
+                            Edge(
+                                src=e.src,
+                                dst=target,
+                                label=e.label,
+                                color=e.color,
+                                style=e.style,
+                            )
+                        )
                     elif e.src == b.id:
                         pass  # drop outgoing
                     else:
@@ -869,19 +942,30 @@ def _simplify_cfg(cfg: FunctionCFG) -> FunctionCFG:
                 break
 
             # Case 2: Empty conditional with single incoming and true/false outgoing
-            if (b.kind == BlockKind.CONDITIONAL
-                    and len(incoming) == 1):
+            if b.kind == BlockKind.CONDITIONAL and len(incoming) == 1:
                 true_edges = [e for e in outgoing if e.label == "true"]
                 false_edges = [e for e in outgoing if e.label == "false"]
                 if len(true_edges) == 1 and len(false_edges) == 1:
                     pred = incoming[0].src
                     new_edges = [e for e in edges if e.src != b.id and e.dst != b.id]
-                    new_edges.append(Edge(src=pred, dst=true_edges[0].dst,
-                                         label="true", color=true_edges[0].color,
-                                         style=true_edges[0].style))
-                    new_edges.append(Edge(src=pred, dst=false_edges[0].dst,
-                                         label="false", color=false_edges[0].color,
-                                         style=false_edges[0].style))
+                    new_edges.append(
+                        Edge(
+                            src=pred,
+                            dst=true_edges[0].dst,
+                            label="true",
+                            color=true_edges[0].color,
+                            style=true_edges[0].style,
+                        )
+                    )
+                    new_edges.append(
+                        Edge(
+                            src=pred,
+                            dst=false_edges[0].dst,
+                            label="false",
+                            color=false_edges[0].color,
+                            style=false_edges[0].style,
+                        )
+                    )
                     edges = new_edges
                     blocks = [bb for bb in blocks if bb.id != b.id]
                     changed = True
@@ -897,8 +981,12 @@ def _simplify_cfg(cfg: FunctionCFG) -> FunctionCFG:
             deduped.append(e)
 
     return FunctionCFG(
-        name=cfg.name, visibility=cfg.visibility, args=cfg.args, ret=cfg.ret,
-        blocks=blocks, edges=deduped,
+        name=cfg.name,
+        visibility=cfg.visibility,
+        args=cfg.args,
+        ret=cfg.ret,
+        blocks=blocks,
+        edges=deduped,
     )
 
 
@@ -906,6 +994,7 @@ def _merge_true_false_edges(edges: list[Edge]) -> tuple[list[Edge], bool]:
     """Merge duplicate true/false edges to the same target into a single unlabeled edge.
     Also remove redundant labeled edges when an unlabeled edge to the same target exists."""
     from collections import defaultdict
+
     pair_labels: dict[tuple[str, str], list[int]] = defaultdict(list)
     for idx, e in enumerate(edges):
         pair_labels[(e.src, e.dst)].append(idx)
@@ -938,6 +1027,7 @@ def _merge_true_false_edges(edges: list[Edge]) -> tuple[list[Edge], bool]:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     global _verbose
 
@@ -951,9 +1041,7 @@ def main() -> None:
 """,
     )
     parser.add_argument("input", nargs="?", help="MLIR input file (default: stdin)")
-    parser.add_argument(
-        "-fn", "--function", help="Function name to generate CFG for"
-    )
+    parser.add_argument("-fn", "--function", help="Function name to generate CFG for")
     parser.add_argument(
         "--list", action="store_true", help="List all functions in the MLIR"
     )
@@ -1034,7 +1122,9 @@ def main() -> None:
         dot = cfg_to_dot(cfg)
         render_dot(dot, args.format, args.output)
     else:
-        print("Multiple functions found. Use --function NAME or --all.", file=sys.stderr)
+        print(
+            "Multiple functions found. Use --function NAME or --all.", file=sys.stderr
+        )
         print("Available functions:", file=sys.stderr)
         for fn in functions:
             vis = " (private)" if fn.visibility == "private" else ""

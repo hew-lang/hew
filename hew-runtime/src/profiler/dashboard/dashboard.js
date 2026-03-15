@@ -19,7 +19,9 @@ function fmtNum(n) {
   return (n / 1_000_000).toFixed(1) + "M";
 }
 
-function fmtRate(n) { return fmtNum(Math.round(n)); }
+function fmtRate(n) {
+  return fmtNum(Math.round(n));
+}
 
 function fmtUptime(secs) {
   const h = Math.floor(secs / 3600);
@@ -41,7 +43,8 @@ function drawSparkline(canvasId, series, opts = {}) {
   canvas.width = rect.width * dpr;
   canvas.height = rect.height * dpr;
   ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
+  const W = rect.width,
+    H = rect.height;
 
   ctx.clearRect(0, 0, W, H);
 
@@ -74,7 +77,7 @@ function drawSparkline(canvasId, series, opts = {}) {
     ctx.fillStyle = "#8b8fa3";
     ctx.font = "10px monospace";
     ctx.textAlign = "right";
-    const allData = series.flatMap(s => s.data || []);
+    const allData = series.flatMap((s) => s.data || []);
     const max = Math.max(...allData, 1);
     ctx.fillText(opts.yFmt ? opts.yFmt(max) : fmtNum(max), W - 4, 12);
   }
@@ -98,21 +101,34 @@ async function poll() {
       `Uptime: ${fmtUptime(snap.timestamp_secs)} · Polling every ${POLL_MS / 1000}s`;
 
     // Scheduler stats.
-    document.getElementById("tasks-spawned").textContent = fmtNum(snap.tasks_spawned);
-    document.getElementById("tasks-completed").textContent = fmtNum(snap.tasks_completed);
-    document.getElementById("messages-sent").textContent = fmtNum(snap.messages_sent);
+    document.getElementById("tasks-spawned").textContent = fmtNum(
+      snap.tasks_spawned,
+    );
+    document.getElementById("tasks-completed").textContent = fmtNum(
+      snap.tasks_completed,
+    );
+    document.getElementById("messages-sent").textContent = fmtNum(
+      snap.messages_sent,
+    );
     document.getElementById("active-workers").textContent = snap.active_workers;
 
     // Memory stats.
-    document.getElementById("bytes-live").textContent = fmtBytes(snap.bytes_live);
-    document.getElementById("peak-bytes").textContent = fmtBytes(snap.peak_bytes_live);
-    document.getElementById("alloc-count").textContent = fmtNum(snap.alloc_count);
+    document.getElementById("bytes-live").textContent = fmtBytes(
+      snap.bytes_live,
+    );
+    document.getElementById("peak-bytes").textContent = fmtBytes(
+      snap.peak_bytes_live,
+    );
+    document.getElementById("alloc-count").textContent = fmtNum(
+      snap.alloc_count,
+    );
 
     // Rates (computed from previous snapshot).
     if (prevSnap && snap.timestamp_secs > prevSnap.timestamp_secs) {
       const dt = snap.timestamp_secs - prevSnap.timestamp_secs;
       const allocRate = (snap.alloc_count - prevSnap.alloc_count) / dt;
-      const msgInRate = (snap.messages_received - prevSnap.messages_received) / dt;
+      const msgInRate =
+        (snap.messages_received - prevSnap.messages_received) / dt;
       const msgOutRate = (snap.messages_sent - prevSnap.messages_sent) / dt;
       const stealRate = (snap.steals - prevSnap.steals) / dt;
 
@@ -132,28 +148,45 @@ async function poll() {
         const dt = history[i].t - history[i - 1].t || 1;
         rates.push((history[i].ts - history[i - 1].ts) / dt);
       }
-      drawSparkline("chart-scheduler", [
-        { data: rates, color: "rgb(108, 140, 255)", fill: true },
-        { data: history.map(h => h.aw), color: "rgb(74, 222, 128)" },
-      ], { yLabel: true });
+      drawSparkline(
+        "chart-scheduler",
+        [
+          { data: rates, color: "rgb(108, 140, 255)", fill: true },
+          { data: history.map((h) => h.aw), color: "rgb(74, 222, 128)" },
+        ],
+        { yLabel: true },
+      );
 
       // Memory chart: bytes live.
-      drawSparkline("chart-memory", [
-        { data: history.map(h => h.bl), color: "rgb(108, 140, 255)", fill: true },
-        { data: history.map(h => h.pb), color: "rgb(248, 113, 113)" },
-      ], { yLabel: true, yFmt: fmtBytes });
+      drawSparkline(
+        "chart-memory",
+        [
+          {
+            data: history.map((h) => h.bl),
+            color: "rgb(108, 140, 255)",
+            fill: true,
+          },
+          { data: history.map((h) => h.pb), color: "rgb(248, 113, 113)" },
+        ],
+        { yLabel: true, yFmt: fmtBytes },
+      );
 
       // Messages chart: send/recv rates.
-      const sendRates = [], recvRates = [];
+      const sendRates = [],
+        recvRates = [];
       for (let i = 1; i < history.length; i++) {
         const dt = history[i].t - history[i - 1].t || 1;
         sendRates.push((history[i].ms - history[i - 1].ms) / dt);
         recvRates.push((history[i].mr - history[i - 1].mr) / dt);
       }
-      drawSparkline("chart-messages", [
-        { data: sendRates, color: "rgb(108, 140, 255)", fill: true },
-        { data: recvRates, color: "rgb(74, 222, 128)" },
-      ], { yLabel: true });
+      drawSparkline(
+        "chart-messages",
+        [
+          { data: sendRates, color: "rgb(108, 140, 255)", fill: true },
+          { data: recvRates, color: "rgb(74, 222, 128)" },
+        ],
+        { yLabel: true },
+      );
 
       // Allocation timeline: alloc rate.
       const allocRates = [];
@@ -161,9 +194,11 @@ async function poll() {
         const dt = history[i].t - history[i - 1].t || 1;
         allocRates.push((history[i].ac - history[i - 1].ac) / dt);
       }
-      drawSparkline("chart-alloc-timeline", [
-        { data: allocRates, color: "rgb(251, 191, 36)", fill: true },
-      ], { yLabel: true });
+      drawSparkline(
+        "chart-alloc-timeline",
+        [{ data: allocRates, color: "rgb(251, 191, 36)", fill: true }],
+        { yLabel: true },
+      );
     }
 
     // Actors table.
@@ -175,9 +210,14 @@ async function poll() {
       for (const a of actors) {
         const timeMs = (a.time_ns / 1_000_000).toFixed(1);
         const avgUs = a.msgs > 0 ? (a.time_ns / a.msgs / 1000).toFixed(1) : "—";
-        const stateColor = a.state === "running" ? "var(--green)" :
-                           a.state === "crashed" ? "var(--red)" :
-                           a.state === "idle" ? "var(--muted)" : "var(--text)";
+        const stateColor =
+          a.state === "running"
+            ? "var(--green)"
+            : a.state === "crashed"
+              ? "var(--red)"
+              : a.state === "idle"
+                ? "var(--muted)"
+                : "var(--text)";
         html += `<tr style="border-bottom: 1px solid var(--border);">
           <td style="padding:4px 8px;font-variant-numeric:tabular-nums">${a.id}</td>
           <td style="padding:4px 8px;font-variant-numeric:tabular-nums">${a.pid}</td>
@@ -191,10 +231,12 @@ async function poll() {
       }
       tbody.innerHTML = html;
     } else if (tbody) {
-      tbody.innerHTML = '<tr><td colspan="8" style="padding:12px;color:var(--muted)">No actors</td></tr>';
+      tbody.innerHTML =
+        '<tr><td colspan="8" style="padding:12px;color:var(--muted)">No actors</td></tr>';
     }
   } catch (e) {
-    document.getElementById("uptime").textContent = "Connection lost — retrying...";
+    document.getElementById("uptime").textContent =
+      "Connection lost — retrying...";
   }
 }
 

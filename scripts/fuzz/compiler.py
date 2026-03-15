@@ -60,6 +60,7 @@ from pathlib import Path
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def find_repo_root() -> Path:
     """Walk up from the script to find the repo root (contains Cargo.toml)."""
     d = Path(__file__).resolve().parent
@@ -101,8 +102,9 @@ class FuzzContext:
     issues: list[Issue] = field(default_factory=list)
 
 
-def run_hew(ctx: FuzzContext, source: str | bytes, label: str,
-            *, mode: str = "build") -> Issue | None:
+def run_hew(
+    ctx: FuzzContext, source: str | bytes, label: str, *, mode: str = "build"
+) -> Issue | None:
     """Compile *source* with ``hew build`` (or ``hew check``) and classify."""
     ctx.stats.total += 1
     tmpfile = ctx.workdir / "input.hew"
@@ -126,7 +128,10 @@ def run_hew(ctx: FuzzContext, source: str | bytes, label: str,
 
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=ctx.timeout,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
         )
         combined = proc.stdout + proc.stderr
 
@@ -138,7 +143,7 @@ def run_hew(ctx: FuzzContext, source: str | bytes, label: str,
             # Detect Rust panics / ICEs.  Be specific to avoid false positives
             # from user-visible mentions of "panic" in Hew error messages.
             ice_markers = (
-                "thread '",            # Rust panic header: "thread 'main' panicked at"
+                "thread '",  # Rust panic header: "thread 'main' panicked at"
                 "rust_backtrace",
                 "internal compiler error",
                 "has overflowed its stack",
@@ -198,8 +203,9 @@ def _report(issue: Issue | None) -> None:
         print(f"  !! {issue.status}: {issue.label}")
 
 
-def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
-                       expected_stdout: str) -> Issue | None:
+def run_and_verify_hew(
+    ctx: FuzzContext, source: str, label: str, expected_stdout: str
+) -> Issue | None:
     """Build, run, and verify stdout matches *expected_stdout*.
 
     Returns an Issue for crashes, ICEs, hangs, and wrong output.
@@ -215,7 +221,9 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
     try:
         build = subprocess.run(
             [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile)],
-            capture_output=True, text=True, timeout=ctx.timeout,
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
         )
     except subprocess.TimeoutExpired:
         ctx.stats.hang += 1
@@ -229,8 +237,13 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
     if build.returncode != 0:
         combined = build.stdout + build.stderr
         lower = combined.lower()
-        ice_markers = ("thread '", "rust_backtrace", "internal compiler error",
-                       "has overflowed its stack", "panicked at")
+        ice_markers = (
+            "thread '",
+            "rust_backtrace",
+            "internal compiler error",
+            "has overflowed its stack",
+            "panicked at",
+        )
         if any(m in lower for m in ice_markers):
             ctx.stats.ice += 1
             issue = Issue("ICE", f"{label}/build", _clip(source), combined[:2000])
@@ -239,7 +252,13 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
             return issue
         if build.returncode < 0:
             ctx.stats.crash += 1
-            issue = Issue("crash", f"{label}/build", _clip(source), combined[:2000], build.returncode)
+            issue = Issue(
+                "crash",
+                f"{label}/build",
+                _clip(source),
+                combined[:2000],
+                build.returncode,
+            )
             ctx.issues.append(issue)
             _save_issue(ctx, issue, source)
             return issue
@@ -253,7 +272,10 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
     # Run
     try:
         run = subprocess.run(
-            [str(outfile)], capture_output=True, text=True, timeout=ctx.timeout,
+            [str(outfile)],
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
         )
     except subprocess.TimeoutExpired:
         ctx.stats.hang += 1
@@ -266,9 +288,13 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
 
     if run.returncode < 0:
         ctx.stats.crash += 1
-        issue = Issue("runtime_crash", label, _clip(source),
-                      f"signal {-run.returncode}\nstdout: {run.stdout[:500]}\nstderr: {run.stderr[:500]}",
-                      run.returncode)
+        issue = Issue(
+            "runtime_crash",
+            label,
+            _clip(source),
+            f"signal {-run.returncode}\nstdout: {run.stdout[:500]}\nstderr: {run.stderr[:500]}",
+            run.returncode,
+        )
         ctx.issues.append(issue)
         _save_issue(ctx, issue, source)
         return issue
@@ -277,8 +303,12 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
     expected = expected_stdout.rstrip("\n")
     if actual != expected:
         ctx.stats.oracle_fail += 1
-        issue = Issue("wrong_output", label, _clip(source),
-                      f"expected:\n{expected}\nactual:\n{actual}")
+        issue = Issue(
+            "wrong_output",
+            label,
+            _clip(source),
+            f"expected:\n{expected}\nactual:\n{actual}",
+        )
         ctx.issues.append(issue)
         _save_issue(ctx, issue, source)
         return issue
@@ -288,8 +318,9 @@ def run_and_verify_hew(ctx: FuzzContext, source: str, label: str,
     return None
 
 
-def run_emit_hew(ctx: FuzzContext, source: str, label: str,
-                 emit_flag: str) -> Issue | None:
+def run_emit_hew(
+    ctx: FuzzContext, source: str, label: str, emit_flag: str
+) -> Issue | None:
     """Run ``hew build --emit-mlir`` or ``--emit-llvm`` to stress IR lowering."""
     ctx.stats.total += 1
     tmpfile = ctx.workdir / "input.hew"
@@ -301,7 +332,9 @@ def run_emit_hew(ctx: FuzzContext, source: str, label: str,
     try:
         proc = subprocess.run(
             [str(ctx.hew), "build", str(tmpfile), "-o", str(outfile), emit_flag],
-            capture_output=True, text=True, timeout=ctx.timeout,
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
         )
         combined = proc.stdout + proc.stderr
 
@@ -310,8 +343,13 @@ def run_emit_hew(ctx: FuzzContext, source: str, label: str,
             return None
 
         lower = combined.lower()
-        ice_markers = ("thread '", "rust_backtrace", "internal compiler error",
-                       "has overflowed its stack", "panicked at")
+        ice_markers = (
+            "thread '",
+            "rust_backtrace",
+            "internal compiler error",
+            "has overflowed its stack",
+            "panicked at",
+        )
         if any(m in lower for m in ice_markers):
             ctx.stats.ice += 1
             issue = Issue("ICE", f"{label}/{emit_flag}", _clip(source), combined[:2000])
@@ -320,7 +358,13 @@ def run_emit_hew(ctx: FuzzContext, source: str, label: str,
             return issue
         if proc.returncode < 0:
             ctx.stats.crash += 1
-            issue = Issue("crash", f"{label}/{emit_flag}", _clip(source), combined[:2000], proc.returncode)
+            issue = Issue(
+                "crash",
+                f"{label}/{emit_flag}",
+                _clip(source),
+                combined[:2000],
+                proc.returncode,
+            )
             ctx.issues.append(issue)
             _save_issue(ctx, issue, source)
             return issue
@@ -343,18 +387,30 @@ def run_emit_hew(ctx: FuzzContext, source: str, label: str,
 # Random generators
 # ---------------------------------------------------------------------------
 
+
 def rand_ident(maxlen: int = 20) -> str:
     first = random.choice(string.ascii_lowercase)
-    rest = "".join(random.choices(string.ascii_letters + string.digits + "_", k=random.randint(0, maxlen)))
+    rest = "".join(
+        random.choices(
+            string.ascii_letters + string.digits + "_", k=random.randint(0, maxlen)
+        )
+    )
     return first + rest
 
 
 def rand_type() -> str:
-    return random.choice([
-        "i32", "i64", "f64", "bool", "string", "String",
-        f"Vec<{random.choice(['i32', 'string', 'f64'])}>",
-        f"HashMap<string, {random.choice(['i32', 'string'])}>",
-    ])
+    return random.choice(
+        [
+            "i32",
+            "i64",
+            "f64",
+            "bool",
+            "string",
+            "String",
+            f"Vec<{random.choice(['i32', 'string', 'f64'])}>",
+            f"HashMap<string, {random.choice(['i32', 'string'])}>",
+        ]
+    )
 
 
 def rand_expr(depth: int = 0) -> str:
@@ -370,7 +426,9 @@ def rand_expr(depth: int = 0) -> str:
     if choice == 6:
         return random.choice(("true", "false"))
     if choice == 7:
-        op = random.choice(["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "&&", "||"])
+        op = random.choice(
+            ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "&&", "||"]
+        )
         return f"({rand_expr(depth + 1)} {op} {rand_expr(depth + 1)})"
     if choice == 8:
         return f"if {rand_expr(depth + 1)} {{ {rand_expr(depth + 1)} }} else {{ {rand_expr(depth + 1)} }}"
@@ -409,7 +467,9 @@ def rand_stmt(depth: int = 0) -> str:
         return f"return {rand_expr(depth)};"
     if choice == 9:
         name = rand_ident()
-        params = ", ".join(f"{rand_ident()}: {rand_type()}" for _ in range(random.randint(0, 4)))
+        params = ", ".join(
+            f"{rand_ident()}: {rand_type()}" for _ in range(random.randint(0, 4))
+        )
         return f"fn {name}({params}) -> {rand_type()} {{ {rand_expr(depth)} }}"
     return f"{rand_expr(depth)};"
 
@@ -417,6 +477,7 @@ def rand_stmt(depth: int = 0) -> str:
 # ---------------------------------------------------------------------------
 # Fuzz categories
 # ---------------------------------------------------------------------------
+
 
 def fuzz_empty(ctx: FuzzContext) -> None:
     """Empty and near-empty inputs."""
@@ -440,11 +501,14 @@ def fuzz_unicode(ctx: FuzzContext) -> None:
     """Unicode edge cases."""
     cases = [
         ("emoji_ident", "fn main() { let \U0001f389 = 1; }"),
-        ("emoji_string", 'fn main() { let x = "\U0001f389\U0001f525\U0001f4af"; println(x); }'),
+        (
+            "emoji_string",
+            'fn main() { let x = "\U0001f389\U0001f525\U0001f4af"; println(x); }',
+        ),
         ("rtl", 'fn main() { let x = "\u0645\u0631\u062d\u0628\u0627"; }'),
         ("cjk", 'fn main() { let x = "\u4f60\u597d\u4e16\u754c"; }'),
         ("null_char", 'fn main() { let x = "\\0"; }'),
-        ("escape_hell", 'fn main() { let x = "\\n\\t\\r\\\\\\\""; }'),
+        ("escape_hell", 'fn main() { let x = "\\n\\t\\r\\\\\\""; }'),
         ("mixed_unicode_ident", "fn main() { let caf\u00e9 = 42; }"),
         ("zero_width_space", "fn main() { let x\u200b = 1; }"),
         ("combining_chars", "fn main() { let a\u0300 = 1; }"),
@@ -458,11 +522,20 @@ def fuzz_types(ctx: FuzzContext) -> None:
     cases = [
         ("recursive_type", "type Foo { x: Foo; }\nfn main() { }"),
         ("mutual_recursion", "type A { b: B; }\ntype B { a: A; }\nfn main() { }"),
-        ("generic_spam", "fn id<T>(x: T) -> T { x }\nfn main() { let x = id(id(id(id(id(1))))); }"),
+        (
+            "generic_spam",
+            "fn id<T>(x: T) -> T { x }\nfn main() { let x = id(id(id(id(id(1))))); }",
+        ),
         ("option_none", "fn main() { let x: Option<i32> = None; }"),
-        ("result_nested", "fn main() { let x: Result<Result<i32, string>, string> = Ok(Ok(1)); }"),
+        (
+            "result_nested",
+            "fn main() { let x: Result<Result<i32, string>, string> = Ok(Ok(1)); }",
+        ),
         ("vec_of_vec", "fn main() { let x: Vec<Vec<Vec<i32>>> = Vec::new(); }"),
-        ("hashmap_complex", "fn main() { let x: HashMap<string, Vec<i32>> = HashMap::new(); }"),
+        (
+            "hashmap_complex",
+            "fn main() { let x: HashMap<string, Vec<i32>> = HashMap::new(); }",
+        ),
         ("fn_type_mismatch", "fn f(x: i32) -> string { x }\nfn main() { }"),
         ("wrong_arg_count", "fn f(x: i32) -> i32 { x }\nfn main() { f(1, 2, 3); }"),
         ("assign_to_let", "fn main() { let x = 1; x = 2; }"),
@@ -488,7 +561,10 @@ def fuzz_syntax(ctx: FuzzContext) -> None:
         ("at_label", "fn main() { @label: for i in 0..10 { break @label; } }"),
         ("hash_attr", "#[inline]\nfn f() -> i32 { 1 }\nfn main() { }"),
         ("nested_comments", "/* outer /* inner */ still outer */\nfn main() { }"),
-        ("trailing_comma", "fn f(x: i32, y: i32,) -> i32 { x + y }\nfn main() { f(1, 2); }"),
+        (
+            "trailing_comma",
+            "fn f(x: i32, y: i32,) -> i32 { x + y }\nfn main() { f(1, 2); }",
+        ),
         ("empty_match", "fn main() { match 1 { } }"),
         ("dangling_else", "fn main() { if true { 1 } else if false { 2 } }"),
         ("expr_as_stmt", "fn main() { 1 + 2; }"),
@@ -513,28 +589,45 @@ def fuzz_actors(ctx: FuzzContext) -> None:
     """Actor-specific edge cases."""
     cases = [
         ("empty_actor", "actor Empty { }\nfn main() { let e = spawn Empty(); }"),
-        ("actor_no_receive", "actor Foo { x: i32; }\nfn main() { let f = spawn Foo(x: 0); }"),
-        ("actor_self_send", (
-            "actor Pinger {\n  count: i32;\n"
-            "  receive fn ping() {\n    self.count = self.count + 1;\n"
-            "    if self.count < 10 { self.ping(); }\n  }\n}\n"
-            "fn main() { let p = spawn Pinger(count: 0); p.ping(); }"
-        )),
-        ("spawn_in_receive", (
-            "actor Spawner {\n"
-            "  receive fn go() {\n"
-            "    let child = spawn (x: i32) => { println(x); };\n"
-            "    child.send(42);\n  }\n}\n"
-            "fn main() { let s = spawn Spawner(); s.go(); }"
-        )),
-        ("many_fields", "actor Big {\n" + "\n".join(f"  f{i}: i32;" for i in range(100)) + "\n}\nfn main() { }"),
+        (
+            "actor_no_receive",
+            "actor Foo { x: i32; }\nfn main() { let f = spawn Foo(x: 0); }",
+        ),
+        (
+            "actor_self_send",
+            (
+                "actor Pinger {\n  count: i32;\n"
+                "  receive fn ping() {\n    self.count = self.count + 1;\n"
+                "    if self.count < 10 { self.ping(); }\n  }\n}\n"
+                "fn main() { let p = spawn Pinger(count: 0); p.ping(); }"
+            ),
+        ),
+        (
+            "spawn_in_receive",
+            (
+                "actor Spawner {\n"
+                "  receive fn go() {\n"
+                "    let child = spawn (x: i32) => { println(x); };\n"
+                "    child.send(42);\n  }\n}\n"
+                "fn main() { let s = spawn Spawner(); s.go(); }"
+            ),
+        ),
+        (
+            "many_fields",
+            "actor Big {\n"
+            + "\n".join(f"  f{i}: i32;" for i in range(100))
+            + "\n}\nfn main() { }",
+        ),
         ("lambda_no_body", "fn main() { let f = spawn (x: i32) => { }; }"),
-        ("actor_duplicate_method", (
-            "actor Dup {\n"
-            "  receive fn foo() { println(1); }\n"
-            "  receive fn foo() { println(2); }\n"
-            "}\nfn main() { }"
-        )),
+        (
+            "actor_duplicate_method",
+            (
+                "actor Dup {\n"
+                "  receive fn foo() { println(1); }\n"
+                "  receive fn foo() { println(2); }\n"
+                "}\nfn main() { }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"actor/{label}"))
@@ -562,11 +655,23 @@ def fuzz_scope(ctx: FuzzContext) -> None:
     cases = [
         ("use_before_decl", "fn main() { println(x); let x = 1; }"),
         ("double_decl", "fn main() { let x = 1; let x = 2; }"),
-        ("closure_capture", "fn main() { let x = 1; let f = |y: i32| -> i32 { x + y }; }"),
-        ("closure_mut_capture", "fn main() { var x = 1; let f = |y: i32| -> i32 { x = x + y; x }; }"),
-        ("nested_closure", "fn main() { let f = |x: i32| -> i32 { let g = |y: i32| -> i32 { x + y }; g(1) }; }"),
+        (
+            "closure_capture",
+            "fn main() { let x = 1; let f = |y: i32| -> i32 { x + y }; }",
+        ),
+        (
+            "closure_mut_capture",
+            "fn main() { var x = 1; let f = |y: i32| -> i32 { x = x + y; x }; }",
+        ),
+        (
+            "nested_closure",
+            "fn main() { let f = |x: i32| -> i32 { let g = |y: i32| -> i32 { x + y }; g(1) }; }",
+        ),
         ("fn_in_fn", "fn main() { fn inner() -> i32 { 42 } println(inner()); }"),
-        ("deeply_nested_scope", "fn main() {\n" + "{\n" * 100 + "let x = 1;\n" + "}\n" * 100 + "}"),
+        (
+            "deeply_nested_scope",
+            "fn main() {\n" + "{\n" * 100 + "let x = 1;\n" + "}\n" * 100 + "}",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"scope/{label}"))
@@ -575,13 +680,47 @@ def fuzz_scope(ctx: FuzzContext) -> None:
 def fuzz_deep(ctx: FuzzContext) -> None:
     """Deep nesting stress tests."""
     cases = [
-        ("deep_if_500", "fn main() {\n" + "".join(f"if true {{ let x{i} = {i};\n" for i in range(500)) + "1;\n" + "}" * 500 + "\n}"),
-        ("deep_match_200", "fn main() {\n" + "".join(f"match {i} {{ _ => {{\n" for i in range(200)) + "1;\n" + "}}" * 200 + "\n}"),
-        ("deep_block_1000", "fn main() {\n" + "{\n" * 1000 + "let x = 1;\n" + "}\n" * 1000 + "}"),
-        ("deep_for_100", "fn main() {\n" + "".join(f"for i{n} in 0..1 {{\n" for n in range(100)) + "println(1);\n" + "}" * 100 + "\n}"),
-        ("fn_chain_500", "\n".join(f"fn f{i}() -> i32 {{ f{i+1}() }}" for i in range(500)) + "\nfn f500() -> i32 { 42 }\nfn main() { println(f0()); }"),
-        ("nested_tuple_50", "fn main() { let x = " + "(" * 50 + "1" + ",)" * 50 + "; }"),
-        ("nested_vec_type", "fn main() { let x: " + "Vec<" * 20 + "i32" + ">" * 20 + " = Vec::new(); }"),
+        (
+            "deep_if_500",
+            "fn main() {\n"
+            + "".join(f"if true {{ let x{i} = {i};\n" for i in range(500))
+            + "1;\n"
+            + "}" * 500
+            + "\n}",
+        ),
+        (
+            "deep_match_200",
+            "fn main() {\n"
+            + "".join(f"match {i} {{ _ => {{\n" for i in range(200))
+            + "1;\n"
+            + "}}" * 200
+            + "\n}",
+        ),
+        (
+            "deep_block_1000",
+            "fn main() {\n" + "{\n" * 1000 + "let x = 1;\n" + "}\n" * 1000 + "}",
+        ),
+        (
+            "deep_for_100",
+            "fn main() {\n"
+            + "".join(f"for i{n} in 0..1 {{\n" for n in range(100))
+            + "println(1);\n"
+            + "}" * 100
+            + "\n}",
+        ),
+        (
+            "fn_chain_500",
+            "\n".join(f"fn f{i}() -> i32 {{ f{i + 1}() }}" for i in range(500))
+            + "\nfn f500() -> i32 { 42 }\nfn main() { println(f0()); }",
+        ),
+        (
+            "nested_tuple_50",
+            "fn main() { let x = " + "(" * 50 + "1" + ",)" * 50 + "; }",
+        ),
+        (
+            "nested_vec_type",
+            "fn main() { let x: " + "Vec<" * 20 + "i32" + ">" * 20 + " = Vec::new(); }",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"deep/{label}"))
@@ -590,16 +729,47 @@ def fuzz_deep(ctx: FuzzContext) -> None:
 def fuzz_pathological(ctx: FuzzContext) -> None:
     """Pathological patterns known to stress parsers and compilers."""
     cases = [
-        ("deep_parens_500", "fn main() { let x = " + "(" * 500 + "1" + ")" * 500 + "; }"),
+        (
+            "deep_parens_500",
+            "fn main() { let x = " + "(" * 500 + "1" + ")" * 500 + "; }",
+        ),
         ("long_chain_5000", "fn main() { let x = " + " + ".join(["1"] * 5000) + "; }"),
-        ("many_operators_10000", "fn main() { let x = " + " + ".join([str(i) for i in range(10000)]) + "; }"),
+        (
+            "many_operators_10000",
+            "fn main() { let x = " + " + ".join([str(i) for i in range(10000)]) + "; }",
+        ),
         ("repeated_keywords", " ".join(["fn"] * 1000)),
-        ("all_operators", "fn main() { let x = 1 + 2 - 3 * 4 / 5 % 6 == 7 != 8 < 9 > 10 <= 11 >= 12 && true || false; }"),
-        ("many_matches", "fn main() {\n" + "\n".join(f"  match {i} {{ {i} => println({i}), _ => {{}} }}" for i in range(200)) + "\n}"),
-        ("chained_push_1000", "fn main() { let v: Vec<i32> = Vec::new(); " + "v.push(1); " * 1000 + "}"),
-        ("many_stmts_5000", "fn main() {\n" + "\n".join(f"  let x{i} = {i};" for i in range(5000)) + "\n}"),
-        ("many_functions_2000", "\n".join(f"fn f{i}() -> i32 {{ {i} }}" for i in range(2000)) + "\nfn main() { println(f0()); }"),
-        ("many_params_500", f"fn f({', '.join(f'p{i}: i32' for i in range(500))}) -> i32 {{ 0 }}\nfn main() {{ }}"),
+        (
+            "all_operators",
+            "fn main() { let x = 1 + 2 - 3 * 4 / 5 % 6 == 7 != 8 < 9 > 10 <= 11 >= 12 && true || false; }",
+        ),
+        (
+            "many_matches",
+            "fn main() {\n"
+            + "\n".join(
+                f"  match {i} {{ {i} => println({i}), _ => {{}} }}" for i in range(200)
+            )
+            + "\n}",
+        ),
+        (
+            "chained_push_1000",
+            "fn main() { let v: Vec<i32> = Vec::new(); " + "v.push(1); " * 1000 + "}",
+        ),
+        (
+            "many_stmts_5000",
+            "fn main() {\n"
+            + "\n".join(f"  let x{i} = {i};" for i in range(5000))
+            + "\n}",
+        ),
+        (
+            "many_functions_2000",
+            "\n".join(f"fn f{i}() -> i32 {{ {i} }}" for i in range(2000))
+            + "\nfn main() { println(f0()); }",
+        ),
+        (
+            "many_params_500",
+            f"fn f({', '.join(f'p{i}: i32' for i in range(500))}) -> i32 {{ 0 }}\nfn main() {{ }}",
+        ),
         ("long_string_100k", 'fn main() { let x = "' + "a" * 100000 + '"; }'),
         ("long_ident_100k", f"fn main() {{ let {'a' * 100000} = 1; }}"),
         ("crlf_endings", "fn main() {\r\n  let x = 1;\r\n  println(x);\r\n}\r\n"),
@@ -651,14 +821,29 @@ def fuzz_control_flow(ctx: FuzzContext) -> None:
         ("infinite_break", "fn main() { while true { break; } }"),
         ("nested_break", "fn main() { for i in 0..10 { for j in 0..10 { break; } } }"),
         ("continue_only", "fn main() { for i in 0..10 { continue; } }"),
-        ("return_in_if", "fn f() -> i32 { if true { return 1; } return 2; }\nfn main() { println(f()); }"),
-        ("return_in_for", "fn f() -> i32 { for i in 0..10 { return i; } return -1; }\nfn main() { println(f()); }"),
-        ("dead_code", "fn f() -> i32 { return 1; let x = 2; x }\nfn main() { println(f()); }"),
+        (
+            "return_in_if",
+            "fn f() -> i32 { if true { return 1; } return 2; }\nfn main() { println(f()); }",
+        ),
+        (
+            "return_in_for",
+            "fn f() -> i32 { for i in 0..10 { return i; } return -1; }\nfn main() { println(f()); }",
+        ),
+        (
+            "dead_code",
+            "fn f() -> i32 { return 1; let x = 2; x }\nfn main() { println(f()); }",
+        ),
         ("empty_if", "fn main() { if true { } }"),
         ("empty_for", "fn main() { for i in 0..0 { println(i); } }"),
         ("empty_while", "fn main() { while false { } }"),
-        ("nested_return", "fn f() -> i32 { if true { if true { return 1; } return 2; } return 3; }\nfn main() { println(f()); }"),
-        ("match_wildcard_dup", "fn main() { match 1 { _ => println(1), _ => println(2) } }"),
+        (
+            "nested_return",
+            "fn f() -> i32 { if true { if true { return 1; } return 2; } return 3; }\nfn main() { println(f()); }",
+        ),
+        (
+            "match_wildcard_dup",
+            "fn main() { match 1 { _ => println(1), _ => println(2) } }",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"cf/{label}"))
@@ -714,10 +899,25 @@ def fuzz_mutations(ctx: FuzzContext, n: int = 200) -> None:
     ]
     mutations = [
         lambda s: s[: random.randint(0, len(s))],
-        lambda s: s + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50),
+        lambda s: s
+        + random.choice(["{", "}", "(", ")", ";", "\n"]) * random.randint(1, 50),
         lambda s: (
             s[: (p := random.randint(0, len(s)))]
-            + random.choice(["fn", "let", "if", "for", "while", "match", "spawn", "actor", "{}", "()", ";"])
+            + random.choice(
+                [
+                    "fn",
+                    "let",
+                    "if",
+                    "for",
+                    "while",
+                    "match",
+                    "spawn",
+                    "actor",
+                    "{}",
+                    "()",
+                    ";",
+                ]
+            )
             + s[random.randint(0, len(s)) :]
         ),
         lambda s: "".join(random.sample(list(s), len(s))) if s else s,
@@ -763,50 +963,84 @@ def fuzz_binary(ctx: FuzzContext, n: int = 50) -> None:
 # NEW: Language feature coverage
 # ---------------------------------------------------------------------------
 
+
 def fuzz_traits(ctx: FuzzContext) -> None:
     """Trait declarations, impls, and bounds."""
     cases = [
         ("empty_trait", "trait Empty { }\nfn main() { }"),
         ("trait_with_method", "trait Greet { fn hello() -> string; }\nfn main() { }"),
-        ("trait_with_default", "trait Greet { fn hello() -> string { \"hi\" } }\nfn main() { }"),
-        ("impl_trait", (
-            "trait Greet { fn hello(self) -> string; }\n"
-            "type Dog { name: string; }\n"
-            "impl Greet for Dog { fn hello(self) -> string { self.name } }\n"
-            "fn main() { }"
-        )),
-        ("multiple_traits", (
-            "trait A { fn a() -> i32; }\n"
-            "trait B { fn b() -> i32; }\n"
-            "type Foo { }\n"
-            "impl A for Foo { fn a() -> i32 { 1 } }\n"
-            "impl B for Foo { fn b() -> i32 { 2 } }\n"
-            "fn main() { }"
-        )),
-        ("trait_inheritance", "trait Base { fn base() -> i32; }\ntrait Child : Base { fn child() -> i32; }\nfn main() { }"),
-        ("generic_trait_bound", "fn show<T: Display>(x: T) -> string { x.to_string() }\nfn main() { }"),
-        ("where_clause", "fn foo<T>(x: T) -> i32 where T: Display { 1 }\nfn main() { }"),
+        (
+            "trait_with_default",
+            'trait Greet { fn hello() -> string { "hi" } }\nfn main() { }',
+        ),
+        (
+            "impl_trait",
+            (
+                "trait Greet { fn hello(self) -> string; }\n"
+                "type Dog { name: string; }\n"
+                "impl Greet for Dog { fn hello(self) -> string { self.name } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "multiple_traits",
+            (
+                "trait A { fn a() -> i32; }\n"
+                "trait B { fn b() -> i32; }\n"
+                "type Foo { }\n"
+                "impl A for Foo { fn a() -> i32 { 1 } }\n"
+                "impl B for Foo { fn b() -> i32 { 2 } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "trait_inheritance",
+            "trait Base { fn base() -> i32; }\ntrait Child : Base { fn child() -> i32; }\nfn main() { }",
+        ),
+        (
+            "generic_trait_bound",
+            "fn show<T: Display>(x: T) -> string { x.to_string() }\nfn main() { }",
+        ),
+        (
+            "where_clause",
+            "fn foo<T>(x: T) -> i32 where T: Display { 1 }\nfn main() { }",
+        ),
         ("multiple_bounds", "fn foo<T: Display + Send>(x: T) { }\nfn main() { }"),
-        ("associated_type", "trait Container { type Item; fn get(self) -> Self::Item; }\nfn main() { }"),
-        ("impl_wrong_signature", (
-            "trait Foo { fn bar() -> i32; }\n"
-            "type Baz { }\n"
-            "impl Foo for Baz { fn bar() -> string { \"wrong\" } }\n"
-            "fn main() { }"
-        )),
-        ("impl_missing_method", (
-            "trait Foo { fn bar() -> i32; fn baz() -> i32; }\n"
-            "type X { }\n"
-            "impl Foo for X { fn bar() -> i32 { 1 } }\n"
-            "fn main() { }"
-        )),
-        ("self_param", (
-            "trait Describable { fn describe(self) -> string; }\n"
-            "type Point { x: i32; y: i32; }\n"
-            "impl Describable for Point { fn describe(self) -> string { \"point\" } }\n"
-            "fn main() { }"
-        )),
-        ("dyn_trait", "trait Speak { fn speak(self) -> string; }\nfn loud(s: dyn Speak) { }\nfn main() { }"),
+        (
+            "associated_type",
+            "trait Container { type Item; fn get(self) -> Self::Item; }\nfn main() { }",
+        ),
+        (
+            "impl_wrong_signature",
+            (
+                "trait Foo { fn bar() -> i32; }\n"
+                "type Baz { }\n"
+                'impl Foo for Baz { fn bar() -> string { "wrong" } }\n'
+                "fn main() { }"
+            ),
+        ),
+        (
+            "impl_missing_method",
+            (
+                "trait Foo { fn bar() -> i32; fn baz() -> i32; }\n"
+                "type X { }\n"
+                "impl Foo for X { fn bar() -> i32 { 1 } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "self_param",
+            (
+                "trait Describable { fn describe(self) -> string; }\n"
+                "type Point { x: i32; y: i32; }\n"
+                'impl Describable for Point { fn describe(self) -> string { "point" } }\n'
+                "fn main() { }"
+            ),
+        ),
+        (
+            "dyn_trait",
+            "trait Speak { fn speak(self) -> string; }\nfn loud(s: dyn Speak) { }\nfn main() { }",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"trait/{label}"))
@@ -815,29 +1049,55 @@ def fuzz_traits(ctx: FuzzContext) -> None:
 def fuzz_enums(ctx: FuzzContext) -> None:
     """Enum declarations, variants, and pattern matching."""
     cases = [
-        ("simple_enum", "enum Color { Red, Green, Blue }\nfn main() { let c = Color::Red; }"),
-        ("enum_with_data", "enum Shape { Circle(f64), Rect(f64, f64) }\nfn main() { let s = Shape::Circle(3.14); }"),
-        ("enum_struct_variant", "enum Msg { Quit, Move { x: i32; y: i32; }, Text(string) }\nfn main() { }"),
-        ("match_enum", (
-            "enum Dir { Up, Down, Left, Right }\n"
-            "fn show(d: Dir) -> string {\n"
-            "  match d { Dir::Up => \"up\", Dir::Down => \"down\", Dir::Left => \"left\", Dir::Right => \"right\" }\n"
-            "}\nfn main() { println(show(Dir::Up)); }"
-        )),
-        ("match_enum_data", (
-            "enum Val { Int(i32), Str(string) }\n"
-            "fn show(v: Val) -> string {\n"
-            "  match v { Val::Int(n) => \"int\", Val::Str(s) => s }\n"
-            "}\nfn main() { }"
-        )),
-        ("enum_methods", (
-            "enum Option2 { Some2(i32), None2 }\n"
-            "impl Option2 { fn is_some(self) -> bool { match self { Option2::Some2(_) => true, _ => false } } }\n"
-            "fn main() { }"
-        )),
-        ("nested_enum", "enum Outer { Inner(Inner) }\nenum Inner { A, B }\nfn main() { }"),
+        (
+            "simple_enum",
+            "enum Color { Red, Green, Blue }\nfn main() { let c = Color::Red; }",
+        ),
+        (
+            "enum_with_data",
+            "enum Shape { Circle(f64), Rect(f64, f64) }\nfn main() { let s = Shape::Circle(3.14); }",
+        ),
+        (
+            "enum_struct_variant",
+            "enum Msg { Quit, Move { x: i32; y: i32; }, Text(string) }\nfn main() { }",
+        ),
+        (
+            "match_enum",
+            (
+                "enum Dir { Up, Down, Left, Right }\n"
+                "fn show(d: Dir) -> string {\n"
+                '  match d { Dir::Up => "up", Dir::Down => "down", Dir::Left => "left", Dir::Right => "right" }\n'
+                "}\nfn main() { println(show(Dir::Up)); }"
+            ),
+        ),
+        (
+            "match_enum_data",
+            (
+                "enum Val { Int(i32), Str(string) }\n"
+                "fn show(v: Val) -> string {\n"
+                '  match v { Val::Int(n) => "int", Val::Str(s) => s }\n'
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "enum_methods",
+            (
+                "enum Option2 { Some2(i32), None2 }\n"
+                "impl Option2 { fn is_some(self) -> bool { match self { Option2::Some2(_) => true, _ => false } } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "nested_enum",
+            "enum Outer { Inner(Inner) }\nenum Inner { A, B }\nfn main() { }",
+        ),
         ("empty_enum", "enum Empty { }\nfn main() { }"),
-        ("many_variants", "enum Big {\n" + ",\n".join(f"  V{i}" for i in range(100)) + "\n}\nfn main() { }"),
+        (
+            "many_variants",
+            "enum Big {\n"
+            + ",\n".join(f"  V{i}" for i in range(100))
+            + "\n}\nfn main() { }",
+        ),
         ("recursive_enum", "enum List { Nil, Cons(i32, Box<List>) }\nfn main() { }"),
     ]
     for label, src in cases:
@@ -848,28 +1108,51 @@ def fuzz_structs(ctx: FuzzContext) -> None:
     """Struct declarations, initialization, field access, and methods."""
     cases = [
         ("empty_struct", "type Empty { }\nfn main() { let e = Empty {}; }"),
-        ("single_field", "type Wrap { val: i32; }\nfn main() { let w = Wrap { val: 42 }; }"),
-        ("many_fields", "type Big {\n" + "\n".join(f"  f{i}: i32;" for i in range(50)) + "\n}\nfn main() { }"),
-        ("nested_struct", (
-            "type Inner { x: i32; }\n"
-            "type Outer { inner: Inner; y: i32; }\n"
-            "fn main() { let o = Outer { inner: Inner { x: 1 }, y: 2 }; }"
-        )),
-        ("struct_method", (
-            "type Counter { count: i32; }\n"
-            "impl Counter { fn value(self) -> i32 { self.count } }\n"
-            "fn main() { }"
-        )),
-        ("field_access_chain", (
-            "type A { b: B; }\ntype B { c: C; }\ntype C { val: i32; }\n"
-            "fn main() { }"
-        )),
-        ("struct_update", "type Point { x: i32; y: i32; }\nfn main() { var p = Point { x: 1, y: 2 }; p.x = 10; }"),
+        (
+            "single_field",
+            "type Wrap { val: i32; }\nfn main() { let w = Wrap { val: 42 }; }",
+        ),
+        (
+            "many_fields",
+            "type Big {\n"
+            + "\n".join(f"  f{i}: i32;" for i in range(50))
+            + "\n}\nfn main() { }",
+        ),
+        (
+            "nested_struct",
+            (
+                "type Inner { x: i32; }\n"
+                "type Outer { inner: Inner; y: i32; }\n"
+                "fn main() { let o = Outer { inner: Inner { x: 1 }, y: 2 }; }"
+            ),
+        ),
+        (
+            "struct_method",
+            (
+                "type Counter { count: i32; }\n"
+                "impl Counter { fn value(self) -> i32 { self.count } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "field_access_chain",
+            ("type A { b: B; }\ntype B { c: C; }\ntype C { val: i32; }\nfn main() { }"),
+        ),
+        (
+            "struct_update",
+            "type Point { x: i32; y: i32; }\nfn main() { var p = Point { x: 1, y: 2 }; p.x = 10; }",
+        ),
         ("generic_struct", "type Pair<T> { first: T; second: T; }\nfn main() { }"),
         ("struct_with_vec", "type Names { items: Vec<string>; }\nfn main() { }"),
-        ("struct_with_option", "type Config { name: string; port: Option<i32>; }\nfn main() { }"),
+        (
+            "struct_with_option",
+            "type Config { name: string; port: Option<i32>; }\nfn main() { }",
+        ),
         ("duplicate_field_names", "type Bad { x: i32; x: string; }\nfn main() { }"),
-        ("field_type_mismatch", "type Foo { x: i32; }\nfn main() { let f = Foo { x: \"wrong\" }; }"),
+        (
+            "field_type_mismatch",
+            'type Foo { x: i32; }\nfn main() { let f = Foo { x: "wrong" }; }',
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"struct/{label}"))
@@ -880,50 +1163,94 @@ def fuzz_patterns(ctx: FuzzContext) -> None:
     cases = [
         ("wildcard", "fn main() { match 42 { _ => println(1) } }"),
         ("literal_int", "fn main() { match 42 { 42 => println(1), _ => println(0) } }"),
-        ("literal_string", 'fn main() { match "hi" { "hi" => println(1), _ => println(0) } }'),
-        ("literal_bool", "fn main() { match true { true => println(1), false => println(0) } }"),
+        (
+            "literal_string",
+            'fn main() { match "hi" { "hi" => println(1), _ => println(0) } }',
+        ),
+        (
+            "literal_bool",
+            "fn main() { match true { true => println(1), false => println(0) } }",
+        ),
         ("variable_binding", "fn main() { match 42 { x => println(x) } }"),
-        ("or_pattern", "fn main() { match 1 { 1 | 2 | 3 => println(1), _ => println(0) } }"),
-        ("guard", "fn main() { match 42 { x if x > 10 => println(1), _ => println(0) } }"),
-        ("guard_complex", "fn main() { match 42 { x if x > 0 && x < 100 => println(1), _ => println(0) } }"),
-        ("nested_match", (
-            "fn main() {\n"
-            "  match 1 {\n"
-            "    1 => match 2 { 2 => println(1), _ => println(0) },\n"
-            "    _ => println(0)\n"
-            "  }\n"
-            "}"
-        )),
+        (
+            "or_pattern",
+            "fn main() { match 1 { 1 | 2 | 3 => println(1), _ => println(0) } }",
+        ),
+        (
+            "guard",
+            "fn main() { match 42 { x if x > 10 => println(1), _ => println(0) } }",
+        ),
+        (
+            "guard_complex",
+            "fn main() { match 42 { x if x > 0 && x < 100 => println(1), _ => println(0) } }",
+        ),
+        (
+            "nested_match",
+            (
+                "fn main() {\n"
+                "  match 1 {\n"
+                "    1 => match 2 { 2 => println(1), _ => println(0) },\n"
+                "    _ => println(0)\n"
+                "  }\n"
+                "}"
+            ),
+        ),
         ("tuple_destructure", "fn main() { let (a, b) = (1, 2); println(a); }"),
-        ("tuple_in_match", "fn main() { match (1, 2) { (1, 2) => println(1), _ => println(0) } }"),
-        ("constructor_pattern", (
-            "enum Shape { Circle(f64), Rect(f64, f64) }\n"
-            "fn area(s: Shape) -> f64 { match s { Shape::Circle(r) => r, Shape::Rect(w, h) => w } }\n"
-            "fn main() { }"
-        )),
-        ("struct_pattern", (
-            "type Point { x: i32; y: i32; }\n"
-            "fn main() { let p = Point { x: 1, y: 2 }; match p { Point { x, y } => println(x) } }"
-        )),
-        ("nested_option", (
-            "fn main() {\n"
-            "  let x: Option<Option<i32>> = Some(Some(42));\n"
-            "  match x { Some(Some(v)) => println(v), _ => println(0) }\n"
-            "}"
-        )),
-        ("exhaustiveness_missing", (
-            "enum Dir { Up, Down, Left, Right }\n"
-            "fn f(d: Dir) -> i32 { match d { Dir::Up => 1, Dir::Down => 2 } }\n"
-            "fn main() { }"
-        )),
-        ("many_arms", "fn main() { match 0 {\n" + "\n".join(f"  {i} => println({i})," for i in range(50)) + "\n  _ => println(-1)\n} }"),
-        ("match_on_string", 'fn main() { match "hello" { "hello" => println(1), "world" => println(2), _ => println(0) } }'),
-        ("match_result", (
-            "fn main() {\n"
-            "  let r: Result<i32, string> = Ok(42);\n"
-            "  match r { Ok(v) => println(v), Err(e) => println(e) }\n"
-            "}"
-        )),
+        (
+            "tuple_in_match",
+            "fn main() { match (1, 2) { (1, 2) => println(1), _ => println(0) } }",
+        ),
+        (
+            "constructor_pattern",
+            (
+                "enum Shape { Circle(f64), Rect(f64, f64) }\n"
+                "fn area(s: Shape) -> f64 { match s { Shape::Circle(r) => r, Shape::Rect(w, h) => w } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "struct_pattern",
+            (
+                "type Point { x: i32; y: i32; }\n"
+                "fn main() { let p = Point { x: 1, y: 2 }; match p { Point { x, y } => println(x) } }"
+            ),
+        ),
+        (
+            "nested_option",
+            (
+                "fn main() {\n"
+                "  let x: Option<Option<i32>> = Some(Some(42));\n"
+                "  match x { Some(Some(v)) => println(v), _ => println(0) }\n"
+                "}"
+            ),
+        ),
+        (
+            "exhaustiveness_missing",
+            (
+                "enum Dir { Up, Down, Left, Right }\n"
+                "fn f(d: Dir) -> i32 { match d { Dir::Up => 1, Dir::Down => 2 } }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "many_arms",
+            "fn main() { match 0 {\n"
+            + "\n".join(f"  {i} => println({i})," for i in range(50))
+            + "\n  _ => println(-1)\n} }",
+        ),
+        (
+            "match_on_string",
+            'fn main() { match "hello" { "hello" => println(1), "world" => println(2), _ => println(0) } }',
+        ),
+        (
+            "match_result",
+            (
+                "fn main() {\n"
+                "  let r: Result<i32, string> = Ok(42);\n"
+                "  match r { Ok(v) => println(v), Err(e) => println(e) }\n"
+                "}"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"pattern/{label}"))
@@ -932,52 +1259,73 @@ def fuzz_patterns(ctx: FuzzContext) -> None:
 def fuzz_async_await(ctx: FuzzContext) -> None:
     """Async/await patterns and timeout combinators."""
     cases = [
-        ("basic_await", (
-            "actor Worker { receive fn compute() -> i32 { 42 } }\n"
-            "fn main() { let w = spawn Worker(); let r = await w.compute(); println(r); }"
-        )),
-        ("await_in_if", (
-            "actor W { receive fn get() -> i32 { 1 } }\n"
-            "fn main() {\n"
-            "  let w = spawn W();\n"
-            "  if true { let r = await w.get(); println(r); }\n"
-            "}"
-        )),
-        ("await_in_for", (
-            "actor W { receive fn get() -> i32 { 1 } }\n"
-            "fn main() {\n"
-            "  let w = spawn W();\n"
-            "  for i in 0..3 { let r = await w.get(); println(r); }\n"
-            "}"
-        )),
-        ("multiple_awaits", (
-            "actor A { receive fn val() -> i32 { 1 } }\n"
-            "actor B { receive fn val() -> i32 { 2 } }\n"
-            "fn main() {\n"
-            "  let a = spawn A(); let b = spawn B();\n"
-            "  let x = await a.val(); let y = await b.val();\n"
-            "  println(x + y);\n"
-            "}"
-        )),
-        ("timeout_expr", (
-            "actor Slow { receive fn wait() -> i32 { 42 } }\n"
-            "fn main() { let s = spawn Slow(); let r = await s.wait() | after 1s; }"
-        )),
-        ("await_void", (
-            "actor W { receive fn fire() { println(1); } }\n"
-            "fn main() { let w = spawn W(); w.fire(); }"
-        )),
-        ("nested_actor_await", (
-            "actor Inner { receive fn value() -> i32 { 99 } }\n"
-            "actor Outer {\n"
-            "  receive fn go() -> i32 {\n"
-            "    let inner = spawn Inner();\n"
-            "    let v = await inner.value();\n"
-            "    v\n"
-            "  }\n"
-            "}\n"
-            "fn main() { let o = spawn Outer(); let r = await o.go(); println(r); }"
-        )),
+        (
+            "basic_await",
+            (
+                "actor Worker { receive fn compute() -> i32 { 42 } }\n"
+                "fn main() { let w = spawn Worker(); let r = await w.compute(); println(r); }"
+            ),
+        ),
+        (
+            "await_in_if",
+            (
+                "actor W { receive fn get() -> i32 { 1 } }\n"
+                "fn main() {\n"
+                "  let w = spawn W();\n"
+                "  if true { let r = await w.get(); println(r); }\n"
+                "}"
+            ),
+        ),
+        (
+            "await_in_for",
+            (
+                "actor W { receive fn get() -> i32 { 1 } }\n"
+                "fn main() {\n"
+                "  let w = spawn W();\n"
+                "  for i in 0..3 { let r = await w.get(); println(r); }\n"
+                "}"
+            ),
+        ),
+        (
+            "multiple_awaits",
+            (
+                "actor A { receive fn val() -> i32 { 1 } }\n"
+                "actor B { receive fn val() -> i32 { 2 } }\n"
+                "fn main() {\n"
+                "  let a = spawn A(); let b = spawn B();\n"
+                "  let x = await a.val(); let y = await b.val();\n"
+                "  println(x + y);\n"
+                "}"
+            ),
+        ),
+        (
+            "timeout_expr",
+            (
+                "actor Slow { receive fn wait() -> i32 { 42 } }\n"
+                "fn main() { let s = spawn Slow(); let r = await s.wait() | after 1s; }"
+            ),
+        ),
+        (
+            "await_void",
+            (
+                "actor W { receive fn fire() { println(1); } }\n"
+                "fn main() { let w = spawn W(); w.fire(); }"
+            ),
+        ),
+        (
+            "nested_actor_await",
+            (
+                "actor Inner { receive fn value() -> i32 { 99 } }\n"
+                "actor Outer {\n"
+                "  receive fn go() -> i32 {\n"
+                "    let inner = spawn Inner();\n"
+                "    let v = await inner.value();\n"
+                "    v\n"
+                "  }\n"
+                "}\n"
+                "fn main() { let o = spawn Outer(); let r = await o.go(); println(r); }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"async/{label}"))
@@ -987,22 +1335,40 @@ def fuzz_defer(ctx: FuzzContext) -> None:
     """Defer statement ordering and interaction with returns."""
     cases = [
         ("basic_defer", "fn main() { defer println(1); println(2); }"),
-        ("multiple_defers", "fn main() { defer println(1); defer println(2); defer println(3); println(0); }"),
-        ("defer_with_return", "fn f() -> i32 { defer println(1); return 42; }\nfn main() { println(f()); }"),
+        (
+            "multiple_defers",
+            "fn main() { defer println(1); defer println(2); defer println(3); println(0); }",
+        ),
+        (
+            "defer_with_return",
+            "fn f() -> i32 { defer println(1); return 42; }\nfn main() { println(f()); }",
+        ),
         ("defer_in_if", "fn main() { if true { defer println(1); } println(2); }"),
         ("defer_in_for", "fn main() { for i in 0..3 { defer println(i); } }"),
-        ("defer_in_while", "fn main() { var x = 0; while x < 3 { defer println(x); x = x + 1; break; } }"),
+        (
+            "defer_in_while",
+            "fn main() { var x = 0; while x < 3 { defer println(x); x = x + 1; break; } }",
+        ),
         ("defer_with_var", "fn main() { var x = 0; defer println(x); x = 42; }"),
-        ("defer_early_return", (
-            "fn f(b: bool) -> i32 {\n"
-            "  defer println(1);\n"
-            "  if b { return 10; }\n"
-            "  defer println(2);\n"
-            "  return 20;\n"
-            "}\nfn main() { println(f(true)); println(f(false)); }"
-        )),
-        ("defer_fn_call", "fn cleanup() { println(0); }\nfn main() { defer cleanup(); println(1); }"),
-        ("nested_defer", "fn main() { defer { defer println(1); println(2); }; println(3); }"),
+        (
+            "defer_early_return",
+            (
+                "fn f(b: bool) -> i32 {\n"
+                "  defer println(1);\n"
+                "  if b { return 10; }\n"
+                "  defer println(2);\n"
+                "  return 20;\n"
+                "}\nfn main() { println(f(true)); println(f(false)); }"
+            ),
+        ),
+        (
+            "defer_fn_call",
+            "fn cleanup() { println(0); }\nfn main() { defer cleanup(); println(1); }",
+        ),
+        (
+            "nested_defer",
+            "fn main() { defer { defer println(1); println(2); }; println(3); }",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"defer/{label}"))
@@ -1011,29 +1377,50 @@ def fuzz_defer(ctx: FuzzContext) -> None:
 def fuzz_generators(ctx: FuzzContext) -> None:
     """Generator functions and yield."""
     cases = [
-        ("basic_gen", "gen fn count() -> i32 { yield 1; yield 2; yield 3; }\nfn main() { }"),
-        ("gen_loop", "gen fn naturals() -> i32 { var i = 0; while true { yield i; i = i + 1; } }\nfn main() { }"),
-        ("gen_conditional", (
-            "gen fn evens(max: i32) -> i32 {\n"
-            "  for i in 0..max { if i % 2 == 0 { yield i; } }\n"
-            "}\nfn main() { }"
-        )),
-        ("for_gen", (
-            "gen fn items() -> i32 { yield 10; yield 20; }\n"
-            "fn main() { for x in items() { println(x); } }"
-        )),
+        (
+            "basic_gen",
+            "gen fn count() -> i32 { yield 1; yield 2; yield 3; }\nfn main() { }",
+        ),
+        (
+            "gen_loop",
+            "gen fn naturals() -> i32 { var i = 0; while true { yield i; i = i + 1; } }\nfn main() { }",
+        ),
+        (
+            "gen_conditional",
+            (
+                "gen fn evens(max: i32) -> i32 {\n"
+                "  for i in 0..max { if i % 2 == 0 { yield i; } }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "for_gen",
+            (
+                "gen fn items() -> i32 { yield 10; yield 20; }\n"
+                "fn main() { for x in items() { println(x); } }"
+            ),
+        ),
         ("empty_gen", "gen fn empty() -> i32 { }\nfn main() { }"),
-        ("nested_yield", (
-            "gen fn nested() -> i32 {\n"
-            "  for i in 0..3 { for j in 0..3 { yield i * 10 + j; } }\n"
-            "}\nfn main() { }"
-        )),
-        ("yield_string", "gen fn words() -> string { yield \"hello\"; yield \"world\"; }\nfn main() { }"),
-        ("receive_gen", (
-            "actor Streamer {\n"
-            "  receive gen fn stream() -> i32 { yield 1; yield 2; yield 3; }\n"
-            "}\nfn main() { }"
-        )),
+        (
+            "nested_yield",
+            (
+                "gen fn nested() -> i32 {\n"
+                "  for i in 0..3 { for j in 0..3 { yield i * 10 + j; } }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "yield_string",
+            'gen fn words() -> string { yield "hello"; yield "world"; }\nfn main() { }',
+        ),
+        (
+            "receive_gen",
+            (
+                "actor Streamer {\n"
+                "  receive gen fn stream() -> i32 { yield 1; yield 2; yield 3; }\n"
+                "}\nfn main() { }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"gen/{label}"))
@@ -1086,7 +1473,10 @@ def fuzz_operators(ctx: FuzzContext) -> None:
         ("prec_bit_cmp", "fn main() { println((1 & 3) == 1); }"),
         ("prec_shift_add", "fn main() { println((1 << 2) + 1); }"),
         ("prec_complex", "fn main() { println(1 + 2 * 3 - 4 / 2 + 5 % 3); }"),
-        ("mixed_logical_bit", "fn main() { let x = (true && false) || (true and true); println(x); }"),
+        (
+            "mixed_logical_bit",
+            "fn main() { let x = (true && false) || (true and true); println(x); }",
+        ),
         # Unary
         ("negate_expr", "fn main() { let x = -(1 + 2); println(x); }"),
         ("double_negate", "fn main() { let x = -(-42); println(x); }"),
@@ -1119,8 +1509,14 @@ def fuzz_imports(ctx: FuzzContext) -> None:
         ("import_star", "import std::*;\nfn main() { }"),
         ("import_selective", "import std::json::{ parse, stringify };\nfn main() { }"),
         ("double_import", "import std::json;\nimport std::json;\nfn main() { }"),
-        ("import_and_use", "import std::json;\nfn main() { let s = json.stringify(42); }"),
-        ("many_imports", "\n".join(f"import std::mod{i};" for i in range(50)) + "\nfn main() { }"),
+        (
+            "import_and_use",
+            "import std::json;\nfn main() { let s = json.stringify(42); }",
+        ),
+        (
+            "many_imports",
+            "\n".join(f"import std::mod{i};" for i in range(50)) + "\nfn main() { }",
+        ),
         ("import_deep_path", "import a::b::c::d::e::f;\nfn main() { }"),
     ]
     for label, src in cases:
@@ -1130,45 +1526,60 @@ def fuzz_imports(ctx: FuzzContext) -> None:
 def fuzz_wire_types(ctx: FuzzContext) -> None:
     """Wire struct/enum declarations for serialization."""
     cases = [
-        ("basic_wire_struct", (
-            "wire struct Msg { name: string @1; age: u32 @2; }\n"
-            "fn main() { }"
-        )),
-        ("wire_enum", (
-            "wire enum Status { Active @1, Inactive @2, Pending @3 }\n"
-            "fn main() { }"
-        )),
-        ("wire_optional", (
-            "wire struct Config { host: string @1; optional port: u16 @2; }\n"
-            "fn main() { }"
-        )),
-        ("wire_deprecated", (
-            "wire struct Old { name: string @1; deprecated old_name: string @2; }\n"
-            "fn main() { }"
-        )),
-        ("wire_nested", (
-            "wire struct Inner { val: i32 @1; }\n"
-            "wire struct Outer { inner: Inner @1; label: string @2; }\n"
-            "fn main() { }"
-        )),
-        ("wire_list", (
-            "wire struct Batch { items: list[string] @1; }\n"
-            "fn main() { }"
-        )),
-        ("wire_json_attr", (
-            "#[json(camelCase)]\n"
-            "wire struct ApiResponse { status_code: i32 @1; error_message: string @2; }\n"
-            "fn main() { }"
-        )),
-        ("wire_reserved", (
-            "wire struct Evolving { name: string @1; reserved(2, 3); active: bool @4; }\n"
-            "fn main() { }"
-        )),
-        ("wire_many_fields", (
-            "wire struct Wide {\n"
-            + "\n".join(f"  f{i}: i32 @{i+1};" for i in range(30))
-            + "\n}\nfn main() { }"
-        )),
+        (
+            "basic_wire_struct",
+            ("wire struct Msg { name: string @1; age: u32 @2; }\nfn main() { }"),
+        ),
+        (
+            "wire_enum",
+            ("wire enum Status { Active @1, Inactive @2, Pending @3 }\nfn main() { }"),
+        ),
+        (
+            "wire_optional",
+            (
+                "wire struct Config { host: string @1; optional port: u16 @2; }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "wire_deprecated",
+            (
+                "wire struct Old { name: string @1; deprecated old_name: string @2; }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "wire_nested",
+            (
+                "wire struct Inner { val: i32 @1; }\n"
+                "wire struct Outer { inner: Inner @1; label: string @2; }\n"
+                "fn main() { }"
+            ),
+        ),
+        ("wire_list", ("wire struct Batch { items: list[string] @1; }\nfn main() { }")),
+        (
+            "wire_json_attr",
+            (
+                "#[json(camelCase)]\n"
+                "wire struct ApiResponse { status_code: i32 @1; error_message: string @2; }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "wire_reserved",
+            (
+                "wire struct Evolving { name: string @1; reserved(2, 3); active: bool @4; }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "wire_many_fields",
+            (
+                "wire struct Wide {\n"
+                + "\n".join(f"  f{i}: i32 @{i + 1};" for i in range(30))
+                + "\n}\nfn main() { }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"wire/{label}"))
@@ -1179,45 +1590,57 @@ def fuzz_labels(ctx: FuzzContext) -> None:
     cases = [
         ("labeled_for", "@outer: for i in 0..10 { break @outer; }\nfn main() { }"),
         ("labeled_while", "fn main() { @outer: while true { break @outer; } }"),
-        ("labeled_nested", (
-            "fn main() {\n"
-            "  @outer: for i in 0..10 {\n"
-            "    for j in 0..10 {\n"
-            "      if j == 5 { break @outer; }\n"
-            "    }\n"
-            "  }\n"
-            "}"
-        )),
-        ("labeled_continue", (
-            "fn main() {\n"
-            "  @outer: for i in 0..10 {\n"
-            "    for j in 0..10 {\n"
-            "      if j == 5 { continue @outer; }\n"
-            "    }\n"
-            "  }\n"
-            "}"
-        )),
-        ("multiple_labels", (
-            "fn main() {\n"
-            "  @a: for i in 0..5 {\n"
-            "    @b: for j in 0..5 {\n"
-            "      @c: for k in 0..5 {\n"
-            "        if k == 2 { break @a; }\n"
-            "      }\n"
-            "    }\n"
-            "  }\n"
-            "}"
-        )),
+        (
+            "labeled_nested",
+            (
+                "fn main() {\n"
+                "  @outer: for i in 0..10 {\n"
+                "    for j in 0..10 {\n"
+                "      if j == 5 { break @outer; }\n"
+                "    }\n"
+                "  }\n"
+                "}"
+            ),
+        ),
+        (
+            "labeled_continue",
+            (
+                "fn main() {\n"
+                "  @outer: for i in 0..10 {\n"
+                "    for j in 0..10 {\n"
+                "      if j == 5 { continue @outer; }\n"
+                "    }\n"
+                "  }\n"
+                "}"
+            ),
+        ),
+        (
+            "multiple_labels",
+            (
+                "fn main() {\n"
+                "  @a: for i in 0..5 {\n"
+                "    @b: for j in 0..5 {\n"
+                "      @c: for k in 0..5 {\n"
+                "        if k == 2 { break @a; }\n"
+                "      }\n"
+                "    }\n"
+                "  }\n"
+                "}"
+            ),
+        ),
         ("break_label_value", "@loop: loop { break @loop 42; }\nfn main() { }"),
-        ("label_shadowing", (
-            "fn main() {\n"
-            "  @x: for i in 0..5 {\n"
-            "    @x: for j in 0..5 {\n"
-            "      break @x;\n"
-            "    }\n"
-            "  }\n"
-            "}"
-        )),
+        (
+            "label_shadowing",
+            (
+                "fn main() {\n"
+                "  @x: for i in 0..5 {\n"
+                "    @x: for j in 0..5 {\n"
+                "      break @x;\n"
+                "    }\n"
+                "  }\n"
+                "}"
+            ),
+        ),
         ("label_no_loop", "fn main() { @label: let x = 1; }"),
         ("nonexistent_label", "fn main() { for i in 0..10 { break @nonexistent; } }"),
     ]
@@ -1230,20 +1653,29 @@ def fuzz_ffi(ctx: FuzzContext) -> None:
     cases = [
         ("extern_c", 'extern "C" { fn puts(s: *const u8) -> i32; }\nfn main() { }'),
         ("extern_no_abi", "extern { fn malloc(size: u64) -> *mut u8; }\nfn main() { }"),
-        ("extern_variadic", 'extern "C" { fn printf(fmt: *const u8, ...) -> i32; }\nfn main() { }'),
-        ("extern_many", (
-            'extern "C" {\n'
-            "  fn open(path: *const u8, flags: i32) -> i32;\n"
-            "  fn close(fd: i32) -> i32;\n"
-            "  fn read(fd: i32, buf: *mut u8, count: u64) -> i64;\n"
-            "  fn write(fd: i32, buf: *const u8, count: u64) -> i64;\n"
-            "}\nfn main() { }"
-        )),
+        (
+            "extern_variadic",
+            'extern "C" { fn printf(fmt: *const u8, ...) -> i32; }\nfn main() { }',
+        ),
+        (
+            "extern_many",
+            (
+                'extern "C" {\n'
+                "  fn open(path: *const u8, flags: i32) -> i32;\n"
+                "  fn close(fd: i32) -> i32;\n"
+                "  fn read(fd: i32, buf: *mut u8, count: u64) -> i64;\n"
+                "  fn write(fd: i32, buf: *const u8, count: u64) -> i64;\n"
+                "}\nfn main() { }"
+            ),
+        ),
         ("foreign_keyword", 'foreign "C" { fn exit(code: i32); }\nfn main() { }'),
-        ("unsafe_ffi_call", (
-            'extern "C" { fn abs(x: i32) -> i32; }\n'
-            "fn main() { unsafe { abs(-42); } }"
-        )),
+        (
+            "unsafe_ffi_call",
+            (
+                'extern "C" { fn abs(x: i32) -> i32; }\n'
+                "fn main() { unsafe { abs(-42); } }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"ffi/{label}"))
@@ -1254,8 +1686,11 @@ def fuzz_attributes(ctx: FuzzContext) -> None:
     cases = [
         ("test_attr", "#[test]\nfn test_it() { }"),
         ("ignore_attr", "#[test]\n#[ignore]\nfn test_slow() { }"),
-        ("should_panic", "#[test]\n#[should_panic]\nfn test_fail() { panic(\"boom\"); }"),
-        ("inline_attr", "#[inline]\nfn fast() -> i32 { 42 }\nfn main() { println(fast()); }"),
+        ("should_panic", '#[test]\n#[should_panic]\nfn test_fail() { panic("boom"); }'),
+        (
+            "inline_attr",
+            "#[inline]\nfn fast() -> i32 { 42 }\nfn main() { println(fast()); }",
+        ),
         ("unknown_attr", "#[banana]\nfn main() { }"),
         ("multiple_attrs", "#[test]\n#[ignore]\n#[inline]\nfn f() { }"),
         ("attr_with_args", '#[export("my_func")]\nfn f() -> i32 { 1 }\nfn main() { }'),
@@ -1268,7 +1703,10 @@ def fuzz_attributes(ctx: FuzzContext) -> None:
 def fuzz_visibility(ctx: FuzzContext) -> None:
     """Visibility modifiers."""
     cases = [
-        ("pub_fn", "pub fn greet() -> string { \"hello\" }\nfn main() { println(greet()); }"),
+        (
+            "pub_fn",
+            'pub fn greet() -> string { "hello" }\nfn main() { println(greet()); }',
+        ),
         ("pub_type", "pub type Point { pub x: i32; pub y: i32; }\nfn main() { }"),
         ("pub_package", "pub(package) fn internal() -> i32 { 42 }\nfn main() { }"),
         ("pub_super", "pub(super) fn parent_only() -> i32 { 1 }\nfn main() { }"),
@@ -1285,11 +1723,17 @@ def fuzz_tuples(ctx: FuzzContext) -> None:
     cases = [
         ("unit_tuple", "fn main() { let x = (); }"),
         ("pair", "fn main() { let x = (1, 2); }"),
-        ("triple", "fn main() { let x = (1, \"hello\", true); }"),
+        ("triple", 'fn main() { let x = (1, "hello", true); }'),
         ("nested_tuple", "fn main() { let x = ((1, 2), (3, 4)); }"),
         ("tuple_access", "fn main() { let x = (10, 20); println(x.0); }"),
-        ("tuple_destructure", "fn main() { let (a, b, c) = (1, 2, 3); println(a + b + c); }"),
-        ("tuple_return", "fn pair() -> (i32, i32) { (1, 2) }\nfn main() { let (a, b) = pair(); }"),
+        (
+            "tuple_destructure",
+            "fn main() { let (a, b, c) = (1, 2, 3); println(a + b + c); }",
+        ),
+        (
+            "tuple_return",
+            "fn pair() -> (i32, i32) { (1, 2) }\nfn main() { let (a, b) = pair(); }",
+        ),
         ("single_element", "fn main() { let x = (42,); }"),
         ("large_tuple", "fn main() { let x = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10); }"),
         ("tuple_in_vec", "fn main() { let v: Vec<(i32, i32)> = Vec::new(); }"),
@@ -1330,7 +1774,10 @@ def fuzz_unsafe_blocks(ctx: FuzzContext) -> None:
         ("nested_unsafe", "fn main() { unsafe { unsafe { println(1); } } }"),
         ("unsafe_in_if", "fn main() { if true { unsafe { println(1); } } }"),
         ("unsafe_in_for", "fn main() { for i in 0..3 { unsafe { println(i); } } }"),
-        ("unsafe_fn", "unsafe fn danger() -> i32 { 42 }\nfn main() { unsafe { danger(); } }"),
+        (
+            "unsafe_fn",
+            "unsafe fn danger() -> i32 { 42 }\nfn main() { unsafe { danger(); } }",
+        ),
         ("ptr_type", "fn main() { let p: *const i32 = 0 as *const i32; }"),
         ("mut_ptr_type", "fn main() { let p: *mut i32 = 0 as *mut i32; }"),
     ]
@@ -1343,40 +1790,52 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
     cases = [
         ("basic_scope", "fn main() { scope { println(1); }; }"),
         ("scope_with_binding", "fn main() { scope |s| { println(1); }; }"),
-        ("scope_launch", (
-            "fn main() {\n"
-            "  scope |s| {\n"
-            "    let t = s.launch { 42 };\n"
-            "    let r = await t;\n"
-            "    println(r);\n"
-            "  };\n"
-            "}"
-        )),
-        ("scope_multiple_tasks", (
-            "fn main() {\n"
-            "  scope |s| {\n"
-            "    let t1 = s.launch { 1 };\n"
-            "    let t2 = s.launch { 2 };\n"
-            "    let t3 = s.launch { 3 };\n"
-            "  };\n"
-            "}"
-        )),
-        ("select_basic", (
-            "actor A { receive fn val() -> i32 { 1 } }\n"
-            "actor B { receive fn val() -> i32 { 2 } }\n"
-            "fn main() {\n"
-            "  let a = spawn A(); let b = spawn B();\n"
-            "  select { a.val() => println(1), b.val() => println(2) }\n"
-            "}"
-        )),
-        ("join_basic", (
-            "actor A { receive fn val() -> i32 { 1 } }\n"
-            "actor B { receive fn val() -> i32 { 2 } }\n"
-            "fn main() {\n"
-            "  let a = spawn A(); let b = spawn B();\n"
-            "  join(a.val(), b.val());\n"
-            "}"
-        )),
+        (
+            "scope_launch",
+            (
+                "fn main() {\n"
+                "  scope |s| {\n"
+                "    let t = s.launch { 42 };\n"
+                "    let r = await t;\n"
+                "    println(r);\n"
+                "  };\n"
+                "}"
+            ),
+        ),
+        (
+            "scope_multiple_tasks",
+            (
+                "fn main() {\n"
+                "  scope |s| {\n"
+                "    let t1 = s.launch { 1 };\n"
+                "    let t2 = s.launch { 2 };\n"
+                "    let t3 = s.launch { 3 };\n"
+                "  };\n"
+                "}"
+            ),
+        ),
+        (
+            "select_basic",
+            (
+                "actor A { receive fn val() -> i32 { 1 } }\n"
+                "actor B { receive fn val() -> i32 { 2 } }\n"
+                "fn main() {\n"
+                "  let a = spawn A(); let b = spawn B();\n"
+                "  select { a.val() => println(1), b.val() => println(2) }\n"
+                "}"
+            ),
+        ),
+        (
+            "join_basic",
+            (
+                "actor A { receive fn val() -> i32 { 1 } }\n"
+                "actor B { receive fn val() -> i32 { 2 } }\n"
+                "fn main() {\n"
+                "  let a = spawn A(); let b = spawn B();\n"
+                "  join(a.val(), b.val());\n"
+                "}"
+            ),
+        ),
         ("cooperate_in_loop", "fn main() { for i in 0..100 { cooperate; } }"),
         ("nested_scope", "fn main() { scope { scope { println(1); }; }; }"),
     ]
@@ -1387,94 +1846,119 @@ def fuzz_scope_concurrency(ctx: FuzzContext) -> None:
 def fuzz_supervisor(ctx: FuzzContext) -> None:
     """Supervisor declarations and patterns."""
     cases = [
-        ("basic_supervisor", (
-            "actor Worker {\n"
-            "  receive fn work() { println(1); }\n"
-            "}\n"
-            "supervisor WorkerSup {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child worker: Worker();\n"
-            "}\n"
-            "fn main() { let sup = spawn WorkerSup(); }"
-        )),
-        ("all_for_one", (
-            "actor A { receive fn go() { } }\n"
-            "actor B { receive fn go() { } }\n"
-            "supervisor AllSup {\n"
-            "  strategy: one_for_all;\n"
-            "  max_restarts: 5;\n"
-            "  window: 10s;\n"
-            "  child a: A();\n"
-            "  child b: B();\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("rest_for_one", (
-            "actor A { receive fn go() { } }\n"
-            "actor B { receive fn go() { } }\n"
-            "supervisor RestSup {\n"
-            "  strategy: rest_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child a: A();\n"
-            "  child b: B();\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("child_restart_permanent", (
-            "actor W { receive fn go() { } }\n"
-            "supervisor S {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child w: W() permanent;\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("child_restart_transient", (
-            "actor W { receive fn go() { } }\n"
-            "supervisor S {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child w: W() transient;\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("child_restart_temporary", (
-            "actor W { receive fn go() { } }\n"
-            "supervisor S {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child w: W() temporary;\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("many_children", (
-            "\n".join(f"actor W{i} {{ receive fn go() {{ }} }}" for i in range(20)) + "\n"
-            "supervisor BigSup {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 10;\n"
-            "  window: 30s;\n"
-            + "\n".join(f"  child w{i}: W{i}();" for i in range(20))
-            + "\n}\nfn main() { }"
-        )),
-        ("supervisor_with_init_args", (
-            "actor Worker {\n"
-            "  id: i32;\n"
-            "  receive fn go() { println(self.id); }\n"
-            "}\n"
-            "supervisor S {\n"
-            "  strategy: one_for_one;\n"
-            "  max_restarts: 3;\n"
-            "  window: 5s;\n"
-            "  child w: Worker(id: 42);\n"
-            "}\n"
-            "fn main() { let s = spawn S(); }"
-        )),
+        (
+            "basic_supervisor",
+            (
+                "actor Worker {\n"
+                "  receive fn work() { println(1); }\n"
+                "}\n"
+                "supervisor WorkerSup {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child worker: Worker();\n"
+                "}\n"
+                "fn main() { let sup = spawn WorkerSup(); }"
+            ),
+        ),
+        (
+            "all_for_one",
+            (
+                "actor A { receive fn go() { } }\n"
+                "actor B { receive fn go() { } }\n"
+                "supervisor AllSup {\n"
+                "  strategy: one_for_all;\n"
+                "  max_restarts: 5;\n"
+                "  window: 10s;\n"
+                "  child a: A();\n"
+                "  child b: B();\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "rest_for_one",
+            (
+                "actor A { receive fn go() { } }\n"
+                "actor B { receive fn go() { } }\n"
+                "supervisor RestSup {\n"
+                "  strategy: rest_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child a: A();\n"
+                "  child b: B();\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "child_restart_permanent",
+            (
+                "actor W { receive fn go() { } }\n"
+                "supervisor S {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child w: W() permanent;\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "child_restart_transient",
+            (
+                "actor W { receive fn go() { } }\n"
+                "supervisor S {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child w: W() transient;\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "child_restart_temporary",
+            (
+                "actor W { receive fn go() { } }\n"
+                "supervisor S {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child w: W() temporary;\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "many_children",
+            (
+                "\n".join(f"actor W{i} {{ receive fn go() {{ }} }}" for i in range(20))
+                + "\n"
+                "supervisor BigSup {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 10;\n"
+                "  window: 30s;\n"
+                + "\n".join(f"  child w{i}: W{i}();" for i in range(20))
+                + "\n}\nfn main() { }"
+            ),
+        ),
+        (
+            "supervisor_with_init_args",
+            (
+                "actor Worker {\n"
+                "  id: i32;\n"
+                "  receive fn go() { println(self.id); }\n"
+                "}\n"
+                "supervisor S {\n"
+                "  strategy: one_for_one;\n"
+                "  max_restarts: 3;\n"
+                "  window: 5s;\n"
+                "  child w: Worker(id: 42);\n"
+                "}\n"
+                "fn main() { let s = spawn S(); }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"supervisor/{label}"))
@@ -1483,49 +1967,58 @@ def fuzz_supervisor(ctx: FuzzContext) -> None:
 def fuzz_mailbox(ctx: FuzzContext) -> None:
     """Actor mailbox configurations."""
     cases = [
-        ("default_mailbox", "actor A { receive fn go() { } }\nfn main() { let a = spawn A(); }"),
-        ("bounded_mailbox", (
-            "actor A {\n"
-            "  mailbox 100;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_block", (
-            "actor A {\n"
-            "  mailbox 10 overflow block;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_drop_new", (
-            "actor A {\n"
-            "  mailbox 10 overflow drop_new;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_drop_old", (
-            "actor A {\n"
-            "  mailbox 10 overflow drop_old;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_fail", (
-            "actor A {\n"
-            "  mailbox 10 overflow fail;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_zero", (
-            "actor A {\n"
-            "  mailbox 0;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
-        ("mailbox_huge", (
-            "actor A {\n"
-            "  mailbox 1000000;\n"
-            "  receive fn go() { }\n"
-            "}\nfn main() { }"
-        )),
+        (
+            "default_mailbox",
+            "actor A { receive fn go() { } }\nfn main() { let a = spawn A(); }",
+        ),
+        (
+            "bounded_mailbox",
+            ("actor A {\n  mailbox 100;\n  receive fn go() { }\n}\nfn main() { }"),
+        ),
+        (
+            "mailbox_block",
+            (
+                "actor A {\n"
+                "  mailbox 10 overflow block;\n"
+                "  receive fn go() { }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "mailbox_drop_new",
+            (
+                "actor A {\n"
+                "  mailbox 10 overflow drop_new;\n"
+                "  receive fn go() { }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "mailbox_drop_old",
+            (
+                "actor A {\n"
+                "  mailbox 10 overflow drop_old;\n"
+                "  receive fn go() { }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "mailbox_fail",
+            (
+                "actor A {\n"
+                "  mailbox 10 overflow fail;\n"
+                "  receive fn go() { }\n"
+                "}\nfn main() { }"
+            ),
+        ),
+        (
+            "mailbox_zero",
+            ("actor A {\n  mailbox 0;\n  receive fn go() { }\n}\nfn main() { }"),
+        ),
+        (
+            "mailbox_huge",
+            ("actor A {\n  mailbox 1000000;\n  receive fn go() { }\n}\nfn main() { }"),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"mailbox/{label}"))
@@ -1535,136 +2028,188 @@ def fuzz_mailbox(ctx: FuzzContext) -> None:
 # NEW: Compiler testing techniques
 # ---------------------------------------------------------------------------
 
+
 def fuzz_differential(ctx: FuzzContext) -> None:
     """Differential testing: programs that pass `hew check` must not crash
     `hew build`.  If check succeeds but build crashes, that's a bug."""
     programs = [
-        ("fn_returning_struct", (
-            "type Point { x: i32; y: i32; }\n"
-            "fn origin() -> Point { Point { x: 0, y: 0 } }\n"
-            "fn main() { let p = origin(); println(p.x); }"
-        )),
-        ("match_option", (
-            "fn maybe(b: bool) -> Option<i32> { if b { Some(1) } else { None } }\n"
-            "fn main() { match maybe(true) { Some(v) => println(v), None => println(0) } }"
-        )),
-        ("generic_fn", (
-            "fn identity<T>(x: T) -> T { x }\n"
-            "fn main() { println(identity(42)); }"
-        )),
-        ("closure_in_var", (
-            "fn main() {\n"
-            "  let add = |a: i32, b: i32| -> i32 { a + b };\n"
-            "  println(add(1, 2));\n"
-            "}"
-        )),
-        ("vec_operations", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  println(v.len());\n"
-            "}"
-        )),
-        ("hashmap_operations", (
-            "fn main() {\n"
-            "  let m: HashMap<string, i32> = HashMap::new();\n"
-            "  m.insert(\"a\", 1);\n"
-            "  m.insert(\"b\", 2);\n"
-            "  println(m.len());\n"
-            "}"
-        )),
-        ("nested_if_match", (
-            "fn classify(x: i32) -> string {\n"
-            "  if x > 0 {\n"
-            "    match x { 1 => \"one\", 2 => \"two\", _ => \"many\" }\n"
-            "  } else if x == 0 { \"zero\" }\n"
-            "  else { \"negative\" }\n"
-            "}\n"
-            "fn main() { println(classify(1)); }"
-        )),
-        ("for_with_vec", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(10); v.push(20); v.push(30);\n"
-            "  var sum = 0;\n"
-            "  for x in v { sum += x; }\n"
-            "  println(sum);\n"
-            "}"
-        )),
-        ("string_interpolation", (
-            "fn main() {\n"
-            "  let name = \"world\";\n"
-            "  let age = 42;\n"
-            '  let msg = f"hello {name}, age {age}";\n'
-            "  println(msg);\n"
-            "}"
-        )),
-        ("actor_with_state", (
-            "actor Counter {\n"
-            "  count: i32;\n"
-            "  receive fn increment() { self.count = self.count + 1; }\n"
-            "  receive fn get_count() -> i32 { self.count }\n"
-            "}\n"
-            "fn main() {\n"
-            "  let c = spawn Counter(count: 0);\n"
-            "  c.increment(); c.increment();\n"
-            "  let n = await c.get_count();\n"
-            "  println(n);\n"
-            "}"
-        )),
-        ("multiple_actors", (
-            "actor Adder { receive fn add(a: i32, b: i32) -> i32 { a + b } }\n"
-            "actor Multiplier { receive fn mul(a: i32, b: i32) -> i32 { a * b } }\n"
-            "fn main() {\n"
-            "  let a = spawn Adder(); let m = spawn Multiplier();\n"
-            "  let sum = await a.add(3, 4);\n"
-            "  let prod = await m.mul(3, 4);\n"
-            "  println(sum); println(prod);\n"
-            "}"
-        )),
-        ("struct_with_methods", (
-            "type Rect { w: i32; h: i32; }\n"
-            "impl Rect {\n"
-            "  fn area(self) -> i32 { self.w * self.h }\n"
-            "  fn perimeter(self) -> i32 { 2 * (self.w + self.h) }\n"
-            "}\n"
-            "fn main() { let r = Rect { w: 3, h: 4 }; println(r.area()); }"
-        )),
-        ("recursive_fn", (
-            "fn factorial(n: i32) -> i32 {\n"
-            "  if n <= 1 { 1 } else { n * factorial(n - 1) }\n"
-            "}\n"
-            "fn main() { println(factorial(10)); }"
-        )),
-        ("mutual_recursion", (
-            "fn is_even(n: i32) -> bool { if n == 0 { true } else { is_odd(n - 1) } }\n"
-            "fn is_odd(n: i32) -> bool { if n == 0 { false } else { is_even(n - 1) } }\n"
-            "fn main() { println(is_even(10)); }"
-        )),
-        ("higher_order_fn", (
-            "fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }\n"
-            "fn double(x: i32) -> i32 { x * 2 }\n"
-            "fn main() { println(apply(double, 21)); }"
-        )),
-        ("enum_match_exhaustive", (
-            "enum Color { Red, Green, Blue }\n"
-            "fn name(c: Color) -> string {\n"
-            "  match c { Color::Red => \"red\", Color::Green => \"green\", Color::Blue => \"blue\" }\n"
-            "}\n"
-            "fn main() { println(name(Color::Red)); }"
-        )),
-        ("chained_methods", (
-            "fn main() {\n"
-            "  let s = \"hello world\";\n"
-            "  println(s.len());\n"
-            "  println(s.contains(\"world\"));\n"
-            "  println(s.to_uppercase());\n"
-            "}"
-        )),
-        ("tuple_operations", (
-            "fn swap(t: (i32, i32)) -> (i32, i32) { (t.1, t.0) }\n"
-            "fn main() { let (a, b) = swap((1, 2)); println(a); println(b); }"
-        )),
+        (
+            "fn_returning_struct",
+            (
+                "type Point { x: i32; y: i32; }\n"
+                "fn origin() -> Point { Point { x: 0, y: 0 } }\n"
+                "fn main() { let p = origin(); println(p.x); }"
+            ),
+        ),
+        (
+            "match_option",
+            (
+                "fn maybe(b: bool) -> Option<i32> { if b { Some(1) } else { None } }\n"
+                "fn main() { match maybe(true) { Some(v) => println(v), None => println(0) } }"
+            ),
+        ),
+        (
+            "generic_fn",
+            ("fn identity<T>(x: T) -> T { x }\nfn main() { println(identity(42)); }"),
+        ),
+        (
+            "closure_in_var",
+            (
+                "fn main() {\n"
+                "  let add = |a: i32, b: i32| -> i32 { a + b };\n"
+                "  println(add(1, 2));\n"
+                "}"
+            ),
+        ),
+        (
+            "vec_operations",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "hashmap_operations",
+            (
+                "fn main() {\n"
+                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                '  m.insert("a", 1);\n'
+                '  m.insert("b", 2);\n'
+                "  println(m.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "nested_if_match",
+            (
+                "fn classify(x: i32) -> string {\n"
+                "  if x > 0 {\n"
+                '    match x { 1 => "one", 2 => "two", _ => "many" }\n'
+                '  } else if x == 0 { "zero" }\n'
+                '  else { "negative" }\n'
+                "}\n"
+                "fn main() { println(classify(1)); }"
+            ),
+        ),
+        (
+            "for_with_vec",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(10); v.push(20); v.push(30);\n"
+                "  var sum = 0;\n"
+                "  for x in v { sum += x; }\n"
+                "  println(sum);\n"
+                "}"
+            ),
+        ),
+        (
+            "string_interpolation",
+            (
+                "fn main() {\n"
+                '  let name = "world";\n'
+                "  let age = 42;\n"
+                '  let msg = f"hello {name}, age {age}";\n'
+                "  println(msg);\n"
+                "}"
+            ),
+        ),
+        (
+            "actor_with_state",
+            (
+                "actor Counter {\n"
+                "  count: i32;\n"
+                "  receive fn increment() { self.count = self.count + 1; }\n"
+                "  receive fn get_count() -> i32 { self.count }\n"
+                "}\n"
+                "fn main() {\n"
+                "  let c = spawn Counter(count: 0);\n"
+                "  c.increment(); c.increment();\n"
+                "  let n = await c.get_count();\n"
+                "  println(n);\n"
+                "}"
+            ),
+        ),
+        (
+            "multiple_actors",
+            (
+                "actor Adder { receive fn add(a: i32, b: i32) -> i32 { a + b } }\n"
+                "actor Multiplier { receive fn mul(a: i32, b: i32) -> i32 { a * b } }\n"
+                "fn main() {\n"
+                "  let a = spawn Adder(); let m = spawn Multiplier();\n"
+                "  let sum = await a.add(3, 4);\n"
+                "  let prod = await m.mul(3, 4);\n"
+                "  println(sum); println(prod);\n"
+                "}"
+            ),
+        ),
+        (
+            "struct_with_methods",
+            (
+                "type Rect { w: i32; h: i32; }\n"
+                "impl Rect {\n"
+                "  fn area(self) -> i32 { self.w * self.h }\n"
+                "  fn perimeter(self) -> i32 { 2 * (self.w + self.h) }\n"
+                "}\n"
+                "fn main() { let r = Rect { w: 3, h: 4 }; println(r.area()); }"
+            ),
+        ),
+        (
+            "recursive_fn",
+            (
+                "fn factorial(n: i32) -> i32 {\n"
+                "  if n <= 1 { 1 } else { n * factorial(n - 1) }\n"
+                "}\n"
+                "fn main() { println(factorial(10)); }"
+            ),
+        ),
+        (
+            "mutual_recursion",
+            (
+                "fn is_even(n: i32) -> bool { if n == 0 { true } else { is_odd(n - 1) } }\n"
+                "fn is_odd(n: i32) -> bool { if n == 0 { false } else { is_even(n - 1) } }\n"
+                "fn main() { println(is_even(10)); }"
+            ),
+        ),
+        (
+            "higher_order_fn",
+            (
+                "fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }\n"
+                "fn double(x: i32) -> i32 { x * 2 }\n"
+                "fn main() { println(apply(double, 21)); }"
+            ),
+        ),
+        (
+            "enum_match_exhaustive",
+            (
+                "enum Color { Red, Green, Blue }\n"
+                "fn name(c: Color) -> string {\n"
+                '  match c { Color::Red => "red", Color::Green => "green", Color::Blue => "blue" }\n'
+                "}\n"
+                "fn main() { println(name(Color::Red)); }"
+            ),
+        ),
+        (
+            "chained_methods",
+            (
+                "fn main() {\n"
+                '  let s = "hello world";\n'
+                "  println(s.len());\n"
+                '  println(s.contains("world"));\n'
+                "  println(s.to_uppercase());\n"
+                "}"
+            ),
+        ),
+        (
+            "tuple_operations",
+            (
+                "fn swap(t: (i32, i32)) -> (i32, i32) { (t.1, t.0) }\n"
+                "fn main() { let (a, b) = swap((1, 2)); println(a); println(b); }"
+            ),
+        ),
     ]
 
     for label, src in programs:
@@ -1683,150 +2228,186 @@ def fuzz_differential(ctx: FuzzContext) -> None:
 def fuzz_cross_feature(ctx: FuzzContext) -> None:
     """Cross-feature interactions: combining multiple language features."""
     cases = [
-        ("actor_plus_closure", (
-            "actor Processor {\n"
-            "  receive fn process(data: Vec<i32>) -> i32 {\n"
-            "    var sum = 0;\n"
-            "    for x in data { sum = sum + x; }\n"
-            "    sum\n"
-            "  }\n"
-            "}\n"
-            "fn main() {\n"
-            "  let p = spawn Processor();\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  let result = await p.process(v);\n"
-            "  println(result);\n"
-            "}"
-        )),
-        ("match_in_actor", (
-            "enum Cmd { Inc, Dec, Reset }\n"
-            "actor Counter {\n"
-            "  val: i32;\n"
-            "  receive fn exec(cmd: Cmd) {\n"
-            "    match cmd {\n"
-            "      Cmd::Inc => { self.val = self.val + 1; },\n"
-            "      Cmd::Dec => { self.val = self.val - 1; },\n"
-            "      Cmd::Reset => { self.val = 0; }\n"
-            "    }\n"
-            "  }\n"
-            "  receive fn get() -> i32 { self.val }\n"
-            "}\n"
-            "fn main() { let c = spawn Counter(val: 0); }"
-        )),
-        ("generic_with_option_result", (
-            "fn first_ok<T>(items: Vec<Result<T, string>>) -> Option<T> {\n"
-            "  for item in items {\n"
-            "    match item { Ok(v) => { return Some(v); }, Err(_) => { } }\n"
-            "  }\n"
-            "  None\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("struct_with_vec_and_hashmap", (
-            "type Database {\n"
-            "  tables: Vec<string>;\n"
-            "  metadata: HashMap<string, string>;\n"
-            "}\n"
-            "fn main() {\n"
-            "  let db = Database {\n"
-            "    tables: Vec::new(),\n"
-            "    metadata: HashMap::new()\n"
-            "  };\n"
-            "  db.tables.push(\"users\");\n"
-            "  db.metadata.insert(\"version\", \"1.0\");\n"
-            "}"
-        )),
-        ("defer_plus_match", (
-            "fn process(x: i32) -> string {\n"
-            "  defer println(0);\n"
-            "  match x {\n"
-            "    1 => { defer println(1); return \"one\"; },\n"
-            "    2 => { defer println(2); return \"two\"; },\n"
-            "    _ => { defer println(3); return \"other\"; }\n"
-            "  }\n"
-            "}\n"
-            "fn main() { println(process(2)); }"
-        )),
-        ("for_loop_with_match_and_break", (
-            "fn find_first_even(v: Vec<i32>) -> Option<i32> {\n"
-            "  for x in v {\n"
-            "    match x % 2 {\n"
-            "      0 => { return Some(x); },\n"
-            "      _ => { continue; }\n"
-            "    }\n"
-            "  }\n"
-            "  None\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("lambda_actor_with_closure", (
-            "fn main() {\n"
-            "  let multiplier = 10;\n"
-            "  let worker = spawn (x: i32) => {\n"
-            "    println(x * multiplier);\n"
-            "  };\n"
-            "  worker.send(5);\n"
-            "}"
-        )),
-        ("nested_actors_with_await", (
-            "actor Inner { receive fn compute(x: i32) -> i32 { x * x } }\n"
-            "actor Outer {\n"
-            "  receive fn run(x: i32) -> i32 {\n"
-            "    let inner = spawn Inner();\n"
-            "    let result = await inner.compute(x);\n"
-            "    result + 1\n"
-            "  }\n"
-            "}\n"
-            "fn main() {\n"
-            "  let o = spawn Outer();\n"
-            "  let r = await o.run(5);\n"
-            "  println(r);\n"
-            "}"
-        )),
-        ("string_interp_with_method", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            '  let msg = f"vec has {v.len()} items";\n'
-            "  println(msg);\n"
-            "}"
-        )),
-        ("if_expr_in_match_in_for", (
-            "fn main() {\n"
-            "  for i in 0..10 {\n"
-            "    let label = match i % 3 {\n"
-            "      0 => if i == 0 { \"start\" } else { \"fizz\" },\n"
-            "      _ => \"other\"\n"
-            "    };\n"
-            "    println(label);\n"
-            "  }\n"
-            "}"
-        )),
-        ("trait_with_generics_and_enum", (
-            "trait Describable { fn describe(self) -> string; }\n"
-            "enum Shape { Circle(f64), Square(f64) }\n"
-            "impl Describable for Shape {\n"
-            "  fn describe(self) -> string {\n"
-            "    match self { Shape::Circle(_) => \"circle\", Shape::Square(_) => \"square\" }\n"
-            "  }\n"
-            "}\n"
-            "fn main() { }"
-        )),
-        ("multiple_returns_with_defer", (
-            "fn complex(x: i32) -> i32 {\n"
-            "  defer println(0);\n"
-            "  if x < 0 { return -1; }\n"
-            "  defer println(1);\n"
-            "  if x == 0 { return 0; }\n"
-            "  defer println(2);\n"
-            "  for i in 0..x {\n"
-            "    if i > 100 { return 100; }\n"
-            "  }\n"
-            "  x\n"
-            "}\n"
-            "fn main() { println(complex(5)); }"
-        )),
+        (
+            "actor_plus_closure",
+            (
+                "actor Processor {\n"
+                "  receive fn process(data: Vec<i32>) -> i32 {\n"
+                "    var sum = 0;\n"
+                "    for x in data { sum = sum + x; }\n"
+                "    sum\n"
+                "  }\n"
+                "}\n"
+                "fn main() {\n"
+                "  let p = spawn Processor();\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  let result = await p.process(v);\n"
+                "  println(result);\n"
+                "}"
+            ),
+        ),
+        (
+            "match_in_actor",
+            (
+                "enum Cmd { Inc, Dec, Reset }\n"
+                "actor Counter {\n"
+                "  val: i32;\n"
+                "  receive fn exec(cmd: Cmd) {\n"
+                "    match cmd {\n"
+                "      Cmd::Inc => { self.val = self.val + 1; },\n"
+                "      Cmd::Dec => { self.val = self.val - 1; },\n"
+                "      Cmd::Reset => { self.val = 0; }\n"
+                "    }\n"
+                "  }\n"
+                "  receive fn get() -> i32 { self.val }\n"
+                "}\n"
+                "fn main() { let c = spawn Counter(val: 0); }"
+            ),
+        ),
+        (
+            "generic_with_option_result",
+            (
+                "fn first_ok<T>(items: Vec<Result<T, string>>) -> Option<T> {\n"
+                "  for item in items {\n"
+                "    match item { Ok(v) => { return Some(v); }, Err(_) => { } }\n"
+                "  }\n"
+                "  None\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "struct_with_vec_and_hashmap",
+            (
+                "type Database {\n"
+                "  tables: Vec<string>;\n"
+                "  metadata: HashMap<string, string>;\n"
+                "}\n"
+                "fn main() {\n"
+                "  let db = Database {\n"
+                "    tables: Vec::new(),\n"
+                "    metadata: HashMap::new()\n"
+                "  };\n"
+                '  db.tables.push("users");\n'
+                '  db.metadata.insert("version", "1.0");\n'
+                "}"
+            ),
+        ),
+        (
+            "defer_plus_match",
+            (
+                "fn process(x: i32) -> string {\n"
+                "  defer println(0);\n"
+                "  match x {\n"
+                '    1 => { defer println(1); return "one"; },\n'
+                '    2 => { defer println(2); return "two"; },\n'
+                '    _ => { defer println(3); return "other"; }\n'
+                "  }\n"
+                "}\n"
+                "fn main() { println(process(2)); }"
+            ),
+        ),
+        (
+            "for_loop_with_match_and_break",
+            (
+                "fn find_first_even(v: Vec<i32>) -> Option<i32> {\n"
+                "  for x in v {\n"
+                "    match x % 2 {\n"
+                "      0 => { return Some(x); },\n"
+                "      _ => { continue; }\n"
+                "    }\n"
+                "  }\n"
+                "  None\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "lambda_actor_with_closure",
+            (
+                "fn main() {\n"
+                "  let multiplier = 10;\n"
+                "  let worker = spawn (x: i32) => {\n"
+                "    println(x * multiplier);\n"
+                "  };\n"
+                "  worker.send(5);\n"
+                "}"
+            ),
+        ),
+        (
+            "nested_actors_with_await",
+            (
+                "actor Inner { receive fn compute(x: i32) -> i32 { x * x } }\n"
+                "actor Outer {\n"
+                "  receive fn run(x: i32) -> i32 {\n"
+                "    let inner = spawn Inner();\n"
+                "    let result = await inner.compute(x);\n"
+                "    result + 1\n"
+                "  }\n"
+                "}\n"
+                "fn main() {\n"
+                "  let o = spawn Outer();\n"
+                "  let r = await o.run(5);\n"
+                "  println(r);\n"
+                "}"
+            ),
+        ),
+        (
+            "string_interp_with_method",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                '  let msg = f"vec has {v.len()} items";\n'
+                "  println(msg);\n"
+                "}"
+            ),
+        ),
+        (
+            "if_expr_in_match_in_for",
+            (
+                "fn main() {\n"
+                "  for i in 0..10 {\n"
+                "    let label = match i % 3 {\n"
+                '      0 => if i == 0 { "start" } else { "fizz" },\n'
+                '      _ => "other"\n'
+                "    };\n"
+                "    println(label);\n"
+                "  }\n"
+                "}"
+            ),
+        ),
+        (
+            "trait_with_generics_and_enum",
+            (
+                "trait Describable { fn describe(self) -> string; }\n"
+                "enum Shape { Circle(f64), Square(f64) }\n"
+                "impl Describable for Shape {\n"
+                "  fn describe(self) -> string {\n"
+                '    match self { Shape::Circle(_) => "circle", Shape::Square(_) => "square" }\n'
+                "  }\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "multiple_returns_with_defer",
+            (
+                "fn complex(x: i32) -> i32 {\n"
+                "  defer println(0);\n"
+                "  if x < 0 { return -1; }\n"
+                "  defer println(1);\n"
+                "  if x == 0 { return 0; }\n"
+                "  defer println(2);\n"
+                "  for i in 0..x {\n"
+                "    if i > 100 { return 100; }\n"
+                "  }\n"
+                "  x\n"
+                "}\n"
+                "fn main() { println(complex(5)); }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"cross/{label}"))
@@ -1835,71 +2416,82 @@ def fuzz_cross_feature(ctx: FuzzContext) -> None:
 def fuzz_error_cascade(ctx: FuzzContext) -> None:
     """Multiple errors in one file — compiler should not crash."""
     cases = [
-        ("many_type_errors", (
-            "fn main() {\n"
-            "  let x: i32 = \"wrong\";\n"
-            "  let y: string = 42;\n"
-            "  let z: bool = 3.14;\n"
-            "  let w: f64 = true;\n"
-            "  println(x + y + z + w);\n"
-            "}"
-        )),
-        ("many_syntax_errors", (
-            "fn main() {\n"
-            "  let = 1;\n"
-            "  let x = ;\n"
-            "  fn ;\n"
-            "  if { }\n"
-            "  for { }\n"
-            "}"
-        )),
-        ("undefined_everywhere", (
-            "fn main() {\n"
-            "  println(a);\n"
-            "  println(b);\n"
-            "  println(c);\n"
-            "  let x = foo();\n"
-            "  let y = bar();\n"
-            "  let z = baz();\n"
-            "  a.method();\n"
-            "  b[0] = c;\n"
-            "}"
-        )),
-        ("mixed_errors", (
-            "fn f(x: i32) -> string { x }\n"
-            "fn g() -> i32 { \"wrong\" }\n"
-            "fn h(a: i32, b: i32) -> i32 { a }\n"
-            "fn main() {\n"
-            "  f(\"wrong\");\n"
-            "  g();\n"
-            "  h(1);\n"
-            "  h(1, 2, 3);\n"
-            "  unknown_function();\n"
-            "}"
-        )),
-        ("error_after_error", (
-            "fn main() {\n"
-            "  let x = undefined1;\n"
-            "  let y = x + undefined2;\n"
-            "  let z = y.field;\n"
-            "  z.method(undefined3);\n"
-            "}"
-        )),
-        ("50_errors", (
-            "fn main() {\n"
-            + "\n".join(f"  let v{i}: i32 = \"str{i}\";" for i in range(50))
-            + "\n}"
-        )),
-        ("recover_after_bad_fn", (
-            "fn broken(\n"  # Syntax error
-            "fn main() { println(42); }\n"  # Should still parse
-        )),
-        ("unterminated_string_then_code", (
-            'fn main() { let x = "unterminated;\n'
-            "  let y = 42;\n"
-            "  println(y);\n"
-            "}"
-        )),
+        (
+            "many_type_errors",
+            (
+                "fn main() {\n"
+                '  let x: i32 = "wrong";\n'
+                "  let y: string = 42;\n"
+                "  let z: bool = 3.14;\n"
+                "  let w: f64 = true;\n"
+                "  println(x + y + z + w);\n"
+                "}"
+            ),
+        ),
+        (
+            "many_syntax_errors",
+            ("fn main() {\n  let = 1;\n  let x = ;\n  fn ;\n  if { }\n  for { }\n}"),
+        ),
+        (
+            "undefined_everywhere",
+            (
+                "fn main() {\n"
+                "  println(a);\n"
+                "  println(b);\n"
+                "  println(c);\n"
+                "  let x = foo();\n"
+                "  let y = bar();\n"
+                "  let z = baz();\n"
+                "  a.method();\n"
+                "  b[0] = c;\n"
+                "}"
+            ),
+        ),
+        (
+            "mixed_errors",
+            (
+                "fn f(x: i32) -> string { x }\n"
+                'fn g() -> i32 { "wrong" }\n'
+                "fn h(a: i32, b: i32) -> i32 { a }\n"
+                "fn main() {\n"
+                '  f("wrong");\n'
+                "  g();\n"
+                "  h(1);\n"
+                "  h(1, 2, 3);\n"
+                "  unknown_function();\n"
+                "}"
+            ),
+        ),
+        (
+            "error_after_error",
+            (
+                "fn main() {\n"
+                "  let x = undefined1;\n"
+                "  let y = x + undefined2;\n"
+                "  let z = y.field;\n"
+                "  z.method(undefined3);\n"
+                "}"
+            ),
+        ),
+        (
+            "50_errors",
+            (
+                "fn main() {\n"
+                + "\n".join(f'  let v{i}: i32 = "str{i}";' for i in range(50))
+                + "\n}"
+            ),
+        ),
+        (
+            "recover_after_bad_fn",
+            (
+                "fn broken(\n"  # Syntax error
+                "fn main() { println(42); }\n"  # Should still parse
+            ),
+        ),
+        (
+            "unterminated_string_then_code",
+            ('fn main() { let x = "unterminated;\n  let y = 42;\n  println(y);\n}'),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"cascade/{label}"))
@@ -1909,36 +2501,66 @@ def fuzz_type_inference(ctx: FuzzContext) -> None:
     """Programs that stress bidirectional type inference."""
     cases = [
         ("infer_int_literal", "fn main() { let x = 42; println(x); }"),
-        ("infer_from_return", "fn f() -> i32 { 42 }\nfn main() { let x = f(); println(x); }"),
+        (
+            "infer_from_return",
+            "fn f() -> i32 { 42 }\nfn main() { let x = f(); println(x); }",
+        ),
         ("infer_from_arg", "fn f(x: i32) -> i32 { x }\nfn main() { let x = f(42); }"),
         ("infer_in_if", "fn main() { let x = if true { 1 } else { 2 }; println(x); }"),
-        ("infer_in_match", "fn main() { let x = match 1 { 1 => 10, _ => 20 }; println(x); }"),
-        ("infer_vec_element", "fn main() { let v: Vec<i32> = Vec::new(); v.push(42); let x = v.get(0); }"),
-        ("infer_closure_return", "fn main() { let f = |x: i32| -> i32 { x + 1 }; let y = f(41); println(y); }"),
-        ("infer_chain", (
-            "fn a() -> i32 { 1 }\n"
-            "fn b(x: i32) -> i32 { x + 1 }\n"
-            "fn c(x: i32) -> string { \"done\" }\n"
-            "fn main() { let x = c(b(a())); println(x); }"
-        )),
-        ("infer_generic", "fn id<T>(x: T) -> T { x }\nfn main() { let x = id(42); let y = id(\"hi\"); }"),
-        ("infer_nested_generic", (
-            "fn wrap<T>(x: T) -> Option<T> { Some(x) }\n"
-            "fn main() { let x = wrap(wrap(42)); }"
-        )),
-        ("conflicting_inference", (
-            "fn main() {\n"
-            "  let x = 42;\n"
-            "  let y: string = x;\n"  # Should error
-            "}"
-        )),
-        ("diamond_inference", (
-            "fn f<T>(a: T, b: T) -> T { a }\n"
-            "fn main() { let x = f(1, 2); println(x); }"
-        )),
+        (
+            "infer_in_match",
+            "fn main() { let x = match 1 { 1 => 10, _ => 20 }; println(x); }",
+        ),
+        (
+            "infer_vec_element",
+            "fn main() { let v: Vec<i32> = Vec::new(); v.push(42); let x = v.get(0); }",
+        ),
+        (
+            "infer_closure_return",
+            "fn main() { let f = |x: i32| -> i32 { x + 1 }; let y = f(41); println(y); }",
+        ),
+        (
+            "infer_chain",
+            (
+                "fn a() -> i32 { 1 }\n"
+                "fn b(x: i32) -> i32 { x + 1 }\n"
+                'fn c(x: i32) -> string { "done" }\n'
+                "fn main() { let x = c(b(a())); println(x); }"
+            ),
+        ),
+        (
+            "infer_generic",
+            'fn id<T>(x: T) -> T { x }\nfn main() { let x = id(42); let y = id("hi"); }',
+        ),
+        (
+            "infer_nested_generic",
+            (
+                "fn wrap<T>(x: T) -> Option<T> { Some(x) }\n"
+                "fn main() { let x = wrap(wrap(42)); }"
+            ),
+        ),
+        (
+            "conflicting_inference",
+            (
+                "fn main() {\n"
+                "  let x = 42;\n"
+                "  let y: string = x;\n"  # Should error
+                "}"
+            ),
+        ),
+        (
+            "diamond_inference",
+            (
+                "fn f<T>(a: T, b: T) -> T { a }\n"
+                "fn main() { let x = f(1, 2); println(x); }"
+            ),
+        ),
         ("type_annotation_override", "fn main() { let x: i32 = 42; let y: i64 = 42; }"),
         ("numeric_coercion", "fn main() { let x: f64 = 42; println(x); }"),
-        ("ambiguous_numeric", "fn main() { let x = 1 + 2; let y = x + 3; println(y); }"),
+        (
+            "ambiguous_numeric",
+            "fn main() { let x = 1 + 2; let y = x + 3; println(y); }",
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"infer/{label}"))
@@ -1947,43 +2569,67 @@ def fuzz_type_inference(ctx: FuzzContext) -> None:
 def fuzz_recursion(ctx: FuzzContext) -> None:
     """Recursive patterns: mutual recursion, deep recursion, recursive types."""
     cases = [
-        ("simple_recursion", "fn f(n: i32) -> i32 { if n == 0 { 0 } else { f(n - 1) } }\nfn main() { println(f(10)); }"),
-        ("mutual_recursion", (
-            "fn ping(n: i32) -> i32 { if n == 0 { 0 } else { pong(n - 1) } }\n"
-            "fn pong(n: i32) -> i32 { if n == 0 { 1 } else { ping(n - 1) } }\n"
-            "fn main() { println(ping(10)); }"
-        )),
-        ("triple_mutual", (
-            "fn a(n: i32) -> i32 { if n <= 0 { 0 } else { b(n - 1) } }\n"
-            "fn b(n: i32) -> i32 { if n <= 0 { 1 } else { c(n - 1) } }\n"
-            "fn c(n: i32) -> i32 { if n <= 0 { 2 } else { a(n - 1) } }\n"
-            "fn main() { println(a(9)); }"
-        )),
-        ("recursive_type", "type List { val: i32; next: Option<Box<List>>; }\nfn main() { }"),
-        ("recursive_enum", (
-            "enum Expr { Num(i32), Add(Box<Expr>, Box<Expr>), Mul(Box<Expr>, Box<Expr>) }\n"
-            "fn main() { }"
-        )),
-        ("recursive_actor_spawn", (
-            "actor Tree {\n"
-            "  depth: i32;\n"
-            "  receive fn grow() {\n"
-            "    if self.depth > 0 {\n"
-            "      let left = spawn Tree(depth: self.depth - 1);\n"
-            "      let right = spawn Tree(depth: self.depth - 1);\n"
-            "    }\n"
-            "  }\n"
-            "}\n"
-            "fn main() { let t = spawn Tree(depth: 3); t.grow(); }"
-        )),
-        ("forward_reference", "fn main() { println(f(5)); }\nfn f(n: i32) -> i32 { n * 2 }"),
-        ("fn_as_arg_recursive", (
-            "fn apply_n(f: fn(i32) -> i32, x: i32, n: i32) -> i32 {\n"
-            "  if n == 0 { x } else { apply_n(f, f(x), n - 1) }\n"
-            "}\n"
-            "fn inc(x: i32) -> i32 { x + 1 }\n"
-            "fn main() { println(apply_n(inc, 0, 10)); }"
-        )),
+        (
+            "simple_recursion",
+            "fn f(n: i32) -> i32 { if n == 0 { 0 } else { f(n - 1) } }\nfn main() { println(f(10)); }",
+        ),
+        (
+            "mutual_recursion",
+            (
+                "fn ping(n: i32) -> i32 { if n == 0 { 0 } else { pong(n - 1) } }\n"
+                "fn pong(n: i32) -> i32 { if n == 0 { 1 } else { ping(n - 1) } }\n"
+                "fn main() { println(ping(10)); }"
+            ),
+        ),
+        (
+            "triple_mutual",
+            (
+                "fn a(n: i32) -> i32 { if n <= 0 { 0 } else { b(n - 1) } }\n"
+                "fn b(n: i32) -> i32 { if n <= 0 { 1 } else { c(n - 1) } }\n"
+                "fn c(n: i32) -> i32 { if n <= 0 { 2 } else { a(n - 1) } }\n"
+                "fn main() { println(a(9)); }"
+            ),
+        ),
+        (
+            "recursive_type",
+            "type List { val: i32; next: Option<Box<List>>; }\nfn main() { }",
+        ),
+        (
+            "recursive_enum",
+            (
+                "enum Expr { Num(i32), Add(Box<Expr>, Box<Expr>), Mul(Box<Expr>, Box<Expr>) }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "recursive_actor_spawn",
+            (
+                "actor Tree {\n"
+                "  depth: i32;\n"
+                "  receive fn grow() {\n"
+                "    if self.depth > 0 {\n"
+                "      let left = spawn Tree(depth: self.depth - 1);\n"
+                "      let right = spawn Tree(depth: self.depth - 1);\n"
+                "    }\n"
+                "  }\n"
+                "}\n"
+                "fn main() { let t = spawn Tree(depth: 3); t.grow(); }"
+            ),
+        ),
+        (
+            "forward_reference",
+            "fn main() { println(f(5)); }\nfn f(n: i32) -> i32 { n * 2 }",
+        ),
+        (
+            "fn_as_arg_recursive",
+            (
+                "fn apply_n(f: fn(i32) -> i32, x: i32, n: i32) -> i32 {\n"
+                "  if n == 0 { x } else { apply_n(f, f(x), n - 1) }\n"
+                "}\n"
+                "fn inc(x: i32) -> i32 { x + 1 }\n"
+                "fn main() { println(apply_n(inc, 0, 10)); }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"recursion/{label}"))
@@ -1995,73 +2641,103 @@ def fuzz_semantic_oracle(ctx: FuzzContext) -> None:
     programs = [
         ("hello", 'fn main() { println("hello"); }'),
         ("arithmetic", "fn main() { println(2 + 3 * 4); }"),
-        ("fibonacci", (
-            "fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\n"
-            "fn main() { println(fib(10)); }"
-        )),
-        ("string_ops", (
-            "fn main() {\n"
-            '  let s = "hello";\n'
-            "  println(s.len());\n"
-            '  println(s + " world");\n'
-            "}"
-        )),
-        ("vec_basics", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  println(v.len());\n"
-            "  println(v.get(0));\n"
-            "}"
-        )),
-        ("for_loop_sum", (
-            "fn main() {\n"
-            "  var sum = 0;\n"
-            "  for i in 0..10 { sum = sum + i; }\n"
-            "  println(sum);\n"
-            "}"
-        )),
-        ("while_loop", (
-            "fn main() {\n"
-            "  var x = 1;\n"
-            "  while x < 100 { x = x * 2; }\n"
-            "  println(x);\n"
-            "}"
-        )),
-        ("match_expr", (
-            "fn classify(n: i32) -> string {\n"
-            '  match n { 0 => "zero", 1 => "one", _ => "many" }\n'
-            "}\n"
-            'fn main() { println(classify(0)); println(classify(1)); println(classify(99)); }'
-        )),
-        ("nested_fn", (
-            "fn outer(x: i32) -> i32 { inner(x) + 1 }\n"
-            "fn inner(x: i32) -> i32 { x * 2 }\n"
-            "fn main() { println(outer(5)); }"
-        )),
-        ("var_mutation", (
-            "fn main() {\n"
-            "  var x = 0;\n"
-            "  x = x + 1; x = x + 2; x = x + 3;\n"
-            "  println(x);\n"
-            "}"
-        )),
-        ("bool_logic", (
-            "fn main() {\n"
-            "  println(true && true);\n"
-            "  println(true && false);\n"
-            "  println(false || true);\n"
-            "  println(!false);\n"
-            "}"
-        )),
-        ("early_return", (
-            "fn first_positive(a: i32, b: i32, c: i32) -> i32 {\n"
-            "  if a > 0 { return a; }\n"
-            "  if b > 0 { return b; }\n"
-            "  c\n"
-            "}\n"
-            "fn main() { println(first_positive(-1, -2, 3)); }"
-        )),
+        (
+            "fibonacci",
+            (
+                "fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\n"
+                "fn main() { println(fib(10)); }"
+            ),
+        ),
+        (
+            "string_ops",
+            (
+                "fn main() {\n"
+                '  let s = "hello";\n'
+                "  println(s.len());\n"
+                '  println(s + " world");\n'
+                "}"
+            ),
+        ),
+        (
+            "vec_basics",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  println(v.len());\n"
+                "  println(v.get(0));\n"
+                "}"
+            ),
+        ),
+        (
+            "for_loop_sum",
+            (
+                "fn main() {\n"
+                "  var sum = 0;\n"
+                "  for i in 0..10 { sum = sum + i; }\n"
+                "  println(sum);\n"
+                "}"
+            ),
+        ),
+        (
+            "while_loop",
+            (
+                "fn main() {\n"
+                "  var x = 1;\n"
+                "  while x < 100 { x = x * 2; }\n"
+                "  println(x);\n"
+                "}"
+            ),
+        ),
+        (
+            "match_expr",
+            (
+                "fn classify(n: i32) -> string {\n"
+                '  match n { 0 => "zero", 1 => "one", _ => "many" }\n'
+                "}\n"
+                "fn main() { println(classify(0)); println(classify(1)); println(classify(99)); }"
+            ),
+        ),
+        (
+            "nested_fn",
+            (
+                "fn outer(x: i32) -> i32 { inner(x) + 1 }\n"
+                "fn inner(x: i32) -> i32 { x * 2 }\n"
+                "fn main() { println(outer(5)); }"
+            ),
+        ),
+        (
+            "var_mutation",
+            (
+                "fn main() {\n"
+                "  var x = 0;\n"
+                "  x = x + 1; x = x + 2; x = x + 3;\n"
+                "  println(x);\n"
+                "}"
+            ),
+        ),
+        (
+            "bool_logic",
+            (
+                "fn main() {\n"
+                "  println(true && true);\n"
+                "  println(true && false);\n"
+                "  println(false || true);\n"
+                "  println(!false);\n"
+                "}"
+            ),
+        ),
+        (
+            "early_return",
+            (
+                "fn first_positive(a: i32, b: i32, c: i32) -> i32 {\n"
+                "  if a > 0 { return a; }\n"
+                "  if b > 0 { return b; }\n"
+                "  c\n"
+                "}\n"
+                "fn main() { println(first_positive(-1, -2, 3)); }"
+            ),
+        ),
     ]
     for label, src in programs:
         _report(run_hew(ctx, src, f"oracle/{label}"))
@@ -2070,22 +2746,43 @@ def fuzz_semantic_oracle(ctx: FuzzContext) -> None:
 def fuzz_comment_placement(ctx: FuzzContext) -> None:
     """Comments in unusual places."""
     cases = [
-        ("comment_everywhere", (
-            "/* a */ fn /* b */ main /* c */ ( /* d */ ) /* e */ { /* f */\n"
-            "  let /* g */ x /* h */ = /* i */ 42 /* j */ ; /* k */\n"
-            "  println(x);\n"
-            "/* l */ }"
-        )),
-        ("doc_comment_fn", "/// This is a documented function\nfn f() -> i32 { 42 }\nfn main() { println(f()); }"),
-        ("doc_comment_type", "/// A point in 2D space\ntype Point { /// X coordinate\n x: i32; /// Y coordinate\n y: i32; }\nfn main() { }"),
-        ("nested_block_comment", "/* outer /* inner /* deep */ inner */ outer */\nfn main() { println(1); }"),
-        ("comment_in_string", 'fn main() { let x = "/* not a comment */"; println(x); }'),
+        (
+            "comment_everywhere",
+            (
+                "/* a */ fn /* b */ main /* c */ ( /* d */ ) /* e */ { /* f */\n"
+                "  let /* g */ x /* h */ = /* i */ 42 /* j */ ; /* k */\n"
+                "  println(x);\n"
+                "/* l */ }"
+            ),
+        ),
+        (
+            "doc_comment_fn",
+            "/// This is a documented function\nfn f() -> i32 { 42 }\nfn main() { println(f()); }",
+        ),
+        (
+            "doc_comment_type",
+            "/// A point in 2D space\ntype Point { /// X coordinate\n x: i32; /// Y coordinate\n y: i32; }\nfn main() { }",
+        ),
+        (
+            "nested_block_comment",
+            "/* outer /* inner /* deep */ inner */ outer */\nfn main() { println(1); }",
+        ),
+        (
+            "comment_in_string",
+            'fn main() { let x = "/* not a comment */"; println(x); }',
+        ),
         ("string_in_comment", '/* let x = "hello"; */\nfn main() { println(1); }'),
-        ("comment_between_tokens", "fn main() { let x = 1 /* gap */ + /* gap */ 2; println(x); }"),
+        (
+            "comment_between_tokens",
+            "fn main() { let x = 1 /* gap */ + /* gap */ 2; println(x); }",
+        ),
         ("line_comment_at_eof", "fn main() { println(1); } // end"),
         ("only_comments", "// line 1\n// line 2\n/* block */"),
         ("empty_block_comment", "/**/\nfn main() { }"),
-        ("comment_with_code_chars", '// fn main() { let x = "};!@#$%"; }\nfn main() { println(1); }'),
+        (
+            "comment_with_code_chars",
+            '// fn main() { let x = "};!@#$%"; }\nfn main() { println(1); }',
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"comment/{label}"))
@@ -2095,15 +2792,24 @@ def fuzz_whitespace(ctx: FuzzContext) -> None:
     """Whitespace sensitivity and formatting edge cases."""
     cases = [
         ("no_whitespace", "fn main(){let x=1+2;println(x);}"),
-        ("excessive_whitespace", "fn   main  (  )   {   let   x   =   1  +  2  ;   println ( x ) ;   }"),
+        (
+            "excessive_whitespace",
+            "fn   main  (  )   {   let   x   =   1  +  2  ;   println ( x ) ;   }",
+        ),
         ("tabs_only", "fn\tmain()\t{\tlet\tx\t=\t42;\tprintln(x);\t}"),
         ("mixed_indent", "fn main() {\n\t  \t let x = 1;\n  \t\t  println(x);\n}"),
         ("windows_newlines", "fn main() {\r\n  let x = 42;\r\n  println(x);\r\n}\r\n"),
         ("mac_newlines", "fn main() {\r  let x = 42;\r  println(x);\r}\r"),
-        ("trailing_whitespace", "fn main() {   \n  let x = 42;   \n  println(x);   \n}   \n"),
+        (
+            "trailing_whitespace",
+            "fn main() {   \n  let x = 42;   \n  println(x);   \n}   \n",
+        ),
         ("leading_whitespace", "   \n   \n   fn main() { println(42); }"),
         ("no_final_newline", "fn main() { println(42); }"),
-        ("many_blank_lines", "\n\n\n\n\n\nfn main() {\n\n\n\n\n\n  println(42);\n\n\n\n\n\n}\n\n\n\n\n"),
+        (
+            "many_blank_lines",
+            "\n\n\n\n\n\nfn main() {\n\n\n\n\n\n  println(42);\n\n\n\n\n\n}\n\n\n\n\n",
+        ),
         ("form_feed", "fn main() {\f println(42); }"),
         ("vertical_tab", "fn main() {\v println(42); }"),
     ]
@@ -2114,81 +2820,106 @@ def fuzz_whitespace(ctx: FuzzContext) -> None:
 def fuzz_collections_deep(ctx: FuzzContext) -> None:
     """Deeper collection usage patterns."""
     cases = [
-        ("vec_of_strings", (
-            "fn main() {\n"
-            '  let v: Vec<string> = Vec::new();\n'
-            '  v.push("hello"); v.push("world");\n'
-            "  for s in v { println(s); }\n"
-            "}"
-        )),
-        ("hashmap_iteration", (
-            "fn main() {\n"
-            "  let m: HashMap<string, i32> = HashMap::new();\n"
-            '  m.insert("a", 1); m.insert("b", 2);\n'
-            "  println(m.len());\n"
-            "}"
-        )),
-        ("vec_remove", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  v.remove(1);\n"
-            "  println(v.len());\n"
-            "}"
-        )),
-        ("vec_pop", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2);\n"
-            "  let last = v.pop();\n"
-            "  println(v.len());\n"
-            "}"
-        )),
-        ("hashmap_contains", (
-            "fn main() {\n"
-            "  let m: HashMap<string, i32> = HashMap::new();\n"
-            '  m.insert("key", 42);\n'
-            '  println(m.contains_key("key"));\n'
-            '  println(m.contains_key("missing"));\n'
-            "}"
-        )),
-        ("hashmap_remove", (
-            "fn main() {\n"
-            "  let m: HashMap<string, i32> = HashMap::new();\n"
-            '  m.insert("key", 42);\n'
-            '  m.remove("key");\n'
-            "  println(m.len());\n"
-            "}"
-        )),
-        ("nested_vec", (
-            "fn main() {\n"
-            "  let v: Vec<Vec<i32>> = Vec::new();\n"
-            "  let inner: Vec<i32> = Vec::new();\n"
-            "  inner.push(1); inner.push(2);\n"
-            "  v.push(inner);\n"
-            "}"
-        )),
-        ("vec_set", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  v.set(1, 99);\n"
-            "  println(v.get(1));\n"
-            "}"
-        )),
-        ("empty_vec_operations", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  println(v.len());\n"
-            "}"
-        )),
-        ("empty_hashmap_operations", (
-            "fn main() {\n"
-            "  let m: HashMap<string, i32> = HashMap::new();\n"
-            "  println(m.len());\n"
-            '  println(m.contains_key("x"));\n'
-            "}"
-        )),
+        (
+            "vec_of_strings",
+            (
+                "fn main() {\n"
+                "  let v: Vec<string> = Vec::new();\n"
+                '  v.push("hello"); v.push("world");\n'
+                "  for s in v { println(s); }\n"
+                "}"
+            ),
+        ),
+        (
+            "hashmap_iteration",
+            (
+                "fn main() {\n"
+                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                '  m.insert("a", 1); m.insert("b", 2);\n'
+                "  println(m.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "vec_remove",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  v.remove(1);\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "vec_pop",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2);\n"
+                "  let last = v.pop();\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "hashmap_contains",
+            (
+                "fn main() {\n"
+                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                '  m.insert("key", 42);\n'
+                '  println(m.contains_key("key"));\n'
+                '  println(m.contains_key("missing"));\n'
+                "}"
+            ),
+        ),
+        (
+            "hashmap_remove",
+            (
+                "fn main() {\n"
+                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                '  m.insert("key", 42);\n'
+                '  m.remove("key");\n'
+                "  println(m.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "nested_vec",
+            (
+                "fn main() {\n"
+                "  let v: Vec<Vec<i32>> = Vec::new();\n"
+                "  let inner: Vec<i32> = Vec::new();\n"
+                "  inner.push(1); inner.push(2);\n"
+                "  v.push(inner);\n"
+                "}"
+            ),
+        ),
+        (
+            "vec_set",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  v.set(1, 99);\n"
+                "  println(v.get(1));\n"
+                "}"
+            ),
+        ),
+        (
+            "empty_vec_operations",
+            ("fn main() {\n  let v: Vec<i32> = Vec::new();\n  println(v.len());\n}"),
+        ),
+        (
+            "empty_hashmap_operations",
+            (
+                "fn main() {\n"
+                "  let m: HashMap<string, i32> = HashMap::new();\n"
+                "  println(m.len());\n"
+                '  println(m.contains_key("x"));\n'
+                "}"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"collections/{label}"))
@@ -2197,59 +2928,83 @@ def fuzz_collections_deep(ctx: FuzzContext) -> None:
 def fuzz_actor_lifecycle(ctx: FuzzContext) -> None:
     """Actor lifecycle: init, stop, link, monitor."""
     cases = [
-        ("actor_with_init", (
-            "actor Server {\n"
-            "  ready: bool;\n"
-            "  init() { self.ready = true; }\n"
-            "  receive fn is_ready() -> bool { self.ready }\n"
-            "}\n"
-            "fn main() { let s = spawn Server(ready: false); }"
-        )),
-        ("actor_stop", (
-            "actor Worker {\n"
-            "  receive fn finish() { stop(); }\n"
-            "}\n"
-            "fn main() { let w = spawn Worker(); w.finish(); }"
-        )),
-        ("actor_link", (
-            "actor Parent {\n"
-            "  receive fn start() {\n"
-            "    let child = spawn (x: i32) => { println(x); };\n"
-            "    link(child);\n"
-            "  }\n"
-            "}\n"
-            "fn main() { let p = spawn Parent(); p.start(); }"
-        )),
-        ("actor_monitor", (
-            "actor Watcher {\n"
-            "  receive fn watch() {\n"
-            "    let target = spawn (x: i32) => { println(x); };\n"
-            "    monitor(target);\n"
-            "  }\n"
-            "}\n"
-            "fn main() { let w = spawn Watcher(); w.watch(); }"
-        )),
-        ("actor_many_handlers", (
-            "actor Service {\n"
-            "  val: i32;\n"
-            + "\n".join(f"  receive fn method{i}() -> i32 {{ self.val + {i} }}" for i in range(20))
-            + "\n}\nfn main() { let s = spawn Service(val: 0); }"
-        )),
-        ("actor_with_collections", (
-            "actor Store {\n"
-            "  items: Vec<string>;\n"
-            '  receive fn add(item: string) { self.items.push(item); }\n'
-            "  receive fn count() -> i32 { self.items.len() }\n"
-            "}\n"
-            "fn main() { let s = spawn Store(items: Vec::new()); }"
-        )),
-        ("basic_actor", (
-            "actor Pure {\n"
-            "  val: i32;\n"
-            "  receive fn get() -> i32 { self.val }\n"
-            "}\n"
-            "fn main() { let p = spawn Pure(val: 42); }"
-        )),
+        (
+            "actor_with_init",
+            (
+                "actor Server {\n"
+                "  ready: bool;\n"
+                "  init() { self.ready = true; }\n"
+                "  receive fn is_ready() -> bool { self.ready }\n"
+                "}\n"
+                "fn main() { let s = spawn Server(ready: false); }"
+            ),
+        ),
+        (
+            "actor_stop",
+            (
+                "actor Worker {\n"
+                "  receive fn finish() { stop(); }\n"
+                "}\n"
+                "fn main() { let w = spawn Worker(); w.finish(); }"
+            ),
+        ),
+        (
+            "actor_link",
+            (
+                "actor Parent {\n"
+                "  receive fn start() {\n"
+                "    let child = spawn (x: i32) => { println(x); };\n"
+                "    link(child);\n"
+                "  }\n"
+                "}\n"
+                "fn main() { let p = spawn Parent(); p.start(); }"
+            ),
+        ),
+        (
+            "actor_monitor",
+            (
+                "actor Watcher {\n"
+                "  receive fn watch() {\n"
+                "    let target = spawn (x: i32) => { println(x); };\n"
+                "    monitor(target);\n"
+                "  }\n"
+                "}\n"
+                "fn main() { let w = spawn Watcher(); w.watch(); }"
+            ),
+        ),
+        (
+            "actor_many_handlers",
+            (
+                "actor Service {\n"
+                "  val: i32;\n"
+                + "\n".join(
+                    f"  receive fn method{i}() -> i32 {{ self.val + {i} }}"
+                    for i in range(20)
+                )
+                + "\n}\nfn main() { let s = spawn Service(val: 0); }"
+            ),
+        ),
+        (
+            "actor_with_collections",
+            (
+                "actor Store {\n"
+                "  items: Vec<string>;\n"
+                "  receive fn add(item: string) { self.items.push(item); }\n"
+                "  receive fn count() -> i32 { self.items.len() }\n"
+                "}\n"
+                "fn main() { let s = spawn Store(items: Vec::new()); }"
+            ),
+        ),
+        (
+            "basic_actor",
+            (
+                "actor Pure {\n"
+                "  val: i32;\n"
+                "  receive fn get() -> i32 { self.val }\n"
+                "}\n"
+                "fn main() { let p = spawn Pure(val: 42); }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"lifecycle/{label}"))
@@ -2258,39 +3013,54 @@ def fuzz_actor_lifecycle(ctx: FuzzContext) -> None:
 def fuzz_try_operator(ctx: FuzzContext) -> None:
     """Postfix try (?) operator with Result/Option."""
     cases = [
-        ("try_result", (
-            "fn may_fail() -> Result<i32, string> { Ok(42) }\n"
-            "fn caller() -> Result<i32, string> { let x = may_fail()?; Ok(x + 1) }\n"
-            "fn main() { }"
-        )),
-        ("try_chain", (
-            "fn a() -> Result<i32, string> { Ok(1) }\n"
-            "fn b(x: i32) -> Result<i32, string> { Ok(x + 1) }\n"
-            "fn chain() -> Result<i32, string> { let x = a()?; let y = b(x)?; Ok(y) }\n"
-            "fn main() { }"
-        )),
-        ("try_option", (
-            "fn find() -> Option<i32> { Some(42) }\n"
-            "fn use_it() -> Option<i32> { let x = find()?; Some(x + 1) }\n"
-            "fn main() { }"
-        )),
-        ("try_in_match", (
-            "fn get() -> Result<i32, string> { Ok(42) }\n"
-            "fn process() -> Result<string, string> {\n"
-            '  let x = get()?;\n'
-            '  Ok(match x { 42 => "found", _ => "other" })\n'
-            "}\n"
-            "fn main() { }"
-        )),
-        ("try_in_loop", (
-            "fn step(i: i32) -> Result<i32, string> { Ok(i) }\n"
-            "fn run() -> Result<i32, string> {\n"
-            "  var sum = 0;\n"
-            "  for i in 0..5 { sum = sum + step(i)?; }\n"
-            "  Ok(sum)\n"
-            "}\n"
-            "fn main() { }"
-        )),
+        (
+            "try_result",
+            (
+                "fn may_fail() -> Result<i32, string> { Ok(42) }\n"
+                "fn caller() -> Result<i32, string> { let x = may_fail()?; Ok(x + 1) }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "try_chain",
+            (
+                "fn a() -> Result<i32, string> { Ok(1) }\n"
+                "fn b(x: i32) -> Result<i32, string> { Ok(x + 1) }\n"
+                "fn chain() -> Result<i32, string> { let x = a()?; let y = b(x)?; Ok(y) }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "try_option",
+            (
+                "fn find() -> Option<i32> { Some(42) }\n"
+                "fn use_it() -> Option<i32> { let x = find()?; Some(x + 1) }\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "try_in_match",
+            (
+                "fn get() -> Result<i32, string> { Ok(42) }\n"
+                "fn process() -> Result<string, string> {\n"
+                "  let x = get()?;\n"
+                '  Ok(match x { 42 => "found", _ => "other" })\n'
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
+        (
+            "try_in_loop",
+            (
+                "fn step(i: i32) -> Result<i32, string> { Ok(i) }\n"
+                "fn run() -> Result<i32, string> {\n"
+                "  var sum = 0;\n"
+                "  for i in 0..5 { sum = sum + step(i)?; }\n"
+                "  Ok(sum)\n"
+                "}\n"
+                "fn main() { }"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"try/{label}"))
@@ -2299,31 +3069,49 @@ def fuzz_try_operator(ctx: FuzzContext) -> None:
 def fuzz_method_chains(ctx: FuzzContext) -> None:
     """Method chaining patterns."""
     cases = [
-        ("string_methods", (
-            'fn main() {\n'
-            '  let s = "Hello World";\n'
-            '  println(s.len());\n'
-            '  println(s.to_lowercase());\n'
-            '  println(s.to_uppercase());\n'
-            '  println(s.trim());\n'
-            '  println(s.contains("World"));\n'
-            '  println(s.starts_with("Hello"));\n'
-            '  println(s.ends_with("World"));\n'
-            '}'
-        )),
-        ("string_replace", 'fn main() { let s = "hello world"; println(s.replace("world", "hew")); }'),
-        ("string_split", 'fn main() { let parts = "a,b,c".split(","); println(parts.len()); }'),
-        ("string_substring", 'fn main() { let s = "hello"; println(s.substring(0, 3)); }'),
+        (
+            "string_methods",
+            (
+                "fn main() {\n"
+                '  let s = "Hello World";\n'
+                "  println(s.len());\n"
+                "  println(s.to_lowercase());\n"
+                "  println(s.to_uppercase());\n"
+                "  println(s.trim());\n"
+                '  println(s.contains("World"));\n'
+                '  println(s.starts_with("Hello"));\n'
+                '  println(s.ends_with("World"));\n'
+                "}"
+            ),
+        ),
+        (
+            "string_replace",
+            'fn main() { let s = "hello world"; println(s.replace("world", "hew")); }',
+        ),
+        (
+            "string_split",
+            'fn main() { let parts = "a,b,c".split(","); println(parts.len()); }',
+        ),
+        (
+            "string_substring",
+            'fn main() { let s = "hello"; println(s.substring(0, 3)); }',
+        ),
         ("string_char_at", 'fn main() { let s = "hello"; println(s.char_at(0)); }'),
-        ("string_index_of", 'fn main() { let s = "hello world"; println(s.index_of("world")); }'),
-        ("vec_chain", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(3); v.push(1); v.push(2);\n"
-            "  println(v.len());\n"
-            "  println(v.get(0));\n"
-            "}"
-        )),
+        (
+            "string_index_of",
+            'fn main() { let s = "hello world"; println(s.index_of("world")); }',
+        ),
+        (
+            "vec_chain",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(3); v.push(1); v.push(2);\n"
+                "  println(v.len());\n"
+                "  println(v.get(0));\n"
+                "}"
+            ),
+        ),
     ]
     for label, src in cases:
         _report(run_hew(ctx, src, f"methods/{label}"))
@@ -2341,8 +3129,8 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
         main_stmts: list[str] = []
         int_vars: list[str] = []
         str_vars: list[str] = []
-        fn_names: list[tuple[str, int]] = []   # (name, nparams)
-        actor_names: list[tuple[str, str]] = [] # (ActorName, receive_fn_name)
+        fn_names: list[tuple[str, int]] = []  # (name, nparams)
+        actor_names: list[tuple[str, str]] = []  # (ActorName, receive_fn_name)
 
         # --- Helper functions ---
         num_fns = random.randint(0, 3)
@@ -2363,7 +3151,9 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
             nfields = random.randint(1, 3)
             fields = "\n".join(f"  let f{k}: i32;" for k in range(nfields))
             parts.append(f"type {tname} {{\n{fields}\n}}")
-            field_init = ", ".join(f"f{k}: {random.randint(0, 50)}" for k in range(nfields))
+            field_init = ", ".join(
+                f"f{k}: {random.randint(0, 50)}" for k in range(nfields)
+            )
             vname = f"obj_{i}"
             main_stmts.append(f"let {vname} = {tname} {{ {field_init} }};")
             main_stmts.append(f"println({vname}.f0);")
@@ -2375,7 +3165,7 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
             vdecls = "\n".join(f"  {v};" for v in variants)
             parts.append(f"enum {ename} {{\n{vdecls}\n}}")
             chosen = random.choice(variants)
-            main_stmts.append(f'let _ek = {ename}::{chosen};')
+            main_stmts.append(f"let _ek = {ename}::{chosen};")
 
         # --- Actor declarations ---
         if random.random() < 0.35:
@@ -2429,7 +3219,9 @@ def fuzz_random_well_typed(ctx: FuzzContext, n: int = 100) -> None:
                 tv = random.randint(0, 100)
                 fv = random.randint(0, 100)
                 vname = f"ie{len(int_vars)}"
-                main_stmts.append(f"let {vname} = if {a} {op} {b} {{ {tv} }} else {{ {fv} }};")
+                main_stmts.append(
+                    f"let {vname} = if {a} {op} {b} {{ {tv} }} else {{ {fv} }};"
+                )
                 int_vars.append(vname)
 
             elif choice == 6:
@@ -2494,261 +3286,344 @@ def fuzz_oracle_exec(ctx: FuzzContext) -> None:
         ("arith_neg", "fn main() { println(-5 + 3); }", "-2"),
         ("arith_mod", "fn main() { println(17 % 5); }", "2"),
         ("arith_div", "fn main() { println(15 / 4); }", "3"),
-
         # --- Variables ---
         ("var_let", "fn main() { let x = 42; println(x); }", "42"),
-        ("var_mut", (
-            "fn main() {\n"
-            "  var x = 1;\n"
-            "  x = x + 10;\n"
-            "  x = x * 2;\n"
-            "  println(x);\n"
-            "}"
-        ), "22"),
-
+        (
+            "var_mut",
+            (
+                "fn main() {\n"
+                "  var x = 1;\n"
+                "  x = x + 10;\n"
+                "  x = x * 2;\n"
+                "  println(x);\n"
+                "}"
+            ),
+            "22",
+        ),
         # --- Booleans ---
         ("bool_and", "fn main() { println(true && true); }", "true"),
         ("bool_and_false", "fn main() { println(true && false); }", "false"),
         ("bool_or", "fn main() { println(false || true); }", "true"),
         ("bool_not", "fn main() { println(!false); }", "true"),
-
         # --- Strings ---
         ("string_hello", 'fn main() { println("hello"); }', "hello"),
         ("string_concat", 'fn main() { println("ab" + "cd"); }', "abcd"),
-        ("string_interp", (
-            "fn main() {\n"
-            "  let x = 42;\n"
-            '  println(f"val={x}");\n'
-            "}"
-        ), "val=42"),
-        ("string_interp_expr", (
-            "fn main() {\n"
-            "  let a = 3;\n"
-            "  let b = 7;\n"
-            '  println(f"{a + b}");\n'
-            "}"
-        ), "10"),
-        ("string_len", (
-            "fn main() {\n"
-            '  let s = "hello";\n'
-            "  println(s.len());\n"
-            "}"
-        ), "5"),
-
+        (
+            "string_interp",
+            ('fn main() {\n  let x = 42;\n  println(f"val={x}");\n}'),
+            "val=42",
+        ),
+        (
+            "string_interp_expr",
+            ('fn main() {\n  let a = 3;\n  let b = 7;\n  println(f"{a + b}");\n}'),
+            "10",
+        ),
+        (
+            "string_len",
+            ('fn main() {\n  let s = "hello";\n  println(s.len());\n}'),
+            "5",
+        ),
         # --- Control flow ---
         ("if_true", "fn main() { if true { println(1); } }", "1"),
-        ("if_else", (
-            "fn main() { let x = if 3 > 5 { 10 } else { 20 }; println(x); }"
-        ), "20"),
-        ("while_sum", (
-            "fn main() {\n"
-            "  var i = 0; var s = 0;\n"
-            "  while i < 5 { s = s + i; i = i + 1; }\n"
-            "  println(s);\n"
-            "}"
-        ), "10"),
-        ("while_break", (
-            "fn main() {\n"
-            "  var i = 0;\n"
-            "  while true { if i >= 3 { break; } i = i + 1; }\n"
-            "  println(i);\n"
-            "}"
-        ), "3"),
-        ("while_continue", (
-            "fn main() {\n"
-            "  var i = 0; var s = 0;\n"
-            "  while i < 6 {\n"
-            "    i = i + 1;\n"
-            "    if i == 3 { continue; }\n"
-            "    s = s + i;\n"
-            "  }\n"
-            "  println(s);\n"
-            "}"
-        ), "18"),  # 1+2+4+5+6 = 18
-        ("for_range", (
-            "fn main() {\n"
-            "  var s = 0;\n"
-            "  for i in 0..5 { s = s + i; }\n"
-            "  println(s);\n"
-            "}"
-        ), "10"),
-        ("loop_break", (
-            "fn main() {\n"
-            "  var c = 0;\n"
-            "  loop { c = c + 1; if c == 5 { break; } }\n"
-            "  println(c);\n"
-            "}"
-        ), "5"),
-
+        (
+            "if_else",
+            ("fn main() { let x = if 3 > 5 { 10 } else { 20 }; println(x); }"),
+            "20",
+        ),
+        (
+            "while_sum",
+            (
+                "fn main() {\n"
+                "  var i = 0; var s = 0;\n"
+                "  while i < 5 { s = s + i; i = i + 1; }\n"
+                "  println(s);\n"
+                "}"
+            ),
+            "10",
+        ),
+        (
+            "while_break",
+            (
+                "fn main() {\n"
+                "  var i = 0;\n"
+                "  while true { if i >= 3 { break; } i = i + 1; }\n"
+                "  println(i);\n"
+                "}"
+            ),
+            "3",
+        ),
+        (
+            "while_continue",
+            (
+                "fn main() {\n"
+                "  var i = 0; var s = 0;\n"
+                "  while i < 6 {\n"
+                "    i = i + 1;\n"
+                "    if i == 3 { continue; }\n"
+                "    s = s + i;\n"
+                "  }\n"
+                "  println(s);\n"
+                "}"
+            ),
+            "18",
+        ),  # 1+2+4+5+6 = 18
+        (
+            "for_range",
+            (
+                "fn main() {\n"
+                "  var s = 0;\n"
+                "  for i in 0..5 { s = s + i; }\n"
+                "  println(s);\n"
+                "}"
+            ),
+            "10",
+        ),
+        (
+            "loop_break",
+            (
+                "fn main() {\n"
+                "  var c = 0;\n"
+                "  loop { c = c + 1; if c == 5 { break; } }\n"
+                "  println(c);\n"
+                "}"
+            ),
+            "5",
+        ),
         # --- Match ---
-        ("match_int", (
-            "fn main() {\n"
-            "  let x = 2;\n"
-            "  let r = match x { 1 => 10, 2 => 20, 3 => 30, _ => 0 };\n"
-            "  println(r);\n"
-            "}"
-        ), "20"),
-        ("match_wildcard", (
-            "fn main() {\n"
-            "  let x = 99;\n"
-            "  let r = match x { 1 => 10, _ => -1 };\n"
-            "  println(r);\n"
-            "}"
-        ), "-1"),
-        ("match_block", (
-            "fn main() {\n"
-            "  let x = 1;\n"
-            "  let r = match x {\n"
-            "    1 => { let a = 10; let b = 20; a + b },\n"
-            "    _ => 0,\n"
-            "  };\n"
-            "  println(r);\n"
-            "}"
-        ), "30"),
-
+        (
+            "match_int",
+            (
+                "fn main() {\n"
+                "  let x = 2;\n"
+                "  let r = match x { 1 => 10, 2 => 20, 3 => 30, _ => 0 };\n"
+                "  println(r);\n"
+                "}"
+            ),
+            "20",
+        ),
+        (
+            "match_wildcard",
+            (
+                "fn main() {\n"
+                "  let x = 99;\n"
+                "  let r = match x { 1 => 10, _ => -1 };\n"
+                "  println(r);\n"
+                "}"
+            ),
+            "-1",
+        ),
+        (
+            "match_block",
+            (
+                "fn main() {\n"
+                "  let x = 1;\n"
+                "  let r = match x {\n"
+                "    1 => { let a = 10; let b = 20; a + b },\n"
+                "    _ => 0,\n"
+                "  };\n"
+                "  println(r);\n"
+                "}"
+            ),
+            "30",
+        ),
         # --- Functions ---
-        ("fn_basic", (
-            "fn add(a: i32, b: i32) -> i32 { a + b }\n"
-            "fn main() { println(add(3, 4)); }"
-        ), "7"),
-        ("fn_recursive", (
-            "fn fib(n: i32) -> i32 {\n"
-            "  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n"
-            "}\n"
-            "fn main() { println(fib(10)); }"
-        ), "55"),
-        ("fn_mutual_recursion", (
-            "fn is_even(n: i32) -> bool { if n == 0 { true } else { is_odd(n - 1) } }\n"
-            "fn is_odd(n: i32) -> bool { if n == 0 { false } else { is_even(n - 1) } }\n"
-            "fn main() { println(is_even(10)); }"
-        ), "true"),
-        ("fn_early_return", (
-            "fn first_pos(a: i32, b: i32, c: i32) -> i32 {\n"
-            "  if a > 0 { return a; }\n"
-            "  if b > 0 { return b; }\n"
-            "  c\n"
-            "}\n"
-            "fn main() { println(first_pos(-1, -2, 7)); }"
-        ), "7"),
-        ("fn_nested_calls", (
-            "fn f(x: i32) -> i32 { x + 1 }\n"
-            "fn g(x: i32) -> i32 { f(x * 2) }\n"
-            "fn h(x: i32) -> i32 { g(x + 3) }\n"
-            "fn main() { println(h(5)); }"  # (5+3)*2+1 = 17
-        ), "17"),
-
+        (
+            "fn_basic",
+            (
+                "fn add(a: i32, b: i32) -> i32 { a + b }\n"
+                "fn main() { println(add(3, 4)); }"
+            ),
+            "7",
+        ),
+        (
+            "fn_recursive",
+            (
+                "fn fib(n: i32) -> i32 {\n"
+                "  if n <= 1 { n } else { fib(n - 1) + fib(n - 2) }\n"
+                "}\n"
+                "fn main() { println(fib(10)); }"
+            ),
+            "55",
+        ),
+        (
+            "fn_mutual_recursion",
+            (
+                "fn is_even(n: i32) -> bool { if n == 0 { true } else { is_odd(n - 1) } }\n"
+                "fn is_odd(n: i32) -> bool { if n == 0 { false } else { is_even(n - 1) } }\n"
+                "fn main() { println(is_even(10)); }"
+            ),
+            "true",
+        ),
+        (
+            "fn_early_return",
+            (
+                "fn first_pos(a: i32, b: i32, c: i32) -> i32 {\n"
+                "  if a > 0 { return a; }\n"
+                "  if b > 0 { return b; }\n"
+                "  c\n"
+                "}\n"
+                "fn main() { println(first_pos(-1, -2, 7)); }"
+            ),
+            "7",
+        ),
+        (
+            "fn_nested_calls",
+            (
+                "fn f(x: i32) -> i32 { x + 1 }\n"
+                "fn g(x: i32) -> i32 { f(x * 2) }\n"
+                "fn h(x: i32) -> i32 { g(x + 3) }\n"
+                "fn main() { println(h(5)); }"  # (5+3)*2+1 = 17
+            ),
+            "17",
+        ),
         # --- Closures ---
-        ("closure_basic", (
-            "fn main() {\n"
-            "  let double = (x) => x * 2;\n"
-            "  println(double(21));\n"
-            "}"
-        ), "42"),
-        ("closure_capture", (
-            "fn main() {\n"
-            "  let offset = 100;\n"
-            "  let add_offset = (x) => x + offset;\n"
-            "  println(add_offset(5));\n"
-            "}"
-        ), "105"),
-        ("closure_multi_capture", (
-            "fn main() {\n"
-            "  let a = 3;\n"
-            "  let b = 7;\n"
-            "  let sum_with = (c) => a + b + c;\n"
-            "  println(sum_with(10));\n"
-            "}"
-        ), "20"),
-
+        (
+            "closure_basic",
+            ("fn main() {\n  let double = (x) => x * 2;\n  println(double(21));\n}"),
+            "42",
+        ),
+        (
+            "closure_capture",
+            (
+                "fn main() {\n"
+                "  let offset = 100;\n"
+                "  let add_offset = (x) => x + offset;\n"
+                "  println(add_offset(5));\n"
+                "}"
+            ),
+            "105",
+        ),
+        (
+            "closure_multi_capture",
+            (
+                "fn main() {\n"
+                "  let a = 3;\n"
+                "  let b = 7;\n"
+                "  let sum_with = (c) => a + b + c;\n"
+                "  println(sum_with(10));\n"
+                "}"
+            ),
+            "20",
+        ),
         # --- Type declarations ---
-        ("type_basic", (
-            "type Point { x: i32; y: i32; }\n"
-            "fn main() {\n"
-            "  let p = Point { x: 3, y: 4 };\n"
-            "  println(p.x + p.y);\n"
-            "}"
-        ), "7"),
-
+        (
+            "type_basic",
+            (
+                "type Point { x: i32; y: i32; }\n"
+                "fn main() {\n"
+                "  let p = Point { x: 3, y: 4 };\n"
+                "  println(p.x + p.y);\n"
+                "}"
+            ),
+            "7",
+        ),
         # --- Vec ---
-        ("vec_push_len", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(10); v.push(20); v.push(30);\n"
-            "  println(v.len());\n"
-            "}"
-        ), "3"),
-        ("vec_get", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(42);\n"
-            "  println(v.get(0));\n"
-            "}"
-        ), "42"),
-        ("vec_pop", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  let last = v.pop();\n"
-            "  println(last);\n"
-            "  println(v.len());\n"
-            "}"
-        ), "3\n2"),
-
+        (
+            "vec_push_len",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(10); v.push(20); v.push(30);\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+            "3",
+        ),
+        (
+            "vec_get",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(42);\n"
+                "  println(v.get(0));\n"
+                "}"
+            ),
+            "42",
+        ),
+        (
+            "vec_pop",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  let last = v.pop();\n"
+                "  println(last);\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+            "3\n2",
+        ),
         # --- Actors ---
-        ("actor_basic", (
-            "actor Counter {\n"
-            "  let count: i32;\n"
-            "  receive fn inc(n: i32) {\n"
-            "    self.count = self.count + n;\n"
-            "    println(self.count);\n"
-            "  }\n"
-            "}\n"
-            "fn main() {\n"
-            "  let c = spawn Counter;\n"
-            "  c.inc(5);\n"
-            "  c.inc(3);\n"
-            "  sleep_ms(200);\n"
-            "}"
-        ), "5\n8"),
-        ("actor_query", (
-            "actor Acc {\n"
-            "  let val: i32;\n"
-            "  receive fn add(n: i32) { self.val = self.val + n; }\n"
-            "  receive fn get() -> i32 { self.val }\n"
-            "}\n"
-            "fn main() {\n"
-            "  let a = spawn Acc;\n"
-            "  a.add(10);\n"
-            "  a.add(20);\n"
-            "  let v = a.get();\n"
-            "  println(v);\n"
-            "  sleep_ms(100);\n"
-            "}"
-        ), "30"),
-
+        (
+            "actor_basic",
+            (
+                "actor Counter {\n"
+                "  let count: i32;\n"
+                "  receive fn inc(n: i32) {\n"
+                "    self.count = self.count + n;\n"
+                "    println(self.count);\n"
+                "  }\n"
+                "}\n"
+                "fn main() {\n"
+                "  let c = spawn Counter;\n"
+                "  c.inc(5);\n"
+                "  c.inc(3);\n"
+                "  sleep_ms(200);\n"
+                "}"
+            ),
+            "5\n8",
+        ),
+        (
+            "actor_query",
+            (
+                "actor Acc {\n"
+                "  let val: i32;\n"
+                "  receive fn add(n: i32) { self.val = self.val + n; }\n"
+                "  receive fn get() -> i32 { self.val }\n"
+                "}\n"
+                "fn main() {\n"
+                "  let a = spawn Acc;\n"
+                "  a.add(10);\n"
+                "  a.add(20);\n"
+                "  let v = a.get();\n"
+                "  println(v);\n"
+                "  sleep_ms(100);\n"
+                "}"
+            ),
+            "30",
+        ),
         # --- Comparisons ---
-        ("cmp_chain", (
-            "fn main() {\n"
-            "  println(1 < 2);\n"
-            "  println(2 > 3);\n"
-            "  println(5 == 5);\n"
-            "  println(5 != 6);\n"
-            "  println(3 <= 3);\n"
-            "  println(4 >= 5);\n"
-            "}"
-        ), "true\nfalse\ntrue\ntrue\ntrue\nfalse"),
-
+        (
+            "cmp_chain",
+            (
+                "fn main() {\n"
+                "  println(1 < 2);\n"
+                "  println(2 > 3);\n"
+                "  println(5 == 5);\n"
+                "  println(5 != 6);\n"
+                "  println(3 <= 3);\n"
+                "  println(4 >= 5);\n"
+                "}"
+            ),
+            "true\nfalse\ntrue\ntrue\ntrue\nfalse",
+        ),
         # --- Complex expressions ---
-        ("expr_nested_parens", (
-            "fn main() { println(((2 + 3) * (4 - 1)) / 3); }"
-        ), "5"),
-        ("expr_if_in_let", (
-            "fn main() {\n"
-            "  let a = 10;\n"
-            "  let b = if a > 5 { a * 2 } else { a };\n"
-            "  println(b);\n"
-            "}"
-        ), "20"),
+        (
+            "expr_nested_parens",
+            ("fn main() { println(((2 + 3) * (4 - 1)) / 3); }"),
+            "5",
+        ),
+        (
+            "expr_if_in_let",
+            (
+                "fn main() {\n"
+                "  let a = 10;\n"
+                "  let b = if a > 5 { a * 2 } else { a };\n"
+                "  println(b);\n"
+                "}"
+            ),
+            "20",
+        ),
     ]
 
     for label, src, expected in programs:
@@ -2766,71 +3641,111 @@ def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
         ("arith", "fn main() { println(2 + 3 * 4); }"),
         ("string", 'fn main() { println("hello"); }'),
         ("interp", 'fn main() { let x = 42; println(f"val={x}"); }'),
-        ("for_loop", "fn main() { var s = 0; for i in 0..10 { s = s + i; } println(s); }"),
-        ("while_loop", "fn main() { var x = 1; while x < 100 { x = x * 2; } println(x); }"),
-        ("match_expr", "fn main() { let r = match 2 { 1 => 10, 2 => 20, _ => 0 }; println(r); }"),
+        (
+            "for_loop",
+            "fn main() { var s = 0; for i in 0..10 { s = s + i; } println(s); }",
+        ),
+        (
+            "while_loop",
+            "fn main() { var x = 1; while x < 100 { x = x * 2; } println(x); }",
+        ),
+        (
+            "match_expr",
+            "fn main() { let r = match 2 { 1 => 10, 2 => 20, _ => 0 }; println(r); }",
+        ),
         ("if_expr", "fn main() { let x = if true { 1 } else { 0 }; println(x); }"),
-        ("fn_call", "fn add(a: i32, b: i32) -> i32 { a + b }\nfn main() { println(add(3, 4)); }"),
-        ("recursion", (
-            "fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\n"
-            "fn main() { println(fib(10)); }"
-        )),
+        (
+            "fn_call",
+            "fn add(a: i32, b: i32) -> i32 { a + b }\nfn main() { println(add(3, 4)); }",
+        ),
+        (
+            "recursion",
+            (
+                "fn fib(n: i32) -> i32 { if n <= 1 { n } else { fib(n-1) + fib(n-2) } }\n"
+                "fn main() { println(fib(10)); }"
+            ),
+        ),
         ("closure", "fn main() { let f = (x) => x * 2; println(f(21)); }"),
-        ("vec_ops", (
-            "fn main() {\n"
-            "  let v: Vec<i32> = Vec::new();\n"
-            "  v.push(1); v.push(2); v.push(3);\n"
-            "  println(v.len());\n"
-            "}"
-        )),
-        ("type_decl", (
-            "type Pt { x: i32; y: i32; }\n"
-            "fn main() { let p = Pt { x: 1, y: 2 }; println(p.x); }"
-        )),
-        ("enum_decl", (
-            "enum Dir { Up; Down; Left; Right; }\n"
-            "fn main() { let d = Dir::Up; println(0); }"
-        )),
-        ("actor", (
-            "actor Cnt {\n"
-            "  let v: i32;\n"
-            "  receive fn inc(n: i32) { self.v = self.v + n; }\n"
-            "  receive fn get() -> i32 { self.v }\n"
-            "}\n"
-            "fn main() { let c = spawn Cnt; c.inc(1); sleep_ms(50); }"
-        )),
+        (
+            "vec_ops",
+            (
+                "fn main() {\n"
+                "  let v: Vec<i32> = Vec::new();\n"
+                "  v.push(1); v.push(2); v.push(3);\n"
+                "  println(v.len());\n"
+                "}"
+            ),
+        ),
+        (
+            "type_decl",
+            (
+                "type Pt { x: i32; y: i32; }\n"
+                "fn main() { let p = Pt { x: 1, y: 2 }; println(p.x); }"
+            ),
+        ),
+        (
+            "enum_decl",
+            (
+                "enum Dir { Up; Down; Left; Right; }\n"
+                "fn main() { let d = Dir::Up; println(0); }"
+            ),
+        ),
+        (
+            "actor",
+            (
+                "actor Cnt {\n"
+                "  let v: i32;\n"
+                "  receive fn inc(n: i32) { self.v = self.v + n; }\n"
+                "  receive fn get() -> i32 { self.v }\n"
+                "}\n"
+                "fn main() { let c = spawn Cnt; c.inc(1); sleep_ms(50); }"
+            ),
+        ),
         ("bool_logic", "fn main() { println(true && false || true); }"),
-        ("early_return", (
-            "fn check(n: i32) -> i32 { if n < 0 { return -1; } n * 2 }\n"
-            "fn main() { println(check(-5)); println(check(3)); }"
-        )),
-        ("nested_match", (
-            "fn main() {\n"
-            "  let x = 1;\n"
-            "  let y = 2;\n"
-            "  let r = match x {\n"
-            "    1 => match y { 2 => 100, _ => 0 },\n"
-            "    _ => -1,\n"
-            "  };\n"
-            "  println(r);\n"
-            "}"
-        )),
-        ("var_mutation", (
-            "fn main() { var x = 0; x = x + 1; x = x + 2; x = x + 3; println(x); }"
-        )),
-        ("string_ops", (
-            "fn main() {\n"
-            '  let s = "hello";\n'
-            "  println(s.len());\n"
-            '  println(s + " world");\n'
-            "}"
-        )),
-        ("multi_fn", (
-            "fn a(x: i32) -> i32 { x + 1 }\n"
-            "fn b(x: i32) -> i32 { a(x) * 2 }\n"
-            "fn c(x: i32) -> i32 { b(x) + a(x) }\n"
-            "fn main() { println(c(5)); }"
-        )),
+        (
+            "early_return",
+            (
+                "fn check(n: i32) -> i32 { if n < 0 { return -1; } n * 2 }\n"
+                "fn main() { println(check(-5)); println(check(3)); }"
+            ),
+        ),
+        (
+            "nested_match",
+            (
+                "fn main() {\n"
+                "  let x = 1;\n"
+                "  let y = 2;\n"
+                "  let r = match x {\n"
+                "    1 => match y { 2 => 100, _ => 0 },\n"
+                "    _ => -1,\n"
+                "  };\n"
+                "  println(r);\n"
+                "}"
+            ),
+        ),
+        (
+            "var_mutation",
+            ("fn main() { var x = 0; x = x + 1; x = x + 2; x = x + 3; println(x); }"),
+        ),
+        (
+            "string_ops",
+            (
+                "fn main() {\n"
+                '  let s = "hello";\n'
+                "  println(s.len());\n"
+                '  println(s + " world");\n'
+                "}"
+            ),
+        ),
+        (
+            "multi_fn",
+            (
+                "fn a(x: i32) -> i32 { x + 1 }\n"
+                "fn b(x: i32) -> i32 { a(x) * 2 }\n"
+                "fn c(x: i32) -> i32 { b(x) + a(x) }\n"
+                "fn main() { println(c(5)); }"
+            ),
+        ),
     ]
 
     # Also generate randomized programs for broader coverage
@@ -2854,9 +3769,13 @@ def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
                 stmts.append(f"for _i in 0..{random.randint(1, 3)} {{ println(1); }}")
             elif c == 3:
                 v = random.randint(0, 3)
-                stmts.append(f"let m{len(stmts)} = match {v} {{ 0 => 10, 1 => 20, _ => 0 }};")
+                stmts.append(
+                    f"let m{len(stmts)} = match {v} {{ 0 => 10, 1 => 20, _ => 0 }};"
+                )
             else:
-                stmts.append(f"var w{len(stmts)} = 0; while w{len(stmts)} < {random.randint(1, 3)} {{ w{len(stmts)} = w{len(stmts)} + 1; }}")
+                stmts.append(
+                    f"var w{len(stmts)} = 0; while w{len(stmts)} < {random.randint(1, 3)} {{ w{len(stmts)} = w{len(stmts)} + 1; }}"
+                )
 
         body = "\n  ".join(stmts)
         src = "\n".join(fns) + f"\nfn main() {{\n  {body}\n}}"
@@ -2866,63 +3785,64 @@ def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
         for flag in ("--emit-mlir", "--emit-llvm"):
             _report(run_emit_hew(ctx, src, f"emit_ir/{label}", flag))
 
+
 CATEGORIES: dict[str, tuple[str, object]] = {
     # --- Original categories ---
-    "empty":         ("Empty and near-empty inputs",            fuzz_empty),
-    "unicode":       ("Unicode edge cases",                     fuzz_unicode),
-    "types":         ("Type system edge cases",                 fuzz_types),
-    "syntax":        ("Syntax torture",                         fuzz_syntax),
-    "actors":        ("Actor edge cases",                       fuzz_actors),
-    "interpolation": ("String interpolation edge cases",        fuzz_interpolation),
-    "scope":         ("Scope and closure edge cases",           fuzz_scope),
-    "deep":          ("Deep nesting stress tests",              fuzz_deep),
-    "pathological":  ("Pathological patterns",                  fuzz_pathological),
-    "boundary":      ("Numeric boundary values",                fuzz_boundary),
-    "strings":       ("String edge cases",                      fuzz_strings),
-    "control_flow":  ("Control flow edge cases",                fuzz_control_flow),
-    "malformed":     ("Malformed constructs",                   fuzz_malformed),
-    "random":        ("Random generated programs",              fuzz_random),
-    "mutations":     ("Mutated valid programs",                 fuzz_mutations),
-    "garbage":       ("Random printable garbage",               fuzz_garbage),
-    "binary":        ("Binary / injected data",                 fuzz_binary),
+    "empty": ("Empty and near-empty inputs", fuzz_empty),
+    "unicode": ("Unicode edge cases", fuzz_unicode),
+    "types": ("Type system edge cases", fuzz_types),
+    "syntax": ("Syntax torture", fuzz_syntax),
+    "actors": ("Actor edge cases", fuzz_actors),
+    "interpolation": ("String interpolation edge cases", fuzz_interpolation),
+    "scope": ("Scope and closure edge cases", fuzz_scope),
+    "deep": ("Deep nesting stress tests", fuzz_deep),
+    "pathological": ("Pathological patterns", fuzz_pathological),
+    "boundary": ("Numeric boundary values", fuzz_boundary),
+    "strings": ("String edge cases", fuzz_strings),
+    "control_flow": ("Control flow edge cases", fuzz_control_flow),
+    "malformed": ("Malformed constructs", fuzz_malformed),
+    "random": ("Random generated programs", fuzz_random),
+    "mutations": ("Mutated valid programs", fuzz_mutations),
+    "garbage": ("Random printable garbage", fuzz_garbage),
+    "binary": ("Binary / injected data", fuzz_binary),
     # --- Language feature coverage ---
-    "traits":        ("Trait declarations and impls",           fuzz_traits),
-    "enums":         ("Enum declarations and matching",         fuzz_enums),
-    "structs":       ("Struct init, fields, methods",           fuzz_structs),
-    "patterns":      ("Pattern matching (guards, or, destruct)",fuzz_patterns),
-    "async_await":   ("Async/await and timeouts",               fuzz_async_await),
-    "defer":         ("Defer statement ordering",               fuzz_defer),
-    "generators":    ("Generator functions and yield",          fuzz_generators),
-    "operators":     ("All operators and precedence",           fuzz_operators),
-    "imports":       ("Import and module system",               fuzz_imports),
-    "wire_types":    ("Wire struct/enum serialization",         fuzz_wire_types),
-    "labels":        ("Labeled loops with break/continue",      fuzz_labels),
-    "ffi":           ("FFI / extern declarations",              fuzz_ffi),
-    "attributes":    ("Attribute annotations",                  fuzz_attributes),
-    "visibility":    ("Visibility modifiers",                   fuzz_visibility),
-    "tuples":        ("Tuple types and destructuring",          fuzz_tuples),
-    "dur_regex":     ("Duration literals and regex patterns",   fuzz_duration_regex),
-    "unsafe":        ("Unsafe blocks and raw pointers",         fuzz_unsafe_blocks),
-    "concurrency":   ("Scope, select, join, cooperate",         fuzz_scope_concurrency),
-    "supervisors":   ("Supervisor declarations",                fuzz_supervisor),
-    "mailbox":       ("Actor mailbox configurations",           fuzz_mailbox),
-    "lifecycle":     ("Actor lifecycle (init, stop, link)",     fuzz_actor_lifecycle),
-    "try_op":        ("Postfix try (?) operator",               fuzz_try_operator),
-    "methods":       ("Method chaining patterns",               fuzz_method_chains),
-    "collections":   ("Deep collection usage",                  fuzz_collections_deep),
+    "traits": ("Trait declarations and impls", fuzz_traits),
+    "enums": ("Enum declarations and matching", fuzz_enums),
+    "structs": ("Struct init, fields, methods", fuzz_structs),
+    "patterns": ("Pattern matching (guards, or, destruct)", fuzz_patterns),
+    "async_await": ("Async/await and timeouts", fuzz_async_await),
+    "defer": ("Defer statement ordering", fuzz_defer),
+    "generators": ("Generator functions and yield", fuzz_generators),
+    "operators": ("All operators and precedence", fuzz_operators),
+    "imports": ("Import and module system", fuzz_imports),
+    "wire_types": ("Wire struct/enum serialization", fuzz_wire_types),
+    "labels": ("Labeled loops with break/continue", fuzz_labels),
+    "ffi": ("FFI / extern declarations", fuzz_ffi),
+    "attributes": ("Attribute annotations", fuzz_attributes),
+    "visibility": ("Visibility modifiers", fuzz_visibility),
+    "tuples": ("Tuple types and destructuring", fuzz_tuples),
+    "dur_regex": ("Duration literals and regex patterns", fuzz_duration_regex),
+    "unsafe": ("Unsafe blocks and raw pointers", fuzz_unsafe_blocks),
+    "concurrency": ("Scope, select, join, cooperate", fuzz_scope_concurrency),
+    "supervisors": ("Supervisor declarations", fuzz_supervisor),
+    "mailbox": ("Actor mailbox configurations", fuzz_mailbox),
+    "lifecycle": ("Actor lifecycle (init, stop, link)", fuzz_actor_lifecycle),
+    "try_op": ("Postfix try (?) operator", fuzz_try_operator),
+    "methods": ("Method chaining patterns", fuzz_method_chains),
+    "collections": ("Deep collection usage", fuzz_collections_deep),
     # --- Compiler testing techniques ---
-    "differential":  ("Differential testing (check vs build)",  fuzz_differential),
-    "cross_feature": ("Cross-feature interactions",             fuzz_cross_feature),
-    "error_cascade": ("Multiple errors in one file",            fuzz_error_cascade),
-    "type_infer":    ("Type inference stress tests",            fuzz_type_inference),
-    "recursion":     ("Recursive patterns",                     fuzz_recursion),
-    "oracle":        ("Semantic oracle (known-good programs)",  fuzz_semantic_oracle),
-    "comments":      ("Comment placement edge cases",           fuzz_comment_placement),
-    "whitespace":    ("Whitespace sensitivity",                 fuzz_whitespace),
-    "well_typed":    ("Random well-typed programs (CSmith-like)", fuzz_random_well_typed),
+    "differential": ("Differential testing (check vs build)", fuzz_differential),
+    "cross_feature": ("Cross-feature interactions", fuzz_cross_feature),
+    "error_cascade": ("Multiple errors in one file", fuzz_error_cascade),
+    "type_infer": ("Type inference stress tests", fuzz_type_inference),
+    "recursion": ("Recursive patterns", fuzz_recursion),
+    "oracle": ("Semantic oracle (known-good programs)", fuzz_semantic_oracle),
+    "comments": ("Comment placement edge cases", fuzz_comment_placement),
+    "whitespace": ("Whitespace sensitivity", fuzz_whitespace),
+    "well_typed": ("Random well-typed programs (CSmith-like)", fuzz_random_well_typed),
     # --- Pipeline depth testing ---
-    "oracle_exec":   ("Execution oracle (build+run+verify output)", fuzz_oracle_exec),
-    "emit_ir":       ("IR lowering stress (--emit-mlir/--emit-llvm)", fuzz_emit_ir),
+    "oracle_exec": ("Execution oracle (build+run+verify output)", fuzz_oracle_exec),
+    "emit_ir": ("IR lowering stress (--emit-mlir/--emit-llvm)", fuzz_emit_ir),
 }
 
 
@@ -2930,24 +3850,40 @@ CATEGORIES: dict[str, tuple[str, object]] = {
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generative fuzzing of the Hew compiler (no external deps)."
     )
-    parser.add_argument("-n", type=int, default=100,
-                        help="Number of random/mutant programs per category (default: 100)")
-    parser.add_argument("-t", type=int, default=10,
-                        help="Timeout in seconds per compile (default: 10)")
-    parser.add_argument("--seed", type=int, default=None,
-                        help="Random seed for reproducibility")
-    parser.add_argument("--hew", type=str, default=None,
-                        help="Path to hew binary (default: target/debug/hew)")
-    parser.add_argument("--category", type=str, default=None,
-                        help="Run only a specific category")
-    parser.add_argument("--list-categories", action="store_true",
-                        help="List available fuzz categories and exit")
-    parser.add_argument("-k", action="store_true",
-                        help="Keep workdir with failing inputs")
+    parser.add_argument(
+        "-n",
+        type=int,
+        default=100,
+        help="Number of random/mutant programs per category (default: 100)",
+    )
+    parser.add_argument(
+        "-t", type=int, default=10, help="Timeout in seconds per compile (default: 10)"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--hew",
+        type=str,
+        default=None,
+        help="Path to hew binary (default: target/debug/hew)",
+    )
+    parser.add_argument(
+        "--category", type=str, default=None, help="Run only a specific category"
+    )
+    parser.add_argument(
+        "--list-categories",
+        action="store_true",
+        help="List available fuzz categories and exit",
+    )
+    parser.add_argument(
+        "-k", action="store_true", help="Keep workdir with failing inputs"
+    )
     args = parser.parse_args()
 
     if args.list_categories:
@@ -2957,7 +3893,9 @@ def main() -> None:
         sys.exit(0)
 
     if args.category and args.category not in CATEGORIES:
-        sys.exit(f"Unknown category '{args.category}'. Use --list-categories to see options.")
+        sys.exit(
+            f"Unknown category '{args.category}'. Use --list-categories to see options."
+        )
 
     root = find_repo_root()
 
@@ -2966,7 +3904,9 @@ def main() -> None:
     else:
         hew = root / "target" / "debug" / "hew"
     if not hew.exists():
-        sys.exit(f"ERROR: hew binary not found at {hew}\n  Build it with: cargo build -p hew-cli")
+        sys.exit(
+            f"ERROR: hew binary not found at {hew}\n  Build it with: cargo build -p hew-cli"
+        )
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -2990,6 +3930,7 @@ def main() -> None:
         print(f"--- {desc} ---")
         try:
             import inspect
+
             sig = inspect.signature(func)
             if "n" in sig.parameters:
                 func(ctx, n=args.n)

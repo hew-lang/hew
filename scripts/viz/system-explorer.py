@@ -72,19 +72,48 @@ class AskEdge:
 
 from enum import Enum, auto
 
-NOISE_OPS = frozenset([
-    "arith.constant", "arith.addi", "arith.subi", "arith.muli", "arith.divsi",
-    "arith.remsi", "arith.extsi", "arith.trunci", "arith.andi", "arith.ori",
-    "arith.xori", "arith.addf", "arith.subf", "arith.mulf", "arith.divf",
-    "arith.negf", "arith.sitofp", "arith.fptosi",
-    "llvm.load", "llvm.store", "llvm.getelementptr", "llvm.insertvalue",
-    "llvm.extractvalue", "llvm.alloca", "llvm.bitcast",
-    "memref.alloca", "memref.store", "memref.load",
-    "hew.constant", "hew.bitcast", "hew.drop", "hew.to_string",
-    "hew.sched.init", "hew.sched.shutdown",
-    "hew.pack_args", "hew.func_ptr",
-    "scf.yield", "scf.condition",
-])
+NOISE_OPS = frozenset(
+    [
+        "arith.constant",
+        "arith.addi",
+        "arith.subi",
+        "arith.muli",
+        "arith.divsi",
+        "arith.remsi",
+        "arith.extsi",
+        "arith.trunci",
+        "arith.andi",
+        "arith.ori",
+        "arith.xori",
+        "arith.addf",
+        "arith.subf",
+        "arith.mulf",
+        "arith.divf",
+        "arith.negf",
+        "arith.sitofp",
+        "arith.fptosi",
+        "llvm.load",
+        "llvm.store",
+        "llvm.getelementptr",
+        "llvm.insertvalue",
+        "llvm.extractvalue",
+        "llvm.alloca",
+        "llvm.bitcast",
+        "memref.alloca",
+        "memref.store",
+        "memref.load",
+        "hew.constant",
+        "hew.bitcast",
+        "hew.drop",
+        "hew.to_string",
+        "hew.sched.init",
+        "hew.sched.shutdown",
+        "hew.pack_args",
+        "hew.func_ptr",
+        "scf.yield",
+        "scf.condition",
+    ]
+)
 
 
 def _cfg_classify_op(line: str) -> str | None:
@@ -92,7 +121,7 @@ def _cfg_classify_op(line: str) -> str | None:
     stripped = line.strip()
     if stripped.startswith(("scf.if", "scf.while", "scf.for", "} else {")):
         return None
-    op_match = re.match(r'(?:%\S+\s*=\s*)?([a-zA-Z_][a-zA-Z0-9_.]*)', stripped)
+    op_match = re.match(r"(?:%\S+\s*=\s*)?([a-zA-Z_][a-zA-Z0-9_.]*)", stripped)
     if not op_match:
         return None
     op = op_match.group(1)
@@ -112,12 +141,16 @@ def _cfg_classify_op(line: str) -> str | None:
         return op.split(".")[-1]
     if op == "hew.actor_self":
         return "self_ref"
-    if op in ("hew.actor_link", "hew.actor_unlink",
-              "hew.actor_monitor", "hew.actor_demonitor"):
+    if op in (
+        "hew.actor_link",
+        "hew.actor_unlink",
+        "hew.actor_monitor",
+        "hew.actor_demonitor",
+    ):
         return op.replace("hew.actor_", "")
     # ── Receive / scheduling
     if op == "hew.receive":
-        m = re.search(r'handlers\s*=\s*\[([^\]]*)\]', stripped)
+        m = re.search(r"handlers\s*=\s*\[([^\]]*)\]", stripped)
         if m:
             handlers = [h.strip().lstrip("@") for h in m.group(1).split(",")]
             return "receive [" + ", ".join(handlers) + "]"
@@ -184,13 +217,13 @@ def _cfg_classify_op(line: str) -> str | None:
         return op.replace("hew.", "")
     # ── Runtime / misc
     if op == "hew.runtime_call":
-        m = re.search(r'@(\w+)', stripped)
+        m = re.search(r"@(\w+)", stripped)
         return f"runtime: {m.group(1)}" if m else "runtime: ?"
     if op == "hew.cast":
         return "cast"
     # ── Function calls
     if op in ("func.call", "call"):
-        m = re.search(r'@(\w+)', stripped)
+        m = re.search(r"@(\w+)", stripped)
         if m:
             name = m.group(1)
             if name.startswith("hew_"):
@@ -250,14 +283,24 @@ class _CfgBuilder:
         self._counter += 1
         return f"bb{self._counter}"
 
-    def add_block(self, label: str, kind: _CfgBlockKind = _CfgBlockKind.NORMAL) -> _CfgBlock:
+    def add_block(
+        self, label: str, kind: _CfgBlockKind = _CfgBlockKind.NORMAL
+    ) -> _CfgBlock:
         b = _CfgBlock(id=self._new_id(), label=label, kind=kind)
         self.blocks.append(b)
         return b
 
-    def add_edge(self, src: str, dst: str, label: str = "",
-                 color: str = "black", style: str = "solid") -> None:
-        self.edges.append(_CfgEdge(src=src, dst=dst, label=label, color=color, style=style))
+    def add_edge(
+        self,
+        src: str,
+        dst: str,
+        label: str = "",
+        color: str = "black",
+        style: str = "solid",
+    ) -> None:
+        self.edges.append(
+            _CfgEdge(src=src, dst=dst, label=label, color=color, style=style)
+        )
 
     def add_op(self, block: _CfgBlock, op: str) -> None:
         if op == "return":
@@ -325,7 +368,9 @@ def _cfg_parse_while(lines: list[str], start: int) -> tuple[list[str], list[str]
     return cond_lines, lines[body_start:], len(lines)
 
 
-def _cfg_parse_if_else(lines: list[str], start: int) -> tuple[list[str], list[str] | None, int]:
+def _cfg_parse_if_else(
+    lines: list[str], start: int
+) -> tuple[list[str], list[str] | None, int]:
     i = start
     depth = 0
     true_start = None
@@ -402,7 +447,9 @@ def _cfg_parse_if_else(lines: list[str], start: int) -> tuple[list[str], list[st
     return true_lines, false_lines, end_i
 
 
-def _cfg_process_block(builder: _CfgBuilder, lines: list[str], current: _CfgBlock) -> _CfgBlock | None:
+def _cfg_process_block(
+    builder: _CfgBuilder, lines: list[str], current: _CfgBlock
+) -> _CfgBlock | None:
     i = 0
     while i < len(lines):
         stripped = lines[i].strip()
@@ -422,7 +469,13 @@ def _cfg_process_block(builder: _CfgBuilder, lines: list[str], current: _CfgBloc
             builder.add_edge(loop_hdr.id, body_block.id, label="true", color="#2E7D32")
             body_exit = _cfg_process_block(builder, do_lines, body_block)
             if body_exit:
-                builder.add_edge(body_exit.id, loop_hdr.id, label="loop", color="#1565C0", style="dashed")
+                builder.add_edge(
+                    body_exit.id,
+                    loop_hdr.id,
+                    label="loop",
+                    color="#1565C0",
+                    style="dashed",
+                )
             after = builder.add_block("after loop", _CfgBlockKind.NORMAL)
             builder.add_edge(loop_hdr.id, after.id, label="false", color="#C62828")
             current = after
@@ -430,7 +483,7 @@ def _cfg_process_block(builder: _CfgBuilder, lines: list[str], current: _CfgBloc
             continue
 
         if stripped.startswith("scf.for"):
-            m = re.match(r'scf\.for\s+(%\w+)\s*=\s*(%\w+)\s+to\s+(%\w+)', stripped)
+            m = re.match(r"scf\.for\s+(%\w+)\s*=\s*(%\w+)\s+to\s+(%\w+)", stripped)
             lbl = f"for {m.group(1)}" if m else "for"
             for_body, end_i = _cfg_parse_braced(lines, i)
             loop_hdr = builder.add_block(lbl, _CfgBlockKind.LOOP_HEADER)
@@ -439,31 +492,43 @@ def _cfg_process_block(builder: _CfgBuilder, lines: list[str], current: _CfgBloc
             builder.add_edge(loop_hdr.id, body_block.id, label="true", color="#2E7D32")
             body_exit = _cfg_process_block(builder, for_body, body_block)
             if body_exit:
-                builder.add_edge(body_exit.id, loop_hdr.id, label="loop", color="#1565C0", style="dashed")
+                builder.add_edge(
+                    body_exit.id,
+                    loop_hdr.id,
+                    label="loop",
+                    color="#1565C0",
+                    style="dashed",
+                )
             after = builder.add_block("after for", _CfgBlockKind.NORMAL)
             builder.add_edge(loop_hdr.id, after.id, label="done", color="#C62828")
             current = after
             i = end_i
             continue
 
-        if stripped.startswith("scf.if") or re.match(r'%\S+\s*=\s*scf\.if', stripped):
+        if stripped.startswith("scf.if") or re.match(r"%\S+\s*=\s*scf\.if", stripped):
             true_lines, false_lines, end_i = _cfg_parse_if_else(lines, i)
             cond_block = builder.add_block("if", _CfgBlockKind.CONDITIONAL)
             builder.add_edge(current.id, cond_block.id)
             true_block = builder.add_block("then", _CfgBlockKind.NORMAL)
-            builder.add_edge(cond_block.id, true_block.id, label="true", color="#2E7D32")
+            builder.add_edge(
+                cond_block.id, true_block.id, label="true", color="#2E7D32"
+            )
             true_exit = _cfg_process_block(builder, true_lines, true_block)
             after = builder.add_block("after if", _CfgBlockKind.NORMAL)
             if true_exit:
                 builder.add_edge(true_exit.id, after.id)
             if false_lines is not None:
                 false_block = builder.add_block("else", _CfgBlockKind.NORMAL)
-                builder.add_edge(cond_block.id, false_block.id, label="false", color="#C62828")
+                builder.add_edge(
+                    cond_block.id, false_block.id, label="false", color="#C62828"
+                )
                 false_exit = _cfg_process_block(builder, false_lines, false_block)
                 if false_exit:
                     builder.add_edge(false_exit.id, after.id)
             else:
-                builder.add_edge(cond_block.id, after.id, label="false", color="#C62828")
+                builder.add_edge(
+                    cond_block.id, after.id, label="false", color="#C62828"
+                )
             current = after
             i = end_i
             continue
@@ -478,6 +543,7 @@ def _cfg_process_block(builder: _CfgBuilder, lines: list[str], current: _CfgBloc
 
 def _cfg_merge_true_false(edges: list[_CfgEdge]) -> tuple[list[_CfgEdge], bool]:
     from collections import defaultdict
+
     pair_labels: dict[tuple[str, str], list[int]] = defaultdict(list)
     for idx, e in enumerate(edges):
         pair_labels[(e.src, e.dst)].append(idx)
@@ -501,7 +567,9 @@ def _cfg_merge_true_false(edges: list[_CfgEdge]) -> tuple[list[_CfgEdge], bool]:
     return new_edges, True
 
 
-def _cfg_simplify(blocks: list[_CfgBlock], edges: list[_CfgEdge]) -> tuple[list[_CfgBlock], list[_CfgEdge]]:
+def _cfg_simplify(
+    blocks: list[_CfgBlock], edges: list[_CfgEdge]
+) -> tuple[list[_CfgBlock], list[_CfgEdge]]:
     changed = True
     while changed:
         changed = False
@@ -509,7 +577,11 @@ def _cfg_simplify(blocks: list[_CfgBlock], edges: list[_CfgEdge]) -> tuple[list[
         if merged:
             changed = True
         for b in list(blocks):
-            if b.ops or b.truncated or b.kind in (_CfgBlockKind.ENTRY, _CfgBlockKind.EXIT):
+            if (
+                b.ops
+                or b.truncated
+                or b.kind in (_CfgBlockKind.ENTRY, _CfgBlockKind.EXIT)
+            ):
                 continue
             outgoing = [e for e in edges if e.src == b.id]
             incoming = [e for e in edges if e.dst == b.id]
@@ -518,7 +590,15 @@ def _cfg_simplify(blocks: list[_CfgBlock], edges: list[_CfgEdge]) -> tuple[list[
                 new_edges = []
                 for e in edges:
                     if e.dst == b.id:
-                        new_edges.append(_CfgEdge(src=e.src, dst=target, label=e.label, color=e.color, style=e.style))
+                        new_edges.append(
+                            _CfgEdge(
+                                src=e.src,
+                                dst=target,
+                                label=e.label,
+                                color=e.color,
+                                style=e.style,
+                            )
+                        )
                     elif e.src == b.id:
                         pass
                     else:
@@ -533,10 +613,24 @@ def _cfg_simplify(blocks: list[_CfgBlock], edges: list[_CfgEdge]) -> tuple[list[
                 if len(true_edges) == 1 and len(false_edges) == 1:
                     pred = incoming[0].src
                     new_edges = [e for e in edges if e.src != b.id and e.dst != b.id]
-                    new_edges.append(_CfgEdge(src=pred, dst=true_edges[0].dst,
-                                              label="true", color=true_edges[0].color, style=true_edges[0].style))
-                    new_edges.append(_CfgEdge(src=pred, dst=false_edges[0].dst,
-                                              label="false", color=false_edges[0].color, style=false_edges[0].style))
+                    new_edges.append(
+                        _CfgEdge(
+                            src=pred,
+                            dst=true_edges[0].dst,
+                            label="true",
+                            color=true_edges[0].color,
+                            style=true_edges[0].style,
+                        )
+                    )
+                    new_edges.append(
+                        _CfgEdge(
+                            src=pred,
+                            dst=false_edges[0].dst,
+                            label="false",
+                            color=false_edges[0].color,
+                            style=false_edges[0].style,
+                        )
+                    )
                     edges = new_edges
                     blocks = [bb for bb in blocks if bb.id != b.id]
                     changed = True
@@ -577,12 +671,14 @@ def build_internal_cfg(body_lines: list[str]) -> dict | None:
         ops = list(b.ops)
         if b.truncated:
             ops.append(f"... +{b.truncated} more")
-        json_blocks.append({
-            "id": b.id,
-            "label": b.label,
-            "kind": _BLOCK_KIND_MAP.get(b.kind, "normal"),
-            "ops": ops,
-        })
+        json_blocks.append(
+            {
+                "id": b.id,
+                "label": b.label,
+                "kind": _BLOCK_KIND_MAP.get(b.kind, "normal"),
+                "ops": ops,
+            }
+        )
     json_edges = []
     for e in edges:
         edge_d: dict = {"src": e.src, "dst": e.dst}
@@ -611,7 +707,7 @@ RE_GLOBAL_STRING = re.compile(
 RE_ACTOR_SPAWN = re.compile(
     r"(?P<ssa>%\S+)\s*=\s*hew\.actor_spawn\s+@(?P<dispatch>\S+)\((?P<init>[^)]*)\)"
     r'\s*\{[^}]*actor_name\s*=\s*"(?P<actor>[^"]+)"'
-    r'[^}]*state_type\s*=\s*(?P<state>![^}]+)\}'
+    r"[^}]*state_type\s*=\s*(?P<state>![^}]+)\}"
 )
 RE_ACTOR_SEND = re.compile(
     r"hew\.actor_send\s+(?P<target>%\S+)\s*\{msg_type\s*=\s*(?P<msg>\d+)"
@@ -628,11 +724,13 @@ RE_ACTOR_LIFECYCLE = re.compile(
 )
 RE_VEC_OP = re.compile(r"hew\.vec\.(?P<op>\w+)")
 RE_HASHMAP_OP = re.compile(r"hew\.hashmap\.(?P<op>\w+)")
-RE_VEC_NEW = re.compile(r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)")
+RE_VEC_NEW = re.compile(
+    r"(?P<ssa>%\S+)\s*=\s*hew\.vec\.new.*:\s*(?P<ty>!hew\.vec<[^>]+>)"
+)
 RE_HASHMAP_NEW = re.compile(
     r"(?P<ssa>%\S+)\s*=\s*hew\.hashmap\.new.*:\s*(?P<ty>!hew\.hashmap<[^>]+>)"
 )
-RE_RUNTIME_CALL = re.compile(r'hew\.runtime_call\s+@(?P<fn>\w+)')
+RE_RUNTIME_CALL = re.compile(r"hew\.runtime_call\s+@(?P<fn>\w+)")
 RE_RECEIVE = re.compile(r"hew\.receive")
 RE_FUNC_CALL = re.compile(r"(?:func\.)?call\s+@(?P<fn>\w+)")
 RE_SCOPE_OP = re.compile(r"hew\.scope\.(?P<op>\w+)")
@@ -762,7 +860,9 @@ def parse_mlir(text: str):
                 actors[actor_name] = ActorInfo(name=actor_name, state_type=state)
             else:
                 actors[actor_name].state_type = state
-            spawns.append(SpawnEdge(source_func=fn_name, actor_name=actor_name, ssa_var=ssa))
+            spawns.append(
+                SpawnEdge(source_func=fn_name, actor_name=actor_name, ssa_var=ssa)
+            )
             current_func.ops.append(f"spawn {actor_name}")
             continue
 
@@ -796,7 +896,9 @@ def parse_mlir(text: str):
         if m:
             target_actor = ssa_to_actor.get(m.group("target"), m.group("target"))
             msg = int(m.group("msg"))
-            sends.append(SendEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg))
+            sends.append(
+                SendEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg)
+            )
             current_func.ops.append(f"send msg#{msg}")
             continue
 
@@ -806,7 +908,14 @@ def parse_mlir(text: str):
             target_actor = ssa_to_actor.get(m.group("target"), m.group("target"))
             msg = int(m.group("msg"))
             ret = m.group("ret") if m.group("ret") else ""
-            asks.append(AskEdge(source_func=fn_name, target_ssa=target_actor, msg_type=msg, result_type=ret))
+            asks.append(
+                AskEdge(
+                    source_func=fn_name,
+                    target_ssa=target_actor,
+                    msg_type=msg,
+                    result_type=ret,
+                )
+            )
             current_func.ops.append(f"ask msg#{msg}")
             continue
 
@@ -942,7 +1051,7 @@ def parse_mlir(text: str):
         prefix = actor_name + "_"
         for fname in funcs:
             if fname.startswith(prefix) and fname != f"{actor_name}_dispatch":
-                handler = fname[len(prefix):]
+                handler = fname[len(prefix) :]
                 actor.handlers.append(handler)
 
     # Detect supervisors: actors with "supervisor" in name or using supervisor ops
@@ -964,7 +1073,9 @@ def parse_mlir(text: str):
 # ── JSON data builder ────────────────────────────────────────────────────────
 
 
-def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, supervisor_names=None):
+def build_graph_data(
+    funcs, actors, spawns, sends, asks, global_strings, title, supervisor_names=None
+):
     """Build the JSON data structure for the D3.js visualization."""
     nodes = []
     edges = []
@@ -1047,12 +1158,14 @@ def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, 
                 if sp.source_func.startswith(aname + "_"):
                     src_id = f"actor:{aname}"
                     break
-        edges.append({
-            "source": src_id,
-            "target": f"actor:{sp.actor_name}",
-            "type": "spawn",
-            "label": "spawn",
-        })
+        edges.append(
+            {
+                "source": src_id,
+                "target": f"actor:{sp.actor_name}",
+                "type": "spawn",
+                "label": "spawn",
+            }
+        )
 
     # Send edges
     for se in sends:
@@ -1067,12 +1180,14 @@ def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, 
         if target_actor in actors and se.msg_type < len(actors[target_actor].handlers):
             handler_label = actors[target_actor].handlers[se.msg_type]
         if target_actor in actors:
-            edges.append({
-                "source": src_id,
-                "target": f"actor:{target_actor}",
-                "type": "send",
-                "label": handler_label,
-            })
+            edges.append(
+                {
+                    "source": src_id,
+                    "target": f"actor:{target_actor}",
+                    "type": "send",
+                    "label": handler_label,
+                }
+            )
 
     # Ask edges
     for ae in asks:
@@ -1088,12 +1203,14 @@ def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, 
             handler_label = actors[target_actor].handlers[ae.msg_type]
         ret_label = f" → {ae.result_type}" if ae.result_type else ""
         if target_actor in actors:
-            edges.append({
-                "source": src_id,
-                "target": f"actor:{target_actor}",
-                "type": "ask",
-                "label": handler_label + ret_label,
-            })
+            edges.append(
+                {
+                    "source": src_id,
+                    "target": f"actor:{target_actor}",
+                    "type": "ask",
+                    "label": handler_label + ret_label,
+                }
+            )
 
     # Call edges (function-to-function, include private user functions, skip hew_ runtime helpers)
     private_funcs_needed: set[str] = set()
@@ -1110,12 +1227,14 @@ def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, 
                     continue
                 if funcs[callee].is_private:
                     private_funcs_needed.add(callee)
-                edges.append({
-                    "source": src_id,
-                    "target": f"func:{callee}",
-                    "type": "call",
-                    "label": callee,
-                })
+                edges.append(
+                    {
+                        "source": src_id,
+                        "target": f"func:{callee}",
+                        "type": "call",
+                        "label": callee,
+                    }
+                )
 
     # Add private user-defined function nodes (discovered from call edges)
     for pname in private_funcs_needed:
@@ -1151,10 +1270,15 @@ def build_graph_data(funcs, actors, spawns, sends, asks, global_strings, title, 
         "stats": {
             "actorCount": len(actors),
             "functionCount": sum(
-                1 for f in funcs.values()
-                if not f.is_dispatch and not f.is_private and f.name not in actor_handler_funcs
+                1
+                for f in funcs.values()
+                if not f.is_dispatch
+                and not f.is_private
+                and f.name not in actor_handler_funcs
             ),
-            "messageEdgeCount": sum(1 for e in unique_edges if e["type"] in ("send", "ask")),
+            "messageEdgeCount": sum(
+                1 for e in unique_edges if e["type"] in ("send", "ask")
+            ),
             "spawnEdgeCount": sum(1 for e in unique_edges if e["type"] == "spawn"),
         },
         "globalStrings": global_strings,
@@ -2085,7 +2209,8 @@ def main():
         help="Input MLIR file (default: stdin)",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         required=True,
         help="Output HTML file path",
     )
@@ -2108,14 +2233,20 @@ def main():
         sys.exit(1)
 
     # Parse MLIR
-    funcs, actors, spawns, sends, asks, global_strings, supervisor_names = parse_mlir(mlir_text)
+    funcs, actors, spawns, sends, asks, global_strings, supervisor_names = parse_mlir(
+        mlir_text
+    )
 
     # Build graph data
-    graph_data = build_graph_data(funcs, actors, spawns, sends, asks, global_strings, args.title, supervisor_names)
+    graph_data = build_graph_data(
+        funcs, actors, spawns, sends, asks, global_strings, args.title, supervisor_names
+    )
 
     # Generate HTML
     html_content = HTML_TEMPLATE.replace("{{TITLE}}", html.escape(args.title))
-    html_content = html_content.replace("{{GRAPH_DATA}}", json.dumps(graph_data, indent=2))
+    html_content = html_content.replace(
+        "{{GRAPH_DATA}}", json.dumps(graph_data, indent=2)
+    )
 
     with open(args.output, "w") as f:
         f.write(html_content)

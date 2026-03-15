@@ -2,7 +2,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _respond(self, status: int, body: bytes, content_type: str = "text/plain; charset=utf-8") -> None:
+    def _respond(
+        self, status: int, body: bytes, content_type: str = "text/plain; charset=utf-8"
+    ) -> None:
         """Helper method to send HTTP response with proper headers."""
         self.send_response(status)
         self.send_header("Content-Type", content_type)

@@ -1,0 +1,7 @@
+sqrt(100/1) = 10
+divide by zero: code 1
+negative input: -42
+chained ok: 4
+propagated: divide by zero
+propagated: negative -100
+qualified overflow: 999

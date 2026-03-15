@@ -1811,7 +1811,10 @@ fn enrich_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::{ImportDecl, Visibility};
+    use hew_parser::ast::{
+        ConstDecl, ImplDecl, ImportDecl, MachineDecl, MachineEvent, MachineState,
+        MachineTransition, ReceiveFnDecl, SupervisorDecl, TraitDecl, TypeDecl, Visibility,
+    };
 
     /// Module registry with the repo root as a search path, so stdlib
     /// modules can be loaded during tests.
@@ -2940,6 +2943,2906 @@ mod tests {
                 assert_eq!(args.len(), 2, "should preserve both args");
             }
             other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ty_to_type_expr — missing primitive coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ty_to_type_expr_remaining_primitives() {
+        let cases = vec![
+            (Ty::I8, "i8"),
+            (Ty::I16, "i16"),
+            (Ty::U8, "u8"),
+            (Ty::U16, "u16"),
+            (Ty::U32, "u32"),
+            (Ty::U64, "u64"),
+            (Ty::F32, "f32"),
+            (Ty::Bytes, "bytes"),
+            (Ty::Duration, "duration"),
+        ];
+        for (ty, expected_name) in cases {
+            let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+            match te {
+                TypeExpr::Named { name, type_args } => {
+                    assert_eq!(name, expected_name);
+                    assert!(type_args.is_none());
+                }
+                _ => panic!("expected Named variant for {ty:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_closure() {
+        let ty = Ty::Closure {
+            params: vec![Ty::I32, Ty::String],
+            ret: Box::new(Ty::Bool),
+            captures: vec![],
+        };
+        let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+        match te {
+            TypeExpr::Function {
+                params,
+                return_type,
+            } => {
+                assert_eq!(params.len(), 2);
+                assert!(matches!(params[0].0, TypeExpr::Named { ref name, .. } if name == "i32"));
+                assert!(
+                    matches!(return_type.0, TypeExpr::Named { ref name, .. } if name == "bool")
+                );
+            }
+            _ => panic!("expected Function variant for Closure"),
+        }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_slice() {
+        let ty = Ty::Slice(Box::new(Ty::String));
+        let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+        match te {
+            TypeExpr::Slice(inner) => {
+                assert!(
+                    matches!(inner.0, TypeExpr::Named { ref name, .. } if name == "string")
+                );
+            }
+            _ => panic!("expected Slice variant"),
+        }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_trait_object() {
+        use hew_types::ty::TraitObjectBound;
+        let ty = Ty::TraitObject {
+            traits: vec![TraitObjectBound {
+                trait_name: "Display".into(),
+                args: vec![],
+            }],
+        };
+        let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+        match te {
+            TypeExpr::TraitObject(bounds) => {
+                assert_eq!(bounds.len(), 1);
+                assert_eq!(bounds[0].name, "Display");
+                assert!(bounds[0].type_args.is_none());
+            }
+            _ => panic!("expected TraitObject variant"),
+        }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_trait_object_with_type_args() {
+        use hew_types::ty::TraitObjectBound;
+        let ty = Ty::TraitObject {
+            traits: vec![TraitObjectBound {
+                trait_name: "Iterator".into(),
+                args: vec![Ty::I32],
+            }],
+        };
+        let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+        match te {
+            TypeExpr::TraitObject(bounds) => {
+                assert_eq!(bounds.len(), 1);
+                assert_eq!(bounds[0].name, "Iterator");
+                let args = bounds[0].type_args.as_ref().unwrap();
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("expected TraitObject variant"),
+        }
+    }
+
+    #[test]
+    fn test_ty_to_type_expr_machine() {
+        let ty = Ty::Machine {
+            name: "TrafficLight".into(),
+        };
+        let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
+        match te {
+            TypeExpr::Named { name, type_args } => {
+                assert_eq!(name, "TrafficLight");
+                assert!(type_args.is_none());
+            }
+            _ => panic!("expected Named variant for Machine"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_builtin_calls — coverage for len(x) → x.len() rewriting
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a `len(arg)` call expression.
+    fn make_len_call(arg: Spanned<Expr>) -> Spanned<Expr> {
+        (
+            Expr::Call {
+                function: Box::new((Expr::Identifier("len".into()), 0..3)),
+                args: vec![CallArg::Positional(arg)],
+                type_args: None,
+                is_tail_call: false,
+            },
+            0..10,
+        )
+    }
+
+    /// Helper: make an integer literal expression.
+    fn make_int_lit(n: i64) -> Spanned<Expr> {
+        (
+            Expr::Literal(hew_parser::ast::Literal::Integer {
+                value: n,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            }),
+            0..1,
+        )
+    }
+
+    /// Helper: make a simple identifier expression.
+    fn make_ident(name: &str) -> Spanned<Expr> {
+        (Expr::Identifier(name.into()), 0..name.len())
+    }
+
+    /// Helper: make a function item wrapping a body block.
+    fn make_fn_item(name: &str, body: Block) -> Spanned<Item> {
+        (
+            Item::Function(FnDecl {
+                attributes: vec![],
+                is_async: false,
+                is_generator: false,
+                visibility: Visibility::Private,
+                is_pure: false,
+                name: name.into(),
+                type_params: None,
+                params: vec![],
+                return_type: None,
+                where_clause: None,
+                body,
+                doc_comment: None,
+            }),
+            0..0,
+        )
+    }
+
+    /// Helper: make a block with a single expression statement.
+    fn make_block_with_expr(expr: Spanned<Expr>) -> Block {
+        Block {
+            stmts: vec![(Stmt::Expression(expr), 0..0)],
+            trailing_expr: None,
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_function() {
+        let len_call = make_len_call(make_ident("xs"));
+        let mut items = vec![make_fn_item("test_fn", make_block_with_expr(len_call))];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                assert!(
+                    matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"),
+                    "len(xs) should be rewritten to xs.len()"
+                );
+            } else {
+                panic!("expected expression statement");
+            }
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_actor() {
+        let len_call = make_len_call(make_ident("items"));
+        let mut items = vec![(
+            Item::Actor(ActorDecl {
+                visibility: Visibility::Private,
+                name: "Counter".into(),
+                super_traits: None,
+                init: Some(hew_parser::ast::ActorInit {
+                    params: vec![],
+                    body: make_block_with_expr(len_call),
+                }),
+                fields: vec![],
+                receive_fns: vec![ReceiveFnDecl {
+                    is_generator: false,
+                    is_pure: false,
+                    name: "inc".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: make_block_with_expr(make_len_call(make_ident("data"))),
+                    span: 0..0,
+                }],
+                methods: vec![],
+                mailbox_capacity: None,
+                overflow_policy: None,
+                is_isolated: false,
+                doc_comment: None,
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Actor(actor) = &items[0].0 {
+            // Check init block
+            if let Stmt::Expression(expr) = &actor.init.as_ref().unwrap().body.stmts[0].0 {
+                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+            }
+            // Check receive fn
+            if let Stmt::Expression(expr) = &actor.receive_fns[0].body.stmts[0].0 {
+                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_machine() {
+        let mut items = vec![(
+            Item::Machine(MachineDecl {
+                visibility: Visibility::Private,
+                name: "Light".into(),
+                states: vec![],
+                events: vec![],
+                transitions: vec![MachineTransition {
+                    event_name: "toggle".into(),
+                    source_state: "Off".into(),
+                    target_state: "On".into(),
+                    guard: None,
+                    body: make_len_call(make_ident("xs")),
+                }],
+                has_default: false,
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Machine(m) = &items[0].0 {
+            assert!(
+                matches!(&m.transitions[0].body.0, Expr::MethodCall { method, .. } if method == "len")
+            );
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_impl() {
+        let len_call = make_len_call(make_ident("v"));
+        let mut items = vec![(
+            Item::Impl(ImplDecl {
+                type_params: None,
+                trait_bound: None,
+                target_type: (
+                    TypeExpr::Named {
+                        name: "Foo".into(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+                where_clause: None,
+                type_aliases: vec![],
+                methods: vec![FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "count".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: make_block_with_expr(len_call),
+                    doc_comment: None,
+                }],
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Impl(imp) = &items[0].0 {
+            if let Stmt::Expression(expr) = &imp.methods[0].body.stmts[0].0 {
+                assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_trait() {
+        let len_call = make_len_call(make_ident("items"));
+        let mut items = vec![(
+            Item::Trait(TraitDecl {
+                visibility: Visibility::Private,
+                name: "Countable".into(),
+                type_params: None,
+                super_traits: None,
+                items: vec![hew_parser::ast::TraitItem::Method(
+                    hew_parser::ast::TraitMethod {
+                        name: "count".into(),
+                        is_pure: false,
+                        type_params: None,
+                        params: vec![],
+                        return_type: None,
+                        where_clause: None,
+                        body: Some(make_block_with_expr(len_call)),
+                    },
+                )],
+                doc_comment: None,
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Trait(t) = &items[0].0 {
+            if let hew_parser::ast::TraitItem::Method(m) = &t.items[0] {
+                if let Stmt::Expression(expr) = &m.body.as_ref().unwrap().stmts[0].0 {
+                    assert!(
+                        matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_const() {
+        let len_call = make_len_call(make_ident("data"));
+        let mut items = vec![(
+            Item::Const(ConstDecl {
+                visibility: Visibility::Private,
+                name: "LEN".into(),
+                ty: (
+                    TypeExpr::Named {
+                        name: "int".into(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+                value: len_call,
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Const(c) = &items[0].0 {
+            assert!(matches!(&c.value.0, Expr::MethodCall { method, .. } if method == "len"));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_type_decl_method() {
+        let len_call = make_len_call(make_ident("self_items"));
+        let mut items = vec![(
+            Item::TypeDecl(TypeDecl {
+                visibility: Visibility::Private,
+                kind: hew_parser::ast::TypeDeclKind::Struct,
+                name: "MyList".into(),
+                type_params: None,
+                where_clause: None,
+                body: vec![hew_parser::ast::TypeBodyItem::Method(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "size".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: make_block_with_expr(len_call),
+                    doc_comment: None,
+                })],
+                doc_comment: None,
+                wire: None,
+                is_indirect: false,
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::TypeDecl(td) = &items[0].0 {
+            if let hew_parser::ast::TypeBodyItem::Method(m) = &td.body[0] {
+                if let Stmt::Expression(expr) = &m.body.stmts[0].0 {
+                    assert!(
+                        matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_builtin_calls_in_supervisor() {
+        let len_call = make_len_call(make_ident("args"));
+        let mut items = vec![(
+            Item::Supervisor(SupervisorDecl {
+                visibility: Visibility::Private,
+                name: "MySup".into(),
+                strategy: None,
+                max_restarts: None,
+                window: None,
+                children: vec![hew_parser::ast::ChildSpec {
+                    name: "worker".into(),
+                    actor_type: "Worker".into(),
+                    args: vec![len_call],
+                    restart: None,
+                }],
+            }),
+            0..0,
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Supervisor(sup) = &items[0].0 {
+            assert!(
+                matches!(&sup.children[0].args[0].0, Expr::MethodCall { method, .. } if method == "len")
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_builtin_calls_in_expr — expression variant coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rewrite_len_in_if_expr() {
+        let mut expr: Spanned<Expr> = (
+            Expr::If {
+                condition: Box::new(make_len_call(make_ident("a"))),
+                then_block: Box::new(make_int_lit(1)),
+                else_block: Some(Box::new(make_len_call(make_ident("b")))),
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::If {
+            condition,
+            else_block,
+            ..
+        } = &expr.0
+        {
+            assert!(matches!(&condition.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(
+                matches!(&else_block.as_ref().unwrap().0, Expr::MethodCall { method, .. } if method == "len")
+            );
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_binary_and_unary() {
+        let mut binary: Spanned<Expr> = (
+            Expr::Binary {
+                op: hew_parser::ast::BinaryOp::Add,
+                left: Box::new(make_len_call(make_ident("x"))),
+                right: Box::new(make_len_call(make_ident("y"))),
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut binary);
+        if let Expr::Binary { left, right, .. } = &binary.0 {
+            assert!(matches!(&left.0, Expr::MethodCall { method, .. } if method == "len"));
+            assert!(matches!(&right.0, Expr::MethodCall { method, .. } if method == "len"));
+        }
+
+        let mut unary: Spanned<Expr> = (
+            Expr::Unary {
+                op: hew_parser::ast::UnaryOp::Negate,
+                operand: Box::new(make_len_call(make_ident("z"))),
+            },
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut unary);
+        if let Expr::Unary { operand, .. } = &unary.0 {
+            assert!(matches!(&operand.0, Expr::MethodCall { method, .. } if method == "len"));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_match_expr() {
+        let mut expr: Spanned<Expr> = (
+            Expr::Match {
+                scrutinee: Box::new(make_len_call(make_ident("v"))),
+                arms: vec![hew_parser::ast::MatchArm {
+                    pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                    guard: Some(make_len_call(make_ident("w"))),
+                    body: make_len_call(make_ident("r")),
+                }],
+            },
+            0..30,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::Match {
+            scrutinee, arms, ..
+        } = &expr.0
+        {
+            assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
+            assert!(matches!(&arms[0].guard.as_ref().unwrap().0, Expr::MethodCall { .. }));
+            assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_lambda() {
+        let mut expr: Spanned<Expr> = (
+            Expr::Lambda {
+                params: vec![],
+                body: Box::new(make_len_call(make_ident("items"))),
+                return_type: None,
+                is_move: false,
+                type_params: None,
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::Lambda { body, .. } = &expr.0 {
+            assert!(matches!(&body.0, Expr::MethodCall { method, .. } if method == "len"));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_array_and_tuple() {
+        let mut arr: Spanned<Expr> = (
+            Expr::Array(vec![make_len_call(make_ident("a"))]),
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut arr);
+        if let Expr::Array(elems) = &arr.0 {
+            assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
+        }
+
+        let mut tup: Spanned<Expr> = (
+            Expr::Tuple(vec![make_len_call(make_ident("b"))]),
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut tup);
+        if let Expr::Tuple(elems) = &tup.0 {
+            assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_map_literal() {
+        let mut expr: Spanned<Expr> = (
+            Expr::MapLiteral {
+                entries: vec![(
+                    make_len_call(make_ident("k")),
+                    make_len_call(make_ident("v")),
+                )],
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::MapLiteral { entries } = &expr.0 {
+            assert!(matches!(&entries[0].0 .0, Expr::MethodCall { .. }));
+            assert!(matches!(&entries[0].1 .0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_struct_init() {
+        let mut expr: Spanned<Expr> = (
+            Expr::StructInit {
+                name: "Foo".into(),
+                fields: vec![("count".into(), make_len_call(make_ident("items")))],
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::StructInit { fields, .. } = &expr.0 {
+            assert!(matches!(&fields[0].1 .0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_index_and_field_access() {
+        let mut idx: Spanned<Expr> = (
+            Expr::Index {
+                object: Box::new(make_ident("arr")),
+                index: Box::new(make_len_call(make_ident("i"))),
+            },
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut idx);
+        if let Expr::Index { index, .. } = &idx.0 {
+            assert!(matches!(&index.0, Expr::MethodCall { .. }));
+        }
+
+        let mut fa: Spanned<Expr> = (
+            Expr::FieldAccess {
+                object: Box::new(make_len_call(make_ident("obj"))),
+                field: "x".into(),
+            },
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut fa);
+        if let Expr::FieldAccess { object, .. } = &fa.0 {
+            assert!(matches!(&object.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_cast() {
+        let mut expr: Spanned<Expr> = (
+            Expr::Cast {
+                expr: Box::new(make_len_call(make_ident("v"))),
+                ty: (
+                    TypeExpr::Named {
+                        name: "int".into(),
+                        type_args: None,
+                    },
+                    0..0,
+                ),
+            },
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::Cast { expr: inner, .. } = &expr.0 {
+            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_spawn_and_send() {
+        let mut spawn: Spanned<Expr> = (
+            Expr::Spawn {
+                target: Box::new(make_ident("Worker")),
+                args: vec![("count".into(), make_len_call(make_ident("xs")))],
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut spawn);
+        if let Expr::Spawn { args, .. } = &spawn.0 {
+            assert!(matches!(&args[0].1 .0, Expr::MethodCall { .. }));
+        }
+
+        let mut send: Spanned<Expr> = (
+            Expr::Send {
+                target: Box::new(make_ident("actor")),
+                message: Box::new(make_len_call(make_ident("msg"))),
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut send);
+        if let Expr::Send { message, .. } = &send.0 {
+            assert!(matches!(&message.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_range() {
+        let mut expr: Spanned<Expr> = (
+            Expr::Range {
+                start: Some(Box::new(make_len_call(make_ident("a")))),
+                end: Some(Box::new(make_len_call(make_ident("b")))),
+                inclusive: false,
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::Range { start, end, .. } = &expr.0 {
+            assert!(matches!(&start.as_ref().unwrap().0, Expr::MethodCall { .. }));
+            assert!(matches!(&end.as_ref().unwrap().0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_interp_string() {
+        let mut expr: Spanned<Expr> = (
+            Expr::InterpolatedString(vec![hew_parser::ast::StringPart::Expr(
+                make_len_call(make_ident("s")),
+            )]),
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::InterpolatedString(parts) = &expr.0 {
+            if let hew_parser::ast::StringPart::Expr(e) = &parts[0] {
+                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_array_repeat() {
+        let mut expr: Spanned<Expr> = (
+            Expr::ArrayRepeat {
+                value: Box::new(make_len_call(make_ident("v"))),
+                count: Box::new(make_len_call(make_ident("n"))),
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut expr);
+        if let Expr::ArrayRepeat { value, count } = &expr.0 {
+            assert!(matches!(&value.0, Expr::MethodCall { .. }));
+            assert!(matches!(&count.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_builtin_calls_in_stmt — statement variant coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rewrite_len_in_let_and_var_stmts() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::Let {
+                            pattern: (hew_parser::ast::Pattern::Identifier("a".into()), 0..1),
+                            ty: None,
+                            value: Some(make_len_call(make_ident("xs"))),
+                        },
+                        0..10,
+                    ),
+                    (
+                        Stmt::Var {
+                            name: "b".into(),
+                            ty: None,
+                            value: Some(make_len_call(make_ident("ys"))),
+                        },
+                        10..20,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Let { value: Some(v), .. } = &f.body.stmts[0].0 {
+                assert!(matches!(&v.0, Expr::MethodCall { .. }));
+            }
+            if let Stmt::Var { value: Some(v), .. } = &f.body.stmts[1].0 {
+                assert!(matches!(&v.0, Expr::MethodCall { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_for_and_while_stmts() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::For {
+                            pattern: (hew_parser::ast::Pattern::Identifier("i".into()), 0..1),
+                            iterable: make_len_call(make_ident("xs")),
+                            body: make_block_with_expr(make_len_call(make_ident("inner"))),
+                            label: None,
+                            is_await: false,
+                        },
+                        0..20,
+                    ),
+                    (
+                        Stmt::While {
+                            condition: make_len_call(make_ident("cond")),
+                            body: make_block_with_expr(make_int_lit(0)),
+                            label: None,
+                        },
+                        20..40,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::For {
+                iterable, body, ..
+            } = &f.body.stmts[0].0
+            {
+                assert!(matches!(&iterable.0, Expr::MethodCall { .. }));
+                if let Stmt::Expression(e) = &body.stmts[0].0 {
+                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                }
+            }
+            if let Stmt::While { condition, .. } = &f.body.stmts[1].0 {
+                assert!(matches!(&condition.0, Expr::MethodCall { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_if_stmt_with_else() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::If {
+                        condition: make_len_call(make_ident("c")),
+                        then_block: make_block_with_expr(make_int_lit(1)),
+                        else_block: Some(ElseBlock {
+                            block: Some(make_block_with_expr(make_len_call(make_ident("e")))),
+                            if_stmt: None,
+                            is_if: false,
+                        }),
+                    },
+                    0..30,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::If {
+                condition,
+                else_block,
+                ..
+            } = &f.body.stmts[0].0
+            {
+                assert!(matches!(&condition.0, Expr::MethodCall { .. }));
+                let eb = else_block.as_ref().unwrap();
+                if let Stmt::Expression(e) = &eb.block.as_ref().unwrap().stmts[0].0 {
+                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_match_stmt() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Match {
+                        scrutinee: make_len_call(make_ident("s")),
+                        arms: vec![hew_parser::ast::MatchArm {
+                            pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                            guard: Some(make_len_call(make_ident("g"))),
+                            body: make_len_call(make_ident("b")),
+                        }],
+                    },
+                    0..30,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Match {
+                scrutinee, arms, ..
+            } = &f.body.stmts[0].0
+            {
+                assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
+                assert!(matches!(&arms[0].guard.as_ref().unwrap().0, Expr::MethodCall { .. }));
+                assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_assign_and_defer() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::Assign {
+                            target: make_ident("x"),
+                            value: make_len_call(make_ident("v")),
+                            op: None,
+                        },
+                        0..10,
+                    ),
+                    (Stmt::Defer(Box::new(make_len_call(make_ident("d")))), 10..20),
+                    (
+                        Stmt::Loop {
+                            body: make_block_with_expr(make_int_lit(0)),
+                            label: None,
+                        },
+                        20..30,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Assign { value, .. } = &f.body.stmts[0].0 {
+                assert!(matches!(&value.0, Expr::MethodCall { .. }));
+            }
+            if let Stmt::Defer(e) = &f.body.stmts[1].0 {
+                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_if_let_stmt() {
+        let mut items = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::IfLet {
+                        pattern: Box::new((hew_parser::ast::Pattern::Identifier("x".into()), 0..1)),
+                        expr: Box::new(make_len_call(make_ident("opt"))),
+                        body: make_block_with_expr(make_int_lit(1)),
+                        else_body: Some(make_block_with_expr(make_len_call(make_ident("fb")))),
+                    },
+                    0..30,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        rewrite_builtin_calls(&mut items);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::IfLet {
+                expr, else_body, ..
+            } = &f.body.stmts[0].0
+            {
+                assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+                if let Stmt::Expression(e) = &else_body.as_ref().unwrap().stmts[0].0 {
+                    assert!(matches!(&e.0, Expr::MethodCall { .. }));
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // rewrite_builtin_calls_in_expr — more expression variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_rewrite_len_in_block_and_iflet_expr() {
+        let mut block_expr: Spanned<Expr> = (
+            Expr::Block(make_block_with_expr(make_len_call(make_ident("v")))),
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut block_expr);
+        if let Expr::Block(block) = &block_expr.0 {
+            if let Stmt::Expression(e) = &block.stmts[0].0 {
+                assert!(matches!(&e.0, Expr::MethodCall { .. }));
+            }
+        }
+
+        let mut iflet: Spanned<Expr> = (
+            Expr::IfLet {
+                pattern: Box::new((hew_parser::ast::Pattern::Identifier("x".into()), 0..1)),
+                expr: Box::new(make_len_call(make_ident("opt"))),
+                body: make_block_with_expr(make_int_lit(1)),
+                else_body: None,
+            },
+            0..20,
+        );
+        rewrite_builtin_calls_in_expr(&mut iflet);
+        if let Expr::IfLet { expr, .. } = &iflet.0 {
+            assert!(matches!(&expr.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    #[test]
+    fn test_rewrite_len_in_postfix_try_and_await() {
+        let mut try_expr: Spanned<Expr> = (
+            Expr::PostfixTry(Box::new(make_len_call(make_ident("r")))),
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut try_expr);
+        if let Expr::PostfixTry(inner) = &try_expr.0 {
+            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+        }
+
+        let mut await_expr: Spanned<Expr> = (
+            Expr::Await(Box::new(make_len_call(make_ident("f")))),
+            0..10,
+        );
+        rewrite_builtin_calls_in_expr(&mut await_expr);
+        if let Expr::Await(inner) = &await_expr.0 {
+            assert!(matches!(&inner.0, Expr::MethodCall { .. }));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_item_types — coverage for various item variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_actor_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::Actor(ActorDecl {
+                visibility: Visibility::Private,
+                name: "MyActor".into(),
+                super_traits: None,
+                init: Some(hew_parser::ast::ActorInit {
+                    params: vec![],
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: None,
+                    },
+                }),
+                fields: vec![hew_parser::ast::FieldDecl {
+                    name: "data".into(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Option".into(),
+                            type_args: Some(vec![(
+                                TypeExpr::Named {
+                                    name: "i32".into(),
+                                    type_args: None,
+                                },
+                                0..0,
+                            )]),
+                        },
+                        0..0,
+                    ),
+                }],
+                receive_fns: vec![ReceiveFnDecl {
+                    is_generator: false,
+                    is_pure: false,
+                    name: "handle".into(),
+                    type_params: None,
+                    params: vec![Param {
+                        name: "msg".into(),
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Result".into(),
+                                type_args: Some(vec![
+                                    (
+                                        TypeExpr::Named {
+                                            name: "i32".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    ),
+                                    (
+                                        TypeExpr::Named {
+                                            name: "string".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    ),
+                                ]),
+                            },
+                            0..0,
+                        ),
+                        is_mutable: false,
+                    }],
+                    return_type: Some((
+                        TypeExpr::Named {
+                            name: "Option".into(),
+                            type_args: Some(vec![(
+                                TypeExpr::Named {
+                                    name: "i32".into(),
+                                    type_args: None,
+                                },
+                                0..0,
+                            )]),
+                        },
+                        0..0,
+                    )),
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![],
+                        trailing_expr: None,
+                    },
+                    span: 0..0,
+                }],
+                methods: vec![],
+                mailbox_capacity: None,
+                overflow_policy: None,
+                is_isolated: false,
+                doc_comment: None,
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        // Verify Option in field was normalized
+        if let Item::Actor(a) = &items[0].0 {
+            assert!(matches!(&a.fields[0].ty.0, TypeExpr::Option(_)));
+            // Verify Result param was normalized
+            assert!(matches!(&a.receive_fns[0].params[0].ty.0, TypeExpr::Result { .. }));
+            // Verify Option return type was normalized
+            assert!(matches!(
+                &a.receive_fns[0].return_type.as_ref().unwrap().0,
+                TypeExpr::Option(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_normalize_impl_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::Impl(ImplDecl {
+                type_params: None,
+                trait_bound: None,
+                target_type: (
+                    TypeExpr::Named {
+                        name: "Result".into(),
+                        type_args: Some(vec![
+                            (
+                                TypeExpr::Named {
+                                    name: "i32".into(),
+                                    type_args: None,
+                                },
+                                0..0,
+                            ),
+                            (
+                                TypeExpr::Named {
+                                    name: "string".into(),
+                                    type_args: None,
+                                },
+                                0..0,
+                            ),
+                        ]),
+                    },
+                    0..0,
+                ),
+                where_clause: None,
+                type_aliases: vec![],
+                methods: vec![],
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Impl(imp) = &items[0].0 {
+            assert!(matches!(&imp.target_type.0, TypeExpr::Result { .. }));
+        }
+    }
+
+    #[test]
+    fn test_normalize_extern_block_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::ExternBlock(ExternBlock {
+                abi: "C".into(),
+                functions: vec![ExternFnDecl {
+                    name: "ext_fn".into(),
+                    params: vec![Param {
+                        name: "p".into(),
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        ),
+                        is_mutable: false,
+                    }],
+                    return_type: Some((
+                        TypeExpr::Named {
+                            name: "Result".into(),
+                            type_args: Some(vec![
+                                (
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                ),
+                                (
+                                    TypeExpr::Named {
+                                        name: "string".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                ),
+                            ]),
+                        },
+                        0..0,
+                    )),
+                    is_variadic: false,
+                }],
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::ExternBlock(eb) = &items[0].0 {
+            assert!(matches!(&eb.functions[0].params[0].ty.0, TypeExpr::Option(_)));
+            assert!(matches!(
+                &eb.functions[0].return_type.as_ref().unwrap().0,
+                TypeExpr::Result { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn test_normalize_type_decl_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::TypeDecl(TypeDecl {
+                visibility: Visibility::Private,
+                kind: hew_parser::ast::TypeDeclKind::Enum,
+                name: "MyEnum".into(),
+                type_params: None,
+                where_clause: None,
+                body: vec![
+                    hew_parser::ast::TypeBodyItem::Field {
+                        name: "data".into(),
+                        ty: (
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        ),
+                    },
+                    hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+                        name: "TupleV".into(),
+                        kind: hew_parser::ast::VariantKind::Tuple(vec![(
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        )]),
+                    }),
+                    hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+                        name: "StructV".into(),
+                        kind: hew_parser::ast::VariantKind::Struct(vec![(
+                            "val".into(),
+                            (
+                                TypeExpr::Named {
+                                    name: "Option".into(),
+                                    type_args: Some(vec![(
+                                        TypeExpr::Named {
+                                            name: "i32".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    )]),
+                                },
+                                0..0,
+                            ),
+                        )]),
+                    }),
+                ],
+                doc_comment: None,
+                wire: None,
+                is_indirect: false,
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::TypeDecl(td) = &items[0].0 {
+            if let hew_parser::ast::TypeBodyItem::Field { ty, .. } = &td.body[0] {
+                assert!(matches!(&ty.0, TypeExpr::Option(_)));
+            }
+            if let hew_parser::ast::TypeBodyItem::Variant(v) = &td.body[1] {
+                if let hew_parser::ast::VariantKind::Tuple(fields) = &v.kind {
+                    assert!(matches!(&fields[0].0, TypeExpr::Option(_)));
+                }
+            }
+            if let hew_parser::ast::TypeBodyItem::Variant(v) = &td.body[2] {
+                if let hew_parser::ast::VariantKind::Struct(fields) = &v.kind {
+                    assert!(matches!(&fields[0].1 .0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_trait_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::Trait(TraitDecl {
+                visibility: Visibility::Private,
+                name: "Processor".into(),
+                type_params: None,
+                super_traits: None,
+                items: vec![
+                    hew_parser::ast::TraitItem::Method(hew_parser::ast::TraitMethod {
+                        name: "process".into(),
+                        is_pure: false,
+                        type_params: None,
+                        params: vec![Param {
+                            name: "data".into(),
+                            ty: (
+                                TypeExpr::Named {
+                                    name: "Option".into(),
+                                    type_args: Some(vec![(
+                                        TypeExpr::Named {
+                                            name: "i32".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    )]),
+                                },
+                                0..0,
+                            ),
+                            is_mutable: false,
+                        }],
+                        return_type: Some((
+                            TypeExpr::Named {
+                                name: "Result".into(),
+                                type_args: Some(vec![
+                                    (
+                                        TypeExpr::Named {
+                                            name: "i32".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    ),
+                                    (
+                                        TypeExpr::Named {
+                                            name: "string".into(),
+                                            type_args: None,
+                                        },
+                                        0..0,
+                                    ),
+                                ]),
+                            },
+                            0..0,
+                        )),
+                        where_clause: None,
+                        body: Some(Block {
+                            stmts: vec![],
+                            trailing_expr: None,
+                        }),
+                    }),
+                    hew_parser::ast::TraitItem::AssociatedType {
+                        name: "Item".into(),
+                        bounds: vec![],
+                        default: Some((
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        )),
+                    },
+                ],
+                doc_comment: None,
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Trait(t) = &items[0].0 {
+            if let hew_parser::ast::TraitItem::Method(m) = &t.items[0] {
+                assert!(matches!(&m.params[0].ty.0, TypeExpr::Option(_)));
+                assert!(matches!(
+                    &m.return_type.as_ref().unwrap().0,
+                    TypeExpr::Result { .. }
+                ));
+            }
+            if let hew_parser::ast::TraitItem::AssociatedType { default, .. } = &t.items[1] {
+                assert!(matches!(&default.as_ref().unwrap().0, TypeExpr::Option(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_const_and_type_alias() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![
+            (
+                Item::Const(ConstDecl {
+                    visibility: Visibility::Private,
+                    name: "C".into(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Option".into(),
+                            type_args: Some(vec![(
+                                TypeExpr::Named {
+                                    name: "i32".into(),
+                                    type_args: None,
+                                },
+                                0..0,
+                            )]),
+                        },
+                        0..0,
+                    ),
+                    value: make_int_lit(42),
+                }),
+                0..0,
+            ),
+            (
+                Item::TypeAlias(hew_parser::ast::TypeAliasDecl {
+                    visibility: Visibility::Private,
+                    name: "MyResult".into(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "Result".into(),
+                            type_args: Some(vec![
+                                (
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                ),
+                                (
+                                    TypeExpr::Named {
+                                        name: "string".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                ),
+                            ]),
+                        },
+                        0..0,
+                    ),
+                }),
+                0..0,
+            ),
+        ];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Const(c) = &items[0].0 {
+            assert!(matches!(&c.ty.0, TypeExpr::Option(_)));
+        }
+        if let Item::TypeAlias(ta) = &items[1].0 {
+            assert!(matches!(&ta.ty.0, TypeExpr::Result { .. }));
+        }
+    }
+
+    #[test]
+    fn test_normalize_machine_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::Machine(MachineDecl {
+                visibility: Visibility::Private,
+                name: "Light".into(),
+                states: vec![MachineState {
+                    name: "On".into(),
+                    fields: vec![(
+                        "brightness".into(),
+                        (
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "i32".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        ),
+                    )],
+                }],
+                events: vec![MachineEvent {
+                    name: "Toggle".into(),
+                    fields: vec![(
+                        "force".into(),
+                        (
+                            TypeExpr::Named {
+                                name: "Option".into(),
+                                type_args: Some(vec![(
+                                    TypeExpr::Named {
+                                        name: "bool".into(),
+                                        type_args: None,
+                                    },
+                                    0..0,
+                                )]),
+                            },
+                            0..0,
+                        ),
+                    )],
+                }],
+                transitions: vec![MachineTransition {
+                    event_name: "Toggle".into(),
+                    source_state: "Off".into(),
+                    target_state: "On".into(),
+                    guard: None,
+                    body: make_int_lit(0),
+                }],
+                has_default: false,
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Machine(m) = &items[0].0 {
+            assert!(matches!(&m.states[0].fields[0].1 .0, TypeExpr::Option(_)));
+            assert!(matches!(&m.events[0].fields[0].1 .0, TypeExpr::Option(_)));
+        }
+    }
+
+    #[test]
+    fn test_normalize_supervisor_types() {
+        let registry = test_registry();
+        // Supervisor children have arg expressions — ensure normalize_expr_types runs
+        let mut items: Vec<Spanned<Item>> = vec![(
+            Item::Supervisor(SupervisorDecl {
+                visibility: Visibility::Private,
+                name: "MySup".into(),
+                strategy: None,
+                max_restarts: None,
+                window: None,
+                children: vec![hew_parser::ast::ChildSpec {
+                    name: "worker".into(),
+                    actor_type: "Worker".into(),
+                    args: vec![make_int_lit(0)],
+                    restart: None,
+                }],
+            }),
+            0..0,
+        )];
+        normalize_items_types(&mut items, &registry);
+        // Just ensure it doesn't panic — supervisor args are expressions, not types
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_stmt_types — coverage for statement normalization
+    // -----------------------------------------------------------------------
+
+    fn make_option_type() -> Spanned<TypeExpr> {
+        (
+            TypeExpr::Named {
+                name: "Option".into(),
+                type_args: Some(vec![(
+                    TypeExpr::Named {
+                        name: "i32".into(),
+                        type_args: None,
+                    },
+                    0..0,
+                )]),
+            },
+            0..0,
+        )
+    }
+
+    #[test]
+    fn test_normalize_stmt_let_var_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::Let {
+                            pattern: (hew_parser::ast::Pattern::Identifier("a".into()), 0..1),
+                            ty: Some(make_option_type()),
+                            value: None,
+                        },
+                        0..10,
+                    ),
+                    (
+                        Stmt::Var {
+                            name: "b".into(),
+                            ty: Some(make_option_type()),
+                            value: None,
+                        },
+                        10..20,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Let { ty: Some(t), .. } = &f.body.stmts[0].0 {
+                assert!(matches!(&t.0, TypeExpr::Option(_)));
+            }
+            if let Stmt::Var { ty: Some(t), .. } = &f.body.stmts[1].0 {
+                assert!(matches!(&t.0, TypeExpr::Option(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_stmt_if_and_iflet() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::If {
+                            condition: make_int_lit(1),
+                            then_block: Block {
+                                stmts: vec![(
+                                    Stmt::Let {
+                                        pattern: (
+                                            hew_parser::ast::Pattern::Identifier("x".into()),
+                                            0..1,
+                                        ),
+                                        ty: Some(make_option_type()),
+                                        value: None,
+                                    },
+                                    0..10,
+                                )],
+                                trailing_expr: None,
+                            },
+                            else_block: Some(ElseBlock {
+                                block: Some(Block {
+                                    stmts: vec![],
+                                    trailing_expr: None,
+                                }),
+                                if_stmt: None,
+                                is_if: false,
+                            }),
+                        },
+                        0..30,
+                    ),
+                    (
+                        Stmt::IfLet {
+                            pattern: Box::new((hew_parser::ast::Pattern::Identifier("v".into()), 0..1)),
+                            expr: Box::new(make_int_lit(0)),
+                            body: Block {
+                                stmts: vec![],
+                                trailing_expr: None,
+                            },
+                            else_body: Some(Block {
+                                stmts: vec![],
+                                trailing_expr: None,
+                            }),
+                        },
+                        30..60,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        // Verify normalization propagated without panic
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::If { then_block, .. } = &f.body.stmts[0].0 {
+                if let Stmt::Let { ty: Some(t), .. } = &then_block.stmts[0].0 {
+                    assert!(matches!(&t.0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_stmt_for_while_loop_match() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    (
+                        Stmt::For {
+                            pattern: (hew_parser::ast::Pattern::Identifier("i".into()), 0..1),
+                            iterable: make_int_lit(0),
+                            body: Block {
+                                stmts: vec![],
+                                trailing_expr: None,
+                            },
+                            label: None,
+                            is_await: false,
+                        },
+                        0..10,
+                    ),
+                    (
+                        Stmt::While {
+                            condition: make_int_lit(1),
+                            body: Block {
+                                stmts: vec![],
+                                trailing_expr: None,
+                            },
+                            label: None,
+                        },
+                        10..20,
+                    ),
+                    (
+                        Stmt::Loop {
+                            body: Block {
+                                stmts: vec![],
+                                trailing_expr: None,
+                            },
+                            label: None,
+                        },
+                        20..30,
+                    ),
+                    (
+                        Stmt::Match {
+                            scrutinee: make_int_lit(0),
+                            arms: vec![hew_parser::ast::MatchArm {
+                                pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                                guard: Some(make_int_lit(1)),
+                                body: make_int_lit(2),
+                            }],
+                        },
+                        30..50,
+                    ),
+                    (
+                        Stmt::Assign {
+                            target: make_ident("x"),
+                            value: make_int_lit(0),
+                            op: None,
+                        },
+                        50..60,
+                    ),
+                    (Stmt::Defer(Box::new(make_int_lit(0))), 60..70),
+                    (Stmt::Return(None), 70..80),
+                    (
+                        Stmt::Break {
+                            value: None,
+                            label: None,
+                        },
+                        80..90,
+                    ),
+                    (Stmt::Continue { label: None }, 90..100),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+        // All branches visited without panic — correctness verified by structure
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_expr_types_inner — expression variant coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_expr_lambda_with_types() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Expression((
+                        Expr::Lambda {
+                            params: vec![hew_parser::ast::LambdaParam {
+                                name: "x".into(),
+                                ty: Some(make_option_type()),
+                            }],
+                            body: Box::new(make_int_lit(0)),
+                            return_type: Some(make_option_type()),
+                            is_move: false,
+                            type_params: None,
+                        },
+                        0..20,
+                    )),
+                    0..20,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                if let Expr::Lambda {
+                    params,
+                    return_type,
+                    ..
+                } = &expr.0
+                {
+                    assert!(matches!(&params[0].ty.as_ref().unwrap().0, TypeExpr::Option(_)));
+                    assert!(matches!(&return_type.as_ref().unwrap().0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_expr_call_with_type_args() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Expression((
+                        Expr::Call {
+                            function: Box::new(make_ident("foo")),
+                            args: vec![],
+                            type_args: Some(vec![make_option_type()]),
+                            is_tail_call: false,
+                        },
+                        0..10,
+                    )),
+                    0..10,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                if let Expr::Call { type_args, .. } = &expr.0 {
+                    let ta = type_args.as_ref().unwrap();
+                    assert!(matches!(&ta[0].0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_expr_cast_type() {
+        let registry = test_registry();
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![(
+                    Stmt::Expression((
+                        Expr::Cast {
+                            expr: Box::new(make_int_lit(0)),
+                            ty: make_option_type(),
+                        },
+                        0..10,
+                    )),
+                    0..10,
+                )],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+
+        if let Item::Function(f) = &items[0].0 {
+            if let Stmt::Expression(expr) = &f.body.stmts[0].0 {
+                if let Expr::Cast { ty, .. } = &expr.0 {
+                    assert!(matches!(&ty.0, TypeExpr::Option(_)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_normalize_various_expr_types() {
+        let registry = test_registry();
+        // Exercise many expression variants in a single function
+        let mut items: Vec<Spanned<Item>> = vec![make_fn_item(
+            "f",
+            Block {
+                stmts: vec![
+                    // If expression
+                    (
+                        Stmt::Expression((
+                            Expr::If {
+                                condition: Box::new(make_int_lit(1)),
+                                then_block: Box::new(make_int_lit(2)),
+                                else_block: Some(Box::new(make_int_lit(3))),
+                            },
+                            0..10,
+                        )),
+                        0..10,
+                    ),
+                    // IfLet expression
+                    (
+                        Stmt::Expression((
+                            Expr::IfLet {
+                                pattern: Box::new((
+                                    hew_parser::ast::Pattern::Identifier("x".into()),
+                                    0..1,
+                                )),
+                                expr: Box::new(make_int_lit(0)),
+                                body: Block {
+                                    stmts: vec![],
+                                    trailing_expr: None,
+                                },
+                                else_body: Some(Block {
+                                    stmts: vec![],
+                                    trailing_expr: None,
+                                }),
+                            },
+                            10..20,
+                        )),
+                        10..20,
+                    ),
+                    // Match expression
+                    (
+                        Stmt::Expression((
+                            Expr::Match {
+                                scrutinee: Box::new(make_int_lit(0)),
+                                arms: vec![hew_parser::ast::MatchArm {
+                                    pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                                    guard: Some(make_int_lit(1)),
+                                    body: make_int_lit(2),
+                                }],
+                            },
+                            20..30,
+                        )),
+                        20..30,
+                    ),
+                    // Array, Tuple, MapLiteral
+                    (
+                        Stmt::Expression((
+                            Expr::Array(vec![make_int_lit(0)]),
+                            30..35,
+                        )),
+                        30..35,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::Tuple(vec![make_int_lit(0)]),
+                            35..40,
+                        )),
+                        35..40,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::MapLiteral {
+                                entries: vec![(make_int_lit(1), make_int_lit(2))],
+                            },
+                            40..50,
+                        )),
+                        40..50,
+                    ),
+                    // Binary, Unary, FieldAccess, Index
+                    (
+                        Stmt::Expression((
+                            Expr::Binary {
+                                op: hew_parser::ast::BinaryOp::Add,
+                                left: Box::new(make_int_lit(1)),
+                                right: Box::new(make_int_lit(2)),
+                            },
+                            50..55,
+                        )),
+                        50..55,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::Unary {
+                                op: hew_parser::ast::UnaryOp::Negate,
+                                operand: Box::new(make_int_lit(1)),
+                            },
+                            55..60,
+                        )),
+                        55..60,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::FieldAccess {
+                                object: Box::new(make_ident("obj")),
+                                field: "f".into(),
+                            },
+                            60..65,
+                        )),
+                        60..65,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::Index {
+                                object: Box::new(make_ident("arr")),
+                                index: Box::new(make_int_lit(0)),
+                            },
+                            65..70,
+                        )),
+                        65..70,
+                    ),
+                    // StructInit, Spawn, Send
+                    (
+                        Stmt::Expression((
+                            Expr::StructInit {
+                                name: "Pt".into(),
+                                fields: vec![("x".into(), make_int_lit(0))],
+                            },
+                            70..80,
+                        )),
+                        70..80,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::Spawn {
+                                target: Box::new(make_ident("Actor")),
+                                args: vec![("n".into(), make_int_lit(1))],
+                            },
+                            80..90,
+                        )),
+                        80..90,
+                    ),
+                    (
+                        Stmt::Expression((
+                            Expr::Send {
+                                target: Box::new(make_ident("actor")),
+                                message: Box::new(make_int_lit(0)),
+                            },
+                            90..100,
+                        )),
+                        90..100,
+                    ),
+                    // Range
+                    (
+                        Stmt::Expression((
+                            Expr::Range {
+                                start: Some(Box::new(make_int_lit(0))),
+                                end: Some(Box::new(make_int_lit(10))),
+                                inclusive: false,
+                            },
+                            100..110,
+                        )),
+                        100..110,
+                    ),
+                    // ArrayRepeat
+                    (
+                        Stmt::Expression((
+                            Expr::ArrayRepeat {
+                                value: Box::new(make_int_lit(0)),
+                                count: Box::new(make_int_lit(5)),
+                            },
+                            110..120,
+                        )),
+                        110..120,
+                    ),
+                    // InterpolatedString
+                    (
+                        Stmt::Expression((
+                            Expr::InterpolatedString(vec![
+                                hew_parser::ast::StringPart::Expr(make_int_lit(42)),
+                            ]),
+                            120..130,
+                        )),
+                        120..130,
+                    ),
+                ],
+                trailing_expr: None,
+            },
+        )];
+        normalize_items_types(&mut items, &registry);
+        // All expression normalization branches visited without panic
+    }
+
+    // -----------------------------------------------------------------------
+    // enrich_item_with_diagnostics — item variant coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enrich_machine_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Machine(MachineDecl {
+                    visibility: Visibility::Private,
+                    name: "Light".into(),
+                    states: vec![],
+                    events: vec![],
+                    transitions: vec![MachineTransition {
+                        event_name: "toggle".into(),
+                        source_state: "Off".into(),
+                        target_state: "On".into(),
+                        guard: None,
+                        body: make_int_lit(0),
+                    }],
+                    has_default: false,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_impl_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Impl(ImplDecl {
+                    type_params: None,
+                    trait_bound: None,
+                    target_type: (
+                        TypeExpr::Named {
+                            name: "Foo".into(),
+                            type_args: None,
+                        },
+                        0..0,
+                    ),
+                    where_clause: None,
+                    type_aliases: vec![],
+                    methods: vec![FnDecl {
+                        attributes: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        visibility: Visibility::Private,
+                        is_pure: false,
+                        name: "bar".into(),
+                        type_params: None,
+                        params: vec![],
+                        return_type: None,
+                        where_clause: None,
+                        body: Block {
+                            stmts: vec![],
+                            trailing_expr: Some(Box::new(make_int_lit(42))),
+                        },
+                        doc_comment: None,
+                    }],
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_const_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Const(ConstDecl {
+                    visibility: Visibility::Private,
+                    name: "C".into(),
+                    ty: (
+                        TypeExpr::Named {
+                            name: "int".into(),
+                            type_args: None,
+                        },
+                        0..0,
+                    ),
+                    value: make_int_lit(42),
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_trait_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Trait(TraitDecl {
+                    visibility: Visibility::Private,
+                    name: "Greet".into(),
+                    type_params: None,
+                    super_traits: None,
+                    items: vec![hew_parser::ast::TraitItem::Method(
+                        hew_parser::ast::TraitMethod {
+                            name: "greet".into(),
+                            is_pure: false,
+                            type_params: None,
+                            params: vec![],
+                            return_type: None,
+                            where_clause: None,
+                            body: Some(Block {
+                                stmts: vec![],
+                                trailing_expr: Some(Box::new(make_int_lit(0))),
+                            }),
+                        },
+                    )],
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_type_decl_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::TypeDecl(TypeDecl {
+                    visibility: Visibility::Private,
+                    kind: hew_parser::ast::TypeDeclKind::Struct,
+                    name: "MyType".into(),
+                    type_params: None,
+                    where_clause: None,
+                    body: vec![hew_parser::ast::TypeBodyItem::Method(FnDecl {
+                        attributes: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        visibility: Visibility::Private,
+                        is_pure: false,
+                        name: "do_stuff".into(),
+                        type_params: None,
+                        params: vec![],
+                        return_type: None,
+                        where_clause: None,
+                        body: Block {
+                            stmts: vec![],
+                            trailing_expr: Some(Box::new(make_int_lit(0))),
+                        },
+                        doc_comment: None,
+                    })],
+                    doc_comment: None,
+                    wire: None,
+                    is_indirect: false,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_supervisor_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Supervisor(SupervisorDecl {
+                    visibility: Visibility::Private,
+                    name: "MySup".into(),
+                    strategy: None,
+                    max_restarts: None,
+                    window: None,
+                    children: vec![hew_parser::ast::ChildSpec {
+                        name: "worker".into(),
+                        actor_type: "Worker".into(),
+                        args: vec![make_int_lit(1)],
+                        restart: None,
+                    }],
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_enrich_actor_item() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Actor(ActorDecl {
+                    visibility: Visibility::Private,
+                    name: "Worker".into(),
+                    super_traits: None,
+                    init: Some(hew_parser::ast::ActorInit {
+                        params: vec![],
+                        body: Block {
+                            stmts: vec![(Stmt::Expression(make_int_lit(0)), 0..5)],
+                            trailing_expr: None,
+                        },
+                    }),
+                    fields: vec![],
+                    receive_fns: vec![ReceiveFnDecl {
+                        is_generator: false,
+                        is_pure: false,
+                        name: "handle".into(),
+                        type_params: None,
+                        params: vec![],
+                        return_type: None,
+                        where_clause: None,
+                        body: Block {
+                            stmts: vec![(Stmt::Expression(make_int_lit(1)), 0..5)],
+                            trailing_expr: None,
+                        },
+                        span: 0..0,
+                    }],
+                    methods: vec![FnDecl {
+                        attributes: vec![],
+                        is_async: false,
+                        is_generator: false,
+                        visibility: Visibility::Private,
+                        is_pure: false,
+                        name: "helper".into(),
+                        type_params: None,
+                        params: vec![],
+                        return_type: None,
+                        where_clause: None,
+                        body: Block {
+                            stmts: vec![],
+                            trailing_expr: Some(Box::new(make_int_lit(2))),
+                        },
+                        doc_comment: None,
+                    }],
+                    mailbox_capacity: None,
+                    overflow_policy: None,
+                    is_isolated: false,
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // enrich_stmt_with_diagnostics — statement enrichment coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enrich_var_type_inference() {
+        let var_span = 10..20;
+        let mut tco = empty_tco();
+        tco.expr_types.insert(
+            SpanKey {
+                start: var_span.start,
+                end: var_span.end,
+            },
+            Ty::String,
+        );
+
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "f".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![(
+                            Stmt::Var {
+                                name: "v".into(),
+                                ty: None,
+                                value: Some((
+                                    Expr::Identifier("input".into()),
+                                    var_span.clone(),
+                                )),
+                            },
+                            0..30,
+                        )],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry).unwrap();
+        assert!(result.diagnostics().is_empty());
+
+        if let Item::Function(f) = &program.items[0].0 {
+            if let Stmt::Var { ty, .. } = &f.body.stmts[0].0 {
+                assert!(ty.is_some(), "var type should be inferred");
+                assert!(
+                    matches!(&ty.as_ref().unwrap().0, TypeExpr::Named { name, .. } if name == "string")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_enrich_stmt_control_flow() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "f".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![
+                            (
+                                Stmt::If {
+                                    condition: make_int_lit(1),
+                                    then_block: Block {
+                                        stmts: vec![],
+                                        trailing_expr: None,
+                                    },
+                                    else_block: Some(ElseBlock {
+                                        block: Some(Block {
+                                            stmts: vec![],
+                                            trailing_expr: None,
+                                        }),
+                                        if_stmt: None,
+                                        is_if: false,
+                                    }),
+                                },
+                                0..20,
+                            ),
+                            (
+                                Stmt::IfLet {
+                                    pattern: Box::new((
+                                        hew_parser::ast::Pattern::Identifier("v".into()),
+                                        0..1,
+                                    )),
+                                    expr: Box::new(make_int_lit(0)),
+                                    body: Block {
+                                        stmts: vec![],
+                                        trailing_expr: None,
+                                    },
+                                    else_body: Some(Block {
+                                        stmts: vec![],
+                                        trailing_expr: None,
+                                    }),
+                                },
+                                20..40,
+                            ),
+                            (
+                                Stmt::Match {
+                                    scrutinee: make_int_lit(0),
+                                    arms: vec![hew_parser::ast::MatchArm {
+                                        pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                                        guard: Some(make_int_lit(1)),
+                                        body: make_int_lit(2),
+                                    }],
+                                },
+                                40..60,
+                            ),
+                            (
+                                Stmt::For {
+                                    pattern: (
+                                        hew_parser::ast::Pattern::Identifier("i".into()),
+                                        0..1,
+                                    ),
+                                    iterable: make_int_lit(0),
+                                    body: Block {
+                                        stmts: vec![],
+                                        trailing_expr: None,
+                                    },
+                                    label: None,
+                                    is_await: false,
+                                },
+                                60..80,
+                            ),
+                            (
+                                Stmt::While {
+                                    condition: make_int_lit(1),
+                                    body: Block {
+                                        stmts: vec![],
+                                        trailing_expr: None,
+                                    },
+                                    label: None,
+                                },
+                                80..100,
+                            ),
+                            (
+                                Stmt::Loop {
+                                    body: Block {
+                                        stmts: vec![(
+                                            Stmt::Break {
+                                                value: Some(make_int_lit(0)),
+                                                label: None,
+                                            },
+                                            0..10,
+                                        )],
+                                        trailing_expr: None,
+                                    },
+                                    label: None,
+                                },
+                                100..120,
+                            ),
+                            (
+                                Stmt::Assign {
+                                    target: make_ident("x"),
+                                    value: make_int_lit(0),
+                                    op: None,
+                                },
+                                120..130,
+                            ),
+                            (Stmt::Defer(Box::new(make_int_lit(0))), 130..140),
+                            (Stmt::Return(Some(make_int_lit(0))), 140..150),
+                        ],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // enrich_expr_with_diagnostics — expression enrichment coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enrich_various_exprs() {
+        let tco = empty_tco();
+        let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
+        let mut program = Program {
+            items: vec![(
+                Item::Function(FnDecl {
+                    attributes: vec![],
+                    is_async: false,
+                    is_generator: false,
+                    visibility: Visibility::Private,
+                    is_pure: false,
+                    name: "f".into(),
+                    type_params: None,
+                    params: vec![],
+                    return_type: None,
+                    where_clause: None,
+                    body: Block {
+                        stmts: vec![
+                            // If expr
+                            (
+                                Stmt::Expression((
+                                    Expr::If {
+                                        condition: Box::new(make_int_lit(1)),
+                                        then_block: Box::new(make_int_lit(2)),
+                                        else_block: Some(Box::new(make_int_lit(3))),
+                                    },
+                                    0..10,
+                                )),
+                                0..10,
+                            ),
+                            // IfLet expr
+                            (
+                                Stmt::Expression((
+                                    Expr::IfLet {
+                                        pattern: Box::new((
+                                            hew_parser::ast::Pattern::Identifier("x".into()),
+                                            0..1,
+                                        )),
+                                        expr: Box::new(make_int_lit(0)),
+                                        body: Block {
+                                            stmts: vec![],
+                                            trailing_expr: None,
+                                        },
+                                        else_body: Some(Block {
+                                            stmts: vec![],
+                                            trailing_expr: None,
+                                        }),
+                                    },
+                                    10..20,
+                                )),
+                                10..20,
+                            ),
+                            // Match expr
+                            (
+                                Stmt::Expression((
+                                    Expr::Match {
+                                        scrutinee: Box::new(make_int_lit(0)),
+                                        arms: vec![hew_parser::ast::MatchArm {
+                                            pattern: (hew_parser::ast::Pattern::Wildcard, 0..0),
+                                            guard: Some(make_int_lit(1)),
+                                            body: make_int_lit(2),
+                                        }],
+                                    },
+                                    20..30,
+                                )),
+                                20..30,
+                            ),
+                            // Array, Tuple, MapLiteral
+                            (
+                                Stmt::Expression((
+                                    Expr::Array(vec![make_int_lit(0)]),
+                                    30..35,
+                                )),
+                                30..35,
+                            ),
+                            (
+                                Stmt::Expression((
+                                    Expr::Tuple(vec![make_int_lit(0)]),
+                                    35..40,
+                                )),
+                                35..40,
+                            ),
+                            (
+                                Stmt::Expression((
+                                    Expr::MapLiteral {
+                                        entries: vec![(make_int_lit(1), make_int_lit(2))],
+                                    },
+                                    40..50,
+                                )),
+                                40..50,
+                            ),
+                            // Lambda
+                            (
+                                Stmt::Expression((
+                                    Expr::Lambda {
+                                        params: vec![],
+                                        body: Box::new(make_int_lit(0)),
+                                        return_type: None,
+                                        is_move: false,
+                                        type_params: None,
+                                    },
+                                    50..60,
+                                )),
+                                50..60,
+                            ),
+                            // Call
+                            (
+                                Stmt::Expression((
+                                    Expr::Call {
+                                        function: Box::new(make_ident("foo")),
+                                        args: vec![CallArg::Positional(make_int_lit(1))],
+                                        type_args: None,
+                                        is_tail_call: false,
+                                    },
+                                    60..70,
+                                )),
+                                60..70,
+                            ),
+                            // Binary, Unary
+                            (
+                                Stmt::Expression((
+                                    Expr::Binary {
+                                        op: hew_parser::ast::BinaryOp::Add,
+                                        left: Box::new(make_int_lit(1)),
+                                        right: Box::new(make_int_lit(2)),
+                                    },
+                                    70..80,
+                                )),
+                                70..80,
+                            ),
+                            (
+                                Stmt::Expression((
+                                    Expr::Unary {
+                                        op: hew_parser::ast::UnaryOp::Negate,
+                                        operand: Box::new(make_int_lit(1)),
+                                    },
+                                    80..85,
+                                )),
+                                80..85,
+                            ),
+                            // FieldAccess, Index
+                            (
+                                Stmt::Expression((
+                                    Expr::FieldAccess {
+                                        object: Box::new(make_ident("s")),
+                                        field: "x".into(),
+                                    },
+                                    85..90,
+                                )),
+                                85..90,
+                            ),
+                            (
+                                Stmt::Expression((
+                                    Expr::Index {
+                                        object: Box::new(make_ident("arr")),
+                                        index: Box::new(make_int_lit(0)),
+                                    },
+                                    90..95,
+                                )),
+                                90..95,
+                            ),
+                            // StructInit
+                            (
+                                Stmt::Expression((
+                                    Expr::StructInit {
+                                        name: "Pt".into(),
+                                        fields: vec![("x".into(), make_int_lit(0))],
+                                    },
+                                    95..105,
+                                )),
+                                95..105,
+                            ),
+                            // Spawn, Send
+                            (
+                                Stmt::Expression((
+                                    Expr::Spawn {
+                                        target: Box::new(make_ident("Actor")),
+                                        args: vec![("n".into(), make_int_lit(1))],
+                                    },
+                                    105..115,
+                                )),
+                                105..115,
+                            ),
+                            (
+                                Stmt::Expression((
+                                    Expr::Send {
+                                        target: Box::new(make_ident("actor")),
+                                        message: Box::new(make_int_lit(0)),
+                                    },
+                                    115..125,
+                                )),
+                                115..125,
+                            ),
+                            // Range
+                            (
+                                Stmt::Expression((
+                                    Expr::Range {
+                                        start: Some(Box::new(make_int_lit(0))),
+                                        end: Some(Box::new(make_int_lit(10))),
+                                        inclusive: false,
+                                    },
+                                    125..135,
+                                )),
+                                125..135,
+                            ),
+                            // Block
+                            (
+                                Stmt::Expression((
+                                    Expr::Block(Block {
+                                        stmts: vec![],
+                                        trailing_expr: Some(Box::new(make_int_lit(0))),
+                                    }),
+                                    135..145,
+                                )),
+                                135..145,
+                            ),
+                            // ArrayRepeat
+                            (
+                                Stmt::Expression((
+                                    Expr::ArrayRepeat {
+                                        value: Box::new(make_int_lit(0)),
+                                        count: Box::new(make_int_lit(5)),
+                                    },
+                                    145..155,
+                                )),
+                                145..155,
+                            ),
+                            // InterpolatedString
+                            (
+                                Stmt::Expression((
+                                    Expr::InterpolatedString(vec![
+                                        hew_parser::ast::StringPart::Expr(make_int_lit(42)),
+                                    ]),
+                                    155..165,
+                                )),
+                                155..165,
+                            ),
+                        ],
+                        trailing_expr: None,
+                    },
+                    doc_comment: None,
+                }),
+                0..0,
+            )],
+            module_doc: None,
+            module_graph: None,
+        };
+        let result = enrich_program(&mut program, &tco, &registry);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_type_expr — additional children coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_array_type_children() {
+        let registry = test_registry();
+        let mut te = TypeExpr::Array {
+            element: Box::new((
+                TypeExpr::Named {
+                    name: "Option".into(),
+                    type_args: Some(vec![(
+                        TypeExpr::Named {
+                            name: "i32".into(),
+                            type_args: None,
+                        },
+                        0..0,
+                    )]),
+                },
+                0..0,
+            )),
+            size: 10,
+        };
+        normalize_type_expr(&mut te, &registry);
+        if let TypeExpr::Array { element, .. } = &te {
+            assert!(matches!(&element.0, TypeExpr::Option(_)));
+        }
+    }
+
+    #[test]
+    fn test_normalize_pointer_type_children() {
+        let registry = test_registry();
+        let mut te = TypeExpr::Pointer {
+            is_mutable: false,
+            pointee: Box::new((
+                TypeExpr::Named {
+                    name: "Option".into(),
+                    type_args: Some(vec![(
+                        TypeExpr::Named {
+                            name: "i32".into(),
+                            type_args: None,
+                        },
+                        0..0,
+                    )]),
+                },
+                0..0,
+            )),
+        };
+        normalize_type_expr(&mut te, &registry);
+        if let TypeExpr::Pointer { pointee, .. } = &te {
+            assert!(matches!(&pointee.0, TypeExpr::Option(_)));
+        }
+    }
+
+    #[test]
+    fn test_normalize_slice_type_children() {
+        let registry = test_registry();
+        let mut te = TypeExpr::Slice(Box::new((
+            TypeExpr::Named {
+                name: "Option".into(),
+                type_args: Some(vec![(
+                    TypeExpr::Named {
+                        name: "i32".into(),
+                        type_args: None,
+                    },
+                    0..0,
+                )]),
+            },
+            0..0,
+        )));
+        normalize_type_expr(&mut te, &registry);
+        if let TypeExpr::Slice(inner) = &te {
+            assert!(matches!(&inner.0, TypeExpr::Option(_)));
+        }
+    }
+
+    #[test]
+    fn test_normalize_trait_object_type_children() {
+        let registry = test_registry();
+        let mut te = TypeExpr::TraitObject(vec![TraitBound {
+            name: "Iter".into(),
+            type_args: Some(vec![(
+                TypeExpr::Named {
+                    name: "Option".into(),
+                    type_args: Some(vec![(
+                        TypeExpr::Named {
+                            name: "i32".into(),
+                            type_args: None,
+                        },
+                        0..0,
+                    )]),
+                },
+                0..0,
+            )]),
+        }]);
+        normalize_type_expr(&mut te, &registry);
+        if let TypeExpr::TraitObject(bounds) = &te {
+            let args = bounds[0].type_args.as_ref().unwrap();
+            assert!(matches!(&args[0].0, TypeExpr::Option(_)));
         }
     }
 }

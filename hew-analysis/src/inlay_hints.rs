@@ -122,6 +122,9 @@ fn collect_inlay_hints_from_stmt(
         Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
+        Stmt::WhileLet { body, .. } => {
+            collect_inlay_hints_from_block(source, body, tc, hints);
+        }
         Stmt::If {
             then_block,
             else_block,

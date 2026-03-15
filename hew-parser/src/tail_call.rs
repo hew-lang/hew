@@ -74,9 +74,10 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         Stmt::IfLet {
             body, else_body, ..
         } => block_contains_defer(body) || else_body.as_ref().is_some_and(block_contains_defer),
-        Stmt::Loop { body, .. } | Stmt::For { body, .. } | Stmt::While { body, .. } => {
-            block_contains_defer(body)
-        }
+        Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. } => block_contains_defer(body),
         _ => false,
     }
 }
@@ -107,7 +108,10 @@ fn mark_stmt(stmt: &mut Stmt) {
                 mark_block(block);
             }
         }
-        Stmt::Loop { body, .. } | Stmt::For { body, .. } | Stmt::While { body, .. } => {
+        Stmt::Loop { body, .. }
+        | Stmt::For { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. } => {
             mark_block(body);
         }
         _ => {}

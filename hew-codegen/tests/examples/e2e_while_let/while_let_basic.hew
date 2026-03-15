@@ -1,0 +1,32 @@
+// Test while-let pattern matching loops with Option types
+
+fn countdown(n: i64) -> Option<i64> {
+    if n > 0 {
+        Some(n - 1)
+    } else {
+        let none: Option<i64> = None;
+        none
+    }
+}
+
+fn main() -> int {
+    // Basic while-let: iterate until None
+    var opt: Option<i64> = Some(3);
+    while let Some(x) = opt {
+        println(x);
+        opt = countdown(x);
+    }
+
+    // Early exit with break
+    var opt2: Option<i64> = Some(10);
+    while let Some(x) = opt2 {
+        if x < 8 {
+            break;
+        }
+        println(x);
+        opt2 = countdown(x);
+    }
+    println("done");
+
+    return 0;
+}

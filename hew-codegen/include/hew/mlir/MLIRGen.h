@@ -181,6 +181,7 @@ private:
   void generateIfStmt(const ast::StmtIf &stmt);
   mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt);
   void generateWhileStmt(const ast::StmtWhile &stmt);
+  void generateWhileLetStmt(const ast::StmtWhileLet &stmt);
   bool isExprLoopInvariant(const ast::Expr &expr);
   void generateForStmt(const ast::StmtFor &stmt);
   void generateForAwaitStmt(const ast::StmtFor &stmt);

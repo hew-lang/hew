@@ -1026,6 +1026,17 @@ static ast::Stmt parseStmt(const msgpack::object &obj) {
     s.body = parseBlock(mapReq(*payload, "body"));
     return ast::Stmt{std::move(s), {}};
   }
+  if (name == "WhileLet") {
+    ast::StmtWhileLet s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    s.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    s.body = parseBlock(mapReq(*payload, "body"));
+    return ast::Stmt{std::move(s), {}};
+  }
   if (name == "Break") {
     ast::StmtBreak s;
     const auto *lbl = mapGet(*payload, "label");

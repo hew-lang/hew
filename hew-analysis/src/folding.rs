@@ -178,6 +178,10 @@ fn collect_stmt_folding(
             add_region(source, lo, span, r);
             collect_block_folding(source, lo, body, r);
         }
+        Stmt::WhileLet { body, .. } => {
+            add_region(source, lo, span, r);
+            collect_block_folding(source, lo, body, r);
+        }
         Stmt::Expression(expr) => {
             collect_expr_folding(source, lo, &expr.0, &expr.1, r);
         }

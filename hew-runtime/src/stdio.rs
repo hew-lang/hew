@@ -130,4 +130,11 @@ mod tests {
         // Empty string is still a valid NUL-terminated pointer.
         unsafe { hew_io_write(s.as_ptr()) };
     }
+
+    #[test]
+    fn write_err_empty_string() {
+        let s = CString::new("").unwrap();
+        // Empty string to stderr should not panic.
+        unsafe { hew_io_write_err(s.as_ptr()) };
+    }
 }

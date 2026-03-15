@@ -226,4 +226,36 @@ mod tests {
             hew_deque_free(dq);
         }
     }
+
+    #[test]
+    fn null_pointer_safety() {
+        // SAFETY: testing null-safety of all deque functions.
+        unsafe {
+            hew_deque_push_front(std::ptr::null_mut(), 1);
+            hew_deque_push_back(std::ptr::null_mut(), 1);
+            assert_eq!(hew_deque_pop_front(std::ptr::null_mut()), 0);
+            assert_eq!(hew_deque_pop_back(std::ptr::null_mut()), 0);
+            assert_eq!(hew_deque_len(std::ptr::null()), 0);
+            assert!(hew_deque_is_empty(std::ptr::null()));
+            hew_deque_free(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn len_tracks_operations() {
+        let dq = hew_deque_new();
+        // SAFETY: `dq` was just created above.
+        unsafe {
+            assert_eq!(hew_deque_len(dq), 0);
+            hew_deque_push_back(dq, 10);
+            assert_eq!(hew_deque_len(dq), 1);
+            hew_deque_push_front(dq, 20);
+            assert_eq!(hew_deque_len(dq), 2);
+            hew_deque_pop_front(dq);
+            assert_eq!(hew_deque_len(dq), 1);
+            hew_deque_pop_back(dq);
+            assert_eq!(hew_deque_len(dq), 0);
+            hew_deque_free(dq);
+        }
+    }
 }

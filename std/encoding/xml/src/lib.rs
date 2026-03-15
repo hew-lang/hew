@@ -649,4 +649,25 @@ mod tests {
             hew_xml_free(node);
         }
     }
+
+    #[test]
+    fn to_string_null_returns_null() {
+        // SAFETY: testing null-safety of hew_xml_to_string.
+        unsafe {
+            let s = hew_xml_to_string(std::ptr::null());
+            assert!(s.is_null());
+        }
+    }
+
+    #[test]
+    fn get_attribute_null_node_returns_empty() {
+        let key = CString::new("id").unwrap();
+        // SAFETY: testing null-safety of hew_xml_get_attribute.
+        unsafe {
+            let val = hew_xml_get_attribute(std::ptr::null(), key.as_ptr());
+            assert!(!val.is_null());
+            let result = read_and_free_cstr(val);
+            assert_eq!(result, "");
+        }
+    }
 }

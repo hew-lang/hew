@@ -63,13 +63,14 @@
 (defconst hew-keywords
   '("if" "else" "match" "loop" "for" "in" "while"
     "break" "continue" "return"
-    "let" "var" "const" "fn" "gen" "type" "struct" "enum"
+    "let" "var" "const" "fn" "gen" "type" "struct" "indirect" "enum"
     "trait" "impl" "import" "pub" "super" "where"
     "actor" "receive" "init" "spawn" "async" "move" "await" "this"
     "supervisor" "child" "restart" "budget" "strategy"
     "wire" "reserved" "optional" "deprecated" "default"
+    "machine" "state" "event" "on" "when"
     "try" "catch" "select" "join" "yield" "cooperate" "after" "from"
-    "scope" "race" "defer"
+    "scope" "race" "defer" "foreign"
     "dyn" "unsafe" "extern" "package"
     "pure" "as")
   "Hew language keywords.")

@@ -160,26 +160,35 @@
       ]
     },
     "wire-annotations": {
-      "comment": "Wire field tags: @1, @2",
-      "name": "constant.numeric.wire-tag.hew",
-      "match": "@\\d+"
+      "patterns": [
+        {
+          "comment": "Wire field tags: @1, @2",
+          "name": "constant.numeric.wire-tag.hew",
+          "match": "@\\d+"
+        },
+        {
+          "comment": "Named annotations: @every, @label",
+          "name": "entity.name.function.annotation.hew",
+          "match": "@[a-zA-Z_][a-zA-Z0-9_]*"
+        }
+      ]
     },
     "keywords": {
       "patterns": [
         {
           "comment": "Control flow",
           "name": "keyword.control.hew",
-          "match": "\\b(if|else|match|loop|for|in|while|break|continue|return|try|catch|select|join|race|yield|cooperate|after|from|await|scope|defer)\\b"
+          "match": "\\b(if|else|match|loop|for|in|while|break|continue|return|select|join|yield|cooperate|after|from|await|scope|defer)\\b"
         },
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(let|var|const|fn|gen|type|struct|enum|trait|impl|import|pub|super|where|as)\\b"
+          "match": "\\b(let|var|const|fn|gen|type|struct|indirect|enum|trait|impl|import|pub|super|where|as)\\b"
         },
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|receive|init|spawn|async|move|this|mailbox|overflow)\\b"
+          "match": "\\b(actor|receive|init|spawn|async|move|this)\\b"
         },
         {
           "comment": "Supervisor",
@@ -197,9 +206,19 @@
           "match": "\\b(wire|reserved|optional|deprecated|default)\\b"
         },
         {
+          "comment": "State machine keywords",
+          "name": "keyword.control.machine.hew",
+          "match": "\\b(machine|state|event|on|when)\\b"
+        },
+        {
           "comment": "Other keywords",
           "name": "keyword.other.hew",
           "match": "\\b(dyn|unsafe|extern|package|pure)\\b"
+        },
+        {
+          "comment": "Reserved keywords (not yet used in the language)",
+          "name": "keyword.reserved.hew",
+          "match": "\\b(try|catch|race|foreign)\\b"
         },
         {
           "comment": "Boolean literals",

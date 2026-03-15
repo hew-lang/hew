@@ -185,6 +185,9 @@ mod tests {
     unsafe fn read_f64_vec(v: *mut HewVec) -> Vec<f64> {
         unsafe {
             let len = (*v).len;
+            if len == 0 {
+                return Vec::new();
+            }
             core::slice::from_raw_parts((*v).data.cast::<f64>(), len).to_vec()
         }
     }
@@ -203,6 +206,9 @@ mod tests {
     unsafe fn read_str_vec(v: *mut HewVec) -> Vec<String> {
         unsafe {
             let len = (*v).len;
+            if len == 0 {
+                return Vec::new();
+            }
             let ptrs = core::slice::from_raw_parts((*v).data.cast::<*const libc::c_char>(), len);
             ptrs.iter()
                 .map(|p| CStr::from_ptr(*p).to_string_lossy().into_owned())
@@ -278,6 +284,104 @@ mod tests {
             assert_eq!(read_i64_vec(sorted), vec![42]);
             hew_runtime::vec::hew_vec_free(sorted);
             hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_ints_already_sorted() {
+        unsafe {
+            let v = make_i64_vec(&[1, 2, 3, 4, 5]);
+            let sorted = hew_sort_ints(v);
+            assert_eq!(read_i64_vec(sorted), vec![1, 2, 3, 4, 5]);
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_ints_reverse_sorted() {
+        unsafe {
+            let v = make_i64_vec(&[5, 4, 3, 2, 1]);
+            let sorted = hew_sort_ints(v);
+            assert_eq!(read_i64_vec(sorted), vec![1, 2, 3, 4, 5]);
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_ints_duplicates() {
+        unsafe {
+            let v = make_i64_vec(&[3, 1, 3, 1, 2]);
+            let sorted = hew_sort_ints(v);
+            assert_eq!(read_i64_vec(sorted), vec![1, 1, 2, 3, 3]);
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_strings_empty() {
+        unsafe {
+            let v = make_str_vec(&[]);
+            let sorted = hew_sort_strings(v);
+            assert_eq!(read_str_vec(sorted), Vec::<String>::new());
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_floats_negative() {
+        unsafe {
+            let v = make_f64_vec(&[-3.0, -1.0, -2.0]);
+            let sorted = hew_sort_floats(v);
+            assert_eq!(read_f64_vec(sorted), vec![-3.0, -2.0, -1.0]);
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn sort_floats_with_zero() {
+        unsafe {
+            let v = make_f64_vec(&[1.0, 0.0, -1.0]);
+            let sorted = hew_sort_floats(v);
+            assert_eq!(read_f64_vec(sorted), vec![-1.0, 0.0, 1.0]);
+            hew_runtime::vec::hew_vec_free(sorted);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn reverse_empty() {
+        unsafe {
+            let v = make_i64_vec(&[]);
+            let rev = hew_sort_reverse(v);
+            assert_eq!(read_i64_vec(rev), Vec::<i64>::new());
+            hew_runtime::vec::hew_vec_free(rev);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn reverse_single() {
+        unsafe {
+            let v = make_i64_vec(&[42]);
+            let rev = hew_sort_reverse(v);
+            assert_eq!(read_i64_vec(rev), vec![42]);
+            hew_runtime::vec::hew_vec_free(rev);
+            hew_runtime::vec::hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn null_returns_null() {
+        unsafe {
+            assert!(hew_sort_ints(std::ptr::null_mut()).is_null());
+            assert!(hew_sort_strings(std::ptr::null_mut()).is_null());
+            assert!(hew_sort_floats(std::ptr::null_mut()).is_null());
+            assert!(hew_sort_reverse(std::ptr::null_mut()).is_null());
         }
     }
 }

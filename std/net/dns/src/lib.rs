@@ -155,4 +155,20 @@ mod tests {
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(result.is_null());
     }
+
+    #[test]
+    fn resolve_empty_string_returns_empty() {
+        let host = CString::new("").unwrap();
+        let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
+        assert!(!vec.is_null());
+        assert_eq!(unsafe { hew_cabi::vec::hew_vec_len(vec) }, 0);
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    }
+
+    #[test]
+    fn lookup_host_empty_string_returns_null() {
+        let host = CString::new("").unwrap();
+        let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
+        assert!(result.is_null());
+    }
 }

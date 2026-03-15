@@ -220,4 +220,33 @@ mod tests {
         // SAFETY: passing null is the test.
         unsafe { hew_tls_close(std::ptr::null_mut()) };
     }
+
+    #[test]
+    fn default_config_does_not_panic() {
+        let config = default_client_config();
+        assert!(config.is_ok(), "default_client_config should succeed");
+    }
+
+    #[test]
+    fn connect_empty_host_returns_null() {
+        let host = std::ffi::CString::new("").unwrap();
+        // SAFETY: passing valid but empty C string.
+        let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn connect_negative_port_returns_null() {
+        let host = std::ffi::CString::new("example.com").unwrap();
+        // SAFETY: passing valid host with invalid port.
+        let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn write_null_data_nonzero_len_returns_error() {
+        // SAFETY: testing null data with non-zero length.
+        let ret = unsafe { hew_tls_write(std::ptr::null_mut(), std::ptr::null(), 10) };
+        assert_eq!(ret, -1);
+    }
 }

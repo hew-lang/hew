@@ -191,4 +191,38 @@ mod tests {
     fn round_zero() {
         assert_eq!(unsafe { hew_math_round(0.0) }, 0.0);
     }
+
+    // ── additional coverage ─────────────────────────────────────────
+
+    #[test]
+    fn sqrt_large_value() {
+        assert_eq!(unsafe { hew_math_sqrt(1_000_000.0) }, 1000.0);
+    }
+
+    #[test]
+    fn pow_negative_base() {
+        assert_eq!(unsafe { hew_math_pow(-2.0, 3.0) }, -8.0);
+    }
+
+    #[test]
+    fn floor_point_five() {
+        assert_eq!(unsafe { hew_math_floor(2.5) }, 2.0);
+        assert_eq!(unsafe { hew_math_floor(-2.5) }, -3.0);
+    }
+
+    #[test]
+    fn ceil_point_five() {
+        assert_eq!(unsafe { hew_math_ceil(2.5) }, 3.0);
+        assert_eq!(unsafe { hew_math_ceil(-2.5) }, -2.0);
+    }
+
+    #[test]
+    fn round_point_one() {
+        assert_eq!(unsafe { hew_math_round(2.1) }, 2.0);
+    }
+
+    #[test]
+    fn round_point_nine() {
+        assert_eq!(unsafe { hew_math_round(2.9) }, 3.0);
+    }
 }

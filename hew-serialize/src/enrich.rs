@@ -1716,7 +1716,7 @@ fn enrich_expr_with_diagnostics(
                 let call_span_key = SpanKey::from(&expr.1);
                 if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
                     let converted: Result<Vec<_>, _> =
-                        inferred.iter().map(|ty| ty_to_type_expr(ty)).collect();
+                        inferred.iter().map(ty_to_type_expr).collect();
                     if let Ok(ta) = converted {
                         *type_args = Some(ta);
                     }

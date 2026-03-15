@@ -1394,6 +1394,7 @@ mod tests {
         ) {
             // SAFETY: test passes a valid Vec pointer.
             let vec = unsafe { &mut *user_data.cast::<Vec<(String, u64, bool)>>() };
+            // SAFETY: name is a valid NUL-terminated C string from the cluster callback.
             let s = unsafe { CStr::from_ptr(name) }
                 .to_string_lossy()
                 .into_owned();

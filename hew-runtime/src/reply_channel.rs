@@ -399,6 +399,7 @@ mod tests {
     fn cancel_then_owner_release_leaves_sender_reference_for_late_reply() {
         let ch = hew_reply_channel_new();
 
+        // SAFETY: ch is a valid channel pointer; FFI calls test ref-counting behaviour.
         unsafe {
             hew_reply_channel_retain(ch);
             hew_reply_channel_cancel(ch);
@@ -417,11 +418,12 @@ mod tests {
         let ch = hew_reply_channel_new();
         let value = 42_i32;
 
+        // SAFETY: ch is a valid channel pointer; value address is valid for the block scope.
         unsafe {
             hew_reply_channel_retain(ch);
             hew_reply(
                 ch,
-                (&value as *const i32).cast_mut().cast(),
+                (&raw const value).cast_mut().cast(),
                 std::mem::size_of::<i32>(),
             );
 
@@ -444,12 +446,13 @@ mod tests {
         let ch = hew_reply_channel_new();
         let payload = 99_i64;
 
+        // SAFETY: ch is a valid channel pointer; payload address is valid for the block scope.
         unsafe {
             // Sender retains so the channel survives the reply call.
             hew_reply_channel_retain(ch);
             hew_reply(
                 ch,
-                (&payload as *const i64).cast_mut().cast(),
+                (&raw const payload).cast_mut().cast(),
                 std::mem::size_of::<i64>(),
             );
 
@@ -465,8 +468,8 @@ mod tests {
     fn timeout_expires_returns_null() {
         let ch = hew_reply_channel_new();
 
+        // SAFETY: ch is a valid channel pointer; testing timeout with no reply pending.
         unsafe {
-            // Nobody sends a reply, so timeout should fire.
             let result = hew_reply_wait_timeout(ch, 10);
             assert!(result.is_null());
             hew_reply_channel_free(ch);
@@ -476,6 +479,7 @@ mod tests {
     #[test]
     fn null_channel_safety() {
         // All functions should handle null gracefully.
+        // SAFETY: All functions are documented to handle null pointers gracefully.
         unsafe {
             hew_reply(ptr::null_mut(), ptr::null_mut(), 0);
             assert!(hew_reply_wait(ptr::null_mut()).is_null());
@@ -491,6 +495,7 @@ mod tests {
         let ch = hew_reply_channel_new();
         let value = 77_i32;
 
+        // SAFETY: ch is a valid channel; retain/free manage ref count across threads.
         unsafe {
             hew_reply_channel_retain(ch);
 
@@ -501,7 +506,7 @@ mod tests {
                 let v = 77_i32;
                 hew_reply(
                     ch,
-                    (&v as *const i32).cast_mut().cast(),
+                    (&raw const v).cast_mut().cast(),
                     std::mem::size_of::<i32>(),
                 );
             });
@@ -517,6 +522,7 @@ mod tests {
 
     #[test]
     fn select_first_null_returns_negative_one() {
+        // SAFETY: Null pointer is passed deliberately to verify graceful handling.
         let result = unsafe { hew_select_first(ptr::null_mut(), 0, 10) };
         assert_eq!(result, -1);
     }

@@ -3223,7 +3223,7 @@ impl Worker {
             .find(|l| {
                 l.command
                     .as_ref()
-                    .map_or(false, |c| c.title.contains("reference"))
+                    .is_some_and(|c| c.title.contains("reference"))
                     && l.range.start.line == 0
             })
             .expect("should find a reference lens for helper");
@@ -3248,7 +3248,7 @@ impl Worker {
         let run_test_lens = lenses.iter().find(|l| {
             l.command
                 .as_ref()
-                .map_or(false, |c| c.title.contains("Run test"))
+                .is_some_and(|c| c.title.contains("Run test"))
         });
         assert!(
             run_test_lens.is_some(),
@@ -3753,7 +3753,7 @@ impl Worker {
                 .as_ref()
                 .and_then(|data| data.get("suggestions"))
                 .and_then(|v| v.as_array())
-                .map_or(false, |arr| !arr.is_empty())
+                .is_some_and(|arr| !arr.is_empty())
         });
         if let Some(diag) = diag_with_suggestions {
             let kind = diag

@@ -7,6 +7,7 @@
 use std::collections::VecDeque;
 
 /// Opaque handle to a `VecDeque<i64>`.
+#[derive(Debug)]
 pub struct HewDeque {
     inner: VecDeque<i64>,
 }
@@ -93,6 +94,10 @@ pub unsafe extern "C" fn hew_deque_pop_back(dq: *mut HewDeque) -> i64 {
 ///
 /// `dq` must be a valid pointer returned by [`hew_deque_new`].
 #[no_mangle]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "VecDeque length is bounded in practice"
+)]
 pub unsafe extern "C" fn hew_deque_len(dq: *const HewDeque) -> i64 {
     if dq.is_null() {
         return 0;

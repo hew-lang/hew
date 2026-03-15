@@ -247,14 +247,14 @@ mod tests {
         hew_parser::parse(source)
     }
 
-    /// Build a TypeCheckOutput using the real type checker.
+    /// Build a `TypeCheckOutput` using the real type checker.
     fn type_check(pr: &hew_parser::ParseResult) -> TypeCheckOutput {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
         let mut checker = hew_types::Checker::new(registry);
         checker.check_program(&pr.program)
     }
 
-    /// Build a TypeCheckOutput with a single manually placed expression type.
+    /// Build a `TypeCheckOutput` with a single manually placed expression type.
     fn make_tc_with_expr_type(span_start: usize, span_end: usize, ty: Ty) -> TypeCheckOutput {
         let mut expr_types = HashMap::new();
         expr_types.insert(

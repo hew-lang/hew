@@ -1716,7 +1716,7 @@ fn enrich_expr_with_diagnostics(
                 let call_span_key = SpanKey::from(&expr.1);
                 if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
                     let converted: Result<Vec<_>, _> =
-                        inferred.iter().map(|ty| ty_to_type_expr(ty)).collect();
+                        inferred.iter().map(ty_to_type_expr).collect();
                     if let Ok(ta) = converted {
                         *type_args = Some(ta);
                     }
@@ -2630,7 +2630,7 @@ mod tests {
         if let Item::Function(function) = &program.items[0].0 {
             match &function.body.stmts[0].0 {
                 Stmt::Let { ty, .. } => {
-                    assert!(ty.is_none(), "unsupported type should stay implicit")
+                    assert!(ty.is_none(), "unsupported type should stay implicit");
                 }
                 other => panic!("expected let statement, got {other:?}"),
             }
@@ -4872,6 +4872,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_normalize_various_expr_types() {
         let registry = test_registry();
         // Exercise many expression variants in a single function
@@ -5397,6 +5401,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_enrich_stmt_control_flow() {
         let tco = empty_tco();
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5534,6 +5542,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_enrich_various_exprs() {
         let tco = empty_tco();
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);

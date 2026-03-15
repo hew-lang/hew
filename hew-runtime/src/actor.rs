@@ -2166,7 +2166,6 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use std::ptr;
 
     unsafe extern "C" fn noop_dispatch(
         _state: *mut c_void,
@@ -2178,17 +2177,21 @@ mod tests {
 
     #[test]
     fn ask_with_channel_send_failure_returns_error() {
-        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: Spawning with null state and a valid dispatch function.
+        let actor = unsafe { hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
         assert!(!actor.is_null());
 
+        // SAFETY: actor pointer is valid — returned by hew_actor_spawn above.
         unsafe {
             hew_actor_close(actor);
         }
 
         let ch = reply_channel::hew_reply_channel_new();
-        let rc = unsafe { hew_actor_ask_with_channel(actor, 0, ptr::null_mut(), 0, ch) };
+        // SAFETY: actor and ch are valid pointers from their respective constructors.
+        let rc = unsafe { hew_actor_ask_with_channel(actor, 0, std::ptr::null_mut(), 0, ch) };
         assert_eq!(rc, HewError::ErrActorStopped as i32);
 
+        // SAFETY: ch and actor are valid pointers; freeing resources after test.
         unsafe {
             reply_channel::hew_reply_channel_free(ch);
             assert_eq!(hew_actor_free(actor), 0);

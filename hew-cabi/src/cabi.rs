@@ -61,6 +61,7 @@ mod tests {
 
     /// Helper: free a malloc'd pointer (reduces boilerplate).
     unsafe fn free_ptr(ptr: *mut c_char) {
+        // SAFETY: `ptr` was allocated by a C allocator (malloc via `malloc_cstring`) and is being freed with the matching `libc::free`.
         unsafe { libc::free(ptr.cast::<c_void>()) };
     }
 

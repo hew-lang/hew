@@ -483,7 +483,9 @@ mod tests {
     fn url_encode_null_returns_null() {
         // SAFETY: Null pointer is explicitly handled.
         assert!(unsafe { hew_url_encode(std::ptr::null()) }.is_null());
+        // SAFETY: Null pointer is explicitly handled by hew_url_decode.
         assert!(unsafe { hew_url_decode(std::ptr::null()) }.is_null());
+        // SAFETY: Null pointer is explicitly handled by hew_url_encode_query.
         assert!(unsafe { hew_url_encode_query(std::ptr::null()) }.is_null());
     }
 

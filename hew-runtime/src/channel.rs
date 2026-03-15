@@ -362,16 +362,16 @@ mod tests {
                 let tx = tx_addr as *mut HewChannelSender;
                 let msg = b"from-1\0";
                 // SAFETY: tx is valid for the lifetime of this test.
-                unsafe { hew_channel_send(tx, msg.as_ptr().cast()) };
-                unsafe { hew_channel_sender_close(tx) };
+                hew_channel_send(tx, msg.as_ptr().cast());
+                hew_channel_sender_close(tx);
             });
 
             let t2 = thread::spawn(move || {
                 let tx2 = tx2_addr as *mut HewChannelSender;
                 let msg = b"from-2\0";
                 // SAFETY: tx2 is valid for the lifetime of this test.
-                unsafe { hew_channel_send(tx2, msg.as_ptr().cast()) };
-                unsafe { hew_channel_sender_close(tx2) };
+                hew_channel_send(tx2, msg.as_ptr().cast());
+                hew_channel_sender_close(tx2);
             });
 
             t1.join().unwrap();

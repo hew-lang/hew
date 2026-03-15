@@ -531,7 +531,7 @@ fn machine_exhaustiveness_duplicate_explicit() {
 #[test]
 fn bounds_not_satisfied_missing_trait_impl() {
     let output = typecheck(
-        r#"
+        r"
         trait Printable {
             fn describe(val: Self) -> string;
         }
@@ -547,7 +547,7 @@ fn bounds_not_satisfied_missing_trait_impl() {
             let r = Rock { weight: 42 };
             println(show<Rock>(r));
         }
-    "#,
+    ",
     );
     assert!(
         output

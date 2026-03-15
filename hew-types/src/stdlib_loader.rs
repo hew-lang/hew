@@ -369,10 +369,8 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
             }
             None
         }
-        // Handle blocks that wrap a call (e.g. `{ hew_foo(x); }`)
-        Expr::Block(block) => extract_call_target(block),
-        // Handle unsafe blocks that wrap an FFI call (e.g. `unsafe { hew_foo(x) }`)
-        Expr::Unsafe(block) => extract_call_target(block),
+        // Handle blocks or unsafe blocks that wrap a call
+        Expr::Block(block) | Expr::Unsafe(block) => extract_call_target(block),
         _ => None,
     }
 }
@@ -545,7 +543,7 @@ mod tests {
             return;
         };
         let mut sorted: Vec<_> = entries.filter_map(Result::ok).collect();
-        sorted.sort_by_key(|e| e.file_name());
+        sorted.sort_by_key(std::fs::DirEntry::file_name);
 
         let mut has_hew = false;
         for entry in &sorted {
@@ -553,7 +551,7 @@ mod tests {
             if path.is_dir() {
                 discover_modules(&path, repo_root, paths);
             } else if path.extension().is_some_and(|e| e == "hew")
-                && !path.file_name().is_some_and(|f| f == "builtins.hew")
+                && path.file_name().is_none_or(|f| f != "builtins.hew")
             {
                 has_hew = true;
             }
@@ -576,7 +574,7 @@ mod tests {
                 for entry in &sorted {
                     let path = entry.path();
                     if path.extension().is_some_and(|e| e == "hew")
-                        && !path.file_name().is_some_and(|f| f == "builtins.hew")
+                        && path.file_name().is_none_or(|f| f != "builtins.hew")
                     {
                         let stem = path.file_stem().unwrap().to_str().unwrap();
                         paths.push(format!("{}::{stem}", segments[0]));

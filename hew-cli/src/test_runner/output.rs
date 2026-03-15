@@ -47,6 +47,8 @@ pub fn output_results(summary: &TestSummary, use_color: bool, format: OutputForm
     print!("{rendered}");
 }
 
+use std::fmt::Write as _;
+
 /// Render test results as coloured text.
 #[must_use]
 pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
@@ -54,7 +56,7 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
     let total = summary.passed + summary.failed + summary.ignored;
     let mut out = String::new();
 
-    out.push_str(&format!("\nrunning {total} tests\n"));
+    let _ = writeln!(out, "\nrunning {total} tests");
 
     for result in &summary.results {
         let status = match &result.outcome {
@@ -62,7 +64,7 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
             TestOutcome::Failed(_) => format!("{}FAILED{}", c.red, c.reset),
             TestOutcome::Ignored => format!("{}ignored{}", c.yellow, c.reset),
         };
-        out.push_str(&format!("test {} ... {status}\n", result.test.name));
+        let _ = writeln!(out, "test {} ... {status}", result.test.name);
     }
 
     // Print failure details.
@@ -75,7 +77,7 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
     if !failures.is_empty() {
         out.push_str("\nfailures:\n\n");
         for result in &failures {
-            out.push_str(&format!("---- {} ----\n", result.test.name));
+            let _ = writeln!(out, "---- {} ----", result.test.name);
             if let TestOutcome::Failed(msg) = &result.outcome {
                 out.push_str(msg);
                 out.push('\n');
@@ -98,17 +100,13 @@ pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
         format!("{}{}ok{}", c.bold, c.green, c.reset)
     };
 
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "test result: {result_word}. {} passed; {} failed; {} ignored\n\n",
         summary.passed, summary.failed, summary.ignored,
-    ));
+    );
 
     out
-}
-
-/// Format and print test results as coloured text.
-pub fn print_results(summary: &TestSummary, use_color: bool) {
-    print!("{}", render_results(summary, use_color));
 }
 
 /// Print test results as `JUnit` XML to stdout.
@@ -342,8 +340,8 @@ mod tests {
             .contains(r#"<testsuite name="math_test.hew" tests="2" failures="1" skipped="0""#));
         assert!(rendered
             .contains(r#"<failure message="expected 4, got 5">expected 4, got 5</failure>"#));
-        assert!(rendered.contains(r#"<system-out>debug output</system-out>"#));
-        assert!(rendered.contains(r#"<skipped/>"#));
+        assert!(rendered.contains(r"<system-out>debug output</system-out>"));
+        assert!(rendered.contains(r"<skipped/>"));
     }
 
     #[test]

@@ -4015,18 +4015,29 @@ impl Checker {
                     if let Some(ty) = found {
                         ty
                     } else {
-                        let similar = crate::error::find_similar(
-                            name,
-                            self.env
-                                .all_names()
-                                .chain(self.fn_sigs.keys().map(String::as_str)),
-                        );
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedVariable,
-                            span,
-                            format!("undefined variable `{name}`"),
-                            similar,
-                        );
+                        if name == "self" {
+                            self.report_error(
+                                TypeErrorKind::UndefinedVariable,
+                                span,
+                                "`self` is not a valid identifier in Hew; \
+                                 use a named receiver parameter instead: \
+                                 `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                                    .to_string(),
+                            );
+                        } else {
+                            let similar = crate::error::find_similar(
+                                name,
+                                self.env
+                                    .all_names()
+                                    .chain(self.fn_sigs.keys().map(String::as_str)),
+                            );
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedVariable,
+                                span,
+                                format!("undefined variable `{name}`"),
+                                similar,
+                            );
+                        }
                         Ty::Error
                     }
                 }

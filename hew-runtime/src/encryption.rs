@@ -338,7 +338,7 @@ unsafe extern "C" fn enc_connect(impl_ptr: *mut c_void, address: *const c_char) 
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
     let ops = match enc.inner_ops() {
-        Some(o) => o as *const HewTransportOps,
+        Some(o) => std::ptr::from_ref(o),
         None => return HEW_CONN_INVALID,
     };
     let inner_impl = enc.inner_impl();
@@ -402,7 +402,7 @@ unsafe extern "C" fn enc_accept(impl_ptr: *mut c_void, timeout_ms: c_int) -> c_i
     // SAFETY: impl_ptr points to a valid EncryptedTransport.
     let enc = unsafe { &mut *impl_ptr.cast::<EncryptedTransport>() };
     let ops = match enc.inner_ops() {
-        Some(o) => o as *const HewTransportOps,
+        Some(o) => std::ptr::from_ref(o),
         None => return HEW_CONN_INVALID,
     };
     let inner_impl = enc.inner_impl();

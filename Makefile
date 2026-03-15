@@ -33,7 +33,7 @@
 # ============================================================================
 
 .PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
-.PHONY: test test-all test-rust test-codegen test-wasm test-cpp lint grammar
+.PHONY: test test-all test-rust test-codegen test-stdlib test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -282,7 +282,8 @@ assemble-release:
 
 test: test-rust test-codegen
 
-test-all: test-rust test-codegen test-wasm
+# TODO: Add test-stdlib to `test` target once stdlib files are type-check clean
+test-all: test-rust test-codegen test-stdlib test-wasm
 
 test-rust:
 	cargo test
@@ -292,6 +293,23 @@ test-codegen: hew codegen runtime stdlib
 
 test-wasm: hew codegen wasm-runtime
 	cd hew-codegen/build && ctest --output-on-failure -L wasm
+
+test-stdlib: hew
+	@echo "==> Type-checking stdlib .hew files"
+	@fail=0; total=0; \
+	for f in $$(find std/ -name '*.hew' -not -path '*/target/*' | sort); do \
+	  total=$$((total + 1)); \
+	  if ! $(DEBUG_DIR)/hew check "$$f" >/dev/null 2>&1; then \
+	    echo "  FAIL: $$f"; \
+	    $(DEBUG_DIR)/hew check "$$f" 2>&1 | head -3; \
+	    fail=$$((fail + 1)); \
+	  fi; \
+	done; \
+	echo "  $$((total - fail))/$$total stdlib files pass type-check"; \
+	if [ $$fail -gt 0 ]; then \
+	  echo "ERROR: $$fail stdlib file(s) failed type-check"; \
+	  exit 1; \
+	fi
 
 # Legacy alias
 test-cpp: test-codegen

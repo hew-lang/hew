@@ -481,8 +481,8 @@ impl<'a> Formatter<'a> {
                     default,
                 } => {
                     if self.has_comments() {
-                        let pos = self
-                            .find_keyword_after(&format!("type {}", name), self.prev_source_pos);
+                        let pos =
+                            self.find_keyword_after(&format!("type {name}"), self.prev_source_pos);
                         self.flush_comments_before(pos);
                     }
                     self.write_indent();
@@ -783,6 +783,7 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
+    #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
     fn format_machine(&mut self, decl: &MachineDecl, span_end: usize) {
         self.write_indent();
         self.write_visibility(decl.visibility);

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Format staged files before commit.
+# Pre-commit: format staged files + run clippy on Rust changes.
 # Called by git-multi-hook via .git/hooks/pre-commit.d/format symlink.
-# Each formatter runs only when staged files match its glob.
-# Formatted files are automatically re-staged.
 
 staged_into() {
     # shellcheck disable=SC2178 # nameref, not a regular variable
@@ -24,12 +22,21 @@ fmt_and_restage() {
     fi
 }
 
-# Rust — cargo fmt formats the whole project; just restage what was staged
+# Rust — cargo fmt formats the whole project; just restage what was staged.
+# Then run clippy to catch warnings before they fail CI.
 staged_into rs_files '*.rs'
 # shellcheck disable=SC2154 # rs_files set via nameref in staged_into
 if ((${#rs_files[@]} > 0)); then
     cargo fmt --quiet 2>/dev/null
     git add "${rs_files[@]}"
+
+    # Block commit if clippy finds warnings — matches CI enforcement.
+    if ! cargo clippy --workspace --tests --quiet 2>/dev/null; then
+        echo ""
+        echo "clippy found issues. Fix before committing."
+        cargo clippy --workspace --tests 2>&1 | grep "^error\[" | head -10
+        exit 1
+    fi
 fi
 
 # C++ / Headers

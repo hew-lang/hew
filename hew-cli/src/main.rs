@@ -350,11 +350,11 @@ fn cmd_fmt(args: &[String]) {
         };
 
         let result = hew_parser::parse(&source);
-        let has_errors = result
+        let is_fatal = result
             .errors
             .iter()
             .any(|e| matches!(e.severity, hew_parser::Severity::Error));
-        if has_errors {
+        if is_fatal {
             for err in &result.errors {
                 eprintln!("{file}: {err:?}");
             }

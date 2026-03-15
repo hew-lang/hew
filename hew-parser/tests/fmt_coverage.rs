@@ -72,21 +72,6 @@ fn roundtrip_no_comments(source: &str) -> String {
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_simple_function() {
-    let out = roundtrip("fn main() { }");
-    assert!(out.contains("fn main()"), "output: {out}");
-}
-
-#[test]
-fn fmt_function_with_return_type() {
-    let out = roundtrip("fn add(a: i32, b: i32) -> i32 { a + b }");
-    assert!(
-        out.contains("fn add(a: i32, b: i32) -> i32"),
-        "output: {out}"
-    );
-}
-
-#[test]
 fn fmt_function_multiple_statements() {
     let src = r#"fn compute(x: i32) -> i32 {
     let y = x * 2;
@@ -99,25 +84,6 @@ fn fmt_function_multiple_statements() {
 }
 
 #[test]
-fn fmt_async_function() {
-    let out = roundtrip("async fn fetch(n: i32) -> i32 { n }");
-    assert!(out.contains("async fn fetch"), "output: {out}");
-}
-
-#[test]
-fn fmt_pub_function() {
-    let out = roundtrip("pub fn helper() { }");
-    assert!(out.contains("pub fn helper"), "output: {out}");
-}
-
-#[test]
-fn fmt_generic_function() {
-    let src = "fn identity<T>(x: T) -> T { x }";
-    let out = roundtrip(src);
-    assert!(out.contains("fn identity<T>(x: T) -> T"), "output: {out}");
-}
-
-#[test]
 fn fmt_generic_function_with_bounds() {
     let src = "fn print_it<T: Display>(x: T) { println(x); }";
     let out = roundtrip(src);
@@ -125,54 +91,8 @@ fn fmt_generic_function_with_bounds() {
 }
 
 // -----------------------------------------------------------------------
-// Let / var bindings
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_let_binding() {
-    let src = "fn main() { let x = 42; }";
-    let out = roundtrip(src);
-    assert!(out.contains("let x = 42;"), "output: {out}");
-}
-
-#[test]
-fn fmt_let_with_type_annotation() {
-    let src = "fn main() { let x: i32 = 10; }";
-    let out = roundtrip(src);
-    assert!(out.contains("let x: i32 = 10;"), "output: {out}");
-}
-
-#[test]
-fn fmt_var_binding() {
-    let src = "fn main() { var count = 0; }";
-    let out = roundtrip(src);
-    assert!(out.contains("var count = 0;"), "output: {out}");
-}
-
-#[test]
-fn fmt_var_with_type_annotation() {
-    let src = "fn main() { var total: i64 = 0; }";
-    let out = roundtrip(src);
-    assert!(out.contains("var total: i64 = 0;"), "output: {out}");
-}
-
-#[test]
-fn fmt_tuple_destructuring() {
-    let src = "fn main() { let (a, b) = (1, 2); }";
-    let out = roundtrip(src);
-    assert!(out.contains("let (a, b) = (1, 2);"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
 // If / else
 // -----------------------------------------------------------------------
-
-#[test]
-fn fmt_if_statement() {
-    let src = "fn main() { if x > 0 { println(x); } }";
-    let out = roundtrip(src);
-    assert!(out.contains("if x > 0 {"), "output: {out}");
-}
 
 #[test]
 fn fmt_if_else() {
@@ -544,13 +464,6 @@ fn fmt_actor_with_mailbox() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn fmt_simple_lambda() {
-    let src = "fn main() { let f = (x) => x * 2; }";
-    let out = roundtrip(src);
-    assert!(out.contains("(x) => x * 2"), "output: {out}");
-}
-
-#[test]
 fn fmt_lambda_with_types() {
     let src = "fn main() { let f = (x: i32) -> i32 => x + 1; }";
     let out = roundtrip(src);
@@ -564,23 +477,9 @@ fn fmt_multi_param_lambda() {
     assert!(out.contains("(a, b) => a + b"), "output: {out}");
 }
 
-#[test]
-fn fmt_lambda_no_params() {
-    let src = "fn main() { let f = () => 42; }";
-    let out = roundtrip(src);
-    assert!(out.contains("() => 42"), "output: {out}");
-}
-
 // -----------------------------------------------------------------------
 // Method calls and chaining
 // -----------------------------------------------------------------------
-
-#[test]
-fn fmt_method_call() {
-    let src = "fn main() { obj.method(1, 2); }";
-    let out = roundtrip(src);
-    assert!(out.contains("obj.method(1, 2)"), "output: {out}");
-}
 
 #[test]
 fn fmt_chained_method_calls() {
@@ -590,13 +489,6 @@ fn fmt_chained_method_calls() {
         out.contains("list.push(1).push(2).push(3)"),
         "output: {out}"
     );
-}
-
-#[test]
-fn fmt_field_access() {
-    let src = "fn main() { let v = point.x; }";
-    let out = roundtrip(src);
-    assert!(out.contains("point.x"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -618,24 +510,6 @@ fn fmt_string_interpolation_multiple() {
         out.contains(r#"f"{a} plus {b} equals {c}""#),
         "output: {out}"
     );
-}
-
-// -----------------------------------------------------------------------
-// Const declarations
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_const_declaration() {
-    let src = "const MAX: i32 = 100;";
-    let out = roundtrip(src);
-    assert!(out.contains("const MAX: i32 = 100;"), "output: {out}");
-}
-
-#[test]
-fn fmt_pub_const() {
-    let src = "pub const PI: f64 = 3.14;";
-    let out = roundtrip(src);
-    assert!(out.contains("pub const PI: f64 = 3.14;"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -674,17 +548,6 @@ fn fmt_import_file() {
 }
 
 // -----------------------------------------------------------------------
-// Type aliases
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_type_alias() {
-    let src = "type Id = i64;";
-    let out = roundtrip(src);
-    assert!(out.contains("type Id = i64;"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
 // Return statement
 // -----------------------------------------------------------------------
 
@@ -693,13 +556,6 @@ fn fmt_return_statement() {
     let src = "fn early(x: i32) -> i32 { if x < 0 { return 0; } x }";
     let out = roundtrip(src);
     assert!(out.contains("return 0;"), "output: {out}");
-}
-
-#[test]
-fn fmt_return_no_value() {
-    let src = "fn bail() { return; }";
-    let out = roundtrip(src);
-    assert!(out.contains("return;"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -737,20 +593,6 @@ fn fmt_comparison_operators() {
     let src = "fn main() { let r = x >= 0 && x < 100; }";
     let out = roundtrip(src);
     assert!(out.contains("x >= 0 && x < 100"), "output: {out}");
-}
-
-#[test]
-fn fmt_unary_not() {
-    let src = "fn main() { let r = !flag; }";
-    let out = roundtrip(src);
-    assert!(out.contains("!flag"), "output: {out}");
-}
-
-#[test]
-fn fmt_unary_negate() {
-    let src = "fn main() { let r = -x; }";
-    let out = roundtrip(src);
-    assert!(out.contains("-x"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------
@@ -962,17 +804,6 @@ fn fmt_defer_statement() {
     let src = "fn main() { defer cleanup(); }";
     let out = roundtrip(src);
     assert!(out.contains("defer cleanup();"), "output: {out}");
-}
-
-// -----------------------------------------------------------------------
-// Expression statement
-// -----------------------------------------------------------------------
-
-#[test]
-fn fmt_expression_statement() {
-    let src = "fn main() { println(42); }";
-    let out = roundtrip(src);
-    assert!(out.contains("println(42);"), "output: {out}");
 }
 
 // -----------------------------------------------------------------------

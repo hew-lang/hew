@@ -1,5 +1,25 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-15 `hew test` hardening pass
+
+### 1. Test discovery must never discard parser diagnostics
+
+If a test runner ignores parse errors during discovery, a broken test file can be
+misreported as "no tests found" and the command can exit 0. That is worse than a
+visible failure because it creates false confidence in the suite.
+
+### 2. Stable result order is part of test-runner trustworthiness
+
+Even when the right tests run, a `HashMap` in the execution path makes output order
+non-deterministic across files. Preserving discovery order keeps repeated runs easy
+to compare and prevents flaky golden-output expectations.
+
+### 3. Timeout behaviour needs a CLI seam to be testable
+
+A hard-coded timeout works for users, but it makes automated regression tests slow
+and awkward. Exposing `--timeout` made the feature easier to validate and improved
+the real CLI at the same time.
+
 ## From the 2026-03-06 remediation passes
 
 ### 1. Validation targets must follow the real repo layout

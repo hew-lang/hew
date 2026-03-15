@@ -40,18 +40,21 @@ const NO_COLORS: Colors = Colors {
 
 /// Format and output test results in the specified format.
 pub fn output_results(summary: &TestSummary, use_color: bool, format: OutputFormat) {
-    match format {
-        OutputFormat::Text => print_results(summary, use_color),
-        OutputFormat::Junit => print_junit(summary),
-    }
+    let rendered = match format {
+        OutputFormat::Text => render_results(summary, use_color),
+        OutputFormat::Junit => render_junit(summary),
+    };
+    print!("{rendered}");
 }
 
-/// Format and print test results as coloured text.
-pub fn print_results(summary: &TestSummary, use_color: bool) {
+/// Render test results as coloured text.
+#[must_use]
+pub fn render_results(summary: &TestSummary, use_color: bool) -> String {
     let c = if use_color { &COLORS } else { &NO_COLORS };
     let total = summary.passed + summary.failed + summary.ignored;
+    let mut out = String::new();
 
-    println!("\nrunning {total} tests");
+    out.push_str(&format!("\nrunning {total} tests\n"));
 
     for result in &summary.results {
         let status = match &result.outcome {
@@ -59,7 +62,7 @@ pub fn print_results(summary: &TestSummary, use_color: bool) {
             TestOutcome::Failed(_) => format!("{}FAILED{}", c.red, c.reset),
             TestOutcome::Ignored => format!("{}ignored{}", c.yellow, c.reset),
         };
-        println!("test {} ... {status}", result.test.name);
+        out.push_str(&format!("test {} ... {status}\n", result.test.name));
     }
 
     // Print failure details.
@@ -70,16 +73,21 @@ pub fn print_results(summary: &TestSummary, use_color: bool) {
         .collect();
 
     if !failures.is_empty() {
-        println!("\nfailures:\n");
+        out.push_str("\nfailures:\n\n");
         for result in &failures {
-            println!("---- {} ----", result.test.name);
+            out.push_str(&format!("---- {} ----\n", result.test.name));
             if let TestOutcome::Failed(msg) = &result.outcome {
-                println!("{msg}");
+                out.push_str(msg);
+                out.push('\n');
             }
             if !result.output.is_empty() {
-                println!("output:\n{}", result.output);
+                out.push_str("output:\n");
+                out.push_str(&result.output);
+                if !result.output.ends_with('\n') {
+                    out.push('\n');
+                }
             }
-            println!();
+            out.push('\n');
         }
     }
 
@@ -90,10 +98,17 @@ pub fn print_results(summary: &TestSummary, use_color: bool) {
         format!("{}{}ok{}", c.bold, c.green, c.reset)
     };
 
-    println!(
-        "test result: {result_word}. {} passed; {} failed; {} ignored\n",
+    out.push_str(&format!(
+        "test result: {result_word}. {} passed; {} failed; {} ignored\n\n",
         summary.passed, summary.failed, summary.ignored,
-    );
+    ));
+
+    out
+}
+
+/// Format and print test results as coloured text.
+pub fn print_results(summary: &TestSummary, use_color: bool) {
+    print!("{}", render_results(summary, use_color));
 }
 
 /// Print test results as `JUnit` XML to stdout.
@@ -101,8 +116,9 @@ pub fn print_results(summary: &TestSummary, use_color: bool) {
 /// Produces a `<testsuites>` document with one `<testsuite>` per source file.
 /// Compatible with Jenkins, GitHub Actions (`mikepenz/action-junit-report`),
 /// and other `JUnit` XML consumers.
-fn print_junit(summary: &TestSummary) {
+fn render_junit(summary: &TestSummary) -> String {
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
 
     // Group results by source file for testsuite elements.
     let mut suites: BTreeMap<&str, Vec<&super::runner::TestResult>> = BTreeMap::new();
@@ -120,11 +136,14 @@ fn print_junit(summary: &TestSummary) {
         .map(|r| r.duration.as_secs_f64())
         .sum();
 
-    println!(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    println!(
+    let mut out = String::new();
+    writeln!(out, r#"<?xml version="1.0" encoding="UTF-8"?>"#).unwrap();
+    writeln!(
+        out,
         r#"<testsuites name="hew test" tests="{total}" failures="{}" skipped="{}" time="{total_time:.3}">"#,
         summary.failed, summary.ignored,
-    );
+    )
+    .unwrap();
 
     for (file, results) in &suites {
         let suite_tests = results.len();
@@ -138,46 +157,55 @@ fn print_junit(summary: &TestSummary) {
             .count();
         let suite_time: f64 = results.iter().map(|r| r.duration.as_secs_f64()).sum();
 
-        println!(
+        writeln!(
+            out,
             r#"  <testsuite name="{}" tests="{suite_tests}" failures="{suite_failures}" skipped="{suite_skipped}" time="{suite_time:.3}">"#,
             xml_escape(file),
-        );
+        )
+        .unwrap();
 
         for result in results {
             let time = result.duration.as_secs_f64();
-            println!(
+            writeln!(
+                out,
                 r#"    <testcase name="{}" classname="{}" time="{time:.3}">"#,
                 xml_escape(&result.test.name),
                 xml_escape(file),
-            );
+            )
+            .unwrap();
 
             match &result.outcome {
                 TestOutcome::Passed => {}
                 TestOutcome::Failed(msg) => {
-                    println!(
+                    writeln!(
+                        out,
                         r#"      <failure message="{}">{}</failure>"#,
                         xml_escape(msg),
                         xml_escape(msg),
-                    );
+                    )
+                    .unwrap();
                     if !result.output.is_empty() {
-                        println!(
+                        writeln!(
+                            out,
                             "      <system-out>{}</system-out>",
                             xml_escape(&result.output),
-                        );
+                        )
+                        .unwrap();
                     }
                 }
                 TestOutcome::Ignored => {
-                    println!("      <skipped/>");
+                    writeln!(out, "      <skipped/>").unwrap();
                 }
             }
 
-            println!("    </testcase>");
+            writeln!(out, "    </testcase>").unwrap();
         }
 
-        println!("  </testsuite>");
+        writeln!(out, "  </testsuite>").unwrap();
     }
 
-    println!("</testsuites>");
+    writeln!(out, "</testsuites>").unwrap();
+    out
 }
 
 /// Strip ANSI escape sequences from a string.
@@ -216,7 +244,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn print_all_passing() {
+    fn render_all_passing() {
         let summary = TestSummary {
             results: vec![TestResult {
                 test: TestCase {
@@ -233,12 +261,14 @@ mod tests {
             failed: 0,
             ignored: 0,
         };
-        // Just ensure it doesn't panic.
-        print_results(&summary, false);
+        let rendered = render_results(&summary, false);
+        assert!(rendered.contains("running 1 tests"));
+        assert!(rendered.contains("test test_ok ... ok"));
+        assert!(rendered.contains("1 passed; 0 failed; 0 ignored"));
     }
 
     #[test]
-    fn print_with_failure() {
+    fn render_with_failure_details() {
         let summary = TestSummary {
             results: vec![TestResult {
                 test: TestCase {
@@ -248,14 +278,18 @@ mod tests {
                     should_panic: false,
                 },
                 outcome: TestOutcome::Failed("assertion failed".into()),
-                output: String::new(),
+                output: "debug line".into(),
                 duration: std::time::Duration::from_millis(13),
             }],
             passed: 0,
             failed: 1,
             ignored: 0,
         };
-        print_results(&summary, false);
+        let rendered = render_results(&summary, false);
+        assert!(rendered.contains("test test_bad ... FAILED"));
+        assert!(rendered.contains("---- test_bad ----"));
+        assert!(rendered.contains("assertion failed"));
+        assert!(rendered.contains("output:\ndebug line"));
     }
 
     #[test]
@@ -300,9 +334,16 @@ mod tests {
             failed: 1,
             ignored: 1,
         };
-        // Just ensure it doesn't panic — actual XML validation would
-        // require an XML parser dependency we don't want to add.
-        output_results(&summary, false, OutputFormat::Junit);
+        let rendered = render_junit(&summary);
+        assert!(
+            rendered.contains(r#"<testsuites name="hew test" tests="3" failures="1" skipped="1""#)
+        );
+        assert!(rendered
+            .contains(r#"<testsuite name="math_test.hew" tests="2" failures="1" skipped="0""#));
+        assert!(rendered
+            .contains(r#"<failure message="expected 4, got 5">expected 4, got 5</failure>"#));
+        assert!(rendered.contains(r#"<system-out>debug output</system-out>"#));
+        assert!(rendered.contains(r#"<skipped/>"#));
     }
 
     #[test]

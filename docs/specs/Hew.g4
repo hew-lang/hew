@@ -556,6 +556,7 @@ returnStmt
 
 deferStmt
     : 'defer' expr ';'
+    | 'defer' block
     ;
 
 exprStmt

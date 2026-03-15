@@ -412,6 +412,7 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
     // Case 4: Loop/While/For as a value-producing block ending (via break-with-value)
     if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
         std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||
+        std::holds_alternative<ast::StmtWhileLet>(lastStmt.kind) ||
         std::holds_alternative<ast::StmtFor>(lastStmt.kind)) {
       lastBreakValue = nullptr;
       generateStatement(lastStmt);
@@ -451,6 +452,10 @@ void MLIRGen::generateStatement(const ast::Stmt &stmt) {
   }
   if (auto *s = std::get_if<ast::StmtWhile>(&stmt.kind)) {
     generateWhileStmt(*s);
+    return;
+  }
+  if (auto *s = std::get_if<ast::StmtWhileLet>(&stmt.kind)) {
+    generateWhileLetStmt(*s);
     return;
   }
   if (auto *s = std::get_if<ast::StmtFor>(&stmt.kind)) {
@@ -817,22 +822,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     }
 
   } else if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
-    for (uint32_t i = 0; i < tuplePat->elements.size(); i++) {
-      const auto &elem = tuplePat->elements[i];
-      if (auto *ei = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
-        mlir::Value elemVal;
-        if (auto hewTuple = mlir::dyn_cast<hew::HewTupleType>(value.getType())) {
-          elemVal = hew::TupleExtractOp::create(builder, location, hewTuple.getElementTypes()[i],
-                                                value, static_cast<int64_t>(i));
-        } else {
-          elemVal = mlir::LLVM::ExtractValueOp::create(
-              builder, location, value, llvm::ArrayRef<int64_t>{static_cast<int64_t>(i)});
-        }
-        declareVariable(ei->name, elemVal);
-      } else if (std::holds_alternative<ast::PatWildcard>(elem->value.kind)) {
-        continue;
-      }
-    }
+    bindTuplePatternFields(*tuplePat, value, location);
   } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
     bindLetSubPattern(pattern, value, location);
   } else {
@@ -1380,6 +1370,8 @@ static bool stmtMutatesVar(const ast::Stmt &stmt, const std::string &varName) {
     return bodyMutatesVar(for_->body, varName);
   if (auto *while_ = std::get_if<ast::StmtWhile>(&stmt.kind))
     return bodyMutatesVar(while_->body, varName);
+  if (auto *whileLet = std::get_if<ast::StmtWhileLet>(&stmt.kind))
+    return bodyMutatesVar(whileLet->body, varName);
   if (auto *loop_ = std::get_if<ast::StmtLoop>(&stmt.kind))
     return bodyMutatesVar(loop_->body, varName);
   return false;

@@ -593,6 +593,7 @@ add_e2e_file_test(struct_assign         e2e_struct_assign struct_assign)
 
 # ── Tuple destructuring tests ────────────────────────────────────────────────
 add_e2e_file_test(tuple_destruct        e2e_tuple_destruct tuple_destruct)
+add_e2e_file_test(nested_tuple_destruct e2e_nested_tuple_destruct nested_tuple_destruct)
 
 # ── Struct destructuring tests ───────────────────────────────────────────────
 add_e2e_file_test(struct_destruct       e2e_struct_destruct struct_destruct)
@@ -726,6 +727,7 @@ add_e2e_file_test(const_expressions     e2e_const const_expressions)
 add_e2e_file_test(defer                 e2e_defer defer)
 add_e2e_file_test(defer_multi_return    e2e_defer defer_multi_return)
 add_e2e_file_test(defer_cleanup_call    e2e_defer defer_cleanup_call)
+add_e2e_file_test(defer_block           e2e_defer defer_block)
 
 # ── Loop tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(for_range_break       e2e_loops for_range_break)
@@ -808,6 +810,7 @@ add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_l
 add_e2e_file_test(match_nested_pattern  e2e_match match_nested_pattern)
 add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
 add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
+add_e2e_file_test(while_let_basic      e2e_while_let while_let_basic)
 add_e2e_file_test(duration_methods     e2e_duration duration_methods)
 add_e2e_file_test(duration_arithmetic  e2e_duration duration_arithmetic)
 add_e2e_file_test(duration_from_nanos  e2e_duration duration_from_nanos)

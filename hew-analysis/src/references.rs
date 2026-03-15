@@ -291,6 +291,16 @@ fn collect_refs_in_stmt(stmt: &Stmt, name: &str, spans: &mut Vec<Span>) {
             collect_refs_in_expr(&condition.0, &condition.1, name, spans);
             collect_refs_in_block(body, name, spans);
         }
+        Stmt::WhileLet {
+            pattern,
+            expr,
+            body,
+            ..
+        } => {
+            collect_refs_in_pattern(&pattern.0, &pattern.1, name, spans);
+            collect_refs_in_expr(&expr.0, &expr.1, name, spans);
+            collect_refs_in_block(body, name, spans);
+        }
         Stmt::For {
             pattern,
             iterable,

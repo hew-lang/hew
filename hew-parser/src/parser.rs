@@ -3298,12 +3298,25 @@ impl<'src> Parser<'src> {
             }
             Some(Token::While) => {
                 self.advance();
-                let condition = self.parse_expr()?;
-                let body = self.parse_block()?;
-                Stmt::While {
-                    label: None,
-                    condition,
-                    body,
+                if self.eat(&Token::Let) {
+                    let pattern = Box::new(self.parse_pattern()?);
+                    self.expect(&Token::Equal)?;
+                    let expr = Box::new(self.parse_expr()?);
+                    let body = self.parse_block()?;
+                    Stmt::WhileLet {
+                        label: None,
+                        pattern,
+                        expr,
+                        body,
+                    }
+                } else {
+                    let condition = self.parse_expr()?;
+                    let body = self.parse_block()?;
+                    Stmt::While {
+                        label: None,
+                        condition,
+                        body,
+                    }
                 }
             }
             Some(Token::For) => {
@@ -3363,7 +3376,11 @@ impl<'src> Parser<'src> {
             Some(Token::Defer) => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                self.expect(&Token::Semicolon)?;
+                // Block expressions don't need a trailing semicolon
+                // (consistent with if/while/for).
+                if !matches!(expr.0, Expr::Block(_)) {
+                    self.expect(&Token::Semicolon)?;
+                }
                 Stmt::Defer(Box::new(expr))
             }
             _ => {
@@ -3389,12 +3406,25 @@ impl<'src> Parser<'src> {
         let stmt = match self.peek() {
             Some(Token::While) => {
                 self.advance();
-                let condition = self.parse_expr()?;
-                let body = self.parse_block()?;
-                Stmt::While {
-                    label: Some(label),
-                    condition,
-                    body,
+                if self.eat(&Token::Let) {
+                    let pattern = Box::new(self.parse_pattern()?);
+                    self.expect(&Token::Equal)?;
+                    let expr = Box::new(self.parse_expr()?);
+                    let body = self.parse_block()?;
+                    Stmt::WhileLet {
+                        label: Some(label),
+                        pattern,
+                        expr,
+                        body,
+                    }
+                } else {
+                    let condition = self.parse_expr()?;
+                    let body = self.parse_block()?;
+                    Stmt::While {
+                        label: Some(label),
+                        condition,
+                        body,
+                    }
                 }
             }
             Some(Token::Loop) => {

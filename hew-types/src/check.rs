@@ -3664,6 +3664,20 @@ impl Checker {
                     self.loop_labels.pop();
                 }
             }
+            Stmt::WhileLet {
+                pattern,
+                expr,
+                body,
+                ..
+            } => {
+                let scr_ty = self.synthesize(&expr.0, &expr.1);
+                self.env.push_scope();
+                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+                self.loop_depth += 1;
+                self.check_block(body);
+                self.loop_depth -= 1;
+                self.env.pop_scope();
+            }
             Stmt::Break { label, value } => {
                 if self.loop_depth == 0 {
                     self.errors.push(TypeError::new(

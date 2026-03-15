@@ -1377,6 +1377,26 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
                 self.newline();
             }
+            Stmt::WhileLet {
+                label,
+                pattern,
+                expr,
+                body,
+            } => {
+                self.write_indent();
+                if let Some(label) = label {
+                    self.write("@");
+                    self.write(label);
+                    self.write(": ");
+                }
+                self.write("while let ");
+                self.format_pattern(&pattern.0);
+                self.write(" = ");
+                self.format_expr(&expr.0);
+                self.write(" ");
+                self.format_block(body, self.source.len());
+                self.newline();
+            }
             Stmt::Break { label, value } => {
                 self.write_indent();
                 self.write("break");
@@ -1417,7 +1437,12 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write("defer ");
                 self.format_expr(&expr.0);
-                self.write(";\n");
+                // Block expressions already end with `}`, no semicolon.
+                if matches!(expr.0, Expr::Block(_)) {
+                    self.write("\n");
+                } else {
+                    self.write(";\n");
+                }
             }
         }
     }

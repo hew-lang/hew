@@ -1463,6 +1463,10 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(condition, calls);
             collect_calls_in_block(body, calls);
         }
+        Stmt::WhileLet { expr, body, .. } => {
+            collect_calls_in_expr(expr.as_ref(), calls);
+            collect_calls_in_block(body, calls);
+        }
         Stmt::If {
             condition,
             then_block,
@@ -1972,7 +1976,10 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&arm.body.0, counts);
             }
         }
-        Stmt::Loop { body, .. } | Stmt::While { body, .. } | Stmt::For { body, .. } => {
+        Stmt::Loop { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. }
+        | Stmt::For { body, .. } => {
             count_idents_in_block(body, counts);
         }
         Stmt::Expression(expr) | Stmt::Return(Some(expr)) => {

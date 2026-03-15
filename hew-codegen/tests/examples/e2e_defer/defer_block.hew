@@ -1,0 +1,73 @@
+// Test: defer { block } syntax — multiple statements in a deferred block.
+// Exercises: parser (block without semicolon), codegen (block expression in
+// deferred context), LIFO ordering of block defers.
+
+fn test_basic_block() {
+    println("start");
+    defer {
+        println("cleanup-a");
+        println("cleanup-b");
+    }
+    println("end");
+}
+
+fn test_lifo_blocks() {
+    defer {
+        println("second-a");
+        println("second-b");
+    }
+    defer {
+        println("first-a");
+        println("first-b");
+    }
+    println("body");
+}
+
+fn test_early_return() -> int {
+    defer {
+        println("block-cleanup");
+    }
+    if 1 == 1 {
+        println("early");
+        return 42;
+    }
+    return 0;
+}
+
+fn test_mixed() {
+    defer println("single");
+    defer {
+        println("block-a");
+        println("block-b");
+    }
+    println("mixed-body");
+}
+
+fn helper() {
+    defer {
+        println("inner-cleanup");
+    }
+    println("inner-work");
+}
+
+fn test_nested_calls() {
+    defer {
+        println("outer-cleanup");
+    }
+    println("outer-start");
+    helper();
+    println("outer-end");
+}
+
+fn main() {
+    test_basic_block();
+    println("---");
+    test_lifo_blocks();
+    println("---");
+    let r = test_early_return();
+    println(r);
+    println("---");
+    test_mixed();
+    println("---");
+    test_nested_calls();
+}

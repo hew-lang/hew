@@ -1388,7 +1388,21 @@ fn early_return() -> i32 {
 ```
 
 4. **Interaction with drops.** Deferred expressions execute before RAII drop calls at function exit.
-5. **Expression argument.** The `defer` keyword takes a single expression (typically a function call).
+5. **Expression or block argument.** The `defer` keyword takes a single expression (typically a function call) or a block containing multiple statements:
+
+```hew
+// Single expression:
+defer close(handle);
+
+// Block with multiple cleanup steps:
+defer {
+    flush(handle);
+    close(handle);
+    println("resource released");
+}
+```
+
+Block defers follow the same LIFO and early-return semantics as expression defers.
 
 ---
 

@@ -43,13 +43,13 @@ trait TlsStreamMethods {
 
 impl TlsStreamMethods for TlsStream {
     fn write(stream: TlsStream, data: bytes) -> i32 {
-        hew_tls_write(stream, data)
+        unsafe { hew_tls_write(stream, data) }
     }
     fn read(stream: TlsStream, size: i32) -> bytes {
-        hew_tls_read(stream, size)
+        unsafe { hew_tls_read(stream, size) }
     }
     fn close(stream: TlsStream) {
-        hew_tls_close(stream);
+        unsafe { hew_tls_close(stream) };
     }
 }
 
@@ -66,26 +66,26 @@ impl TlsStreamMethods for TlsStream {
 /// let stream = tls.connect("example.com", 443);
 /// ```
 pub fn connect(host: String, port: i32) -> TlsStream {
-    hew_tls_connect(host, port)
+    unsafe { hew_tls_connect(host, port) }
 }
 
 /// Write raw bytes to a TLS stream.
 ///
 /// Returns the number of bytes written, or −1 on error.
 pub fn write(stream: TlsStream, data: bytes) -> i32 {
-    hew_tls_write(stream, data)
+    unsafe { hew_tls_write(stream, data) }
 }
 
 /// Read up to `size` bytes from a TLS stream.
 ///
 /// Returns the bytes read. Returns an empty buffer on EOF or error.
 pub fn read(stream: TlsStream, size: i32) -> bytes {
-    hew_tls_read(stream, size)
+    unsafe { hew_tls_read(stream, size) }
 }
 
 /// Close a TLS connection and release resources.
 pub fn close(stream: TlsStream) {
-    hew_tls_close(stream);
+    unsafe { hew_tls_close(stream) };
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

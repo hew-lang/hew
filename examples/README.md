@@ -34,6 +34,11 @@ hew build examples/fibonacci.hew -o fibonacci
 - **benchmarks/** -- HTTP server implementations in Hew, Rust, Go, and Python
 - **comparison/** -- Counter service implemented side-by-side in Hew, Go, and Rust
 
+### Service Patterns
+
+- **services/** -- Distributed service patterns that showcase Hew's actor model:
+  - Circuit breaker, rate limiter, worker pool, pub/sub broker, health monitor, distributed counter
+
 ### Standalone Examples
 
 | Category      | Examples                                                                  |

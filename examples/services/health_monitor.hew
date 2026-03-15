@@ -1,0 +1,155 @@
+// Health Monitor — periodic service health checking
+//
+// A monitor actor periodically checks the health of other actors,
+// tracks their status, and reports an aggregate health summary. This
+// is the "sidecar health checker" pattern used in service meshes
+// (Envoy, Linkerd) and orchestrators (Kubernetes liveness probes).
+//
+// In Go you'd write a goroutine with a time.Ticker, a map of health
+// statuses, and a mutex to protect it. In Rust you'd use tokio::time
+// with Arc<RwLock<HashMap>>.
+//
+// In Hew the monitor is an actor. Health state is actor state — no
+// locks needed. The check cycle uses `select` with a timeout to detect
+// unresponsive services without blocking forever.
+
+// Service actor — responds to health checks. Can be made unhealthy.
+actor Service {
+    let name: String;
+    let healthy: int;   // 1 = healthy, 0 = unhealthy
+    let requests: int;
+
+    receive fn health_check() -> int {
+        if healthy == 0 {
+            panic("service unhealthy");
+        }
+        requests = requests + 1;
+        1
+    }
+
+    receive fn handle(id: int) -> int {
+        requests = requests + 1;
+        println(f"  [{name}] handled request {id} (total: {requests})");
+        requests
+    }
+
+    receive fn set_unhealthy() {
+        healthy = 0;
+        println(f"  [{name}] marked UNHEALTHY");
+    }
+}
+
+// Health monitor — checks registered services and reports status.
+actor HealthMonitor {
+    let svc_names: Vec<String>;
+    let svc_refs: Vec<ActorRef<Service>>;
+    let svc_status: Vec<int>;     // 1=healthy, 0=unhealthy per service
+    let check_count: int;
+
+    receive fn register(name: String, svc: ActorRef<Service>) {
+        svc_names.push(name);
+        svc_refs.push(svc);
+        svc_status.push(1);
+        println(f"[monitor] registered: {name}");
+    }
+
+    // Run one health check cycle across all registered services.
+    receive fn check_all() {
+        check_count = check_count + 1;
+        println(f"[monitor] --- health check #{check_count} ---");
+        for i in 0..svc_refs.len() {
+            let svc = svc_refs.get(i);
+            // Use select with timeout — if the service doesn't respond
+            // within 500ms, mark it unhealthy.
+            let result = select {
+                r from svc.health_check() => r,
+                after 500ms => -1,
+            };
+            let svc_name = svc_names.get(i);
+            if result == 1 {
+                svc_status.set(i, 1);
+                println(f"  {svc_name}: HEALTHY");
+            } else {
+                svc_status.set(i, 0);
+                println(f"  {svc_name}: UNHEALTHY");
+            }
+        }
+    }
+
+    // Report aggregate health.
+    receive fn report() -> int {
+        var healthy_count = 0;
+        let total = svc_names.len();
+        for i in 0..total {
+            let name = svc_names.get(i);
+            let status = svc_status.get(i);
+            if status == 1 {
+                println(f"  {name}: UP");
+                healthy_count = healthy_count + 1;
+            } else {
+                println(f"  {name}: DOWN");
+            }
+        }
+        println(f"[monitor] {healthy_count}/{total} services healthy");
+        healthy_count
+    }
+}
+
+fn main() {
+    println("=== Health Monitor ===");
+    println("");
+
+    // Create services
+    let auth = spawn Service(name: "auth", healthy: 1, requests: 0);
+    let api = spawn Service(name: "api", healthy: 1, requests: 0);
+    let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
+
+    // Create monitor
+    let empty_names: Vec<String> = Vec::new();
+    let empty_refs: Vec<ActorRef<Service>> = Vec::new();
+    let empty_status: Vec<int> = Vec::new();
+    let monitor = spawn HealthMonitor(
+        svc_names: empty_names,
+        svc_refs: empty_refs,
+        svc_status: empty_status,
+        check_count: 0,
+    );
+
+    // Register services
+    monitor.register("auth", auth);
+    monitor.register("api", api);
+    monitor.register("cache", cache);
+    sleep_ms(30);
+
+    // ── All healthy ──
+    println("--- All services healthy ---");
+    await monitor.check_all();
+    sleep_ms(30);
+    await monitor.report();
+
+    // ── Normal traffic ──
+    println("");
+    println("--- Normal traffic ---");
+    await auth.handle(1);
+    await api.handle(2);
+    await cache.handle(3);
+
+    // ── Make cache unhealthy ──
+    println("");
+    println("--- Cache goes down ---");
+    cache.set_unhealthy();
+    sleep_ms(30);
+    await monitor.check_all();
+    sleep_ms(600);
+    await monitor.report();
+
+    // ── Remaining services still serve traffic ──
+    println("");
+    println("--- Healthy services still operational ---");
+    await auth.handle(4);
+    await api.handle(5);
+
+    println("");
+    println("Health monitoring complete. The select timeout detects");
+    println("unresponsive services without blocking the monitor.");
+}

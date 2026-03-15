@@ -1,0 +1,111 @@
+// Supervised Worker Pool — fan-out, collect, recover
+//
+// A supervisor manages a pool of worker actors. Work is distributed
+// across the pool, results are collected with `join`, and crashed
+// workers are automatically restarted by the supervisor.
+//
+// In Go you'd write a goroutine pool with a WaitGroup, a work channel,
+// a results channel, and manual panic recovery in each goroutine (~80
+// lines). In Rust you'd use tokio::JoinSet or rayon, plus Arc<Mutex>
+// for shared state.
+//
+// In Hew:
+//   - `supervisor` declares the pool and its restart policy
+//   - `join { ... }` fans out and waits for all results
+//   - Crashed workers restart automatically — no recovery code needed
+//
+// This is the "scatter/gather" pattern that every backend service uses.
+
+fn fib(n: int) -> int {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+actor Worker {
+    let id: int;
+    let jobs_done: int;
+
+    receive fn compute(n: int) -> int {
+        jobs_done = jobs_done + 1;
+        let result = fib(n);
+        println(f"  [worker {id}] fib({n}) = {result}  (job #{jobs_done})");
+        result
+    }
+
+    receive fn crash_test() {
+        println(f"  [worker {id}] crashing!");
+        panic("simulated worker failure");
+    }
+}
+
+// Supervisor: restart any crashed worker individually.
+// Budget: up to 10 restarts in 60 seconds before giving up.
+supervisor Pool {
+    strategy: one_for_one;
+    max_restarts: 10;
+    window: 60;
+
+    child w0: Worker(0, 0);
+    child w1: Worker(1, 0);
+    child w2: Worker(2, 0);
+    child w3: Worker(3, 0);
+}
+
+fn main() {
+    println("=== Supervised Worker Pool ===");
+    println("");
+
+    let pool = spawn Pool;
+    sleep_ms(30);
+
+    let w0 = supervisor_child(pool, 0);
+    let w1 = supervisor_child(pool, 1);
+    let w2 = supervisor_child(pool, 2);
+    let w3 = supervisor_child(pool, 3);
+
+    // ── Fan-out: distribute work, collect all results ──
+    println("--- Fan-out: 4 jobs across 4 workers ---");
+    let (r0, r1, r2, r3) = join {
+        w0.compute(10),
+        w1.compute(12),
+        w2.compute(8),
+        w3.compute(14),
+    };
+    let total = r0 + r1 + r2 + r3;
+    println(f"Results: {r0}, {r1}, {r2}, {r3}  (sum={total})");
+
+    // ── Second round: different workloads ──
+    println("");
+    println("--- Round 2: mixed workloads ---");
+    let (a, b, c, d) = join {
+        w0.compute(6),
+        w1.compute(9),
+        w2.compute(11),
+        w3.compute(7),
+    };
+    println(f"Results: {a}, {b}, {c}, {d}");
+
+    // ── Crash and recovery ──
+    println("");
+    println("--- Worker 2 crashes ---");
+    w2.crash_test();
+    sleep_ms(200);
+
+    // Supervisor has already restarted worker 2 — get the fresh handle
+    let w2_new = supervisor_child(pool, 2);
+    println("--- Post-crash fan-out ---");
+    let (p, q, r, s) = join {
+        w0.compute(5),
+        w1.compute(5),
+        w2_new.compute(5),
+        w3.compute(5),
+    };
+    println(f"Results: {p}, {q}, {r}, {s}  (all workers operational)");
+
+    println("");
+    println("Pool survived the crash. Supervision + join = scatter/gather");
+    println("with automatic recovery. No WaitGroups. No panic handlers.");
+}

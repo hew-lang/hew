@@ -1,0 +1,131 @@
+// Publish/Subscribe Broker — actor-based topic routing
+//
+// A broker actor routes messages from publishers to subscribers based
+// on topic strings. Subscribers register interest in a topic; when a
+// publisher sends a message on that topic, the broker fans it out to
+// every matching subscriber.
+//
+// In Go you'd build this with channels, a map[string][]chan, and a
+// select loop (~120 lines plus race-condition debugging). In Rust
+// you'd use tokio::broadcast or a manual Arc<RwLock<HashMap>>.
+//
+// In Hew the broker is an actor. Subscriptions are just state.
+// Fan-out is just a loop calling receive handlers. No locks, no
+// channel management, no select{} boilerplate.
+//
+// Pattern: fire-and-forget publish + actor-to-actor routing.
+
+// Subscriber actor — receives messages on topics it cares about.
+actor Subscriber {
+    let name: String;
+    let received: int;
+
+    receive fn on_message(topic: String, payload: String) {
+        received = received + 1;
+        println(f"  [{name}] #{received} topic={topic}: {payload}");
+    }
+
+    receive fn count() -> int {
+        println(f"  [{name}] total received: {received}");
+        received
+    }
+}
+
+// Broker actor — manages subscriptions and routes messages.
+//
+// Parallel arrays: sub_topics[i] corresponds to sub_actors[i].
+// A subscriber can register for multiple topics (one entry per topic).
+actor Broker {
+    let sub_topics: Vec<String>;
+    let sub_actors: Vec<ActorRef<Subscriber>>;
+    let published: int;
+
+    // Register a subscriber for a topic.
+    receive fn subscribe(topic: String, subscriber: ActorRef<Subscriber>) {
+        sub_topics.push(topic);
+        sub_actors.push(subscriber);
+        println(f"[broker] subscription added: topic={topic}");
+    }
+
+    // Publish a message to all subscribers of the given topic.
+    receive fn publish(topic: String, payload: String) {
+        published = published + 1;
+        var delivered = 0;
+        for i in 0..sub_topics.len() {
+            if sub_topics.get(i) == topic {
+                let target = sub_actors.get(i);
+                target.on_message(sub_topics.get(i), payload);
+                delivered = delivered + 1;
+            }
+        }
+        println(f"[broker] published #{published} → {delivered} subscribers");
+    }
+
+    receive fn stats() -> int {
+        println(f"[broker] total published: {published}, subscriptions: {sub_topics.len()}");
+        published
+    }
+}
+
+fn main() {
+    println("=== Pub/Sub Broker ===");
+    println("");
+
+    // Create broker
+    let empty_topics: Vec<String> = Vec::new();
+    let empty_actors: Vec<ActorRef<Subscriber>> = Vec::new();
+    let broker = spawn Broker(
+        sub_topics: empty_topics,
+        sub_actors: empty_actors,
+        published: 0,
+    );
+
+    // Create subscribers
+    let alice = spawn Subscriber(name: "alice", received: 0);
+    let bob = spawn Subscriber(name: "bob", received: 0);
+    let carol = spawn Subscriber(name: "carol", received: 0);
+
+    // ── Register subscriptions ──
+    println("--- Registering subscriptions ---");
+    broker.subscribe("orders", alice);
+    broker.subscribe("orders", bob);
+    broker.subscribe("metrics", bob);
+    broker.subscribe("metrics", carol);
+    broker.subscribe("alerts", alice);
+    broker.subscribe("alerts", carol);
+    sleep_ms(30);
+
+    // ── Publish messages ──
+    println("");
+    println("--- Publishing messages ---");
+
+    // Orders — alice and bob receive
+    broker.publish("orders", "order #1001 created");
+    sleep_ms(20);
+    broker.publish("orders", "order #1002 shipped");
+    sleep_ms(20);
+
+    // Metrics — bob and carol receive
+    broker.publish("metrics", "cpu=42% mem=68%");
+    sleep_ms(20);
+
+    // Alerts — alice and carol receive
+    broker.publish("alerts", "disk usage above 90%");
+    sleep_ms(20);
+
+    // Unknown topic — no subscribers, zero deliveries
+    broker.publish("unknown", "this goes nowhere");
+    sleep_ms(50);
+
+    // ── Collect stats ──
+    println("");
+    println("--- Stats ---");
+    await broker.stats();
+    await alice.count();
+    await bob.count();
+    await carol.count();
+
+    println("");
+    println("Pub/sub complete. No channels, no mutexes, no select loops.");
+    println("The broker actor serialises all routing — data-race free.");
+}

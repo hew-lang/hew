@@ -672,6 +672,10 @@ fn rewrite_builtin_calls_in_stmt(stmt: &mut Stmt) {
             rewrite_builtin_calls_in_expr(condition);
             rewrite_builtin_calls_in_block(body);
         }
+        Stmt::WhileLet { expr, body, .. } => {
+            rewrite_builtin_calls_in_expr(expr);
+            rewrite_builtin_calls_in_block(body);
+        }
         Stmt::If {
             condition,
             then_block,
@@ -1077,6 +1081,10 @@ fn normalize_stmt_types(stmt: &mut Stmt, registry: &hew_types::module_registry::
             normalize_expr_types(condition, registry);
             normalize_block_types(body, registry);
         }
+        Stmt::WhileLet { expr, body, .. } => {
+            normalize_expr_types(expr, registry);
+            normalize_block_types(body, registry);
+        }
         Stmt::Loop { body, .. } => {
             normalize_block_types(body, registry);
         }
@@ -1415,6 +1423,10 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "match over Stmt variants is inherently long"
+)]
 fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,
@@ -1498,6 +1510,10 @@ fn enrich_stmt_with_diagnostics(
             condition, body, ..
         } => {
             enrich_expr_with_diagnostics(condition, tco, diagnostics, registry)?;
+            enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            enrich_expr_with_diagnostics(expr, tco, diagnostics, registry)?;
             enrich_block_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Stmt::Loop { body, .. } => {

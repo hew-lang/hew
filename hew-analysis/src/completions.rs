@@ -309,6 +309,12 @@ fn collect_locals_from_stmt(
                 collect_locals_from_block(body, offset, locals);
             }
         }
+        Stmt::WhileLet { pattern, body, .. } => {
+            if in_stmt_scope {
+                collect_pattern_names(&pattern.0, locals);
+                collect_locals_from_block(body, offset, locals);
+            }
+        }
         Stmt::If {
             then_block,
             else_block,

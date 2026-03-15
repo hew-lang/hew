@@ -291,6 +291,12 @@ pub enum Stmt {
         condition: Spanned<Expr>,
         body: Block,
     },
+    WhileLet {
+        label: Option<String>,
+        pattern: Box<Spanned<Pattern>>,
+        expr: Box<Spanned<Expr>>,
+        body: Block,
+    },
     Break {
         label: Option<String>,
         value: Option<Spanned<Expr>>,

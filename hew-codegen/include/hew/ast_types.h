@@ -539,6 +539,12 @@ struct StmtWhile {
   Spanned<Expr> condition;
   Block body;
 };
+struct StmtWhileLet {
+  std::optional<std::string> label;
+  Spanned<Pattern> pattern;
+  std::unique_ptr<Spanned<Expr>> expr;
+  Block body;
+};
 struct StmtBreak {
   std::optional<std::string> label;
   std::optional<Spanned<Expr>> value;
@@ -558,7 +564,7 @@ struct StmtExpression {
 
 struct Stmt {
   std::variant<StmtLet, StmtVar, StmtAssign, StmtIf, StmtIfLet, StmtMatch, StmtLoop, StmtFor,
-               StmtWhile, StmtBreak, StmtContinue, StmtReturn, StmtDefer, StmtExpression>
+               StmtWhile, StmtWhileLet, StmtBreak, StmtContinue, StmtReturn, StmtDefer, StmtExpression>
       kind;
   Span span; // Copied from Spanned<Stmt> wrapper for codegen convenience
 };

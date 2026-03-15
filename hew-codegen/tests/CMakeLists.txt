@@ -809,6 +809,7 @@ add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_l
 add_e2e_file_test(match_nested_pattern  e2e_match match_nested_pattern)
 add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
 add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
+add_e2e_file_test(while_let_basic      e2e_while_let while_let_basic)
 add_e2e_file_test(duration_methods     e2e_duration duration_methods)
 add_e2e_file_test(duration_arithmetic  e2e_duration duration_arithmetic)
 add_e2e_file_test(duration_from_nanos  e2e_duration duration_from_nanos)

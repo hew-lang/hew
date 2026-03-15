@@ -1,0 +1,49 @@
+// Test: Result<T, UserEnum> from imported module with inline nested match arms.
+// Regression: inline `Err(e) => match e { ... }` (without braces) was crashing
+// codegen with "MLIRGen: no default value for type: none" when the match arms
+// all return void (e.g., call println). The type checker records NoneType for
+// such arms; codegen must treat NoneType as void rather than a real result type.
+import "result_enum_lib.hew";
+
+fn main() {
+    // Result<String, IoError> — inline nested match without block braces
+    match try_read("myfile.txt") {
+        Ok(content) => println(f"read: {content}"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Timeout => println("timeout"),
+        },
+    }
+
+    // Result<int, IoError> — same pattern, different ok type
+    match try_write("/readonly") {
+        Ok(n) => println(f"wrote {n} bytes"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Timeout => println("timeout"),
+        },
+    }
+
+    // Result<int, IoError> — successful path
+    match try_connect("localhost") {
+        Ok(fd) => println(f"connected: {fd}"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Timeout => println("timeout"),
+        },
+    }
+
+    // Same inline pattern but with let binding first
+    let r = try_read("");
+    match r {
+        Ok(content) => println(f"content: {content}"),
+        Err(e) => match e {
+            NotFound => println("read failed: not found"),
+            PermissionDenied => println("read failed: permission denied"),
+            Timeout => println("read failed: timeout"),
+        },
+    }
+}

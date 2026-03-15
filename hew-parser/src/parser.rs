@@ -5624,7 +5624,9 @@ mod tests {
             "expected parse error for bare `self` parameter"
         );
         assert!(
-            result.errors[0].message.contains("not a valid parameter name"),
+            result.errors[0]
+                .message
+                .contains("not a valid parameter name"),
             "error message should mention self is not a valid parameter name, got: {}",
             result.errors[0].message,
         );
@@ -5639,7 +5641,9 @@ mod tests {
             "expected parse error for `self: Type` parameter"
         );
         assert!(
-            result.errors[0].message.contains("not a valid parameter name"),
+            result.errors[0]
+                .message
+                .contains("not a valid parameter name"),
             "error message should mention self is not a valid parameter name, got: {}",
             result.errors[0].message,
         );

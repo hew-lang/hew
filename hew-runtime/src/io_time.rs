@@ -489,6 +489,7 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                ..unsafe { std::mem::zeroed() }
             });
         }
         if events & HEW_IO_WRITE != 0 {
@@ -499,6 +500,7 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                ..unsafe { std::mem::zeroed() }
             });
         }
 
@@ -550,6 +552,7 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                ..unsafe { std::mem::zeroed() }
             },
             libc::kevent {
                 ident: fd as usize,
@@ -558,6 +561,7 @@ mod platform {
                 fflags: 0,
                 data: 0,
                 udata: std::ptr::null_mut(),
+                ..unsafe { std::mem::zeroed() }
             },
         ];
 

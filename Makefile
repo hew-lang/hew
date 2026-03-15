@@ -103,7 +103,7 @@ STDLIB_PACKAGES := \
     hew-std-encoding-base64 hew-std-encoding-compress hew-std-encoding-csv \
     hew-std-encoding-json hew-std-encoding-markdown \
     hew-std-encoding-msgpack hew-std-encoding-protobuf hew-std-encoding-toml \
-    hew-std-encoding-yaml \
+    hew-std-encoding-xml hew-std-encoding-yaml \
     hew-std-crypto-crypto hew-std-crypto-jwt hew-std-crypto-password \
     hew-std-net-http hew-std-net-ipnet hew-std-net-quic hew-std-net-smtp \
     hew-std-net-url hew-std-net-websocket \

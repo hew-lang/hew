@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
 endif()
-project(hew-codegen VERSION 0.1.4 LANGUAGES C CXX)
+project(hew-codegen VERSION 0.2.0 LANGUAGES C CXX)
 
 # ── Standards ────────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)

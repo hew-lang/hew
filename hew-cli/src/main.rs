@@ -490,7 +490,22 @@ fn cmd_completions(args: &[String]) {
 
 fn cmd_version() {
     let version = env!("CARGO_PKG_VERSION");
-    println!("hew {version}");
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let git_hash = option_env!("HEW_GIT_HASH").unwrap_or("");
+    let dirty = if option_env!("HEW_GIT_DIRTY").is_some() {
+        "-dirty"
+    } else {
+        ""
+    };
+    if git_hash.is_empty() {
+        println!("hew {version} ({profile})");
+    } else {
+        println!("hew {version} ({profile}, {git_hash}{dirty})");
+    }
 }
 
 // ---------------------------------------------------------------------------

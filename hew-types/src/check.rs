@@ -5129,9 +5129,7 @@ impl Checker {
         if let Some((trait_name, method_name)) = func_name.split_once("::") {
             if self.trait_defs.contains_key(trait_name) {
                 // Use the full signature (receiver included) for qualified calls.
-                if let Some(sig) =
-                    self.lookup_trait_method_inner(trait_name, method_name, false)
-                {
+                if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.
                     // For qualified calls the first positional arg is the receiver.
                     if args.len() != sig.params.len() {
@@ -6452,27 +6450,22 @@ impl Checker {
                 // When the receiver is a generic type parameter (e.g. `T` in
                 // `fn report<T: Measurable>(item: T)`), look up the method
                 // from the traits that bound that parameter.
-                let bounds_for_type_param =
-                    self.current_function.as_ref().and_then(|fn_name| {
-                        self.fn_sigs.get(fn_name).and_then(|sig| {
-                            if sig.type_params.contains(name) {
-                                sig.type_param_bounds.get(name).cloned()
-                            } else {
-                                None
-                            }
-                        })
-                    });
+                let bounds_for_type_param = self.current_function.as_ref().and_then(|fn_name| {
+                    self.fn_sigs.get(fn_name).and_then(|sig| {
+                        if sig.type_params.contains(name) {
+                            sig.type_param_bounds.get(name).cloned()
+                        } else {
+                            None
+                        }
+                    })
+                });
                 if let Some(bounds) = bounds_for_type_param {
                     for bound_trait in &bounds {
-                        if let Some(mut trait_sig) =
-                            self.lookup_trait_method(bound_trait, method)
-                        {
+                        if let Some(mut trait_sig) = self.lookup_trait_method(bound_trait, method) {
                             // Replace `Self` references with the type parameter type.
                             let self_ty = resolved.clone();
                             for param_ty in &mut trait_sig.params {
-                                *param_ty = self.substitute_named_param(
-                                    param_ty, "Self", &self_ty,
-                                );
+                                *param_ty = self.substitute_named_param(param_ty, "Self", &self_ty);
                             }
                             trait_sig.return_type = self.substitute_named_param(
                                 &trait_sig.return_type,

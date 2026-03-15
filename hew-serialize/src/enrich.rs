@@ -3004,9 +3004,7 @@ mod tests {
         let (te, _span) = unwrap_converted(ty_to_type_expr(&ty));
         match te {
             TypeExpr::Slice(inner) => {
-                assert!(
-                    matches!(inner.0, TypeExpr::Named { ref name, .. } if name == "string")
-                );
+                assert!(matches!(inner.0, TypeExpr::Named { ref name, .. } if name == "string"));
             }
             _ => panic!("expected Slice variant"),
         }
@@ -3295,9 +3293,7 @@ mod tests {
         if let Item::Trait(t) = &items[0].0 {
             if let hew_parser::ast::TraitItem::Method(m) = &t.items[0] {
                 if let Stmt::Expression(expr) = &m.body.as_ref().unwrap().stmts[0].0 {
-                    assert!(
-                        matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len")
-                    );
+                    assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
                 }
             }
         }
@@ -3363,9 +3359,7 @@ mod tests {
         if let Item::TypeDecl(td) = &items[0].0 {
             if let hew_parser::ast::TypeBodyItem::Method(m) = &td.body[0] {
                 if let Stmt::Expression(expr) = &m.body.stmts[0].0 {
-                    assert!(
-                        matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len")
-                    );
+                    assert!(matches!(&expr.0, Expr::MethodCall { method, .. } if method == "len"));
                 }
             }
         }
@@ -3475,7 +3469,10 @@ mod tests {
         } = &expr.0
         {
             assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
-            assert!(matches!(&arms[0].guard.as_ref().unwrap().0, Expr::MethodCall { .. }));
+            assert!(matches!(
+                &arms[0].guard.as_ref().unwrap().0,
+                Expr::MethodCall { .. }
+            ));
             assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
         }
     }
@@ -3500,19 +3497,13 @@ mod tests {
 
     #[test]
     fn test_rewrite_len_in_array_and_tuple() {
-        let mut arr: Spanned<Expr> = (
-            Expr::Array(vec![make_len_call(make_ident("a"))]),
-            0..10,
-        );
+        let mut arr: Spanned<Expr> = (Expr::Array(vec![make_len_call(make_ident("a"))]), 0..10);
         rewrite_builtin_calls_in_expr(&mut arr);
         if let Expr::Array(elems) = &arr.0 {
             assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
         }
 
-        let mut tup: Spanned<Expr> = (
-            Expr::Tuple(vec![make_len_call(make_ident("b"))]),
-            0..10,
-        );
+        let mut tup: Spanned<Expr> = (Expr::Tuple(vec![make_len_call(make_ident("b"))]), 0..10);
         rewrite_builtin_calls_in_expr(&mut tup);
         if let Expr::Tuple(elems) = &tup.0 {
             assert!(matches!(&elems[0].0, Expr::MethodCall { .. }));
@@ -3639,7 +3630,10 @@ mod tests {
         );
         rewrite_builtin_calls_in_expr(&mut expr);
         if let Expr::Range { start, end, .. } = &expr.0 {
-            assert!(matches!(&start.as_ref().unwrap().0, Expr::MethodCall { .. }));
+            assert!(matches!(
+                &start.as_ref().unwrap().0,
+                Expr::MethodCall { .. }
+            ));
             assert!(matches!(&end.as_ref().unwrap().0, Expr::MethodCall { .. }));
         }
     }
@@ -3647,9 +3641,9 @@ mod tests {
     #[test]
     fn test_rewrite_len_in_interp_string() {
         let mut expr: Spanned<Expr> = (
-            Expr::InterpolatedString(vec![hew_parser::ast::StringPart::Expr(
-                make_len_call(make_ident("s")),
-            )]),
+            Expr::InterpolatedString(vec![hew_parser::ast::StringPart::Expr(make_len_call(
+                make_ident("s"),
+            ))]),
             0..20,
         );
         rewrite_builtin_calls_in_expr(&mut expr);
@@ -3749,10 +3743,7 @@ mod tests {
         rewrite_builtin_calls(&mut items);
 
         if let Item::Function(f) = &items[0].0 {
-            if let Stmt::For {
-                iterable, body, ..
-            } = &f.body.stmts[0].0
-            {
+            if let Stmt::For { iterable, body, .. } = &f.body.stmts[0].0 {
                 assert!(matches!(&iterable.0, Expr::MethodCall { .. }));
                 if let Stmt::Expression(e) = &body.stmts[0].0 {
                     assert!(matches!(&e.0, Expr::MethodCall { .. }));
@@ -3829,7 +3820,10 @@ mod tests {
             } = &f.body.stmts[0].0
             {
                 assert!(matches!(&scrutinee.0, Expr::MethodCall { .. }));
-                assert!(matches!(&arms[0].guard.as_ref().unwrap().0, Expr::MethodCall { .. }));
+                assert!(matches!(
+                    &arms[0].guard.as_ref().unwrap().0,
+                    Expr::MethodCall { .. }
+                ));
                 assert!(matches!(&arms[0].body.0, Expr::MethodCall { .. }));
             }
         }
@@ -3849,7 +3843,10 @@ mod tests {
                         },
                         0..10,
                     ),
-                    (Stmt::Defer(Box::new(make_len_call(make_ident("d")))), 10..20),
+                    (
+                        Stmt::Defer(Box::new(make_len_call(make_ident("d")))),
+                        10..20,
+                    ),
                     (
                         Stmt::Loop {
                             body: make_block_with_expr(make_int_lit(0)),
@@ -3948,10 +3945,8 @@ mod tests {
             assert!(matches!(&inner.0, Expr::MethodCall { .. }));
         }
 
-        let mut await_expr: Spanned<Expr> = (
-            Expr::Await(Box::new(make_len_call(make_ident("f")))),
-            0..10,
-        );
+        let mut await_expr: Spanned<Expr> =
+            (Expr::Await(Box::new(make_len_call(make_ident("f")))), 0..10);
         rewrite_builtin_calls_in_expr(&mut await_expr);
         if let Expr::Await(inner) = &await_expr.0 {
             assert!(matches!(&inner.0, Expr::MethodCall { .. }));
@@ -4058,7 +4053,10 @@ mod tests {
         if let Item::Actor(a) = &items[0].0 {
             assert!(matches!(&a.fields[0].ty.0, TypeExpr::Option(_)));
             // Verify Result param was normalized
-            assert!(matches!(&a.receive_fns[0].params[0].ty.0, TypeExpr::Result { .. }));
+            assert!(matches!(
+                &a.receive_fns[0].params[0].ty.0,
+                TypeExpr::Result { .. }
+            ));
             // Verify Option return type was normalized
             assert!(matches!(
                 &a.receive_fns[0].return_type.as_ref().unwrap().0,
@@ -4164,7 +4162,10 @@ mod tests {
         normalize_items_types(&mut items, &registry);
 
         if let Item::ExternBlock(eb) = &items[0].0 {
-            assert!(matches!(&eb.functions[0].params[0].ty.0, TypeExpr::Option(_)));
+            assert!(matches!(
+                &eb.functions[0].params[0].ty.0,
+                TypeExpr::Option(_)
+            ));
             assert!(matches!(
                 &eb.functions[0].return_type.as_ref().unwrap().0,
                 TypeExpr::Result { .. }
@@ -4198,6 +4199,7 @@ mod tests {
                             },
                             0..0,
                         ),
+                        attributes: Vec::new(),
                     },
                     hew_parser::ast::TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
                         name: "TupleV".into(),
@@ -4606,7 +4608,10 @@ mod tests {
                     ),
                     (
                         Stmt::IfLet {
-                            pattern: Box::new((hew_parser::ast::Pattern::Identifier("v".into()), 0..1)),
+                            pattern: Box::new((
+                                hew_parser::ast::Pattern::Identifier("v".into()),
+                                0..1,
+                            )),
                             expr: Box::new(make_int_lit(0)),
                             body: Block {
                                 stmts: vec![],
@@ -4752,8 +4757,14 @@ mod tests {
                     ..
                 } = &expr.0
                 {
-                    assert!(matches!(&params[0].ty.as_ref().unwrap().0, TypeExpr::Option(_)));
-                    assert!(matches!(&return_type.as_ref().unwrap().0, TypeExpr::Option(_)));
+                    assert!(matches!(
+                        &params[0].ty.as_ref().unwrap().0,
+                        TypeExpr::Option(_)
+                    ));
+                    assert!(matches!(
+                        &return_type.as_ref().unwrap().0,
+                        TypeExpr::Option(_)
+                    ));
                 }
             }
         }
@@ -4881,17 +4892,11 @@ mod tests {
                     ),
                     // Array, Tuple, MapLiteral
                     (
-                        Stmt::Expression((
-                            Expr::Array(vec![make_int_lit(0)]),
-                            30..35,
-                        )),
+                        Stmt::Expression((Expr::Array(vec![make_int_lit(0)]), 30..35)),
                         30..35,
                     ),
                     (
-                        Stmt::Expression((
-                            Expr::Tuple(vec![make_int_lit(0)]),
-                            35..40,
-                        )),
+                        Stmt::Expression((Expr::Tuple(vec![make_int_lit(0)]), 35..40)),
                         35..40,
                     ),
                     (
@@ -5002,9 +5007,9 @@ mod tests {
                     // InterpolatedString
                     (
                         Stmt::Expression((
-                            Expr::InterpolatedString(vec![
-                                hew_parser::ast::StringPart::Expr(make_int_lit(42)),
-                            ]),
+                            Expr::InterpolatedString(vec![hew_parser::ast::StringPart::Expr(
+                                make_int_lit(42),
+                            )]),
                             120..130,
                         )),
                         120..130,
@@ -5326,10 +5331,7 @@ mod tests {
                             Stmt::Var {
                                 name: "v".into(),
                                 ty: None,
-                                value: Some((
-                                    Expr::Identifier("input".into()),
-                                    var_span.clone(),
-                                )),
+                                value: Some((Expr::Identifier("input".into()), var_span.clone())),
                             },
                             0..30,
                         )],
@@ -5562,17 +5564,11 @@ mod tests {
                             ),
                             // Array, Tuple, MapLiteral
                             (
-                                Stmt::Expression((
-                                    Expr::Array(vec![make_int_lit(0)]),
-                                    30..35,
-                                )),
+                                Stmt::Expression((Expr::Array(vec![make_int_lit(0)]), 30..35)),
                                 30..35,
                             ),
                             (
-                                Stmt::Expression((
-                                    Expr::Tuple(vec![make_int_lit(0)]),
-                                    35..40,
-                                )),
+                                Stmt::Expression((Expr::Tuple(vec![make_int_lit(0)]), 35..40)),
                                 35..40,
                             ),
                             (

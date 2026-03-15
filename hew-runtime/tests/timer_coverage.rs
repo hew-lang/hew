@@ -16,9 +16,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
-use hew_runtime::deterministic::{
-    hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable,
-};
+use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
 use hew_runtime::io_time::{hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ms};
 use hew_runtime::timer::{
     hew_timer_cancel, hew_timer_list_destroy, hew_timer_list_init, hew_timer_next_deadline_ms,
@@ -208,24 +206,9 @@ fn timer_list_multiple_timers_fire_in_order() {
         let tl = tl.as_mut_ptr();
 
         // Schedule three timers: 10ms, 20ms, 30ms.
-        hew_timer_schedule(
-            tl,
-            10,
-            tag_cb,
-            (&raw const TAG_A).cast_mut().cast(),
-        );
-        hew_timer_schedule(
-            tl,
-            20,
-            tag_cb,
-            (&raw const TAG_B).cast_mut().cast(),
-        );
-        hew_timer_schedule(
-            tl,
-            30,
-            tag_cb,
-            (&raw const TAG_C).cast_mut().cast(),
-        );
+        hew_timer_schedule(tl, 10, tag_cb, (&raw const TAG_A).cast_mut().cast());
+        hew_timer_schedule(tl, 20, tag_cb, (&raw const TAG_B).cast_mut().cast());
+        hew_timer_schedule(tl, 30, tag_cb, (&raw const TAG_C).cast_mut().cast());
 
         // Advance to t=1015 — only A should fire.
         hew_simtime_advance_ms(15);
@@ -478,26 +461,11 @@ fn wheel_multiple_timers_across_levels() {
         let tw = hew_timer_wheel_new();
 
         // L0 timer: 10ms
-        hew_timer_wheel_schedule(
-            tw,
-            10,
-            tag_cb,
-            (&raw const TAG_L0).cast_mut().cast(),
-        );
+        hew_timer_wheel_schedule(tw, 10, tag_cb, (&raw const TAG_L0).cast_mut().cast());
         // L1 timer: 500ms
-        hew_timer_wheel_schedule(
-            tw,
-            500,
-            tag_cb,
-            (&raw const TAG_L1).cast_mut().cast(),
-        );
+        hew_timer_wheel_schedule(tw, 500, tag_cb, (&raw const TAG_L1).cast_mut().cast());
         // Overflow timer: 20000ms
-        hew_timer_wheel_schedule(
-            tw,
-            20_000,
-            tag_cb,
-            (&raw const TAG_OVF).cast_mut().cast(),
-        );
+        hew_timer_wheel_schedule(tw, 20_000, tag_cb, (&raw const TAG_OVF).cast_mut().cast());
 
         // Advance 15ms — only L0 fires.
         hew_simtime_advance_ms(15);

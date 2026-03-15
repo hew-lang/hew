@@ -301,8 +301,7 @@ mod tests {
 
     #[test]
     fn fold_actor_body() {
-        let source =
-            "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
+        let source = "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
         let pr = parse(source);
         let ranges = build_folding_ranges(source, &pr);
         // Actor should produce at least some fold ranges

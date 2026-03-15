@@ -449,7 +449,14 @@ fn is_duration_predicate() {
 fn is_primitive_covers_all_primitive_types() {
     // All integers are primitive
     for ty in [
-        Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::U8, Ty::U16, Ty::U32, Ty::U64,
+        Ty::I8,
+        Ty::I16,
+        Ty::I32,
+        Ty::I64,
+        Ty::U8,
+        Ty::U16,
+        Ty::U32,
+        Ty::U64,
     ] {
         assert!(ty.is_primitive(), "{ty} should be primitive");
     }
@@ -471,7 +478,16 @@ fn is_primitive_covers_all_primitive_types() {
 #[test]
 fn is_numeric_covers_all_numeric_types() {
     for ty in [
-        Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::U8, Ty::U16, Ty::U32, Ty::U64, Ty::F32, Ty::F64,
+        Ty::I8,
+        Ty::I16,
+        Ty::I32,
+        Ty::I64,
+        Ty::U8,
+        Ty::U16,
+        Ty::U32,
+        Ty::U64,
+        Ty::F32,
+        Ty::F64,
     ] {
         assert!(ty.is_numeric(), "{ty} should be numeric");
     }
@@ -487,20 +503,16 @@ fn is_numeric_covers_all_numeric_types() {
 #[test]
 fn is_copy_never_and_pointer() {
     assert!(Ty::Never.is_copy());
-    assert!(
-        Ty::Pointer {
-            is_mutable: false,
-            pointee: Box::new(Ty::I32),
-        }
-        .is_copy()
-    );
-    assert!(
-        Ty::Pointer {
-            is_mutable: true,
-            pointee: Box::new(Ty::String),
-        }
-        .is_copy()
-    );
+    assert!(Ty::Pointer {
+        is_mutable: false,
+        pointee: Box::new(Ty::I32),
+    }
+    .is_copy());
+    assert!(Ty::Pointer {
+        is_mutable: true,
+        pointee: Box::new(Ty::String),
+    }
+    .is_copy());
 }
 
 #[test]
@@ -518,13 +530,11 @@ fn is_copy_non_copy_types() {
     assert!(!named("Vec").is_copy());
     assert!(!Ty::Slice(Box::new(Ty::I32)).is_copy());
     assert!(!Ty::Error.is_copy());
-    assert!(
-        !Ty::Function {
-            params: vec![],
-            ret: Box::new(Ty::Unit),
-        }
-        .is_copy()
-    );
+    assert!(!Ty::Function {
+        params: vec![],
+        ret: Box::new(Ty::Unit),
+    }
+    .is_copy());
 }
 
 // ===========================================================================
@@ -840,10 +850,7 @@ fn substitution_resolve_non_var() {
 
     // Resolving a non-var applies subst to children
     let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
-    assert_eq!(
-        subst.resolve(&ty),
-        Ty::Tuple(vec![Ty::Bool, Ty::I32])
-    );
+    assert_eq!(subst.resolve(&ty), Ty::Tuple(vec![Ty::Bool, Ty::I32]));
 }
 
 #[test]

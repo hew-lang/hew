@@ -254,7 +254,13 @@ mod tests {
     /// Build a TypeCheckOutput with a single manually placed expression type.
     fn make_tc_with_expr_type(span_start: usize, span_end: usize, ty: Ty) -> TypeCheckOutput {
         let mut expr_types = HashMap::new();
-        expr_types.insert(SpanKey { start: span_start, end: span_end }, ty);
+        expr_types.insert(
+            SpanKey {
+                start: span_start,
+                end: span_end,
+            },
+            ty,
+        );
         TypeCheckOutput {
             expr_types,
             errors: vec![],
@@ -273,7 +279,10 @@ mod tests {
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
         // If the type checker populated expr_types for the literal, we should get a hint
-        let type_hints: Vec<_> = hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| h.kind == InlayHintKind::Type)
+            .collect();
         if !tc.expr_types.is_empty() {
             assert!(
                 !type_hints.is_empty(),
@@ -295,7 +304,10 @@ mod tests {
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
         // Annotated bindings should not get type hints
-        let type_hints: Vec<_> = hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
+        let type_hints: Vec<_> = hints
+            .iter()
+            .filter(|h| h.kind == InlayHintKind::Type)
+            .collect();
         assert!(
             type_hints.is_empty(),
             "annotated let binding should not get a type hint"
@@ -309,15 +321,20 @@ mod tests {
         let pr = parse(source);
         // Navigate the AST to find the var statement's value span
         if let Some((Item::Function(f), _)) = pr.program.items.first() {
-            if let Some((Stmt::Var { value: Some(val), .. }, _)) = f.body.stmts.first() {
+            if let Some((
+                Stmt::Var {
+                    value: Some(val), ..
+                },
+                _,
+            )) = f.body.stmts.first()
+            {
                 let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::I32);
                 let hints = build_inlay_hints(source, &pr, &tc);
-                let type_hints: Vec<_> =
-                    hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
-                assert!(
-                    !type_hints.is_empty(),
-                    "var binding should get a type hint"
-                );
+                let type_hints: Vec<_> = hints
+                    .iter()
+                    .filter(|h| h.kind == InlayHintKind::Type)
+                    .collect();
+                assert!(!type_hints.is_empty(), "var binding should get a type hint");
                 assert!(type_hints[0].label.contains("i32"));
             } else {
                 panic!("expected var statement with value");
@@ -332,11 +349,19 @@ mod tests {
         let source = "fn main() {\n    let name = \"hello\";\n}";
         let pr = parse(source);
         if let Some((Item::Function(f), _)) = pr.program.items.first() {
-            if let Some((Stmt::Let { value: Some(val), .. }, _)) = f.body.stmts.first() {
+            if let Some((
+                Stmt::Let {
+                    value: Some(val), ..
+                },
+                _,
+            )) = f.body.stmts.first()
+            {
                 let tc = make_tc_with_expr_type(val.1.start, val.1.end, Ty::String);
                 let hints = build_inlay_hints(source, &pr, &tc);
-                let type_hints: Vec<_> =
-                    hints.iter().filter(|h| h.kind == InlayHintKind::Type).collect();
+                let type_hints: Vec<_> = hints
+                    .iter()
+                    .filter(|h| h.kind == InlayHintKind::Type)
+                    .collect();
                 assert!(
                     !type_hints.is_empty(),
                     "unannotated let should get type hint"

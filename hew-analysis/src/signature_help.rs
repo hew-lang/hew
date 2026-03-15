@@ -156,7 +156,12 @@ mod tests {
     use hew_types::Ty;
     use std::collections::{HashMap, HashSet};
 
-    fn make_tc_with_fn(name: &str, param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> TypeCheckOutput {
+    fn make_tc_with_fn(
+        name: &str,
+        param_names: Vec<&str>,
+        params: Vec<Ty>,
+        ret: Ty,
+    ) -> TypeCheckOutput {
         let sig = FnSig {
             type_params: vec![],
             type_param_bounds: HashMap::new(),

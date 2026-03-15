@@ -2881,8 +2881,7 @@ impl Worker {
         let type_output = checker.check_program(&parse_result.program);
         // Hover on the usage of `x`
         let offset = source.rfind('x').unwrap();
-        let result =
-            hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
+        let result = hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
         assert!(result.is_some(), "expected hover result for variable 'x'");
         let hr = result.unwrap();
         assert!(!hr.contents.is_empty());
@@ -2896,8 +2895,7 @@ impl Worker {
         let type_output = checker.check_program(&parse_result.program);
         // Hover on the call site of `greet`
         let offset = source.rfind("greet").unwrap();
-        let result =
-            hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
+        let result = hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
         assert!(result.is_some(), "expected hover for function call");
         let hr = result.unwrap();
         assert!(
@@ -2909,14 +2907,14 @@ impl Worker {
 
     #[test]
     fn hover_on_type_name() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+        let source =
+            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         // Hover on usage of Point in the struct init
         let offset = source.rfind("Point").unwrap();
-        let result =
-            hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
+        let result = hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
         assert!(result.is_some(), "expected hover for type name");
         let hr = result.unwrap();
         assert!(
@@ -2950,7 +2948,11 @@ impl Worker {
     }
 }";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let ranges = hew_analysis::folding::build_folding_ranges(source, &parse_result);
         assert!(
             !ranges.is_empty(),
@@ -2981,7 +2983,10 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let offset = source.find("counter").unwrap();
         let span = hew_analysis::rename::prepare_rename(source, &parse_result, offset);
-        assert!(span.is_some(), "should be able to prepare rename on variable");
+        assert!(
+            span.is_some(),
+            "should be able to prepare rename on variable"
+        );
         let s = span.unwrap();
         assert_eq!(&source[s.start..s.end], "counter");
     }
@@ -3083,7 +3088,12 @@ impl Worker {
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let supers = collect_supertypes(&uri, "Circle", source, &lo, &parse_result);
-        assert_eq!(supers.len(), 1, "expected 1 supertype, got {}", supers.len());
+        assert_eq!(
+            supers.len(),
+            1,
+            "expected 1 supertype, got {}",
+            supers.len()
+        );
         assert_eq!(supers[0].name, "Drawable");
     }
 
@@ -3130,11 +3140,20 @@ impl Worker {
     fn incoming_calls_finds_callers() {
         let source = "fn helper() -> i32 { 42 }\nfn main() -> i32 { let r = helper(); r }";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let calls = find_incoming_calls(&uri, source, &lo, &parse_result, "helper");
-        assert_eq!(calls.len(), 1, "expected 1 incoming call, got {}", calls.len());
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected 1 incoming call, got {}",
+            calls.len()
+        );
         assert_eq!(calls[0].from.name, "main");
     }
 
@@ -3142,11 +3161,20 @@ impl Worker {
     fn outgoing_calls_finds_callees() {
         let source = "fn helper() -> i32 { 42 }\nfn main() -> i32 { let r = helper(); r }";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "main");
-        assert_eq!(calls.len(), 1, "expected 1 outgoing call, got {}", calls.len());
+        assert_eq!(
+            calls.len(),
+            1,
+            "expected 1 outgoing call, got {}",
+            calls.len()
+        );
         assert_eq!(calls[0].to.name, "helper");
     }
 
@@ -3157,7 +3185,10 @@ impl Worker {
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let calls = find_outgoing_calls(&uri, source, &lo, &parse_result, "leaf");
-        assert!(calls.is_empty(), "leaf function should have no outgoing calls");
+        assert!(
+            calls.is_empty(),
+            "leaf function should have no outgoing calls"
+        );
     }
 
     // ── Code lens tests ─────────────────────────────────────────────
@@ -3195,7 +3226,12 @@ impl Worker {
             })
             .expect("should find a reference lens for helper");
         assert!(
-            helper_lens.command.as_ref().unwrap().title.contains("1 reference"),
+            helper_lens
+                .command
+                .as_ref()
+                .unwrap()
+                .title
+                .contains("1 reference"),
             "helper should have 1 reference, got: {}",
             helper_lens.command.as_ref().unwrap().title
         );
@@ -3207,13 +3243,11 @@ impl Worker {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let lenses = build_code_lenses(source, &lo, &parse_result);
-        let run_test_lens = lenses
-            .iter()
-            .find(|l| {
-                l.command
-                    .as_ref()
-                    .map_or(false, |c| c.title.contains("Run test"))
-            });
+        let run_test_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
         assert!(
             run_test_lens.is_some(),
             "expected a 'Run test' code lens for #[test] function"
@@ -3226,14 +3260,27 @@ impl Worker {
     fn workspace_symbols_finds_functions_and_types() {
         let source = "fn compute() -> i32 { 0 }\ntype Widget { w: i32 }\nconst MAX: i32 = 100;";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
         let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"compute"), "should find function, got: {names:?}");
-        assert!(names.contains(&"Widget"), "should find type, got: {names:?}");
-        assert!(names.contains(&"MAX"), "should find constant, got: {names:?}");
+        assert!(
+            names.contains(&"compute"),
+            "should find function, got: {names:?}"
+        );
+        assert!(
+            names.contains(&"Widget"),
+            "should find type, got: {names:?}"
+        );
+        assert!(
+            names.contains(&"MAX"),
+            "should find constant, got: {names:?}"
+        );
     }
 
     #[test]
@@ -3265,7 +3312,10 @@ impl Worker {
         let uri = Url::parse("file:///test.hew").unwrap();
         let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"Counter"), "should find actor, got: {names:?}");
+        assert!(
+            names.contains(&"Counter"),
+            "should find actor, got: {names:?}"
+        );
         assert!(
             names.contains(&"increment"),
             "should find receive method, got: {names:?}"
@@ -3283,7 +3333,10 @@ impl Worker {
         let uri = Url::parse("file:///test.hew").unwrap();
         let symbols = collect_workspace_symbols(&uri, source, &lo, &parse_result, "");
         let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"Drawable"), "should find trait, got: {names:?}");
+        assert!(
+            names.contains(&"Drawable"),
+            "should find trait, got: {names:?}"
+        );
         let trait_sym = symbols.iter().find(|s| s.name == "Drawable").unwrap();
         assert_eq!(trait_sym.kind, SymbolKind::INTERFACE);
     }
@@ -3401,10 +3454,7 @@ impl Worker {
         let type_diag = diags
             .iter()
             .find(|d| d.source.as_deref() == Some("hew-types"));
-        assert!(
-            type_diag.is_some(),
-            "expected a type-checker diagnostic"
-        );
+        assert!(type_diag.is_some(), "expected a type-checker diagnostic");
     }
 
     #[test]
@@ -3511,7 +3561,10 @@ impl Worker {
             (hew_analysis::SymbolKind::Type, SymbolKind::STRUCT),
             (hew_analysis::SymbolKind::Wire, SymbolKind::STRUCT),
             (hew_analysis::SymbolKind::Constant, SymbolKind::CONSTANT),
-            (hew_analysis::SymbolKind::TypeAlias, SymbolKind::TYPE_PARAMETER),
+            (
+                hew_analysis::SymbolKind::TypeAlias,
+                SymbolKind::TYPE_PARAMETER,
+            ),
             (hew_analysis::SymbolKind::Impl, SymbolKind::NAMESPACE),
             (hew_analysis::SymbolKind::Field, SymbolKind::FIELD),
             (hew_analysis::SymbolKind::Method, SymbolKind::METHOD),
@@ -3519,7 +3572,10 @@ impl Worker {
             (hew_analysis::SymbolKind::Variant, SymbolKind::ENUM_MEMBER),
             (hew_analysis::SymbolKind::Event, SymbolKind::EVENT),
             (hew_analysis::SymbolKind::Module, SymbolKind::MODULE),
-            (hew_analysis::SymbolKind::Constructor, SymbolKind::CONSTRUCTOR),
+            (
+                hew_analysis::SymbolKind::Constructor,
+                SymbolKind::CONSTRUCTOR,
+            ),
         ];
         for (analysis_kind, expected_lsp_kind) in cases {
             assert_eq!(
@@ -3593,7 +3649,11 @@ impl Worker {
     fn inlay_hints_for_let_binding() {
         let source = "fn main() -> i32 { let x = 42; x }";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         let hints =
@@ -3611,7 +3671,11 @@ impl Worker {
     fn signature_help_for_function_call() {
         let source = "fn add(a: i32, b: i32) -> i32 { a + b }\nfn main() -> i32 { add(1, 2) }";
         let parse_result = hew_parser::parse(source);
-        assert!(parse_result.errors.is_empty(), "parse errors: {:?}", parse_result.errors);
+        assert!(
+            parse_result.errors.is_empty(),
+            "parse errors: {:?}",
+            parse_result.errors
+        );
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
         // Offset inside the call parens, e.g. after the `(`

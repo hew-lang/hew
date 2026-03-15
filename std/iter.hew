@@ -1,0 +1,143 @@
+//! Iterator-like utility functions for Vec.
+//!
+//! Pure Hew implementations of common functional-style operations.
+//! Since Hew does not yet have a full Iterator trait, these are
+//! specialised to `Vec<int>`.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::iter;
+//!
+//! fn main() {
+//!     let v: Vec<int> = Vec::new();
+//!     v.push(1);
+//!     v.push(2);
+//!     v.push(3);
+//!     println(iter.sum(v));           // 6
+//!     println(iter.any(v, (x: int) => x > 2));  // true
+//! }
+//! ```
+
+/// Apply `f` to every element and return a new vector of results.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// let doubled = iter.map_int(v, (x: int) => x * 2);
+/// // doubled == [2, 4]
+/// ```
+pub fn map_int(v: Vec<int>, f: fn(int) -> int) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    for i in 0..v.len() {
+        out.push(f(v.get(i)));
+    }
+    out
+}
+
+/// Return a new vector containing only elements for which `f` returns `true`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// v.push(3);
+/// let evens = iter.filter_int(v, (x: int) => x % 2 == 0);
+/// // evens == [2]
+/// ```
+pub fn filter_int(v: Vec<int>, f: fn(int) -> bool) -> Vec<int> {
+    let out: Vec<int> = Vec::new();
+    for i in 0..v.len() {
+        let val = v.get(i);
+        if f(val) {
+            out.push(val);
+        }
+    }
+    out
+}
+
+/// Left-fold: accumulate all elements starting from `init`.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// v.push(3);
+/// let total = iter.fold_int(v, 0, (acc: int, x: int) => acc + x);
+/// // total == 6
+/// ```
+pub fn fold_int(v: Vec<int>, init: int, f: fn(int, int) -> int) -> int {
+    var acc = init;
+    for i in 0..v.len() {
+        acc = f(acc, v.get(i));
+    }
+    acc
+}
+
+/// Return `true` if `f` returns `true` for at least one element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// v.push(3);
+/// println(iter.any(v, (x: int) => x > 2));  // true
+/// println(iter.any(v, (x: int) => x > 9));  // false
+/// ```
+pub fn any(v: Vec<int>, f: fn(int) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return `true` if `f` returns `true` for every element.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// v.push(3);
+/// println(iter.all(v, (x: int) => x > 0));  // true
+/// println(iter.all(v, (x: int) => x > 2));  // false
+/// ```
+pub fn all(v: Vec<int>, f: fn(int) -> bool) -> bool {
+    for i in 0..v.len() {
+        if f(v.get(i)) == false {
+            return false;
+        }
+    }
+    true
+}
+
+/// Return the sum of all elements.
+///
+/// # Examples
+///
+/// ```
+/// let v: Vec<int> = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// v.push(3);
+/// println(iter.sum(v));  // 6
+/// ```
+pub fn sum(v: Vec<int>) -> int {
+    var total: int = 0;
+    for i in 0..v.len() {
+        total = total + v.get(i);
+    }
+    total
+}

@@ -620,6 +620,7 @@ add_e2e_file_test(option_pattern        e2e_error_handling option_pattern)
 add_e2e_file_test(option_stdlib         e2e_option_stdlib option_stdlib)
 add_e2e_file_test(enum_error_chain      e2e_error_handling enum_error_chain)
 add_e2e_file_test(result_stdlib         e2e_error_handling result_stdlib)
+add_e2e_file_test(iter_stdlib           e2e_iter_stdlib iter_stdlib)
 
 # ── Structured concurrency tests ─────────────────────────────────────────────
 add_e2e_file_test(scope_launch          e2e_concurrency scope_launch)

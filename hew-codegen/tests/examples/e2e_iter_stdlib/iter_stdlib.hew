@@ -1,0 +1,47 @@
+import std::iter;
+
+fn main() {
+    let v: Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v.push(4);
+    v.push(5);
+
+    // map_int: double each element
+    let doubled = iter.map_int(v, (x: int) => x * 2);
+    for i in 0..doubled.len() {
+        println(doubled.get(i));
+    }
+
+    // filter_int: keep even numbers
+    let evens = iter.filter_int(v, (x: int) => x % 2 == 0);
+    for i in 0..evens.len() {
+        println(evens.get(i));
+    }
+
+    // fold_int: sum via fold
+    let total = iter.fold_int(v, 0, (acc: int, x: int) => acc + x);
+    println(total);
+
+    // sum
+    println(iter.sum(v));
+
+    // any: at least one element > 3
+    println(iter.any(v, (x: int) => x > 3));
+
+    // any: no element > 10
+    println(iter.any(v, (x: int) => x > 10));
+
+    // all: every element > 0
+    println(iter.all(v, (x: int) => x > 0));
+
+    // all: not every element > 3
+    println(iter.all(v, (x: int) => x > 3));
+
+    // edge: empty vector
+    let empty: Vec<int> = Vec::new();
+    println(iter.sum(empty));
+    println(iter.any(empty, (x: int) => x > 0));
+    println(iter.all(empty, (x: int) => x > 0));
+}

@@ -187,6 +187,8 @@ pub mod file_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod io_time;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod stdio;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod iter;
 
 #[cfg(any(target_arch = "wasm32", test))]

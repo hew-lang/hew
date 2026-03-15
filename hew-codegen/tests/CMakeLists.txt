@@ -604,6 +604,7 @@ add_e2e_file_test(bench_basic           e2e_bench bench_basic)
 # ── Import tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(import_stdlib         e2e_imports import_stdlib)
 add_e2e_file_test(import_fs             e2e_imports test_import_fs)
+add_e2e_file_test(import_io             e2e_imports test_import_io)
 add_e2e_file_test(import_string         e2e_imports test_import_string)
 add_e2e_file_test(import_os             e2e_imports test_import_os)
 add_e2e_file_test(import_multi          e2e_imports test_import_multi)

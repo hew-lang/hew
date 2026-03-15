@@ -1,0 +1,39 @@
+// Test: qualified enum variant constructors (Shape::Circle(5) syntax)
+enum Shape {
+    Circle(int);
+    Rectangle(int, int);
+    Unit;
+}
+
+fn describe(s: Shape) -> int {
+    match s {
+        Shape::Circle(r) => r,
+        Shape::Rectangle(w, h) => w * h,
+        Shape::Unit => 0,
+    }
+}
+
+fn main() {
+    // Qualified construction
+    let c = Shape::Circle(5);
+    println(describe(c));
+
+    let rect = Shape::Rectangle(3, 4);
+    println(describe(rect));
+
+    let u = Shape::Unit;
+    println(describe(u));
+
+    // Unqualified still works
+    let c2 = Circle(7);
+    println(describe(c2));
+
+    // Mix qualified and unqualified in match
+    let s = Shape::Circle(10);
+    let val = match s {
+        Circle(r) => r + 1,
+        Shape::Rectangle(w, h) => w + h,
+        _ => -1,
+    };
+    println(val);
+}

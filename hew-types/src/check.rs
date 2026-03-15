@@ -4929,20 +4929,39 @@ impl Checker {
         // Check if name is a user-defined enum variant constructor first.
         // Separate lookup (immutable borrow) from processing (mutable borrow)
         // to avoid cloning the entire type_defs map.
-        let constructor_match = self
-            .type_defs
-            .iter()
-            .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
-            .find_map(|(type_name, td)| {
-                td.variants.get(&func_name).and_then(|variant| {
+        //
+        // Handle both unqualified (`Circle(5)`) and qualified (`Shape::Circle(5)`) forms.
+        let constructor_match = if let Some(pos) = func_name.rfind("::") {
+            let type_prefix = &func_name[..pos];
+            let variant_name = &func_name[pos + 2..];
+            self.type_defs.get(type_prefix).and_then(|td| {
+                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                    return None;
+                }
+                td.variants.get(variant_name).and_then(|variant| {
                     let params = match variant {
                         VariantDef::Unit => Vec::new(),
                         VariantDef::Tuple(p) => p.clone(),
                         VariantDef::Struct(_) => return None,
                     };
-                    Some((type_name.clone(), params, td.type_params.clone()))
+                    Some((type_prefix.to_string(), params, td.type_params.clone()))
                 })
-            });
+            })
+        } else {
+            self.type_defs
+                .iter()
+                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
+                .find_map(|(type_name, td)| {
+                    td.variants.get(&func_name).and_then(|variant| {
+                        let params = match variant {
+                            VariantDef::Unit => Vec::new(),
+                            VariantDef::Tuple(p) => p.clone(),
+                            VariantDef::Struct(_) => return None,
+                        };
+                        Some((type_name.clone(), params, td.type_params.clone()))
+                    })
+                })
+        };
         if let Some((type_name, expected_params, type_params)) = constructor_match {
             let type_param_count = type_params.len();
             if type_param_count == 0 {
@@ -7254,8 +7273,10 @@ impl Checker {
                 };
                 if let Some(type_name) = type_name_opt {
                     if let Some(td) = self.lookup_type_def(type_name) {
+                        // Strip enum prefix for qualified patterns (e.g. "Shape::Move" → "Move")
+                        let short_name = name.rsplit("::").next().unwrap_or(name);
                         if let Some(VariantDef::Struct(variant_fields)) =
-                            td.variants.get(name).cloned()
+                            td.variants.get(short_name).cloned()
                         {
                             for pf in fields {
                                 if let Some((_, field_ty)) = variant_fields
@@ -8210,10 +8231,15 @@ impl Checker {
                             }
                             visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                                 Pattern::Constructor { name, .. }
-                                | Pattern::Struct { name, .. } => covered.push(name.clone()),
+                                | Pattern::Struct { name, .. } => {
+                                    // Strip enum prefix for qualified patterns
+                                    let short = name.rsplit("::").next().unwrap_or(name);
+                                    covered.push(short.to_string());
+                                }
                                 Pattern::Identifier(id) => {
-                                    if td.variants.contains_key(id) {
-                                        covered.push(id.clone());
+                                    let short = id.rsplit("::").next().unwrap_or(id);
+                                    if td.variants.contains_key(short) {
+                                        covered.push(short.to_string());
                                     } else {
                                         has_binding_identifier = true;
                                     }
@@ -8227,7 +8253,7 @@ impl Checker {
                         let missing: Vec<_> = td
                             .variants
                             .keys()
-                            .filter(|v| !covered.contains(v))
+                            .filter(|v| !covered.contains(*v))
                             .collect();
                         if !missing.is_empty() {
                             let names: Vec<_> = missing.iter().map(|s| s.as_str()).collect();
@@ -8250,10 +8276,14 @@ impl Checker {
                             }
                             visit_or_patterns(&arm.pattern.0, &mut |pattern| match pattern {
                                 Pattern::Constructor { name, .. }
-                                | Pattern::Struct { name, .. } => covered.push(name.clone()),
+                                | Pattern::Struct { name, .. } => {
+                                    let short = name.rsplit("::").next().unwrap_or(name);
+                                    covered.push(short.to_string());
+                                }
                                 Pattern::Identifier(id) => {
-                                    if td.variants.contains_key(id) {
-                                        covered.push(id.clone());
+                                    let short = id.rsplit("::").next().unwrap_or(id);
+                                    if td.variants.contains_key(short) {
+                                        covered.push(short.to_string());
                                     } else {
                                         has_binding_identifier = true;
                                     }

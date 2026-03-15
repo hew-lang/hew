@@ -3,6 +3,14 @@
 //! Provides version requirement parsing with Adze-specific rules and resolution
 //! of manifest dependencies against the installed package registry.
 
+// The `ManifestRead` variant embeds `manifest::ManifestError` (~136 bytes).
+// Boxing it would add indirection on every error path for minimal gain in a CLI
+// tool, so we suppress the lint at module level.
+#![allow(
+    clippy::result_large_err,
+    reason = "ManifestError variant is large but boxing adds unnecessary indirection"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -53,8 +61,8 @@ pub enum ResolveError {
         package: String,
         /// The selected version.
         version: String,
-        /// The underlying manifest error (boxed to keep the enum small).
-        source: Box<manifest::ManifestError>,
+        /// The underlying manifest error.
+        source: manifest::ManifestError,
     },
     /// The selected dependency graph contains a cycle.
     CircularDependency {
@@ -116,7 +124,7 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidVersionReq { source, .. } => Some(source),
-            Self::ManifestRead { source, .. } => Some(&**source),
+            Self::ManifestRead { source, .. } => Some(source),
             Self::NoMatchingVersion { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. } => None,
@@ -384,7 +392,7 @@ impl<'a> ResolverPass<'a> {
                 ResolveError::ManifestRead {
                     package: package.to_string(),
                     version: version.to_string(),
-                    source: Box::new(source),
+                    source,
                 }
             })?;
             self.manifest_cache.insert(key.clone(), manifest);
@@ -626,7 +634,7 @@ fn best_matching_entry<'a>(
 /// Returns [`ResolveError::InvalidVersionReq`] if `requirement` cannot be parsed.
 #[allow(
     dead_code,
-    reason = "reserved for future single-requirement resolution API"
+    reason = "public API reserved for single-requirement callers"
 )]
 pub fn resolve_version_from_entries(
     entries: &[IndexEntry],
@@ -693,8 +701,6 @@ pub fn resolve_all(
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-
     use super::*;
     use crate::manifest::{DepTable, Package};
 
@@ -729,6 +735,8 @@ mod tests {
         dependencies: &[FakeDep<'_>],
         features: &[(&str, &[&str])],
     ) {
+        use std::fmt::Write as _;
+
         let dir = registry.package_dir(name, version);
         std::fs::create_dir_all(&dir).unwrap();
 

@@ -413,7 +413,7 @@ impl App {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "refresh polls many independent data sources; splitting would scatter related fetch/update logic"
+        reason = "TUI refresh reads multiple sources in a single pass"
     )]
     pub fn refresh(&mut self) {
         if self.demo_mode {

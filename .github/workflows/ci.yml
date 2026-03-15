@@ -199,8 +199,10 @@ jobs:
             -p hew-std-text-regex -p hew-std-text-semver \
             -p hew-std-sort -p hew-std-math \
             -p hew-std-misc-uuid -p hew-std-misc-log
-        # Default features include "full" (encryption + profiler + quic),
-        # so all 33 QUIC transport tests run without an explicit flag.
+
+      # Default features include "full" (encryption + profiler + quic),
+      # so all 33 QUIC transport tests run without an explicit flag.
+      - name: Run Rust workspace tests
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
       - name: Run codegen unit tests

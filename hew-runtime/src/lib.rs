@@ -224,6 +224,8 @@ pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod scope;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod channel;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
 #[cfg(not(target_arch = "wasm32"))]

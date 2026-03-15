@@ -1,0 +1,75 @@
+// Test: numeric literal coercion in generic struct construction
+
+type Wrapper<T> {
+    value: T;
+}
+
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn wrap<T>(v: T) -> Wrapper<T> {
+    Wrapper { value: v }
+}
+
+fn make_pair<A, B>(a: A, b: B) -> Pair<A, B> {
+    Pair { first: a, second: b }
+}
+
+fn unwrap_i32(w: Wrapper<i32>) -> i32 {
+    w.value
+}
+
+fn test_generic_i32() {
+    // Integer literal coerces to i32 through generic function
+    let w = wrap<i32>(42);
+    println(w.value);
+
+    // Unwrap through typed function
+    let r = unwrap_i32(w);
+    println(r);
+}
+
+fn test_generic_u8() {
+    let w = wrap<u8>(255);
+    println(w.value);
+}
+
+fn test_generic_i16() {
+    let w = wrap<i16>(1000);
+    println(w.value);
+}
+
+fn test_generic_u32() {
+    let w = wrap<u32>(42);
+    println(w.value);
+}
+
+fn test_multi_param() {
+    // Multi-param generic with mixed types
+    let p = make_pair<i32, i64>(10, 20);
+    println(p.first);
+    println(p.second);
+}
+
+fn test_f32_in_generic() {
+    // Float literal coerces to f32 in generic context
+    let w = wrap<f32>(3.14);
+    println(w.value);
+}
+
+fn test_negative_i32() {
+    let w = wrap<i32>(-10);
+    println(w.value);
+}
+
+fn main() {
+    test_generic_i32();
+    test_generic_u8();
+    test_generic_i16();
+    test_generic_u32();
+    test_multi_param();
+    test_f32_in_generic();
+    test_negative_i32();
+}

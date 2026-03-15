@@ -86,12 +86,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Clippy
-        run: >
-          cargo clippy --workspace --tests --message-format=json
-          | clippy-sarif
-          | tee clippy-results.sarif
-          | sarif-fmt
-        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --tests --message-format=json -- -D warnings \
+            | clippy-sarif \
+            | tee clippy-results.sarif \
+            | sarif-fmt
 
       - name: Upload Clippy SARIF
         if: always() && hashFiles('clippy-results.sarif') != ''

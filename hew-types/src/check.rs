@@ -7823,11 +7823,34 @@ impl Checker {
         });
     }
 
-    /// Check if a variable binding would shadow an outer scope variable and emit an error.
+    /// Check if a variable binding would shadow an existing variable and emit an error.
+    ///
+    /// Same-scope rebinding and outer-scope shadowing are both hard errors
+    /// per the language spec (HEW-SPEC §4 — variable shadowing).
     fn check_shadowing(&mut self, name: &str, span: &Span) {
         if name.starts_with('_') || self.in_for_binding {
             return;
         }
+
+        // Same-scope rebinding: hard error
+        if let Some(prev) = self.env.find_in_current_scope(name) {
+            let notes = prev
+                .map(|s| vec![(s, "previously defined here".to_string())])
+                .unwrap_or_default();
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::Shadowing,
+                span: span.clone(),
+                message: format!("variable `{name}` is already defined in this scope"),
+                notes,
+                suggestions: vec![format!(
+                    "choose a different name, or prefix with underscore: `_{name}`"
+                )],
+            });
+            return;
+        }
+
+        // Outer-scope shadowing: also hard error per spec
         if let Some(prev) = self.env.find_in_outer_scope(name) {
             // Synthetic bindings (actor fields) have no source span,
             // so the notes list may be empty.
@@ -7838,10 +7861,10 @@ impl Checker {
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
-                message: format!("variable `{name}` shadows a previous binding"),
+                message: format!("variable `{name}` shadows a binding in an outer scope"),
                 notes,
                 suggestions: vec![format!(
-                    "if this is intentional, prefix with underscore: `_{name}`"
+                    "choose a different name, or prefix with underscore: `_{name}`"
                 )],
             });
         }
@@ -9536,6 +9559,23 @@ mod tests {
     // ── Shadowing Tests ─────────────────────────────────────────────────
 
     #[test]
+    fn error_same_scope_shadowing() {
+        let source = "fn main() { let x = 5; let x = 10; println(x); }";
+        let result = hew_parser::parse(source);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&result.program);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::Shadowing
+                    && e.message.contains("already defined in this scope")),
+            "expected same-scope shadowing error, got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn error_variable_shadowing() {
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
@@ -9546,8 +9586,8 @@ mod tests {
                 .errors
                 .iter()
                 .any(|e| e.kind == TypeErrorKind::Shadowing
-                    && e.message.contains("variable `x` shadows")),
-            "expected shadowing error, got: {:?}",
+                    && e.message.contains("shadows a binding in an outer scope")),
+            "expected outer-scope shadowing error, got: {:?}",
             output.errors
         );
     }
@@ -9597,7 +9637,8 @@ mod tests {
         let (errors, _warnings) = parse_and_check(source);
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
-                && e.message.contains("variable `count` shadows")),
+                && e.message
+                    .contains("variable `count` shadows a binding in an outer scope")),
             "should error on param shadowing actor field, got: {errors:?}",
         );
     }
@@ -9613,7 +9654,8 @@ mod tests {
         let (errors, _warnings) = parse_and_check(source);
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
-                && e.message.contains("variable `count` shadows")),
+                && e.message
+                    .contains("variable `count` shadows a binding in an outer scope")),
             "should error on fn param shadowing actor field, got: {errors:?}",
         );
     }

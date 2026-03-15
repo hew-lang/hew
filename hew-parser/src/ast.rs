@@ -701,7 +701,12 @@ pub struct WireFieldMeta {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeBodyItem {
-    Field { name: String, ty: Spanned<TypeExpr> },
+    Field {
+        name: String,
+        ty: Spanned<TypeExpr>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attributes: Vec<Attribute>,
+    },
     Variant(VariantDecl),
     Method(FnDecl),
 }
@@ -815,6 +820,7 @@ impl WireDecl {
                     },
                     0..0,
                 ),
+                attributes: Vec::new(),
             })
             .chain(
                 self.variants

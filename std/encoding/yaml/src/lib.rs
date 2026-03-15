@@ -446,6 +446,258 @@ pub unsafe extern "C" fn hew_yaml_object_set_string(
 }
 
 // ---------------------------------------------------------------------------
+// Object builder — Value child setter and null setter
+// ---------------------------------------------------------------------------
+
+/// Set a [`HewYamlValue`] child on a YAML mapping, taking ownership.
+///
+/// The `val` pointer is consumed and must not be freed by the caller.
+/// Does nothing if `obj` is null, not a mapping, or `key` is null.
+///
+/// # Safety
+///
+/// `obj` must be a valid non-null [`HewYamlValue`] pointer. `key` must be a
+/// valid NUL-terminated C string. `val` must be a valid non-null
+/// [`HewYamlValue`] pointer that the caller relinquishes ownership of.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_object_set(
+    obj: *mut HewYamlValue,
+    key: *const c_char,
+    val: *mut HewYamlValue,
+) {
+    if obj.is_null() || key.is_null() || val.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
+    let key_str = unsafe { CStr::from_ptr(key) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    // SAFETY: val was allocated with Box::into_raw and caller transfers ownership.
+    let child = unsafe { Box::from_raw(val) };
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
+        map.insert(serde_yaml::Value::String(key_str), child.inner);
+    }
+}
+
+/// Set a null field on a YAML mapping.
+///
+/// Does nothing if `obj` is null, not a mapping, or `key` is null.
+///
+/// # Safety
+///
+/// Same as [`hew_yaml_object_set_bool`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_object_set_null(obj: *mut HewYamlValue, key: *const c_char) {
+    if obj.is_null() || key.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees obj is valid; key is a valid NUL-terminated string.
+    let key_str = unsafe { CStr::from_ptr(key) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    // SAFETY: obj is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Mapping(map) = &mut unsafe { &mut *obj }.inner {
+        map.insert(serde_yaml::Value::String(key_str), serde_yaml::Value::Null);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Array builder
+// ---------------------------------------------------------------------------
+
+/// Create a new empty YAML sequence.
+///
+/// Returns a heap-allocated [`HewYamlValue`] wrapping an empty YAML sequence.
+/// Must be freed with [`hew_yaml_free`].
+#[no_mangle]
+pub extern "C" fn hew_yaml_array_new() -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Sequence(Vec::new()))
+}
+
+/// Push a boolean onto a YAML sequence.
+///
+/// Does nothing if `arr` is null or not a sequence.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push_bool(arr: *mut HewYamlValue, val: i32) {
+    if arr.is_null() {
+        return;
+    }
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(serde_yaml::Value::Bool(val != 0));
+    }
+}
+
+/// Push an integer onto a YAML sequence.
+///
+/// Does nothing if `arr` is null or not a sequence.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push_int(arr: *mut HewYamlValue, val: i64) {
+    if arr.is_null() {
+        return;
+    }
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(serde_yaml::Value::Number(serde_yaml::Number::from(val)));
+    }
+}
+
+/// Push a float onto a YAML sequence.
+///
+/// Does nothing if `arr` is null or not a sequence.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push_float(arr: *mut HewYamlValue, val: f64) {
+    if arr.is_null() {
+        return;
+    }
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(serde_yaml::Value::Number(serde_yaml::Number::from(val)));
+    }
+}
+
+/// Push a string onto a YAML sequence. The string value is copied.
+///
+/// Does nothing if `arr` is null, not a sequence, or `val` is null.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer. `val` must be a
+/// valid NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push_string(arr: *mut HewYamlValue, val: *const c_char) {
+    if arr.is_null() || val.is_null() {
+        return;
+    }
+    // SAFETY: val is non-null (checked above) and valid per caller contract.
+    let val_str = unsafe { CStr::from_ptr(val) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(serde_yaml::Value::String(val_str));
+    }
+}
+
+/// Push a null onto a YAML sequence.
+///
+/// Does nothing if `arr` is null or not a sequence.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push_null(arr: *mut HewYamlValue) {
+    if arr.is_null() {
+        return;
+    }
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(serde_yaml::Value::Null);
+    }
+}
+
+/// Push a [`HewYamlValue`] child onto a YAML sequence, taking ownership.
+///
+/// The `val` pointer is consumed and must not be freed by the caller.
+/// Does nothing if `arr` is null, not a sequence, or `val` is null.
+///
+/// # Safety
+///
+/// `arr` must be a valid non-null [`HewYamlValue`] pointer. `val` must be a
+/// valid non-null [`HewYamlValue`] pointer that the caller relinquishes
+/// ownership of.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_array_push(arr: *mut HewYamlValue, val: *mut HewYamlValue) {
+    if arr.is_null() || val.is_null() {
+        return;
+    }
+    // SAFETY: val was allocated with Box::into_raw and caller transfers ownership.
+    let child = unsafe { Box::from_raw(val) };
+    // SAFETY: arr is non-null (checked above) and valid per caller contract.
+    if let serde_yaml::Value::Sequence(seq) = &mut unsafe { &mut *arr }.inner {
+        seq.push(child.inner);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scalar constructors
+// ---------------------------------------------------------------------------
+
+/// Create a [`HewYamlValue`] wrapping a boolean.
+///
+/// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
+/// [`hew_yaml_free`].
+#[no_mangle]
+pub extern "C" fn hew_yaml_from_bool(val: i32) -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Bool(val != 0))
+}
+
+/// Create a [`HewYamlValue`] wrapping an integer.
+///
+/// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
+/// [`hew_yaml_free`].
+#[no_mangle]
+pub extern "C" fn hew_yaml_from_int(val: i64) -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+}
+
+/// Create a [`HewYamlValue`] wrapping a float.
+///
+/// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
+/// [`hew_yaml_free`].
+#[no_mangle]
+pub extern "C" fn hew_yaml_from_float(val: f64) -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Number(serde_yaml::Number::from(val)))
+}
+
+/// Create a [`HewYamlValue`] wrapping a string. The string value is copied.
+///
+/// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
+/// [`hew_yaml_free`]. Returns null if `val` is null.
+///
+/// # Safety
+///
+/// `val` must be a valid NUL-terminated C string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_yaml_from_string(val: *const c_char) -> *mut HewYamlValue {
+    if val.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: val is non-null (checked above) and valid per caller contract.
+    let s = unsafe { CStr::from_ptr(val) }
+        .to_str()
+        .unwrap_or("")
+        .to_owned();
+    boxed_value(serde_yaml::Value::String(s))
+}
+
+/// Create a [`HewYamlValue`] wrapping null.
+///
+/// Returns a heap-allocated [`HewYamlValue`]. Must be freed with
+/// [`hew_yaml_free`].
+#[no_mangle]
+pub extern "C" fn hew_yaml_from_null() -> *mut HewYamlValue {
+    boxed_value(serde_yaml::Value::Null)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -644,6 +896,300 @@ mod tests {
             let f = hew_yaml_get_float(val);
             assert!((f - 2.718).abs() < 1e-10);
             hew_yaml_free(val);
+        }
+    }
+
+    #[test]
+    fn array_construction() {
+        let arr = hew_yaml_array_new();
+        assert!(!arr.is_null());
+
+        // SAFETY: arr is a valid HewYamlValue from hew_yaml_array_new.
+        unsafe {
+            hew_yaml_array_push_bool(arr, 1);
+            hew_yaml_array_push_int(arr, 42);
+            hew_yaml_array_push_float(arr, 2.5);
+            let s = CString::new("hello").unwrap();
+            hew_yaml_array_push_string(arr, s.as_ptr());
+            hew_yaml_array_push_null(arr);
+
+            assert_eq!(hew_yaml_type(arr), 5); // sequence
+            assert_eq!(hew_yaml_array_len(arr), 5);
+
+            let e0 = hew_yaml_array_get(arr, 0);
+            assert_eq!(hew_yaml_type(e0), 1); // bool
+            assert_eq!(hew_yaml_get_bool(e0), 1);
+            hew_yaml_free(e0);
+
+            let e1 = hew_yaml_array_get(arr, 1);
+            assert_eq!(hew_yaml_type(e1), 2); // int
+            assert_eq!(hew_yaml_get_int(e1), 42);
+            hew_yaml_free(e1);
+
+            let e2 = hew_yaml_array_get(arr, 2);
+            assert_eq!(hew_yaml_type(e2), 3); // float
+            let f = hew_yaml_get_float(e2);
+            assert!((f - 2.5).abs() < f64::EPSILON);
+            hew_yaml_free(e2);
+
+            let e3 = hew_yaml_array_get(arr, 3);
+            assert_eq!(hew_yaml_type(e3), 4); // string
+            let s_out = read_and_free_cstr(hew_yaml_get_string(e3));
+            assert_eq!(s_out, "hello");
+            hew_yaml_free(e3);
+
+            let e4 = hew_yaml_array_get(arr, 4);
+            assert_eq!(hew_yaml_type(e4), 0); // null
+            hew_yaml_free(e4);
+
+            hew_yaml_free(arr);
+        }
+    }
+
+    #[test]
+    fn array_push_value_child() {
+        let arr = hew_yaml_array_new();
+        assert!(!arr.is_null());
+
+        // SAFETY: arr and inner are valid HewYamlValue pointers.
+        unsafe {
+            let inner = hew_yaml_object_new();
+            let k = CString::new("nested").unwrap();
+            hew_yaml_object_set_int(inner, k.as_ptr(), 7);
+            // Push takes ownership of inner — do not free it.
+            hew_yaml_array_push(arr, inner);
+
+            assert_eq!(hew_yaml_array_len(arr), 1);
+            let elem = hew_yaml_array_get(arr, 0);
+            assert_eq!(hew_yaml_type(elem), 6); // mapping
+
+            let field = hew_yaml_get_field(elem, k.as_ptr());
+            assert_eq!(hew_yaml_get_int(field), 7);
+            hew_yaml_free(field);
+            hew_yaml_free(elem);
+            hew_yaml_free(arr);
+        }
+    }
+
+    #[test]
+    fn object_set_value_child() {
+        let obj = hew_yaml_object_new();
+        assert!(!obj.is_null());
+
+        // SAFETY: obj and child are valid HewYamlValue pointers.
+        unsafe {
+            let child_arr = hew_yaml_array_new();
+            hew_yaml_array_push_int(child_arr, 1);
+            hew_yaml_array_push_int(child_arr, 2);
+
+            let k = CString::new("items").unwrap();
+            // Set takes ownership of child_arr — do not free it.
+            hew_yaml_object_set(obj, k.as_ptr(), child_arr);
+
+            let field = hew_yaml_get_field(obj, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_yaml_type(field), 5); // sequence
+            assert_eq!(hew_yaml_array_len(field), 2);
+            hew_yaml_free(field);
+            hew_yaml_free(obj);
+        }
+    }
+
+    #[test]
+    fn object_set_null_field() {
+        let obj = hew_yaml_object_new();
+        assert!(!obj.is_null());
+
+        // SAFETY: obj is a valid HewYamlValue from hew_yaml_object_new.
+        unsafe {
+            let k = CString::new("empty").unwrap();
+            hew_yaml_object_set_null(obj, k.as_ptr());
+
+            let field = hew_yaml_get_field(obj, k.as_ptr());
+            assert!(!field.is_null());
+            assert_eq!(hew_yaml_type(field), 0); // null
+            hew_yaml_free(field);
+            hew_yaml_free(obj);
+        }
+    }
+
+    #[test]
+    fn scalar_constructors() {
+        // SAFETY: all pointers come from hew_yaml_from_* functions.
+        unsafe {
+            let bool_val = hew_yaml_from_bool(1);
+            assert_eq!(hew_yaml_type(bool_val), 1);
+            assert_eq!(hew_yaml_get_bool(bool_val), 1);
+            hew_yaml_free(bool_val);
+
+            let bool_false = hew_yaml_from_bool(0);
+            assert_eq!(hew_yaml_get_bool(bool_false), 0);
+            hew_yaml_free(bool_false);
+
+            let int_val = hew_yaml_from_int(-99);
+            assert_eq!(hew_yaml_type(int_val), 2);
+            assert_eq!(hew_yaml_get_int(int_val), -99);
+            hew_yaml_free(int_val);
+
+            let float_val = hew_yaml_from_float(1.5);
+            assert_eq!(hew_yaml_type(float_val), 3);
+            let fv = hew_yaml_get_float(float_val);
+            assert!((fv - 1.5).abs() < f64::EPSILON);
+            hew_yaml_free(float_val);
+
+            let str_c = CString::new("world").unwrap();
+            let str_val = hew_yaml_from_string(str_c.as_ptr());
+            assert_eq!(hew_yaml_type(str_val), 4);
+            let sv = read_and_free_cstr(hew_yaml_get_string(str_val));
+            assert_eq!(sv, "world");
+            hew_yaml_free(str_val);
+
+            // Null pointer input returns null.
+            assert!(hew_yaml_from_string(std::ptr::null()).is_null());
+
+            let null_val = hew_yaml_from_null();
+            assert_eq!(hew_yaml_type(null_val), 0);
+            hew_yaml_free(null_val);
+        }
+    }
+
+    #[test]
+    fn stringify_builder_roundtrip() {
+        let obj = hew_yaml_object_new();
+        assert!(!obj.is_null());
+
+        // SAFETY: all pointers are valid HewYamlValue from builder functions.
+        unsafe {
+            let k_name = CString::new("name").unwrap();
+            let v_name = CString::new("hew").unwrap();
+            hew_yaml_object_set_string(obj, k_name.as_ptr(), v_name.as_ptr());
+
+            let k_version = CString::new("version").unwrap();
+            hew_yaml_object_set_int(obj, k_version.as_ptr(), 1);
+
+            let k_tags = CString::new("tags").unwrap();
+            let tags = hew_yaml_array_new();
+            let t1 = CString::new("lang").unwrap();
+            let t2 = CString::new("actor").unwrap();
+            hew_yaml_array_push_string(tags, t1.as_ptr());
+            hew_yaml_array_push_string(tags, t2.as_ptr());
+            hew_yaml_object_set(obj, k_tags.as_ptr(), tags);
+
+            // Stringify and re-parse to verify structural equality.
+            let yaml_out = hew_yaml_stringify(obj);
+            assert!(!yaml_out.is_null());
+            let yaml_str = read_and_free_cstr(yaml_out);
+
+            let reparsed = hew_yaml_parse(CString::new(yaml_str).unwrap().as_ptr());
+            assert!(!reparsed.is_null());
+
+            // Verify fields survived the roundtrip.
+            let name_field = hew_yaml_get_field(reparsed, k_name.as_ptr());
+            assert!(!name_field.is_null());
+            let name_out = read_and_free_cstr(hew_yaml_get_string(name_field));
+            assert_eq!(name_out, "hew");
+            hew_yaml_free(name_field);
+
+            let ver_field = hew_yaml_get_field(reparsed, k_version.as_ptr());
+            assert_eq!(hew_yaml_get_int(ver_field), 1);
+            hew_yaml_free(ver_field);
+
+            let tags_field = hew_yaml_get_field(reparsed, k_tags.as_ptr());
+            assert_eq!(hew_yaml_array_len(tags_field), 2);
+            hew_yaml_free(tags_field);
+
+            hew_yaml_free(reparsed);
+            hew_yaml_free(obj);
+        }
+    }
+
+    #[test]
+    fn object_with_nested_values() {
+        // Build: {meta: {author: "slepp", stable: true}, scores: [10, 20]}
+        let root = hew_yaml_object_new();
+
+        // SAFETY: all pointers are valid HewYamlValue from builder functions.
+        unsafe {
+            let meta = hew_yaml_object_new();
+            let k_author = CString::new("author").unwrap();
+            let v_author = CString::new("slepp").unwrap();
+            hew_yaml_object_set_string(meta, k_author.as_ptr(), v_author.as_ptr());
+            let k_stable = CString::new("stable").unwrap();
+            hew_yaml_object_set_bool(meta, k_stable.as_ptr(), 1);
+
+            let scores = hew_yaml_array_new();
+            hew_yaml_array_push_int(scores, 10);
+            hew_yaml_array_push_int(scores, 20);
+
+            let k_meta = CString::new("meta").unwrap();
+            hew_yaml_object_set(root, k_meta.as_ptr(), meta);
+            let k_scores = CString::new("scores").unwrap();
+            hew_yaml_object_set(root, k_scores.as_ptr(), scores);
+
+            // Verify nested structure.
+            let meta_out = hew_yaml_get_field(root, k_meta.as_ptr());
+            assert_eq!(hew_yaml_type(meta_out), 6); // mapping
+
+            let author_out = hew_yaml_get_field(meta_out, k_author.as_ptr());
+            let author_str = read_and_free_cstr(hew_yaml_get_string(author_out));
+            assert_eq!(author_str, "slepp");
+            hew_yaml_free(author_out);
+
+            let stable_out = hew_yaml_get_field(meta_out, k_stable.as_ptr());
+            assert_eq!(hew_yaml_get_bool(stable_out), 1);
+            hew_yaml_free(stable_out);
+            hew_yaml_free(meta_out);
+
+            let scores_out = hew_yaml_get_field(root, k_scores.as_ptr());
+            assert_eq!(hew_yaml_array_len(scores_out), 2);
+            let s0 = hew_yaml_array_get(scores_out, 0);
+            assert_eq!(hew_yaml_get_int(s0), 10);
+            hew_yaml_free(s0);
+            let s1 = hew_yaml_array_get(scores_out, 1);
+            assert_eq!(hew_yaml_get_int(s1), 20);
+            hew_yaml_free(s1);
+            hew_yaml_free(scores_out);
+
+            hew_yaml_free(root);
+        }
+    }
+
+    #[test]
+    fn null_handling_throughout() {
+        // Verify null-safety on all new functions.
+        // SAFETY: testing null-pointer behaviour on all builder functions.
+        unsafe {
+            // Array push functions with null arr should be no-ops.
+            hew_yaml_array_push_bool(std::ptr::null_mut(), 1);
+            hew_yaml_array_push_int(std::ptr::null_mut(), 1);
+            hew_yaml_array_push_float(std::ptr::null_mut(), 1.0);
+            hew_yaml_array_push_string(std::ptr::null_mut(), std::ptr::null());
+            hew_yaml_array_push_null(std::ptr::null_mut());
+            hew_yaml_array_push(std::ptr::null_mut(), std::ptr::null_mut());
+
+            // Object set functions with null obj should be no-ops.
+            hew_yaml_object_set(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut());
+            hew_yaml_object_set_null(std::ptr::null_mut(), std::ptr::null());
+
+            // Scalar constructors with null string input.
+            assert!(hew_yaml_from_string(std::ptr::null()).is_null());
+
+            // Stringify with null.
+            assert!(hew_yaml_stringify(std::ptr::null()).is_null());
+
+            // Push on a non-sequence is a silent no-op.
+            let obj = hew_yaml_object_new();
+            hew_yaml_array_push_int(obj, 5);
+            assert_eq!(hew_yaml_type(obj), 6); // still a mapping, unmodified
+            hew_yaml_free(obj);
+
+            // Object set on a non-mapping is a silent no-op.
+            let arr = hew_yaml_array_new();
+            let k = CString::new("key").unwrap();
+            hew_yaml_object_set_bool(arr, k.as_ptr(), 1);
+            assert_eq!(hew_yaml_type(arr), 5); // still a sequence, unmodified
+            assert_eq!(hew_yaml_array_len(arr), 0);
+            hew_yaml_free(arr);
         }
     }
 }

@@ -151,7 +151,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                     .body
                     .iter()
                     .filter_map(|item| match item {
-                        TypeBodyItem::Field { name, ty } => {
+                        TypeBodyItem::Field { name, ty, .. } => {
                             Some((name.clone(), type_expr_to_string(&ty.0)))
                         }
                         _ => None,

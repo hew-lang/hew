@@ -120,6 +120,14 @@ private:
       const std::optional<ast::NamingCase> &namingCase,
       llvm::function_ref<const std::optional<std::string> &(const ast::WireFieldDecl &)>
           fieldOverride);
+  /// Generate TypeName_to_{json,yaml,toml} for an Encode-eligible struct type.
+  /// Takes struct as input, serializes each field, returns string pointer.
+  void generateStructToSerial(const std::string &typeName, llvm::StringRef format);
+  /// Generate TypeName_from_{json,yaml,toml} for a Decode-eligible struct type.
+  /// Takes string input, parses and extracts fields, returns struct.
+  void generateStructFromSerial(const std::string &typeName, llvm::StringRef format);
+  /// Generate mangled method wrappers for struct encode/decode methods.
+  void generateStructEncodeWrappers(const std::string &typeName);
   void generateSupervisorDecl(const ast::SupervisorDecl &decl);
   void registerMachineDecl(const ast::MachineDecl &decl);
   void generateMachineDecl(const ast::MachineDecl &decl);

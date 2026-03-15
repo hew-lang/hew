@@ -878,7 +878,7 @@ impl Checker {
 
         for item in &td.body {
             match item {
-                TypeBodyItem::Field { name, ty } => {
+                TypeBodyItem::Field { name, ty, .. } => {
                     let field_ty = self.resolve_type_expr(&ty.0);
                     fields.insert(name.clone(), field_ty);
                 }
@@ -961,6 +961,12 @@ impl Checker {
 
         // Register with trait registry for Send/Frozen derivation
         let field_types: Vec<_> = type_def.fields.values().cloned().collect();
+        let all_fields_encodable = td.wire.is_none()
+            && kind == TypeDefKind::Struct
+            && field_types
+                .iter()
+                .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
+
         self.registry.register_type(td.name.clone(), field_types);
 
         self.type_defs.insert(td.name.clone(), type_def);
@@ -969,6 +975,12 @@ impl Checker {
         if let Some(ref wire) = td.wire {
             self.register_wire_methods(&td.name);
             self.validate_wire_version_constraints(&td.name, wire);
+        }
+
+        // For non-wire struct types: if all fields are Encode, register
+        // serialization methods (to_json, from_json, to_yaml, from_yaml, to_toml, from_toml)
+        if all_fields_encodable {
+            self.register_encode_methods(&td.name);
         }
     }
 
@@ -1011,6 +1023,74 @@ impl Checker {
             ("decode", vec![bytes_ty], self_ty.clone()),
             ("from_json", vec![Ty::String], self_ty.clone()),
             ("from_yaml", vec![Ty::String], self_ty),
+        ];
+
+        for (method_name, params, return_type) in static_methods {
+            let qualified_name = format!("{type_name}.{method_name}");
+            self.fn_sigs.insert(
+                qualified_name,
+                FnSig {
+                    type_params: vec![],
+                    type_param_bounds: HashMap::new(),
+                    param_names: vec![],
+                    params,
+                    return_type,
+                    is_async: false,
+                    is_pure: true,
+                    accepts_kwargs: false,
+                    doc_comment: None,
+                },
+            );
+        }
+    }
+
+    /// Register serialization methods for a struct type that implements `Encode`.
+    ///
+    /// Adds `to_json`, `to_yaml`, `to_toml` instance methods and
+    /// `from_json`, `from_yaml`, `from_toml` static methods.
+    fn register_encode_methods(&mut self, type_name: &str) {
+        let self_ty = Ty::Named {
+            name: type_name.to_string(),
+            args: vec![],
+        };
+
+        // Instance methods: to_json(self) -> String, to_yaml(self) -> String, to_toml(self) -> String
+        let instance_methods = [
+            ("to_json", Ty::String),
+            ("to_yaml", Ty::String),
+            ("to_toml", Ty::String),
+        ];
+
+        if let Some(type_def) = self.type_defs.get_mut(type_name) {
+            for (method_name, return_type) in instance_methods {
+                type_def.methods.insert(
+                    method_name.to_string(),
+                    FnSig {
+                        type_params: vec![],
+                        type_param_bounds: HashMap::new(),
+                        param_names: vec![],
+                        params: vec![],
+                        return_type,
+                        is_async: false,
+                        is_pure: true,
+                        accepts_kwargs: false,
+                        doc_comment: None,
+                    },
+                );
+            }
+        }
+
+        // Static methods: TypeName.from_json(String) -> Self, etc.
+        // SHIM: Returns Self directly, not Result<Self, String>. Result wrapping
+        // requires codegen changes to construct Result enum values. Until then,
+        // parse errors panic at runtime.
+        // WHEN: Add Result wrapping when codegen can emit Result<T, E> construction.
+        // WHAT: Change return type to Ty::result(self_ty, Ty::String) and update codegen
+        // to wrap parse output in Ok/Err.
+        let static_methods = [
+            ("from_json", vec![Ty::String], self_ty.clone()),
+            ("from_yaml", vec![Ty::String], self_ty.clone()),
+            ("from_toml", vec![Ty::String], self_ty),
         ];
 
         for (method_name, params, return_type) in static_methods {
@@ -10276,6 +10356,7 @@ fn main() {
                     },
                     0..0,
                 ),
+                attributes: Vec::new(),
             }],
             doc_comment: None,
             wire: None,

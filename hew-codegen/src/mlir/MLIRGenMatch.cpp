@@ -195,20 +195,26 @@ mlir::Value MLIRGen::generateMatchExpr(const ast::ExprMatch &expr, const ast::Sp
   // The frontend type-checks all arms, unifies their types, and records
   // the result type in the expression type map keyed by span.
   mlir::Type resultType = nullptr;
+  bool resolvedTypeKnown = false;
   if (auto *resolvedType = resolvedTypeOf(exprSpan)) {
+    resolvedTypeKnown = true;
     resultType = convertType(*resolvedType);
+    // NoneType means the match arms all return void — treat as a
+    // statement-style match with no result value (resultType == nullptr).
+    if (mlir::isa<mlir::NoneType>(resultType))
+      resultType = nullptr;
   }
 
   // If the type checker didn't record a type, infer from the scrutinee for
   // Result/Option matches where the natural result is the inner type.
-  if (!resultType) {
+  if (!resultType && !resolvedTypeKnown) {
     if (auto rt = mlir::dyn_cast<hew::ResultEnumType>(scrutinee.getType()))
       resultType = rt.getOkType();
     else if (auto ot = mlir::dyn_cast<hew::OptionEnumType>(scrutinee.getType()))
       resultType = ot.getInnerType();
   }
 
-  if (!resultType) {
+  if (!resultType && !resolvedTypeKnown) {
     emitError(location) << "cannot determine result type for match expression"
                         << " (scrutinee type: " << scrutinee.getType() << ")";
     return nullptr;

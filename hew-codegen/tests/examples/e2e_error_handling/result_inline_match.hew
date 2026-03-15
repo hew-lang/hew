@@ -1,0 +1,57 @@
+// Test: inline nested match on Result<T, UserEnum> arms (no import, standalone).
+// Regression: `Err(e) => match e { ... }` without braces crashed codegen when
+// all arms return void (NoneType). This test exercises the same path in a single
+// file without any imports so the fix is verified independently of module loading.
+enum FsError {
+    NotFound;
+    PermissionDenied;
+    Io;
+}
+
+fn open_path(path: String) -> Result<String, FsError> {
+    if path == "" {
+        Err(NotFound)
+    } else if path == "/secret" {
+        Err(PermissionDenied)
+    } else {
+        Ok("data")
+    }
+}
+
+fn save_path(path: String) -> Result<int, FsError> {
+    if path == "/secret" {
+        Err(PermissionDenied)
+    } else {
+        Ok(4)
+    }
+}
+
+fn main() {
+    // Inline nested match — no block braces on the Err arm
+    match open_path("readme.txt") {
+        Ok(s) => println(f"ok: {s}"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Io => println("io error"),
+        },
+    }
+
+    match open_path("") {
+        Ok(s) => println(f"ok: {s}"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Io => println("io error"),
+        },
+    }
+
+    match save_path("/secret") {
+        Ok(n) => println(f"wrote {n}"),
+        Err(e) => match e {
+            NotFound => println("not found"),
+            PermissionDenied => println("permission denied"),
+            Io => println("io error"),
+        },
+    }
+}

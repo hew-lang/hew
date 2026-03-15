@@ -1,0 +1,30 @@
+// Library: exposes Result<T, UserEnum> functions from an imported module.
+pub enum IoError {
+    NotFound;
+    PermissionDenied;
+    Timeout;
+}
+
+pub fn try_read(path: String) -> Result<String, IoError> {
+    if path == "" {
+        Err(NotFound)
+    } else {
+        Ok("file contents")
+    }
+}
+
+pub fn try_write(path: String) -> Result<int, IoError> {
+    if path == "/readonly" {
+        Err(PermissionDenied)
+    } else {
+        Ok(42)
+    }
+}
+
+pub fn try_connect(host: String) -> Result<int, IoError> {
+    if host == "unreachable" {
+        Err(Timeout)
+    } else {
+        Ok(1)
+    }
+}

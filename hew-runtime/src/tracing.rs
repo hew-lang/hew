@@ -151,6 +151,47 @@ fn monotonic_ns() -> u64 {
     }
 }
 
+/// Public wrapper around `monotonic_ns()` for use by internal consumers.
+///
+/// Returns the current monotonic time in nanoseconds since the process's
+/// tracing epoch. Use this to compute relative ages of trace events.
+pub fn trace_now_ns() -> u64 {
+    monotonic_ns()
+}
+
+/// Compute the nanosecond offset to convert monotonic timestamps to Unix epoch.
+///
+/// Call this once when the OTel exporter starts. The returned value satisfies:
+///
+/// ```text
+/// unix_epoch_ns = unix_epoch_offset_ns() + event.timestamp_ns
+/// ```
+///
+/// The measurement takes two back-to-back reads (wall clock then monotonic) so
+/// the error is at most a few nanoseconds — negligible for tracing.
+pub fn unix_epoch_offset_ns() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Ensure the monotonic EPOCH is initialised before we sample system time,
+    // so the first `monotonic_ns()` call doesn't skew the offset.
+    let _ = monotonic_ns();
+
+    let sys_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mono_ns = u128::from(monotonic_ns());
+
+    // offset = sys - mono  (saturating: protects against clock weirdness)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Unix epoch ns since 1970 fits comfortably in u64 until the year 2554"
+    )]
+    {
+        sys_ns.saturating_sub(mono_ns) as u64
+    }
+}
+
 // ── Rust-internal drain ────────────────────────────────────────────────
 
 /// Drain up to `max` trace events for internal consumers (e.g. the OTel exporter).

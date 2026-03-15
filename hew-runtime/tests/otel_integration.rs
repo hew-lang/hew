@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use hew_runtime::otel::{build_otlp_json, reconstruct_spans};
+use hew_runtime::otel::{build_otlp_json, flush_stale_begins, reconstruct_spans};
 use hew_runtime::tracing::{
     drain_events, hew_trace_begin, hew_trace_enable, hew_trace_end, hew_trace_lifecycle,
     hew_trace_reset, SPAN_SPAWN,
@@ -134,8 +134,11 @@ fn otel_exporter_posts_valid_otlp_json() {
     let events = drain_events(512);
     assert!(!events.is_empty(), "expected trace events to be recorded");
 
-    // 4. Reconstruct spans.
-    let spans = reconstruct_spans(events);
+    // 4. Reconstruct spans (with persistent pending_begins state).
+    let mut pending_begins = std::collections::HashMap::new();
+    let mut spans = reconstruct_spans(events, &mut pending_begins);
+    // Flush any stale pending begins (threshold=0 forces immediate flush in tests).
+    spans.extend(flush_stale_begins(&mut pending_begins, 0));
     assert!(
         spans.len() >= 3,
         "expected at least 3 spans, got {}",
@@ -164,8 +167,9 @@ fn otel_exporter_posts_valid_otlp_json() {
         assert!(s.ok, "dispatch spans should be ok");
     }
 
-    // 5. Build OTLP JSON.
-    let json = build_otlp_json("test-service", &spans);
+    // 5. Build OTLP JSON with a real epoch offset so timestamps are valid Unix ns.
+    let epoch_offset_ns = hew_runtime::tracing::unix_epoch_offset_ns();
+    let json = build_otlp_json("test-service", &spans, epoch_offset_ns);
 
     // 6. Basic structural validation.
     assert!(json.contains("\"resourceSpans\""), "missing resourceSpans");
@@ -223,7 +227,8 @@ fn span_reconstruction_timing_invariants() {
     hew_trace_end(10, 1);
 
     let events = drain_events(16);
-    let spans = reconstruct_spans(events);
+    let mut pending = std::collections::HashMap::new();
+    let spans = reconstruct_spans(events, &mut pending);
     assert_eq!(spans.len(), 1);
     let s = &spans[0];
     assert!(

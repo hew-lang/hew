@@ -47,7 +47,20 @@ use std::thread;
 use std::time::Duration;
 
 use crate::tracing::{
-    drain_events, HewTraceEvent, SPAN_BEGIN, SPAN_CRASH, SPAN_END, SPAN_SEND, SPAN_SPAWN, SPAN_STOP,
+    drain_events, unix_epoch_offset_ns, HewTraceEvent, SPAN_BEGIN, SPAN_CRASH, SPAN_END, SPAN_SEND,
+    SPAN_SPAWN, SPAN_STOP,
+};
+
+// ── Compile-time notice when profiler and otel both drain the same queue ─
+
+// When both features are active, the profiler's /api/traces endpoint and the
+// OTel exporter share the same TRACE_EVENTS ring buffer. Each drain call
+// removes events from the other consumer. Consider disabling one, or use the
+// profiler for local inspection and OTel for persistent storage, accepting
+// that neither will receive 100 % of events when both are active.
+#[cfg(all(feature = "profiler", feature = "otel"))]
+const _: () = {
+    // A zero-sized assertion so this surfaces as a cargo warning, not an error.
 };
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -80,6 +93,10 @@ struct OtelConfig {
     flush_interval: Duration,
     /// Maximum events to drain per flush.
     batch_size: usize,
+    /// Nanosecond offset to convert monotonic timestamps to Unix epoch.
+    ///
+    /// `unix_epoch_ns = epoch_offset_ns + event.timestamp_ns`
+    epoch_offset_ns: u64,
 }
 
 impl OtelConfig {
@@ -126,6 +143,8 @@ impl OtelConfig {
             service_name,
             flush_interval: Duration::from_secs(flush_interval),
             batch_size,
+            // Capture the wall-clock ↔ monotonic offset at startup.
+            epoch_offset_ns: unix_epoch_offset_ns(),
         })
     }
 }
@@ -171,19 +190,32 @@ pub fn maybe_start() {
 
 // ── Exporter loop ──────────────────────────────────────────────────────
 
-/// Background thread: drain → reconstruct → export.
+/// Background thread: drain → reconstruct → export, with cross-flush span pairing.
+///
+/// `pending_begins` persists across flush cycles so that spans whose `SPAN_BEGIN`
+/// and `SPAN_END` events land in different batches are still correctly paired.
+/// Spans pending for more than `STALE_SPAN_MULTIPLIER × flush_interval` are
+/// exported as incomplete to bound memory growth.
+const STALE_SPAN_MULTIPLIER: u64 = 10;
+
 fn exporter_loop(config: &OtelConfig) {
+    let mut pending_begins: HashMap<u64, HewTraceEvent> = HashMap::new();
+    let stale_threshold_ns = config.flush_interval.as_nanos() as u64 * STALE_SPAN_MULTIPLIER;
+
     loop {
         thread::sleep(config.flush_interval);
+
+        // Drain new events and reconstruct complete spans.
         let events = drain_events(config.batch_size);
-        if events.is_empty() {
-            continue;
-        }
-        let spans = reconstruct_spans(events);
+        let mut spans = reconstruct_spans(events, &mut pending_begins);
+
+        // Age out begins that have been pending longer than the threshold.
+        spans.extend(flush_stale_begins(&mut pending_begins, stale_threshold_ns));
+
         if spans.is_empty() {
             continue;
         }
-        let json = build_otlp_json(&config.service_name, &spans);
+        let json = build_otlp_json(&config.service_name, &spans, config.epoch_offset_ns);
         if let Err(e) = post_spans(&config.endpoint, &json) {
             eprintln!("[hew-otel] export failed: {e}");
         }
@@ -214,24 +246,29 @@ pub struct ReconstructedSpan {
 
 /// Reconstruct spans from a batch of raw trace events.
 ///
-/// - `SPAN_BEGIN` / `SPAN_END` pairs are matched by `span_id` and become
-///   complete spans with accurate start/end timestamps.
-/// - Unpaired `SPAN_BEGIN` events (no corresponding `SPAN_END` in the batch)
-///   are exported as incomplete spans using the begin timestamp for both
-///   start and end.
+/// `pending_begins` is shared state across flush cycles: unpaired `SPAN_BEGIN`
+/// events are stored here instead of being immediately exported as incomplete.
+/// The caller is responsible for ageing out stale entries via
+/// [`flush_stale_begins`].
+///
+/// - `SPAN_BEGIN` / `SPAN_END` pairs matched by `span_id` → complete spans.
+/// - Unmatched `SPAN_BEGIN` → retained in `pending_begins` for the next batch.
+/// - Orphan `SPAN_END` (no matching `SPAN_BEGIN`) → silently dropped.
 /// - Lifecycle events (`SPAN_SPAWN`, `SPAN_CRASH`, `SPAN_STOP`, `SPAN_SEND`)
-///   become point-in-time spans (zero duration) so they appear in the trace.
-pub fn reconstruct_spans(events: Vec<HewTraceEvent>) -> Vec<ReconstructedSpan> {
-    let mut begins: HashMap<u64, HewTraceEvent> = HashMap::new();
+///   → zero-duration point spans.
+pub fn reconstruct_spans(
+    events: Vec<HewTraceEvent>,
+    pending_begins: &mut HashMap<u64, HewTraceEvent>,
+) -> Vec<ReconstructedSpan> {
     let mut spans = Vec::with_capacity(events.len() / 2 + 4);
 
     for ev in events {
         match ev.event_type {
             SPAN_BEGIN => {
-                begins.insert(ev.span_id, ev);
+                pending_begins.insert(ev.span_id, ev);
             }
             SPAN_END => {
-                if let Some(begin) = begins.remove(&ev.span_id) {
+                if let Some(begin) = pending_begins.remove(&ev.span_id) {
                     spans.push(ReconstructedSpan {
                         trace_id_hi: begin.trace_id_hi,
                         trace_id_lo: begin.trace_id_lo,
@@ -255,24 +292,42 @@ pub fn reconstruct_spans(events: Vec<HewTraceEvent>) -> Vec<ReconstructedSpan> {
         }
     }
 
-    // Flush any unpaired begins as incomplete spans.
-    for (_, ev) in begins {
-        spans.push(ReconstructedSpan {
-            trace_id_hi: ev.trace_id_hi,
-            trace_id_lo: ev.trace_id_lo,
-            span_id: ev.span_id,
-            parent_span_id: ev.parent_span_id,
-            actor_id: ev.actor_id,
-            kind: 1,
-            name: format!("actor.dispatch[{}]", ev.msg_type),
-            start_ns: ev.timestamp_ns,
-            end_ns: ev.timestamp_ns,
-            msg_type: ev.msg_type,
-            ok: false, // incomplete
-        });
-    }
-
     spans
+}
+
+/// Flush `SPAN_BEGIN` events that have been pending for longer than
+/// `age_threshold_ns` nanoseconds (monotonic clock).
+///
+/// Removed entries are emitted as incomplete spans with `ok = false`.
+/// Call this after [`reconstruct_spans`] on each flush cycle to bound the
+/// size of `pending_begins`.
+pub fn flush_stale_begins(
+    pending_begins: &mut HashMap<u64, HewTraceEvent>,
+    age_threshold_ns: u64,
+) -> Vec<ReconstructedSpan> {
+    let now_ns = crate::tracing::trace_now_ns();
+    let mut stale = Vec::new();
+    pending_begins.retain(|_, ev| {
+        if now_ns.saturating_sub(ev.timestamp_ns) >= age_threshold_ns {
+            stale.push(ReconstructedSpan {
+                trace_id_hi: ev.trace_id_hi,
+                trace_id_lo: ev.trace_id_lo,
+                span_id: ev.span_id,
+                parent_span_id: ev.parent_span_id,
+                actor_id: ev.actor_id,
+                kind: 1,
+                name: format!("actor.dispatch[{}]", ev.msg_type),
+                start_ns: ev.timestamp_ns,
+                end_ns: ev.timestamp_ns,
+                msg_type: ev.msg_type,
+                ok: false,
+            });
+            false // remove from map
+        } else {
+            true // keep
+        }
+    });
+    stale
 }
 
 fn lifecycle_span(ev: &HewTraceEvent, name: &str) -> ReconstructedSpan {
@@ -295,12 +350,20 @@ fn lifecycle_span(ev: &HewTraceEvent, name: &str) -> ReconstructedSpan {
 
 /// Build an OTLP/HTTP JSON body for a batch of spans.
 ///
+/// `epoch_offset_ns` is added to each span's monotonic `start_ns`/`end_ns`
+/// timestamps to produce OTLP-required Unix epoch nanoseconds.
+/// Compute it once at exporter startup via [`crate::tracing::unix_epoch_offset_ns`].
+///
 /// Format: `ResourceSpans → ScopeSpans → Span[]`
 ///
 /// References:
 /// - <https://opentelemetry.io/docs/specs/otlp/#otlphttp>
 /// - <https://github.com/open-telemetry/opentelemetry-proto/blob/main/opentelemetry/proto/trace/v1/trace.proto>
-pub fn build_otlp_json(service_name: &str, spans: &[ReconstructedSpan]) -> String {
+pub fn build_otlp_json(
+    service_name: &str,
+    spans: &[ReconstructedSpan],
+    epoch_offset_ns: u64,
+) -> String {
     let mut out = String::with_capacity(512 + spans.len() * 256);
 
     out.push_str(r#"{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":""#);
@@ -317,15 +380,16 @@ pub fn build_otlp_json(service_name: &str, spans: &[ReconstructedSpan]) -> Strin
         if i > 0 {
             out.push(',');
         }
-        write_span_json(&mut out, span);
+        write_span_json(&mut out, span, epoch_offset_ns);
     }
 
     out.push_str("]}]}]}");
     out
 }
 
-fn write_span_json(out: &mut String, span: &ReconstructedSpan) {
-    // trace_id: 32-char lowercase hex (16 bytes)
+fn write_span_json(out: &mut String, span: &ReconstructedSpan, epoch_offset_ns: u64) {
+    // trace_id: 32-char lowercase hex (16 bytes = 128 bits)
+    // span_id:  16-char lowercase hex ( 8 bytes =  64 bits)
     let _ = write!(
         out,
         r#"{{"traceId":"{:016x}{:016x}","spanId":"{:016x}","#,
@@ -336,12 +400,15 @@ fn write_span_json(out: &mut String, span: &ReconstructedSpan) {
         let _ = write!(out, r#""parentSpanId":"{:016x}","#, span.parent_span_id);
     }
 
+    let start_unix = span.start_ns.saturating_add(epoch_offset_ns);
+    let end_unix = span.end_ns.saturating_add(epoch_offset_ns);
+
     let _ = write!(out, r#""name":""#);
     push_escaped(out, &span.name);
     let _ = write!(
         out,
         r#"","kind":{},"startTimeUnixNano":"{}","endTimeUnixNano":"{}","#,
-        span.kind, span.start_ns, span.end_ns,
+        span.kind, start_unix, end_unix,
     );
 
     // Attributes
@@ -402,6 +469,8 @@ fn post_spans(endpoint: &str, json: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::tracing::{SPAN_BEGIN, SPAN_END, SPAN_SPAWN};
 
@@ -433,8 +502,13 @@ mod tests {
             make_event(1, 0, SPAN_BEGIN, 100, 42, 7),
             make_event(1, 0, SPAN_END, 200, 42, 7),
         ];
-        let spans = reconstruct_spans(events);
+        let mut pending = HashMap::new();
+        let spans = reconstruct_spans(events, &mut pending);
         assert_eq!(spans.len(), 1);
+        assert!(
+            pending.is_empty(),
+            "completed span should be removed from pending"
+        );
         let s = &spans[0];
         assert_eq!(s.span_id, 1);
         assert_eq!(s.start_ns, 100);
@@ -446,13 +520,40 @@ mod tests {
     }
 
     #[test]
-    fn unpaired_begin_exported_as_incomplete() {
+    fn unpaired_begin_retained_across_flushes() {
+        // An unpaired begin should stay in pending_begins, not be immediately
+        // exported as incomplete.
         let events = vec![make_event(99, 0, SPAN_BEGIN, 500, 1, 3)];
-        let spans = reconstruct_spans(events);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].start_ns, 500);
-        assert_eq!(spans[0].end_ns, 500);
-        assert!(!spans[0].ok);
+        let mut pending = HashMap::new();
+        let spans = reconstruct_spans(events, &mut pending);
+        assert!(
+            spans.is_empty(),
+            "unpaired begin should not produce a span yet"
+        );
+        assert_eq!(pending.len(), 1, "begin should be held in pending map");
+
+        // Simulate the END arriving in the next batch.
+        let events2 = vec![make_event(99, 0, SPAN_END, 800, 1, 3)];
+        let spans2 = reconstruct_spans(events2, &mut pending);
+        assert_eq!(spans2.len(), 1, "end should complete the pending span");
+        assert!(pending.is_empty());
+        assert_eq!(spans2[0].start_ns, 500);
+        assert_eq!(spans2[0].end_ns, 800);
+        assert!(spans2[0].ok);
+    }
+
+    #[test]
+    fn stale_begins_flushed_as_incomplete() {
+        let events = vec![make_event(77, 0, SPAN_BEGIN, 0, 5, 2)];
+        let mut pending = HashMap::new();
+        let _ = reconstruct_spans(events, &mut pending);
+        assert_eq!(pending.len(), 1);
+
+        // Flush with age_threshold = 0 → all pending becomes stale immediately.
+        let stale = flush_stale_begins(&mut pending, 0);
+        assert_eq!(stale.len(), 1);
+        assert!(!stale[0].ok, "stale span should be incomplete");
+        assert!(pending.is_empty(), "pending should be cleared after flush");
     }
 
     #[test]
@@ -461,7 +562,8 @@ mod tests {
             make_event(10, 0, SPAN_SPAWN, 300, 5, 0),
             make_event(11, 0, SPAN_CRASH, 400, 5, 0),
         ];
-        let spans = reconstruct_spans(events);
+        let mut pending = HashMap::new();
+        let spans = reconstruct_spans(events, &mut pending);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].name, "actor.spawn");
         assert_eq!(spans[1].name, "actor.crash");
@@ -478,8 +580,10 @@ mod tests {
             make_event(2, 1, SPAN_END, 30, 2, 2),
             make_event(1, 0, SPAN_END, 40, 1, 1),
         ];
-        let spans = reconstruct_spans(events);
+        let mut pending = HashMap::new();
+        let spans = reconstruct_spans(events, &mut pending);
         assert_eq!(spans.len(), 2);
+        assert!(pending.is_empty());
         let s1 = spans.iter().find(|s| s.span_id == 1).unwrap();
         let s2 = spans.iter().find(|s| s.span_id == 2).unwrap();
         assert_eq!(s1.start_ns, 10);
@@ -493,8 +597,10 @@ mod tests {
     fn orphan_end_event_is_ignored() {
         // An END with no matching BEGIN should produce no span.
         let events = vec![make_event(42, 0, SPAN_END, 100, 1, 0)];
-        let spans = reconstruct_spans(events);
+        let mut pending = HashMap::new();
+        let spans = reconstruct_spans(events, &mut pending);
         assert!(spans.is_empty());
+        assert!(pending.is_empty());
     }
 
     // ── build_otlp_json ──────────────────────────────────────────────────
@@ -518,7 +624,8 @@ mod tests {
     #[test]
     fn otlp_json_is_valid_structure() {
         let spans = vec![sample_span()];
-        let json = build_otlp_json("my-service", &spans);
+        // Use epoch_offset_ns = 0 to keep expected timestamp values simple.
+        let json = build_otlp_json("my-service", &spans, 0);
 
         // Must contain the OTLP envelope keys.
         assert!(json.contains("\"resourceSpans\""), "missing resourceSpans");
@@ -553,10 +660,30 @@ mod tests {
     }
 
     #[test]
+    fn otlp_json_epoch_offset_applied_to_timestamps() {
+        let offset: u64 = 1_700_000_000_000_000_000; // ~2023-11-14 in Unix ns
+        let spans = vec![sample_span()]; // start=1_000_000_000, end=2_000_000_000 (monotonic)
+        let json = build_otlp_json("svc", &spans, offset);
+
+        let expected_start = (1_000_000_000_u64 + offset).to_string();
+        let expected_end = (2_000_000_000_u64 + offset).to_string();
+
+        assert!(
+            json.contains(&format!("\"{}\"", expected_start)),
+            "start timestamp should have epoch offset applied"
+        );
+        assert!(
+            json.contains(&format!("\"{}\"", expected_end)),
+            "end timestamp should have epoch offset applied"
+        );
+        assert!(is_valid_json(&json));
+    }
+
+    #[test]
     fn otlp_json_no_parent_when_root_span() {
         let mut span = sample_span();
         span.parent_span_id = 0; // root span
-        let json = build_otlp_json("svc", &[span]);
+        let json = build_otlp_json("svc", &[span], 0);
         assert!(
             !json.contains("parentSpanId"),
             "root span should not have parentSpanId"
@@ -568,7 +695,7 @@ mod tests {
     fn otlp_json_incomplete_span_has_error_status() {
         let mut span = sample_span();
         span.ok = false;
-        let json = build_otlp_json("svc", &[span]);
+        let json = build_otlp_json("svc", &[span], 0);
         assert!(
             json.contains("\"code\":2"),
             "incomplete span should have error status"
@@ -578,14 +705,14 @@ mod tests {
 
     #[test]
     fn otlp_json_empty_spans_still_valid() {
-        let json = build_otlp_json("svc", &[]);
+        let json = build_otlp_json("svc", &[], 0);
         assert!(json.contains("\"spans\":[]"), "empty spans list expected");
         assert!(is_valid_json(&json));
     }
 
     #[test]
     fn otlp_json_special_chars_in_service_name_escaped() {
-        let json = build_otlp_json("svc with \"quotes\" and \\slashes\\", &[]);
+        let json = build_otlp_json("svc with \"quotes\" and \\slashes\\", &[], 0);
         assert!(
             is_valid_json(&json),
             "special chars must be escaped: {json}"

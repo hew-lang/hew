@@ -405,7 +405,7 @@ endif
 	@echo "==> C++ codegen coverage summary:"
 	$(LLVM_COV) report hew-codegen/build-cov/src/hew-codegen \
 	  -instr-profile=$(COV_DIR)/cpp.profdata \
-	  --ignore-filename-regex='(llvm|mlir|/usr/|msgpack|nlohmann)' \
+	  --ignore-filename-regex='(llvm/|mlir/include|mlir/lib|/usr/|msgpack\.h|nlohmann|json\.hpp|_deps/)' \
 	  -summary-only
 
 # ── FFI symbol verification ───────────────────────────────────────────────

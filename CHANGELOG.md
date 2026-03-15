@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-15
+
 ### Added
 
 - QUIC transport for inter-node messaging in the Node mesh (#152, #163)

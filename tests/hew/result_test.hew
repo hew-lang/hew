@@ -1,0 +1,146 @@
+//! Tests for the std::result helper functions.
+
+import std::result;
+import std::testing;
+
+// ── Predicates ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_is_ok_int() {
+    let x: Result<int, int> = Ok(42);
+    testing.assert_true(result.is_ok_int(x));
+    testing.assert_false(result.is_err_int(x));
+}
+
+#[test]
+fn test_is_err_int() {
+    let x: Result<int, int> = Err(1);
+    testing.assert_true(result.is_err_int(x));
+    testing.assert_false(result.is_ok_int(x));
+}
+
+// ── Unwrap ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_unwrap_int_ok() {
+    let x: Result<int, int> = Ok(42);
+    testing.assert_eq(result.unwrap_int(x), 42);
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_int_err_panics() {
+    let x: Result<int, int> = Err(1);
+    result.unwrap_int(x);
+}
+
+#[test]
+fn test_unwrap_err_int() {
+    let x: Result<int, int> = Err(99);
+    testing.assert_eq(result.unwrap_err_int(x), 99);
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_err_int_ok_panics() {
+    let x: Result<int, int> = Ok(42);
+    result.unwrap_err_int(x);
+}
+
+#[test]
+fn test_unwrap_or_int_ok() {
+    let x: Result<int, int> = Ok(42);
+    testing.assert_eq(result.unwrap_or_int(x, 0), 42);
+}
+
+#[test]
+fn test_unwrap_or_int_err() {
+    let x: Result<int, int> = Err(1);
+    testing.assert_eq(result.unwrap_or_int(x, -1), -1);
+}
+
+// ── Contains ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_contains_int_match() {
+    let x: Result<int, int> = Ok(42);
+    testing.assert_true(result.contains_int(x, 42));
+}
+
+#[test]
+fn test_contains_int_no_match() {
+    let x: Result<int, int> = Ok(42);
+    testing.assert_false(result.contains_int(x, 99));
+}
+
+#[test]
+fn test_contains_int_err() {
+    let x: Result<int, int> = Err(1);
+    testing.assert_false(result.contains_int(x, 42));
+}
+
+// ── String variants ────────────────────────────────────────────────────
+
+#[test]
+fn test_is_ok_str() {
+    let x: Result<String, String> = Ok("success");
+    testing.assert_true(result.is_ok_str(x));
+}
+
+#[test]
+fn test_is_err_str() {
+    let x: Result<String, String> = Err("failure");
+    testing.assert_true(result.is_err_str(x));
+}
+
+#[test]
+fn test_unwrap_or_str_ok() {
+    let x: Result<String, String> = Ok("value");
+    testing.assert_eq_str(result.unwrap_or_str(x, "default"), "value");
+}
+
+#[test]
+fn test_unwrap_or_str_err() {
+    let x: Result<String, String> = Err("oops");
+    testing.assert_eq_str(result.unwrap_or_str(x, "fallback"), "fallback");
+}
+
+#[test]
+fn test_contains_str_match() {
+    let x: Result<String, String> = Ok("hello");
+    testing.assert_true(result.contains_str(x, "hello"));
+}
+
+#[test]
+fn test_contains_str_err() {
+    let x: Result<String, String> = Err("oops");
+    testing.assert_false(result.contains_str(x, "hello"));
+}
+
+// ── unwrap_str / unwrap_err_str ────────────────────────────────────────
+
+#[test]
+fn test_unwrap_str_ok() {
+    let x: Result<String, String> = Ok("value");
+    testing.assert_eq_str(result.unwrap_str(x), "value");
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_str_err_panics() {
+    let x: Result<String, String> = Err("oops");
+    result.unwrap_str(x);
+}
+
+#[test]
+fn test_unwrap_err_str() {
+    let x: Result<String, String> = Err("oops");
+    testing.assert_eq_str(result.unwrap_err_str(x), "oops");
+}
+
+#[test]
+#[should_panic]
+fn test_unwrap_err_str_ok_panics() {
+    let x: Result<String, String> = Ok("value");
+    result.unwrap_err_str(x);
+}

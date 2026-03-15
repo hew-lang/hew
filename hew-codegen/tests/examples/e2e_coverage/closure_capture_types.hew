@@ -1,6 +1,5 @@
 // Test: Closure captures with different value types.
 // Exercises: lambda capture of int, struct fields, mutable var.
-// NOTE: fn(String) -> String closures blocked by #176 (closure return coercion).
 
 type Pair {
     a: int;

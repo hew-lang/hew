@@ -1619,7 +1619,7 @@ mod tests {
         assert!(connected, "node1 failed to connect to node2");
 
         let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
-        let actor_pid = (u64::from(202u16) << 48) | 99;
+        let actor_pid = (u64::from(202u16) << 48) | 0x63;
         // SAFETY: pointers are valid in this scope.
         unsafe {
             assert_eq!(
@@ -1830,7 +1830,7 @@ mod tests {
             assert_eq!(hew_node_start(node.as_ptr()), 0);
 
             let name = c"gossip_actor";
-            let pid: u64 = (u64::from(111u16) << 48) | 42;
+            let pid: u64 = (u64::from(111u16) << 48) | 0x2A;
             assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
 
             // The cluster should have a pending registry gossip event.

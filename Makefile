@@ -33,7 +33,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
-.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
+.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release strip-stdlib
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
@@ -78,6 +78,7 @@ BUILD_DIR  := build
 # Cargo profile directory names
 DEBUG_DIR  := target/debug
 RELEASE_DIR := target/release
+STRIPPED_STDLIB_DIR := $(RELEASE_DIR)/stripped-stdlib
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
@@ -212,7 +213,7 @@ endif
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew adze codegen runtime
+assemble: | hew adze codegen runtime stdlib
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn ../../$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
@@ -260,8 +261,12 @@ endif
 	cmake --build hew-codegen/build
 	$(MAKE) assemble-release
 
+strip-stdlib: stdlib runtime
+	@echo "==> Stripping duplicate objects from stdlib staticlibs"
+	bash scripts/strip-stdlib.sh
+
 # Assemble build/ with release symlinks.
-assemble-release:
+assemble-release: strip-stdlib
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
 	@ln -sfn ../../hew-codegen/build/src/hew-codegen    $(BUILD_DIR)/bin/hew-codegen
@@ -275,9 +280,14 @@ assemble-release:
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std
 	@mkdir -p $(BUILD_DIR)/lib/hew
-	@for f in $(RELEASE_DIR)/libhew_std_*.a; do \
+	@find $(BUILD_DIR)/lib/hew -maxdepth 1 \( -name 'libhew_std_*.a' -o -name 'libhew_std_*.objects' \) -exec rm -rf {} + 2>/dev/null || true
+	@for f in $(STRIPPED_STDLIB_DIR)/libhew_std_*.a; do \
 		[ -f "$$f" ] || continue; \
 		ln -sfn "../../../$$f" "$(BUILD_DIR)/lib/hew/$$(basename $$f)"; \
+	done
+	@for d in $(STRIPPED_STDLIB_DIR)/libhew_std_*.objects; do \
+		[ -d "$$d" ] || continue; \
+		ln -sfn "../../../$$d" "$(BUILD_DIR)/lib/hew/$$(basename $$d)"; \
 	done
 	@echo "build/ assembled (release)."
 
@@ -291,7 +301,7 @@ test-all: test-rust test-codegen test-stdlib test-hew test-wasm
 test-rust:
 	cargo test
 
-test-codegen: hew codegen runtime stdlib
+test-codegen: strip-stdlib hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm
 
 test-wasm: hew codegen wasm-runtime
@@ -314,7 +324,7 @@ test-stdlib: hew
 	  exit 1; \
 	fi
 
-test-hew: hew codegen runtime stdlib
+test-hew: strip-stdlib hew codegen runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
 
@@ -482,7 +492,7 @@ grammar: $(GRAMMAR) $(HEW_FILES)
 # Installs release-built artifacts to $(DESTDIR)$(PREFIX).
 # Run `make release` first, or this target will build release for you.
 
-install: install-check
+install: strip-stdlib install-check
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -d $(DESTDIR)$(PREFIX)/lib
@@ -498,8 +508,11 @@ install: install-check
 		install -m 644 $(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@for f in $(RELEASE_DIR)/libhew_std_*.a; do \
+	@for f in $(STRIPPED_STDLIB_DIR)/libhew_std_*.a; do \
 		[ -f "$$f" ] && install -m 644 "$$f" $(DESTDIR)$(PREFIX)/lib/hew/; \
+	done
+	@for d in $(STRIPPED_STDLIB_DIR)/libhew_std_*.objects; do \
+		[ -d "$$d" ] && cp -R "$$d" $(DESTDIR)$(PREFIX)/lib/hew/; \
 	done
 	cp -r std/. $(DESTDIR)$(PREFIX)/std/
 	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/

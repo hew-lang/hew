@@ -1,5 +1,23 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 9: Slim stdlib packaging (2026-03-15)
+
+### Goal
+
+Shrink release distributions by removing runtime object duplication from every
+stdlib static library before assembling tarballs.
+
+### Rationale
+
+- Cargo `staticlib` archives embed transitive object files, so every
+  `libhew_std_*.a` was shipping runtime support objects that were already
+  present in `libhew_runtime.a`.
+- The linker flags that suppressed duplicate definitions were hiding that waste
+  and could also mask real symbol-collision bugs.
+- Repacking each stdlib package as a thin archive over only its non-runtime
+  objects keeps runtime-first link order unchanged while making release
+  artifacts much smaller.
+
 ## Phase 8: Runtime observe wiring (2026-03-15)
 
 ### Goal

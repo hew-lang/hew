@@ -295,6 +295,10 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
+          RELEASE_DIR="target/${{ matrix.rust_target }}/release"
+          STRIPPED_DIR="${RELEASE_DIR}/stripped-stdlib"
+
+          bash scripts/strip-stdlib.sh "${RELEASE_DIR}" "${STRIPPED_DIR}"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
@@ -307,11 +311,17 @@ jobs:
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
           # Runtime library
-          cp "target/${{ matrix.rust_target }}/release/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
+          cp "${RELEASE_DIR}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
 
           # Stdlib package static libraries
-          find "target/${{ matrix.rust_target }}/release" -maxdepth 1 -name "libhew_std_*.a" \
-            -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+          for f in "${STRIPPED_DIR}"/libhew_std_*.a; do
+            [ -f "$f" ] || continue
+            cp "$f" "${ARCHIVE_NAME}/lib/"
+          done
+          for d in "${STRIPPED_DIR}"/libhew_std_*.objects; do
+            [ -d "$d" ] || continue
+            cp -R "$d" "${ARCHIVE_NAME}/lib/"
+          done
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -570,6 +580,8 @@ jobs:
               -p hew-std-misc-uuid -p hew-std-misc-log \
               --release
 
+            bash scripts/strip-stdlib.sh target/release target/release/stripped-stdlib
+
             # ── hew-codegen (statically linked) ────────────────────────────
             cd hew-codegen
             cmake -B build -G Ninja \
@@ -597,8 +609,14 @@ jobs:
             cp target/release/libhew_runtime.a "${ARCHIVE_NAME}/lib/"
 
             # Stdlib package static libraries
-            find target/release -maxdepth 1 -name "libhew_std_*.a" \
-              -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+            for f in target/release/stripped-stdlib/libhew_std_*.a; do
+              [ -f "$f" ] || continue
+              cp "$f" "${ARCHIVE_NAME}/lib/"
+            done
+            for d in target/release/stripped-stdlib/libhew_std_*.objects; do
+              [ -d "$d" ] || continue
+              cp -R "$d" "${ARCHIVE_NAME}/lib/"
+            done
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -779,6 +797,9 @@ jobs:
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
 
           MUSL_REL="target/${{ matrix.rust_musl_target }}/release"
+          STRIPPED_DIR="${MUSL_REL}/stripped-stdlib"
+          bash scripts/strip-stdlib.sh "${MUSL_REL}" "${STRIPPED_DIR}"
+
           for bin in hew adze hew-lsp; do
             cp "${MUSL_REL}/${bin}" "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/${bin}"
@@ -788,8 +809,14 @@ jobs:
           chmod +x "${ARCHIVE_NAME}/bin/hew-codegen"
 
           cp "${MUSL_REL}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
-          find "${MUSL_REL}" -maxdepth 1 -name "libhew_std_*.a" \
-            -exec cp {} "${ARCHIVE_NAME}/lib/" \;
+          for f in "${STRIPPED_DIR}"/libhew_std_*.a; do
+            [ -f "$f" ] || continue
+            cp "$f" "${ARCHIVE_NAME}/lib/"
+          done
+          for d in "${STRIPPED_DIR}"/libhew_std_*.objects; do
+            [ -d "$d" ] || continue
+            cp -R "$d" "${ARCHIVE_NAME}/lib/"
+          done
           cp -r std/. "${ARCHIVE_NAME}/std/"
           cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"

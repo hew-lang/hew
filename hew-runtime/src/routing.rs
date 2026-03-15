@@ -260,7 +260,7 @@ mod tests {
             }
 
             hew_routing_add_route(table, 42, 4242);
-            let pid = (u64::from(42u16) << PID_SERIAL_BITS) | 7;
+            let pid = (u64::from(42u16) << PID_SERIAL_BITS) | 0x0007;
             assert_eq!(hew_routing_lookup(table, pid), 4242);
             hew_routing_table_free(table);
         }

@@ -105,8 +105,9 @@ attrArgs
     ;
 
 attrArg
-    : ident ( '=' ( STRING_LIT | ident ) )?
+    : ident ( '=' ( STRING_LIT | ident | INTEGER_LIT ) )?
     | STRING_LIT
+    | DURATION_LIT
     ;
 
 // ----------------------------------------------------------------
@@ -351,11 +352,11 @@ coalesceFallback
     ;
 
 receiveFnDecl
-    : 'pure'? 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
+    : attribute* 'pure'? 'receive' 'fn' ident typeParams? '(' params? ')' retType? whereClause? block
     ;
 
 receiveGenFnDecl
-    : 'pure'? 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
+    : attribute* 'pure'? 'receive' 'gen' 'fn' ident typeParams? '(' params? ')' '->' type_ whereClause? block
     ;
 
 // ----------------------------------------------------------------

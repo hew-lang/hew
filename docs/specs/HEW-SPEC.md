@@ -146,7 +146,37 @@ actor Pinger: Pingable {
 }
 ```
 
-### 2.1.2 Lambda Actors
+### 2.1.2 Periodic Receive Handlers
+
+Receive handlers can be annotated with `#[every(duration)]` to create periodic timers that fire automatically at a fixed interval:
+
+```hew
+actor HealthChecker {
+    let endpoint: String;
+    let failures: int;
+
+    #[every(5s)]
+    receive fn check() {
+        // Called automatically every 5 seconds
+        failures = failures + 1;
+    }
+
+    receive fn get_failures() -> int {
+        failures
+    }
+}
+```
+
+**Rules:**
+- The `#[every]` attribute takes a single duration literal argument (e.g. `5s`, `100ms`, `1m`)
+- Periodic handlers must not have parameters (they receive no message payload)
+- Periodic handlers must not have a return type (fire-and-forget)
+- The timer starts when the actor is spawned and repeats until the actor stops
+- Periodic handlers run within the actor's message loop, preserving single-threaded semantics
+
+**Implementation:** The runtime uses a global timer wheel to schedule periodic self-sends. Each tick fires a zero-payload message to the actor's dispatch function at the handler's message index.
+
+### 2.1.3 Lambda Actors
 
 Lambda actors provide lightweight, inline actor definitions using lambda syntax:
 

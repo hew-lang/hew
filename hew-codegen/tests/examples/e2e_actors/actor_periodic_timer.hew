@@ -1,0 +1,31 @@
+// Test: Periodic actor timer with #[every(50ms)]
+// Exercises: Periodic self-send, timer-driven receive handler
+actor Ticker {
+    let count: int;
+
+    #[every(50ms)]
+    receive fn tick() {
+        count = count + 1;
+    }
+
+    receive fn get_count() -> int {
+        count
+    }
+}
+
+fn main() {
+    println("=== Periodic Timer ===");
+    let t = spawn Ticker(count: 0);
+
+    // Sleep 280ms — expect ~5 ticks (50ms interval, first at 50ms).
+    // Allow a range: at least 3, which is well within tolerance.
+    sleep_ms(280);
+
+    let n = await t.get_count();
+    if n >= 3 {
+        println("periodic ticks received: ok");
+    } else {
+        println(f"ERROR: expected >= 3 ticks, got {n}");
+    }
+    println("Done");
+}

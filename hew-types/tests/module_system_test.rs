@@ -466,6 +466,7 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
             trailing_expr: None,
         },
         span: 0..0,
+        attributes: vec![],
     }
 }
 

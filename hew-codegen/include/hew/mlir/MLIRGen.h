@@ -138,6 +138,7 @@ private:
     std::vector<std::string> paramNames;  // message parameter names
     std::vector<mlir::Type> paramTypes;   // message parameter types
     std::optional<mlir::Type> returnType; // return type (for await/ask)
+    std::optional<int64_t> periodicIntervalNs; // periodic interval from #[every]
   };
   struct ActorInfo {
     std::string name;

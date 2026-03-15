@@ -27,15 +27,28 @@ pub enum AttributeArg {
     Positional(String),
     /// Key-value argument, e.g. `since = 1` in `#[wire(since = 1)]`.
     KeyValue { key: String, value: String },
+    /// Duration argument in nanoseconds, e.g. `5s` in `#[every(5s)]`.
+    Duration(i64),
 }
 
 impl AttributeArg {
     /// Get the value as a string regardless of whether it's positional or key-value.
+    /// Returns `""` for duration arguments (use [`as_duration_ns`] instead).
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             AttributeArg::Positional(s) => s,
             AttributeArg::KeyValue { value, .. } => value,
+            AttributeArg::Duration(_) => "",
+        }
+    }
+
+    /// If this argument is a duration literal, return the value in nanoseconds.
+    #[must_use]
+    pub fn as_duration_ns(&self) -> Option<i64> {
+        match self {
+            AttributeArg::Duration(ns) => Some(*ns),
+            _ => None,
         }
     }
 }
@@ -999,6 +1012,9 @@ pub struct ReceiveFnDecl {
     pub where_clause: Option<WhereClause>,
     pub body: Block,
     pub span: Span,
+    /// Attributes such as `#[every(5s)]` for periodic scheduling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -875,37 +875,6 @@ coverage.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
 
-### Adze transitive dependency resolution
-
-- Replaced Adze's direct-dependency-only resolver with a greedy transitive graph walk that
-  reads installed package manifests, unifies version requirements across the graph, and
-  restarts a pass when a tighter constraint forces a lower selected version.
-- Added graph-wide feature union for dependency requests, optional-dependency activation
-  from package features, and explicit circular-dependency diagnostics that print the cycle
-  path instead of failing later with a generic missing-version error.
-- Updated `adze install` to keep fetching missing packages until the full transitive graph
-  resolves, and taught `adze.lock` to record direct manifest requirements separately so
-  staleness checks compare requirements rather than only dependency names.
-- Added resolver and lockfile regression coverage for diamond graphs, compatible and
-  incompatible version conflicts, feature-activated transitives, circular dependencies,
-  and lockfile staleness with transitive entries present.
-### Service pattern examples
-
-Added `examples/services/` with six distributed service patterns that demonstrate Hew's
-actor model advantages over Go channels + mutexes and Rust `Arc<Mutex>`:
-
-- **`circuit_breaker.hew`** — Actor as state machine: Closed → Open → HalfOpen transitions
-  with failure tracking, fast-fail rejection, and probe-based recovery.
-- **`rate_limiter.hew`** — Token bucket rate limiter as an actor. Workers use ask/reply to
-  acquire tokens; a timer actor handles periodic refills.
-- **`worker_pool.hew`** — Supervised worker pool with `join`-based scatter/gather. Crashed
-  workers are automatically restarted by the supervisor.
-- **`pub_sub.hew`** — Topic-based publish/subscribe broker. Subscribers register for topics;
-  the broker fans out published messages to all matching subscribers.
-- **`health_monitor.hew`** — Periodic health checker using `select` with timeout to detect
-  unresponsive services without blocking.
-- **`distributed_counter.hew`** — Replicated counter with coordinator-based merge. Local
-  reads are instant; writes sync through a coordinator actor.
 
 ## Structured Error Types — Error Handling Story
 

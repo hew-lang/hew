@@ -9,11 +9,11 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock, FieldDecl,
-    FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm,
-    Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl, TraitItem,
-    TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind,
-    WhereClause, WireDecl, WireDeclKind,
+    ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock,
+    FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl,
+    MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl,
+    TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
+    VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -3073,7 +3073,100 @@ impl Checker {
         self.env.pop_scope();
     }
 
+    /// Validate `#[every(duration)]` attributes on a receive fn.
+    fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
+        let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
+
+        if every_attrs.is_empty() {
+            // Check for unknown attributes on receive fns.
+            for attr in &rf.attributes {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    attr.span.clone(),
+                    format!(
+                        "unknown attribute `#[{}]` on receive fn `{}`",
+                        attr.name, rf.name
+                    ),
+                ));
+            }
+            return;
+        }
+
+        if every_attrs.len() > 1 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                every_attrs[1].span.clone(),
+                format!(
+                    "receive fn `{}` has multiple #[every] attributes; only one is allowed",
+                    rf.name
+                ),
+            ));
+            return;
+        }
+
+        let attr = every_attrs[0];
+
+        // Must have exactly one duration argument.
+        if attr.args.len() != 1 {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                attr.span.clone(),
+                format!(
+                    "#[every] requires exactly one duration argument, e.g. #[every(5s)], got {} arguments",
+                    attr.args.len()
+                ),
+            ));
+            return;
+        }
+
+        match &attr.args[0] {
+            AttributeArg::Duration(ns) => {
+                if *ns <= 0 {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        attr.span.clone(),
+                        "#[every] duration must be positive",
+                    ));
+                }
+            }
+            _ => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    attr.span.clone(),
+                    "#[every] argument must be a duration literal, e.g. #[every(100ms)]",
+                ));
+            }
+        }
+
+        // Periodic handlers must not have parameters (they receive no message payload).
+        if !rf.params.is_empty() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                rf.span.clone(),
+                format!(
+                    "#[every] receive fn `{}` must not have parameters; periodic handlers are called automatically with no arguments",
+                    rf.name
+                ),
+            ));
+        }
+
+        // Periodic handlers must not have a return type (fire-and-forget).
+        if rf.return_type.is_some() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                rf.span.clone(),
+                format!(
+                    "#[every] receive fn `{}` must not have a return type; periodic handlers are fire-and-forget",
+                    rf.name
+                ),
+            ));
+        }
+    }
+
     fn check_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl, fields: &[FieldDecl]) {
+        // Validate #[every(duration)] attribute if present.
+        self.validate_every_attribute(rf);
+
         let prev_in_pure = self.in_pure_function;
         self.in_pure_function = rf.is_pure;
         self.env.push_scope();
@@ -8755,6 +8848,7 @@ mod tests {
                 trailing_expr: None,
             },
             span: 0..0,
+            attributes: vec![],
         };
 
         let actor = ActorDecl {
@@ -9381,6 +9475,7 @@ mod tests {
             type_params: None,
             where_clause: None,
             span: 0..0,
+            attributes: vec![],
         };
         let actor = ActorDecl {
             visibility: Visibility::Pub,

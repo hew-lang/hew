@@ -3376,7 +3376,11 @@ impl<'src> Parser<'src> {
             Some(Token::Defer) => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                self.expect(&Token::Semicolon)?;
+                // Block expressions don't need a trailing semicolon
+                // (consistent with if/while/for).
+                if !matches!(expr.0, Expr::Block(_)) {
+                    self.expect(&Token::Semicolon)?;
+                }
                 Stmt::Defer(Box::new(expr))
             }
             _ => {

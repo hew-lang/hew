@@ -4402,8 +4402,14 @@ void MLIRGen::emitDropsExcept(const std::set<std::string> &excludeVars) {
 // ── Defer execution ──────────────────────────────────────────
 
 void MLIRGen::emitDeferredCalls() {
-  // Execute all deferred expressions in LIFO order (last registered first).
-  for (auto it = currentFnDefers.rbegin(); it != currentFnDefers.rend(); ++it) {
+  // Move defers into a local before iterating. This prevents infinite
+  // recursion when a deferred expression is a block: generateBlock →
+  // DropScopeGuard dtor → popDropScope → emitDeferredCalls. With the
+  // vector cleared first, the re-entrant call finds nothing to emit.
+  auto defers = std::move(currentFnDefers);
+  currentFnDefers.clear();
+  // Execute in LIFO order (last registered first).
+  for (auto it = defers.rbegin(); it != defers.rend(); ++it) {
     generateExpression(*it->expr);
   }
 }

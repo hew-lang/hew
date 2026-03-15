@@ -11,11 +11,8 @@ Any structural difference means the formatter changed semantics.
 """
 
 import json
-import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -91,7 +88,6 @@ def main():
         .split("\n")
     )
 
-    tmpdir = tempfile.mkdtemp(prefix="hew-fmt-verify-")
     total = 0
     skipped = 0
     passed = 0
@@ -105,29 +101,31 @@ def main():
             filepath = Path(repo_root) / rel_path
             total += 1
 
-            # Step 1: Emit AST from original
+            # Step 1: Emit AST from original (in-place, modules resolve)
             before_ast = emit_ast(filepath)
             if before_ast is None:
                 skipped += 1
                 continue
 
-            # Step 2: Copy and format
-            tmp_file = Path(tmpdir) / rel_path
-            tmp_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(filepath, tmp_file)
+            # Step 2: Back up, format in-place, emit AST, then restore
+            original = filepath.read_text()
 
             fmt_result = subprocess.run(
-                ["hew", "fmt", str(tmp_file)],
+                ["hew", "fmt", str(filepath)],
                 capture_output=True,
                 text=True,
             )
             if fmt_result.returncode != 0:
+                filepath.write_text(original)
                 failures.append((rel_path, f"hew fmt failed: {fmt_result.stderr.strip()}"))
                 failed += 1
                 continue
 
-            # Step 3: Emit AST from formatted
-            after_ast = emit_ast(tmp_file)
+            # Step 3: Emit AST from formatted file (still in repo, modules resolve)
+            after_ast = emit_ast(filepath)
+
+            # Step 4: Restore original
+            filepath.write_text(original)
             if after_ast is None:
                 failures.append((rel_path, "hew build --emit-ast failed after formatting"))
                 failed += 1
@@ -166,7 +164,7 @@ def main():
         sys.exit(1 if failed > 0 else 0)
 
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        pass
 
 
 if __name__ == "__main__":

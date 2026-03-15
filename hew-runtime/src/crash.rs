@@ -302,6 +302,34 @@ pub unsafe extern "C" fn hew_crash_log_last() -> CrashReport {
         })
 }
 
+#[cfg(feature = "profiler")]
+pub fn snapshot_crashes_json() -> String {
+    use std::fmt::Write as _;
+
+    let crashes = match RECENT_CRASHES.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+
+    let mut json = String::from("[");
+    for (i, crash) in crashes.iter().rev().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            r#"{{"time_s":{},"actor_id":{},"signal":{},"msg_type":{},"fault_addr":{}}}"#,
+            crash.timestamp_ns as f64 / 1_000_000_000.0,
+            crash.actor_id,
+            crash.signal,
+            crash.msg_type,
+            crash.fault_addr,
+        );
+    }
+    json.push(']');
+    json
+}
+
 // ── Integration with signal recovery ────────────────────────────────────
 
 /// Build a crash report from signal recovery context.

@@ -500,6 +500,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
     unsafe {
         crate::profiler::actor_registry::register(raw);
     };
+    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
     raw
 }
 
@@ -581,6 +582,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
     unsafe {
         crate::profiler::actor_registry::register(raw);
     };
+    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
     raw
 }
 
@@ -643,6 +645,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
     unsafe {
         crate::profiler::actor_registry::register(raw);
     };
+    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
     raw
 }
 
@@ -820,12 +823,17 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     }
 
     // If actor is IDLE, transition directly to STOPPED.
-    let _ = a.actor_state.compare_exchange(
-        HewActorState::Idle as i32,
-        HewActorState::Stopped as i32,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+    }
 }
 
 /// Stop an actor, sending a system shutdown message.
@@ -1114,6 +1122,15 @@ unsafe fn actor_send_result_internal(
     if result != 0 {
         return result;
     }
+
+    let sender = hew_actor_self();
+    let trace_actor_id = if sender.is_null() {
+        a.id
+    } else {
+        // SAFETY: the scheduler sets CURRENT_ACTOR to a live actor during dispatch.
+        unsafe { (*sender).id }
+    };
+    crate::tracing::record_send(trace_actor_id, msg_type);
 
     // CAS IDLE → RUNNABLE; on success, schedule the actor.
     if a.actor_state
@@ -1538,6 +1555,12 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
 
     // Store error code only after winning the CAS race.
     a.error_code.store(error_code, Ordering::Release);
+    let lifecycle_event = if terminal == HewActorState::Crashed as i32 {
+        crate::tracing::SPAN_CRASH
+    } else {
+        crate::tracing::SPAN_STOP
+    };
+    crate::tracing::hew_trace_lifecycle(actor_id, lifecycle_event);
 
     // Propagate exit to linked actors and notify monitors.
     // Do this BEFORE notifying supervisor to ensure proper ordering.

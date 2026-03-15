@@ -142,6 +142,15 @@ pub(crate) unsafe fn free_registered_supervisors() {
     }
 }
 
+#[cfg(feature = "profiler")]
+pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::HewSupervisor> {
+    let sups = match TOP_LEVEL_SUPERVISORS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    sups.iter().map(|sup| sup.0).collect()
+}
+
 // ---------------------------------------------------------------------------
 // C ABI — Shutdown trigger
 // ---------------------------------------------------------------------------

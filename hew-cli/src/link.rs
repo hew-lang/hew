@@ -19,6 +19,10 @@ fn runtime_lib_name() -> &'static str {
 ///
 /// Returns a human-readable message when the linker cannot be invoked or exits
 /// with a non-zero status.
+#[allow(
+    clippy::too_many_lines,
+    reason = "linker flags and platform-specific library search must stay together"
+)]
 pub fn link_executable(
     object_path: &str,
     output_path: &str,
@@ -61,11 +65,31 @@ pub fn link_executable(
         cmd.arg("-fuse-ld=lld-link");
     }
 
-    cmd.arg(object_path).arg(&runtime_lib);
+    cmd.arg(object_path);
 
-    // Link per-package staticlibs (e.g., libhew_std_encoding_hex.a)
-    for lib in extra_libs {
-        cmd.arg(lib);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if extra_libs.is_empty() {
+            cmd.arg(&runtime_lib);
+        } else {
+            cmd.arg("-Wl,--start-group");
+            cmd.arg(&runtime_lib);
+            for lib in extra_libs {
+                cmd.arg(lib);
+            }
+            cmd.arg("-Wl,--end-group");
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        cmd.arg(&runtime_lib);
+        for lib in extra_libs {
+            cmd.arg(lib);
+        }
+        if !extra_libs.is_empty() {
+            cmd.arg(&runtime_lib);
+        }
     }
 
     cmd.arg("-o").arg(&safe_output);
@@ -82,13 +106,6 @@ pub fn link_executable(
         if !debug {
             cmd.arg("-Wl,--strip-all");
         }
-        // When linking stdlib package staticlibs alongside the runtime, both
-        // archives contain embedded copies of shared dependencies (e.g.
-        // hew_cabi) because Cargo bakes all transitive deps into each
-        // staticlib. Allow the linker to pick one copy and discard the rest.
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,--allow-multiple-definition");
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -96,13 +113,6 @@ pub fn link_executable(
         cmd.arg("-Wl,-dead_strip");
         if !debug {
             cmd.arg("-Wl,-x");
-        }
-        // Same rationale as the ELF `--allow-multiple-definition` above:
-        // Cargo staticlibs embed shared dependencies, producing duplicate
-        // symbols when linked together. `-Wl,-multiply_defined,suppress`
-        // tells ld64 to silently pick one definition.
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,-multiply_defined,suppress");
         }
     }
 
@@ -112,11 +122,6 @@ pub fn link_executable(
         // runtime uses the DLL CRT (msvcrt). Override the default so the
         // CRT linkage matches.
         cmd.args(["-Wl,/NODEFAULTLIB:libcmt", "-Wl,/DEFAULTLIB:msvcrt"]);
-
-        // MSVC-style dead-code elimination via clang → lld-link/link.exe
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,/FORCE:MULTIPLE");
-        }
     }
 
     // Platform-specific libraries
@@ -329,6 +334,13 @@ pub fn find_package_libs(modules: &[String], pkg_path: Option<&std::path::Path>)
             exe_dir.join("../lib").join(&lib_name),
             exe_dir.join("../lib/hew").join(&lib_name),
             exe_dir.join("../lib64/hew").join(&lib_name),
+            exe_dir.join("stripped-stdlib").join(&lib_name),
+            exe_dir
+                .join("../../target/release/stripped-stdlib")
+                .join(&lib_name),
+            exe_dir
+                .join("../../target/debug/stripped-stdlib")
+                .join(&lib_name),
             exe_dir.join(&lib_name),
             exe_dir.join("../../target/release").join(&lib_name),
             exe_dir.join("../../target/debug").join(&lib_name),

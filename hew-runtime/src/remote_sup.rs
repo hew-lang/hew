@@ -575,7 +575,7 @@ mod tests {
         // SAFETY: node lifecycle handled by TestNode.
         let node = unsafe { TestNode::new(3001) };
         let remote_node_id = 3002;
-        let remote_pid = (u64::from(remote_node_id) << 48) | 7;
+        let remote_pid = (u64::from(remote_node_id) << 48) | 0x0007;
 
         // SAFETY: pointers are valid for this scope.
         unsafe {
@@ -602,8 +602,8 @@ mod tests {
         // SAFETY: node lifecycle handled by TestNode.
         let node = unsafe { TestNode::new(3011) };
         let remote_node_id = 3012;
-        let pid1 = (u64::from(remote_node_id) << 48) | 10;
-        let pid2 = (u64::from(remote_node_id) << 48) | 11;
+        let pid1 = (u64::from(remote_node_id) << 48) | 0x000a;
+        let pid2 = (u64::from(remote_node_id) << 48) | 0x000b;
 
         // SAFETY: pointers are valid for this scope.
         unsafe {

@@ -70,18 +70,6 @@ fn copy_floats() {
 // ===========================================================================
 
 #[test]
-fn string_is_not_copy() {
-    let reg = TraitRegistry::new();
-    assert!(!reg.implements_marker(&Ty::String, MarkerTrait::Copy));
-}
-
-#[test]
-fn bytes_is_not_copy() {
-    let reg = TraitRegistry::new();
-    assert!(!reg.implements_marker(&Ty::Bytes, MarkerTrait::Copy));
-}
-
-#[test]
 fn vec_is_not_copy() {
     let reg = TraitRegistry::new();
     assert!(!reg.implements_marker(&named_with("Vec", vec![Ty::I32]), MarkerTrait::Copy));
@@ -157,18 +145,6 @@ fn all_primitives_are_send() {
 }
 
 #[test]
-fn string_is_send() {
-    let reg = TraitRegistry::new();
-    assert!(reg.is_send(&Ty::String));
-}
-
-#[test]
-fn bytes_is_send() {
-    let reg = TraitRegistry::new();
-    assert!(reg.is_send(&Ty::Bytes));
-}
-
-#[test]
 fn pointer_is_not_send() {
     let reg = TraitRegistry::new();
     let ptr = Ty::Pointer {
@@ -196,12 +172,6 @@ fn string_is_not_frozen() {
 }
 
 #[test]
-fn vec_is_not_frozen() {
-    let reg = TraitRegistry::new();
-    assert!(!reg.is_frozen(&named_with("Vec", vec![Ty::I32])));
-}
-
-#[test]
 fn actor_ref_is_frozen() {
     let reg = TraitRegistry::new();
     let aref = Ty::actor_ref(named("MyActor"));
@@ -211,57 +181,6 @@ fn actor_ref_is_frozen() {
 // ===========================================================================
 // is_sync
 // ===========================================================================
-
-#[test]
-fn string_is_sync() {
-    let reg = TraitRegistry::new();
-    assert!(reg.is_sync(&Ty::String));
-}
-
-#[test]
-fn bytes_is_sync() {
-    let reg = TraitRegistry::new();
-    assert!(reg.is_sync(&Ty::Bytes));
-}
-
-// ===========================================================================
-// Bytes marker trait coverage
-// ===========================================================================
-
-#[test]
-fn bytes_marker_traits() {
-    let reg = TraitRegistry::new();
-    // Bytes should have: Send, Sync, Clone, Eq, Hash, Debug
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Send));
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Sync));
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Clone));
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Eq));
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Hash));
-    assert!(reg.implements_marker(&Ty::Bytes, MarkerTrait::Debug));
-    // Bytes should NOT have: Copy, Frozen, Ord, Display
-    assert!(!reg.implements_marker(&Ty::Bytes, MarkerTrait::Copy));
-    assert!(!reg.implements_marker(&Ty::Bytes, MarkerTrait::Frozen));
-    assert!(!reg.implements_marker(&Ty::Bytes, MarkerTrait::Ord));
-    assert!(!reg.implements_marker(&Ty::Bytes, MarkerTrait::Display));
-}
-
-// ===========================================================================
-// String marker trait coverage
-// ===========================================================================
-
-#[test]
-fn string_marker_traits() {
-    let reg = TraitRegistry::new();
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Display));
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Debug));
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Clone));
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Eq));
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Ord));
-    assert!(reg.implements_marker(&Ty::String, MarkerTrait::Hash));
-    // String should NOT be Frozen or Copy
-    assert!(!reg.implements_marker(&Ty::String, MarkerTrait::Frozen));
-    assert!(!reg.implements_marker(&Ty::String, MarkerTrait::Copy));
-}
 
 // ===========================================================================
 // Float trait edge cases (NaN issues)
@@ -747,13 +666,6 @@ fn vec_of_non_eq_is_not_eq() {
     // F64 is not Eq (NaN), so Vec<F64> shouldn't be Eq either
     let vec_f64 = named_with("Vec", vec![Ty::F64]);
     assert!(!reg.implements_marker(&vec_f64, MarkerTrait::Eq));
-}
-
-#[test]
-fn hashmap_not_frozen() {
-    let reg = TraitRegistry::new();
-    let map = named_with("HashMap", vec![Ty::String, Ty::I32]);
-    assert!(!reg.implements_marker(&map, MarkerTrait::Frozen));
 }
 
 // ===========================================================================

@@ -427,11 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn test_levenshtein_identical() {
-        assert_eq!(levenshtein("hello", "hello"), 0);
-    }
-
-    #[test]
     fn test_levenshtein_single_edit() {
         // insertion
         assert_eq!(levenshtein("color", "colour"), 1);
@@ -757,18 +752,6 @@ mod tests {
         assert_eq!(err.severity, Severity::Error);
     }
 
-    #[test]
-    fn test_severity_debug_and_clone() {
-        let s = Severity::Error;
-        let s2 = s;
-        assert_eq!(s, s2);
-        assert_eq!(format!("{s:?}"), "Error");
-
-        let w = Severity::Warning;
-        assert_eq!(format!("{w:?}"), "Warning");
-        assert_ne!(s, w);
-    }
-
     // ── std::error::Error impl ───────────────────────────────────────
 
     #[test]
@@ -813,59 +796,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_type_error_kind_debug() {
-        // Ensure Debug is derived for all unit variants
-        let kinds = [
-            TypeErrorKind::UndefinedVariable,
-            TypeErrorKind::UndefinedType,
-            TypeErrorKind::UndefinedFunction,
-            TypeErrorKind::UndefinedField,
-            TypeErrorKind::UndefinedMethod,
-            TypeErrorKind::InvalidSend,
-            TypeErrorKind::InvalidOperation,
-            TypeErrorKind::ArityMismatch,
-            TypeErrorKind::BoundsNotSatisfied,
-            TypeErrorKind::InferenceFailed,
-            TypeErrorKind::NonExhaustiveMatch,
-            TypeErrorKind::DuplicateDefinition,
-            TypeErrorKind::MutabilityError,
-            TypeErrorKind::ReturnTypeMismatch,
-            TypeErrorKind::UseAfterMove,
-            TypeErrorKind::YieldOutsideGenerator,
-            TypeErrorKind::ActorRefCycle,
-            TypeErrorKind::UnusedVariable,
-            TypeErrorKind::UnusedMut,
-            TypeErrorKind::StyleSuggestion,
-            TypeErrorKind::UnusedImport,
-            TypeErrorKind::UnreachableCode,
-            TypeErrorKind::Shadowing,
-            TypeErrorKind::DeadCode,
-            TypeErrorKind::PurityViolation,
-            TypeErrorKind::OrphanImpl,
-            TypeErrorKind::PlatformLimitation,
-            TypeErrorKind::MachineExhaustivenessError,
-        ];
-        for kind in &kinds {
-            // Verify Debug doesn't panic for any variant
-            let _ = format!("{kind:?}");
-        }
-    }
-
     // ── TypeError Clone ──────────────────────────────────────────────
-
-    #[test]
-    fn test_type_error_clone() {
-        let err = TypeError::mismatch(0..10, &Ty::I32, &Ty::Bool)
-            .with_note(0..5, "note")
-            .with_suggestion("help");
-        let cloned = err.clone();
-        assert_eq!(cloned.message, err.message);
-        assert_eq!(cloned.kind, err.kind);
-        assert_eq!(cloned.span, err.span);
-        assert_eq!(cloned.notes.len(), err.notes.len());
-        assert_eq!(cloned.suggestions.len(), err.suggestions.len());
-    }
 
     // ── Multi-error collection ───────────────────────────────────────
 

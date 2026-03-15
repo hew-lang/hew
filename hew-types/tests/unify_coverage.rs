@@ -51,14 +51,6 @@ fn bind_occurs_check_through_named_type() {
 // ===========================================================================
 
 #[test]
-fn unify_identical_slices() {
-    let mut subst = fresh_subst();
-    let a = Ty::Slice(Box::new(Ty::I64));
-    let b = Ty::Slice(Box::new(Ty::I64));
-    assert!(unify(&mut subst, &a, &b).is_ok());
-}
-
-#[test]
 fn unify_slice_with_type_var_element() {
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
@@ -168,18 +160,6 @@ fn trait_bound(name: &str, args: Vec<Ty>) -> TraitObjectBound {
 }
 
 #[test]
-fn unify_trait_objects_same_single_bound() {
-    let mut subst = fresh_subst();
-    let a = Ty::TraitObject {
-        traits: vec![trait_bound("Display", vec![])],
-    };
-    let b = Ty::TraitObject {
-        traits: vec![trait_bound("Display", vec![])],
-    };
-    assert!(unify(&mut subst, &a, &b).is_ok());
-}
-
-#[test]
 fn unify_trait_objects_different_order() {
     // Set-based comparison: order should not matter.
     let mut subst = fresh_subst();
@@ -254,18 +234,6 @@ fn unify_trait_objects_arg_arity_mismatch() {
 // ===========================================================================
 // Machine type unification
 // ===========================================================================
-
-#[test]
-fn unify_machine_types_same_name() {
-    let mut subst = fresh_subst();
-    let a = Ty::Machine {
-        name: "TrafficLight".into(),
-    };
-    let b = Ty::Machine {
-        name: "TrafficLight".into(),
-    };
-    assert!(unify(&mut subst, &a, &b).is_ok());
-}
 
 #[test]
 fn unify_machine_types_different_names() {

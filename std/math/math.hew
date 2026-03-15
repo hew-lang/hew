@@ -1,0 +1,112 @@
+//! Mathematical operations.
+//!
+//! Integer functions (absolute value, min, max, clamp, sign) and
+//! floating-point functions (sqrt, pow, floor, ceil, round) plus
+//! common constants.
+//!
+//! All functions are compiled to MLIR/LLVM intrinsics by the codegen
+//! backend. The Rust FFI in `src/lib.rs` provides a fallback for
+//! linking contexts that bypass the MLIR math dialect.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::math;
+//!
+//! fn main() {
+//!     println(math.abs(-5));         // 5
+//!     println(math.clamp(10, 0, 5)); // 5
+//!     println(math.sqrt(4.0));       // 2
+//!     println(math.pi());            // 3.14159
+//! }
+//! ```
+
+// ── Constants ─────────────────────────────────────────────────────────
+
+/// The ratio of a circle's circumference to its diameter.
+pub fn pi() -> f64 {
+    3.141592653589793
+}
+
+/// Euler's number, the base of natural logarithms.
+pub fn e() -> f64 {
+    2.718281828459045
+}
+
+// ── Integer operations ────────────────────────────────────────────────
+
+/// Return the absolute value of an integer.
+pub fn abs(x: int) -> int {
+    if x < 0 { -x } else { x }
+}
+
+/// Return the smaller of two integers.
+pub fn min(a: int, b: int) -> int {
+    if a < b { a } else { b }
+}
+
+/// Return the larger of two integers.
+pub fn max(a: int, b: int) -> int {
+    if a > b { a } else { b }
+}
+
+/// Clamp `x` to the range [`lo`, `hi`].
+pub fn clamp(x: int, lo: int, hi: int) -> int {
+    if x < lo {
+        return lo;
+    }
+    if x > hi {
+        return hi;
+    }
+    x
+}
+
+/// Return the sign of an integer: -1, 0, or 1.
+pub fn sign(x: int) -> int {
+    if x < 0 {
+        return -1;
+    }
+    if x > 0 {
+        return 1;
+    }
+    0
+}
+
+// ── Floating-point operations ─────────────────────────────────────────
+// Codegen emits MLIR math-dialect intrinsics for these. The bodies
+// below are pure-Hew fallbacks that satisfy the type-checker.
+
+/// Return the absolute value of a float.
+pub fn abs_f(x: f64) -> f64 {
+    if x < 0.0 { -x } else { x }
+}
+
+/// Return the square root of a float.
+pub fn sqrt(x: f64) -> f64 {
+    // Codegen maps to mlir::math::SqrtOp
+    0.0
+}
+
+/// Raise `base` to the power `exp`.
+pub fn pow(base: f64, exp: f64) -> f64 {
+    // Codegen maps to mlir::math::PowFOp
+    0.0
+}
+
+/// Return the largest integer value less than or equal to `x`.
+pub fn floor(x: f64) -> f64 {
+    // Codegen maps to mlir::math::FloorOp
+    0.0
+}
+
+/// Return the smallest integer value greater than or equal to `x`.
+pub fn ceil(x: f64) -> f64 {
+    // Codegen maps to mlir::math::CeilOp
+    0.0
+}
+
+/// Round to the nearest integer, with ties rounding away from zero.
+pub fn round(x: f64) -> f64 {
+    // Codegen maps to mlir::math::RoundOp
+    0.0
+}

@@ -831,6 +831,8 @@ mod platform {
         let Some(&key) = TLS_KEY.get() else {
             return ptr::null_mut();
         };
+        // SAFETY: `key` was allocated by `TlsAlloc` in `init_crash_handling`
+        // and is valid for the lifetime of the process.
         unsafe { TlsGetValue(key) }.cast::<WorkerRecoveryCtx>()
     }
 
@@ -840,6 +842,8 @@ mod platform {
         if info.is_null() {
             return EXCEPTION_CONTINUE_SEARCH;
         }
+        // SAFETY: `info` is non-null (checked above). The OS guarantees
+        // `exception_record` is a valid pointer within a VEH callback.
         let record = unsafe { &*(*info).exception_record };
         let code = record.exception_code;
 
@@ -852,11 +856,16 @@ mod platform {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
 
         // Re-entrancy guard.
@@ -890,12 +899,16 @@ mod platform {
 
     pub(crate) fn init_crash_handling() {
         TLS_KEY.get_or_init(|| {
+            // SAFETY: `TlsAlloc` has no preconditions; it allocates a new
+            // TLS index from the OS. Called once via `OnceLock`.
             let key = unsafe { TlsAlloc() };
             assert!(key != TLS_OUT_OF_INDEXES, "TlsAlloc failed");
             key
         });
 
-        // Register VEH handler (first=1 → called before SEH frames).
+        // SAFETY: `veh_handler` is a valid function pointer with the correct
+        // `PVECTORED_EXCEPTION_HANDLER` signature. Passing `first=1` inserts
+        // it at the head of the VEH chain. Called once during initialization.
         unsafe {
             let h = AddVectoredExceptionHandler(1, veh_handler);
             assert!(!h.is_null(), "AddVectoredExceptionHandler failed");
@@ -908,6 +921,8 @@ mod platform {
         let key = *TLS_KEY
             .get()
             .expect("init_crash_handling must be called before init_worker_recovery");
+        // SAFETY: `key` was allocated by `TlsAlloc`. `ctx_ptr` is from
+        // `Box::into_raw` and is valid. Each worker calls this exactly once.
         let ret = unsafe { TlsSetValue(key, ctx_ptr.cast()) };
         assert!(ret != 0, "TlsSetValue failed");
     }
@@ -916,11 +931,16 @@ mod platform {
         actor: *mut HewActor,
         msg: *mut c_void,
     ) -> *mut SigJmpBuf {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return ptr::null_mut();
         }
 
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
 
         // Store dispatch metadata via shared helper.
@@ -931,20 +951,30 @@ mod platform {
     }
 
     pub(crate) fn mark_recovery_active() {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return;
         }
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
         super::shared::mark_recovery_active_impl(&mut ctx.state);
     }
 
     pub(crate) unsafe fn handle_crash_recovery() -> (i32, usize) {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return (0, 0);
         }
 
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
 
         // SAFETY: called immediately after sigsetjmp returned non-zero.
@@ -952,10 +982,15 @@ mod platform {
     }
 
     pub(crate) fn clear_dispatch_recovery() {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return;
         }
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
         super::shared::clear_dispatch_recovery_impl(&mut ctx.state);
     }
@@ -973,14 +1008,23 @@ mod platform {
     /// Must be called from a dispatch context (actor's stack frame chain
     /// includes the scheduler's sigsetjmp frame).
     pub(crate) unsafe fn try_direct_longjmp() {
+        // SAFETY: Retrieves the per-thread recovery context via TLS.
+        // May return null (handled below).
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             return;
         }
+        // SAFETY: `ctx` is non-null (checked above) and was allocated via
+        // `Box::into_raw` in `init_worker_recovery`. Exclusive access is
+        // guaranteed because each worker thread has its own TLS slot.
         let ctx = unsafe { &mut *ctx };
         if !super::shared::try_direct_longjmp_preamble(&mut ctx.state) {
             return;
         }
+        // SAFETY: `jmp_buf` was set by `sigsetjmp` in `activate_actor` on the
+        // same thread. `try_direct_longjmp_preamble` confirmed the buffer is
+        // valid and marked it consumed. The longjmp unwinds back to the
+        // scheduler's recovery frame.
         unsafe { longjmp(&raw mut ctx.jmp_buf, 1) };
     }
 }

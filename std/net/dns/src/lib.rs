@@ -34,6 +34,10 @@ pub unsafe extern "C" fn hew_dns_resolve(hostname: *const c_char) -> *mut HewVec
         return vec;
     };
 
+    if host.is_empty() {
+        return vec;
+    }
+
     // Append ":0" so ToSocketAddrs can parse it as host:port.
     let addr_str = format!("{host}:0");
     let Ok(addrs) = addr_str.to_socket_addrs() else {
@@ -63,6 +67,10 @@ pub unsafe extern "C" fn hew_dns_lookup_host(hostname: *const c_char) -> *mut c_
     let Some(host) = (unsafe { cstr_to_str(hostname) }) else {
         return std::ptr::null_mut();
     };
+
+    if host.is_empty() {
+        return std::ptr::null_mut();
+    }
 
     let addr_str = format!("{host}:0");
     let Ok(mut addrs) = addr_str.to_socket_addrs() else {

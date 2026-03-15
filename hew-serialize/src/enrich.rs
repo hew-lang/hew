@@ -1699,11 +1699,30 @@ fn enrich_expr_with_diagnostics(
                 };
             }
         }
-        Expr::Call { function, args, .. } => {
+        Expr::Call {
+            function,
+            args,
+            type_args,
+            ..
+        } => {
             enrich_expr_with_diagnostics(function, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
+
+            // Fill in inferred type arguments for generic calls that omit
+            // explicit type annotations (e.g. `identity(42)` → `identity<int>(42)`).
+            if type_args.is_none() {
+                let call_span_key = SpanKey::from(&expr.1);
+                if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
+                    let converted: Result<Vec<_>, _> =
+                        inferred.iter().map(|ty| ty_to_type_expr(ty)).collect();
+                    if let Ok(ta) = converted {
+                        *type_args = Some(ta);
+                    }
+                }
+            }
+
             // Rewrite len(x) → x.len() method call so the C++ codegen
             // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
             if let Expr::Identifier(name) = &function.0 {
@@ -2759,6 +2778,7 @@ mod tests {
             fn_sigs: HashMap::new(),
             cycle_capable_actors: HashSet::new(),
             user_modules: HashSet::new(),
+            call_type_args: HashMap::new(),
         }
     }
 

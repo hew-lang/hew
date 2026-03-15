@@ -1,0 +1,99 @@
+//! Tests for the std::testing assertion library.
+
+import std::testing;
+
+// ── assert_eq ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_assert_eq_passes_for_equal_values() {
+    testing.assert_eq(42, 42);
+    testing.assert_eq(0, 0);
+    testing.assert_eq(-1, -1);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_eq_panics_for_unequal_values() {
+    testing.assert_eq(1, 2);
+}
+
+// ── assert_eq_str ──────────────────────────────────────────────────────
+
+#[test]
+fn test_assert_eq_str_passes_for_equal_strings() {
+    testing.assert_eq_str("hello", "hello");
+    testing.assert_eq_str("", "");
+}
+
+#[test]
+#[should_panic]
+fn test_assert_eq_str_panics_for_unequal_strings() {
+    testing.assert_eq_str("hello", "world");
+}
+
+// ── assert_ne ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_assert_ne_passes_for_unequal_values() {
+    testing.assert_ne(1, 2);
+    testing.assert_ne(0, -1);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_ne_panics_for_equal_values() {
+    testing.assert_ne(1, 1);
+}
+
+// ── assert_true / assert_false ─────────────────────────────────────────
+
+#[test]
+fn test_assert_true_passes() {
+    testing.assert_true(true);
+    testing.assert_true(1 == 1);
+    testing.assert_true(10 > 5);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_true_panics_for_false() {
+    testing.assert_true(false);
+}
+
+#[test]
+fn test_assert_false_passes() {
+    testing.assert_false(false);
+    testing.assert_false(1 == 2);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_false_panics_for_true() {
+    testing.assert_false(true);
+}
+
+// ── assert_gt / assert_lt ──────────────────────────────────────────────
+
+#[test]
+fn test_assert_gt_passes() {
+    testing.assert_gt(2, 1);
+    testing.assert_gt(100, 0);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_gt_panics_for_equal() {
+    testing.assert_gt(1, 1);
+}
+
+#[test]
+fn test_assert_lt_passes() {
+    testing.assert_lt(1, 2);
+    testing.assert_lt(-1, 0);
+}
+
+#[test]
+#[should_panic]
+fn test_assert_lt_panics_for_equal() {
+    testing.assert_lt(1, 1);
+}

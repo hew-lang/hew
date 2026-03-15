@@ -1,0 +1,30 @@
+import std::channel::channel;
+
+fn producer(tx: Sender, label: String) {
+    tx.send(label + ":alpha");
+    tx.send(label + ":beta");
+    tx.close();
+}
+
+fn main() {
+    let (tx, rx) = channel.new(8);
+
+    // Clone the sender for a second producer.
+    let tx2 = tx.clone();
+
+    // Two producers send through their own sender handles.
+    producer(tx, "P1");
+    producer(tx2, "P2");
+
+    // The single consumer drains all messages.
+    var count: int = 0;
+    var msg = rx.recv();
+    while msg != "" {
+        println(msg);
+        count = count + 1;
+        msg = rx.recv();
+    }
+
+    println(count);
+    rx.close();
+}

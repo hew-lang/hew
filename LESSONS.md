@@ -1,5 +1,25 @@
 # Lessons Learned — Distributed Actor Infrastructure
 
+## From the 2026-03-15 `hew test` hardening pass
+
+### 1. Test discovery must never discard parser diagnostics
+
+If a test runner ignores parse errors during discovery, a broken test file can be
+misreported as "no tests found" and the command can exit 0. That is worse than a
+visible failure because it creates false confidence in the suite.
+
+### 2. Stable result order is part of test-runner trustworthiness
+
+Even when the right tests run, a `HashMap` in the execution path makes output order
+non-deterministic across files. Preserving discovery order keeps repeated runs easy
+to compare and prevents flaky golden-output expectations.
+
+### 3. Timeout behaviour needs a CLI seam to be testable
+
+A hard-coded timeout works for users, but it makes automated regression tests slow
+and awkward. Exposing `--timeout` made the feature easier to validate and improved
+the real CLI at the same time.
+
 ## From the 2026-03-06 remediation passes
 
 ### 1. Validation targets must follow the real repo layout
@@ -454,3 +474,11 @@ The `otel` feature is off by default and not included in `full`. Observability
 integrations depend on external infrastructure (a running collector), so they
 should never be compiled into programs that don't need them. Prefer a
 clear opt-in (`--features otel`) over silently enlarging the default binary.
+### 59. Inferred type arguments must be persisted for downstream passes
+
+The type checker successfully infers concrete type arguments via unification, but if those
+resolved types are not written back into the AST (or a side-channel map), downstream
+consumers like codegen only see `type_args: None` and cannot specialize. Storing inferred
+type arguments in `TypeCheckOutput` and backfilling during enrichment keeps the codegen
+simple — it only has to handle one path (explicit type args) instead of re-inferring
+types at the MLIR level.

@@ -342,3 +342,144 @@ jobs:
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Windows)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build & test — macOS
+  #
+  # Run Rust workspace tests on both GitHub-hosted macOS architectures.
+  # Only the Apple Silicon runner runs hew-codegen E2E in PRs: Homebrew ships
+  # LLVM 22 bottles for current Apple Silicon runners, while Intel macOS
+  # runners would require slower LLVM/MLIR provisioning.
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-test-macos:
+    name: Build & test (macOS ${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: arm64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            run_codegen: true
+          - target: x86_64
+            os: macos-13
+            rust_target: x86_64-apple-darwin
+            run_codegen: false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/
+          key: build-test-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: build-test-${{ runner.os }}-${{ matrix.target }}-
+
+      - name: Install LLVM/MLIR (macOS Apple Silicon)
+        if: matrix.run_codegen
+        run: |
+          brew install llvm@${{ env.LLVM_VERSION }} ninja
+          LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
+          echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+
+      - name: Cache hew-codegen build
+        if: matrix.run_codegen
+        uses: actions/cache@v4
+        with:
+          path: hew-codegen/build
+          key: hew-codegen-build-${{ runner.os }}-${{ matrix.target }}-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('hew-codegen/**/*.cpp', 'hew-codegen/**/*.h', 'hew-codegen/**/CMakeLists.txt', 'hew-codegen/**/*.td') }}
+          restore-keys: hew-codegen-build-${{ runner.os }}-${{ matrix.target }}-llvm${{ env.LLVM_VERSION }}-
+
+      - name: Run Rust workspace tests
+        # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
+        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
+
+      - name: Build runtime (release + debug)
+        if: matrix.run_codegen
+        run: |
+          cargo build -p hew-runtime --release
+          cargo build -p hew-runtime
+
+      - name: Build frontend (release + debug)
+        if: matrix.run_codegen
+        run: |
+          cargo build -p hew-cli -p hew-serialize --release
+          cargo build -p hew-cli
+
+      - name: Build standard library packages
+        if: matrix.run_codegen
+        run: |
+          cargo build --release \
+            -p hew-std-encoding-base64 -p hew-std-encoding-compress \
+            -p hew-std-encoding-csv -p hew-std-encoding-json \
+            -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
+            -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
+            -p hew-std-encoding-xml -p hew-std-encoding-yaml \
+            -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
+            -p hew-std-crypto-password \
+            -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-quic \
+            -p hew-std-net-smtp -p hew-std-net-url -p hew-std-net-websocket \
+            -p hew-std-time-cron -p hew-std-time-datetime \
+            -p hew-std-text-regex -p hew-std-text-semver \
+            -p hew-std-sort \
+            -p hew-std-misc-uuid -p hew-std-misc-log
+
+      - name: Configure hew-codegen
+        if: matrix.run_codegen
+        run: |
+          cd hew-codegen
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
+            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
+            -DHEW_STATIC_LINK=ON \
+            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
+            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
+
+      - name: Build hew-codegen
+        if: matrix.run_codegen
+        run: cmake --build hew-codegen/build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Run codegen unit tests
+        if: matrix.run_codegen
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure --output-junit codegen-unit.xml
+          -R "^(mlir_dialect|translate)$"
+
+      - name: Run codegen E2E tests (native)
+        if: matrix.run_codegen
+        run: >
+          cd hew-codegen/build &&
+          ctest --output-on-failure --output-junit codegen-e2e-native.xml
+          -j"$(sysctl -n hw.ncpu)" -LE wasm -E "^(mlir_dialect|translate)$"
+
+      - name: Upload Rust test reports
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: target/nextest/ci/junit.xml
+          check_name: Rust Test Results (macOS ${{ matrix.target }})
+
+      - name: Upload codegen test reports
+        if: always() && matrix.run_codegen
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: |
+            hew-codegen/build/codegen-unit.xml
+            hew-codegen/build/codegen-e2e-native.xml
+          check_name: Codegen Test Results (macOS ${{ matrix.target }})

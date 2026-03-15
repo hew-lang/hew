@@ -1,0 +1,164 @@
+// Circuit Breaker — resilient service calls with actor state
+//
+// The circuit breaker pattern prevents cascading failures by wrapping
+// unreliable service calls. After N consecutive failures the breaker
+// "trips open" and rejects requests immediately, giving the downstream
+// service time to recover. After a cooldown period it allows a single
+// probe request through; if that succeeds the breaker closes again.
+//
+// In Go you'd reach for sony/gobreaker or write ~200 lines of mutex-
+// guarded state. In Rust you'd need Arc<Mutex<State>> or an async
+// channel wrapper. In Hew the actor IS the state machine — no locks,
+// no shared memory, no data races by construction.
+//
+// States:  Closed (normal) → Open (rejecting) → HalfOpen (probing)
+
+// Simulated backend service.
+// Returns request_id * 10 on success, -1 on failure.
+// Failure is triggered by setting the actor to "degraded" mode.
+actor Backend {
+    let healthy: int;  // 1 = healthy, 0 = degraded
+
+    receive fn call(request_id: int) -> int {
+        if healthy == 0 {
+            -1
+        } else {
+            request_id * 10
+        }
+    }
+
+    receive fn set_healthy(val: int) {
+        healthy = val;
+        if val == 1 {
+            println("[backend] restored to healthy");
+        } else {
+            println("[backend] degraded — returning errors");
+        }
+    }
+}
+
+// Circuit breaker wrapping a Backend actor.
+//
+// State encoding:
+//   0 = Closed   (normal operation)
+//   1 = Open     (rejecting all calls)
+//   2 = HalfOpen (allowing one probe)
+actor CircuitBreaker {
+    let backend: ActorRef<Backend>;
+    let state: int;           // 0=Closed, 1=Open, 2=HalfOpen
+    let failure_count: int;
+    let max_failures: int;    // trip threshold
+
+    init() {
+        println(f"[breaker] init: max_failures={max_failures}");
+    }
+
+    // Attempt a request through the breaker.
+    //   Returns  >= 0  on success (the backend result)
+    //   Returns -1     if the breaker is open (fast-fail)
+    //   Returns -2     if the backend call failed
+    receive fn request(id: int) -> int {
+        if state == 1 {
+            // Open — reject immediately
+            println(f"[breaker] OPEN — rejecting request {id}");
+            -1
+        } else {
+            let result = await backend.call(id);
+            if result < 0 {
+                // Backend returned an error — count as failure
+                failure_count = failure_count + 1;
+                if failure_count >= max_failures {
+                    state = 1;
+                    println(f"[breaker] request {id} FAILED — TRIPPED OPEN (count={failure_count})");
+                } else {
+                    println(f"[breaker] request {id} FAILED (count={failure_count})");
+                }
+                -2
+            } else {
+                // Success — reset failure count, close breaker if probing
+                failure_count = 0;
+                if state == 2 {
+                    state = 0;
+                    println(f"[breaker] request {id} OK → {result} (HalfOpen → Closed)");
+                } else {
+                    println(f"[breaker] request {id} OK → {result}");
+                }
+                result
+            }
+        }
+    }
+
+    // Transition Open → HalfOpen (called after cooldown).
+    receive fn probe() {
+        if state == 1 {
+            state = 2;
+            println("[breaker] Open → HalfOpen (allowing probe)");
+        }
+    }
+
+    receive fn get_state() -> int {
+        state
+    }
+}
+
+fn main() {
+    println("=== Circuit Breaker Pattern ===");
+    println("");
+
+    let backend = spawn Backend(healthy: 1);
+    let breaker = spawn CircuitBreaker(
+        backend: backend,
+        state: 0,
+        failure_count: 0,
+        max_failures: 3,
+    );
+
+    // ── Normal operation: requests succeed ──
+    println("--- Normal operation ---");
+    await breaker.request(1);
+    await breaker.request(2);
+    await breaker.request(3);
+
+    // ── Backend degrades ──
+    println("");
+    println("--- Backend goes down ---");
+    backend.set_healthy(0);
+    sleep_ms(20);
+
+    // Three failures trip the breaker (max_failures=3)
+    await breaker.request(4);
+    await breaker.request(5);
+    await breaker.request(6);
+
+    // Breaker is now open — requests rejected immediately
+    println("");
+    println("--- Breaker is open (fast-fail) ---");
+    let rejected = await breaker.request(7);
+    println(f"Result while open: {rejected}");
+    let rejected2 = await breaker.request(8);
+    println(f"Result while open: {rejected2}");
+
+    // ── Backend recovers ──
+    println("");
+    println("--- Backend recovers ---");
+    backend.set_healthy(1);
+    sleep_ms(20);
+
+    // Trigger half-open probe, then send a request
+    breaker.probe();
+    sleep_ms(20);
+    let probe_result = await breaker.request(9);
+    println(f"Probe request result: {probe_result}");
+
+    // Breaker should be closed again — normal operation resumes
+    println("");
+    println("--- Back to normal ---");
+    await breaker.request(10);
+    await breaker.request(11);
+    let final_state = await breaker.get_state();
+    println(f"Final breaker state: {final_state} (0=Closed)");
+
+    println("");
+    println("Circuit breaker complete.");
+    println("The actor IS the state machine — no mutexes, no shared state.");
+}

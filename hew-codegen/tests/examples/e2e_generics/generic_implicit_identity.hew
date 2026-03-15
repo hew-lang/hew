@@ -1,0 +1,8 @@
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() {
+    println(f"{identity(42)}");
+    println(identity("hello"));
+}

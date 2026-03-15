@@ -30,6 +30,9 @@ pub struct TypeCheckOutput {
     pub cycle_capable_actors: HashSet<String>,
     /// Module short names for user (non-stdlib) imports that have resolved items.
     pub user_modules: HashSet<String>,
+    /// Inferred type arguments for generic function calls that lack explicit
+    /// type annotations.  Keyed by the call expression's span.
+    pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
 }
 
 /// Span used as map key (byte offsets).
@@ -233,6 +236,9 @@ pub struct Checker {
     current_machine_transition: Option<(String, String, String)>,
     /// Compile-time known values for untyped constants (for literal coercion).
     const_values: HashMap<String, ConstValue>,
+    /// Inferred type arguments for generic function calls that omit explicit
+    /// type annotations.  Populated in `check_call` after argument unification.
+    call_type_args: HashMap<SpanKey, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,6 +486,7 @@ impl Checker {
             wasm_warning_spans: HashSet::new(),
             current_machine_transition: None,
             const_values: HashMap::new(),
+            call_type_args: HashMap::new(),
         }
     }
 
@@ -2874,6 +2881,18 @@ impl Checker {
             .into_iter()
             .map(|(k, v)| (k, self.subst.resolve(&v)))
             .collect();
+
+        // Also resolve inferred call type args so the enrichment layer can
+        // fill in explicit type annotations for the codegen.
+        let resolved_call_type_args: HashMap<SpanKey, Vec<Ty>> =
+            std::mem::take(&mut self.call_type_args)
+                .into_iter()
+                .map(|(k, args)| {
+                    let resolved = args.iter().map(|a| self.subst.resolve(a)).collect();
+                    (k, resolved)
+                })
+                .collect();
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             errors: std::mem::take(&mut self.errors),
@@ -2882,6 +2901,7 @@ impl Checker {
             fn_sigs: std::mem::take(&mut self.fn_sigs),
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
+            call_type_args: resolved_call_type_args,
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -5403,6 +5423,21 @@ impl Checker {
                 }
             }
             self.enforce_type_param_bounds(&sig, &resolved_type_args, span);
+
+            // When the caller omitted explicit type arguments, resolve the
+            // inferred type variables to concrete types and record them so the
+            // enrichment layer can fill them in before serialization.
+            if type_args.is_none() && !sig.type_params.is_empty() {
+                let concrete: Vec<Ty> = resolved_type_args
+                    .iter()
+                    .map(|ta| self.subst.resolve(ta))
+                    .collect();
+                // Only store if every type arg resolved to a concrete (non-Var) type.
+                if concrete.iter().all(|t| !matches!(t, Ty::Var(_))) {
+                    self.call_type_args.insert(SpanKey::from(span), concrete);
+                }
+            }
+
             return freshened_ret;
         }
 

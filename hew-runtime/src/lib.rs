@@ -285,6 +285,20 @@ pub mod encryption;
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 pub mod quic_transport;
 
+// OTel exporter: background thread + OTLP/HTTP, activated by HEW_OTEL_ENDPOINT.
+// Not available on WASM (no OS threads for the background exporter).
+#[cfg(all(feature = "otel", not(target_arch = "wasm32")))]
+pub mod otel;
+
+// When the otel feature is disabled, provide a zero-cost stub so scheduler.rs
+// can call otel::maybe_start() unconditionally.
+#[cfg(any(not(feature = "otel"), target_arch = "wasm32"))]
+pub mod otel {
+    //! OTel exporter stubs when the `otel` feature is disabled.
+    /// No-op: otel feature is disabled.
+    pub fn maybe_start() {}
+}
+
 pub mod log_core;
 
 #[cfg(feature = "export-meta")]

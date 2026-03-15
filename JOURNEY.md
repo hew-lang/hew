@@ -803,3 +803,27 @@ coverage.
   submission before any wait path can hang.
 - Added regression coverage in the runtime and MLIR tests for failed `ask_with_channel`
   submission plus send-failure cleanup paths in both `select` and `join`.
+
+
+## Phase N: OpenTelemetry OTLP Exporter (2026-07)
+
+### Motivation
+
+The runtime already had W3C Trace Context-compatible 128-bit trace IDs and per-actor span recording, but no way to export spans to external backends (Jaeger, Grafana Tempo, OpenTelemetry Collector). Developers had to either instrument their programs manually or grep raw JSON from `/api/traces` in the profiler.
+
+### Design decisions
+
+- **OTLP/HTTP JSON, not gRPC** — avoids tonic + protobuf codegen; JSON is universally supported by Jaeger, Tempo, and the OTel Collector.
+- **`ureq` (sync HTTP), not tokio** — the Hew runtime runs its own M:N scheduler; pulling in tokio just for the exporter would add ~1.5 MB and create two competing async runtimes on the same thread pool. `ureq` is ~150 KB, pure Rust, and entirely synchronous.
+- **Background OS thread** — mirrors the profiler pattern exactly (`hew-pprof-sampler` / `hew-pprof-server`). The thread wakes on a configurable interval, drains the event ring buffer, reconstructs spans, and POSTs them.
+- **`otel` feature flag** — off by default, so existing users incur zero compile-time or link-time overhead until they opt in.
+- **Span reconstruction** — `SPAN_BEGIN`/`SPAN_END` events are matched by `span_id` inside the exporter; unpaired begins (still in flight when the batch window closes) are exported as incomplete spans rather than dropped.
+
+### Outcome
+
+- `hew-runtime/src/otel.rs` — exporter module (~400 LOC, no unsafe)
+- `hew-runtime/src/tracing.rs` — added `pub fn drain_events(max: usize) -> Vec<HewTraceEvent>`
+- `hew-runtime/Cargo.toml` — `otel = ["dep:ureq"]` feature; `ureq 3.x` with `default-features = false`
+- 13 unit tests (span reconstruction + OTLP JSON correctness)
+- 2 integration tests (mock OTLP receiver, timing invariants)
+- Zero new dependencies when `otel` is not enabled

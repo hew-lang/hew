@@ -151,6 +151,30 @@ fn monotonic_ns() -> u64 {
     }
 }
 
+// ── Rust-internal drain ────────────────────────────────────────────────
+
+/// Drain up to `max` trace events for internal consumers (e.g. the OTel exporter).
+///
+/// Unlike the C ABI [`hew_trace_drain`], this returns a `Vec` directly and
+/// is callable from Rust without unsafe code.
+pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
+    if max == 0 {
+        return Vec::new();
+    }
+    let mut events = match TRACE_EVENTS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    let count = events.len().min(max);
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        if let Some(ev) = events.pop_front() {
+            out.push(ev);
+        }
+    }
+    out
+}
+
 // ── Recording ──────────────────────────────────────────────────────────
 
 /// Record a trace event if tracing is enabled.

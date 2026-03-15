@@ -428,3 +428,29 @@ Some inferred `Ty` shapes (notably generator forms) are intentionally left impli
 codegen tracks them through other mechanisms, but that does not justify a silent `None`
 fallthrough. Carry span-tagged diagnostics out of enrichment/build passes and deduplicate
 by span in the CLI so developers see the unsupported conversion exactly once.
+
+## From the OTel OTLP exporter (2026-07)
+
+### 56. Don't pull in an async runtime for a synchronous side-channel
+
+The `opentelemetry-otlp` crate's HTTP transport requires tokio. But the Hew
+runtime already runs its own M:N scheduler; adding tokio would create two
+competing async runtimes. The right call is a thin synchronous HTTP client
+(`ureq`) on a dedicated OS thread — the same pattern the profiler uses.
+Async is the right tool for the hot path; background telemetry is not the
+hot path.
+
+### 57. Span reconstruction is the exporter's job, not the recording path
+
+Recording raw `SPAN_BEGIN` / `SPAN_END` events is fast and lock-minimal.
+Pairing them into full spans with start/end timestamps is done once, in the
+background exporter thread, when it drains the ring buffer. This keeps the
+recording fast path free of HashMap bookkeeping and defers allocation to a
+point where latency doesn't matter.
+
+### 58. Feature flags should be opt-in for observability integrations
+
+The `otel` feature is off by default and not included in `full`. Observability
+integrations depend on external infrastructure (a running collector), so they
+should never be compiled into programs that don't need them. Prefer a
+clear opt-in (`--features otel`) over silently enlarging the default binary.

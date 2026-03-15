@@ -1588,10 +1588,10 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     return nullptr;
   }
 
-  // panic() — crash the current actor by triggering SEGV via runtime
+  // panic() — terminate the current actor (or process if called from main)
   if (name == "panic") {
     if (!args.empty()) {
-      // panic("message") — print the message via hew_panic_msg, then crash
+      // panic("message") — print the message via hew_panic_msg, then panic
       auto msg = generateExpression(ast::callArgExpr(args[0]).value);
       if (msg) {
         auto panicMsgAttr = mlir::SymbolRefAttr::get(&context, "hew_panic_msg");

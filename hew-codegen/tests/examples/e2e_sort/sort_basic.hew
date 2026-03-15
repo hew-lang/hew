@@ -1,0 +1,57 @@
+import std::sort;
+
+fn main() {
+    // ── Sort integers ─────────────────────────────────────────────
+    let nums: Vec<int> = Vec::new();
+    nums.push(3);
+    nums.push(1);
+    nums.push(4);
+    nums.push(1);
+    nums.push(5);
+    let sorted = sort.sort_ints(nums);
+    var i = 0;
+    while i < sorted.len() {
+        println(sorted.get(i));
+        i = i + 1;
+    }
+
+    // ── Sort strings ──────────────────────────────────────────────
+    let words: Vec<String> = Vec::new();
+    words.push("banana");
+    words.push("apple");
+    words.push("cherry");
+    let sorted_words = sort.sort_strings(words);
+    var j = 0;
+    while j < sorted_words.len() {
+        println(sorted_words.get(j));
+        j = j + 1;
+    }
+
+    // ── Sort floats ───────────────────────────────────────────────
+    let vals: Vec<float> = Vec::new();
+    vals.push(3.14);
+    vals.push(1.0);
+    vals.push(2.71);
+    let sorted_vals = sort.sort_floats(vals);
+    var k = 0;
+    while k < sorted_vals.len() {
+        println(sorted_vals.get(k));
+        k = k + 1;
+    }
+
+    // ── Reverse ───────────────────────────────────────────────────
+    let to_rev: Vec<int> = Vec::new();
+    to_rev.push(10);
+    to_rev.push(20);
+    to_rev.push(30);
+    let reversed = sort.reverse(to_rev);
+    var m = 0;
+    while m < reversed.len() {
+        println(reversed.get(m));
+        m = m + 1;
+    }
+
+    // ── Original unchanged ────────────────────────────────────────
+    println(nums.get(0));
+    println(nums.get(1));
+}

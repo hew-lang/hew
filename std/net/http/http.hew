@@ -45,11 +45,11 @@ trait ServerMethods {
 impl ServerMethods for Server {
     /// Accept the next incoming HTTP request.
     fn accept(srv: Server) -> Request {
-        hew_http_server_recv(srv)
+        unsafe { hew_http_server_recv(srv) }
     }
     /// Close the server and release the listening socket.
     fn close(srv: Server) {
-        hew_http_server_close(srv);
+        unsafe { hew_http_server_close(srv) };
     }
 }
 
@@ -108,35 +108,35 @@ trait RequestMethods {
 
 impl RequestMethods for Request {
     /// Return the HTTP method (e.g. `"GET"`, `"POST"`).
-    fn method(req: Request) -> String { hew_http_request_method(req) }
+    fn method(req: Request) -> String { unsafe { hew_http_request_method(req) } }
     /// Return the request path (e.g. `"/api/users"`).
-    fn path(req: Request) -> String { hew_http_request_path(req) }
+    fn path(req: Request) -> String { unsafe { hew_http_request_path(req) } }
     /// Return the value of the named header, or an empty string.
-    fn header(req: Request, name: String) -> String { hew_http_request_header(req, name) }
+    fn header(req: Request, name: String) -> String { unsafe { hew_http_request_header(req, name) } }
     /// Return the request body decoded according to `encoding`.
-    fn body(req: Request, encoding: String) -> String { hew_http_request_body(req, encoding) }
+    fn body(req: Request, encoding: String) -> String { unsafe { hew_http_request_body(req, encoding) } }
     /// Send a full HTTP response with status, content-type, and body.
     fn respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32 {
-        hew_http_respond(req, status, content_type, content_length, body)
+        unsafe { hew_http_respond(req, status, content_type, content_length, body) }
     }
     /// Send a plain-text HTTP response.
     fn respond_text(req: Request, status: i32, body: String) -> i32 {
-        hew_http_respond_text(req, status, body)
+        unsafe { hew_http_respond_text(req, status, body) }
     }
     /// Send a JSON HTTP response with `Content-Type: application/json`.
     fn respond_json(req: Request, status: i32, json: String) -> i32 {
-        hew_http_respond_json(req, status, json)
+        unsafe { hew_http_respond_json(req, status, json) }
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
     fn respond_stream(req: Request, status: i32, content_type: String) -> Sink {
-        hew_http_respond_stream(req, status, content_type)
+        unsafe { hew_http_respond_stream(req, status, content_type) }
     }
 }
 
 impl Drop for Request {
     /// Release the underlying request resources.
     fn drop(req: Request) {
-        hew_http_request_free(req);
+        unsafe { hew_http_request_free(req) };
     }
 }
 
@@ -154,7 +154,7 @@ impl Drop for Request {
 /// let server = http.listen("127.0.0.1:3000");
 /// ```
 pub fn listen(addr: String) -> Server {
-    hew_http_server_new(addr)
+    unsafe { hew_http_server_new(addr) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

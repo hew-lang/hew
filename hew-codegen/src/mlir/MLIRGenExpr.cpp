@@ -3235,6 +3235,10 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         return mlir::math::CeilOp::create(builder, location, arg).getResult();
       if (methodName == "abs")
         return mlir::math::AbsFOp::create(builder, location, arg).getResult();
+      if (methodName == "abs_f")
+        return mlir::math::AbsFOp::create(builder, location, arg).getResult();
+      if (methodName == "round")
+        return mlir::math::RoundOp::create(builder, location, arg).getResult();
       if (methodName == "tanh")
         return mlir::math::TanhOp::create(builder, location, arg).getResult();
       if (methodName == "log2")
@@ -3281,6 +3285,54 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         if (arg2.getType() != f64Type)
           arg2 = coerceType(arg2, f64Type, location);
         return mlir::arith::MinimumFOp::create(builder, location, arg, arg2).getResult();
+      }
+
+      // math.sign(x) — returns -1, 0, or 1 (integer)
+      if (methodName == "sign") {
+        auto i64Type = builder.getI64Type();
+        // If arg is f64, convert to i64 for integer sign
+        if (arg.getType() == f64Type)
+          arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
+        auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                     builder.getI64IntegerAttr(0));
+        auto negOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(-1));
+        auto posOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                       builder.getI64IntegerAttr(1));
+        auto isNeg = mlir::arith::CmpIOp::create(builder, location,
+                                                   mlir::arith::CmpIPredicate::slt, arg, zero);
+        auto isPos = mlir::arith::CmpIOp::create(builder, location,
+                                                   mlir::arith::CmpIPredicate::sgt, arg, zero);
+        auto selPos = mlir::arith::SelectOp::create(builder, location, isPos, posOne, zero);
+        return mlir::arith::SelectOp::create(builder, location, isNeg, negOne, selPos).getResult();
+      }
+
+      // math.clamp(x, lo, hi) — clamp x to [lo, hi]
+      if (methodName == "clamp") {
+        if (mc.args.size() < 3) {
+          emitError(location) << "math.clamp requires 3 arguments";
+          return nullptr;
+        }
+        auto lo = generateExpression(ast::callArgExpr(mc.args[1]).value);
+        auto hi = generateExpression(ast::callArgExpr(mc.args[2]).value);
+        if (!lo || !hi)
+          return nullptr;
+        auto i64Type = builder.getI64Type();
+        if (arg.getType() == f64Type)
+          arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
+        if (lo.getType() == f64Type)
+          lo = mlir::arith::FPToSIOp::create(builder, location, i64Type, lo).getResult();
+        if (hi.getType() == f64Type)
+          hi = mlir::arith::FPToSIOp::create(builder, location, i64Type, hi).getResult();
+        if (lo.getType() != i64Type)
+          lo = coerceType(lo, i64Type, location);
+        if (hi.getType() != i64Type)
+          hi = coerceType(hi, i64Type, location);
+        if (arg.getType() != i64Type)
+          arg = coerceType(arg, i64Type, location);
+        // clamp = max(lo, min(x, hi))
+        auto minXHi = mlir::arith::MinSIOp::create(builder, location, arg, hi);
+        return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
       }
 
       emitError(location) << "unknown math function: math." << methodName;

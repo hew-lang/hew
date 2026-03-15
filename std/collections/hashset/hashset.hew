@@ -1,0 +1,110 @@
+//! Hash set collection.
+//!
+//! An unordered collection of unique values backed by a hash map.
+//! Supports `i64` and `String` element types.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::collections::hashset;
+//!
+//! fn main() {
+//!     let s = hashset.new();
+//!     s.insert_int(1);
+//!     s.insert_int(2);
+//!     println(s.len());
+//!     println(s.contains_int(1));
+//!     s.free();
+//! }
+//! ```
+
+/// An opaque hash set handle.
+///
+/// Created by `hashset.new()`. Must be freed with `free()` when no
+/// longer needed to avoid leaking memory.
+type HashSet {}
+
+/// Methods available on a `HashSet`.
+trait HashSetMethods {
+    /// Insert an integer value into the set.
+    ///
+    /// Returns `true` if the value was newly inserted, `false` if
+    /// already present.
+    fn insert_int(set: HashSet, value: i64) -> bool;
+
+    /// Insert a string value into the set.
+    ///
+    /// Returns `true` if the value was newly inserted, `false` if
+    /// already present.
+    fn insert_string(set: HashSet, value: String) -> bool;
+
+    /// Check whether the set contains an integer value.
+    fn contains_int(set: HashSet, value: i64) -> bool;
+
+    /// Check whether the set contains a string value.
+    fn contains_string(set: HashSet, value: String) -> bool;
+
+    /// Remove an integer value from the set.
+    ///
+    /// Returns `true` if the value was present and removed.
+    fn remove_int(set: HashSet, value: i64) -> bool;
+
+    /// Remove a string value from the set.
+    ///
+    /// Returns `true` if the value was present and removed.
+    fn remove_string(set: HashSet, value: String) -> bool;
+
+    /// Return the number of elements in the set.
+    fn len(set: HashSet) -> i64;
+
+    /// Return `true` if the set has no elements.
+    fn is_empty(set: HashSet) -> bool;
+
+    /// Remove all elements from the set.
+    fn clear(set: HashSet);
+
+    /// Release the set resources.
+    fn free(set: HashSet);
+}
+
+impl HashSetMethods for HashSet {
+    fn insert_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_insert_int(set, value) } }
+    fn insert_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_insert_string(set, value) } }
+    fn contains_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_contains_int(set, value) } }
+    fn contains_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_contains_string(set, value) } }
+    fn remove_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_remove_int(set, value) } }
+    fn remove_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_remove_string(set, value) } }
+    fn len(set: HashSet) -> i64 { unsafe { hew_hashset_len(set) } }
+    fn is_empty(set: HashSet) -> bool { unsafe { hew_hashset_is_empty(set) } }
+    fn clear(set: HashSet) { unsafe { hew_hashset_clear(set) }; }
+    fn free(set: HashSet) { unsafe { hew_hashset_free(set) }; }
+}
+
+// ── Module-level functions ────────────────────────────────────────────
+
+/// Create a new, empty hash set.
+///
+/// # Examples
+///
+/// ```
+/// let s = hashset.new();
+/// ```
+pub fn new() -> HashSet {
+    unsafe { hew_hashset_new() }
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_hashset_new() -> HashSet;
+    fn hew_hashset_insert_int(set: HashSet, value: i64) -> bool;
+    fn hew_hashset_insert_string(set: HashSet, value: String) -> bool;
+    fn hew_hashset_contains_int(set: HashSet, value: i64) -> bool;
+    fn hew_hashset_contains_string(set: HashSet, value: String) -> bool;
+    fn hew_hashset_remove_int(set: HashSet, value: i64) -> bool;
+    fn hew_hashset_remove_string(set: HashSet, value: String) -> bool;
+    fn hew_hashset_len(set: HashSet) -> i64;
+    fn hew_hashset_is_empty(set: HashSet) -> bool;
+    fn hew_hashset_clear(set: HashSet);
+    fn hew_hashset_free(set: HashSet);
+}

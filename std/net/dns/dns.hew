@@ -1,0 +1,54 @@
+//! DNS hostname resolution.
+//!
+//! Resolve hostnames to IP address strings using the system resolver.
+//!
+//! # Examples
+//!
+//! ```
+//! import std::net::dns;
+//!
+//! fn main() {
+//!     let addrs = dns.resolve("localhost");
+//!     for i in 0..addrs.len() {
+//!         println(addrs[i]);
+//!     }
+//!
+//!     let first = dns.lookup_host("localhost");
+//!     println(first);
+//! }
+//! ```
+
+/// Resolve a hostname to all associated IP addresses.
+///
+/// Returns a vector of IP address strings. Returns an empty vector
+/// if the hostname cannot be resolved.
+///
+/// # Examples
+///
+/// ```
+/// let addrs = dns.resolve("localhost");  // ["127.0.0.1", "::1"]
+/// ```
+pub fn resolve(hostname: String) -> Vec<String> {
+    unsafe { hew_dns_resolve(hostname) }
+}
+
+/// Resolve a hostname to its first IP address.
+///
+/// Returns the first resolved IP address as a string, or an empty
+/// string if the hostname cannot be resolved.
+///
+/// # Examples
+///
+/// ```
+/// let ip = dns.lookup_host("localhost");  // "127.0.0.1"
+/// ```
+pub fn lookup_host(hostname: String) -> String {
+    unsafe { hew_dns_lookup_host(hostname) }
+}
+
+// ── FFI bindings ──────────────────────────────────────────────────────
+
+extern "C" {
+    fn hew_dns_resolve(hostname: String) -> Vec<String>;
+    fn hew_dns_lookup_host(hostname: String) -> String;
+}

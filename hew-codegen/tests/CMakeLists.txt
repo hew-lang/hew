@@ -358,6 +358,7 @@ add_e2e_file_test(enum_state_machine  e2e_data_structures enum_state_machine)
 add_e2e_file_test(hashmap_frequency   e2e_data_structures hashmap_frequency)
 add_e2e_file_test(hashset_basic       e2e_hashset         hashset_basic)
 add_e2e_file_test(hashset_strings     e2e_hashset         hashset_strings)
+add_e2e_file_test(hashset_stdlib      e2e_hashset         hashset_stdlib)
 add_e2e_file_test(option_result       e2e_data_structures option_result_chain)
 add_e2e_file_test(queue_via_stacks    e2e_data_structures queue_via_stacks)
 add_e2e_file_test(stack_operations    e2e_data_structures stack_operations)
@@ -379,7 +380,10 @@ add_e2e_file_test(hex_test            e2e_hex             hex_test)
 add_e2e_file_test(base64_test         e2e_base64          base64_test)
 add_e2e_file_test(semver_test         e2e_semver          semver_test)
 add_e2e_file_test(csv_test            e2e_csv             csv_test)
+add_e2e_file_test(xml_test            e2e_xml             xml_test)
+add_e2e_file_test(fmt_test            e2e_fmt             fmt_test)
 add_e2e_file_test(crypto_test         e2e_crypto          crypto_test)
+add_e2e_file_test(math_basic          e2e_math            math_basic)
 
 # Machine type tests (state machines with compile-time exhaustiveness)
 add_e2e_file_test(machine_basic       e2e_machine machine_basic)
@@ -417,6 +421,7 @@ add_e2e_file_test(vec_join             e2e_collections vec_join)
 add_e2e_file_test(vec_map              e2e_collections vec_map)
 add_e2e_file_test(vec_filter           e2e_collections vec_filter)
 add_e2e_file_test(vec_fold             e2e_collections vec_fold)
+add_e2e_file_test(deque                e2e_collections deque)
 
 # String.lines() — split on newlines
 add_e2e_file_test(string_lines         e2e_strings string_lines)
@@ -529,6 +534,9 @@ add_e2e_file_test(regex_find_replace    e2e_regex regex_find_replace)
 # RegexReplaceOp: focused test for regex pattern .replace() calls
 add_e2e_file_test(regex_replace         e2e_text  regex_replace)
 
+# Sort tests
+add_e2e_file_test(sort_basic            e2e_sort  sort_basic)
+
 # ── Canonicalization tests ──────────────────────────────────────────────────
 add_e2e_file_test(string_concat_identity  e2e_canonicalize string_concat_identity)
 
@@ -605,6 +613,7 @@ add_e2e_file_test(bench_basic           e2e_bench bench_basic)
 # ── Import tests ─────────────────────────────────────────────────────────────
 add_e2e_file_test(import_stdlib         e2e_imports import_stdlib)
 add_e2e_file_test(import_fs             e2e_imports test_import_fs)
+add_e2e_file_test(import_io             e2e_imports test_import_io)
 add_e2e_file_test(import_string         e2e_imports test_import_string)
 add_e2e_file_test(import_os             e2e_imports test_import_os)
 add_e2e_file_test(import_multi          e2e_imports test_import_multi)
@@ -621,6 +630,7 @@ add_e2e_file_test(option_pattern        e2e_error_handling option_pattern)
 add_e2e_file_test(option_stdlib         e2e_option_stdlib option_stdlib)
 add_e2e_file_test(enum_error_chain      e2e_error_handling enum_error_chain)
 add_e2e_file_test(result_stdlib         e2e_error_handling result_stdlib)
+add_e2e_file_test(iter_stdlib           e2e_iter_stdlib iter_stdlib)
 
 # ── Structured concurrency tests ─────────────────────────────────────────────
 add_e2e_file_test(scope_launch          e2e_concurrency scope_launch)
@@ -866,6 +876,12 @@ add_e2e_file_test(coverage_expr_deep_nesting   e2e_coverage expr_deep_nesting)
 add_e2e_file_test(coverage_loop_edge_cases     e2e_coverage loop_edge_cases)
 add_e2e_file_test(coverage_closure_edge_cases  e2e_coverage closure_edge_cases)
 add_e2e_file_test(coverage_defer_multi_scope   e2e_coverage defer_multi_scope)
+add_e2e_file_test(coverage_std_testing         e2e_coverage std_testing)
+add_e2e_panic_test(testing_assert_fail         e2e_coverage testing_assert_fail "assertion failed: expected 2, got 1")
+
+# ── DNS / TLS stdlib tests ────────────────────────────────────────────────────
+add_e2e_file_test(dns_resolve                  e2e_dns dns_resolve)
+add_e2e_file_test(tls_import                   e2e_tls tls_import)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

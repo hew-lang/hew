@@ -1,0 +1,47 @@
+// Test: XML parsing, attribute access, child navigation, text extraction,
+// and round-trip serialization via std::encoding::xml.
+import std::encoding::xml;
+
+fn main() {
+    // ── Parse a simple document ────────────────────────────────
+    let root = xml.parse("<book lang=\"en\"><title>Hew Guide</title><author>Team</author></book>");
+    println(root.get_tag());
+    println(root.get_attribute("lang"));
+    println(root.children_count());
+
+    // ── Child navigation ───────────────────────────────────────
+    let title = root.get_child(0);
+    println(title.get_tag());
+    println(title.get_text());
+    title.free();
+
+    let author = root.get_child(1);
+    println(author.get_tag());
+    println(author.get_text());
+    author.free();
+
+    // ── Text extraction (recursive) ────────────────────────────
+    let nested = xml.parse("<p>Hello <b>world</b>!</p>");
+    println(nested.get_text());
+    nested.free();
+
+    // ── Missing attribute returns empty ────────────────────────
+    println(root.get_attribute("missing"));
+
+    // ── Round-trip serialization ───────────────────────────────
+    let simple = xml.parse("<data><item>42</item></data>");
+    println(simple.to_string());
+    simple.free();
+
+    // ── Self-closing tags ──────────────────────────────────────
+    let sc = xml.parse("<root><br/></root>");
+    println(sc.children_count());
+    let br = sc.get_child(0);
+    println(br.get_tag());
+    println(br.children_count());
+    br.free();
+    sc.free();
+
+    root.free();
+    println("=== Done ===");
+}

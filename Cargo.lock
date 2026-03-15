@@ -1633,6 +1633,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-std-encoding-xml"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
+ "quick-xml",
+]
+
+[[package]]
 name = "hew-std-encoding-yaml"
 version = "0.2.0"
 dependencies = [
@@ -1640,6 +1650,14 @@ dependencies = [
  "hew-runtime",
  "libc",
  "serde_yaml",
+]
+
+[[package]]
+name = "hew-std-math"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
 ]
 
 [[package]]
@@ -1660,6 +1678,15 @@ dependencies = [
  "hew-runtime",
  "libc",
  "uuid",
+]
+
+[[package]]
+name = "hew-std-net-dns"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
 ]
 
 [[package]]
@@ -1710,6 +1737,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-std-net-tls"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
+ "rustls",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "hew-std-net-url"
 version = "0.2.0"
 dependencies = [
@@ -1726,6 +1764,15 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "tungstenite",
+]
+
+[[package]]
+name = "hew-std-sort"
+version = "0.2.0"
+dependencies = [
+ "hew-cabi",
+ "hew-runtime",
+ "libc",
 ]
 
 [[package]]
@@ -2312,7 +2359,7 @@ dependencies = [
  "socket2",
  "tokio",
  "url",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -3062,6 +3109,15 @@ name = "pulldown-cmark-escape"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
+
+[[package]]
+name = "quick-xml"
+version = "0.37.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "quinn"
@@ -4571,7 +4627,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf-8",
- "webpki-roots",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -4813,6 +4869,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]

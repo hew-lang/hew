@@ -354,3 +354,132 @@ static std::vector<std::unique_ptr<T>> parseVecPtr(const msgpack::object &obj, P
   return result;
 }"#
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Verifying special-case parsers contain their function signatures ────
+    //
+    // These catch accidental truncation or corruption of the hard-coded C++
+    // parser strings. Each test asserts the presence of the function signature
+    // and a distinctive internal detail, confirming the body is intact.
+
+    #[test]
+    fn literal_parser_has_all_variant_branches() {
+        let src = literal_parser();
+        assert!(src.contains("parseLiteral(const msgpack::object &obj)"));
+        // All six literal kinds must be present
+        for variant in &["Integer", "Float", "String", "Bool", "Char", "Duration"] {
+            assert!(
+                src.contains(&format!("name == \"{variant}\"")),
+                "Missing Literal variant: {variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn expr_type_entry_parser_reads_start_end_ty() {
+        let src = expr_type_entry_parser();
+        assert!(src.contains("parseExprTypeEntry("));
+        assert!(src.contains("entry.start"));
+        assert!(src.contains("entry.end"));
+        assert!(src.contains("entry.ty"));
+    }
+
+    #[test]
+    fn module_graph_parser_iterates_modules_map() {
+        let src = module_graph_parser();
+        assert!(src.contains("parseModuleGraph("));
+        assert!(src.contains("mg.root"));
+        assert!(src.contains("mg.topo_order"));
+        assert!(
+            src.contains("mg.modules.emplace"),
+            "Should iterate and emplace module entries"
+        );
+    }
+
+    #[test]
+    fn program_parser_handles_optional_fields() {
+        let src = program_parser();
+        assert!(src.contains("parseProgram("));
+        // Required field
+        assert!(src.contains("prog.items"));
+        // Optional fields checked with mapGet
+        assert!(src.contains("mapGet(obj, \"module_doc\")"));
+        assert!(src.contains("mapGet(obj, \"expr_types\")"));
+        assert!(src.contains("mapGet(obj, \"handle_types\")"));
+        assert!(src.contains("mapGet(obj, \"handle_type_repr\")"));
+        assert!(src.contains("mapGet(obj, \"module_graph\")"));
+    }
+
+    #[test]
+    fn type_decl_parser_handles_method_storage() {
+        let src = type_decl_parser();
+        assert!(src.contains("parseTypeDecl("));
+        assert!(
+            src.contains("td.method_storage"),
+            "TypeDecl parser must manage method_storage ownership"
+        );
+        // All three TypeBodyItem variants
+        assert!(src.contains("name == \"Field\""));
+        assert!(src.contains("name == \"Variant\""));
+        assert!(src.contains("name == \"Method\""));
+    }
+
+    #[test]
+    fn public_api_exposes_both_parse_entry_points() {
+        let src = public_api();
+        assert!(
+            src.contains("parseMsgpackAST("),
+            "Missing msgpack entry point"
+        );
+        assert!(src.contains("parseJsonAST("), "Missing JSON entry point");
+    }
+
+    #[test]
+    fn file_header_sets_namespace_and_includes() {
+        let src = file_header();
+        assert!(src.contains("namespace hew {"));
+        assert!(src.contains("#include \"hew/msgpack_reader.h\""));
+        assert!(src.contains("#include <msgpack.hpp>"));
+    }
+
+    #[test]
+    fn helpers_preamble_provides_core_utilities() {
+        let src = helpers_preamble();
+        // Every auto-generated parser depends on these helpers
+        for fn_name in &[
+            "getString",
+            "getInt",
+            "getUint",
+            "getFloat",
+            "getBool",
+            "isNil",
+            "mapGet",
+            "mapReq",
+            "getEnumVariant",
+        ] {
+            assert!(src.contains(fn_name), "Missing helper function: {fn_name}");
+        }
+    }
+
+    #[test]
+    fn template_helpers_provide_parse_templates() {
+        let src = template_helpers();
+        for template in &[
+            "parseSpan",
+            "parseSpanned",
+            "parseSpannedPtr",
+            "parseOptional",
+            "parseVec",
+            "parseOptVec",
+            "parseVecPtr",
+        ] {
+            assert!(
+                src.contains(template),
+                "Missing template helper: {template}"
+            );
+        }
+    }
+}

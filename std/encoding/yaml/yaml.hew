@@ -75,52 +75,52 @@ trait ValueMethods {
 }
 
 impl ValueMethods for Value {
-    fn stringify(val: Value) -> String { hew_yaml_stringify(val) }
-    fn type_of(val: Value) -> i32 { hew_yaml_type(val) }
-    fn get_bool(val: Value) -> i32 { hew_yaml_get_bool(val) }
-    fn get_int(val: Value) -> i64 { hew_yaml_get_int(val) }
-    fn get_float(val: Value) -> f64 { hew_yaml_get_float(val) }
-    fn get_string(val: Value) -> String { hew_yaml_get_string(val) }
-    fn get_field(val: Value, key: String) -> Value { hew_yaml_get_field(val, key) }
-    fn array_len(val: Value) -> i32 { hew_yaml_array_len(val) }
-    fn array_get(val: Value, index: i32) -> Value { hew_yaml_array_get(val, index) }
-    fn free(val: Value) { hew_yaml_free(val); }
+    fn stringify(val: Value) -> String { unsafe { hew_yaml_stringify(val) } }
+    fn type_of(val: Value) -> i32 { unsafe { hew_yaml_type(val) } }
+    fn get_bool(val: Value) -> i32 { unsafe { hew_yaml_get_bool(val) } }
+    fn get_int(val: Value) -> i64 { unsafe { hew_yaml_get_int(val) } }
+    fn get_float(val: Value) -> f64 { unsafe { hew_yaml_get_float(val) } }
+    fn get_string(val: Value) -> String { unsafe { hew_yaml_get_string(val) } }
+    fn get_field(val: Value, key: String) -> Value { unsafe { hew_yaml_get_field(val, key) } }
+    fn array_len(val: Value) -> i32 { unsafe { hew_yaml_array_len(val) } }
+    fn array_get(val: Value, index: i32) -> Value { unsafe { hew_yaml_array_get(val, index) } }
+    fn free(val: Value) { unsafe { hew_yaml_free(val) }; }
 
     fn with_string(obj: Value, key: String, val: String) -> Value {
-        hew_yaml_object_set_string(obj, key, val); obj
+        unsafe { hew_yaml_object_set_string(obj, key, val) }; obj
     }
     fn with_int(obj: Value, key: String, val: i64) -> Value {
-        hew_yaml_object_set_int(obj, key, val); obj
+        unsafe { hew_yaml_object_set_int(obj, key, val) }; obj
     }
     fn with_float(obj: Value, key: String, val: f64) -> Value {
-        hew_yaml_object_set_float(obj, key, val); obj
+        unsafe { hew_yaml_object_set_float(obj, key, val) }; obj
     }
     fn with_bool(obj: Value, key: String, val: bool) -> Value {
-        hew_yaml_object_set_bool(obj, key, val as i32); obj
+        unsafe { hew_yaml_object_set_bool(obj, key, val as i32) }; obj
     }
     fn with_null(obj: Value, key: String) -> Value {
-        hew_yaml_object_set_null(obj, key); obj
+        unsafe { hew_yaml_object_set_null(obj, key) }; obj
     }
     fn with(obj: Value, key: String, child: Value) -> Value {
-        hew_yaml_object_set(obj, key, child); obj
+        unsafe { hew_yaml_object_set(obj, key, child) }; obj
     }
     fn push(arr: Value, child: Value) -> Value {
-        hew_yaml_array_push(arr, child); arr
+        unsafe { hew_yaml_array_push(arr, child) }; arr
     }
     fn push_int(arr: Value, val: i64) -> Value {
-        hew_yaml_array_push_int(arr, val); arr
+        unsafe { hew_yaml_array_push_int(arr, val) }; arr
     }
     fn push_string(arr: Value, val: String) -> Value {
-        hew_yaml_array_push_string(arr, val); arr
+        unsafe { hew_yaml_array_push_string(arr, val) }; arr
     }
     fn push_float(arr: Value, val: f64) -> Value {
-        hew_yaml_array_push_float(arr, val); arr
+        unsafe { hew_yaml_array_push_float(arr, val) }; arr
     }
     fn push_bool(arr: Value, val: bool) -> Value {
-        hew_yaml_array_push_bool(arr, val as i32); arr
+        unsafe { hew_yaml_array_push_bool(arr, val as i32) }; arr
     }
     fn push_null(arr: Value) -> Value {
-        hew_yaml_array_push_null(arr); arr
+        unsafe { hew_yaml_array_push_null(arr) }; arr
     }
 }
 
@@ -130,33 +130,33 @@ impl ValueMethods for Value {
 ///
 /// Panics if the input is not valid YAML.
 pub fn parse(s: String) -> Value {
-    hew_yaml_parse(s)
+    unsafe { hew_yaml_parse(s) }
 }
 
 /// Create a new empty YAML mapping.
 pub fn object() -> Value {
-    hew_yaml_object_new()
+    unsafe { hew_yaml_object_new() }
 }
 
 /// Create a new empty YAML sequence.
 pub fn array() -> Value {
-    hew_yaml_array_new()
+    unsafe { hew_yaml_array_new() }
 }
 
 /// Create a YAML Value from an integer.
-pub fn from_int(val: i64) -> Value { hew_yaml_from_int(val) }
+pub fn from_int(val: i64) -> Value { unsafe { hew_yaml_from_int(val) } }
 
 /// Create a YAML Value from a float.
-pub fn from_float(val: f64) -> Value { hew_yaml_from_float(val) }
+pub fn from_float(val: f64) -> Value { unsafe { hew_yaml_from_float(val) } }
 
 /// Create a YAML Value from a string.
-pub fn from_string(val: String) -> Value { hew_yaml_from_string(val) }
+pub fn from_string(val: String) -> Value { unsafe { hew_yaml_from_string(val) } }
 
 /// Create a YAML Value from a boolean.
-pub fn from_bool(val: bool) -> Value { hew_yaml_from_bool(val as i32) }
+pub fn from_bool(val: bool) -> Value { unsafe { hew_yaml_from_bool(val as i32) } }
 
 /// Create a YAML null Value.
-pub fn null() -> Value { hew_yaml_from_null() }
+pub fn null() -> Value { unsafe { hew_yaml_from_null() } }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
 

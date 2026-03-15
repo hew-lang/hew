@@ -142,6 +142,7 @@ pub mod rc;
 pub mod result;
 pub mod string;
 pub mod vec;
+pub mod vecdeque;
 
 pub mod bytes;
 
@@ -188,6 +189,8 @@ pub mod file_io;
 pub mod io_time;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod iter;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod stdio;
 
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod bridge;

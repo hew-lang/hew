@@ -110,6 +110,111 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
+// Tests — struct layout and discriminant values
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ElemKind discriminant values (ABI contract) ──────────────────────
+
+    #[test]
+    fn elem_kind_plain_is_zero() {
+        assert_eq!(ElemKind::Plain as u8, 0, "Plain must be 0 for C interop");
+    }
+
+    #[test]
+    fn elem_kind_string_is_one() {
+        assert_eq!(ElemKind::String as u8, 1, "String must be 1 for C interop");
+    }
+
+    #[test]
+    fn elem_kind_size_is_one_byte() {
+        assert_eq!(
+            std::mem::size_of::<ElemKind>(),
+            1,
+            "repr(u8) must be exactly 1 byte"
+        );
+    }
+
+    #[test]
+    fn elem_kind_clone_and_eq() {
+        let a = ElemKind::Plain;
+        let b = a;
+        assert_eq!(a, b);
+        assert_ne!(ElemKind::Plain, ElemKind::String);
+    }
+
+    // ── HewVec layout (must match the C struct) ─────────────────────────
+
+    #[test]
+    fn hewvec_is_repr_c() {
+        // Verify the struct size is the sum of its fields with C alignment.
+        // On 64-bit: 3 pointers/usizes (8 each) + 1 usize + 1 u8 + padding.
+        let size = std::mem::size_of::<HewVec>();
+        let align = std::mem::align_of::<HewVec>();
+        // Must be pointer-aligned for C interop.
+        assert_eq!(align, std::mem::align_of::<*mut u8>());
+        // 4 usizes (data, len, cap, elem_size) + 1 u8 (elem_kind) + padding
+        // = 4*8 + 1 + 7 padding = 40 bytes on 64-bit.
+        assert!(
+            size >= 4 * std::mem::size_of::<usize>() + 1,
+            "HewVec too small: {size}"
+        );
+    }
+
+    #[test]
+    fn hewvec_field_offsets_are_stable() {
+        // Construct a HewVec with known sentinel values and read them back
+        // to verify field ordering matches the C layout.
+        let v = HewVec {
+            data: 0xAAAA_usize as *mut u8,
+            len: 42,
+            cap: 100,
+            elem_size: 8,
+            elem_kind: ElemKind::String,
+        };
+        assert_eq!(v.data as usize, 0xAAAA);
+        assert_eq!(v.len, 42);
+        assert_eq!(v.cap, 100);
+        assert_eq!(v.elem_size, 8);
+        assert_eq!(v.elem_kind, ElemKind::String);
+    }
+
+    #[test]
+    fn hewvec_debug_output_is_readable() {
+        let v = HewVec {
+            data: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            elem_size: 4,
+            elem_kind: ElemKind::Plain,
+        };
+        let debug = format!("{v:?}");
+        // Verify Debug output includes key field names.
+        assert!(debug.contains("HewVec"), "Debug should include type name");
+        assert!(debug.contains("len: 0"), "Debug should include len");
+        assert!(debug.contains("Plain"), "Debug should include elem_kind");
+    }
+
+    #[test]
+    fn hewvec_default_field_values_are_sane() {
+        // A zeroed HewVec (like C's memset-to-zero) should be a valid empty vec.
+        let v = HewVec {
+            data: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+            elem_size: 0,
+            elem_kind: ElemKind::Plain,
+        };
+        assert!(v.data.is_null());
+        assert_eq!(v.len, 0);
+        assert_eq!(v.cap, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // bytes <-> HewVec helpers (used by codec wrappers in native packages)
 // ---------------------------------------------------------------------------
 

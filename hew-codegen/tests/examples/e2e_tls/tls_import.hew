@@ -1,0 +1,19 @@
+// Test: std::net::tls module import and null-safety.
+// Verifies that the TLS module loads and that calling close on a
+// zero-value handle does not crash (null-safety smoke test).
+import std::net::tls;
+
+fn main() {
+    // connect to a bogus host should return a zero-value handle.
+    // We do not test real network connections in CI.
+    println("tls module loaded");
+
+    // Verify the module-level functions are callable.
+    // connect with an invalid host/port should return a null handle
+    // without crashing.
+    let stream = tls.connect("127.0.0.1", 0);
+    tls.close(stream);
+    println("null close: ok");
+
+    println("=== Done ===");
+}

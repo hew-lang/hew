@@ -1406,6 +1406,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "wire format length bounded by protocol"
+    )]
     fn envelope_with_request_id_roundtrip() {
         // SAFETY: FFI calls use valid wire buffer and envelope pointers.
         unsafe {

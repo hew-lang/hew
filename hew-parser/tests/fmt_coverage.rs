@@ -73,11 +73,11 @@ fn roundtrip_no_comments(source: &str) -> String {
 
 #[test]
 fn fmt_function_multiple_statements() {
-    let src = r#"fn compute(x: i32) -> i32 {
+    let src = r"fn compute(x: i32) -> i32 {
     let y = x * 2;
     let z = y + 1;
     z
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("let y = x * 2;"), "output: {out}");
     assert!(out.contains("let z = y + 1;"), "output: {out}");
@@ -96,20 +96,20 @@ fn fmt_generic_function_with_bounds() {
 
 #[test]
 fn fmt_if_else() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     if x > 0 {
         println(x);
     } else {
         println(0);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("} else {"), "else on same line. output: {out}");
 }
 
 #[test]
 fn fmt_if_else_if_chain() {
-    let src = r#"fn check(x: i32) {
+    let src = r"fn check(x: i32) {
     if x > 10 {
         println(1);
     } else if x > 0 {
@@ -117,7 +117,7 @@ fn fmt_if_else_if_chain() {
     } else {
         println(3);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("} else if x > 0 {"), "output: {out}");
     assert!(out.contains("} else {"), "output: {out}");
@@ -125,21 +125,21 @@ fn fmt_if_else_if_chain() {
 
 #[test]
 fn fmt_if_expression() {
-    let src = r#"fn main() -> i32 {
+    let src = r"fn main() -> i32 {
     let val = if true { 1 } else { 0 };
     val
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("if true {"), "output: {out}");
 }
 
 #[test]
 fn fmt_if_let() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     if let Some(x) = maybe {
         println(x);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("if let Some(x) = maybe"), "output: {out}");
 }
@@ -150,22 +150,22 @@ fn fmt_if_let() {
 
 #[test]
 fn fmt_for_loop() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     for i in 0 .. 10 {
         println(i);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("for i in 0 .. 10 {"), "output: {out}");
 }
 
 #[test]
 fn fmt_for_with_pattern() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     for (k, v) in items {
         println(k);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("for (k, v) in items"), "output: {out}");
 }
@@ -176,12 +176,12 @@ fn fmt_for_with_pattern() {
 
 #[test]
 fn fmt_while_loop() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     var x = 10;
     while x > 0 {
         x = x - 1;
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("while x > 0 {"), "output: {out}");
 }
@@ -192,7 +192,7 @@ fn fmt_while_loop() {
 
 #[test]
 fn fmt_loop_with_break() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     var i = 0;
     loop {
         if i > 5 {
@@ -200,7 +200,7 @@ fn fmt_loop_with_break() {
         }
         i = i + 1;
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("loop {"), "output: {out}");
     assert!(out.contains("break;"), "output: {out}");
@@ -208,14 +208,14 @@ fn fmt_loop_with_break() {
 
 #[test]
 fn fmt_continue_statement() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     for i in 0..10 {
         if i == 3 {
             continue;
         }
         println(i);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("continue;"), "output: {out}");
 }
@@ -226,13 +226,13 @@ fn fmt_continue_statement() {
 
 #[test]
 fn fmt_match_statement() {
-    let src = r#"fn describe(x: i32) {
+    let src = r"fn describe(x: i32) {
     match x {
         0 => println(0),
         1 => println(1),
         _ => println(x),
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("match x {"), "output: {out}");
     assert!(out.contains("0 => println(0),"), "output: {out}");
@@ -241,7 +241,7 @@ fn fmt_match_statement() {
 
 #[test]
 fn fmt_match_with_enum_patterns() {
-    let src = r#"enum Colour {
+    let src = r"enum Colour {
     Red;
     Green;
     Blue;
@@ -253,20 +253,20 @@ fn name(c: Colour) -> i32 {
         Colour::Green => 2,
         Colour::Blue => 3,
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("Colour::Red => 1,"), "output: {out}");
 }
 
 #[test]
 fn fmt_match_with_guard() {
-    let src = r#"fn classify(x: i32) -> i32 {
+    let src = r"fn classify(x: i32) -> i32 {
     match x {
         n if n > 100 => 3,
         n if n > 0 => 2,
         _ => 1,
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("n if n > 100 => 3,"), "output: {out}");
 }
@@ -277,10 +277,10 @@ fn fmt_match_with_guard() {
 
 #[test]
 fn fmt_struct_definition() {
-    let src = r#"type Point {
+    let src = r"type Point {
     x: f64;
     y: f64;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("type Point {"), "output: {out}");
     assert!(out.contains("    x: f64;"), "output: {out}");
@@ -289,10 +289,10 @@ fn fmt_struct_definition() {
 
 #[test]
 fn fmt_generic_struct() {
-    let src = r#"type Pair<A, B> {
+    let src = r"type Pair<A, B> {
     first: A;
     second: B;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("type Pair<A, B> {"), "output: {out}");
 }
@@ -303,12 +303,12 @@ fn fmt_generic_struct() {
 
 #[test]
 fn fmt_enum_definition() {
-    let src = r#"enum Direction {
+    let src = r"enum Direction {
     North;
     South;
     East;
     West;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("enum Direction {"), "output: {out}");
     assert!(out.contains("    North;"), "output: {out}");
@@ -316,10 +316,10 @@ fn fmt_enum_definition() {
 
 #[test]
 fn fmt_enum_with_tuple_variant() {
-    let src = r#"enum Shape {
+    let src = r"enum Shape {
     Circle(f64);
     Rectangle(f64, f64);
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("Circle(f64);"), "output: {out}");
     assert!(out.contains("Rectangle(f64, f64);"), "output: {out}");
@@ -327,10 +327,10 @@ fn fmt_enum_with_tuple_variant() {
 
 #[test]
 fn fmt_enum_with_struct_variant() {
-    let src = r#"enum Event {
+    let src = r"enum Event {
     Click { x: i32, y: i32 };
     KeyPress { code: i32 };
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("Click { x: i32, y: i32 }"), "output: {out}");
 }
@@ -341,9 +341,9 @@ fn fmt_enum_with_struct_variant() {
 
 #[test]
 fn fmt_trait_definition() {
-    let src = r#"trait Greet {
+    let src = r"trait Greet {
     fn hello() -> i32;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("trait Greet {"), "output: {out}");
     assert!(out.contains("fn hello() -> i32;"), "output: {out}");
@@ -351,11 +351,11 @@ fn fmt_trait_definition() {
 
 #[test]
 fn fmt_trait_with_default_method() {
-    let src = r#"trait Describable {
+    let src = r"trait Describable {
     fn describe() -> i32 {
         42
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("trait Describable {"), "output: {out}");
     assert!(out.contains("fn describe() -> i32 {"), "output: {out}");
@@ -363,9 +363,9 @@ fn fmt_trait_with_default_method() {
 
 #[test]
 fn fmt_trait_with_supertrait() {
-    let src = r#"trait Printable: Display {
+    let src = r"trait Printable: Display {
     fn output();
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("trait Printable: Display"), "output: {out}");
 }
@@ -376,7 +376,7 @@ fn fmt_trait_with_supertrait() {
 
 #[test]
 fn fmt_impl_block() {
-    let src = r#"type Counter {
+    let src = r"type Counter {
     value: i32;
 }
 
@@ -388,7 +388,7 @@ impl Counter {
     fn get(c: Counter) -> i32 {
         c.value
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("impl Counter {"), "output: {out}");
     assert!(out.contains("fn new() -> Counter"), "output: {out}");
@@ -412,7 +412,7 @@ impl Display for MyType {
 
 #[test]
 fn fmt_generic_impl() {
-    let src = r#"type Wrapper<T> {
+    let src = r"type Wrapper<T> {
     inner: T;
 }
 
@@ -420,7 +420,7 @@ impl<T> Wrapper<T> {
     fn unwrap(w: Wrapper<T>) -> T {
         w.inner
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("impl<T> Wrapper<T>"), "output: {out}");
 }
@@ -431,13 +431,13 @@ impl<T> Wrapper<T> {
 
 #[test]
 fn fmt_simple_actor() {
-    let src = r#"actor Counter {
+    let src = r"actor Counter {
     let count: i32;
 
     receive fn increment(n: i32) -> i32 {
         count + n
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("actor Counter {"), "output: {out}");
     assert!(out.contains("let count: i32;"), "output: {out}");
@@ -446,7 +446,7 @@ fn fmt_simple_actor() {
 
 #[test]
 fn fmt_actor_with_mailbox() {
-    let src = r#"actor Worker {
+    let src = r"actor Worker {
     let id: i32;
 
     mailbox 16;
@@ -454,7 +454,7 @@ fn fmt_actor_with_mailbox() {
     receive fn process(value: i32) {
         println(value);
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("mailbox 16;"), "output: {out}");
 }
@@ -619,11 +619,11 @@ fn fmt_tuple_literal() {
 
 #[test]
 fn fmt_struct_init() {
-    let src = r#"type Point { x: i32; y: i32; }
+    let src = r"type Point { x: i32; y: i32; }
 
 fn main() {
     let p = Point(x: 1, y: 2);
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("Point(x: 1, y: 2)"), "output: {out}");
 }
@@ -667,25 +667,25 @@ fn fmt_cast_expression() {
 
 #[test]
 fn fmt_spawn_expression() {
-    let src = r#"actor Worker {
+    let src = r"actor Worker {
     receive fn work(n: i32) -> i32 { n }
 }
 
 fn main() {
     let w = spawn Worker;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("spawn Worker"), "output: {out}");
 }
 
 #[test]
 fn fmt_await_expression() {
-    let src = r#"async fn fetch() -> i32 { 42 }
+    let src = r"async fn fetch() -> i32 { 42 }
 
 fn main() {
     let f = fetch();
     let r = await f;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("await f"), "output: {out}");
 }
@@ -696,11 +696,11 @@ fn main() {
 
 #[test]
 fn fmt_preserves_line_comments() {
-    let src = r#"// This is a comment
+    let src = r"// This is a comment
 fn main() {
     // Inner comment
     let x = 1;
-}"#;
+}";
     let out = roundtrip(src);
     assert!(
         out.contains("// This is a comment"),
@@ -714,8 +714,8 @@ fn main() {
 
 #[test]
 fn fmt_preserves_block_comments() {
-    let src = r#"/* Block comment */
-fn main() { let x = 1; }"#;
+    let src = r"/* Block comment */
+fn main() { let x = 1; }";
     let out = roundtrip(src);
     assert!(
         out.contains("/* Block comment */"),
@@ -729,13 +729,13 @@ fn main() { let x = 1; }"#;
 
 #[test]
 fn fmt_nested_blocks_indentation() {
-    let src = r#"fn main() {
+    let src = r"fn main() {
     if true {
         if false {
             println(1);
         }
     }
-}"#;
+}";
     let out = roundtrip(src);
     // Inner println should be indented 12 spaces (3 levels × 4 spaces).
     assert!(
@@ -762,14 +762,14 @@ fn fmt_uses_four_space_indent() {
 #[test]
 fn fmt_already_formatted_is_idempotent() {
     // This code is already well-formatted; the formatter should not change it.
-    let src = r#"fn fibonacci(n: i32) -> i32 {
+    let src = r"fn fibonacci(n: i32) -> i32 {
     if n <= 1 {
         n
     } else {
         fibonacci(n - 1) + fibonacci(n - 2)
     }
 }
-"#;
+";
     let out = roundtrip(src);
     assert_eq!(src, out, "Well-formatted code should be unchanged");
 }
@@ -780,11 +780,11 @@ fn fmt_already_formatted_is_idempotent() {
 
 #[test]
 fn fmt_format_program_strips_comments() {
-    let src = r#"// This comment should be stripped
+    let src = r"// This comment should be stripped
 fn main() {
     // So should this
     let x = 1;
-}"#;
+}";
     let out = roundtrip_no_comments(src);
     assert!(
         !out.contains("// This comment"),
@@ -812,11 +812,11 @@ fn fmt_defer_statement() {
 
 #[test]
 fn fmt_block_trailing_expression() {
-    let src = r#"fn compute() -> i32 {
+    let src = r"fn compute() -> i32 {
     let x = 1;
     let y = 2;
     x + y
-}"#;
+}";
     let out = roundtrip(src);
     // The trailing expression (x + y) should appear without a semicolon.
     assert!(out.contains("    x + y\n"), "output: {out}");
@@ -844,14 +844,14 @@ fn fmt_extern_block() {
 fn fmt_pub_function_in_impl() {
     // Visibility on impl methods is not supported inside impl bodies.
     // Test pub visibility on top-level functions instead.
-    let src = r#"pub fn helper() -> i32 {
+    let src = r"pub fn helper() -> i32 {
     42
 }
 
 fn internal() -> i32 {
     0
 }
-"#;
+";
     let out = roundtrip(src);
     assert!(out.contains("pub fn helper"), "output: {out}");
     assert!(out.contains("fn internal"), "output: {out}");
@@ -863,11 +863,11 @@ fn internal() -> i32 {
 
 #[test]
 fn fmt_named_arguments() {
-    let src = r#"type Pt { x: i32; y: i32; }
+    let src = r"type Pt { x: i32; y: i32; }
 
 fn main() {
     let p = Pt(x: 10, y: 20);
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("Pt(x: 10, y: 20)"), "output: {out}");
 }
@@ -879,7 +879,7 @@ fn main() {
 #[test]
 fn fmt_full_program() {
     // A small but complete programme exercising multiple constructs.
-    let src = r#"const MAX: i32 = 100;
+    let src = r"const MAX: i32 = 100;
 
 type Point {
     x: f64;
@@ -898,7 +898,7 @@ fn main() {
         println(i);
     }
 }
-"#;
+";
     let out = roundtrip(src);
     assert!(out.contains("const MAX: i32 = 100;"), "output: {out}");
     assert!(out.contains("type Point {"), "output: {out}");
@@ -908,7 +908,7 @@ fn main() {
 
 #[test]
 fn fmt_enum_and_match_combined() {
-    let src = r#"enum Colour {
+    let src = r"enum Colour {
     Red;
     Green;
     Blue;
@@ -921,7 +921,7 @@ fn to_hex(c: Colour) -> i32 {
         Colour::Blue => 3,
     }
 }
-"#;
+";
     let out = roundtrip(src);
     assert_eq!(src, out, "Well-formatted combined code should be unchanged");
 }
@@ -943,10 +943,10 @@ fn fmt_mutable_parameter() {
 
 #[test]
 fn fmt_function_attribute() {
-    let src = r#"#[inline]
+    let src = r"#[inline]
 fn fast() -> i32 {
     42
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("#[inline]"), "output: {out}");
 }
@@ -1012,12 +1012,12 @@ fn fmt_parenthesised_expression() {
 
 #[test]
 fn fmt_items_separated_by_blank_lines() {
-    let src = r#"fn foo() {
+    let src = r"fn foo() {
 }
 
 fn bar() {
 }
-"#;
+";
     let out = roundtrip(src);
     // Items should be separated by a blank line.
     assert!(out.contains("}\n\nfn bar"), "output: {out}");
@@ -1029,11 +1029,11 @@ fn bar() {
 
 #[test]
 fn fmt_generator_function() {
-    let src = r#"gen fn counting(n: i32) -> i32 {
+    let src = r"gen fn counting(n: i32) -> i32 {
     for i in 0..n {
         yield i;
     }
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("gen fn counting"), "output: {out}");
     assert!(out.contains("yield i;"), "output: {out}");
@@ -1045,9 +1045,9 @@ fn fmt_generator_function() {
 
 #[test]
 fn fmt_where_clause() {
-    let src = r#"fn process<T>(x: T) -> i32 where T: Display {
+    let src = r"fn process<T>(x: T) -> i32 where T: Display {
     42
-}"#;
+}";
     let out = roundtrip(src);
     assert!(out.contains("where T: Display"), "output: {out}");
 }

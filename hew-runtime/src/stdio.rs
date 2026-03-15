@@ -101,40 +101,42 @@ mod tests {
     #[test]
     fn write_null_is_noop() {
         // Passing null should not panic.
+        // SAFETY: Null pointer passed deliberately to verify no-op behaviour.
         unsafe { hew_io_write(std::ptr::null()) };
     }
 
     #[test]
     fn write_err_null_is_noop() {
         // Passing null should not panic.
+        // SAFETY: Null pointer passed deliberately to verify no-op behaviour.
         unsafe { hew_io_write_err(std::ptr::null()) };
     }
 
     #[test]
     fn write_valid_string() {
         let s = CString::new("hello from test").unwrap();
-        // Should not panic; output goes to stdout.
+        // SAFETY: CString guarantees a valid NUL-terminated pointer.
         unsafe { hew_io_write(s.as_ptr()) };
     }
 
     #[test]
     fn write_err_valid_string() {
         let s = CString::new("error from test").unwrap();
-        // Should not panic; output goes to stderr.
+        // SAFETY: CString guarantees a valid NUL-terminated pointer.
         unsafe { hew_io_write_err(s.as_ptr()) };
     }
 
     #[test]
     fn write_empty_string() {
         let s = CString::new("").unwrap();
-        // Empty string is still a valid NUL-terminated pointer.
+        // SAFETY: Empty CString is still a valid NUL-terminated pointer.
         unsafe { hew_io_write(s.as_ptr()) };
     }
 
     #[test]
     fn write_err_empty_string() {
         let s = CString::new("").unwrap();
-        // Empty string to stderr should not panic.
+        // SAFETY: Empty CString is still a valid NUL-terminated pointer.
         unsafe { hew_io_write_err(s.as_ptr()) };
     }
 }

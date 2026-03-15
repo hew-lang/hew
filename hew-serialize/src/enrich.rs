@@ -4870,7 +4870,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "Complex dispatch logic; splitting would reduce clarity")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_normalize_various_expr_types() {
         let registry = test_registry();
         // Exercise many expression variants in a single function
@@ -5395,7 +5398,10 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "Complex dispatch logic; splitting would reduce clarity")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_enrich_stmt_control_flow() {
         let tco = empty_tco();
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
@@ -5533,7 +5539,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[expect(clippy::too_many_lines, reason = "Complex dispatch logic; splitting would reduce clarity")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex dispatch logic; splitting would reduce clarity"
+    )]
     fn test_enrich_various_exprs() {
         let tco = empty_tco();
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);

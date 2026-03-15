@@ -1356,7 +1356,10 @@ mod tests {
         value
     }
 
-    #[expect(clippy::too_many_lines, reason = "Complex QUIC protocol handling; splitting would reduce clarity")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Complex QUIC protocol handling; splitting would reduce clarity"
+    )]
     fn run_loopback(server_ep_ptr: *mut HewQuicEndpoint, client_ep_ptr: *mut HewQuicEndpoint) {
         assert!(!server_ep_ptr.is_null(), "server endpoint must not be null");
         assert!(!client_ep_ptr.is_null(), "client endpoint must not be null");
@@ -1377,8 +1380,8 @@ mod tests {
             // SAFETY: server_ep_ptr is valid and owned by this thread.
             let conn_ptr = unsafe { hew_quic_endpoint_accept(server_ep_ptr) };
             assert!(!conn_ptr.is_null(), "server must accept a connection");
-            // SAFETY: event pointer comes from QUIC API.
             assert_eq!(
+                // SAFETY: event pointer comes from QUIC API.
                 unsafe { take_event_kind(hew_quic_endpoint_on_event(server_ep_ptr)) },
                 EVENT_CONNECTED
             );
@@ -1389,8 +1392,8 @@ mod tests {
                 unsafe { take_string(hew_quic_endpoint_local_addr(server_ep_ptr)) };
             assert_eq!(server_local, server_local_again);
             assert!(server_local.contains(':'));
-            // SAFETY: accepted connection count is readable on a live endpoint.
             assert_eq!(
+                // SAFETY: accepted connection count is readable on a live endpoint.
                 unsafe { hew_quic_endpoint_accepted_connections(server_ep_ptr) },
                 1
             );
@@ -1405,9 +1408,13 @@ mod tests {
             assert!(server_conn_peer.contains(':'));
             // SAFETY: telemetry getters are valid on a live connection.
             assert_eq!(unsafe { hew_quic_conn_opened_streams(conn_ptr) }, 0);
+            // SAFETY: telemetry getters are valid on a live connection.
             assert_eq!(unsafe { hew_quic_conn_accepted_streams(conn_ptr) }, 0);
+            // SAFETY: telemetry getters are valid on a live connection.
             assert!(unsafe { hew_quic_conn_rtt_ms(conn_ptr) } >= 0);
+            // SAFETY: telemetry getters are valid on a live connection.
             assert!(unsafe { hew_quic_conn_bytes_sent(conn_ptr) } >= 0);
+            // SAFETY: telemetry getters are valid on a live connection.
             assert!(unsafe { hew_quic_conn_bytes_received(conn_ptr) } >= 0);
             // SAFETY: last error getter returns malloc-backed strings.
             assert!(unsafe { take_string(hew_quic_conn_last_error(conn_ptr)) }.is_empty());
@@ -1415,8 +1422,8 @@ mod tests {
             // SAFETY: conn_ptr is valid.
             let stream_ptr = unsafe { hew_quic_conn_accept_stream(conn_ptr) };
             assert!(!stream_ptr.is_null(), "server must accept a stream");
-            // SAFETY: event pointer comes from QUIC API.
             assert_eq!(
+                // SAFETY: event pointer comes from QUIC API.
                 unsafe { take_event_kind(hew_quic_conn_on_event(conn_ptr)) },
                 EVENT_STREAM_OPENED
             );
@@ -1426,13 +1433,16 @@ mod tests {
             // SAFETY: stream_ptr is valid.
             let data = unsafe { take_bytes(hew_quic_stream_recv(stream_ptr)) };
             assert_eq!(data, b"hello quic", "server must receive sent bytes");
-            // SAFETY: stream observation getters are valid on a live stream.
             assert_eq!(
+                // SAFETY: stream observation getters are valid on a live stream.
                 unsafe { hew_quic_stream_bytes_received(stream_ptr) },
                 i64::try_from(data.len()).unwrap()
             );
+            // SAFETY: stream observation getters are valid on a live stream.
             assert_eq!(unsafe { hew_quic_stream_bytes_sent(stream_ptr) }, 0);
+            // SAFETY: stream observation getters are valid on a live stream.
             assert!(!unsafe { hew_quic_stream_send_closed(stream_ptr) });
+            // SAFETY: stream observation getters are valid on a live stream.
             assert!(!unsafe { hew_quic_stream_recv_closed(stream_ptr) });
             // SAFETY: stream last error getter returns malloc-backed strings.
             assert!(unsafe { take_string(hew_quic_stream_last_error(stream_ptr)) }.is_empty());
@@ -1446,11 +1456,12 @@ mod tests {
             assert_eq!(rc, 0, "server echo send must succeed");
             // SAFETY: reply was allocated by the Hew runtime.
             unsafe { hew_vec_free(reply) };
-            // SAFETY: stream and connection telemetry getters are valid on a live handle.
             assert_eq!(
+                // SAFETY: stream telemetry getters are valid on a live stream.
                 unsafe { hew_quic_stream_bytes_sent(stream_ptr) },
                 i64::try_from(data.len()).unwrap()
             );
+            // SAFETY: connection telemetry getters are valid on a live connection.
             assert!(unsafe { hew_quic_conn_bytes_sent(conn_ptr) } > 0);
 
             // SAFETY: stream_ptr is valid.
@@ -1459,15 +1470,15 @@ mod tests {
             assert!(unsafe { hew_quic_stream_send_closed(stream_ptr) });
             // SAFETY: stream_ptr is still valid after finish.
             assert_eq!(unsafe { hew_quic_stream_close(stream_ptr) }, 0);
-            // SAFETY: event pointer comes from QUIC API.
             assert_eq!(
+                // SAFETY: event pointer comes from QUIC API.
                 unsafe { take_event_kind(hew_quic_conn_on_event(conn_ptr)) },
                 EVENT_STREAM_CLOSED
             );
 
             barrier_server.wait();
-            // SAFETY: event pointer comes from QUIC API.
             assert_eq!(
+                // SAFETY: event pointer comes from QUIC API.
                 unsafe { take_event_kind(hew_quic_conn_on_event(conn_ptr)) },
                 EVENT_DISCONNECTED
             );
@@ -1476,6 +1487,7 @@ mod tests {
 
             // SAFETY: conn_ptr and server_ep_ptr are valid.
             assert_eq!(unsafe { hew_quic_conn_disconnect(conn_ptr) }, 0);
+            // SAFETY: server_ep_ptr is valid.
             unsafe { hew_quic_endpoint_close(server_ep_ptr) };
         });
 
@@ -1486,8 +1498,8 @@ mod tests {
             unsafe { take_string(hew_quic_endpoint_local_addr(client_ep_ptr)) };
         assert_eq!(client_local, client_local_again);
         assert!(client_local.contains(':'));
-        // SAFETY: endpoint state getters are valid on a live endpoint.
         assert_eq!(
+            // SAFETY: endpoint state getters are valid on a live endpoint.
             unsafe { hew_quic_endpoint_accepted_connections(client_ep_ptr) },
             0
         );
@@ -1500,8 +1512,8 @@ mod tests {
         let conn_ptr =
             unsafe { hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr()) };
         assert!(!conn_ptr.is_null(), "client must connect");
-        // SAFETY: event pointer comes from QUIC API.
         assert_eq!(
+            // SAFETY: event pointer comes from QUIC API.
             unsafe { take_event_kind(hew_quic_endpoint_on_event(client_ep_ptr)) },
             EVENT_CONNECTED
         );
@@ -1513,9 +1525,13 @@ mod tests {
         assert!(client_conn_peer.ends_with(&server_port.to_string()));
         // SAFETY: telemetry getters are valid on a live connection.
         assert_eq!(unsafe { hew_quic_conn_opened_streams(conn_ptr) }, 0);
+        // SAFETY: telemetry getters are valid on a live connection.
         assert_eq!(unsafe { hew_quic_conn_accepted_streams(conn_ptr) }, 0);
+        // SAFETY: telemetry getters are valid on a live connection.
         let bytes_sent_before = unsafe { hew_quic_conn_bytes_sent(conn_ptr) };
+        // SAFETY: telemetry getters are valid on a live connection.
         let bytes_received_before = unsafe { hew_quic_conn_bytes_received(conn_ptr) };
+        // SAFETY: telemetry getters are valid on a live connection.
         assert!(unsafe { hew_quic_conn_rtt_ms(conn_ptr) } >= 0);
         // SAFETY: last error getter returns malloc-backed strings.
         assert!(unsafe { take_string(hew_quic_conn_last_error(conn_ptr)) }.is_empty());
@@ -1523,8 +1539,8 @@ mod tests {
         // SAFETY: conn_ptr is valid.
         let stream_ptr = unsafe { hew_quic_conn_open_stream(conn_ptr) };
         assert!(!stream_ptr.is_null(), "client must open stream");
-        // SAFETY: event pointer comes from QUIC API.
         assert_eq!(
+            // SAFETY: event pointer comes from QUIC API.
             unsafe { take_event_kind(hew_quic_conn_on_event(conn_ptr)) },
             EVENT_STREAM_OPENED
         );
@@ -1539,8 +1555,11 @@ mod tests {
         unsafe { hew_vec_free(msg) };
         // SAFETY: stream state getters are valid on a live stream.
         assert_eq!(unsafe { hew_quic_stream_bytes_sent(stream_ptr) }, 10);
+        // SAFETY: stream state getters are valid on a live stream.
         assert_eq!(unsafe { hew_quic_stream_bytes_received(stream_ptr) }, 0);
+        // SAFETY: stream state getters are valid on a live stream.
         assert!(!unsafe { hew_quic_stream_send_closed(stream_ptr) });
+        // SAFETY: stream state getters are valid on a live stream.
         assert!(!unsafe { hew_quic_stream_recv_closed(stream_ptr) });
         // SAFETY: connection telemetry getters are valid on a live connection.
         assert!(unsafe { hew_quic_conn_bytes_sent(conn_ptr) } >= bytes_sent_before);
@@ -1550,7 +1569,9 @@ mod tests {
         assert_eq!(reply, b"hello quic", "echoed data must match sent data");
         // SAFETY: state getters are valid on a live connection or stream.
         assert_eq!(unsafe { hew_quic_stream_bytes_received(stream_ptr) }, 10);
+        // SAFETY: state getters are valid on a live connection or stream.
         assert!(unsafe { hew_quic_conn_bytes_received(conn_ptr) } >= bytes_received_before);
+        // SAFETY: state getters are valid on a live connection or stream.
         assert!(unsafe { hew_quic_conn_rtt_ms(conn_ptr) } >= 0);
         // SAFETY: last error getter returns malloc-backed strings.
         assert!(unsafe { take_string(hew_quic_stream_last_error(stream_ptr)) }.is_empty());
@@ -1566,14 +1587,15 @@ mod tests {
         assert!(unsafe { hew_quic_stream_recv_closed(stream_ptr) });
         // SAFETY: stream_ptr is still valid after finish.
         assert_eq!(unsafe { hew_quic_stream_close(stream_ptr) }, 0);
-        // SAFETY: event pointer comes from QUIC API.
         assert_eq!(
+            // SAFETY: event pointer comes from QUIC API.
             unsafe { take_event_kind(hew_quic_conn_on_event(conn_ptr)) },
             EVENT_STREAM_CLOSED
         );
 
         // SAFETY: conn_ptr and client_ep_ptr are valid.
         assert_eq!(unsafe { hew_quic_conn_disconnect(conn_ptr) }, 0);
+        // SAFETY: client_ep_ptr is valid.
         unsafe { hew_quic_endpoint_close(client_ep_ptr) };
         barrier.wait();
 

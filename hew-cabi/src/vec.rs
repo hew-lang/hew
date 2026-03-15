@@ -110,6 +110,52 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
+// bytes <-> HewVec helpers (used by codec wrappers in native packages)
+// ---------------------------------------------------------------------------
+
+/// Extract raw bytes from a `bytes`-typed `HewVec` (i32 elements, one byte per slot).
+///
+/// # Safety
+///
+/// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
+pub unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
+    if v.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: caller guarantees v is a valid HewVec.
+    let len = unsafe { hew_vec_len(v) };
+    (0..len)
+        .map(|i| {
+            // SAFETY: i < len.
+            #[expect(
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation,
+                reason = "byte values stored as i32 are 0-255"
+            )]
+            // SAFETY: i < len, so index is in bounds.
+            let b = unsafe { hew_vec_get_i32(v, i) } as u8;
+            b
+        })
+        .collect()
+}
+
+/// Create a new bytes-typed `HewVec` (i32 elements) from a raw u8 slice.
+///
+/// # Safety
+///
+/// None — all memory is managed by the runtime allocator.
+#[must_use]
+pub unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
+    // SAFETY: hew_vec_new allocates a valid HewVec.
+    let v = unsafe { hew_vec_new() };
+    for &b in data {
+        // SAFETY: v is non-null (hew_vec_new aborts on OOM).
+        unsafe { hew_vec_push_i32(v, i32::from(b)) };
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------
 // Tests — struct layout and discriminant values
 // ---------------------------------------------------------------------------
 
@@ -159,7 +205,7 @@ mod tests {
         // 4 usizes (data, len, cap, elem_size) + 1 u8 (elem_kind) + padding
         // = 4*8 + 1 + 7 padding = 40 bytes on 64-bit.
         assert!(
-            size >= 4 * std::mem::size_of::<usize>() + 1,
+            size > 4 * std::mem::size_of::<usize>(),
             "HewVec too small: {size}"
         );
     }
@@ -212,50 +258,4 @@ mod tests {
         assert_eq!(v.len, 0);
         assert_eq!(v.cap, 0);
     }
-}
-
-// ---------------------------------------------------------------------------
-// bytes <-> HewVec helpers (used by codec wrappers in native packages)
-// ---------------------------------------------------------------------------
-
-/// Extract raw bytes from a `bytes`-typed `HewVec` (i32 elements, one byte per slot).
-///
-/// # Safety
-///
-/// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
-pub unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
-    if v.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: caller guarantees v is a valid HewVec.
-    let len = unsafe { hew_vec_len(v) };
-    (0..len)
-        .map(|i| {
-            // SAFETY: i < len.
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "byte values stored as i32 are 0-255"
-            )]
-            // SAFETY: i < len, so index is in bounds.
-            let b = unsafe { hew_vec_get_i32(v, i) } as u8;
-            b
-        })
-        .collect()
-}
-
-/// Create a new bytes-typed `HewVec` (i32 elements) from a raw u8 slice.
-///
-/// # Safety
-///
-/// None — all memory is managed by the runtime allocator.
-#[must_use]
-pub unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
-    // SAFETY: hew_vec_new allocates a valid HewVec.
-    let v = unsafe { hew_vec_new() };
-    for &b in data {
-        // SAFETY: v is non-null (hew_vec_new aborts on OOM).
-        unsafe { hew_vec_push_i32(v, i32::from(b)) };
-    }
-    v
 }

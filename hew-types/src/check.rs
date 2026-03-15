@@ -8605,7 +8605,7 @@ impl Default for Checker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_parser::ast::{ImportName, Param, Visibility};
+    use hew_parser::ast::{ImportName, Visibility};
 
     /// Module registry with the repo root as a search path, so stdlib
     /// modules (e.g. `std::encoding::json`) can be loaded during tests.
@@ -10093,14 +10093,14 @@ mod tests {
 
     #[test]
     fn test_actor_field_shadowing_is_error() {
-        let source = r#"
+        let source = r"
             actor Counter {
                 var count: int = 0;
                 receive fn update(count: int) {
                     println(count);
                 }
             }
-        "#;
+        ";
         let (errors, _warnings) = parse_and_check(source);
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
@@ -10112,12 +10112,12 @@ mod tests {
 
     #[test]
     fn test_actor_fn_method_field_shadowing_is_error() {
-        let source = r#"
+        let source = r"
             actor Counter {
                 var count: int = 0;
                 fn helper(count: int) -> int { count }
             }
-        "#;
+        ";
         let (errors, _warnings) = parse_and_check(source);
         assert!(
             errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing
@@ -11797,7 +11797,7 @@ fn main() {
     #[test]
     fn literal_coercion_float_to_f32() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let lit = (Expr::Literal(Literal::Float(3.14)), 0..4);
+        let lit = (Expr::Literal(Literal::Float(std::f64::consts::PI)), 0..4);
         let ty = checker.check_against(&lit.0, &lit.1, &Ty::F32);
         assert_eq!(ty, Ty::F32);
     }
@@ -11905,7 +11905,7 @@ fn main() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let elems = vec![
             make_int_literal(42, 1..3),
-            (Expr::Literal(Literal::Float(3.14)), 5..9),
+            (Expr::Literal(Literal::Float(std::f64::consts::PI)), 5..9),
         ];
         let tuple = (Expr::Tuple(elems), 0..10);
         let expected = Ty::Tuple(vec![Ty::I32, Ty::F32]);

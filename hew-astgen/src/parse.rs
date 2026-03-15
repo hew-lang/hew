@@ -263,12 +263,12 @@ mod tests {
 
     #[test]
     fn skips_structs_without_serialize_derive() {
-        let source = r#"
+        let source = r"
             pub struct NotSerialized { pub x: i64 }
 
             #[derive(Debug)]
             pub struct DebugOnly { pub y: String }
-        "#;
+        ";
         let types = extract_types(source);
         assert!(
             types.is_empty(),
@@ -278,13 +278,13 @@ mod tests {
 
     #[test]
     fn extracts_struct_with_serialize_derive() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Span {
                 pub start: usize,
                 pub end: usize,
             }
-        "#;
+        ";
         let types = extract_types(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
@@ -301,12 +301,12 @@ mod tests {
 
     #[test]
     fn extracts_serialize_among_multiple_derives() {
-        let source = r#"
+        let source = r"
             #[derive(Debug, Clone, Serialize, PartialEq)]
             pub struct Token {
                 pub value: String,
             }
-        "#;
+        ";
         let types = extract_types(source);
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].name(), "Token");
@@ -316,14 +316,14 @@ mod tests {
 
     #[test]
     fn classifies_all_unit_variants_as_simple_enum() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub enum Visibility {
                 Public,
                 Private,
                 Crate,
             }
-        "#;
+        ";
         let types = extract_types(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
@@ -337,14 +337,14 @@ mod tests {
 
     #[test]
     fn classifies_enum_with_data_variants_as_tagged() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub enum Expr {
                 Literal(LitValue),
                 Binary { left: Box<Expr>, op: BinOp, right: Box<Expr> },
                 Unit,
             }
-        "#;
+        ";
         let types = extract_types(source);
         assert_eq!(types.len(), 1);
         match &types[0] {
@@ -372,12 +372,12 @@ mod tests {
 
     #[test]
     fn parses_tuple_variant_with_multiple_fields() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub enum Pattern {
                 Or(Box<Pattern>, Box<Pattern>),
             }
-        "#;
+        ";
         let types = extract_types(source);
         match &types[0] {
             TypeDef::TaggedEnum(e) => match &e.variants[0] {
@@ -398,14 +398,14 @@ mod tests {
 
     #[test]
     fn extracts_serde_skip_attribute() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Node {
                 pub name: String,
                 #[serde(skip)]
                 pub cached: bool,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -416,14 +416,14 @@ mod tests {
 
     #[test]
     fn extracts_serde_default_attribute() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Config {
                 pub name: String,
                 #[serde(default)]
                 pub flags: Vec<String>,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn parses_primitive_types() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Primitives {
                 pub a: String,
@@ -484,7 +484,7 @@ mod tests {
                 pub h: usize,
                 pub i: PathBuf,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn parses_generic_wrapper_types() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Wrappers {
                 pub items: Vec<String>,
@@ -510,7 +510,7 @@ mod tests {
                 pub boxed: Box<Expr>,
                 pub spanned: Spanned<TypeExpr>,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -532,12 +532,12 @@ mod tests {
 
     #[test]
     fn parses_hashmap_type() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Registry {
                 pub entries: HashMap<String, ModuleId>,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -553,12 +553,12 @@ mod tests {
 
     #[test]
     fn parses_range_type() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Located {
                 pub span: Range<usize>,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -570,12 +570,12 @@ mod tests {
 
     #[test]
     fn parses_tuple_type() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Pair {
                 pub coords: (u64, String),
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -592,12 +592,12 @@ mod tests {
 
     #[test]
     fn parses_nested_generics() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Nested {
                 pub items: Vec<Option<Box<Expr>>>,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -619,12 +619,12 @@ mod tests {
 
     #[test]
     fn resolves_qualified_path_to_last_segment() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub struct Module {
                 pub graph: crate::module::ModuleGraph,
             }
-        "#;
+        ";
         let types = extract_types(source);
         let TypeDef::Struct(s) = &types[0] else {
             panic!()
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn extracts_multiple_types_from_single_file() {
-        let source = r#"
+        let source = r"
             #[derive(Serialize)]
             pub enum Colour { Red, Green, Blue }
 
@@ -651,7 +651,7 @@ mod tests {
                 Circle(f64),
                 Rect { width: f64, height: f64 },
             }
-        "#;
+        ";
         let types = extract_types(source);
         assert_eq!(types.len(), 3);
         assert!(matches!(&types[0], TypeDef::SimpleEnum(e) if e.name == "Colour"));

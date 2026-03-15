@@ -1751,12 +1751,15 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       auto fnPtr = hew::ClosureGetFnOp::create(builder, location, closurePtrType, calleeVal);
       auto envPtr = hew::ClosureGetEnvOp::create(builder, location, closurePtrType, calleeVal);
 
+      // Use LLVM storage types so the func.call_indirect passes legality
+      // checks during the Hew dialect lowering (partial conversion).
       llvm::SmallVector<mlir::Type, 8> indirectParamTypes;
       indirectParamTypes.push_back(closurePtrType);
       for (auto inTy : closureType.getInputTypes())
-        indirectParamTypes.push_back(inTy);
+        indirectParamTypes.push_back(toLLVMStorageType(inTy));
 
-      auto retType = closureType.getResultType();
+      auto hewRetType = closureType.getResultType();
+      auto retType = toLLVMStorageType(hewRetType);
       bool hasReturn = retType && !mlir::isa<mlir::NoneType>(retType);
       auto indirectFuncType = hasReturn
                                   ? mlir::FunctionType::get(&context, indirectParamTypes, {retType})
@@ -1767,14 +1770,20 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       llvm::SmallVector<mlir::Value, 8> indirectArgs;
       indirectArgs.push_back(envPtr);
       for (size_t i = 0; i < args.size() && i < closureType.getInputTypes().size(); ++i) {
-        if (args[i].getType() != closureType.getInputTypes()[i])
-          args[i] = coerceType(args[i], closureType.getInputTypes()[i], location);
+        auto expectedTy = toLLVMStorageType(closureType.getInputTypes()[i]);
+        if (args[i].getType() != expectedTy)
+          args[i] = coerceType(args[i], expectedTy, location);
         indirectArgs.push_back(args[i]);
       }
 
       auto callOp = mlir::func::CallIndirectOp::create(builder, location, fnRef, indirectArgs);
-      if (callOp.getNumResults() > 0)
-        return callOp.getResult(0);
+      if (callOp.getNumResults() > 0) {
+        auto result = callOp.getResult(0);
+        // Bitcast back to the Hew type if the lowered return type differs.
+        if (hewRetType != retType)
+          result = hew::BitcastOp::create(builder, location, hewRetType, result);
+        return result;
+      }
       return nullptr;
     }
   }
@@ -2496,11 +2505,13 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
       auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
 
-      // Build the indirect function type: (ptr env, elemType) -> retElemType
+      // Build the indirect function type using LLVM storage types.
+      auto llvmElemType = toLLVMStorageType(elemType);
+      auto llvmRetElemType = toLLVMStorageType(retElemType);
       llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
-      indirectParamTypes.push_back(ptrType);  // env pointer
-      indirectParamTypes.push_back(elemType); // element
-      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {retElemType});
+      indirectParamTypes.push_back(ptrType);       // env pointer
+      indirectParamTypes.push_back(llvmElemType);  // element
+      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {llvmRetElemType});
       auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
 
       // Create result vec
@@ -2518,9 +2529,15 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
       // Get element, call closure, push result
       auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      mlir::Value callElem = elem;
+      if (elemType != llvmElemType)
+        callElem = hew::BitcastOp::create(builder, location, llvmElemType, elem);
       auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
-                                                           mlir::ValueRange{envPtr, elem});
-      hew::VecPushOp::create(builder, location, resultVec, callResult.getResult(0));
+                                                           mlir::ValueRange{envPtr, callElem});
+      mlir::Value pushVal = callResult.getResult(0);
+      if (retElemType != llvmRetElemType)
+        pushVal = hew::BitcastOp::create(builder, location, retElemType, pushVal);
+      hew::VecPushOp::create(builder, location, resultVec, pushVal);
 
       builder.setInsertionPointAfter(loop);
 
@@ -2549,10 +2566,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
       auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
 
-      // Build indirect function type: (ptr env, elemType) -> i1
+      // Build indirect function type using LLVM storage types.
+      auto llvmElemType = toLLVMStorageType(elemType);
       llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
       indirectParamTypes.push_back(ptrType);
-      indirectParamTypes.push_back(elemType);
+      indirectParamTypes.push_back(llvmElemType);
       auto indirectFuncType =
           mlir::FunctionType::get(&context, indirectParamTypes, {builder.getI1Type()});
       auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
@@ -2572,8 +2590,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
       // Get element, call closure to check predicate
       auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      mlir::Value callElem = elem;
+      if (elemType != llvmElemType)
+        callElem = hew::BitcastOp::create(builder, location, llvmElemType, elem);
       auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
-                                                           mlir::ValueRange{envPtr, elem});
+                                                           mlir::ValueRange{envPtr, callElem});
       auto cond = callResult.getResult(0);
 
       // If true, push element to result vec
@@ -2619,12 +2640,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
       auto fnPtr = hew::ClosureGetFnOp::create(builder, location, ptrType, closureVal);
       auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
 
-      // Build indirect function type: (ptr env, accType, elemType) -> accType
+      // Build indirect function type using LLVM storage types.
+      auto llvmAccType = toLLVMStorageType(accType);
+      auto llvmElemType = toLLVMStorageType(elemType);
       llvm::SmallVector<mlir::Type, 4> indirectParamTypes;
       indirectParamTypes.push_back(ptrType);
-      indirectParamTypes.push_back(accType);
-      indirectParamTypes.push_back(elemType);
-      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {accType});
+      indirectParamTypes.push_back(llvmAccType);
+      indirectParamTypes.push_back(llvmElemType);
+      auto indirectFuncType = mlir::FunctionType::get(&context, indirectParamTypes, {llvmAccType});
       auto fnRef = hew::BitcastOp::create(builder, location, indirectFuncType, fnPtr);
 
       // Loop from 0 to len with iter_args for accumulator
@@ -2642,9 +2665,17 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 
       // Get element, call closure with (acc, elem), yield new acc
       auto elem = hew::VecGetOp::create(builder, location, elemType, vecValue, iv).getResult();
+      mlir::Value callElem = elem;
+      if (elemType != llvmElemType)
+        callElem = hew::BitcastOp::create(builder, location, llvmElemType, elem);
+      mlir::Value callAcc = accArg;
+      if (accType != llvmAccType)
+        callAcc = hew::BitcastOp::create(builder, location, llvmAccType, accArg);
       auto callResult = mlir::func::CallIndirectOp::create(builder, location, fnRef,
-                                                           mlir::ValueRange{envPtr, accArg, elem});
+                                                           mlir::ValueRange{envPtr, callAcc, callElem});
       auto newAcc = callResult.getResult(0);
+      if (accType != llvmAccType)
+        newAcc = hew::BitcastOp::create(builder, location, accType, newAcc);
 
       // Yield the new accumulator value back to the loop
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{newAcc});

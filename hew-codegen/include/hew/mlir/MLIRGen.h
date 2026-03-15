@@ -610,6 +610,8 @@ private:
   // Maps top-level function name → thunk wrapper name (generated on demand
   // when a function is used as a closure value).
   std::unordered_map<std::string, std::string> closureThunkCache;
+  // ── Counter for unique closure return-type coercion thunk names ─
+  unsigned closureCoercionCounter = 0;
 
   // ── Generator type tracking ───────────────────────────────────────
   // Track which variables hold generators: varName → generator function name

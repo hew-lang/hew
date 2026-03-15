@@ -1,7 +1,9 @@
 //! Discover `#[test]` functions in Hew source files.
 
 use hew_parser::ast::{Item, Program};
-use hew_parser::{ParseError, Severity};
+use hew_parser::ParseError;
+#[cfg(test)]
+use hew_parser::Severity;
 
 /// A discovered test case.
 #[derive(Debug, Clone)]
@@ -32,6 +34,7 @@ pub struct DiscoveredTestFile {
 impl DiscoveredTestFile {
     /// Whether the file has any parser errors that should fail the test run.
     #[must_use]
+    #[cfg(test)]
     pub fn has_parse_errors(&self) -> bool {
         self.parse_errors
             .iter()

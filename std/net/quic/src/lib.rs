@@ -1356,6 +1356,7 @@ mod tests {
         value
     }
 
+    #[expect(clippy::too_many_lines, reason = "Complex QUIC protocol handling; splitting would reduce clarity")]
     fn run_loopback(server_ep_ptr: *mut HewQuicEndpoint, client_ep_ptr: *mut HewQuicEndpoint) {
         assert!(!server_ep_ptr.is_null(), "server endpoint must not be null");
         assert!(!client_ep_ptr.is_null(), "client endpoint must not be null");
@@ -1738,7 +1739,7 @@ mod tests {
         let ev = HewQuicEvent {
             kind: EVENT_STREAM_OPENED,
         };
-        let ptr = &raw const ev as *const HewQuicEvent;
+        let ptr = (&raw const ev).cast::<HewQuicEvent>();
         // SAFETY: ptr points to a valid stack-allocated HewQuicEvent.
         let k = unsafe { hew_quic_event_kind(ptr) };
         assert_eq!(k, EVENT_STREAM_OPENED);

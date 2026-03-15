@@ -246,9 +246,9 @@ mod tests {
     #[test]
     fn sort_floats_ascending() {
         unsafe {
-            let v = make_f64_vec(&[3.14, 1.0, 2.71, 0.5]);
+            let v = make_f64_vec(&[std::f64::consts::PI, 1.0, std::f64::consts::E, 0.5]);
             let sorted = hew_sort_floats(v);
-            assert_eq!(read_f64_vec(sorted), vec![0.5, 1.0, 2.71, 3.14]);
+            assert_eq!(read_f64_vec(sorted), vec![0.5, 1.0, std::f64::consts::E, std::f64::consts::PI]);
             hew_runtime::vec::hew_vec_free(sorted);
             hew_runtime::vec::hew_vec_free(v);
         }

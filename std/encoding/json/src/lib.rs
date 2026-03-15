@@ -1022,29 +1022,29 @@ mod tests {
         // SAFETY: All pointers come from scalar constructor functions.
         unsafe {
             // Bool
-            let b = hew_json_from_bool(1);
-            assert!(!b.is_null());
-            assert_eq!(hew_json_type(b), 1);
-            assert_eq!(hew_json_get_bool(b), 1);
-            hew_json_free(b);
+            let bool_val = hew_json_from_bool(1);
+            assert!(!bool_val.is_null());
+            assert_eq!(hew_json_type(bool_val), 1);
+            assert_eq!(hew_json_get_bool(bool_val), 1);
+            hew_json_free(bool_val);
 
             let b_false = hew_json_from_bool(0);
             assert_eq!(hew_json_get_bool(b_false), 0);
             hew_json_free(b_false);
 
             // Int
-            let i = hew_json_from_int(-99);
-            assert!(!i.is_null());
-            assert_eq!(hew_json_type(i), 2);
-            assert_eq!(hew_json_get_int(i), -99);
-            hew_json_free(i);
+            let int_val = hew_json_from_int(-99);
+            assert!(!int_val.is_null());
+            assert_eq!(hew_json_type(int_val), 2);
+            assert_eq!(hew_json_get_int(int_val), -99);
+            hew_json_free(int_val);
 
             // Float
-            let f = hew_json_from_float(2.718);
-            assert!(!f.is_null());
-            assert_eq!(hew_json_type(f), 3);
-            assert!((hew_json_get_float(f) - 2.718).abs() < 1e-10);
-            hew_json_free(f);
+            let float_val = hew_json_from_float(2.718);
+            assert!(!float_val.is_null());
+            assert_eq!(hew_json_type(float_val), 3);
+            assert!((hew_json_get_float(float_val) - 2.718).abs() < 1e-10);
+            hew_json_free(float_val);
 
             // Float: NaN returns null
             assert!(hew_json_from_float(f64::NAN).is_null());
@@ -1054,21 +1054,21 @@ mod tests {
 
             // String
             let s_val = CString::new("colour").unwrap();
-            let s = hew_json_from_string(s_val.as_ptr());
-            assert!(!s.is_null());
-            assert_eq!(hew_json_type(s), 4);
-            let s_str = read_and_free_cstr(hew_json_get_string(s));
+            let str_val = hew_json_from_string(s_val.as_ptr());
+            assert!(!str_val.is_null());
+            assert_eq!(hew_json_type(str_val), 4);
+            let s_str = read_and_free_cstr(hew_json_get_string(str_val));
             assert_eq!(s_str, "colour");
-            hew_json_free(s);
+            hew_json_free(str_val);
 
             // String: null input returns null
             assert!(hew_json_from_string(std::ptr::null()).is_null());
 
             // Null
-            let n = hew_json_from_null();
-            assert!(!n.is_null());
-            assert_eq!(hew_json_type(n), 0);
-            hew_json_free(n);
+            let null_val = hew_json_from_null();
+            assert!(!null_val.is_null());
+            assert_eq!(hew_json_type(null_val), 0);
+            hew_json_free(null_val);
         }
     }
 

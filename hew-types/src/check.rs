@@ -8420,10 +8420,15 @@ impl Checker {
         });
     }
 
-    /// Check if a variable binding would shadow an existing variable and emit an error.
+    /// Check if a variable binding would shadow an existing variable.
     ///
-    /// Same-scope rebinding and outer-scope shadowing are both hard errors
-    /// per the language spec (HEW-SPEC §4 — variable shadowing).
+    /// - **Same-scope rebinding**: hard error (variable already defined in this scope).
+    /// - **Outer-scope shadowing of a synthetic binding** (e.g. actor field): hard error,
+    ///   because bare field access requires unambiguous names.
+    /// - **Outer-scope shadowing of a user-defined local variable**: warning, so the
+    ///   programmer is informed but the program is not rejected.
+    ///
+    /// Bindings with an underscore prefix and for-loop induction variables are always exempt.
     fn check_shadowing(&mut self, name: &str, span: &Span) {
         if name.starts_with('_') || self.in_for_binding {
             return;
@@ -8447,23 +8452,40 @@ impl Checker {
             return;
         }
 
-        // Outer-scope shadowing: also hard error per spec
-        if let Some(prev) = self.env.find_in_outer_scope(name) {
-            // Synthetic bindings (actor fields) have no source span,
-            // so the notes list may be empty.
-            let notes = prev
-                .map(|s| vec![(s, "previously defined here".to_string())])
-                .unwrap_or_default();
-            self.errors.push(TypeError {
-                severity: crate::error::Severity::Error,
-                kind: TypeErrorKind::Shadowing,
-                span: span.clone(),
-                message: format!("variable `{name}` shadows a binding in an outer scope"),
-                notes,
-                suggestions: vec![format!(
-                    "choose a different name, or prefix with underscore: `_{name}`"
-                )],
-            });
+        // Outer-scope shadowing — severity depends on what is being shadowed.
+        if let Some(prev_span) = self.env.find_in_outer_scope(name) {
+            match prev_span {
+                None => {
+                    // Synthetic binding (actor field): hard error — bare field access would
+                    // be ambiguous if a local could shadow a field name.
+                    self.errors.push(TypeError {
+                        severity: crate::error::Severity::Error,
+                        kind: TypeErrorKind::Shadowing,
+                        span: span.clone(),
+                        message: format!("variable `{name}` shadows a binding in an outer scope"),
+                        notes: vec![],
+                        suggestions: vec![format!(
+                            "choose a different name, or prefix with underscore: `_{name}`"
+                        )],
+                    });
+                }
+                Some(prev) => {
+                    // User-defined local variable in an outer scope: warning.
+                    // Shadowing is confusing but not ambiguous in the same way as actor fields.
+                    self.warnings.push(TypeError {
+                        severity: crate::error::Severity::Warning,
+                        kind: TypeErrorKind::Shadowing,
+                        span: span.clone(),
+                        message: format!(
+                            "variable `{name}` shadows a binding in an outer scope"
+                        ),
+                        notes: vec![(prev, "previously defined here".to_string())],
+                        suggestions: vec![format!(
+                            "consider a more descriptive name, or prefix with underscore to suppress: `_{name}`"
+                        )],
+                    });
+                }
+            }
         }
     }
 
@@ -10184,24 +10206,35 @@ mod tests {
     }
 
     #[test]
-    fn error_variable_shadowing() {
+    fn warn_nested_scope_shadowing() {
+        // Nested/child scope shadowing is a warning, not an error.
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
         assert!(
             output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::Shadowing
+                    && w.message.contains("shadows a binding in an outer scope")),
+            "expected outer-scope shadowing warning, got warnings: {:?}, errors: {:?}",
+            output.warnings,
+            output.errors
+        );
+        assert!(
+            !output
                 .errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::Shadowing
-                    && e.message.contains("shadows a binding in an outer scope")),
-            "expected outer-scope shadowing error, got: {:?}",
+                .any(|e| e.kind == TypeErrorKind::Shadowing),
+            "outer-scope shadowing of a local should not be an error: {:?}",
             output.errors
         );
     }
 
     #[test]
-    fn no_error_shadowing_underscore_prefix() {
+    fn no_shadowing_diagnostic_underscore_prefix() {
+        // Underscore-prefixed bindings are fully exempt from shadowing diagnostics.
         let source = "fn main() { let _x = 1; if true { let _x = 2; println(_x); } println(_x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -10214,10 +10247,19 @@ mod tests {
             "should not error for _ prefixed vars: {:?}",
             output.errors
         );
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::Shadowing),
+            "should not warn for _ prefixed vars: {:?}",
+            output.warnings
+        );
     }
 
     #[test]
-    fn no_error_shadowing_for_loop_var() {
+    fn no_shadowing_diagnostic_for_loop_var() {
+        // For-loop induction variables are exempt from shadowing diagnostics.
         let source = "fn main() { let i = 0; for i in 0..10 { println(i); } println(i); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -10230,10 +10272,47 @@ mod tests {
             "should not error for for-loop variable shadowing: {:?}",
             output.errors
         );
+        assert!(
+            !output
+                .warnings
+                .iter()
+                .any(|w| w.kind == TypeErrorKind::Shadowing),
+            "should not warn for for-loop variable shadowing: {:?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn warn_deeply_nested_scope_shadowing() {
+        // Shadowing across multiple scope levels is still a warning.
+        let source = r"
+            fn main() {
+                let val = 1;
+                if true {
+                    if true {
+                        let val = 99;
+                        println(val);
+                    }
+                }
+                println(val);
+            }
+        ";
+        let (errors, warnings) = parse_and_check(source);
+        assert!(
+            warnings.iter().any(|w| w.kind == TypeErrorKind::Shadowing
+                && w.message.contains("shadows a binding in an outer scope")),
+            "expected nested shadowing warning, got warnings: {warnings:?}, errors: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.kind == TypeErrorKind::Shadowing),
+            "outer-scope shadowing of a local should not be an error: {errors:?}"
+        );
     }
 
     #[test]
     fn test_actor_field_shadowing_is_error() {
+        // Shadowing an actor field is a hard error — bare field access requires
+        // unambiguous names.
         let source = r"
             actor Counter {
                 var count: int = 0;
@@ -10253,6 +10332,7 @@ mod tests {
 
     #[test]
     fn test_actor_fn_method_field_shadowing_is_error() {
+        // Shadowing an actor field via an fn helper method is also a hard error.
         let source = r"
             actor Counter {
                 var count: int = 0;
@@ -10420,19 +10500,21 @@ fn main() {
     }
 
     #[test]
-    fn shadowing_error_has_note_for_original_definition() {
+    fn shadowing_warning_has_note_for_original_definition() {
+        // The warning for outer-scope shadowing must include a note pointing back
+        // to where the original binding was defined.
         let source = "fn main() { let x = 1; if true { let x = 2; println(x); } println(x); }";
         let result = hew_parser::parse(source);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
-        let e = output
-            .errors
+        let w = output
+            .warnings
             .iter()
-            .find(|e| e.kind == TypeErrorKind::Shadowing);
-        assert!(e.is_some(), "expected shadowing error");
+            .find(|w| w.kind == TypeErrorKind::Shadowing);
+        assert!(w.is_some(), "expected shadowing warning");
         assert!(
-            !e.unwrap().notes.is_empty(),
-            "shadowing error should have a note pointing to the original definition"
+            !w.unwrap().notes.is_empty(),
+            "shadowing warning should have a note pointing to the original definition"
         );
     }
 

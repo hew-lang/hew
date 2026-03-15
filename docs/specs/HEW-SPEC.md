@@ -864,17 +864,43 @@ actor Worker {
 
 **Variable shadowing:**
 
-Variable shadowing is a **hard error** in Hew. This is a prerequisite for bare field access in actors — if a parameter or local variable could shadow an actor field, bare names would be ambiguous. The compiler rejects any binding that shadows an existing name in scope:
+Hew distinguishes three cases of variable shadowing:
 
-```hew
-actor Example {
-    var count: i32 = 0;
+- **Same-scope rebinding** — a **hard error**. Declaring a name that is already bound in the same scope is rejected outright:
 
-    receive fn update(count: i32) {
-        // compile error: parameter 'count' shadows actor field 'count'
-    }
-}
-```
+  ```hew
+  fn main() {
+      let x = 1;
+      let x = 2;  // compile error: variable `x` is already defined in this scope
+  }
+  ```
+
+- **Outer-scope shadowing of an actor field** — a **hard error**. Actor fields must have unambiguous bare names; a parameter or local variable that shadows a field is rejected:
+
+  ```hew
+  actor Example {
+      var count: i32 = 0;
+
+      receive fn update(count: i32) {
+          // compile error: variable `count` shadows a binding in an outer scope
+      }
+  }
+  ```
+
+- **Outer-scope shadowing of a local variable** — a **warning**. Reusing a name in a nested block is confusing but not ambiguous. The compiler emits a warning and the programmer is encouraged to choose a more descriptive name or prefix the new binding with `_` to suppress the diagnostic:
+
+  ```hew
+  fn main() {
+      let x = 1;
+      if condition {
+          let x = 2;  // warning: variable `x` shadows a binding in an outer scope
+          println(x);
+      }
+      println(x);  // still refers to the outer x
+  }
+  ```
+
+**Shadowing exemptions:** Bindings whose name starts with `_` and for-loop induction variables are silently exempt from all shadowing diagnostics.
 
 **Trait bounds on generics:**
 

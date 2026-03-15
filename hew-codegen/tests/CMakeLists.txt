@@ -187,6 +187,23 @@ function(add_e2e_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
   )
 endfunction()
 
+# Helper: verify a .hew file SUCCEEDS compilation (with a warning), emits the expected
+# warning text, then runs and matches .expected output.
+function(add_e2e_warn_test TEST_NAME CATEGORY HEW_NAME EXPECTED_WARNING)
+  set(HEW_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.hew)
+  set(EXPECTED_FILE ${CMAKE_CURRENT_SOURCE_DIR}/examples/${CATEGORY}/${HEW_NAME}.expected)
+  add_test(
+    NAME warn_${CATEGORY}_${HEW_NAME}
+    COMMAND ${CMAKE_COMMAND}
+      -DHEW_CLI=${HEW_CLI}
+      -DHEW_FILE=${HEW_FILE}
+      -DEXPECTED_WARNING=${EXPECTED_WARNING}
+      -DEXPECTED_FILE=${EXPECTED_FILE}
+      -DOUT_BIN=${CMAKE_CURRENT_BINARY_DIR}/warn_${CATEGORY}_${HEW_NAME}${HEW_EXE_SUFFIX}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_warn_test.cmake
+  )
+endfunction()
+
 # ── Negative tests (verify compile-time error detection) ─────────────────────
 add_e2e_reject_test(undefined_var        e2e_negative undefined_var        "undefined variable")
 add_e2e_reject_test(type_mismatch_fn_arg e2e_negative type_mismatch_fn_arg "type mismatch")
@@ -206,6 +223,8 @@ add_e2e_reject_test(machine_unknown_state e2e_negative machine_unknown_state "re
 add_e2e_reject_test(machine_dup_wildcard e2e_negative machine_dup_wildcard "duplicate wildcard transition")
 add_e2e_reject_test(machine_dup_transition e2e_negative machine_dup_transition "duplicate transition for event")
 add_e2e_reject_test(bounds_not_satisfied e2e_negative bounds_not_satisfied "does not implement trait")
+add_e2e_reject_test(shadowing_same_scope  e2e_negative shadowing_same_scope  "already defined in this scope")
+add_e2e_reject_test(shadowing_actor_field e2e_negative shadowing_actor_field "shadows a binding in an outer scope")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
@@ -867,6 +886,7 @@ add_e2e_file_test(coverage_match_nested_enum   e2e_coverage match_nested_enum)
 add_e2e_file_test(coverage_option_chain        e2e_coverage option_chain)
 add_e2e_file_test(coverage_result_propagation  e2e_coverage result_propagation)
 add_e2e_file_test(coverage_shadowing_scopes    e2e_coverage shadowing_error_recovery)
+add_e2e_warn_test(coverage_shadowing_nested    e2e_coverage shadowing_nested_warns      "shadows a binding in an outer scope")
 add_e2e_file_test(coverage_closure_capture     e2e_coverage closure_capture_types)
 add_e2e_file_test(coverage_actor_ask_reply     e2e_coverage actor_ask_reply)
 add_e2e_file_test(coverage_actor_close_await   e2e_coverage actor_close_await)

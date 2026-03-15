@@ -1,0 +1,15 @@
+// Test: a receive handler parameter that shadows an actor field is a hard error.
+// This file must NOT compile.
+
+actor Counter {
+    var count: int = 0;
+    receive fn update(count: int) {
+        println(count);
+    }
+}
+
+fn main() {
+    let c = Counter.start();
+    c.update(5);
+    c.close();
+}

@@ -51,18 +51,6 @@ use crate::tracing::{
     SPAN_SPAWN, SPAN_STOP,
 };
 
-// ── Compile-time notice when profiler and otel both drain the same queue ─
-
-// When both features are active, the profiler's /api/traces endpoint and the
-// OTel exporter share the same TRACE_EVENTS ring buffer. Each drain call
-// removes events from the other consumer. Consider disabling one, or use the
-// profiler for local inspection and OTel for persistent storage, accepting
-// that neither will receive 100 % of events when both are active.
-#[cfg(all(feature = "profiler", feature = "otel"))]
-const _: () = {
-    // A zero-sized assertion so this surfaces as a cargo warning, not an error.
-};
-
 // ── Constants ──────────────────────────────────────────────────────────
 
 /// Default export interval in seconds.
@@ -163,10 +151,34 @@ fn binary_name() -> String {
 ///
 /// Called from `hew_sched_init` during scheduler startup.
 /// If the env var is absent, this is a complete no-op.
+///
+/// # Profiler conflict
+///
+/// When both the `profiler` and `otel` features are enabled and both
+/// `HEW_PPROF` and `HEW_OTEL_ENDPOINT` are set, both consumers drain the
+/// same shared `TRACE_EVENTS` ring buffer. This causes trace events to be
+/// split nondeterministically between the two consumers. A warning is emitted
+/// to stderr and the OTel exporter is **not** started; use one or the other.
 pub fn maybe_start() {
     let Some(config) = OtelConfig::from_env() else {
         return;
     };
+
+    // Guard: if the profiler is also active and draining traces, refuse to
+    // start to avoid silent event loss. The user must choose one path.
+    #[cfg(feature = "profiler")]
+    if std::env::var("HEW_PPROF")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        eprintln!(
+            "[hew-otel] WARNING: both HEW_PPROF and HEW_OTEL_ENDPOINT are set. \
+             Both consumers share the same trace-event ring buffer and will each \
+             see only a fraction of events. The OTel exporter will NOT be started. \
+             Unset HEW_PPROF or build without the 'profiler' feature to use OTel."
+        );
+        return;
+    }
 
     eprintln!(
         "[hew-otel] exporting traces to {} (service: {}, interval: {}s, batch: {})",

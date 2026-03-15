@@ -3786,6 +3786,142 @@ def fuzz_emit_ir(ctx: FuzzContext, n: int = 100) -> None:
             _report(run_emit_hew(ctx, src, f"emit_ir/{label}", flag))
 
 
+def fuzz_formatter(ctx: FuzzContext, n: int = 200) -> None:
+    """Fuzz the formatter: generate well-typed programs, format them, and
+    verify the formatted output still passes ``hew build --emit-ast``.
+    Compare ASTs (ignoring spans) to catch semantic drift.
+    """
+    import json as _json
+
+    def strip_spans(obj):
+        if isinstance(obj, dict):
+            return {
+                k: strip_spans(v)
+                for k, v in obj.items()
+                if k
+                not in ("span", "start", "end", "source_paths", "source_path", "path")
+            }
+        elif isinstance(obj, list):
+            return [strip_spans(v) for v in obj]
+        return obj
+
+    def emit_ast(filepath):
+        r = subprocess.run(
+            [str(ctx.hew), "build", "--emit-ast", str(filepath), "-o", "/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
+        )
+        if r.returncode != 0:
+            return None
+        try:
+            return _json.loads(r.stdout)
+        except _json.JSONDecodeError:
+            return None
+
+    for i in range(n):
+        parts: list[str] = []
+        main_stmts: list[str] = []
+
+        nfns = random.randint(0, 2)
+        for j in range(nfns):
+            np = random.randint(0, 3)
+            params = ", ".join(f"p{k}: i32" for k in range(np))
+            body = (
+                " + ".join(f"p{k}" for k in range(np))
+                if np > 0
+                else str(random.randint(0, 99))
+            )
+            parts.append(f"fn helper_{j}({params}) -> i32 {{ {body} }}")
+
+        if random.random() < 0.4:
+            nf = random.randint(1, 3)
+            fields = "\n".join(f"  f{k}: i32;" for k in range(nf))
+            parts.append(f"type Data{i} {{\n{fields}\n}}")
+            init = ", ".join(f"f{k}: {random.randint(0, 50)}" for k in range(nf))
+            main_stmts.append(f"let d = Data{i} {{ {init} }};")
+            main_stmts.append("println(d.f0);")
+
+        if random.random() < 0.3:
+            main_stmts.append(
+                f'let msg = f"value={{1 + {random.randint(1, 99)}}}";'
+            )
+            main_stmts.append("println(msg);")
+
+        main_stmts.append(f"let x = {random.randint(0, 100)};")
+        if random.random() < 0.5:
+            main_stmts.append("if x > 50 { println(x); }")
+        if random.random() < 0.3:
+            main_stmts.append("var acc = 0;")
+            main_stmts.append(
+                f"for i in 0 .. {random.randint(1, 10)} {{ acc = acc + i; }}"
+            )
+            main_stmts.append("println(acc);")
+
+        body = "\n    ".join(main_stmts)
+        source = "\n\n".join(parts) + f"\n\nfn main() {{\n    {body}\n}}\n"
+
+        tmpfile = ctx.workdir / "fmt_fuzz.hew"
+        tmpfile.write_text(source)
+
+        before_ast = emit_ast(tmpfile)
+        if before_ast is None:
+            continue
+
+        ctx.stats.total += 1
+
+        fmt_r = subprocess.run(
+            [str(ctx.hew), "fmt", str(tmpfile)],
+            capture_output=True,
+            text=True,
+            timeout=ctx.timeout,
+        )
+        if fmt_r.returncode != 0:
+            ctx.stats.crash += 1
+            ctx.issues.append(
+                Issue(
+                    "CRASH",
+                    f"formatter[{i}]",
+                    source,
+                    fmt_r.stderr,
+                    fmt_r.returncode,
+                )
+            )
+            tmpfile.write_text(source)
+            continue
+
+        after_ast = emit_ast(tmpfile)
+        if after_ast is None:
+            ctx.stats.crash += 1
+            formatted = tmpfile.read_text()
+            ctx.issues.append(
+                Issue(
+                    "CRASH",
+                    f"formatter[{i}]:post-fmt-compile",
+                    formatted,
+                    "build failed after fmt",
+                )
+            )
+            tmpfile.write_text(source)
+            continue
+
+        before_clean = strip_spans(before_ast)
+        after_clean = strip_spans(after_ast)
+        if before_clean != after_clean:
+            ctx.stats.ice += 1
+            ctx.issues.append(
+                Issue(
+                    "ICE",
+                    f"formatter[{i}]:ast-mismatch",
+                    source,
+                    "AST differs after formatting",
+                )
+            )
+
+        tmpfile.write_text(source)
+        ctx.stats.ok += 1
+
+
 CATEGORIES: dict[str, tuple[str, object]] = {
     # --- Original categories ---
     "empty": ("Empty and near-empty inputs", fuzz_empty),
@@ -3843,6 +3979,7 @@ CATEGORIES: dict[str, tuple[str, object]] = {
     # --- Pipeline depth testing ---
     "oracle_exec": ("Execution oracle (build+run+verify output)", fuzz_oracle_exec),
     "emit_ir": ("IR lowering stress (--emit-mlir/--emit-llvm)", fuzz_emit_ir),
+    "formatter": ("Formatter semantic preservation (hew fmt)", fuzz_formatter),
 }
 
 

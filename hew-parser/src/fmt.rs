@@ -1,5 +1,6 @@
 //! Pretty-printer that converts an AST back to canonical Hew source text.
 
+use std::fmt::Write as _;
 use std::ops::Range;
 
 use crate::ast::{
@@ -268,6 +269,7 @@ impl<'a> Formatter<'a> {
             return;
         }
         self.write_indent();
+        self.write_visibility(decl.visibility);
         if decl.is_indirect {
             self.write("indirect ");
         }
@@ -307,8 +309,25 @@ impl<'a> Formatter<'a> {
         self.format_naming_attr("json", wire.json_case);
         self.format_naming_attr("yaml", wire.yaml_case);
         self.write_indent();
-        self.write("#[wire]\n");
+        if wire.version.is_some() || wire.min_version.is_some() {
+            self.write("#[wire(");
+            let mut first = true;
+            if let Some(v) = wire.version {
+                write!(self.output, "version = {v}").unwrap();
+                first = false;
+            }
+            if let Some(v) = wire.min_version {
+                if !first {
+                    self.write(", ");
+                }
+                write!(self.output, "min_version = {v}").unwrap();
+            }
+            self.write(")]\n");
+        } else {
+            self.write("#[wire]\n");
+        }
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("struct ");
         self.write(&decl.name);
         self.write(" {\n");
@@ -436,6 +455,7 @@ impl<'a> Formatter<'a> {
 
     fn format_trait(&mut self, decl: &TraitDecl, _span_end: usize) {
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("trait ");
         self.write(&decl.name);
         self.format_opt_type_params(decl.type_params.as_ref());
@@ -447,12 +467,24 @@ impl<'a> Formatter<'a> {
         self.indent += 1;
         for item in &decl.items {
             match item {
-                TraitItem::Method(m) => self.format_trait_method(m),
+                TraitItem::Method(m) => {
+                    if self.has_comments() {
+                        let pos = self
+                            .find_keyword_after(&format!("fn {}", m.name), self.prev_source_pos);
+                        self.flush_comments_before(pos);
+                    }
+                    self.format_trait_method(m);
+                }
                 TraitItem::AssociatedType {
                     name,
                     bounds,
                     default,
                 } => {
+                    if self.has_comments() {
+                        let pos =
+                            self.find_keyword_after(&format!("type {name}"), self.prev_source_pos);
+                        self.flush_comments_before(pos);
+                    }
                     self.write_indent();
                     self.write("type ");
                     self.write(name);
@@ -655,6 +687,7 @@ impl<'a> Formatter<'a> {
 
     fn format_actor(&mut self, decl: &ActorDecl, span_end: usize) {
         self.write_indent();
+        self.write_visibility(decl.visibility);
         self.write("actor ");
         self.write(&decl.name);
         if let Some(supers) = &decl.super_traits {
@@ -750,6 +783,7 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
+    #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
     fn format_machine(&mut self, decl: &MachineDecl, span_end: usize) {
         self.write_indent();
         self.write_visibility(decl.visibility);
@@ -775,7 +809,7 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&ty.0);
                     self.write(";");
                 }
-                self.write(" };\n");
+                self.write(" }\n");
             }
         }
 
@@ -800,7 +834,7 @@ impl<'a> Formatter<'a> {
                     self.format_type_expr(&ty.0);
                     self.write(";");
                 }
-                self.write(" };\n");
+                self.write(" }\n");
             }
         }
 
@@ -816,15 +850,50 @@ impl<'a> Formatter<'a> {
             self.write(&transition.source_state);
             self.write(" -> ");
             self.write(&transition.target_state);
-            self.write(" ");
-            if let Expr::Block(block) = &transition.body.0 {
+            if let Some(guard) = &transition.guard {
+                self.write(" when ");
+                self.format_expr(&guard.0);
+            }
+            // Omit body when it's just the implicit target state identifier
+            let is_implicit_body = matches!(&transition.body.0,
+                Expr::Identifier(name) if name == &transition.target_state);
+            if is_implicit_body {
+                self.write(";");
+            } else if let Expr::StructInit { name, fields, .. } = &transition.body.0 {
+                // Elided state constructor: emit fields directly without wrapping type name
+                if name == &transition.target_state {
+                    self.write(" { ");
+                    for (i, (fname, fval)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.write(fname);
+                        self.write(": ");
+                        self.format_expr(&fval.0);
+                    }
+                    self.write(" }");
+                } else {
+                    self.write(" { ");
+                    self.format_expr(&transition.body.0);
+                    self.write(" }");
+                }
+            } else if let Expr::Block(block) = &transition.body.0 {
+                self.write(" ");
                 self.format_block(block, span_end);
             } else {
-                self.write("{ ");
+                self.write(" { ");
                 self.format_expr(&transition.body.0);
                 self.write(" }");
             }
             self.newline();
+        }
+
+        if decl.has_default {
+            if !decl.transitions.is_empty() {
+                self.newline();
+            }
+            self.write_indent();
+            self.write("default { state }\n");
         }
 
         self.indent -= 1;
@@ -1028,8 +1097,11 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write("fn(");
                 self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
-                self.write(") -> ");
-                self.format_type_expr(&return_type.0);
+                self.write(")");
+                if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
+                    self.write(" -> ");
+                    self.format_type_expr(&return_type.0);
+                }
             }
             TypeExpr::Pointer {
                 is_mutable,
@@ -1442,7 +1514,14 @@ impl<'a> Formatter<'a> {
                     UnaryOp::Negate => self.write("-"),
                     UnaryOp::BitNot => self.write("~"),
                 }
+                let needs_parens = matches!(operand.0, Expr::Binary { .. });
+                if needs_parens {
+                    self.write("(");
+                }
                 self.format_expr(&operand.0);
+                if needs_parens {
+                    self.write(")");
+                }
             }
             Expr::Literal(lit) => self.format_literal(lit),
             Expr::Identifier(name) => self.write(name),
@@ -1575,7 +1654,13 @@ impl<'a> Formatter<'a> {
                 self.write("f\"");
                 for part in parts {
                     match part {
-                        StringPart::Literal(s) => self.write(s),
+                        StringPart::Literal(s) => {
+                            let escaped = s
+                                .replace('"', "\\\"")
+                                .replace('{', "\\{")
+                                .replace('}', "\\}");
+                            self.write(&escaped);
+                        }
                         StringPart::Expr((expr, _)) => {
                             self.write("{");
                             self.format_expr(expr);
@@ -1593,7 +1678,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.format_expr(&function.0);
                 if let Some(type_args) = type_args {
-                    self.write("::<");
+                    self.write("<");
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }

@@ -1,0 +1,33 @@
+// Test: std::net::dns hostname resolution.
+// Resolves "localhost" via both resolve() and lookup_host(), which are
+// safe for CI environments without network access.
+import std::net::dns;
+
+fn main() {
+    // resolve() returns a vector of all addresses for the hostname.
+    let addrs = dns.resolve("localhost");
+    let count = addrs.len();
+    println(f"resolve count: {count}");
+
+    // At least one address should come back (127.0.0.1 or ::1).
+    if count > 0 {
+        println("resolve: ok");
+    } else {
+        println("resolve: empty");
+    }
+
+    // lookup_host() returns only the first resolved address.
+    let first = dns.lookup_host("localhost");
+    let flen = first.len();
+    if flen > 0 {
+        println("lookup_host: ok");
+    } else {
+        println("lookup_host: empty");
+    }
+
+    // Unresolvable hostname should return an empty vector.
+    let bad = dns.resolve("this-host-does-not-exist.invalid.test");
+    println(bad.len());
+
+    println("=== Done ===");
+}

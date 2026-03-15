@@ -4611,6 +4611,83 @@ impl Checker {
                 expected.clone()
             }
 
+            // Struct init coercion: propagate expected type args into field checking
+            (
+                Expr::StructInit { name, fields },
+                Ty::Named {
+                    name: expected_name,
+                    args: expected_args,
+                },
+            ) if name == expected_name => {
+                if let Some(td) = self.lookup_type_def(name) {
+                    if td.type_params.len() == expected_args.len() && !expected_args.is_empty() {
+                        // Pre-seed type arg map from the expected type
+                        let mut type_arg_map: HashMap<String, Ty> = td
+                            .type_params
+                            .iter()
+                            .zip(expected_args.iter())
+                            .map(|(p, a)| (p.clone(), a.clone()))
+                            .collect();
+
+                        for (field_name, (fexpr, fs)) in fields {
+                            if let Some(declared_ty) = td.fields.get(field_name) {
+                                let mut field_expected = declared_ty.clone();
+                                for (tp, concrete) in &type_arg_map {
+                                    field_expected =
+                                        self.substitute_named_param(&field_expected, tp, concrete);
+                                }
+                                let actual = self.check_against(fexpr, fs, &field_expected);
+
+                                // Still infer any remaining unbound type params
+                                for tp in &td.type_params {
+                                    if !type_arg_map.contains_key(tp)
+                                        && *declared_ty
+                                            == (Ty::Named {
+                                                name: tp.clone(),
+                                                args: vec![],
+                                            })
+                                    {
+                                        type_arg_map.insert(tp.clone(), actual.clone());
+                                    }
+                                }
+                            } else {
+                                let similar = crate::error::find_similar(
+                                    field_name,
+                                    td.fields.keys().map(String::as_str),
+                                );
+                                self.report_error_with_suggestions(
+                                    TypeErrorKind::UndefinedField,
+                                    span,
+                                    format!("no field `{field_name}` on struct `{name}`"),
+                                    similar,
+                                );
+                            }
+                        }
+                        // Check for missing required fields
+                        let provided: HashSet<&str> =
+                            fields.iter().map(|(n, _)| n.as_str()).collect();
+                        for declared in td.fields.keys() {
+                            if !provided.contains(declared.as_str()) {
+                                self.report_error(
+                                    TypeErrorKind::UndefinedField,
+                                    span,
+                                    format!(
+                                        "missing field `{declared}` in initializer of `{name}`"
+                                    ),
+                                );
+                            }
+                        }
+
+                        self.record_type(span, expected);
+                        return expected.clone();
+                    }
+                }
+                // Fall through: non-generic or arity mismatch — synthesize normally
+                let actual = self.synthesize(expr, span);
+                self.expect_type(expected, &actual, span);
+                actual
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -7052,7 +7129,23 @@ impl Checker {
                     for (tp, concrete) in &type_arg_map {
                         expected = self.substitute_named_param(&expected, tp, concrete);
                     }
-                    let actual = self.check_against(expr, es, &expected);
+
+                    // If the expected type is still an unbound type parameter,
+                    // synthesize so the field value determines the type (rather
+                    // than failing with "expected T, found i64").
+                    let is_unbound_param = td.type_params.iter().any(|tp| {
+                        !type_arg_map.contains_key(tp)
+                            && expected
+                                == (Ty::Named {
+                                    name: tp.clone(),
+                                    args: vec![],
+                                })
+                    });
+                    let actual = if is_unbound_param {
+                        self.synthesize(expr, es)
+                    } else {
+                        self.check_against(expr, es, &expected)
+                    };
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
@@ -11831,6 +11924,114 @@ fn main() {
         let ident = (Expr::Identifier("n".to_string()), 24..25);
         let ty = checker.check_against(&ident.0, &ident.1, &Ty::I32);
         assert_eq!(ty, Ty::Error);
+        assert!(
+            checker
+                .errors
+                .iter()
+                .any(|e| e.message.contains("does not fit")),
+            "expected range error: {:?}",
+            checker.errors
+        );
+    }
+
+    // ── Struct init literal coercion tests ─────────────────────────────
+
+    fn register_generic_wrapper(checker: &mut Checker) {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "value".to_string(),
+            Ty::Named {
+                name: "T".to_string(),
+                args: vec![],
+            },
+        );
+        checker.type_defs.insert(
+            "Wrapper".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Struct,
+                name: "Wrapper".to_string(),
+                type_params: vec!["T".to_string()],
+                fields,
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+    }
+
+    #[test]
+    fn struct_init_coerces_literal_to_expected_type_arg() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        register_generic_wrapper(&mut checker);
+
+        // Wrapper { value: 42 } checked against Wrapper<i32>
+        let init = (
+            Expr::StructInit {
+                name: "Wrapper".to_string(),
+                fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            },
+            0..20,
+        );
+        let expected = Ty::Named {
+            name: "Wrapper".to_string(),
+            args: vec![Ty::I32],
+        };
+        let ty = checker.check_against(&init.0, &init.1, &expected);
+        assert_eq!(ty, expected);
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn struct_init_infers_type_param_from_literal() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        register_generic_wrapper(&mut checker);
+
+        // Wrapper { value: 42 } without expected type — should infer Wrapper<i64>
+        let init = (
+            Expr::StructInit {
+                name: "Wrapper".to_string(),
+                fields: vec![("value".to_string(), make_int_literal(42, 10..12))],
+            },
+            0..20,
+        );
+        let ty = checker.synthesize(&init.0, &init.1);
+        assert_eq!(
+            ty,
+            Ty::Named {
+                name: "Wrapper".to_string(),
+                args: vec![Ty::I64],
+            }
+        );
+        assert!(
+            checker.errors.is_empty(),
+            "unexpected errors: {:?}",
+            checker.errors
+        );
+    }
+
+    #[test]
+    fn struct_init_overflow_in_expected_type() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        register_generic_wrapper(&mut checker);
+
+        // Wrapper { value: 256 } checked against Wrapper<u8> — should error
+        let init = (
+            Expr::StructInit {
+                name: "Wrapper".to_string(),
+                fields: vec![("value".to_string(), make_int_literal(256, 10..13))],
+            },
+            0..20,
+        );
+        let expected = Ty::Named {
+            name: "Wrapper".to_string(),
+            args: vec![Ty::U8],
+        };
+        let _ty = checker.check_against(&init.0, &init.1, &expected);
         assert!(
             checker
                 .errors

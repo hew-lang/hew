@@ -7,7 +7,6 @@ fn main() {
     // resolve() returns a vector of all addresses for the hostname.
     let addrs = dns.resolve("localhost");
     let count = addrs.len();
-    println(f"resolve count: {count}");
 
     // At least one address should come back (127.0.0.1 or ::1).
     if count > 0 {

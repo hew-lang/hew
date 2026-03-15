@@ -24,16 +24,17 @@
 #   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
-#   make test         — run all tests (Rust + codegen)
+#   make test         — run all tests (Rust + codegen + Hew)
 #   make test-rust    — just Rust workspace tests
 #   make test-codegen — just hew-codegen ctest (native E2E + unit)
+#   make test-hew     — run Hew test files (std/ *_test.hew)
 #   make test-wasm    — just WASM E2E tests (requires wasmtime)
 #   make lint         — cargo clippy
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
 .PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
-.PHONY: test test-all test-rust test-codegen test-stdlib test-wasm test-cpp lint grammar
+.PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
 .PHONY: coverage coverage-summary coverage-lcov coverage-e2e coverage-combined coverage-cpp
@@ -282,10 +283,10 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust test-codegen
+test: test-rust test-codegen test-hew
 
 # TODO: Add test-stdlib to `test` target once stdlib files are type-check clean
-test-all: test-rust test-codegen test-stdlib test-wasm
+test-all: test-rust test-codegen test-stdlib test-hew test-wasm
 
 test-rust:
 	cargo test
@@ -312,6 +313,10 @@ test-stdlib: hew
 	  echo "ERROR: $$fail stdlib file(s) failed type-check"; \
 	  exit 1; \
 	fi
+
+test-hew: hew codegen runtime stdlib
+	@echo "==> Running Hew test files"
+	$(DEBUG_DIR)/hew test tests/hew/
 
 # Legacy alias
 test-cpp: test-codegen

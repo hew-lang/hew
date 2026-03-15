@@ -1,5 +1,45 @@
 # Distributed Actor Infrastructure — Journey Log
 
+## Phase 0.5: `hew test` hardening audit (2026-03-15)
+
+### What I audited
+
+- Read the full `hew-cli/src/test_runner/` implementation and `hew-cli/src/main.rs` wiring.
+- Exercised `hew test` manually against passing, failing, compile-error, timeout,
+  empty-directory, no-test-function, nested-directory, and malformed-source cases.
+- Added focused Rust tests plus CLI end-to-end coverage for the test runner itself.
+
+### Findings
+
+- **Silent parse failures:** malformed `_test.hew` files were reported as
+  "No test functions found." with exit code 0 because discovery discarded parser
+  diagnostics.
+- **Non-deterministic execution order:** discovered tests were grouped in a
+  `HashMap`, so multi-file runs printed results in unstable order.
+- **Ambiguous empty-suite reporting:** an empty directory and a valid file with no
+  `#[test]` functions produced the same message.
+- **Timeouts existed but were fixed at 30 seconds:** the runner supported timeouts
+  internally, but there was no CLI control, which made the behaviour harder to
+  exercise and slower to test.
+
+### Decisions
+
+- Treat parser errors during discovery as fatal test-runner diagnostics and exit
+  non-zero before executing the suite.
+- Preserve discovery order all the way through execution and reporting so repeated
+  runs are stable and trustworthy.
+- Distinguish "No test files found." from "No test functions found." for clearer UX.
+- Add `--timeout <seconds>` so timeout behaviour is explicit, configurable, and
+  practical to test end-to-end.
+
+### Implementation summary
+
+- `discover_tests_in_file()` now returns both discovered tests and parser diagnostics.
+- `hew test` now renders parse diagnostics with source spans and exits 1 on parser errors.
+- The runner now preserves file/test order instead of relying on `HashMap` iteration.
+- Output formatting gained render helpers so unit tests can assert on exact text and `JUnit`.
+- Added end-to-end CLI tests for passing, failing, mixed, parse-error, and timeout suites.
+
 ## Phase 0: Multi-Agent Audit (2026-02-24)
 
 ### Agents deployed
@@ -821,3 +861,17 @@ actor model advantages over Go channels + mutexes and Rust `Arc<Mutex>`:
   unresponsive services without blocking.
 - **`distributed_counter.hew`** — Replicated counter with coordinator-based merge. Local
   reads are instant; writes sync through a coordinator actor.
+
+### Implicit generic monomorphization
+
+- Added implicit type-argument inference for generic function calls so that
+  `identity(42)` works without requiring `identity<int>(42)`.
+- **Root cause:** the type checker inferred concrete types via unification but never
+  wrote them back into the AST's `call.type_args`; the C++ codegen only specialised
+  when `type_args` was present, falling through to "undefined function" for implicit calls.
+- **Fix (enrichment-stage):** added a `call_type_args` map to `TypeCheckOutput` that
+  records inferred type arguments per call site. During enrichment, calls with missing
+  `type_args` are backfilled from this map before serialization, so the codegen sees
+  explicit type args and handles them through the existing monomorphization path.
+- Added E2E tests: `generic_implicit_identity` (single-param, int + string) and
+  `generic_implicit_multi` (multi-arg generic with int + string specializations).

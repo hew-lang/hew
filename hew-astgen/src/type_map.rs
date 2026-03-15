@@ -170,3 +170,217 @@ pub fn cpp_type(ty: &crate::model::RustType) -> String {
         RustType::Range(_) => "ast::Span".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{EnumVariant, RustType};
+
+    // ── cpp_type: primitive mappings ────────────────────────────────────────
+
+    #[test]
+    fn maps_bool_to_cpp_bool() {
+        assert_eq!(cpp_type(&RustType::Bool), "bool");
+    }
+
+    #[test]
+    fn maps_integer_types_to_stdint() {
+        assert_eq!(cpp_type(&RustType::I64), "int64_t");
+        assert_eq!(cpp_type(&RustType::U64), "uint64_t");
+        assert_eq!(cpp_type(&RustType::U32), "uint32_t");
+        assert_eq!(cpp_type(&RustType::Usize), "uint64_t");
+    }
+
+    #[test]
+    fn maps_f64_to_double() {
+        assert_eq!(cpp_type(&RustType::F64), "double");
+    }
+
+    #[test]
+    fn maps_string_and_pathbuf_to_std_string() {
+        assert_eq!(cpp_type(&RustType::String), "std::string");
+        assert_eq!(cpp_type(&RustType::PathBuf), "std::string");
+    }
+
+    // ── cpp_type: generic wrappers ─────────────────────────────────────────
+
+    #[test]
+    fn maps_vec_to_std_vector() {
+        let ty = RustType::Vec(Box::new(RustType::I64));
+        assert_eq!(cpp_type(&ty), "std::vector<int64_t>");
+    }
+
+    #[test]
+    fn maps_option_to_std_optional() {
+        let ty = RustType::Option(Box::new(RustType::String));
+        assert_eq!(cpp_type(&ty), "std::optional<std::string>");
+    }
+
+    #[test]
+    fn maps_option_box_to_unique_ptr_without_optional() {
+        // Option<Box<T>> collapses to unique_ptr (nullptr represents None)
+        let ty = RustType::Option(Box::new(RustType::Box(Box::new(RustType::Named(
+            "Expr".to_string(),
+        )))));
+        assert_eq!(cpp_type(&ty), "std::unique_ptr<ast::Expr>");
+    }
+
+    #[test]
+    fn maps_box_to_unique_ptr() {
+        let ty = RustType::Box(Box::new(RustType::Named("Block".to_string())));
+        assert_eq!(cpp_type(&ty), "std::unique_ptr<ast::Block>");
+    }
+
+    #[test]
+    fn maps_spanned_to_ast_spanned() {
+        let ty = RustType::Spanned(Box::new(RustType::Named("TypeExpr".to_string())));
+        assert_eq!(cpp_type(&ty), "ast::Spanned<ast::TypeExpr>");
+    }
+
+    #[test]
+    fn maps_named_type_with_ast_prefix() {
+        assert_eq!(
+            cpp_type(&RustType::Named("FnDecl".to_string())),
+            "ast::FnDecl"
+        );
+    }
+
+    #[test]
+    fn maps_pair_tuple_to_std_pair() {
+        let ty = RustType::Tuple(vec![RustType::String, RustType::U64]);
+        assert_eq!(cpp_type(&ty), "std::pair<std::string, uint64_t>");
+    }
+
+    #[test]
+    fn maps_hashmap_to_unordered_map() {
+        let ty = RustType::HashMap(
+            Box::new(RustType::String),
+            Box::new(RustType::Named("Module".to_string())),
+        );
+        assert_eq!(
+            cpp_type(&ty),
+            "std::unordered_map<std::string, ast::Module>"
+        );
+    }
+
+    #[test]
+    fn maps_range_to_ast_span() {
+        let ty = RustType::Range(Box::new(RustType::Usize));
+        assert_eq!(cpp_type(&ty), "ast::Span");
+    }
+
+    #[test]
+    fn maps_nested_vec_option_correctly() {
+        // Vec<Option<String>> → std::vector<std::optional<std::string>>
+        let ty = RustType::Vec(Box::new(RustType::Option(Box::new(RustType::String))));
+        assert_eq!(cpp_type(&ty), "std::vector<std::optional<std::string>>");
+    }
+
+    // ── TypeMap: variant naming ────────────────────────────────────────────
+
+    #[test]
+    fn prefix_naming_prepends_enum_name() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Binary".to_string(),
+        };
+        assert_eq!(tm.cpp_variant_struct("Expr", &variant), "ExprBinary");
+    }
+
+    #[test]
+    fn type_expr_uses_type_prefix() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Array".to_string(),
+        };
+        assert_eq!(tm.cpp_variant_struct("TypeExpr", &variant), "TypeArray");
+    }
+
+    #[test]
+    fn pattern_uses_pat_prefix() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Wildcard".to_string(),
+        };
+        assert_eq!(tm.cpp_variant_struct("Pattern", &variant), "PatWildcard");
+    }
+
+    #[test]
+    fn item_uses_inner_type_name() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Newtype {
+            name: "Import".to_string(),
+            ty: RustType::Named("ImportDecl".to_string()),
+        };
+        assert_eq!(tm.cpp_variant_struct("Item", &variant), "ImportDecl");
+    }
+
+    #[test]
+    fn item_unit_variant_falls_back_to_variant_name() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Empty".to_string(),
+        };
+        // Unit variant under InnerTypeName falls back
+        assert_eq!(tm.cpp_variant_struct("Item", &variant), "Empty");
+    }
+
+    #[test]
+    fn type_body_item_field_override_takes_precedence() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Field".to_string(),
+        };
+        assert_eq!(
+            tm.cpp_variant_struct("TypeBodyItem", &variant),
+            "TypeBodyItemField"
+        );
+    }
+
+    #[test]
+    fn type_body_item_non_overridden_uses_prefix() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Method".to_string(),
+        };
+        assert_eq!(
+            tm.cpp_variant_struct("TypeBodyItem", &variant),
+            "TypeBodyMethod"
+        );
+    }
+
+    #[test]
+    fn unknown_enum_falls_back_to_variant_name() {
+        let tm = TypeMap::new();
+        let variant = EnumVariant::Unit {
+            name: "Foo".to_string(),
+        };
+        assert_eq!(tm.cpp_variant_struct("UnknownEnum", &variant), "Foo");
+    }
+
+    // ── TypeMap: utility methods ────────────────────────────────────────────
+
+    #[test]
+    fn parse_fn_name_follows_convention() {
+        assert_eq!(TypeMap::parse_fn_name("Expr"), "parseExpr");
+        assert_eq!(TypeMap::parse_fn_name("FnDecl"), "parseFnDecl");
+    }
+
+    #[test]
+    fn should_skip_returns_true_for_literal() {
+        let tm = TypeMap::new();
+        assert!(tm.should_skip("Literal"));
+        assert!(tm.should_skip("IntRadix"));
+        assert!(!tm.should_skip("Expr"));
+    }
+
+    #[test]
+    fn needs_forward_decl_for_recursive_types() {
+        let tm = TypeMap::new();
+        assert!(tm.needs_forward_decl("Expr"));
+        assert!(tm.needs_forward_decl("Stmt"));
+        assert!(tm.needs_forward_decl("Block"));
+        assert!(tm.needs_forward_decl("FnDecl"));
+        assert!(!tm.needs_forward_decl("WhereClause"));
+    }
+}

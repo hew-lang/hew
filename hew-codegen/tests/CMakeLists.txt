@@ -525,6 +525,8 @@ add_e2e_file_test(generic_all_types    e2e_generics generic_all_types)
 add_e2e_file_test(generic_nested       e2e_generics generic_nested)
 add_e2e_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound_dispatch)
 add_e2e_file_test(generic_receiver_method e2e_generics generic_receiver_method)
+add_e2e_file_test(generic_implicit_identity e2e_generics generic_implicit_identity)
+add_e2e_file_test(generic_implicit_multi e2e_generics generic_implicit_multi)
 
 # ── Regex tests ───────────────────────────────────────────────────────────────
 add_e2e_file_test(regex_is_match        e2e_regex regex_is_match)

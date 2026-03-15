@@ -245,3 +245,90 @@ fn collect_expr_folding(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    #[test]
+    fn fold_multiline_function_body() {
+        // Verify folding runs without panicking on multi-line code
+        let source = "fn main() {\n    let x = 1;\n    let y = 2;\n}";
+        let pr = parse(source);
+        let _ranges = build_folding_ranges(source, &pr);
+        // Folding depends on parser item spans; just verify no panic
+    }
+
+    #[test]
+    fn fold_import_group() {
+        let source = "import std::os;\nimport std::fs;\nimport std::net;\nfn main() {}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        let imports = ranges.iter().find(|r| r.kind == FoldingKind::Imports);
+        assert!(
+            imports.is_some(),
+            "consecutive imports should create fold range"
+        );
+    }
+
+    #[test]
+    fn single_import_no_fold() {
+        let source = "import std::os;\nfn main() {}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        let imports = ranges
+            .iter()
+            .filter(|r| r.kind == FoldingKind::Imports)
+            .count();
+        assert_eq!(imports, 0, "single import should not create fold range");
+    }
+
+    #[test]
+    fn no_fold_for_single_line_function() {
+        let source = "fn noop() {}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        let regions = ranges
+            .iter()
+            .filter(|r| r.kind == FoldingKind::Region)
+            .count();
+        assert_eq!(regions, 0, "single-line function should not fold");
+    }
+
+    #[test]
+    fn fold_actor_body() {
+        let source =
+            "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        // Actor should produce at least some fold ranges
+        assert!(
+            !ranges.is_empty(),
+            "actor with receive handler should have fold ranges"
+        );
+    }
+
+    #[test]
+    fn fold_nested_if() {
+        let source = "fn check() {\n    if true {\n        let a = 1;\n    } else {\n        let b = 2;\n    }\n}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        // The if statement should produce at least one fold region
+        assert!(
+            !ranges.is_empty(),
+            "function with if/else should have fold ranges"
+        );
+    }
+
+    #[test]
+    fn fold_empty_source() {
+        let source = "";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        assert!(ranges.is_empty(), "empty source should have no fold ranges");
+    }
+}

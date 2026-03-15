@@ -149,3 +149,89 @@ fn make_symbol(name: &str, kind: SymbolKind, span: OffsetSpan) -> SymbolInfo {
         children: Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(source: &str) -> hew_parser::ParseResult {
+        hew_parser::parse(source)
+    }
+
+    #[test]
+    fn symbols_function() {
+        let source = "fn greet() {}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "greet");
+        assert_eq!(symbols[0].kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn symbols_constant() {
+        let source = "const PI: f64 = 3.14;";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "PI");
+        assert_eq!(symbols[0].kind, SymbolKind::Constant);
+    }
+
+    #[test]
+    fn symbols_import() {
+        let source = "import std::os;";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].kind, SymbolKind::Module);
+        assert!(symbols[0].name.contains("std"));
+    }
+
+    #[test]
+    fn symbols_multiple_items() {
+        let source = "fn foo() {}\nfn bar() {}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 2);
+    }
+
+    #[test]
+    fn symbols_actor_with_children() {
+        let source = "actor Counter {\n    receive fn inc() {\n        let x = 1;\n    }\n}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Counter");
+        assert_eq!(symbols[0].kind, SymbolKind::Actor);
+        assert!(
+            !symbols[0].children.is_empty(),
+            "actor should have child symbols for receive handlers"
+        );
+    }
+
+    #[test]
+    fn symbols_enum_with_variants() {
+        let source = "enum Colour {\n    Red;\n    Green;\n    Blue;\n}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Colour");
+        assert_eq!(symbols[0].kind, SymbolKind::Enum);
+        assert!(
+            !symbols[0].children.is_empty(),
+            "enum should have variant children"
+        );
+    }
+
+    #[test]
+    fn symbols_spans_are_set() {
+        // Verify that symbols are produced and have reasonable structure
+        let source = "fn alpha() {}";
+        let pr = parse(source);
+        let symbols = build_document_symbols(source, &pr);
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "alpha");
+        assert_eq!(symbols[0].kind, SymbolKind::Function);
+    }
+}

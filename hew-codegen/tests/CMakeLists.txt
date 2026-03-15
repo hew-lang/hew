@@ -876,6 +876,11 @@ add_e2e_file_test(coverage_loop_edge_cases     e2e_coverage loop_edge_cases)
 add_e2e_file_test(coverage_closure_edge_cases  e2e_coverage closure_edge_cases)
 add_e2e_file_test(coverage_defer_multi_scope   e2e_coverage defer_multi_scope)
 add_e2e_file_test(coverage_std_testing         e2e_coverage std_testing)
+add_e2e_panic_test(testing_assert_fail         e2e_coverage testing_assert_fail "assertion failed: expected 2, got 1")
+
+# ── DNS / TLS stdlib tests ────────────────────────────────────────────────────
+add_e2e_file_test(dns_resolve                  e2e_dns dns_resolve)
+add_e2e_file_test(tls_import                   e2e_tls tls_import)
 
 # ── Golden dialect IR validation tests ────────────────────────────────────────
 # Each test targets specific Hew MLIR dialect ops to ensure the compiler

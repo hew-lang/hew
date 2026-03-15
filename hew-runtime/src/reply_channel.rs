@@ -438,4 +438,86 @@ mod tests {
             hew_reply_channel_free(ch);
         }
     }
+
+    #[test]
+    fn send_recv_roundtrip() {
+        let ch = hew_reply_channel_new();
+        let payload = 99_i64;
+
+        unsafe {
+            // Sender retains so the channel survives the reply call.
+            hew_reply_channel_retain(ch);
+            hew_reply(
+                ch,
+                (&payload as *const i64).cast_mut().cast(),
+                std::mem::size_of::<i64>(),
+            );
+
+            let result = hew_reply_wait(ch).cast::<i64>();
+            assert!(!result.is_null());
+            assert_eq!(*result, 99);
+            libc::free(result.cast());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn timeout_expires_returns_null() {
+        let ch = hew_reply_channel_new();
+
+        unsafe {
+            // Nobody sends a reply, so timeout should fire.
+            let result = hew_reply_wait_timeout(ch, 10);
+            assert!(result.is_null());
+            hew_reply_channel_free(ch);
+        }
+    }
+
+    #[test]
+    fn null_channel_safety() {
+        // All functions should handle null gracefully.
+        unsafe {
+            hew_reply(ptr::null_mut(), ptr::null_mut(), 0);
+            assert!(hew_reply_wait(ptr::null_mut()).is_null());
+            assert!(hew_reply_wait_timeout(ptr::null_mut(), 100).is_null());
+            hew_reply_channel_retain(ptr::null_mut());
+            hew_reply_channel_free(ptr::null_mut());
+            hew_reply_channel_cancel(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn threaded_send_recv() {
+        let ch = hew_reply_channel_new();
+        let value = 77_i32;
+
+        unsafe {
+            hew_reply_channel_retain(ch);
+
+            let ch_ptr = ch as usize;
+            let handle = std::thread::spawn(move || {
+                let ch = ch_ptr as *mut HewReplyChannel;
+                std::thread::sleep(Duration::from_millis(10));
+                let v = 77_i32;
+                hew_reply(
+                    ch,
+                    (&v as *const i32).cast_mut().cast(),
+                    std::mem::size_of::<i32>(),
+                );
+            });
+
+            let result = hew_reply_wait(ch).cast::<i32>();
+            assert!(!result.is_null());
+            assert_eq!(*result, value);
+            libc::free(result.cast());
+            hew_reply_channel_free(ch);
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn select_first_null_returns_negative_one() {
+        let result = unsafe { hew_select_first(ptr::null_mut(), 0, 10) };
+        assert_eq!(result, -1);
+    }
 }

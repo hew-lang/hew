@@ -109,6 +109,7 @@ STDLIB_PACKAGES := \
     hew-std-net-url hew-std-net-websocket \
     hew-std-time-cron hew-std-time-datetime \
     hew-std-text-regex hew-std-text-semver \
+    hew-std-sort \
     hew-std-misc-uuid hew-std-misc-log
 
 stdlib:

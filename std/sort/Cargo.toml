@@ -1,0 +1,21 @@
+[package]
+name = "hew-std-sort"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hew std::sort — sorting utilities for vectors"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+keywords = ["hew", "stdlib"]
+categories = ["compilers"]
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+[dependencies]
+hew-cabi = { path = "../../hew-cabi" }
+hew-runtime = { path = "../../hew-runtime" }
+libc = "0.2"
+
+[lints]
+workspace = true

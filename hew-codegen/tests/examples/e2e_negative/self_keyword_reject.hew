@@ -1,11 +1,11 @@
-// Negative test: self parameter was removed from the language.
+// Negative test: bare `self` parameter is not valid in Hew.
 type Foo {
     x: int;
 }
 
 impl Foo {
     fn bar(self) -> int {
-        self.x
+        42
     }
 }
 

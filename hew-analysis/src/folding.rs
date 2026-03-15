@@ -189,6 +189,15 @@ fn collect_stmt_folding(
                 collect_expr_folding(source, lo, &v.0, &v.1, r);
             }
         }
+        Stmt::Defer(expr) => {
+            collect_expr_folding(source, lo, &expr.0, &expr.1, r);
+        }
+        Stmt::Assign { value, .. } => {
+            collect_expr_folding(source, lo, &value.0, &value.1, r);
+        }
+        Stmt::Return(Some(val)) => {
+            collect_expr_folding(source, lo, &val.0, &val.1, r);
+        }
         _ => {}
     }
 }
@@ -323,6 +332,28 @@ mod tests {
         assert!(
             !ranges.is_empty(),
             "function with if/else should have fold ranges"
+        );
+    }
+
+    #[test]
+    fn fold_defer_block() {
+        let source = "fn cleanup() {\n    defer {\n        close();\n        flush();\n    }\n}";
+        let pr = parse(source);
+        let ranges = build_folding_ranges(source, &pr);
+        // The defer block expression (a multi-line Expr::Block) should
+        // produce a fold range covering lines 1 through 4.
+        let regions: Vec<_> = ranges
+            .iter()
+            .filter(|r| r.kind == FoldingKind::Region)
+            .collect();
+        assert!(
+            !regions.is_empty(),
+            "defer with multi-line block should produce at least one fold range"
+        );
+        // Verify we have a fold range starting at the defer line.
+        assert!(
+            regions.iter().any(|r| r.start_line == 1),
+            "expected a fold range starting at the defer line (line 1), got: {regions:?}"
         );
     }
 }

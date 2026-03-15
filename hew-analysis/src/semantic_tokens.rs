@@ -92,6 +92,14 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
             modifiers |= token_modifiers::ASYNC;
         }
 
+        // Mark labels at definition sites ('label:) with DECLARATION modifier.
+        if matches!(token, Token::Label(_)) {
+            let next = lexer_tokens.get(i + 1).map(|(t, _)| t);
+            if matches!(next, Some(Token::Colon)) {
+                modifiers |= token_modifiers::DECLARATION;
+            }
+        }
+
         result.push(SemanticToken {
             start: span.start,
             length,
@@ -150,5 +158,34 @@ mod tests {
         // `calc` should be typed as FUNCTION
         let calc = tokens.iter().find(|t| t.start == 3).unwrap();
         assert_eq!(calc.token_type, token_types::FUNCTION);
+    }
+
+    #[test]
+    fn label_definition_gets_declaration_modifier() {
+        // @outer: loop { break @outer; }
+        let tokens = build_semantic_tokens("@outer: loop { break @outer; }");
+        let labels: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::VARIABLE)
+            .collect();
+        assert!(
+            labels.len() >= 2,
+            "expected at least two label tokens, got {}",
+            labels.len()
+        );
+        // Definition site (@outer:) should have DECLARATION modifier.
+        let def_label = &labels[0];
+        assert_ne!(
+            def_label.modifiers & token_modifiers::DECLARATION,
+            0,
+            "label at definition site should have DECLARATION modifier"
+        );
+        // Usage site (break @outer) should NOT have DECLARATION modifier.
+        let use_label = &labels[1];
+        assert_eq!(
+            use_label.modifiers & token_modifiers::DECLARATION,
+            0,
+            "label at usage site should not have DECLARATION modifier"
+        );
     }
 }

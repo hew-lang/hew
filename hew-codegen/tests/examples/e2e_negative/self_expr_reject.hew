@@ -1,0 +1,12 @@
+// Negative test: `self` used as an expression must be rejected.
+// Tests self.field, self.method(), let x = self, and return self.
+type Counter { count: int }
+
+impl Counter {
+    fn bad(p: Counter) -> int {
+        let _ = self.count;
+        0
+    }
+}
+
+fn main() {}

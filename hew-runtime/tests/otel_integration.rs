@@ -1,9 +1,9 @@
-//! Integration test: OTel OTLP/HTTP exporter end-to-end.
+//! Integration test: `OTel` OTLP/HTTP exporter end-to-end.
 //!
 //! Starts a minimal HTTP server on a random port (using `std::net::TcpListener`
 //! and `tiny_http`, both already available in `dev-dependencies`), then:
 //!
-//! 1. Configures the OTel exporter to point at the mock receiver.
+//! 1. Configures the `OTel` exporter to point at the mock receiver.
 //! 2. Records a begin/end span pair and a lifecycle event via the tracing C ABI.
 //! 3. Drains events, reconstructs spans, and posts them.
 //! 4. Verifies the mock receiver received valid OTLP/HTTP JSON containing the

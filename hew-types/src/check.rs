@@ -4015,18 +4015,29 @@ impl Checker {
                     if let Some(ty) = found {
                         ty
                     } else {
-                        let similar = crate::error::find_similar(
-                            name,
-                            self.env
-                                .all_names()
-                                .chain(self.fn_sigs.keys().map(String::as_str)),
-                        );
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedVariable,
-                            span,
-                            format!("undefined variable `{name}`"),
-                            similar,
-                        );
+                        if name == "self" {
+                            self.report_error(
+                                TypeErrorKind::UndefinedVariable,
+                                span,
+                                "`self` is not a valid identifier in Hew; \
+                                 use a named receiver parameter instead: \
+                                 `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                                    .to_string(),
+                            );
+                        } else {
+                            let similar = crate::error::find_similar(
+                                name,
+                                self.env
+                                    .all_names()
+                                    .chain(self.fn_sigs.keys().map(String::as_str)),
+                            );
+                            self.report_error_with_suggestions(
+                                TypeErrorKind::UndefinedVariable,
+                                span,
+                                format!("undefined variable `{name}`"),
+                                similar,
+                            );
+                        }
                         Ty::Error
                     }
                 }
@@ -6718,6 +6729,41 @@ impl Checker {
                     "decode" => {
                         // Returns Stream<T> where T is inferred; codec type arg not yet resolved
                         Ty::stream(Ty::Var(TypeVar::fresh()))
+                    }
+                    // Functional operators — fn(String) -> String / bool, return Stream<String>
+                    "map" => {
+                        // Argument is a closure fn(String) -> String.
+                        // Check the closure against the expected type so that the
+                        // closure parameter type is inferred as String.
+                        let ret_ty = Ty::Var(TypeVar::fresh());
+                        let expected_fn = Ty::Function {
+                            params: vec![Ty::String],
+                            ret: Box::new(ret_ty.clone()),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        Ty::stream(Ty::String)
+                    }
+                    "filter" => {
+                        // Argument is a predicate fn(String) -> bool.
+                        let expected_fn = Ty::Function {
+                            params: vec![Ty::String],
+                            ret: Box::new(Ty::Bool),
+                        };
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &expected_fn);
+                        }
+                        Ty::stream(Ty::String)
+                    }
+                    "take" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::I64);
+                        }
+                        Ty::stream(Ty::String)
                     }
                     _ => {
                         self.report_error(

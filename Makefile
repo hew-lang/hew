@@ -283,7 +283,7 @@ assemble-release:
 
 # ── Tests ───────────────────────────────────────────────────────────────────
 
-test: test-rust test-codegen test-hew
+test: test-rust test-codegen test-hew test-cpp
 
 # TODO: Add test-stdlib to `test` target once stdlib files are type-check clean
 test-all: test-rust test-codegen test-stdlib test-hew test-wasm
@@ -318,8 +318,10 @@ test-hew: hew codegen runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
 
-# Legacy alias
-test-cpp: test-codegen
+# C++ unit tests only (not E2E)
+test-cpp: codegen
+	@echo "==> Running C++ unit tests"
+	cd hew-codegen/build && ctest --output-on-failure -R "^(mlir_dialect|mlirgen|translate)$$"
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 

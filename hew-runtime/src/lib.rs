@@ -298,7 +298,7 @@ pub mod otel;
 // can call otel::maybe_start() unconditionally.
 #[cfg(any(not(feature = "otel"), target_arch = "wasm32"))]
 pub mod otel {
-    //! OTel exporter stubs when the `otel` feature is disabled.
+    //! `OTel` exporter stubs when the `otel` feature is disabled.
     /// No-op: otel feature is disabled.
     pub fn maybe_start() {}
 }

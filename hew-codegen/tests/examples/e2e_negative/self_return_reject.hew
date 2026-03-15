@@ -1,0 +1,6 @@
+// Negative test: `self` in a return statement must be rejected.
+fn bar() -> int {
+    return self;
+}
+
+fn main() {}

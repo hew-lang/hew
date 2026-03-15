@@ -1,0 +1,7 @@
+// Negative test: `self` in a let binding must be rejected.
+fn foo() -> int {
+    let x = self;
+    0
+}
+
+fn main() {}

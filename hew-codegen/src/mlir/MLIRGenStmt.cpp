@@ -707,7 +707,9 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             if (fi->name == "hew_stream_channel")
               streamHandleVarTypes[varName] = "Pair";
             else if (fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_lines" ||
-                     fi->name == "hew_stream_pair_stream" || fi->name == "hew_stream_chunks")
+                     fi->name == "hew_stream_pair_stream" || fi->name == "hew_stream_chunks" ||
+                     fi->name == "hew_stream_map_string" || fi->name == "hew_stream_filter_string" ||
+                     fi->name == "hew_stream_take")
               streamHandleVarTypes[varName] = "Stream";
             else if (fi->name == "hew_stream_pair_sink" ||
                      fi->name == "hew_stream_from_file_write" ||
@@ -1694,7 +1696,9 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
       if (ce->function) {
         if (auto *fi = std::get_if<ast::ExprIdentifier>(&ce->function->value.kind)) {
           if (fi->name == "hew_stream_lines" || fi->name == "hew_stream_chunks" ||
-              fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_pair_stream") {
+              fi->name == "hew_stream_from_file_read" || fi->name == "hew_stream_pair_stream" ||
+              fi->name == "hew_stream_map_string" || fi->name == "hew_stream_filter_string" ||
+              fi->name == "hew_stream_take") {
             generateForStreamStmt(stmt);
             return;
           }

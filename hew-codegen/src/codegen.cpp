@@ -4569,14 +4569,19 @@ static void transformCoroutineGenerators(llvm::Module &M) {
   auto *PtrTy = llvm::PointerType::get(Ctx, 0);
   auto *I8Ty = llvm::Type::getInt8Ty(Ctx);
   auto *I32Ty = llvm::Type::getInt32Ty(Ctx);
-  auto *I64Ty = llvm::Type::getInt64Ty(Ctx);
   auto *I1Ty = llvm::Type::getInt1Ty(Ctx);
   auto *VoidTy = llvm::Type::getVoidTy(Ctx);
+
+  // Determine size_t type from the target's pointer width.
+  // On wasm32 this is i32; on x86_64/aarch64 it is i64.
+  unsigned ptrBits = M.getDataLayout().getPointerSizeInBits();
+  auto *SizeTy = llvm::IntegerType::get(Ctx, ptrBits);
+
   // Declare coroutine intrinsics
   auto *CoroIdFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_id);
   auto *CoroAllocFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_alloc);
-  auto *CoroSizeI64Fn =
-      llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_size, {I64Ty});
+  auto *CoroSizeFn =
+      llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_size, {SizeTy});
   auto *CoroBeginFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_begin);
   auto *CoroSuspendFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_suspend);
   auto *CoroEndFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_end);
@@ -4585,10 +4590,10 @@ static void transformCoroutineGenerators(llvm::Module &M) {
   auto *CoroDoneFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_done);
   auto *CoroPromiseFn = llvm::Intrinsic::getOrInsertDeclaration(&M, llvm::Intrinsic::coro_promise);
 
-  // Ensure malloc and free are declared
+  // Ensure malloc and free are declared with target-correct size_t.
   auto *MallocFn = M.getFunction("malloc");
   if (!MallocFn) {
-    auto *MallocTy = llvm::FunctionType::get(PtrTy, {I64Ty}, false);
+    auto *MallocTy = llvm::FunctionType::get(PtrTy, {SizeTy}, false);
     MallocFn = llvm::Function::Create(MallocTy, llvm::Function::ExternalLinkage, "malloc", &M);
   }
   auto *FreeFn = M.getFunction("free");
@@ -4690,7 +4695,7 @@ static void transformCoroutineGenerators(llvm::Module &M) {
 
     // dyn.alloc block
     IRB.SetInsertPoint(DynAlloc);
-    auto *CoroSize = IRB.CreateCall(CoroSizeI64Fn, {}, "coro.size");
+    auto *CoroSize = IRB.CreateCall(CoroSizeFn, {}, "coro.size");
     auto *Alloc = IRB.CreateCall(MallocFn, {CoroSize}, "coro.alloc");
     IRB.CreateBr(Begin);
 

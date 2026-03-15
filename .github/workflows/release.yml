@@ -817,10 +817,52 @@ jobs:
             dist/hew-v*-linux-musl-*.tar.gz
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Docker clean-room test — verifies the Linux release tarball installs and
+  # runs correctly inside a pristine Ubuntu 24.04 container.
+  # Reuses the already-built linux-x86_64 artifact so no LLVM rebuild is
+  # needed; typical runtime is 5–10 min.
+  # Gates the release job so we never publish a broken installer.
+  # ─────────────────────────────────────────────────────────────────────────
+  docker-clean-room-test:
+    name: Docker clean-room test (Ubuntu 24.04)
+    needs: build
+    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download linux-x86_64 release artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hew-v*-linux-x86_64
+          path: artifacts
+          merge-multiple: true
+
+      - name: Stage release tarball for Docker build
+        run: |
+          mkdir -p dist/test-tarball
+          TARBALL=$(find artifacts -name 'hew-v*-linux-x86_64.tar.gz' | head -1)
+          tar -xf "${TARBALL}" -C dist/test-tarball --strip-components=1
+
+      - name: Build Ubuntu 24.04 test image
+        run: |
+          docker build \
+            -f installers/docker/Dockerfile.ubuntu-test \
+            --build-context tarball=dist/test-tarball \
+            -t hew-ubuntu-test \
+            .
+
+      - name: Run stdlib smoke test in container
+        run: docker run --rm hew-ubuntu-test
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Release — download all artifacts, generate checksums, publish
   # ─────────────────────────────────────────────────────────────────────────
   release:
-    needs: [build, build-freebsd, linux-packages, alpine-package]
+    needs: [build, build-freebsd, linux-packages, alpine-package, docker-clean-room-test]
     runs-on: ubuntu-24.04
     # Run as long as build didn't hard-fail — linux-packages and continue-on-error
     # targets (Windows, macOS x86_64) are allowed to fail without blocking release

@@ -862,6 +862,82 @@ actor model advantages over Go channels + mutexes and Rust `Arc<Mutex>`:
 - **`distributed_counter.hew`** — Replicated counter with coordinator-based merge. Local
   reads are instant; writes sync through a coordinator actor.
 
+## Structured Error Types — Error Handling Story
+
+### Design rationale
+
+Hew already has the infrastructure for proper error handling:
+
+- `Result<T, E>` is a built-in generic enum
+- The `?` operator propagates errors from `Result` (and `Option`)
+- Enums with payload variants support pattern matching
+
+What was missing was a **convention**: stdlib modules returned bare
+`i32` error codes or `Result<T, String>` with unstructured messages.
+Services need to match on error *kinds* (not found vs permission denied
+vs timeout), not parse error strings.
+
+### Approach: pure-enum error types (Option C)
+
+We chose the simplest approach that requires **no language changes** —
+define error enums as regular Hew enums in each stdlib domain:
+
+```hew
+enum IoError {
+    NotFound(int);
+    PermissionDenied(int);
+    AlreadyExists(int);
+    Other(int);
+}
+```
+
+User code wraps existing operations in `Result<T, IoError>` and gains
+structured matching via the `?` operator:
+
+```hew
+fn load_config(path: String) -> Result<String, IoError> {
+    if fs.exists(path) {
+        Ok(fs.read(path))
+    } else {
+        Err(IoError::NotFound(1))
+    }
+}
+
+fn init() -> Result<String, IoError> {
+    let cfg = load_config("app.toml")?;   // propagates IoError
+    Ok(cfg)
+}
+```
+
+### What shipped
+
+- **`IoError` enum** in `std/fs.hew` — canonical error type for
+  file-system operations (`NotFound`, `PermissionDenied`,
+  `AlreadyExists`, `Other`), each carrying an `int` error code.
+- **E2E test suite** (`e2e_structured_errors/structured_errors.hew`) —
+  exercises custom `MathError` enum with the `?` operator: Ok-path
+  propagation, first-error and second-error propagation through chained
+  `?`, pattern matching on specific error variants, and qualified
+  construction (`MathError::Overflow(999)`).
+
+### Known limitation — `Result<T, UserEnum>` in imported modules
+
+The codegen currently cannot lower `Result<T, E>` where `E` is a
+user-defined enum when that type appears in a function signature inside
+an imported module.  Standalone files work fine (the E2E test proves
+this).  Once the MLIR monomorphisation handles heterogeneous Result
+instantiations in module scope, `std/fs.hew` can export `try_*`
+functions returning `Result<T, IoError>` directly.
+
+### Future work
+
+- Add `NetError`, `ParseError`, `CryptoError` enums to their respective
+  stdlib modules following the same pattern.
+- Lift the imported-module codegen restriction so stdlib functions can
+  return `Result<T, IoError>` natively.
+- Add an `Error` trait with `message()` and `kind()` methods once trait
+  objects are fully supported in codegen.
+
 ### Implicit generic monomorphization
 
 - Added implicit type-argument inference for generic function calls so that

@@ -805,6 +805,25 @@ private:
   // Recursively handles nested generics: Pair<int> → "Pair_int".
   // Also triggers convertType to ensure nested generic structs are specialized.
   std::string resolveTypeArgMangledName(const ast::TypeExpr &type);
+
+  // ── Generic impl monomorphization ─────────────────────────────
+  /// Info for a deferred generic impl block (e.g. `impl<T> Box<T> { … }`).
+  struct GenericImplInfo {
+    const std::vector<ast::TypeParam> *typeParams; // points into AST
+    std::vector<const ast::FnDecl *> methods;
+  };
+  // Keyed by base type name (e.g. "Box").
+  std::unordered_map<std::string, GenericImplInfo> genericImplMethods;
+  // Map from monomorphized struct name → (base name, type arg names).
+  // Populated during generic struct specialization in convertType.
+  std::unordered_map<std::string,
+                     std::pair<std::string, std::vector<std::string>>>
+      structTypeOrigin;
+  // Specialize a generic impl method for the given concrete type args.
+  mlir::func::FuncOp specializeGenericImplMethod(
+      const std::string &baseTypeName,
+      const std::vector<std::string> &typeArgs,
+      const std::string &methodName);
 };
 
 } // namespace hew

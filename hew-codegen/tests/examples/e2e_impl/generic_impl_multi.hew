@@ -1,0 +1,26 @@
+// Multiple methods in a generic impl block, invoked on different types.
+
+type Wrapper<T> { inner: T }
+
+impl<T> Wrapper<T> {
+    fn get(w: Wrapper<T>) -> T { w.inner }
+
+    fn take_extra(w: Wrapper<T>, extra: T) -> T {
+        extra
+    }
+}
+
+fn wrap<T>(v: T) -> Wrapper<T> {
+    Wrapper { inner: v }
+}
+
+fn main() {
+    let a = wrap<int>(10);
+    println(a.get());
+
+    let r = a.take_extra(99);
+    println(r);
+
+    let c = wrap<string>("world");
+    println(c.get());
+}

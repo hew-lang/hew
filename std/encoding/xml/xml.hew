@@ -45,38 +45,38 @@ trait NodeMethods {
 }
 
 impl NodeMethods for Node {
-    fn to_string(node: Node) -> String { hew_xml_to_string(node) }
-    fn get_tag(node: Node) -> String { hew_xml_get_tag(node) }
+    fn to_string(node: Node) -> String { unsafe { hew_xml_to_string(node) } }
+    fn get_tag(node: Node) -> String { unsafe { hew_xml_get_tag(node) } }
     fn get_attribute(node: Node, name: String) -> String {
-        hew_xml_get_attribute(node, name)
+        unsafe { hew_xml_get_attribute(node, name) }
     }
-    fn children_count(node: Node) -> i32 { hew_xml_children_count(node) }
-    fn get_child(node: Node, index: i32) -> Node { hew_xml_get_child(node, index) }
-    fn get_text(node: Node) -> String { hew_xml_get_text(node) }
-    fn is_element(node: Node) -> i32 { hew_xml_is_element(node) }
-    fn free(node: Node) { hew_xml_free(node); }
+    fn children_count(node: Node) -> i32 { unsafe { hew_xml_children_count(node) } }
+    fn get_child(node: Node, index: i32) -> Node { unsafe { hew_xml_get_child(node, index) } }
+    fn get_text(node: Node) -> String { unsafe { hew_xml_get_text(node) } }
+    fn is_element(node: Node) -> i32 { unsafe { hew_xml_is_element(node) } }
+    fn free(node: Node) { unsafe { hew_xml_free(node) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
 
 /// Parse an XML string into a `Node` tree.
 pub fn parse(s: String) -> Node {
-    hew_xml_parse(s)
+    unsafe { hew_xml_parse(s) }
 }
 
 /// Serialize a `Node` tree back to an XML string.
 pub fn to_string(node: Node) -> String {
-    hew_xml_to_string(node)
+    unsafe { hew_xml_to_string(node) }
 }
 
 /// Get an attribute value from a node. Returns empty string if not found.
 pub fn get_attribute(node: Node, name: String) -> String {
-    hew_xml_get_attribute(node, name)
+    unsafe { hew_xml_get_attribute(node, name) }
 }
 
 /// Get the concatenated text content of a node and its descendants.
 pub fn get_text(node: Node) -> String {
-    hew_xml_get_text(node)
+    unsafe { hew_xml_get_text(node) }
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────

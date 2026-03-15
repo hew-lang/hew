@@ -24,28 +24,28 @@
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_ints(v: Vec<int>) -> Vec<int> {
-    hew_sort_ints(v)
+    unsafe { hew_sort_ints(v) }
 }
 
 /// Sort a vector of strings in alphabetical order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_strings(v: Vec<String>) -> Vec<String> {
-    hew_sort_strings(v)
+    unsafe { hew_sort_strings(v) }
 }
 
 /// Sort a vector of floats in ascending order.
 ///
 /// Returns a new sorted vector; the original is unchanged.
 pub fn sort_floats(v: Vec<f64>) -> Vec<f64> {
-    hew_sort_floats(v)
+    unsafe { hew_sort_floats(v) }
 }
 
 /// Reverse a vector of integers.
 ///
 /// Returns a new reversed vector; the original is unchanged.
 pub fn reverse(v: Vec<int>) -> Vec<int> {
-    hew_sort_reverse(v)
+    unsafe { hew_sort_reverse(v) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

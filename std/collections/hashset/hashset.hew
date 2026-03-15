@@ -68,16 +68,16 @@ trait HashSetMethods {
 }
 
 impl HashSetMethods for HashSet {
-    fn insert_int(set: HashSet, value: i64) -> bool { hew_hashset_insert_int(set, value) }
-    fn insert_string(set: HashSet, value: String) -> bool { hew_hashset_insert_string(set, value) }
-    fn contains_int(set: HashSet, value: i64) -> bool { hew_hashset_contains_int(set, value) }
-    fn contains_string(set: HashSet, value: String) -> bool { hew_hashset_contains_string(set, value) }
-    fn remove_int(set: HashSet, value: i64) -> bool { hew_hashset_remove_int(set, value) }
-    fn remove_string(set: HashSet, value: String) -> bool { hew_hashset_remove_string(set, value) }
-    fn len(set: HashSet) -> i64 { hew_hashset_len(set) }
-    fn is_empty(set: HashSet) -> bool { hew_hashset_is_empty(set) }
-    fn clear(set: HashSet) { hew_hashset_clear(set); }
-    fn free(set: HashSet) { hew_hashset_free(set); }
+    fn insert_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_insert_int(set, value) } }
+    fn insert_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_insert_string(set, value) } }
+    fn contains_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_contains_int(set, value) } }
+    fn contains_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_contains_string(set, value) } }
+    fn remove_int(set: HashSet, value: i64) -> bool { unsafe { hew_hashset_remove_int(set, value) } }
+    fn remove_string(set: HashSet, value: String) -> bool { unsafe { hew_hashset_remove_string(set, value) } }
+    fn len(set: HashSet) -> i64 { unsafe { hew_hashset_len(set) } }
+    fn is_empty(set: HashSet) -> bool { unsafe { hew_hashset_is_empty(set) } }
+    fn clear(set: HashSet) { unsafe { hew_hashset_clear(set) }; }
+    fn free(set: HashSet) { unsafe { hew_hashset_free(set) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -90,7 +90,7 @@ impl HashSetMethods for HashSet {
 /// let s = hashset.new();
 /// ```
 pub fn new() -> HashSet {
-    hew_hashset_new()
+    unsafe { hew_hashset_new() }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

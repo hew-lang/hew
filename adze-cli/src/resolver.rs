@@ -3,6 +3,14 @@
 //! Provides version requirement parsing with Adze-specific rules and resolution
 //! of manifest dependencies against the installed package registry.
 
+// The `ManifestRead` variant embeds `manifest::ManifestError` (~136 bytes).
+// Boxing it would add indirection on every error path for minimal gain in a CLI
+// tool, so we suppress the lint at module level.
+#![allow(
+    clippy::result_large_err,
+    reason = "ManifestError variant is large but boxing adds unnecessary indirection"
+)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -302,7 +310,9 @@ impl<'a> ResolverPass<'a> {
             let state = self.package_states.entry(request.name.clone()).or_default();
             state.requirements.insert(request.requirement.clone());
             if state.direct_requirement.is_none() {
-                state.direct_requirement = request.direct_requirement.clone();
+                state
+                    .direct_requirement
+                    .clone_from(&request.direct_requirement);
             }
             state.requested_features.extend(request.features);
             state.use_default_features |= request.use_default_features;
@@ -622,7 +632,10 @@ fn best_matching_entry<'a>(
 /// # Errors
 ///
 /// Returns [`ResolveError::InvalidVersionReq`] if `requirement` cannot be parsed.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "public API reserved for single-requirement callers"
+)]
 pub fn resolve_version_from_entries(
     entries: &[IndexEntry],
     requirement: &str,
@@ -722,6 +735,8 @@ mod tests {
         dependencies: &[FakeDep<'_>],
         features: &[(&str, &[&str])],
     ) {
+        use std::fmt::Write as _;
+
         let dir = registry.package_dir(name, version);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -733,15 +748,17 @@ mod tests {
                     && dependency.features.is_empty()
                     && dependency.default_features
                 {
-                    content.push_str(&format!(
-                        "\"{}\" = \"{}\"\n",
+                    let _ = writeln!(
+                        content,
+                        "\"{}\" = \"{}\"",
                         dependency.name, dependency.version
-                    ));
+                    );
                 } else {
-                    content.push_str(&format!(
+                    let _ = write!(
+                        content,
                         "\"{}\" = {{ version = \"{}\"",
                         dependency.name, dependency.version
-                    ));
+                    );
                     if dependency.optional {
                         content.push_str(", optional = true");
                     }
@@ -752,7 +769,7 @@ mod tests {
                             .map(|feature| format!("\"{feature}\""))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        content.push_str(&format!(", features = [{features}]"));
+                        let _ = write!(content, ", features = [{features}]");
                     }
                     if !dependency.default_features {
                         content.push_str(", default_features = false");
@@ -770,7 +787,7 @@ mod tests {
                     .map(|item| format!("\"{item}\""))
                     .collect::<Vec<_>>()
                     .join(", ");
-                content.push_str(&format!("{feature_name} = [{enabled}]\n"));
+                let _ = writeln!(content, "{feature_name} = [{enabled}]");
             }
         }
 

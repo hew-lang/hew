@@ -316,14 +316,15 @@ pub fn snapshot_crashes_json() -> String {
         if i > 0 {
             json.push(',');
         }
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "nanosecond precision loss is acceptable for display"
+        )]
+        let time_s = crash.timestamp_ns as f64 / 1_000_000_000.0;
         let _ = write!(
             json,
-            r#"{{"time_s":{},"actor_id":{},"signal":{},"msg_type":{},"fault_addr":{}}}"#,
-            crash.timestamp_ns as f64 / 1_000_000_000.0,
-            crash.actor_id,
-            crash.signal,
-            crash.msg_type,
-            crash.fault_addr,
+            r#"{{"time_s":{time_s},"actor_id":{},"signal":{},"msg_type":{},"fault_addr":{}}}"#,
+            crash.actor_id, crash.signal, crash.msg_type, crash.fault_addr,
         );
     }
     json.push(']');

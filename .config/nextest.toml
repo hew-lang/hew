@@ -7,7 +7,10 @@ default-filter = "not package(hew-wasm)"
 
 [profile.ci]
 # CI profile: runs all tests and produces JUnit XML for GitHub Actions reporting.
-default-filter = "not package(hew-wasm)"
+# Exclude test_runner_e2e tests — they invoke `make codegen` internally and
+# time out when hew-codegen hasn't been pre-built. The same scenarios are
+# covered by the ctest E2E suite that runs after the codegen build step.
+default-filter = "not package(hew-wasm) - test(::test_runner_e2e::)"
 
 [profile.ci.junit]
 path = "junit.xml"

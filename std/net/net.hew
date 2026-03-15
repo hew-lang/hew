@@ -40,7 +40,7 @@ trait ListenerMethods {
 impl ListenerMethods for Listener {
     /// Block until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
-        hew_tcp_accept(ln)
+        unsafe { hew_tcp_accept(ln) }
     }
 }
 
@@ -81,19 +81,19 @@ trait ConnectionMethods {
 
 impl ConnectionMethods for Connection {
     /// Read raw bytes from the connection.
-    fn read(conn: Connection) -> bytes { hew_tcp_read(conn) }
+    fn read(conn: Connection) -> bytes { unsafe { hew_tcp_read(conn) } }
     /// Read a UTF-8 string from the connection.
-    fn read_string(conn: Connection) -> String { hew_bytes_to_string(hew_tcp_read(conn)) }
+    fn read_string(conn: Connection) -> String { unsafe { hew_bytes_to_string(unsafe { hew_tcp_read(conn) }) } }
     /// Write raw bytes to the connection.
-    fn write(conn: Connection, data: bytes) { hew_tcp_write(conn, data) }
+    fn write(conn: Connection, data: bytes) { unsafe { hew_tcp_write(conn, data) } }
     /// Write a UTF-8 string to the connection.
-    fn write_string(conn: Connection, data: String) { hew_tcp_write(conn, hew_string_to_bytes(data)) }
+    fn write_string(conn: Connection, data: String) { unsafe { hew_tcp_write(conn, unsafe { hew_string_to_bytes(data) }) } }
     /// Close the connection and release resources.
-    fn close(conn: Connection) -> i32 { hew_tcp_close(conn) }
+    fn close(conn: Connection) -> i32 { unsafe { hew_tcp_close(conn) } }
     /// Set the read timeout in milliseconds.
-    fn set_read_timeout(conn: Connection, ms: i32) -> i32 { hew_tcp_set_read_timeout(conn, ms) }
+    fn set_read_timeout(conn: Connection, ms: i32) -> i32 { unsafe { hew_tcp_set_read_timeout(conn, ms) } }
     /// Set the write timeout in milliseconds.
-    fn set_write_timeout(conn: Connection, ms: i32) -> i32 { hew_tcp_set_write_timeout(conn, ms) }
+    fn set_write_timeout(conn: Connection, ms: i32) -> i32 { unsafe { hew_tcp_set_write_timeout(conn, ms) } }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -108,7 +108,7 @@ impl ConnectionMethods for Connection {
 /// let listener = net.listen(":9000");
 /// ```
 pub fn listen(addr: String) -> Listener {
-    hew_tcp_listen(addr)
+    unsafe { hew_tcp_listen(addr) }
 }
 
 /// Connect to a TCP server at the given address.
@@ -121,21 +121,21 @@ pub fn listen(addr: String) -> Listener {
 /// let conn = net.connect("localhost:9000");
 /// ```
 pub fn connect(addr: String) -> Connection {
-    hew_tcp_connect(addr)
+    unsafe { hew_tcp_connect(addr) }
 }
 
 /// Connect to a TCP server with a timeout.
 ///
 /// `timeout_sec` and `timeout_usec` specify the deadline.
 pub fn connect_timeout(addr: String, timeout_sec: i32, timeout_usec: i32) -> Connection {
-    hew_tcp_connect_timeout(addr, timeout_sec, timeout_usec)
+    unsafe { hew_tcp_connect_timeout(addr, timeout_sec, timeout_usec) }
 }
 
 /// Broadcast a message to all connections except the sender.
 ///
 /// Used in chat-server patterns to fan out messages.
 pub fn broadcast_except(sender: Connection, message: bytes) -> i32 {
-    hew_tcp_broadcast_except(sender, message)
+    unsafe { hew_tcp_broadcast_except(sender, message) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

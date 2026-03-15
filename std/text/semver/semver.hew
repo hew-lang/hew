@@ -215,7 +215,7 @@ fn compare_pre(a: String, b: String) -> i32 {
     // If one side is exhausted, shorter pre-release has lower precedence
     if a_pos < a_len && b_pos >= b_len { return 1; }
     if a_pos >= a_len && b_pos < b_len { return -1; }
-    0
+    0 as i32
 }
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
@@ -235,7 +235,7 @@ fn compare_pre_id(a: String, b: String) -> i32 {
     // Lexicographic comparison for non-numeric
     if a < b { return -1; }
     if a > b { return 1; }
-    0
+    0 as i32
 }
 
 // ── Requirement matching ──────────────────────────────────────────────

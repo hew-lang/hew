@@ -50,19 +50,19 @@ trait SemaphoreMethods {
 
 impl SemaphoreMethods for Semaphore {
     /// Block until a permit is available, then acquire it.
-    fn acquire(sem: Semaphore) { hew_semaphore_acquire(sem); }
+    fn acquire(sem: Semaphore) { unsafe { hew_semaphore_acquire(sem) }; }
     /// Try to acquire a permit without blocking.
-    fn try_acquire(sem: Semaphore) -> bool { hew_semaphore_try_acquire(sem) }
+    fn try_acquire(sem: Semaphore) -> bool { unsafe { hew_semaphore_try_acquire(sem) } }
     /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
     fn acquire_timeout(sem: Semaphore, timeout_ms: i64) -> bool {
-        hew_semaphore_acquire_timeout(sem, timeout_ms)
+        unsafe { hew_semaphore_acquire_timeout(sem, timeout_ms) }
     }
     /// Release a previously acquired permit.
-    fn release(sem: Semaphore) { hew_semaphore_release(sem); }
+    fn release(sem: Semaphore) { unsafe { hew_semaphore_release(sem) }; }
     /// Return the current number of available permits.
-    fn count(sem: Semaphore) -> i32 { hew_semaphore_count(sem) }
+    fn count(sem: Semaphore) -> i32 { unsafe { hew_semaphore_count(sem) } }
     /// Release the semaphore resources.
-    fn free(sem: Semaphore) { hew_semaphore_free(sem); }
+    fn free(sem: Semaphore) { unsafe { hew_semaphore_free(sem) }; }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -75,7 +75,7 @@ impl SemaphoreMethods for Semaphore {
 /// let sem = semaphore.new(5);
 /// ```
 pub fn new(count: i32) -> Semaphore {
-    hew_semaphore_new(count)
+    unsafe { hew_semaphore_new(count) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

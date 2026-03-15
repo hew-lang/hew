@@ -27,7 +27,7 @@
 /// // e.g. "550e8400-e29b-41d4-a716-446655440000"
 /// ```
 pub fn v4() -> String {
-    hew_uuid_v4()
+    unsafe { hew_uuid_v4() }
 }
 
 /// Generate a timestamp-based (v7) UUID string.
@@ -40,7 +40,7 @@ pub fn v4() -> String {
 /// let id = uuid.v7();
 /// ```
 pub fn v7() -> String {
-    hew_uuid_v7()
+    unsafe { hew_uuid_v7() }
 }
 
 /// Test whether a string is a valid UUID.
@@ -52,7 +52,7 @@ pub fn v7() -> String {
 /// uuid.is_valid("not-a-uuid")                             // false
 /// ```
 pub fn is_valid(s: String) -> bool {
-    hew_uuid_parse(s)
+    unsafe { hew_uuid_parse(s) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

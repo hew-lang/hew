@@ -40,9 +40,9 @@ trait ChildMethods {
 
 impl ChildMethods for Child {
     /// Block until the child process exits and return its exit code.
-    fn wait(child: Child) -> i32 { hew_process_wait(child) }
+    fn wait(child: Child) -> i32 { unsafe { hew_process_wait(child) } }
     /// Terminate the child process.
-    fn kill(child: Child) -> i32 { hew_process_kill(child) }
+    fn kill(child: Child) -> i32 { unsafe { hew_process_kill(child) } }
 }
 
 // ── Module-level functions ────────────────────────────────────────────
@@ -59,7 +59,7 @@ impl ChildMethods for Child {
 /// assert_eq(string_trim(output), "hello");
 /// ```
 pub fn run(command: String) -> String {
-    hew_process_run(command)
+    unsafe { hew_process_run(command) }
 }
 
 /// Run a command with explicit arguments.
@@ -67,7 +67,7 @@ pub fn run(command: String) -> String {
 /// `args` is a space-separated argument string. `arg_count` is the
 /// number of arguments.
 pub fn run_args(command: String, args: String, arg_count: i32) -> String {
-    hew_process_run_args(command, args, arg_count)
+    unsafe { hew_process_run_args(command, args, arg_count) }
 }
 
 /// Start a child process without blocking.
@@ -85,7 +85,7 @@ pub fn run_args(command: String, args: String, arg_count: i32) -> String {
 /// let status = child.wait();
 /// ```
 pub fn start(command: String) -> Child {
-    hew_process_spawn(command)
+    unsafe { hew_process_spawn(command) }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

@@ -119,10 +119,10 @@ fn collect_inlay_hints_from_stmt(
                 collect_inlay_hints_from_expr(source, &value_expr.0, tc, hints);
             }
         }
-        Stmt::For { body, .. } | Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
-            collect_inlay_hints_from_block(source, body, tc, hints);
-        }
-        Stmt::WhileLet { body, .. } => {
+        Stmt::For { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::WhileLet { body, .. } => {
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Stmt::If {

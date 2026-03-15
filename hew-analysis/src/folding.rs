@@ -174,11 +174,10 @@ fn collect_stmt_folding(
                 collect_expr_folding(source, lo, &arm.body.0, &arm.body.1, r);
             }
         }
-        Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Loop { body, .. } => {
-            add_region(source, lo, span, r);
-            collect_block_folding(source, lo, body, r);
-        }
-        Stmt::WhileLet { body, .. } => {
+        Stmt::For { body, .. }
+        | Stmt::While { body, .. }
+        | Stmt::Loop { body, .. }
+        | Stmt::WhileLet { body, .. } => {
             add_region(source, lo, span, r);
             collect_block_folding(source, lo, body, r);
         }

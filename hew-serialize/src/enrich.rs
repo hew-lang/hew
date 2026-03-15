@@ -1423,6 +1423,10 @@ fn enrich_block_with_diagnostics(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "match over Stmt variants is inherently long"
+)]
 fn enrich_stmt_with_diagnostics(
     stmt: &mut Stmt,
     tco: &TypeCheckOutput,

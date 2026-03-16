@@ -16,8 +16,8 @@
 # What this tests (full end-to-end):
 #   1. Module resolution — HEW_STD env var and FHS path (../share/hew) are used
 #      to find stdlib .hew sources; checks std::string, std::fs, std::net::url.
-#   2. Stdlib staticlibs — verifies all expected libhew_std_*.a files are present
-#      in /usr/local/lib/hew/ (needed for linking Hew programs).
+#   2. libhew.a — verifies the combined library is present in /usr/local/lib/
+#      (needed for linking Hew programs).
 #   3. Full compile + link + run via `hew run` — exercises hew-codegen (MLIR
 #      codegen), the C linker, and the Hew runtime.
 #
@@ -30,7 +30,7 @@
 FROM ubuntu:24.04
 
 # gcc + libc-dev: hew invokes the system C compiler to link compiled .o files.
-# The runtime and stdlib staticlibs are linked statically — no Rust needed.
+# The runtime and stdlib are in libhew.a — no Rust needed at runtime.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -41,7 +41,7 @@ RUN apt-get update \
 # install from.
 COPY --from=tarball bin/hew           /usr/local/bin/hew
 COPY --from=tarball bin/hew-codegen   /usr/local/bin/hew-codegen
-COPY --from=tarball lib/              /usr/local/lib/hew/
+COPY --from=tarball lib/libhew.a      /usr/local/lib/libhew.a
 COPY --from=tarball std/              /usr/local/share/hew/std/
 
 # HEW_STD tells hew where the standard library lives.

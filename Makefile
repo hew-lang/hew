@@ -7,7 +7,7 @@
 #     bin/hew              — compiler driver (Rust)
 #     bin/hew-codegen      — MLIR code generator (C++)
 #     bin/adze             — package manager (Rust)
-#     lib/libhew_runtime.a — actor runtime (Rust staticlib)
+#     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/wasm32-wasip1/libhew_runtime.a — WASM runtime (if built)
 #     std/*.hew            — standard library stubs
 #
@@ -21,6 +21,7 @@
 #   make adze         — just the package manager
 #   make codegen      — just hew-codegen (C++ MLIR)
 #   make runtime      — just libhew_runtime.a
+#   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
 #   make wasm         — build hew-wasm (browser WASM via wasm-pack)
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
@@ -33,7 +34,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
-.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release strip-stdlib
+.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
@@ -78,7 +79,6 @@ BUILD_DIR  := build
 # Cargo profile directory names
 DEBUG_DIR  := target/debug
 RELEASE_DIR := target/release
-STRIPPED_STDLIB_DIR := $(RELEASE_DIR)/stripped-stdlib
 WASM_DEBUG_DIR  := target/wasm32-wasip1/debug
 WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
@@ -100,7 +100,7 @@ adze:
 runtime:
 	cargo build -p hew-runtime
 
-# Build all stdlib per-package staticlibs (needed for linking programs that import stdlib modules)
+# Build all stdlib per-package staticlibs and combine into a single libhew.a
 STDLIB_PACKAGES := \
     hew-std-encoding-base64 hew-std-encoding-compress hew-std-encoding-csv \
     hew-std-encoding-json hew-std-encoding-markdown \
@@ -117,6 +117,7 @@ STDLIB_PACKAGES := \
 
 stdlib:
 	cargo build $(addprefix -p ,$(STDLIB_PACKAGES))
+	bash scripts/combine-hew-lib.sh
 
 # Build the WASM runtime (requires wasm32-wasip1 target: rustup target add wasm32-wasip1)
 wasm-runtime:
@@ -221,8 +222,8 @@ assemble: | hew adze codegen runtime stdlib
 	@ln -sfn ../../hew-codegen/build/src/hew-codegen    $(BUILD_DIR)/bin/hew-codegen
 	@# Package manager
 	@ln -sfn ../../$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
-	@# Runtime library
-	@ln -sfn ../../$(DEBUG_DIR)/libhew_runtime.a   $(BUILD_DIR)/lib/libhew_runtime.a
+	@# Combined Hew library (runtime + all stdlib packages)
+	@ln -sfn ../../$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
 	@# WASM runtime (symlink if built)
 	@if [ -f $(WASM_DEBUG_DIR)/libhew_runtime.a ]; then \
 		mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
@@ -244,6 +245,7 @@ release:
 	cargo build -p adze-cli --release
 	cargo build -p hew-runtime --release
 	cargo build $(addprefix -p ,$(STDLIB_PACKAGES)) --release
+	bash scripts/combine-hew-lib.sh target/release
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 ifeq ($(shell uname -s),Darwin)
 	cmake -B hew-codegen/build -G Ninja \
@@ -261,17 +263,14 @@ endif
 	cmake --build hew-codegen/build
 	$(MAKE) assemble-release
 
-strip-stdlib: stdlib runtime
-	@echo "==> Stripping duplicate objects from stdlib staticlibs"
-	bash scripts/strip-stdlib.sh
-
 # Assemble build/ with release symlinks.
-assemble-release: strip-stdlib
+assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
 	@ln -sfn ../../hew-codegen/build/src/hew-codegen    $(BUILD_DIR)/bin/hew-codegen
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
-	@ln -sfn ../../$(RELEASE_DIR)/libhew_runtime.a $(BUILD_DIR)/lib/libhew_runtime.a
+	@# Combined Hew library (runtime + all stdlib packages)
+	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
 	@if [ -f $(WASM_RELEASE_DIR)/libhew_runtime.a ]; then \
 		mkdir -p $(BUILD_DIR)/lib/wasm32-wasip1; \
 		ln -sfn ../../../$(WASM_RELEASE_DIR)/libhew_runtime.a \
@@ -279,16 +278,6 @@ assemble-release: strip-stdlib
 	fi
 	@rm -rf $(BUILD_DIR)/std
 	@ln -sfn ../std $(BUILD_DIR)/std
-	@mkdir -p $(BUILD_DIR)/lib/hew
-	@find $(BUILD_DIR)/lib/hew -maxdepth 1 \( -name 'libhew_std_*.a' -o -name 'libhew_std_*.objects' \) -exec rm -rf {} + 2>/dev/null || true
-	@for f in $(STRIPPED_STDLIB_DIR)/libhew_std_*.a; do \
-		[ -f "$$f" ] || continue; \
-		ln -sfn "../../../$$f" "$(BUILD_DIR)/lib/hew/$$(basename $$f)"; \
-	done
-	@for d in $(STRIPPED_STDLIB_DIR)/libhew_std_*.objects; do \
-		[ -d "$$d" ] || continue; \
-		ln -sfn "../../../$$d" "$(BUILD_DIR)/lib/hew/$$(basename $$d)"; \
-	done
 	@echo "build/ assembled (release)."
 
 # ── Tests ───────────────────────────────────────────────────────────────────
@@ -301,7 +290,7 @@ test-all: test-rust test-codegen test-stdlib test-hew test-wasm
 test-rust:
 	cargo test
 
-test-codegen: strip-stdlib hew codegen runtime stdlib
+test-codegen: hew codegen runtime stdlib
 	cd hew-codegen/build && ctest --output-on-failure -LE wasm
 
 test-wasm: hew codegen wasm-runtime
@@ -324,7 +313,7 @@ test-stdlib: hew
 	  exit 1; \
 	fi
 
-test-hew: strip-stdlib hew codegen runtime stdlib
+test-hew: hew codegen runtime stdlib
 	@echo "==> Running Hew test files"
 	$(DEBUG_DIR)/hew test tests/hew/
 
@@ -492,28 +481,21 @@ grammar: $(GRAMMAR) $(HEW_FILES)
 # Installs release-built artifacts to $(DESTDIR)$(PREFIX).
 # Run `make release` first, or this target will build release for you.
 
-install: strip-stdlib install-check
+install: install-check
 	@echo "==> Installing to $(DESTDIR)$(PREFIX)"
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -d $(DESTDIR)$(PREFIX)/lib
-	install -d $(DESTDIR)$(PREFIX)/lib/hew
 	install -d $(DESTDIR)$(PREFIX)/std
 	install -d $(DESTDIR)$(PREFIX)/completions
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 hew-codegen/build/src/hew-codegen      $(DESTDIR)$(PREFIX)/bin/hew-codegen
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
-	install -m 644 $(RELEASE_DIR)/libhew_runtime.a   $(DESTDIR)$(PREFIX)/lib/libhew_runtime.a
+	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@if [ -f $(WASM_RELEASE_DIR)/libhew_runtime.a ]; then \
 		install -d $(DESTDIR)$(PREFIX)/lib/wasm32-wasip1; \
 		install -m 644 $(WASM_RELEASE_DIR)/libhew_runtime.a \
 			$(DESTDIR)$(PREFIX)/lib/wasm32-wasip1/libhew_runtime.a; \
 	fi
-	@for f in $(STRIPPED_STDLIB_DIR)/libhew_std_*.a; do \
-		[ -f "$$f" ] && install -m 644 "$$f" $(DESTDIR)$(PREFIX)/lib/hew/; \
-	done
-	@for d in $(STRIPPED_STDLIB_DIR)/libhew_std_*.objects; do \
-		[ -d "$$d" ] && cp -R "$$d" $(DESTDIR)$(PREFIX)/lib/hew/; \
-	done
 	cp -r std/. $(DESTDIR)$(PREFIX)/std/
 	install -m 644 completions/hew.bash              $(DESTDIR)$(PREFIX)/completions/
 	install -m 644 completions/hew.zsh               $(DESTDIR)$(PREFIX)/completions/
@@ -530,8 +512,8 @@ install-check:
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
 	@test -f hew-codegen/build/src/hew-codegen \
 		|| { echo "Error: hew-codegen not built. Run 'make release' first."; exit 1; }
-	@test -f $(RELEASE_DIR)/libhew_runtime.a \
-		|| { echo "Error: release runtime not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_DIR)/libhew.a \
+		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
 
 uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)

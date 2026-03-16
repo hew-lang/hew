@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-TARGET_DIR="${1:-target/debug}"
+TARGET_DIR="$(cd "${1:-target/debug}" && pwd)"
 OUTPUT="${TARGET_DIR}/libhew.a"
 RUNTIME="${TARGET_DIR}/libhew_runtime.a"
 

@@ -110,6 +110,7 @@ jobs:
           # Expose the brew LLVM prefix for later steps
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')

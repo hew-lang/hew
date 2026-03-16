@@ -181,27 +181,8 @@ jobs:
       - name: Build hew-codegen
         run: cmake --build hew-codegen/build -j"$(nproc)"
 
-      - name: Build standard library packages
-        run: |
-          cargo build --release \
-            -p hew-std-encoding-base64 -p hew-std-encoding-compress \
-            -p hew-std-encoding-csv -p hew-std-encoding-json \
-            -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
-            -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
-            -p hew-std-encoding-xml -p hew-std-encoding-yaml \
-            -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
-            -p hew-std-crypto-password \
-            -p hew-std-net-dns -p hew-std-net-http -p hew-std-net-ipnet \
-            -p hew-std-net-mime -p hew-std-net-quic \
-            -p hew-std-net-smtp -p hew-std-net-tls -p hew-std-net-url \
-            -p hew-std-net-websocket \
-            -p hew-std-time-cron -p hew-std-time-datetime \
-            -p hew-std-text-regex -p hew-std-text-semver \
-            -p hew-std-sort -p hew-std-math \
-            -p hew-std-misc-uuid -p hew-std-misc-log
-
-      - name: Combine into libhew.a
-        run: bash scripts/combine-hew-lib.sh target/release
+      - name: Build libhew.a (runtime + stdlib)
+        run: cargo build -p hew-lib --release
 
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag.
@@ -411,41 +392,15 @@ jobs:
         # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
         run: cargo nextest run --workspace --exclude hew-wasm --profile ci
 
-      - name: Build runtime (release + debug)
+      - name: Build libhew.a (runtime + stdlib)
         if: matrix.run_codegen
-        run: |
-          cargo build -p hew-runtime --release
-          cargo build -p hew-runtime
+        run: cargo build -p hew-lib --release
 
       - name: Build frontend (release + debug)
         if: matrix.run_codegen
         run: |
           cargo build -p hew-cli -p hew-serialize --release
           cargo build -p hew-cli
-
-      - name: Build standard library packages
-        if: matrix.run_codegen
-        run: |
-          cargo build --release \
-            -p hew-std-encoding-base64 -p hew-std-encoding-compress \
-            -p hew-std-encoding-csv -p hew-std-encoding-json \
-            -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
-            -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
-            -p hew-std-encoding-xml -p hew-std-encoding-yaml \
-            -p hew-std-crypto-crypto -p hew-std-crypto-jwt \
-            -p hew-std-crypto-password \
-            -p hew-std-net-dns -p hew-std-net-http -p hew-std-net-ipnet \
-            -p hew-std-net-mime -p hew-std-net-quic \
-            -p hew-std-net-smtp -p hew-std-net-tls -p hew-std-net-url \
-            -p hew-std-net-websocket \
-            -p hew-std-time-cron -p hew-std-time-datetime \
-            -p hew-std-text-regex -p hew-std-text-semver \
-            -p hew-std-sort -p hew-std-math \
-            -p hew-std-misc-uuid -p hew-std-misc-log
-
-      - name: Combine into libhew.a
-        if: matrix.run_codegen
-        run: bash scripts/combine-hew-lib.sh target/release
 
       - name: Configure hew-codegen
         if: matrix.run_codegen

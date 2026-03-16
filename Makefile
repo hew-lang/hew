@@ -100,24 +100,11 @@ adze:
 runtime:
 	cargo build -p hew-runtime
 
-# Build all stdlib per-package staticlibs and combine into a single libhew.a
-STDLIB_PACKAGES := \
-    hew-std-encoding-base64 hew-std-encoding-compress hew-std-encoding-csv \
-    hew-std-encoding-json hew-std-encoding-markdown \
-    hew-std-encoding-msgpack hew-std-encoding-protobuf hew-std-encoding-toml \
-    hew-std-encoding-xml hew-std-encoding-yaml \
-    hew-std-crypto-crypto hew-std-crypto-jwt hew-std-crypto-password \
-    hew-std-net-dns hew-std-net-http hew-std-net-ipnet hew-std-net-quic hew-std-net-smtp \
-    hew-std-net-tls hew-std-net-url hew-std-net-websocket \
-    hew-std-time-cron hew-std-time-datetime \
-    hew-std-text-regex hew-std-text-semver \
-    hew-std-math \
-    hew-std-sort \
-    hew-std-misc-uuid hew-std-misc-log
-
+# Build libhew.a — the combined runtime + stdlib static library.
+# The hew-lib umbrella crate depends on hew-runtime + all stdlib crates;
+# Cargo produces a single deduplicated staticlib.
 stdlib:
-	cargo build $(addprefix -p ,$(STDLIB_PACKAGES))
-	bash scripts/combine-hew-lib.sh
+	cargo build -p hew-lib
 
 # Build the WASM runtime (requires wasm32-wasip1 target: rustup target add wasm32-wasip1)
 wasm-runtime:
@@ -243,9 +230,7 @@ assemble: | hew adze codegen runtime stdlib
 release:
 	cargo build -p hew-cli --release
 	cargo build -p adze-cli --release
-	cargo build -p hew-runtime --release
-	cargo build $(addprefix -p ,$(STDLIB_PACKAGES)) --release
-	bash scripts/combine-hew-lib.sh target/release
+	cargo build -p hew-lib --release
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 ifeq ($(shell uname -s),Darwin)
 	cmake -B hew-codegen/build -G Ninja \

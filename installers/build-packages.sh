@@ -169,13 +169,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-runtime (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime --release
-
-    info "make" "stdlib + libhew.a..."
-    make stdlib 2>/dev/null || {
-        warn "make stdlib failed; libhew.a may be absent"
-    }
+    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-lib (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib --release
 
     if [[ -f "${REPO_DIR}/hew-codegen/build/build.ninja" ]]; then
         local jobs
@@ -453,19 +448,7 @@ build_alpine() {
         info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime \
-                -p hew-std-encoding-base64 -p hew-std-encoding-compress \
-                -p hew-std-encoding-csv -p hew-std-encoding-json \
-                -p hew-std-encoding-markdown -p hew-std-encoding-msgpack \
-                -p hew-std-encoding-protobuf -p hew-std-encoding-toml \
-                -p hew-std-encoding-yaml -p hew-std-crypto-crypto \
-                -p hew-std-crypto-jwt -p hew-std-crypto-password \
-                -p hew-std-net-http -p hew-std-net-ipnet -p hew-std-net-smtp \
-                -p hew-std-net-url -p hew-std-net-websocket \
-                -p hew-std-time-cron -p hew-std-time-datetime \
-                -p hew-std-text-regex -p hew-std-text-semver \
-                -p hew-std-misc-uuid -p hew-std-misc-log &&
-            bash scripts/combine-hew-lib.sh "target/${musl_target}/release")
+                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
 
         # Build hew-codegen natively on Alpine edge
         info "docker" "Building hew-codegen natively on Alpine edge..."

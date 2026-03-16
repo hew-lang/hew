@@ -37,6 +37,7 @@ members = [
   "hew-cli",
   "hew-serialize",
   "hew-lexer",
+  "hew-lib",
   "hew-lsp",
   "hew-parser",
   "hew-runtime",

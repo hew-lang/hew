@@ -8,7 +8,7 @@
 #   bin/adze          — package manager
 #   bin/hew-codegen   — C++ MLIR compiler (statically linked)
 #   bin/hew-lsp       — Language Server Protocol server
-#   lib/libhew_runtime.a — Rust actor runtime static library
+#   lib/libhew.a      — combined runtime + stdlib static library
 #   std/              — standard library sources
 #   completions/      — shell completions (bash, zsh, fish)
 #
@@ -107,9 +107,10 @@ jobs:
         if: startsWith(matrix.target, 'darwin')
         run: |
           brew install llvm@${{ env.LLVM_VERSION }} ninja
-          # Expose the brew LLVM prefix for later steps
+          # Expose the brew LLVM prefix and binaries for later steps
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -235,6 +236,10 @@ jobs:
             -p hew-std-misc-log \
             --release --target ${{ matrix.rust_target }}
 
+      - name: Combine into libhew.a
+        if: "!startsWith(matrix.target, 'windows')"
+        run: bash scripts/combine-hew-lib.sh "target/${{ matrix.rust_target }}/release"
+
       - name: Smoke test hew-lsp (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
@@ -296,9 +301,6 @@ jobs:
           VERSION="${RELEASE_TAG#v}"
           ARCHIVE_NAME="hew-v${VERSION}-${{ matrix.target }}"
           RELEASE_DIR="target/${{ matrix.rust_target }}/release"
-          STRIPPED_DIR="${RELEASE_DIR}/stripped-stdlib"
-
-          bash scripts/strip-stdlib.sh "${RELEASE_DIR}" "${STRIPPED_DIR}"
 
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
@@ -310,18 +312,8 @@ jobs:
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
-          # Runtime library
-          cp "${RELEASE_DIR}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
-
-          # Stdlib package static libraries
-          for f in "${STRIPPED_DIR}"/libhew_std_*.a; do
-            [ -f "$f" ] || continue
-            cp "$f" "${ARCHIVE_NAME}/lib/"
-          done
-          for d in "${STRIPPED_DIR}"/libhew_std_*.objects; do
-            [ -d "$d" ] || continue
-            cp -R "$d" "${ARCHIVE_NAME}/lib/"
-          done
+          # Combined runtime + stdlib library
+          cp "${RELEASE_DIR}/libhew.a" "${ARCHIVE_NAME}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
           cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -346,6 +338,12 @@ jobs:
         run: |
           $Version = "${{ github.ref_name }}".TrimStart("v")
           $ArchiveName = "hew-v${Version}-${{ matrix.target }}"
+          $ReleaseDir = "target/${{ matrix.rust_target }}/release"
+
+          # Combine runtime + stdlib into hew.lib
+          $libs = @("${ReleaseDir}/hew_runtime.lib")
+          $libs += Get-ChildItem "${ReleaseDir}" -Filter "hew_std_*.lib" | ForEach-Object { $_.FullName }
+          & lib.exe /OUT:"${ReleaseDir}/hew.lib" @libs
 
           New-Item -ItemType Directory -Path "${ArchiveName}/bin", "${ArchiveName}/lib", "${ArchiveName}/std" -Force | Out-Null
 
@@ -353,11 +351,7 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
           Copy-Item "hew-codegen/build/src/hew-codegen.exe"                      "${ArchiveName}/bin/"
-          Copy-Item "target/${{ matrix.rust_target }}/release/hew_runtime.lib"  "${ArchiveName}/lib/"
-
-          # Stdlib package static libraries
-          Get-ChildItem "target/${{ matrix.rust_target }}/release" -Filter "hew_std_*.lib" |
-            Copy-Item -Destination "${ArchiveName}/lib/"
+          Copy-Item "${ReleaseDir}/hew.lib"                                      "${ArchiveName}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
           Copy-Item "std" "${ArchiveName}/std" -Recurse
@@ -527,9 +521,7 @@ jobs:
               git clone --depth 1 --branch llvmorg-22.1.0 \
                 --filter=blob:none --sparse \
                 https://github.com/llvm/llvm-project.git /tmp/llvm-src
-              cd /tmp/llvm-src
-              git sparse-checkout set llvm mlir cmake third-party
-              cd /
+              (cd /tmp/llvm-src && git sparse-checkout set llvm mlir cmake third-party)
 
               cmake -S /tmp/llvm-src/llvm -B /tmp/llvm-build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
@@ -580,7 +572,7 @@ jobs:
               -p hew-std-misc-uuid -p hew-std-misc-log \
               --release
 
-            bash scripts/strip-stdlib.sh target/release target/release/stripped-stdlib
+            bash scripts/combine-hew-lib.sh target/release
 
             # ── hew-codegen (statically linked) ────────────────────────────
             cd hew-codegen
@@ -605,18 +597,8 @@ jobs:
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
-            # Runtime library
-            cp target/release/libhew_runtime.a "${ARCHIVE_NAME}/lib/"
-
-            # Stdlib package static libraries
-            for f in target/release/stripped-stdlib/libhew_std_*.a; do
-              [ -f "$f" ] || continue
-              cp "$f" "${ARCHIVE_NAME}/lib/"
-            done
-            for d in target/release/stripped-stdlib/libhew_std_*.objects; do
-              [ -d "$d" ] || continue
-              cp -R "$d" "${ARCHIVE_NAME}/lib/"
-            done
+            # Combined runtime + stdlib library
+            cp target/release/libhew.a "${ARCHIVE_NAME}/lib/"
 
             # Standard library sources (all .hew files, including subdirectories)
             cp -r std/. "${ARCHIVE_NAME}/std/"
@@ -790,15 +772,14 @@ jobs:
         run: |
           VERSION="${RELEASE_TAG#v}"
 
+          MUSL_REL="target/${{ matrix.rust_musl_target }}/release"
+          bash scripts/combine-hew-lib.sh "${MUSL_REL}"
+
           # Assemble the musl tarball from binaries built above.
           PLATFORM="linux-musl-${{ matrix.arch }}"
           ARCHIVE_NAME="hew-v${VERSION}-${PLATFORM}"
           mkdir -p "${ARCHIVE_NAME}/bin" "${ARCHIVE_NAME}/lib" \
                    "${ARCHIVE_NAME}/std" "${ARCHIVE_NAME}/completions"
-
-          MUSL_REL="target/${{ matrix.rust_musl_target }}/release"
-          STRIPPED_DIR="${MUSL_REL}/stripped-stdlib"
-          bash scripts/strip-stdlib.sh "${MUSL_REL}" "${STRIPPED_DIR}"
 
           for bin in hew adze hew-lsp; do
             cp "${MUSL_REL}/${bin}" "${ARCHIVE_NAME}/bin/"
@@ -808,15 +789,7 @@ jobs:
           cp /tmp/alpine-codegen-out/hew-codegen "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/hew-codegen"
 
-          cp "${MUSL_REL}/libhew_runtime.a" "${ARCHIVE_NAME}/lib/"
-          for f in "${STRIPPED_DIR}"/libhew_std_*.a; do
-            [ -f "$f" ] || continue
-            cp "$f" "${ARCHIVE_NAME}/lib/"
-          done
-          for d in "${STRIPPED_DIR}"/libhew_std_*.objects; do
-            [ -d "$d" ] || continue
-            cp -R "$d" "${ARCHIVE_NAME}/lib/"
-          done
+          cp "${MUSL_REL}/libhew.a" "${ARCHIVE_NAME}/lib/"
           cp -r std/. "${ARCHIVE_NAME}/std/"
           cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"

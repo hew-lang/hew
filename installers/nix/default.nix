@@ -50,7 +50,7 @@ in stdenv.mkDerivation rec {
     install -Dm755 bin/hew          $out/bin/hew
     install -Dm755 bin/adze         $out/bin/adze
     install -Dm755 bin/hew-codegen  $out/bin/hew-codegen
-    install -Dm644 lib/libhew_runtime.a $out/lib/hew/libhew_runtime.a
+    install -Dm644 lib/libhew.a $out/lib/hew/libhew.a
 
     if [ -d std ]; then
       mkdir -p $out/share/hew/std

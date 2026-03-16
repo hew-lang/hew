@@ -200,6 +200,9 @@ jobs:
             -p hew-std-sort -p hew-std-math \
             -p hew-std-misc-uuid -p hew-std-misc-log
 
+      - name: Combine into libhew.a
+        run: bash scripts/combine-hew-lib.sh target/release
+
       # Default features include "full" (encryption + profiler + quic),
       # so all 33 QUIC transport tests run without an explicit flag.
       - name: Run Rust workspace tests
@@ -439,6 +442,10 @@ jobs:
             -p hew-std-text-regex -p hew-std-text-semver \
             -p hew-std-sort -p hew-std-math \
             -p hew-std-misc-uuid -p hew-std-misc-log
+
+      - name: Combine into libhew.a
+        if: matrix.run_codegen
+        run: bash scripts/combine-hew-lib.sh target/release
 
       - name: Configure hew-codegen
         if: matrix.run_codegen

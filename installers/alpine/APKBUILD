@@ -38,12 +38,8 @@ package() {
   install -Dm755 "$builddir/bin/hew-codegen"  "$pkgdir/usr/bin/hew-codegen"
   install -Dm755 "$builddir/bin/hew-lsp"      "$pkgdir/usr/bin/hew-lsp"
 
-  install -Dm644 "$builddir/lib/libhew_runtime.a" \
-    "$pkgdir/usr/lib/hew/libhew_runtime.a"
-
-  # Stdlib package static libraries
-  find "$builddir/lib" -maxdepth 1 -name "libhew_std_*.a" \
-    -exec install -Dm644 {} "$pkgdir/usr/lib/hew/" \;
+  install -Dm644 "$builddir/lib/libhew.a" \
+    "$pkgdir/usr/lib/hew/libhew.a"
 
   if [ -d "$builddir/std" ]; then
     mkdir -p "$pkgdir/usr/share/hew/std"

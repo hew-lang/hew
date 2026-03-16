@@ -53,9 +53,8 @@ RUN cargo build --release \
     -p hew-std-misc-uuid \
     -p hew-std-misc-log
 
-# Strip debug info from staticlibs (~30% size reduction)
-RUN strip -d /src/target/release/libhew_runtime.a \
-    /src/target/release/libhew_std_*.a
+# Combine into single libhew.a
+RUN sh /src/scripts/combine-hew-lib.sh target/release
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 2: hew-codegen with statically linked LLVM/MLIR
@@ -97,11 +96,8 @@ COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
 COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
 COPY --from=codegen-builder /tmp/build/src/hew-codegen /usr/local/bin/hew-codegen
 
-# Runtime staticlib
-COPY --from=rust-builder /src/target/release/libhew_runtime.a /usr/local/lib/hew/libhew_runtime.a
-
-# Std staticlibs (glob is safe — only crates with crate-type=["staticlib"] produce .a files)
-COPY --from=rust-builder /src/target/release/libhew_std_*.a /usr/local/lib/hew/
+# Combined runtime + stdlib library
+COPY --from=rust-builder /src/target/release/libhew.a /usr/local/lib/hew/libhew.a
 
 # Standard library Hew source files
 COPY std/ /usr/local/share/hew/std/

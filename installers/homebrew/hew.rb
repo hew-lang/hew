@@ -32,7 +32,7 @@ class Hew < Formula
     bin.install "bin/adze"
     bin.install "bin/hew-codegen"
     bin.install "bin/hew-lsp"
-    lib.install "lib/libhew_runtime.a"
+    lib.install "lib/libhew.a"
 
     (share/"hew/std").mkpath
     (share/"hew/std").install Dir["std/*"] if (buildpath/"std").exist?

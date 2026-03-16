@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2012
 # installers/build-packages.sh — Build all Hew installer packages from source.
 #
 # Run from the repository root:
@@ -168,8 +169,8 @@ build_tarball() {
     step "Building from source"
     cd "${REPO_DIR}"
 
-    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-runtime (release)..."
-    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime --release
+    info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-lib (release)..."
+    cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib --release
 
     if [[ -f "${REPO_DIR}/hew-codegen/build/build.ninja" ]]; then
         local jobs
@@ -200,15 +201,11 @@ build_tarball() {
         chmod +x "${staging}/bin/hew-codegen"
     fi
 
-    if [[ -f "${REPO_DIR}/target/release/libhew_runtime.a" ]]; then
-        cp "${REPO_DIR}/target/release/libhew_runtime.a" "${staging}/lib/"
+    if [[ -f "${REPO_DIR}/target/release/libhew.a" ]]; then
+        cp "${REPO_DIR}/target/release/libhew.a" "${staging}/lib/"
     else
-        warn "libhew_runtime.a not found"
+        warn "libhew.a not found — run 'make stdlib'"
     fi
-
-    # Stdlib package static libraries
-    find "${REPO_DIR}/target/release" -maxdepth 1 -name "libhew_std_*.a" \
-        -exec cp {} "${staging}/lib/" \; 2>/dev/null || true
 
     # Standard library sources (all .hew files, including subdirectories)
     cp -r "${REPO_DIR}/std/." "${staging}/std/"
@@ -448,10 +445,10 @@ build_alpine() {
             musl_target="aarch64-unknown-linux-musl"
         fi
 
-        info "cargo" "Building Rust binaries for ${musl_target}..."
+        info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
             cargo build --release --target "${musl_target}" \
-                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-runtime)
+                -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
 
         # Build hew-codegen natively on Alpine edge
         info "docker" "Building hew-codegen natively on Alpine edge..."
@@ -487,15 +484,11 @@ build_alpine() {
         fi
         rm -rf "${codegen_out}"
 
-        if [[ -f "${musl_release}/libhew_runtime.a" ]]; then
-            cp "${musl_release}/libhew_runtime.a" "${staging}/lib/"
+        if [[ -f "${musl_release}/libhew.a" ]]; then
+            cp "${musl_release}/libhew.a" "${staging}/lib/"
         else
-            warn "musl libhew_runtime.a not found"
+            warn "musl libhew.a not found — run 'make stdlib'"
         fi
-
-        # Stdlib package static libraries
-        find "${musl_release}" -maxdepth 1 -name "libhew_std_*.a" \
-            -exec cp {} "${staging}/lib/" \; 2>/dev/null || true
 
         # Standard library sources (all .hew files, including subdirectories)
         cp -r "${REPO_DIR}/std/." "${staging}/std/"
@@ -520,9 +513,7 @@ build_alpine() {
     sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${ctx}/APKBUILD"
 
     # Update the source URL/filename to match our Alpine tarball
-    local inner_dir="hew-v\${pkgver}-linux-\${_hew_arch}"
     if [[ "${alpine_tarball_name}" == *"musl"* ]]; then
-        inner_dir="hew-v\${pkgver}-linux-musl-\${_hew_arch}"
         sed -i 's|linux-${_hew_arch}|linux-musl-${_hew_arch}|g' "${ctx}/APKBUILD"
     fi
 

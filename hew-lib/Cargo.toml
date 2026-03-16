@@ -1,0 +1,42 @@
+[package]
+name = "hew-lib"
+version = "0.2.0"
+edition = "2024"
+description = "Combined Hew runtime + standard library — single staticlib for linking"
+publish = false
+
+[lib]
+name = "hew"
+crate-type = ["staticlib"]
+
+[dependencies]
+hew-runtime = { path = "../hew-runtime" }
+hew-std-crypto-crypto = { path = "../std/crypto/crypto" }
+hew-std-crypto-jwt = { path = "../std/crypto/jwt" }
+hew-std-crypto-password = { path = "../std/crypto/password" }
+hew-std-encoding-base64 = { path = "../std/encoding/base64" }
+hew-std-encoding-compress = { path = "../std/encoding/compress" }
+hew-std-encoding-csv = { path = "../std/encoding/csv" }
+hew-std-encoding-json = { path = "../std/encoding/json" }
+hew-std-encoding-markdown = { path = "../std/encoding/markdown" }
+hew-std-encoding-msgpack = { path = "../std/encoding/msgpack" }
+hew-std-encoding-protobuf = { path = "../std/encoding/protobuf" }
+hew-std-encoding-toml = { path = "../std/encoding/toml" }
+hew-std-encoding-xml = { path = "../std/encoding/xml" }
+hew-std-encoding-yaml = { path = "../std/encoding/yaml" }
+hew-std-math = { path = "../std/math" }
+hew-std-misc-log = { path = "../std/misc/log" }
+hew-std-misc-uuid = { path = "../std/misc/uuid" }
+hew-std-net-dns = { path = "../std/net/dns" }
+hew-std-net-http = { path = "../std/net/http" }
+hew-std-net-ipnet = { path = "../std/net/ipnet" }
+hew-std-net-quic = { path = "../std/net/quic" }
+hew-std-net-smtp = { path = "../std/net/smtp" }
+hew-std-net-tls = { path = "../std/net/tls" }
+hew-std-net-url = { path = "../std/net/url" }
+hew-std-net-websocket = { path = "../std/net/websocket" }
+hew-std-sort = { path = "../std/sort" }
+hew-std-text-regex = { path = "../std/text/regex" }
+hew-std-text-semver = { path = "../std/text/semver" }
+hew-std-time-cron = { path = "../std/time/cron" }
+hew-std-time-datetime = { path = "../std/time/datetime" }

@@ -1464,6 +1464,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-lib"
+version = "0.2.0"
+dependencies = [
+ "hew-runtime",
+ "hew-std-crypto-crypto",
+ "hew-std-crypto-jwt",
+ "hew-std-crypto-password",
+ "hew-std-encoding-base64",
+ "hew-std-encoding-compress",
+ "hew-std-encoding-csv",
+ "hew-std-encoding-json",
+ "hew-std-encoding-markdown",
+ "hew-std-encoding-msgpack",
+ "hew-std-encoding-protobuf",
+ "hew-std-encoding-toml",
+ "hew-std-encoding-xml",
+ "hew-std-encoding-yaml",
+ "hew-std-math",
+ "hew-std-misc-log",
+ "hew-std-misc-uuid",
+ "hew-std-net-dns",
+ "hew-std-net-http",
+ "hew-std-net-ipnet",
+ "hew-std-net-quic",
+ "hew-std-net-smtp",
+ "hew-std-net-tls",
+ "hew-std-net-url",
+ "hew-std-net-websocket",
+ "hew-std-sort",
+ "hew-std-text-regex",
+ "hew-std-text-semver",
+ "hew-std-time-cron",
+ "hew-std-time-datetime",
+]
+
+[[package]]
 name = "hew-lsp"
 version = "0.2.0"
 dependencies = [

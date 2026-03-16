@@ -1,17 +1,17 @@
 //! Linker invocation: drives `cc` (or `wasm-ld` for WASM targets) to produce
-//! the final binary from the object file emitted by `hew-codegen` and the Hew
-//! runtime library.
+//! the final binary from the object file emitted by `hew-codegen` and the
+//! combined Hew library (`libhew.a`).
 
-fn runtime_lib_name() -> &'static str {
+fn hew_lib_name() -> &'static str {
     if cfg!(target_os = "windows") {
-        "hew_runtime.lib"
+        "hew.lib"
     } else {
-        "libhew_runtime.a"
+        "libhew.a"
     }
 }
 
-/// Link an object file with the Hew runtime into a native executable (or `.wasm`
-/// binary when the target triple indicates a WASM platform).
+/// Link an object file with the combined Hew library into a native executable
+/// (or `.wasm` binary when the target triple indicates a WASM platform).
 ///
 /// When `debug` is `true`, debug symbols are preserved (no stripping).
 ///
@@ -24,13 +24,12 @@ pub fn link_executable(
     output_path: &str,
     target: Option<&str>,
     debug: bool,
-    extra_libs: &[String],
 ) -> Result<(), String> {
     if target.is_some_and(|t| t.starts_with("wasm32")) {
         return link_wasm(object_path, output_path, target.unwrap());
     }
 
-    let runtime_lib = find_runtime_lib(runtime_lib_name())?;
+    let hew_lib = find_hew_lib(hew_lib_name())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
     let safe_output = if output_path.starts_with('-') {
@@ -61,12 +60,7 @@ pub fn link_executable(
         cmd.arg("-fuse-ld=lld-link");
     }
 
-    cmd.arg(object_path).arg(&runtime_lib);
-
-    // Link per-package staticlibs (e.g., libhew_std_encoding_hex.a)
-    for lib in extra_libs {
-        cmd.arg(lib);
-    }
+    cmd.arg(object_path).arg(&hew_lib);
 
     cmd.arg("-o").arg(&safe_output);
 
@@ -82,13 +76,6 @@ pub fn link_executable(
         if !debug {
             cmd.arg("-Wl,--strip-all");
         }
-        // When linking stdlib package staticlibs alongside the runtime, both
-        // archives contain embedded copies of shared dependencies (e.g.
-        // hew_cabi) because Cargo bakes all transitive deps into each
-        // staticlib. Allow the linker to pick one copy and discard the rest.
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,--allow-multiple-definition");
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -96,13 +83,6 @@ pub fn link_executable(
         cmd.arg("-Wl,-dead_strip");
         if !debug {
             cmd.arg("-Wl,-x");
-        }
-        // Same rationale as the ELF `--allow-multiple-definition` above:
-        // Cargo staticlibs embed shared dependencies, producing duplicate
-        // symbols when linked together. `-Wl,-multiply_defined,suppress`
-        // tells ld64 to silently pick one definition.
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,-multiply_defined,suppress");
         }
     }
 
@@ -112,11 +92,6 @@ pub fn link_executable(
         // runtime uses the DLL CRT (msvcrt). Override the default so the
         // CRT linkage matches.
         cmd.args(["-Wl,/NODEFAULTLIB:libcmt", "-Wl,/DEFAULTLIB:msvcrt"]);
-
-        // MSVC-style dead-code elimination via clang → lld-link/link.exe
-        if !extra_libs.is_empty() {
-            cmd.arg("-Wl,/FORCE:MULTIPLE");
-        }
     }
 
     // Platform-specific libraries
@@ -274,7 +249,7 @@ fn find_wasi_libc(target: &str) -> Option<String> {
     }
 }
 
-fn find_runtime_lib(name: &str) -> Result<String, String> {
+fn find_hew_lib(name: &str) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
     let exe_dir = exe.parent().expect("exe should have a parent directory");
 
@@ -303,64 +278,8 @@ fn find_runtime_lib(name: &str) -> Result<String, String> {
     }
 
     Err(format!(
-        "Error: cannot find {name}. Build with: cargo build -p hew-runtime"
+        "Error: cannot find {name}. Build with: make stdlib"
     ))
-}
-
-/// Map a set of imported module paths to their package staticlib paths.
-///
-/// For each module that has a standalone package crate (e.g.,
-/// `std::encoding::hex` → `libhew_std_encoding_hex.a`), searches
-/// the standard candidate directories and returns the found paths.
-///
-/// `pkg_path` is the optional `--pkg-path` override: when set, also searches
-/// `{pkg_path}/target/release` and `{pkg_path}/target/debug` for ecosystem
-/// package staticlibs (e.g. `hew::net::http` → `libhew_hew_net_http.a`).
-pub fn find_package_libs(modules: &[String], pkg_path: Option<&std::path::Path>) -> Vec<String> {
-    let Ok(exe) = std::env::current_exe() else {
-        return vec![];
-    };
-    let exe_dir = exe.parent().expect("exe should have a parent directory");
-
-    let mut libs = Vec::new();
-    for module_path in modules {
-        let lib_name = module_to_staticlib_name(module_path);
-        let mut candidates: Vec<std::path::PathBuf> = vec![
-            exe_dir.join("../lib").join(&lib_name),
-            exe_dir.join("../lib/hew").join(&lib_name),
-            exe_dir.join("../lib64/hew").join(&lib_name),
-            exe_dir.join(&lib_name),
-            exe_dir.join("../../target/release").join(&lib_name),
-            exe_dir.join("../../target/debug").join(&lib_name),
-        ];
-        // When --pkg-path points to a local ecosystem checkout, also search
-        // <pkg_path>/target/{debug,release}/ for the compiled staticlibs.
-        if let Some(pkg) = pkg_path {
-            candidates.push(pkg.join("target/debug").join(&lib_name));
-            candidates.push(pkg.join("target/release").join(&lib_name));
-        }
-        for c in &candidates {
-            if c.exists() {
-                if let Ok(p) = c.canonicalize() {
-                    libs.push(p.display().to_string());
-                    break;
-                }
-            }
-        }
-    }
-    libs
-}
-
-/// Map a module path to its expected staticlib filename.
-///
-/// `"std::encoding::hex"` → `"libhew_std_encoding_hex.a"`
-fn module_to_staticlib_name(module_path: &str) -> String {
-    let crate_name = format!("hew_{}", module_path.replace("::", "_"));
-    if cfg!(target_os = "windows") {
-        format!("{crate_name}.lib")
-    } else {
-        format!("lib{crate_name}.a")
-    }
 }
 
 /// Parse linker stderr for unresolved `hew_*` symbols and return human-readable
@@ -494,28 +413,6 @@ fn has_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── module_to_staticlib_name ──────────────────────────────────────
-
-    #[test]
-    fn staticlib_name_three_segments() {
-        let name = module_to_staticlib_name("std::encoding::hex");
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_std_encoding_hex.lib");
-        } else {
-            assert_eq!(name, "libhew_std_encoding_hex.a");
-        }
-    }
-
-    #[test]
-    fn staticlib_name_single_segment() {
-        let name = module_to_staticlib_name("json");
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_json.lib");
-        } else {
-            assert_eq!(name, "libhew_json.a");
-        }
-    }
 
     // ── extract_undefined_hew_symbol ──────────────────────────────────
 
@@ -722,32 +619,15 @@ mod tests {
         assert!(!has_tool("definitely_not_a_real_tool_abc123xyz"));
     }
 
-    // ── find_runtime_lib ──────────────────────────────────────────────
+    // ── find_hew_lib ──────────────────────────────────────────────────
 
     #[test]
-    fn find_runtime_lib_nonexistent_returns_error() {
-        let result = find_runtime_lib("nonexistent_lib_xyz.a");
+    fn find_hew_lib_nonexistent_returns_error() {
+        let result = find_hew_lib("nonexistent_lib_xyz.a");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cannot find nonexistent_lib_xyz.a"));
-        assert!(err.contains("cargo build -p hew-runtime"));
-    }
-
-    // ── find_package_libs ─────────────────────────────────────────────
-
-    #[test]
-    fn find_package_libs_nonexistent_module() {
-        let modules = vec!["nonexistent::module::xyz".to_string()];
-        let libs = find_package_libs(&modules, None);
-        assert!(libs.is_empty());
-    }
-
-    #[test]
-    fn find_package_libs_with_pkg_path_nonexistent() {
-        let modules = vec!["std::encoding::hex".to_string()];
-        let pkg = std::path::Path::new("/tmp/hew_test_nonexistent_pkg_path");
-        let libs = find_package_libs(&modules, Some(pkg));
-        assert!(libs.is_empty());
+        assert!(err.contains("make stdlib"));
     }
 
     // ── output-path sanitisation (extracted from link_executable) ─────
@@ -761,29 +641,5 @@ mod tests {
             output_path.to_string()
         };
         assert_eq!(safe, "./-evil");
-    }
-
-    // ── find_package_libs with real temp directory ─────────────────────
-
-    #[test]
-    fn find_package_libs_discovers_lib_in_pkg_path() {
-        use std::fs;
-        let tmp = std::env::temp_dir().join("hew_test_find_pkg_libs");
-        let debug_dir = tmp.join("target/debug");
-        let _ = fs::create_dir_all(&debug_dir);
-
-        // Create a fake staticlib file
-        let lib_name = module_to_staticlib_name("fake::test::mod");
-        let lib_path = debug_dir.join(&lib_name);
-        let _ = fs::write(&lib_path, b"fake");
-
-        let modules = vec!["fake::test::mod".to_string()];
-        let libs = find_package_libs(&modules, Some(&tmp));
-
-        // Clean up before asserting so the directory doesn't linger on failure
-        let _ = fs::remove_dir_all(&tmp);
-
-        assert_eq!(libs.len(), 1);
-        assert!(libs[0].contains("fake"));
     }
 }

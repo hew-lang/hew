@@ -384,14 +384,14 @@ try {
             }
         }
 
-        # Copy runtime library
-        $runtimeLib = Join-Path $innerDir.FullName "lib/libhew_runtime.a"
-        if (Test-Path $runtimeLib) {
-            Copy-Item -Path $runtimeLib -Destination (Join-Path $InstallDir "lib/libhew_runtime.a") -Force
+        # Copy combined library
+        $hewLib = Join-Path $innerDir.FullName "lib/libhew.a"
+        if (Test-Path $hewLib) {
+            Copy-Item -Path $hewLib -Destination (Join-Path $InstallDir "lib/libhew.a") -Force
         }
-        $runtimeLibWin = Join-Path $innerDir.FullName "lib/hew_runtime.lib"
-        if (Test-Path $runtimeLibWin) {
-            Copy-Item -Path $runtimeLibWin -Destination (Join-Path $InstallDir "lib/hew_runtime.lib") -Force
+        $hewLibWin = Join-Path $innerDir.FullName "lib/hew.lib"
+        if (Test-Path $hewLibWin) {
+            Copy-Item -Path $hewLibWin -Destination (Join-Path $InstallDir "lib/hew.lib") -Force
         }
 
         # Standard library and completions (best-effort — may not be in older releases)

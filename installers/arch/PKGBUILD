@@ -36,13 +36,9 @@ package() {
   install -Dm755 "${_srcdir}/bin/hew-codegen"  "${pkgdir}/usr/bin/hew-codegen"
   install -Dm755 "${_srcdir}/bin/hew-lsp"      "${pkgdir}/usr/bin/hew-lsp"
 
-  # Runtime library
-  install -Dm644 "${_srcdir}/lib/libhew_runtime.a" \
-    "${pkgdir}/usr/lib/hew/libhew_runtime.a"
-
-  # Stdlib package static libraries
-  find "${_srcdir}/lib" -maxdepth 1 -name "libhew_std_*.a" \
-    -exec install -Dm644 {} "${pkgdir}/usr/lib/hew/" \;
+  # Combined runtime + stdlib library
+  install -Dm644 "${_srcdir}/lib/libhew.a" \
+    "${pkgdir}/usr/lib/hew/libhew.a"
 
   # Standard library
   if [ -d "${_srcdir}/std" ]; then

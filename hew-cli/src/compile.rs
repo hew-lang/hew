@@ -39,8 +39,6 @@ pub struct CompileOptions {
     pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
     pub pkg_path: Option<PathBuf>,
-    /// Extra static libraries to pass to the linker (via `--link-lib`).
-    pub extra_link_libs: Vec<String>,
 }
 
 /// Build a line map: a Vec where entry\[i\] is the byte offset of the start of line (i+1).
@@ -311,47 +309,7 @@ pub fn compile(
     .map_err(|errs| errs.join("\n"))?;
     program.module_graph = Some(module_graph);
 
-    // Collect module-path imports for per-package staticlib linking.
-    // Walk the entire module graph (not just root imports) so that
-    // transitive dependencies like std::bench → std::time::datetime
-    // are also linked.
-    let mut imported_modules: Vec<String> = program
-        .module_graph
-        .as_ref()
-        .map(|mg| {
-            mg.modules
-                .keys()
-                .filter(|id| !id.path.is_empty())
-                .map(|id| id.path.join("::"))
-                .collect()
-        })
-        .unwrap_or_default();
-    // Wire types always generate JSON encode/decode calls, so link the
-    // JSON, YAML, and TOML staticlibs are needed for wire types (always
-    // generate JSON/YAML) and for auto-derived struct serialization (which
-    // generates to_json/to_yaml/to_toml for types with all-encodable fields).
-    // Link them when wire types are present or when any struct type exists
-    // that could have auto-derived encode methods.
-    let has_wire = program.items.iter().any(|(item, _)| {
-        matches!(item, Item::Wire(_)) || matches!(item, Item::TypeDecl(td) if td.wire.is_some())
-    });
-    let has_struct = program.items.iter().any(|(item, _)| {
-        matches!(item, Item::TypeDecl(td) if td.kind == hew_parser::ast::TypeDeclKind::Struct && td.wire.is_none())
-    });
-    if has_wire || has_struct {
-        for m in [
-            "std::encoding::json",
-            "std::encoding::yaml",
-            "std::encoding::toml",
-        ] {
-            if !imported_modules.contains(&m.to_string()) {
-                imported_modules.push(m.to_string());
-            }
-        }
-    }
-    let mut extra_libs =
-        super::link::find_package_libs(&imported_modules, options.pkg_path.as_deref());
-    extra_libs.extend(options.extra_link_libs.iter().cloned());
+    // All stdlib symbols are in libhew.a — no per-package lib discovery needed.
 
     // 3. Type-check
     let search_paths = build_module_search_paths();
@@ -648,7 +606,6 @@ pub fn compile(
         output_path,
         options.target.as_deref(),
         options.debug,
-        &extra_libs,
     )?;
 
     // obj_temp (TempPath) auto-deletes on drop
@@ -1391,12 +1348,6 @@ fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
         .collect();
 
     let mut needed: Vec<Vec<String>> = Vec::new();
-
-    // Detect wire types that need JSON or YAML support.
-    // Wire codegen always generates JSON encode/decode functions that call
-    // hew_json_* symbols.  Don't add these as import items (which would pull
-    // the whole stdlib module into the AST), just ensure the static libs
-    // are linked by appending to imported_modules below.
 
     // Detect regex literals via source text. The `re"` prefix is the regex
     // literal syntax and is unambiguous; a false positive (e.g. inside a

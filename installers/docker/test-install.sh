@@ -11,16 +11,10 @@ echo "--- Binaries"
 test -x /usr/local/bin/hew && echo "  hew: ok"
 test -x /usr/local/bin/hew-codegen && echo "  hew-codegen: ok"
 
-# 2. Stdlib staticlibs
+# 2. Combined library
 echo ""
-echo "--- Stdlib staticlibs"
-test -f /usr/local/lib/hew/libhew_runtime.a && echo "  libhew_runtime.a: ok"
-count=$(find /usr/local/lib/hew -maxdepth 1 -name "libhew_std_*.a" | wc -l)
-if [ "$count" -lt 1 ]; then
-    echo "  ERROR: no libhew_std_*.a files found in /usr/local/lib/hew/"
-    exit 1
-fi
-echo "  libhew_std_*.a: $count files"
+echo "--- Combined library"
+test -f /usr/local/lib/libhew.a && echo "  libhew.a: ok"
 
 # 3. Stdlib sources
 echo ""

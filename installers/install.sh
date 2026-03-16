@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2059
 # Hew installer — https://hew.sh
 # Usage: curl -fsSL https://install.hew.sh | bash
 #        bash install.sh [--version <ver>] [--prefix <dir>] [--help]
@@ -267,7 +268,7 @@ main() {
         fi
     done
 
-    cp -f "${extracted_dir}/lib/libhew_runtime.a" "${INSTALL_PREFIX}/lib/libhew_runtime.a"
+    cp -f "${extracted_dir}/lib/libhew.a" "${INSTALL_PREFIX}/lib/libhew.a"
 
     # Standard library and completions (best-effort — may not be in older releases)
     if [ -d "${extracted_dir}/std" ]; then

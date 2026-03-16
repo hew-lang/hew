@@ -1,0 +1,1829 @@
+{
+  "schema_version": 1,
+  "syntax_version": "0.9.0",
+  "description": "Shared Hew language/editor assets for mobile clients.",
+  "generated_from": "docs/syntax-data.json",
+  "generated_by": "tools/downstream/generate-mobile-editor-assets.mjs",
+  "completion_catalog": {
+    "description": "Language-level completions. Merge these with local symbols in the client.",
+    "items": [
+      {
+        "label": "if",
+        "insert_text": "if",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "else",
+        "insert_text": "else",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "match",
+        "insert_text": "match",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "loop",
+        "insert_text": "loop",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "for",
+        "insert_text": "for",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "while",
+        "insert_text": "while",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "break",
+        "insert_text": "break",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "continue",
+        "insert_text": "continue",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "return",
+        "insert_text": "return",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "in",
+        "insert_text": "in",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "yield",
+        "insert_text": "yield",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "defer",
+        "insert_text": "defer",
+        "kind": "keyword",
+        "group": "control_flow",
+        "detail": "Control flow keyword"
+      },
+      {
+        "label": "let",
+        "insert_text": "let",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "var",
+        "insert_text": "var",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "const",
+        "insert_text": "const",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "fn",
+        "insert_text": "fn",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "gen",
+        "insert_text": "gen",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "async",
+        "insert_text": "async",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "pub",
+        "insert_text": "pub",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "import",
+        "insert_text": "import",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "package",
+        "insert_text": "package",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "super",
+        "insert_text": "super",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "extern",
+        "insert_text": "extern",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "where",
+        "insert_text": "where",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "type",
+        "insert_text": "type",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "indirect",
+        "insert_text": "indirect",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "enum",
+        "insert_text": "enum",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "trait",
+        "insert_text": "trait",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "impl",
+        "insert_text": "impl",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "as",
+        "insert_text": "as",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "struct",
+        "insert_text": "struct",
+        "kind": "keyword",
+        "group": "declarations",
+        "detail": "Declaration keyword"
+      },
+      {
+        "label": "actor",
+        "insert_text": "actor",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "supervisor",
+        "insert_text": "supervisor",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "spawn",
+        "insert_text": "spawn",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "receive",
+        "insert_text": "receive",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "init",
+        "insert_text": "init",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "scope",
+        "insert_text": "scope",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "move",
+        "insert_text": "move",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "select",
+        "insert_text": "select",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "join",
+        "insert_text": "join",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "after",
+        "insert_text": "after",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "from",
+        "insert_text": "from",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "await",
+        "insert_text": "await",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "cooperate",
+        "insert_text": "cooperate",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "this",
+        "insert_text": "this",
+        "kind": "keyword",
+        "group": "actors",
+        "detail": "Actor and concurrency keyword"
+      },
+      {
+        "label": "wire",
+        "insert_text": "wire",
+        "kind": "keyword",
+        "group": "wire",
+        "detail": "Wire declaration keyword"
+      },
+      {
+        "label": "reserved",
+        "insert_text": "reserved",
+        "kind": "keyword",
+        "group": "wire",
+        "detail": "Wire declaration keyword"
+      },
+      {
+        "label": "optional",
+        "insert_text": "optional",
+        "kind": "keyword",
+        "group": "wire",
+        "detail": "Wire declaration keyword"
+      },
+      {
+        "label": "deprecated",
+        "insert_text": "deprecated",
+        "kind": "keyword",
+        "group": "wire",
+        "detail": "Wire declaration keyword"
+      },
+      {
+        "label": "default",
+        "insert_text": "default",
+        "kind": "keyword",
+        "group": "wire",
+        "detail": "Wire declaration keyword"
+      },
+      {
+        "label": "child",
+        "insert_text": "child",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "restart",
+        "insert_text": "restart",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "budget",
+        "insert_text": "budget",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "strategy",
+        "insert_text": "strategy",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "permanent",
+        "insert_text": "permanent",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "transient",
+        "insert_text": "transient",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "temporary",
+        "insert_text": "temporary",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "one_for_one",
+        "insert_text": "one_for_one",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "one_for_all",
+        "insert_text": "one_for_all",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "rest_for_one",
+        "insert_text": "rest_for_one",
+        "kind": "keyword",
+        "group": "supervisor_config",
+        "detail": "Supervisor configuration keyword"
+      },
+      {
+        "label": "true",
+        "insert_text": "true",
+        "kind": "constant",
+        "group": "logical",
+        "detail": "Boolean literal"
+      },
+      {
+        "label": "false",
+        "insert_text": "false",
+        "kind": "constant",
+        "group": "logical",
+        "detail": "Boolean literal"
+      },
+      {
+        "label": "machine",
+        "insert_text": "machine",
+        "kind": "keyword",
+        "group": "machine",
+        "detail": "State machine keyword"
+      },
+      {
+        "label": "state",
+        "insert_text": "state",
+        "kind": "keyword",
+        "group": "machine",
+        "detail": "State machine keyword"
+      },
+      {
+        "label": "event",
+        "insert_text": "event",
+        "kind": "keyword",
+        "group": "machine",
+        "detail": "State machine keyword"
+      },
+      {
+        "label": "on",
+        "insert_text": "on",
+        "kind": "keyword",
+        "group": "machine",
+        "detail": "State machine keyword"
+      },
+      {
+        "label": "when",
+        "insert_text": "when",
+        "kind": "keyword",
+        "group": "machine",
+        "detail": "State machine keyword"
+      },
+      {
+        "label": "dyn",
+        "insert_text": "dyn",
+        "kind": "keyword",
+        "group": "other",
+        "detail": "Other language keyword"
+      },
+      {
+        "label": "unsafe",
+        "insert_text": "unsafe",
+        "kind": "keyword",
+        "group": "other",
+        "detail": "Other language keyword"
+      },
+      {
+        "label": "pure",
+        "insert_text": "pure",
+        "kind": "keyword",
+        "group": "other",
+        "detail": "Other language keyword"
+      },
+      {
+        "label": "try",
+        "insert_text": "try",
+        "kind": "keyword",
+        "group": "reserved_unused",
+        "detail": "Reserved keyword"
+      },
+      {
+        "label": "catch",
+        "insert_text": "catch",
+        "kind": "keyword",
+        "group": "reserved_unused",
+        "detail": "Reserved keyword"
+      },
+      {
+        "label": "race",
+        "insert_text": "race",
+        "kind": "keyword",
+        "group": "reserved_unused",
+        "detail": "Reserved keyword"
+      },
+      {
+        "label": "foreign",
+        "insert_text": "foreign",
+        "kind": "keyword",
+        "group": "reserved_unused",
+        "detail": "Reserved keyword"
+      },
+      {
+        "label": "i8",
+        "insert_text": "i8",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "i16",
+        "insert_text": "i16",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "i32",
+        "insert_text": "i32",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "i64",
+        "insert_text": "i64",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "u8",
+        "insert_text": "u8",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "u16",
+        "insert_text": "u16",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "u32",
+        "insert_text": "u32",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "u64",
+        "insert_text": "u64",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "isize",
+        "insert_text": "isize",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "usize",
+        "insert_text": "usize",
+        "kind": "type",
+        "group": "integer",
+        "detail": "Integer type"
+      },
+      {
+        "label": "f32",
+        "insert_text": "f32",
+        "kind": "type",
+        "group": "float",
+        "detail": "Floating-point type"
+      },
+      {
+        "label": "f64",
+        "insert_text": "f64",
+        "kind": "type",
+        "group": "float",
+        "detail": "Floating-point type"
+      },
+      {
+        "label": "bool",
+        "insert_text": "bool",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "char",
+        "insert_text": "char",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "string",
+        "insert_text": "string",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "bytes",
+        "insert_text": "bytes",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "void",
+        "insert_text": "void",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "never",
+        "insert_text": "never",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "duration",
+        "insert_text": "duration",
+        "kind": "type",
+        "group": "primitive",
+        "detail": "Primitive type"
+      },
+      {
+        "label": "Vec",
+        "insert_text": "Vec",
+        "kind": "type",
+        "group": "collections",
+        "detail": "Collection type"
+      },
+      {
+        "label": "HashMap",
+        "insert_text": "HashMap",
+        "kind": "type",
+        "group": "collections",
+        "detail": "Collection type"
+      },
+      {
+        "label": "Option",
+        "insert_text": "Option",
+        "kind": "type",
+        "group": "option_result",
+        "detail": "Option/Result type or constructor"
+      },
+      {
+        "label": "Result",
+        "insert_text": "Result",
+        "kind": "type",
+        "group": "option_result",
+        "detail": "Option/Result type or constructor"
+      },
+      {
+        "label": "Ok",
+        "insert_text": "Ok",
+        "kind": "constructor",
+        "group": "option_result",
+        "detail": "Option/Result constructor"
+      },
+      {
+        "label": "Err",
+        "insert_text": "Err",
+        "kind": "constructor",
+        "group": "option_result",
+        "detail": "Option/Result constructor"
+      },
+      {
+        "label": "Some",
+        "insert_text": "Some",
+        "kind": "constructor",
+        "group": "option_result",
+        "detail": "Option/Result constructor"
+      },
+      {
+        "label": "None",
+        "insert_text": "None",
+        "kind": "constructor",
+        "group": "option_result",
+        "detail": "Option/Result constructor"
+      },
+      {
+        "label": "ActorRef",
+        "insert_text": "ActorRef",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Stream",
+        "insert_text": "Stream",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Sink",
+        "insert_text": "Sink",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Task",
+        "insert_text": "Task",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Scope",
+        "insert_text": "Scope",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Generator",
+        "insert_text": "Generator",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "AsyncGenerator",
+        "insert_text": "AsyncGenerator",
+        "kind": "type",
+        "group": "concurrency",
+        "detail": "Concurrency type"
+      },
+      {
+        "label": "Send",
+        "insert_text": "Send",
+        "kind": "trait",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Frozen",
+        "insert_text": "Frozen",
+        "kind": "trait",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Copy",
+        "insert_text": "Copy",
+        "kind": "trait",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Arc",
+        "insert_text": "Arc",
+        "kind": "type",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Rc",
+        "insert_text": "Rc",
+        "kind": "type",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Weak",
+        "insert_text": "Weak",
+        "kind": "type",
+        "group": "marker_traits",
+        "detail": "Marker trait or shared-pointer type"
+      },
+      {
+        "label": "Range",
+        "insert_text": "Range",
+        "kind": "type",
+        "group": "other",
+        "detail": "Other standard type"
+      },
+      {
+        "label": "ActorStream",
+        "insert_text": "ActorStream",
+        "kind": "type",
+        "group": "other",
+        "detail": "Other standard type"
+      },
+      {
+        "label": "mut",
+        "insert_text": "mut",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Mutable qualifier on parameters"
+      },
+      {
+        "label": "mailbox",
+        "insert_text": "mailbox",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Actor mailbox configuration block"
+      },
+      {
+        "label": "overflow",
+        "insert_text": "overflow",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Mailbox overflow policy"
+      },
+      {
+        "label": "window",
+        "insert_text": "window",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Supervisor restart window parameter"
+      },
+      {
+        "label": "max_restarts",
+        "insert_text": "max_restarts",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Supervisor max restarts parameter"
+      },
+      {
+        "label": "export",
+        "insert_text": "export",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "FFI export attribute"
+      },
+      {
+        "label": "json",
+        "insert_text": "json",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Wire serialization format"
+      },
+      {
+        "label": "yaml",
+        "insert_text": "yaml",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Wire serialization format"
+      },
+      {
+        "label": "repeated",
+        "insert_text": "repeated",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Wire field qualifier"
+      },
+      {
+        "label": "coalesce",
+        "insert_text": "coalesce",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Mailbox overflow policy"
+      },
+      {
+        "label": "fallback",
+        "insert_text": "fallback",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Mailbox overflow fallback"
+      },
+      {
+        "label": "drop_new",
+        "insert_text": "drop_new",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Overflow policy: drop new messages"
+      },
+      {
+        "label": "drop_old",
+        "insert_text": "drop_old",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Overflow policy: drop old messages"
+      },
+      {
+        "label": "block",
+        "insert_text": "block",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Overflow policy: block sender"
+      },
+      {
+        "label": "fail",
+        "insert_text": "fail",
+        "kind": "contextual_identifier",
+        "group": "contextual_identifiers",
+        "detail": "Overflow policy: fail actor"
+      }
+    ]
+  },
+  "lexical": {
+    "all_keywords": [
+      "let",
+      "var",
+      "const",
+      "fn",
+      "if",
+      "else",
+      "match",
+      "loop",
+      "for",
+      "while",
+      "break",
+      "continue",
+      "return",
+      "import",
+      "pub",
+      "package",
+      "super",
+      "struct",
+      "indirect",
+      "enum",
+      "trait",
+      "impl",
+      "wire",
+      "actor",
+      "supervisor",
+      "child",
+      "restart",
+      "budget",
+      "strategy",
+      "permanent",
+      "transient",
+      "temporary",
+      "one_for_one",
+      "one_for_all",
+      "rest_for_one",
+      "scope",
+      "spawn",
+      "async",
+      "await",
+      "receive",
+      "init",
+      "type",
+      "this",
+      "dyn",
+      "move",
+      "try",
+      "true",
+      "false",
+      "reserved",
+      "optional",
+      "deprecated",
+      "default",
+      "unsafe",
+      "extern",
+      "foreign",
+      "in",
+      "select",
+      "race",
+      "join",
+      "from",
+      "after",
+      "gen",
+      "yield",
+      "where",
+      "cooperate",
+      "catch",
+      "defer",
+      "pure",
+      "as",
+      "machine",
+      "state",
+      "event",
+      "on",
+      "when"
+    ],
+    "keywords": {
+      "control_flow": [
+        "if",
+        "else",
+        "match",
+        "loop",
+        "for",
+        "while",
+        "break",
+        "continue",
+        "return",
+        "in",
+        "yield",
+        "defer"
+      ],
+      "declarations": [
+        "let",
+        "var",
+        "const",
+        "fn",
+        "gen",
+        "async",
+        "pub",
+        "import",
+        "package",
+        "super",
+        "extern",
+        "where",
+        "type",
+        "indirect",
+        "enum",
+        "trait",
+        "impl",
+        "as",
+        "struct"
+      ],
+      "actors": [
+        "actor",
+        "supervisor",
+        "spawn",
+        "receive",
+        "init",
+        "scope",
+        "move",
+        "select",
+        "join",
+        "after",
+        "from",
+        "await",
+        "cooperate",
+        "this"
+      ],
+      "wire": [
+        "wire",
+        "reserved",
+        "optional",
+        "deprecated",
+        "default"
+      ],
+      "supervisor_config": [
+        "child",
+        "restart",
+        "budget",
+        "strategy",
+        "permanent",
+        "transient",
+        "temporary",
+        "one_for_one",
+        "one_for_all",
+        "rest_for_one"
+      ],
+      "logical": [
+        "true",
+        "false"
+      ],
+      "machine": [
+        "machine",
+        "state",
+        "event",
+        "on",
+        "when"
+      ],
+      "other": [
+        "dyn",
+        "unsafe",
+        "pure"
+      ],
+      "reserved_unused": [
+        "try",
+        "catch",
+        "race",
+        "foreign"
+      ]
+    },
+    "contextual_identifiers": {
+      "mut": "Mutable qualifier on parameters",
+      "mailbox": "Actor mailbox configuration block",
+      "overflow": "Mailbox overflow policy",
+      "window": "Supervisor restart window parameter",
+      "max_restarts": "Supervisor max restarts parameter",
+      "export": "FFI export attribute",
+      "json": "Wire serialization format",
+      "yaml": "Wire serialization format",
+      "repeated": "Wire field qualifier",
+      "coalesce": "Mailbox overflow policy",
+      "fallback": "Mailbox overflow fallback",
+      "drop_new": "Overflow policy: drop new messages",
+      "drop_old": "Overflow policy: drop old messages",
+      "block": "Overflow policy: block sender",
+      "fail": "Overflow policy: fail actor"
+    },
+    "types": {
+      "integer": [
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "isize",
+        "usize"
+      ],
+      "float": [
+        "f32",
+        "f64"
+      ],
+      "primitive": [
+        "bool",
+        "char",
+        "string",
+        "bytes",
+        "void",
+        "never",
+        "duration"
+      ],
+      "collections": [
+        "Vec",
+        "HashMap"
+      ],
+      "option_result": [
+        "Option",
+        "Result",
+        "Ok",
+        "Err",
+        "Some",
+        "None"
+      ],
+      "concurrency": [
+        "ActorRef",
+        "Stream",
+        "Sink",
+        "Task",
+        "Scope",
+        "Generator",
+        "AsyncGenerator"
+      ],
+      "marker_traits": [
+        "Send",
+        "Frozen",
+        "Copy",
+        "Arc",
+        "Rc",
+        "Weak"
+      ],
+      "other": [
+        "Range",
+        "ActorStream"
+      ]
+    },
+    "operators": {
+      "arithmetic": [
+        "+",
+        "-",
+        "*",
+        "/",
+        "%"
+      ],
+      "comparison": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">="
+      ],
+      "logical": [
+        "&&",
+        "||",
+        "!"
+      ],
+      "bitwise": [
+        "&",
+        "|",
+        "^",
+        "~",
+        "<<",
+        ">>"
+      ],
+      "pattern": [
+        "=~",
+        "!~"
+      ],
+      "assignment": [
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "&=",
+        "|=",
+        "^=",
+        "<<=",
+        ">>="
+      ],
+      "arrow": [
+        "->",
+        "=>",
+        "<-"
+      ],
+      "range": [
+        "..",
+        "..="
+      ],
+      "other": [
+        "?",
+        "@",
+        ".",
+        "::",
+        "#["
+      ]
+    },
+    "string_prefixes": [
+      "f",
+      "r",
+      "re",
+      "b"
+    ],
+    "comment_styles": {
+      "line": "//",
+      "doc": "///",
+      "inner_doc": "//!",
+      "block_start": "/*",
+      "block_end": "*/"
+    },
+    "literal_suffixes": {
+      "duration": [
+        "ns",
+        "us",
+        "ms",
+        "s",
+        "m",
+        "h"
+      ]
+    }
+  },
+  "highlighting": {
+    "description": "Grouped tokens for mobile highlighters and other downstream integrations.",
+    "source_groups": {
+      "keywords": {
+        "control_flow": [
+          "if",
+          "else",
+          "match",
+          "loop",
+          "for",
+          "while",
+          "break",
+          "continue",
+          "return",
+          "in",
+          "yield",
+          "defer"
+        ],
+        "declarations": [
+          "let",
+          "var",
+          "const",
+          "fn",
+          "gen",
+          "async",
+          "pub",
+          "import",
+          "package",
+          "super",
+          "extern",
+          "where",
+          "type",
+          "indirect",
+          "enum",
+          "trait",
+          "impl",
+          "as",
+          "struct"
+        ],
+        "actors": [
+          "actor",
+          "supervisor",
+          "spawn",
+          "receive",
+          "init",
+          "scope",
+          "move",
+          "select",
+          "join",
+          "after",
+          "from",
+          "await",
+          "cooperate",
+          "this"
+        ],
+        "wire": [
+          "wire",
+          "reserved",
+          "optional",
+          "deprecated",
+          "default"
+        ],
+        "supervisor_config": [
+          "child",
+          "restart",
+          "budget",
+          "strategy",
+          "permanent",
+          "transient",
+          "temporary",
+          "one_for_one",
+          "one_for_all",
+          "rest_for_one"
+        ],
+        "logical": [
+          "true",
+          "false"
+        ],
+        "machine": [
+          "machine",
+          "state",
+          "event",
+          "on",
+          "when"
+        ],
+        "other": [
+          "dyn",
+          "unsafe",
+          "pure"
+        ],
+        "reserved_unused": [
+          "try",
+          "catch",
+          "race",
+          "foreign"
+        ]
+      },
+      "contextual_identifiers": {
+        "mut": "Mutable qualifier on parameters",
+        "mailbox": "Actor mailbox configuration block",
+        "overflow": "Mailbox overflow policy",
+        "window": "Supervisor restart window parameter",
+        "max_restarts": "Supervisor max restarts parameter",
+        "export": "FFI export attribute",
+        "json": "Wire serialization format",
+        "yaml": "Wire serialization format",
+        "repeated": "Wire field qualifier",
+        "coalesce": "Mailbox overflow policy",
+        "fallback": "Mailbox overflow fallback",
+        "drop_new": "Overflow policy: drop new messages",
+        "drop_old": "Overflow policy: drop old messages",
+        "block": "Overflow policy: block sender",
+        "fail": "Overflow policy: fail actor"
+      },
+      "types": {
+        "integer": [
+          "i8",
+          "i16",
+          "i32",
+          "i64",
+          "u8",
+          "u16",
+          "u32",
+          "u64",
+          "isize",
+          "usize"
+        ],
+        "float": [
+          "f32",
+          "f64"
+        ],
+        "primitive": [
+          "bool",
+          "char",
+          "string",
+          "bytes",
+          "void",
+          "never",
+          "duration"
+        ],
+        "collections": [
+          "Vec",
+          "HashMap"
+        ],
+        "option_result": [
+          "Option",
+          "Result",
+          "Ok",
+          "Err",
+          "Some",
+          "None"
+        ],
+        "concurrency": [
+          "ActorRef",
+          "Stream",
+          "Sink",
+          "Task",
+          "Scope",
+          "Generator",
+          "AsyncGenerator"
+        ],
+        "marker_traits": [
+          "Send",
+          "Frozen",
+          "Copy",
+          "Arc",
+          "Rc",
+          "Weak"
+        ],
+        "other": [
+          "Range",
+          "ActorStream"
+        ]
+      },
+      "operators": {
+        "arithmetic": [
+          "+",
+          "-",
+          "*",
+          "/",
+          "%"
+        ],
+        "comparison": [
+          "==",
+          "!=",
+          "<",
+          "<=",
+          ">",
+          ">="
+        ],
+        "logical": [
+          "&&",
+          "||",
+          "!"
+        ],
+        "bitwise": [
+          "&",
+          "|",
+          "^",
+          "~",
+          "<<",
+          ">>"
+        ],
+        "pattern": [
+          "=~",
+          "!~"
+        ],
+        "assignment": [
+          "=",
+          "+=",
+          "-=",
+          "*=",
+          "/=",
+          "%=",
+          "&=",
+          "|=",
+          "^=",
+          "<<=",
+          ">>="
+        ],
+        "arrow": [
+          "->",
+          "=>",
+          "<-"
+        ],
+        "range": [
+          "..",
+          "..="
+        ],
+        "other": [
+          "?",
+          "@",
+          ".",
+          "::",
+          "#["
+        ]
+      },
+      "string_prefixes": [
+        "f",
+        "r",
+        "re",
+        "b"
+      ],
+      "comment_styles": {
+        "line": "//",
+        "doc": "///",
+        "inner_doc": "//!",
+        "block_start": "/*",
+        "block_end": "*/"
+      },
+      "literal_suffixes": {
+        "duration": [
+          "ns",
+          "us",
+          "ms",
+          "s",
+          "m",
+          "h"
+        ]
+      }
+    },
+    "textmate_scopes": [
+      {
+        "scope": "keyword.control.hew",
+        "tokens": [
+          "if",
+          "else",
+          "match",
+          "loop",
+          "for",
+          "while",
+          "break",
+          "continue",
+          "return",
+          "in",
+          "yield",
+          "defer",
+          "scope",
+          "select",
+          "join",
+          "after",
+          "from",
+          "await",
+          "cooperate"
+        ]
+      },
+      {
+        "scope": "keyword.declaration.hew",
+        "tokens": [
+          "let",
+          "var",
+          "const",
+          "fn",
+          "gen",
+          "async",
+          "pub",
+          "import",
+          "package",
+          "super",
+          "extern",
+          "where",
+          "type",
+          "indirect",
+          "enum",
+          "trait",
+          "impl",
+          "as",
+          "struct"
+        ]
+      },
+      {
+        "scope": "keyword.actor.hew",
+        "tokens": [
+          "actor",
+          "spawn",
+          "receive",
+          "init",
+          "move",
+          "this"
+        ]
+      },
+      {
+        "scope": "keyword.supervisor.hew",
+        "tokens": [
+          "supervisor",
+          "child",
+          "restart",
+          "budget",
+          "strategy"
+        ]
+      },
+      {
+        "scope": "constant.language.strategy.hew",
+        "tokens": [
+          "permanent",
+          "transient",
+          "temporary",
+          "one_for_one",
+          "one_for_all",
+          "rest_for_one"
+        ]
+      },
+      {
+        "scope": "keyword.wire.hew",
+        "tokens": [
+          "wire",
+          "reserved",
+          "optional",
+          "deprecated",
+          "default"
+        ]
+      },
+      {
+        "scope": "keyword.control.machine.hew",
+        "tokens": [
+          "machine",
+          "state",
+          "event",
+          "on",
+          "when"
+        ]
+      },
+      {
+        "scope": "keyword.other.hew",
+        "tokens": [
+          "dyn",
+          "unsafe",
+          "pure"
+        ]
+      },
+      {
+        "scope": "constant.language.boolean.hew",
+        "tokens": [
+          "true",
+          "false"
+        ]
+      },
+      {
+        "scope": "constant.language.none.hew",
+        "tokens": [
+          "None"
+        ]
+      },
+      {
+        "scope": "keyword.reserved.hew",
+        "tokens": [
+          "try",
+          "catch",
+          "race",
+          "foreign"
+        ]
+      },
+      {
+        "scope": "storage.type.numeric.hew",
+        "tokens": [
+          "i8",
+          "i16",
+          "i32",
+          "i64",
+          "u8",
+          "u16",
+          "u32",
+          "u64",
+          "isize",
+          "usize",
+          "f32",
+          "f64"
+        ]
+      },
+      {
+        "scope": "storage.type.primitive.hew",
+        "tokens": [
+          "bool",
+          "char",
+          "string",
+          "bytes",
+          "void",
+          "never",
+          "duration"
+        ]
+      },
+      {
+        "scope": "storage.type.generic.hew",
+        "tokens": [
+          "Vec",
+          "HashMap",
+          "Option",
+          "Result",
+          "Ok",
+          "Err",
+          "Some",
+          "Arc",
+          "Rc",
+          "Weak",
+          "Range",
+          "ActorStream"
+        ]
+      },
+      {
+        "scope": "storage.type.concurrency.hew",
+        "tokens": [
+          "ActorRef",
+          "Stream",
+          "Sink",
+          "Task",
+          "Scope",
+          "Generator",
+          "AsyncGenerator"
+        ]
+      },
+      {
+        "scope": "storage.type.trait.hew",
+        "tokens": [
+          "Send",
+          "Frozen",
+          "Copy"
+        ]
+      },
+      {
+        "scope": "variable.language.contextual.hew",
+        "tokens": [
+          "mut",
+          "mailbox",
+          "overflow",
+          "window",
+          "max_restarts",
+          "export",
+          "json",
+          "yaml",
+          "repeated",
+          "coalesce",
+          "fallback",
+          "drop_new",
+          "drop_old",
+          "block",
+          "fail"
+        ]
+      }
+    ]
+  },
+  "downstream": {
+    "description": "Pre-grouped buckets that mirror existing downstream grammar tooling.",
+    "tree_sitter_sync": {
+      "primitive_types": [
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "isize",
+        "usize",
+        "f32",
+        "f64",
+        "bool",
+        "char",
+        "string",
+        "bytes",
+        "void",
+        "duration"
+      ],
+      "wire_types": [
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "f32",
+        "f64",
+        "bool",
+        "string",
+        "bytes"
+      ],
+      "wire_attributes": [
+        "optional",
+        "deprecated"
+      ],
+      "overflow_kinds": [
+        "drop_new",
+        "drop_old",
+        "block",
+        "fail"
+      ],
+      "restart_permanence": [
+        "permanent",
+        "transient",
+        "temporary"
+      ],
+      "restart_strategies": [
+        "one_for_one",
+        "one_for_all",
+        "rest_for_one"
+      ],
+      "duration_suffixes": [
+        "ns",
+        "us",
+        "ms",
+        "s",
+        "m",
+        "h"
+      ],
+      "assignment_operators": [
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "&=",
+        "|=",
+        "^=",
+        "<<=",
+        ">>="
+      ],
+      "boolean_literals": [
+        "true",
+        "false"
+      ]
+    }
+  }
+}

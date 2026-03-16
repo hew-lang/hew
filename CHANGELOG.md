@@ -61,6 +61,7 @@ The largest Hew release to date. The `self` keyword is removed in favour of name
 
 ### Tooling
 
+- **Single `libhew.a` distribution** — runtime + all stdlib modules combined into one static library via the `hew-lib` umbrella crate; no more per-module `.a` files or `--allow-multiple-definition` linker flags (#252)
 - `hew --version` shows build metadata: `hew 0.2.0 (release, abc1234)`
 - `hew test` runner hardened with `--timeout`, parse-error detection, stable ordering
 - `hew fmt` — 7 semantic corruption bugs fixed

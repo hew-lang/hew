@@ -994,22 +994,28 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
         return mlir::success();
       }
 
+      // Convert Hew dialect types (e.g., !hew.result, !hew.option) to their
+      // LLVM representation so the load uses a concrete LLVM type.
+      auto loadType = getTypeConverter()->convertType(resultType);
+      if (!loadType)
+        loadType = resultType;
+
       // Non-void: load the result from the reply pointer.
       // hew_node_api_ask guarantees a non-null return for non-void asks
       // (returns a zeroed allocation on timeout/failure).
       mlir::Value resultVal;
-      if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
+      if (loadType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
         auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
         resultVal = loaded.getResult();
-      } else if (resultType == i32Type || resultType == rewriter.getI64Type() ||
-                 llvm::isa<mlir::IntegerType>(resultType) ||
-                 llvm::isa<mlir::FloatType>(resultType) ||
-                 llvm::isa<mlir::LLVM::LLVMStructType>(resultType)) {
-        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, replyPtr);
+      } else if (loadType == i32Type || loadType == rewriter.getI64Type() ||
+                 llvm::isa<mlir::IntegerType>(loadType) ||
+                 llvm::isa<mlir::FloatType>(loadType) ||
+                 llvm::isa<mlir::LLVM::LLVMStructType>(loadType)) {
+        auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, loadType, replyPtr);
         resultVal = loaded.getResult();
       } else {
         auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
-        resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, resultType,
+        resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, loadType,
                                                              mlir::ValueRange{loaded.getResult()})
                         .getResult(0);
       }
@@ -1032,8 +1038,8 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
                                    mlir::ValueRange{targetVal, msgTypeVal, dataPtr, dataSize});
     auto replyPtr = call.getResult(0);
 
-    // Load the result from the reply pointer — always load as ptr since
-    // custom types like !hew.string_ref can't be loaded by LLVM directly
+    // Load the result from the reply pointer — convert Hew dialect types
+    // (e.g., !hew.result, !hew.option) to LLVM before loading.
     auto resultType = op.getResult().getType();
 
     // Void-return handler: hew_actor_ask returns null (hew_reply was called with null/0).
@@ -1047,19 +1053,23 @@ struct ActorAskOpLowering : public mlir::OpConversionPattern<hew::ActorAskOp> {
       return mlir::success();
     }
 
+    auto loadType = getTypeConverter()->convertType(resultType);
+    if (!loadType)
+      loadType = resultType;
+
     mlir::Value resultVal;
-    if (resultType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(resultType)) {
+    if (loadType == ptrType || llvm::isa<mlir::LLVM::LLVMPointerType>(loadType)) {
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
       resultVal = loaded.getResult();
-    } else if (resultType == i32Type || resultType == rewriter.getI64Type() ||
-               llvm::isa<mlir::IntegerType>(resultType) || llvm::isa<mlir::FloatType>(resultType) ||
-               llvm::isa<mlir::LLVM::LLVMStructType>(resultType)) {
-      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, resultType, replyPtr);
+    } else if (loadType == i32Type || loadType == rewriter.getI64Type() ||
+               llvm::isa<mlir::IntegerType>(loadType) || llvm::isa<mlir::FloatType>(loadType) ||
+               llvm::isa<mlir::LLVM::LLVMStructType>(loadType)) {
+      auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, loadType, replyPtr);
       resultVal = loaded.getResult();
     } else {
       // Custom types (e.g., !hew.string_ref): load as ptr, then cast
       auto loaded = mlir::LLVM::LoadOp::create(rewriter, loc, ptrType, replyPtr);
-      resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, resultType,
+      resultVal = mlir::UnrealizedConversionCastOp::create(rewriter, loc, loadType,
                                                            mlir::ValueRange{loaded.getResult()})
                       .getResult(0);
     }

@@ -1,16 +1,16 @@
 //! Hand-written recursive-descent parser with Pratt precedence for operator expressions.
 
 use crate::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item, LambdaParam,
-    Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm, NamingCase,
-    OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program, ReceiveFnDecl,
-    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
-    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta,
-    WireMetadata,
+    ActorDecl, ActorInit, ActorTerminate, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl,
+    FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec, IntRadix, Item,
+    LambdaParam, Literal, MachineDecl, MachineEvent, MachineState, MachineTransition, MatchArm,
+    NamingCase, OverflowFallback, OverflowPolicy, Param, Pattern, PatternField, Program,
+    ReceiveFnDecl, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WherePredicate, WireDecl, WireDeclKind, WireFieldDecl,
+    WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use std::cell::Cell;
@@ -1641,6 +1641,7 @@ impl<'src> Parser<'src> {
         self.expect(&Token::LeftBrace)?;
 
         let mut init = None;
+        let mut terminate = None;
         let mut fields = Vec::new();
         let mut receive_fns = Vec::new();
         let mut methods = Vec::new();
@@ -1661,6 +1662,16 @@ impl<'src> Parser<'src> {
                 self.expect(&Token::RightParen)?;
                 let body = self.parse_block()?;
                 init = Some(ActorInit { params, body });
+            } else if self.peek() == Some(&Token::Terminate) {
+                if !attrs.is_empty() {
+                    self.error("attributes are not supported on terminate blocks".to_string());
+                }
+                if terminate.is_some() {
+                    self.error("duplicate terminate block in actor".to_string());
+                }
+                self.advance();
+                let body = self.parse_block()?;
+                terminate = Some(ActorTerminate { body });
             } else if self.peek() == Some(&Token::Pure) || self.peek() == Some(&Token::Receive) {
                 let is_pure = self.eat(&Token::Pure);
                 if self.peek() == Some(&Token::Receive) {
@@ -1798,6 +1809,7 @@ impl<'src> Parser<'src> {
             name,
             super_traits,
             init,
+            terminate,
             fields,
             receive_fns,
             methods,

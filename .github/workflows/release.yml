@@ -60,9 +60,6 @@ jobs:
           - target: linux-aarch64
             os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
-          - target: darwin-x86_64
-            os: macos-15
-            rust_target: x86_64-apple-darwin
           - target: darwin-aarch64
             os: macos-14
             rust_target: aarch64-apple-darwin
@@ -71,8 +68,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows and macOS x86_64 MLIR builds can be flaky — don't block the release
-    continue-on-error: ${{ startsWith(matrix.target, 'windows') || matrix.target == 'darwin-x86_64' }}
+    # Windows MLIR builds can be flaky — don't block the release
+    continue-on-error: ${{ startsWith(matrix.target, 'windows') }}
     # 180 min to accommodate first-run LLVM build from source on Windows (~90-120 min)
     timeout-minutes: 180
 
@@ -630,8 +627,24 @@ jobs:
         with:
           targets: ${{ matrix.rust_musl_target }}
 
-      - name: Install musl cross-compiler
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install musl cross-compiler and LLVM/MLIR
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y \
+            musl-tools cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }}
+
+      - name: Configure LLVM toolchain (musl)
+        run: |
+          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Cache Rust artifacts (musl)
         uses: actions/cache@v4
@@ -913,9 +926,6 @@ jobs:
             binary: hew-lsp
           - target: linux-aarch64
             vscode_target: linux-arm64
-            binary: hew-lsp
-          - target: darwin-x86_64
-            vscode_target: darwin-x64
             binary: hew-lsp
           - target: darwin-aarch64
             vscode_target: darwin-arm64

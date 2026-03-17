@@ -72,6 +72,7 @@
 #include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <climits>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 using namespace hew;
@@ -4616,7 +4617,7 @@ static void transformCoroutineGenerators(llvm::Module &M) {
     auto *DoneFn = M.getFunction(baseName + "__done");
 
     if (!InitFn || !NextFn || !DoneFn) {
-      llvm::report_fatal_error(llvm::Twine("missing generator stubs for '") + baseName +
+      throw std::runtime_error("missing generator stubs for '" + baseName +
                                "' — coroutine IR generation is incomplete");
     }
 
@@ -5095,12 +5096,12 @@ std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
     std::string error;
     auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target)
-      llvm::report_fatal_error(llvm::Twine("cannot find target for triple '") + triple.str() +
+      throw std::runtime_error("cannot find target for triple '" + triple.str() +
                                "': " + error);
     llvm::TargetOptions tOpts;
     auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
     if (!tm)
-      llvm::report_fatal_error(llvm::Twine("cannot create target machine for triple '") +
+      throw std::runtime_error("cannot create target machine for triple '" +
                                triple.str() + "'");
     auto dl = tm->createDataLayout().getStringRepresentation();
     module->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),

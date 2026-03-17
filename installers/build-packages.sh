@@ -425,6 +425,11 @@ build_alpine() {
     else
         info "alpine" "Building musl-native binaries..."
 
+        # Verify LLVM/MLIR is available (required for embedded codegen)
+        if [[ -z "${LLVM_PREFIX:-}" ]]; then
+            die "LLVM_PREFIX is not set — embedded codegen requires LLVM/MLIR.  Set LLVM_PREFIX to your LLVM installation."
+        fi
+
         # Build Rust binaries with musl target
         local musl_target="x86_64-unknown-linux-musl"
         if [[ "${TARGET_ARCH}" == "aarch64" ]]; then
@@ -433,7 +438,7 @@ build_alpine() {
 
         info "cargo" "Building Rust binaries + stdlib for ${musl_target}..."
         (cd "${REPO_DIR}" &&
-            cargo build --release --target "${musl_target}" \
+            HEW_EMBED_STATIC=1 cargo build --release --target "${musl_target}" \
                 -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
 
         # Assemble Alpine tarball

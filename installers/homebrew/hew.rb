@@ -8,13 +8,8 @@ class Hew < Formula
   # Run: sha256sum hew-v#{version}-{darwin,linux}-{x86_64,aarch64}.tar.gz
 
   on_macos do
-    if Hardware::CPU.intel?
-      url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-x86_64.tar.gz"
-      sha256 "__SHA256_DARWIN_X86_64__"
-    else
-      url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-aarch64.tar.gz"
-      sha256 "__SHA256_DARWIN_AARCH64__"
-    end
+    url "https://github.com/hew-lang/hew/releases/download/v#{version}/hew-v#{version}-darwin-aarch64.tar.gz"
+    sha256 "__SHA256_DARWIN_AARCH64__"
   end
 
   on_linux do

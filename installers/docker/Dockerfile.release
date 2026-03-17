@@ -17,7 +17,17 @@ ARG VERSION=0.0.0
 # ═════════════════════════════════════════════════════════════════════════════
 FROM rust:alpine3.21 AS rust-builder
 
-RUN apk add --no-cache musl-dev
+# musl-dev: libc headers for static linking
+# cmake/ninja/samurai: build system for embedded C++ codegen
+# llvm22-dev/mlir22-dev/clang22-dev: LLVM/MLIR for the embedded codegen library
+RUN apk add --no-cache \
+    musl-dev cmake samurai \
+    llvm22-dev mlir22-dev clang22-dev
+
+ENV LLVM_PREFIX=/usr/lib/llvm22
+ENV CC=clang-22
+ENV CXX=clang++-22
+ENV HEW_EMBED_STATIC=1
 
 WORKDIR /src
 COPY . .

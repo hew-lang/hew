@@ -2874,6 +2874,25 @@ impl Checker {
             });
         }
 
+        // Default unconstrained Range type variables to i64.  When both
+        // range bounds are coercible integer literals (e.g. `0..10`) the
+        // type checker creates `Range<fresh_var>`.  If nothing in the loop
+        // body constrains the variable, it reaches the serializer unresolved
+        // and triggers a spurious warning.  Bind those variables to i64 in the
+        // substitution so that both the Range type and any derived bindings
+        // (e.g. the for-loop induction variable) resolve to i64.
+        for ty in expr_types.values() {
+            if let Ty::Named { name, args } = ty {
+                if name == "Range" && args.len() == 1 {
+                    if let Ty::Var(v) = &args[0] {
+                        if self.subst.lookup(*v).is_none() {
+                            self.subst.insert(*v, Ty::I64);
+                        }
+                    }
+                }
+            }
+        }
+
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
         // substitution so the enrichment layer sees concrete types.

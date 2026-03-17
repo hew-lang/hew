@@ -11,9 +11,12 @@ use hew_cabi::vec::HewVec;
 
 /// Read the next item from a stream and return it as a `bytes` value.
 ///
-/// Returns a `*mut HewVec` (i32-element vec, one byte per slot).  On success the
-/// vec contains the item's raw bytes; on EOF it is a valid empty vec (len = 0).
-/// The caller owns the returned vec and must eventually free it.
+/// Returns a `*mut HewVec` (i32-element vec, one byte per slot) on success —
+/// including for zero-length items — or **null** on EOF.  The caller owns the
+/// returned vec and must eventually free it.
+///
+/// The null-vs-empty distinction is important: the codegen wraps this into
+/// `Option<bytes>` (`null` → `None`, non-null → `Some(bytes)`).
 ///
 /// # Safety
 ///
@@ -27,9 +30,7 @@ pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut H
     // SAFETY: stream is valid per caller contract; size is a valid local.
     let ptr = unsafe { hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size)) };
     if ptr.is_null() {
-        // EOF — return a valid empty HewVec so callers can safely call .len() etc.
-        // SAFETY: hew_vec_new allocates a valid empty vec.
-        return unsafe { hew_cabi::vec::hew_vec_new() };
+        return std::ptr::null_mut(); // EOF
     }
     // SAFETY: ptr is valid for `size` bytes (from hew_stream_next_sized contract).
     let raw = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size) };
@@ -44,7 +45,8 @@ pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut H
 /// Write a `bytes` value to a sink.
 ///
 /// Extracts the raw byte content from the `HewVec` and writes it as a single
-/// stream item.  Does nothing if `data` is null or empty.
+/// stream item.  Zero-length writes are forwarded to the backing — they are
+/// valid data, not no-ops.  Does nothing only if `sink` or `data` is null.
 ///
 /// # Safety
 ///
@@ -58,11 +60,15 @@ pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut Hew
     // SAFETY: data is a valid HewVec per caller contract.
     let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
     if bytes.is_empty() {
-        return;
-    }
-    // SAFETY: sink is valid; bytes slice is valid for its length.
-    unsafe {
-        crate::stream::hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
+        // hew_sink_write short-circuits on size=0, but empty bytes are valid
+        // data items that must be delivered.  Write directly to the backing.
+        // SAFETY: sink is valid per caller contract.
+        unsafe { (*sink).inner.write_item(&[]) };
+    } else {
+        // SAFETY: sink is valid; bytes slice is valid for its length.
+        unsafe {
+            crate::stream::hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
+        }
     }
 }
 

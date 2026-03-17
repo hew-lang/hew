@@ -6716,7 +6716,7 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "next" => Ty::option(inner),
-                    "next_bytes" => Ty::Bytes,
+                    "next_bytes" => Ty::option(Ty::Bytes),
                     "close" => Ty::Unit,
                     "lines" => Ty::stream(Ty::String),
                     "collect" => Ty::String,

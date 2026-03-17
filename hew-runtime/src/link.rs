@@ -248,6 +248,7 @@ mod tests {
             init_state: std::ptr::null_mut(),
             init_state_size: 0,
             coalesce_key_fn: None,
+            terminate_fn: None,
             error_code: AtomicI32::new(0),
             supervisor: std::ptr::null_mut(),
             supervisor_child_index: 0,

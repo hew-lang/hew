@@ -157,6 +157,10 @@ pub struct HewActor {
     /// Optional coalesce key function for message coalescing.
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
 
+    /// Optional cleanup function called when the actor is freed.
+    /// Generated from the `terminate { ... }` block in the actor declaration.
+    pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+
     /// Error code set by `hew_actor_trap` (0 = no error).
     pub error_code: AtomicI32,
 
@@ -331,6 +335,19 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
+    // Run the terminate callback (if any) before freeing state.
+    // catch_unwind prevents a panicking terminate block from aborting cleanup.
+    if let Some(terminate_fn) = a.terminate_fn {
+        if !a.state.is_null() {
+            let state = a.state;
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // SAFETY: terminate_fn and state are valid; caller guarantees
+                // the actor is not being dispatched.
+                unsafe { terminate_fn(state) };
+            }));
+        }
+    }
+
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
         libc::free(a.state);
@@ -362,6 +379,16 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Run the terminate callback (if any) before freeing state.
+    if let Some(terminate_fn) = a.terminate_fn {
+        if !a.state.is_null() {
+            let state = a.state;
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                unsafe { terminate_fn(state) };
+            }));
+        }
+    }
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
@@ -480,6 +507,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -562,6 +590,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -625,6 +654,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -960,6 +990,27 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
     )]
     let result = a.budget.load(Ordering::Relaxed) as u32;
     result
+}
+
+/// Register a terminate callback on an actor.
+///
+/// The terminate function is called with the actor's state pointer just
+/// before the actor's resources are freed. Panics inside the callback
+/// are caught and do not prevent cleanup.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function.
+/// - `terminate_fn` must point to a function with C ABI that accepts
+///   a single `*mut c_void` (the actor state).
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_set_terminate(
+    actor: *mut HewActor,
+    terminate_fn: unsafe extern "C" fn(*mut c_void),
+) {
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &mut *actor };
+    a.terminate_fn = Some(terminate_fn);
 }
 
 /// Set the per-actor reduction budget (operations per dispatch).
@@ -1814,6 +1865,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -1866,6 +1918,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -1933,6 +1986,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
+        terminate_fn: None,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,

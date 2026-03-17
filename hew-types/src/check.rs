@@ -9,11 +9,11 @@ use crate::unify::unify;
 #[cfg(test)]
 use hew_parser::ast::IntRadix;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr, ExternBlock,
-    FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl,
-    MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart, TraitDecl,
-    TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantKind, WhereClause, WireDecl, WireDeclKind,
+    ActorDecl, ActorInit, ActorTerminate, AttributeArg, BinaryOp, Block, CallArg, ConstDecl, Expr,
+    ExternBlock, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal,
+    MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl, Span, Spanned, Stmt, StringPart,
+    TraitDecl, TraitItem, TraitMethod, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam,
+    UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -3013,6 +3013,10 @@ impl Checker {
         if let Some(init) = &ad.init {
             self.check_actor_init(&ad.name, init, &ad.fields);
         }
+        // Type-check terminate body if present
+        if let Some(term) = &ad.terminate {
+            self.check_actor_terminate(&ad.name, term, &ad.fields);
+        }
         let actor_ty = Ty::Named {
             name: ad.name.clone(),
             args: vec![],
@@ -3067,6 +3071,37 @@ impl Checker {
         // Init returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
         self.check_block(&init.body);
+        self.current_return_type = None;
+
+        self.current_function = prev_function;
+        self.env.pop_scope();
+    }
+
+    /// Type-check an actor's `terminate { ... }` block. The terminate body
+    /// runs when the actor is stopped and has access to actor fields (bare
+    /// names) but takes no parameters and cannot return a value.
+    fn check_actor_terminate(
+        &mut self,
+        actor_name: &str,
+        term: &ActorTerminate,
+        fields: &[FieldDecl],
+    ) {
+        self.env.push_scope();
+
+        let qualified_name = format!("{actor_name}::terminate");
+        let prev_function = self.current_function.take();
+        self.current_function = Some(qualified_name);
+
+        // Bind actor fields directly in scope (bare field access, mutable
+        // so the terminate body can read/modify fields for cleanup).
+        for field in fields {
+            let field_ty = self.resolve_type_expr(&field.ty.0);
+            self.env.define(field.name.clone(), field_ty, true);
+        }
+
+        // Terminate returns unit — no meaningful return type
+        self.current_return_type = Some(Ty::Unit);
+        self.check_block(&term.body);
         self.current_return_type = None;
 
         self.current_function = prev_function;
@@ -8924,6 +8959,7 @@ mod tests {
             name: "NumberStream".to_string(),
             super_traits: None,
             init: None,
+            terminate: None,
             fields: vec![],
             receive_fns: vec![receive_fn],
             methods: vec![],
@@ -9550,6 +9586,7 @@ mod tests {
             name: "Greeter".to_string(),
             super_traits: None,
             init: None,
+            terminate: None,
             fields: vec![],
             receive_fns: vec![recv],
             methods: vec![],

@@ -1,0 +1,23 @@
+// Test: Actor terminate block reads actor fields
+// Exercises: terminate block accesses mutable state for cleanup
+actor Counter {
+    let count: int;
+
+    receive fn bump() {
+        count = count + 1;
+    }
+
+    terminate {
+        println(f"Counter final value: {count}");
+    }
+}
+
+fn main() {
+    println("=== Terminate Field Access ===");
+    let c = spawn Counter(count: 0);
+    c.bump();
+    c.bump();
+    c.bump();
+    await c.bump();
+    println("=== End ===");
+}

@@ -958,6 +958,7 @@ pub struct ActorDecl {
     pub name: String,
     pub super_traits: Option<Vec<TraitBound>>,
     pub init: Option<ActorInit>,
+    pub terminate: Option<ActorTerminate>,
     pub fields: Vec<FieldDecl>,
     pub receive_fns: Vec<ReceiveFnDecl>,
     pub methods: Vec<FnDecl>,
@@ -992,6 +993,13 @@ pub enum OverflowFallback {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActorInit {
     pub params: Vec<Param>,
+    pub body: Block,
+}
+
+/// An actor's `terminate { ... }` block, run when the actor is stopped.
+/// Has no parameters — actor fields are in scope.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ActorTerminate {
     pub body: Block,
 }
 

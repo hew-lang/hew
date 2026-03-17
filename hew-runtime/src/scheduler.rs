@@ -652,6 +652,8 @@ fn activate_actor(actor: *mut HewActor) {
         {
             crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
             crate::actor_group::notify_actor_death(a.id);
+            // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+            unsafe { crate::actor::call_terminate_fn(actor) };
         }
         return;
     }
@@ -743,6 +745,8 @@ fn activate_actor(actor: *mut HewActor) {
                 {
                     crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
                     crate::actor_group::notify_actor_death(a.id);
+                    // SAFETY: actor just transitioned to Stopped; dispatch is finished.
+                    unsafe { crate::actor::call_terminate_fn(actor) };
                 }
             }
         }
@@ -933,6 +937,9 @@ mod tests {
             init_state: ptr::null_mut(),
             init_state_size: 0,
             coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -1041,6 +1048,9 @@ mod tests {
             init_state: ptr::null_mut(),
             init_state_size: 0,
             coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,

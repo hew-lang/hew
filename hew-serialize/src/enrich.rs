@@ -591,6 +591,9 @@ fn rewrite_builtin_calls_in_item(item: &mut Item) {
             if let Some(ref mut init) = actor.init {
                 rewrite_builtin_calls_in_block(&mut init.body);
             }
+            if let Some(ref mut term) = actor.terminate {
+                rewrite_builtin_calls_in_block(&mut term.body);
+            }
             for recv in &mut actor.receive_fns {
                 rewrite_builtin_calls_in_block(&mut recv.body);
             }
@@ -894,6 +897,9 @@ fn normalize_item_types(item: &mut Item, registry: &hew_types::module_registry::
             }
             if let Some(ref mut init) = actor.init {
                 normalize_block_types(&mut init.body, registry);
+            }
+            if let Some(ref mut term) = actor.terminate {
+                normalize_block_types(&mut term.body, registry);
             }
             for recv in &mut actor.receive_fns {
                 for param in &mut recv.params {
@@ -1398,6 +1404,9 @@ fn enrich_actor_with_diagnostics(
 ) -> Result<(), TypeExprConversionError> {
     if let Some(ref mut init) = actor.init {
         enrich_block_with_diagnostics(&mut init.body, tco, diagnostics, registry)?;
+    }
+    if let Some(ref mut term) = actor.terminate {
+        enrich_block_with_diagnostics(&mut term.body, tco, diagnostics, registry)?;
     }
     for recv in &mut actor.receive_fns {
         enrich_block_with_diagnostics(&mut recv.body, tco, diagnostics, registry)?;
@@ -3196,6 +3205,7 @@ mod tests {
                     params: vec![],
                     body: make_block_with_expr(len_call),
                 }),
+                terminate: None,
                 fields: vec![],
                 receive_fns: vec![ReceiveFnDecl {
                     is_generator: false,
@@ -4013,6 +4023,7 @@ mod tests {
                         trailing_expr: None,
                     },
                 }),
+                terminate: None,
                 fields: vec![hew_parser::ast::FieldDecl {
                     name: "data".into(),
                     ty: (
@@ -5296,6 +5307,7 @@ mod tests {
                             trailing_expr: None,
                         },
                     }),
+                    terminate: None,
                     fields: vec![],
                     receive_fns: vec![ReceiveFnDecl {
                         is_generator: false,

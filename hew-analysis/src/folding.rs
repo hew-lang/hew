@@ -117,6 +117,9 @@ fn collect_actor_folding(source: &str, lo: &[usize], actor: &ActorDecl, r: &mut 
     if let Some(init) = &actor.init {
         collect_block_folding(source, lo, &init.body, r);
     }
+    if let Some(term) = &actor.terminate {
+        collect_block_folding(source, lo, &term.body, r);
+    }
     for recv in &actor.receive_fns {
         add_region(source, lo, &recv.span, r);
         collect_block_folding(source, lo, &recv.body, r);

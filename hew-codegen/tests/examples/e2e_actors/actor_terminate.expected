@@ -1,0 +1,6 @@
+=== Actor Terminate ===
+[app] hello
+[app] world
+[app] done
+=== End ===
+[app] shutting down

@@ -177,6 +177,9 @@ fn collect_refs_in_item(item: &Item, name: &str, spans: &mut Vec<Span>) {
             if let Some(init) = &a.init {
                 collect_refs_in_block(&init.body, name, spans);
             }
+            if let Some(term) = &a.terminate {
+                collect_refs_in_block(&term.body, name, spans);
+            }
             for recv in &a.receive_fns {
                 collect_refs_in_block(&recv.body, name, spans);
             }

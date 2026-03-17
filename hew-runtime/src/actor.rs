@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use crate::internal::types::{HewActorState, HewError, HewOverflowPolicy};
@@ -156,6 +156,18 @@ pub struct HewActor {
 
     /// Optional coalesce key function for message coalescing.
     pub coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+
+    /// Optional cleanup function called when the actor is freed.
+    /// Generated from the `terminate { ... }` block in the actor declaration.
+    pub terminate_fn: Option<unsafe extern "C" fn(*mut c_void)>,
+
+    /// Guard flag ensuring the terminate callback runs exactly once.
+    pub terminate_called: AtomicBool,
+
+    /// Set to `true` after the terminate callback returns (or was skipped).
+    /// Free paths spin-wait on this to avoid freeing state while terminate
+    /// is still running on another thread.
+    pub terminate_finished: AtomicBool,
 
     /// Error code set by `hew_actor_trap` (0 = no error).
     pub error_code: AtomicI32,
@@ -305,6 +317,17 @@ pub(crate) unsafe fn cleanup_all_actors() {
         if actor.is_null() {
             continue;
         }
+        // Run terminate for actors that never reached a terminal state
+        // (still IDLE at process exit). Skip crashed actors — their state
+        // may be corrupted. The terminate_called flag inside
+        // call_terminate_fn prevents double-execution for actors that
+        // already ran their terminate at a state transition.
+        // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
+        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        if state != HewActorState::Crashed as i32 {
+            // SAFETY: No concurrent dispatch — scheduler is shut down.
+            unsafe { call_terminate_fn(actor) };
+        }
         // SAFETY: Caller guarantees no concurrent dispatch.
         // SAFETY: The actor was allocated by a spawn function and has not been freed yet.
         unsafe { free_actor_resources(actor) };
@@ -330,6 +353,14 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
+
+    // Wait for any in-progress terminate callback to complete. This
+    // prevents freeing state while another thread is running terminate.
+    while a.terminate_called.load(Ordering::Acquire)
+        && !a.terminate_finished.load(Ordering::Acquire)
+    {
+        std::hint::spin_loop();
+    }
 
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
@@ -378,6 +409,120 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
 
     // SAFETY: Actor was allocated with Box::new / Box::into_raw.
     drop(unsafe { Box::from_raw(actor) });
+}
+
+// ── Terminate callback invocation ───────────────────────────────────────
+
+/// Run the actor's terminate callback exactly once, with crash recovery.
+///
+/// Sets up `CURRENT_ACTOR` and (on worker threads) a `sigsetjmp` recovery
+/// frame so that Hew panics or signals inside the terminate block are
+/// caught instead of aborting the process.
+///
+/// Called at terminal state transitions (→ Stopped), **not** at free time.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live [`HewActor`] in a terminal
+/// state (`Stopped`) that is not currently being dispatched.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
+    // SAFETY: caller guarantees `actor` is valid.
+    let a = unsafe { &*actor };
+
+    // Guard: only run once across all terminal-transition paths.
+    if a.terminate_called.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let Some(terminate_fn) = a.terminate_fn else {
+        a.terminate_finished.store(true, Ordering::Release);
+        return;
+    };
+
+    if a.state.is_null() {
+        a.terminate_finished.store(true, Ordering::Release);
+        return;
+    }
+
+    let state = a.state;
+    let prev_actor = set_current_actor(actor);
+
+    // Set up crash recovery (returns null on non-worker threads).
+    // SAFETY: `actor` is valid and in a terminal state; null msg is fine.
+    let jmp_buf_ptr = unsafe { crate::signal::prepare_dispatch_recovery(actor, ptr::null_mut()) };
+
+    let is_normal_path = if jmp_buf_ptr.is_null() {
+        // No recovery context (external thread or not initialised).
+        // Hew panics (longjmp) from an external thread will still
+        // abort the process — that's an acceptable limitation.
+        true
+    } else {
+        // SAFETY: jmp_buf_ptr is valid (from prepare_dispatch_recovery).
+        let ret = unsafe { crate::signal::sigsetjmp(jmp_buf_ptr, 1) };
+        if ret == 0 {
+            crate::signal::mark_recovery_active();
+            true
+        } else {
+            false
+        }
+    };
+
+    if is_normal_path {
+        // catch_unwind guards against Rust panics; the sigsetjmp frame
+        // (when present) guards against Hew panics and signals.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: terminate_fn and state are valid; actor is not
+            // being dispatched.
+            unsafe { terminate_fn(state) };
+        }));
+        if !jmp_buf_ptr.is_null() {
+            crate::signal::clear_dispatch_recovery();
+        }
+    } else {
+        // Terminate block crashed via signal/longjmp. The actor is
+        // already in a terminal state so hew_actor_trap is a no-op for
+        // the state transition, but handle_crash_recovery properly
+        // clears in_recovery and logs a crash report.
+        // SAFETY: called immediately after sigsetjmp returned non-zero.
+        unsafe { crate::signal::handle_crash_recovery() };
+    }
+
+    a.terminate_finished.store(true, Ordering::Release);
+    set_current_actor(prev_actor);
+}
+
+/// Run the actor's terminate callback exactly once (WASM version).
+///
+/// No signal recovery on WASM — `catch_unwind` is the only guard.
+///
+/// # Safety
+///
+/// `actor` must be a valid pointer to a live [`HewActor`] in a terminal
+/// state (`Stopped`) that is not currently being dispatched.
+#[cfg(target_arch = "wasm32")]
+pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
+    let a = unsafe { &*actor };
+
+    if a.terminate_called.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    let Some(terminate_fn) = a.terminate_fn else {
+        a.terminate_finished.store(true, Ordering::Release);
+        return;
+    };
+
+    if a.state.is_null() {
+        a.terminate_finished.store(true, Ordering::Release);
+        return;
+    }
+
+    let state = a.state;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        unsafe { terminate_fn(state) };
+    }));
+    a.terminate_finished.store(true, Ordering::Release);
 }
 
 /// Actor spawn options for [`hew_actor_spawn_opts`].
@@ -480,6 +625,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -562,6 +710,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -625,6 +776,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -833,6 +987,8 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
         .is_ok()
     {
         crate::tracing::hew_trace_lifecycle(a.id, crate::tracing::SPAN_STOP);
+        // SAFETY: actor just transitioned to Stopped; not being dispatched.
+        unsafe { call_terminate_fn(actor) };
     }
 }
 
@@ -916,6 +1072,13 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
         return -1;
     }
 
+    // Run terminate for actors freed while still Idle (never explicitly
+    // stopped). terminate_called prevents double-execution.
+    if state != HewActorState::Crashed as i32 {
+        // SAFETY: actor is valid, not being dispatched (wait loop above).
+        unsafe { call_terminate_fn(actor) };
+    }
+
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
     0
@@ -960,6 +1123,28 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
     )]
     let result = a.budget.load(Ordering::Relaxed) as u32;
     result
+}
+
+/// Register a terminate callback on an actor.
+///
+/// The terminate function is called with the actor's state pointer when
+/// the actor transitions to the Stopped state (or at process exit for
+/// actors still idle). Panics inside the callback are caught and do not
+/// prevent cleanup.
+///
+/// # Safety
+///
+/// - `actor` must be a valid pointer returned by a spawn function.
+/// - `terminate_fn` must point to a function with C ABI that accepts
+///   a single `*mut c_void` (the actor state).
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_set_terminate(
+    actor: *mut HewActor,
+    terminate_fn: unsafe extern "C" fn(*mut c_void),
+) {
+    // SAFETY: Caller guarantees `actor` is valid.
+    let a = unsafe { &mut *actor };
+    a.terminate_fn = Some(terminate_fn);
 }
 
 /// Set the per-actor reduction budget (operations per dispatch).
@@ -1814,6 +1999,9 @@ pub unsafe extern "C" fn hew_actor_spawn(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -1866,6 +2054,9 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         init_state,
         init_state_size: state_size,
         coalesce_key_fn: None,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -1933,6 +2124,9 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         init_state,
         init_state_size: opts.state_size,
         coalesce_key_fn: opts.coalesce_key_fn,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -2112,12 +2306,18 @@ pub unsafe extern "C" fn hew_actor_close(actor: *mut HewActor) {
     }
 
     // If IDLE, transition directly to STOPPED.
-    let _ = a.actor_state.compare_exchange(
-        HewActorState::Idle as i32,
-        HewActorState::Stopped as i32,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    if a.actor_state
+        .compare_exchange(
+            HewActorState::Idle as i32,
+            HewActorState::Stopped as i32,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        // SAFETY: actor just transitioned to Stopped; not being dispatched.
+        unsafe { call_terminate_fn(actor) };
+    }
 }
 
 /// Stop an actor, sending a system shutdown message (WASM).

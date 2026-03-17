@@ -420,6 +420,7 @@ fn make_actor(name: &str, receive_fns: Vec<ReceiveFnDecl>) -> ActorDecl {
         name: name.to_string(),
         super_traits: None,
         init: None,
+        terminate: None,
         fields: vec![],
         receive_fns,
         methods: vec![],

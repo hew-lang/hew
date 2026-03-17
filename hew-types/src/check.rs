@@ -3767,7 +3767,9 @@ impl Checker {
                     Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
                         args[0].clone()
                     }
-                    Ty::Named { name, args } if name == "Stream" && args.len() == 1 => {
+                    Ty::Named { name, args }
+                        if (name == "Stream" || name == "stream.Stream") && args.len() == 1 =>
+                    {
                         args[0].clone()
                     }
                     Ty::Named { name, args } if name == "Vec" => {
@@ -6782,17 +6784,28 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Stream" => {
+            ) if name == "Stream" || name == "stream.Stream" => {
                 let inner = type_args
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "next" => Ty::option(inner),
-                    "next_bytes" => Ty::option(Ty::Bytes),
                     "close" => Ty::Unit,
                     "lines" => Ty::stream(Ty::String),
-                    "collect" => Ty::String,
+                    "collect" => {
+                        if inner != Ty::String {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`collect()` is only supported on `Stream<String>`, \
+                                     not `Stream<{inner}>`"
+                                ),
+                            );
+                        }
+                        Ty::String
+                    }
                     "chunks" => {
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
@@ -6837,7 +6850,7 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &Ty::I64);
                         }
-                        Ty::stream(Ty::String)
+                        Ty::stream(inner)
                     }
                     _ => {
                         self.report_error(
@@ -6856,7 +6869,7 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Sink" => {
+            ) if name == "Sink" || name == "stream.Sink" => {
                 let inner = type_args
                     .first()
                     .cloned()
@@ -6870,13 +6883,6 @@ impl Checker {
                         Ty::Unit
                     }
                     "close" | "flush" => Ty::Unit,
-                    "write_bytes" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::Bytes);
-                        }
-                        Ty::Unit
-                    }
                     "encode" => {
                         // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
                         Ty::sink(Ty::Var(TypeVar::fresh()))

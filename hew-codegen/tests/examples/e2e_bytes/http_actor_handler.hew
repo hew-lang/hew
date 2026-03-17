@@ -15,7 +15,7 @@ impl Drop for HttpReq {
 }
 
 actor Handler {
-    receive fn handle(req: HttpReq, sink: Sink) {
+    receive fn handle(req: HttpReq, sink: Sink<String>) {
         let path = req.path;
         sink.write(f"handled: {path}");
         sink.close();

@@ -123,6 +123,20 @@ fn require_converted(
     ty_to_type_expr(ty).map_err(|diagnostic| diagnostic.with_context(context))
 }
 
+/// Extract a short element-type name from a `Ty` for stream method dispatch.
+///
+/// Returns `"bytes"` for `Ty::Bytes`, `"String"` for `Ty::String`, or the
+/// `name` for `Ty::Named`.  Used by the enricher to select the correct
+/// runtime C symbol (e.g. `hew_stream_next` vs `hew_stream_next_bytes`).
+fn ty_element_name(ty: &Ty) -> String {
+    match ty {
+        Ty::Bytes => "bytes".to_string(),
+        Ty::String => "String".to_string(),
+        Ty::Named { name, .. } => name.clone(),
+        _ => String::new(),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers many Ty variants"
@@ -1686,11 +1700,15 @@ fn enrich_expr_with_diagnostics(
                 end: receiver.1.end,
             };
             let c_fn: Option<String> = match tco.expr_types.get(&key) {
-                Some(Ty::Named { name, .. }) if name == "Stream" => {
-                    hew_types::stdlib::resolve_stream_method("Stream", method).map(String::from)
+                Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
+                    let elem = args.first().map(ty_element_name);
+                    hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
+                        .map(String::from)
                 }
-                Some(Ty::Named { name, .. }) if name == "Sink" => {
-                    hew_types::stdlib::resolve_stream_method("Sink", method).map(String::from)
+                Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
+                    let elem = args.first().map(ty_element_name);
+                    hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
+                        .map(String::from)
                 }
                 Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
                     hew_types::stdlib::resolve_channel_method("Sender", method, args.first())

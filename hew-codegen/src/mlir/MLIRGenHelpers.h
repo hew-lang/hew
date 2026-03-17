@@ -125,6 +125,18 @@ inline std::string typeExprStreamKind(const ast::TypeExpr &te) {
   return "";
 }
 
+/// Extract the element type name from a Stream<T> or Sink<T> TypeExpr.
+/// Returns "bytes", "string", or "" if the element type is absent or unknown.
+inline std::string typeExprStreamElement(const ast::TypeExpr &te) {
+  auto *named = std::get_if<ast::TypeNamed>(&te.kind);
+  if (!named || !named->type_args || named->type_args->empty())
+    return "";
+  auto *inner = std::get_if<ast::TypeNamed>(&(*named->type_args)[0].value.kind);
+  if (!inner)
+    return "";
+  return inner->name; // e.g. "bytes", "string"
+}
+
 /// Extract actor type name from a TypeExpr like ActorRef<MyActor>.
 /// Returns the actor name or "" if not an actor reference.
 inline std::string typeExprToActorName(const ast::TypeExpr &te) {

@@ -2,7 +2,7 @@
 import std::stream;
 
 actor Writer {
-    receive fn write_items(sink: Sink) {
+    receive fn write_items(sink: Sink<String>) {
         sink.write("from_actor_1");
         sink.write("from_actor_2");
         sink.write("from_actor_3");

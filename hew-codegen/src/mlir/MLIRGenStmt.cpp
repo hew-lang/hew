@@ -1554,6 +1554,16 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   auto i64Type = builder.getI64Type();
   std::string labelName;
 
+  // Determine the stream's element type to select the correct runtime call.
+  // "bytes" → hew_stream_next_bytes / hew_vec_free
+  // anything else (default) → hew_stream_next / hew_string_drop
+  bool isBytesStream = false;
+  if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span))
+    isBytesStream = typeExprStreamElement(*typeExpr) == "bytes";
+
+  std::string nextFn = isBytesStream ? "hew_stream_next_bytes" : "hew_stream_next";
+  std::string dropFn = isBytesStream ? "hew_vec_free" : "hew_string_drop";
+
   // Generate the stream pointer expression.
   mlir::Value streamPtr = generateExpression(stmt.iterable.value);
   if (!streamPtr)
@@ -1579,8 +1589,8 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
   builder.setInsertionPointToStart(beforeBlock);
 
-  // hew_stream_next(stream_ptr) → malloc'd item buffer, or null on EOF
-  auto nextAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next");
+  // Fetch next item using the element-type-appropriate runtime call.
+  auto nextAttr = mlir::SymbolRefAttr::get(&context, nextFn);
   auto itemPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, nextAttr,
                                             mlir::ValueRange{streamPtr})
                      .getResult();
@@ -1617,14 +1627,22 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
     // already freed it).
     mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
 
+    // For bytes streams, bitcast the raw pointer to VecType so that Vec
+    // methods (.len(), .push(), etc.) dispatch correctly on the loop variable.
+    mlir::Value loopVar = currentItemPtr;
+    if (isBytesStream) {
+      auto bytesType = hew::VecType::get(&context, builder.getI32Type());
+      loopVar = hew::BitcastOp::create(builder, location, bytesType, currentItemPtr);
+    }
+
     std::string loopVarName = "_stream_item";
     if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
       loopVarName = identPat->name;
     }
-    declareVariable(loopVarName, currentItemPtr);
+    declareVariable(loopVarName, loopVar);
 
     pushDropScope();
-    registerDroppable(loopVarName, "hew_string_drop");
+    registerDroppable(loopVarName, dropFn);
     if (returnFlag) {
       auto flagVal =
           mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
@@ -1660,7 +1678,7 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   auto cleanupIf = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
                                            /*withElseRegion=*/false);
   builder.setInsertionPointToStart(&cleanupIf.getThenRegion().front());
-  auto dropAttr = mlir::SymbolRefAttr::get(&context, "hew_string_drop");
+  auto dropAttr = mlir::SymbolRefAttr::get(&context, dropFn);
   hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, dropAttr,
                              mlir::ValueRange{lastItem});
   // scf.if auto-adds yield; set insertion after guard

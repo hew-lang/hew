@@ -1,6 +1,6 @@
 import std::stream;
 
-fn produce(sink: Sink) {
+fn produce(sink: Sink<String>) {
     sink.write("item1");
     sink.write("item2");
     sink.write("item3");

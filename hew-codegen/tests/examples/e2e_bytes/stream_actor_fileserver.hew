@@ -3,7 +3,7 @@ import std::fs;
 import std::os;
 
 actor FileServer {
-    receive fn serve(path: string, sink: Sink) {
+    receive fn serve(path: string, sink: Sink<String>) {
         let raw = match stream.from_file(path) {
             Ok(s) => s,
             Err(e) => { panic(e); },

@@ -1610,6 +1610,51 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     }
   }
 
+  // ── Enriched Stream<bytes>.next() → Option<bytes> ─────────────────────
+  // The enricher rewrites `.next()` on `Stream<bytes>` to a direct call to
+  // `hew_stream_next_bytes(stream)`.  The C function returns a raw ptr
+  // (null=EOF, non-null=HewVec*); we wrap that into Option<bytes>.
+  if (calleeName == "hew_stream_next_bytes") {
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_stream_next_bytes expects exactly 1 argument";
+      return nullptr;
+    }
+    auto streamVal = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!streamVal)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto bytesType = hew::VecType::get(&context, builder.getI32Type());
+    auto optType = hew::OptionEnumType::get(&context, bytesType);
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_stream_next_bytes", externFuncType);
+
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next_bytes");
+    auto rawPtr =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
+                                   mlir::ValueRange{streamVal})
+            .getResult();
+
+    // Build Option<bytes>: null → None (tag 0), non-null → Some (tag 1).
+    auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location,
+                                                 mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
+    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
+
+    auto optLLVMType = mlir::LLVM::LLVMStructType::getLiteral(
+        &context, {builder.getI32Type(), ptrType});
+    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
+    auto withTag =
+        mlir::LLVM::InsertValueOp::create(builder, location, undef, tag, llvm::ArrayRef<int64_t>{0});
+    auto withPayload =
+        mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr, llvm::ArrayRef<int64_t>{1});
+
+    return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
+  }
+
   // Handle built-in print/println
   if (calleeName == "println") {
     return generatePrintCall(call, /*newline=*/true);
@@ -3206,47 +3251,6 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
                                           mlir::ValueRange{receiver, countVal})
             .getResult();
-      }
-      // next_bytes() → Option<bytes>
-      // Calls hew_stream_next_bytes (returns ptr: null=EOF, non-null=data)
-      // then wraps into Option<bytes>: null→None (tag 0), non-null→Some (tag 1).
-      if (method == "next_bytes") {
-        auto bytesType = hew::VecType::get(&context, builder.getI32Type());
-        auto optType = hew::OptionEnumType::get(&context, bytesType);
-
-        // Ensure the extern function is declared.
-        auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
-        getOrCreateExternFunc("hew_stream_next_bytes", externFuncType);
-
-        // Call hew_stream_next_bytes(stream) → !llvm.ptr (null on EOF).
-        auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next_bytes");
-        auto rawPtr =
-            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
-                                       mlir::ValueRange{receiver})
-                .getResult();
-
-        // Build Option<bytes> as LLVM struct { i32 tag, ptr payload }.
-        // Option lowering: { i32=0 → None, i32=1 → Some }.
-        auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-        auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location,
-                                                     mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
-
-        // Select tag: non-null → 1 (Some), null → 0 (None).
-        auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-        auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-        auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
-
-        // Assemble the LLVM struct { i32, ptr }.
-        auto optLLVMType = mlir::LLVM::LLVMStructType::getLiteral(
-            &context, {builder.getI32Type(), ptrType});
-        auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-        auto withTag =
-            mlir::LLVM::InsertValueOp::create(builder, location, undef, tag, llvm::ArrayRef<int64_t>{0});
-        auto withPayload =
-            mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr, llvm::ArrayRef<int64_t>{1});
-
-        // Bitcast the LLVM struct to the Hew OptionEnumType.
-        return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
       }
     }
   }

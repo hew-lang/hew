@@ -1064,3 +1064,70 @@ pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut
         remaining: limit,
     })
 }
+
+// ── Bytes bridge: HewVec ↔ raw-byte marshalling ──────────────────────────────
+//
+// These functions bridge the type-erased stream runtime (raw byte buffers) to
+// the `bytes` (`HewVec<i32>`) representation used by the Hew language.
+// The enricher dispatches here when the stream element type is `bytes`.
+
+use hew_cabi::vec::HewVec;
+
+/// Read the next item from a stream and return it as a `bytes` value.
+///
+/// Returns a `*mut HewVec` (i32-element vec, one byte per slot) on success —
+/// including for zero-length items — or **null** on EOF.  The caller owns the
+/// returned vec and must eventually free it.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut HewVec {
+    if stream.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut size: usize = 0;
+    // SAFETY: stream is valid per caller contract; size is a valid local.
+    let raw_ptr = unsafe { hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size)) };
+    if raw_ptr.is_null() {
+        return std::ptr::null_mut(); // EOF
+    }
+    // SAFETY: raw_ptr is valid for `size` bytes (from hew_stream_next_sized contract).
+    let raw = unsafe { std::slice::from_raw_parts(raw_ptr.cast::<u8>(), size) };
+    // SAFETY: u8_to_hwvec allocates a new HewVec; raw slice is valid.
+    let vec = unsafe { hew_cabi::vec::u8_to_hwvec(raw) };
+    // SAFETY: raw_ptr was allocated by libc::malloc inside hew_stream_next_sized.
+    unsafe { libc::free(raw_ptr) };
+    vec
+}
+
+/// Write a `bytes` value to a sink.
+///
+/// Extracts the raw byte content from the `HewVec` and writes it as a single
+/// stream item.  Zero-length writes are forwarded — they are valid data, not
+/// no-ops.  Does nothing only if `sink` or `data` is null.
+///
+/// # Safety
+///
+/// `sink` must be a valid sink pointer.  `data` must be a valid `HewVec`
+/// pointer (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut HewVec) {
+    if sink.is_null() || data.is_null() {
+        return;
+    }
+    // SAFETY: data is a valid HewVec per caller contract.
+    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    if bytes.is_empty() {
+        // hew_sink_write short-circuits on size=0, but empty bytes are valid
+        // data items that must be delivered.  Write directly to the backing.
+        // SAFETY: sink is valid per caller contract.
+        unsafe { (*sink).inner.write_item(&[]) };
+    } else {
+        // SAFETY: sink is valid; bytes slice is valid for its length.
+        unsafe {
+            hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
+        }
+    }
+}

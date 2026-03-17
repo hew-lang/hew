@@ -202,6 +202,8 @@ pub enum Token<'src> {
     Receive,
     #[token("init")]
     Init,
+    #[token("terminate")]
+    Terminate,
     #[token("type")]
     Type,
     #[token("this")]
@@ -498,6 +500,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Await => f.write_str("`await`"),
             Token::Receive => f.write_str("`receive`"),
             Token::Init => f.write_str("`init`"),
+            Token::Terminate => f.write_str("`terminate`"),
             Token::Type => f.write_str("`type`"),
             Token::This => f.write_str("`this`"),
             Token::Dyn => f.write_str("`dyn`"),
@@ -652,6 +655,7 @@ impl Token<'_> {
             Token::Await => Some("await"),
             Token::Receive => Some("receive"),
             Token::Init => Some("init"),
+            Token::Terminate => Some("terminate"),
             Token::Type => Some("type"),
             Token::This => Some("this"),
             Token::Dyn => Some("dyn"),
@@ -828,6 +832,7 @@ pub const ALL_KEYWORDS: &[&str] = &[
     "await",
     "receive",
     "init",
+    "terminate",
     "type",
     "this",
     "dyn",

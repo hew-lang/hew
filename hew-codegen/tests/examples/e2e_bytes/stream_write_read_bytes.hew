@@ -1,0 +1,38 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.channel(8);
+
+    // Build byte buffers: "Hi" (72, 105), empty, "!" (33)
+    let buf1: bytes = bytes::new();
+    buf1.push(72);
+    buf1.push(105);
+
+    let empty: bytes = bytes::new();
+
+    let buf2: bytes = bytes::new();
+    buf2.push(33);
+
+    sink.write_bytes(buf1);
+    sink.write_bytes(empty);
+    sink.write_bytes(buf2);
+    sink.close();
+
+    // Read back using Option<bytes> match
+    var count: int = 0;
+    var done = false;
+    while !done {
+        match input.next_bytes() {
+            Some(data) => {
+                println(data.len());
+                count = count + 1;
+            },
+            None => {
+                done = true;
+            },
+        }
+    }
+    println(count);
+
+    input.close();
+}

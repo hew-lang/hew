@@ -19,6 +19,7 @@ pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static
         ("Stream", "collect") => Some("hew_stream_collect_string"),
         // Sink<T> methods
         ("Sink", "write") => Some("hew_sink_write_string"),
+        ("Sink", "write_bytes") => Some("hew_sink_write_bytes"),
         ("Sink", "flush") => Some("hew_sink_flush"),
         ("Sink", "close") => Some("hew_sink_close"),
         _ => None,

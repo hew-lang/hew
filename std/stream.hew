@@ -77,6 +77,9 @@ trait SinkMethods {
     /// Write a value to the sink.
     fn write(sink: Sink, data: String);
 
+    /// Write raw bytes to the sink.
+    fn write_bytes(sink: Sink, data: bytes);
+
     /// Flush any buffered data.
     fn flush(sink: Sink);
 
@@ -87,6 +90,8 @@ trait SinkMethods {
 impl SinkMethods for Sink {
     /// Write a value to the sink.
     fn write(sink: Sink, data: String) { unsafe { hew_sink_write_string(sink, data) }; }
+    /// Write raw bytes to the sink.
+    fn write_bytes(sink: Sink, data: bytes) { unsafe { hew_sink_write_bytes(sink, data) }; }
     /// Flush any buffered data.
     fn flush(sink: Sink) { unsafe { hew_sink_flush(sink) }; }
     /// Close the sink, signalling EOF to the reader.
@@ -182,6 +187,7 @@ extern "C" {
     fn hew_sink_is_valid(sink: Sink) -> bool;
     fn hew_stream_last_error() -> String;
     fn hew_stream_next(stream: Stream) -> String;
+    fn hew_stream_next_bytes(stream: Stream) -> bytes;
     fn hew_stream_collect_string(stream: Stream) -> String;
     fn hew_stream_close(stream: Stream);
     fn hew_stream_lines(stream: Stream) -> Stream;
@@ -189,6 +195,7 @@ extern "C" {
     fn hew_stream_pipe(source: Stream, dest: Sink);
     fn hew_stream_take(stream: Stream, n: i64) -> Stream;
     fn hew_sink_write_string(sink: Sink, data: String);
+    fn hew_sink_write_bytes(sink: Sink, data: bytes);
     fn hew_sink_flush(sink: Sink);
     fn hew_sink_close(sink: Sink);
 }

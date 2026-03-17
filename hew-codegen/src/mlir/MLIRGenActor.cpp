@@ -148,6 +148,7 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   actorInfo.fieldHewTypes = std::move(fieldHewTypes);
   actorInfo.numUserFields = numUserFields;
   actorInfo.initParamNames = std::move(initParamNames);
+  actorInfo.hasTerminate = decl.terminate.has_value();
   actorInfo.mailboxCapacity = decl.mailbox_capacity;
 
   if (decl.overflow_policy) {
@@ -588,8 +589,44 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     builder.restoreInsertionPoint(savedIP);
   }
 
-  // NOTE: Actor terminate blocks are not yet in the AST. When added, generate
-  // a `ActorName_terminate(ptr state)` function that cleans up actor resources.
+  // 2c. Generate terminate function if the actor has a terminate block
+  //     void ActorName_terminate(ptr state)
+  if (decl.terminate) {
+    std::string terminateName = actorName + "_terminate";
+    auto terminateFuncType = builder.getFunctionType({ptrType}, {});
+
+    auto savedIP = builder.saveInsertionPoint();
+    builder.setInsertionPointToEnd(module.getBody());
+    auto terminateFuncOp = mlir::func::FuncOp::create(builder, location, terminateName, terminateFuncType);
+    auto *entryBlock = terminateFuncOp.addEntryBlock();
+    builder.setInsertionPointToStart(entryBlock);
+
+    SymbolTableScopeT varScope(symbolTable);
+    MutableTableScopeT mutScope(mutableVars);
+
+    auto prevFunction = currentFunction;
+    currentFunction = terminateFuncOp;
+    auto prevReturnFlag = returnFlag;
+    auto prevReturnSlot = returnSlot;
+    returnFlag = nullptr;
+    returnSlot = nullptr;
+
+    // Bind actor state pointer as internal variable for field access
+    auto selfPtr = entryBlock->getArgument(0);
+    declareVariable("self", selfPtr);
+
+    // Generate terminate block body
+    generateBlock(decl.terminate->body);
+
+    // Ensure terminator
+    if (!hasRealTerminator(builder.getInsertionBlock()))
+      mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
+
+    currentFunction = prevFunction;
+    returnFlag = prevReturnFlag;
+    returnSlot = prevReturnSlot;
+    builder.restoreInsertionPoint(savedIP);
+  }
 
   // 3. Generate dispatch function:
   //    void ActorName_dispatch(ptr state, i32 msg_type, ptr data, size_t data_size)

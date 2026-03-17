@@ -831,6 +831,12 @@ struct ActorInit {
   Block body;
 };
 
+/// An actor's `terminate { ... }` block, run when the actor is stopped.
+/// Has no parameters — actor fields are in scope.
+struct ActorTerminate {
+  Block body;
+};
+
 enum class OverflowFallback { DropNew, DropOld, Block, Fail };
 
 struct OverflowCoalesce {
@@ -852,6 +858,7 @@ struct ActorDecl {
   std::string name;
   std::optional<std::vector<TraitBound>> super_traits;
   std::optional<ActorInit> init;
+  std::optional<ActorTerminate> terminate;
   std::vector<FieldDecl> fields;
   std::vector<ReceiveFnDecl> receive_fns;
   std::vector<FnDecl> methods;

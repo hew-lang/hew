@@ -898,6 +898,27 @@ struct ActorSpawnOpLowering : public mlir::OpConversionPattern<hew::ActorSpawnOp
       result = call.getResult(0);
     }
 
+    // Register terminate function if the actor has one.
+    {
+      std::string terminateName = op.getActorName().str() + "_terminate";
+      if (module.lookupSymbol<mlir::func::FuncOp>(terminateName)) {
+        auto terminateFuncType = rewriter.getFunctionType({ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, terminateName, terminateFuncType);
+        auto terminateFuncRef = mlir::func::ConstantOp::create(
+            rewriter, loc, terminateFuncType,
+            mlir::SymbolRefAttr::get(rewriter.getContext(), terminateName));
+        auto terminatePtr =
+            mlir::UnrealizedConversionCastOp::create(rewriter, loc, ptrType,
+                                                     terminateFuncRef.getResult())
+                .getResult(0);
+
+        auto setTerminateFuncType = rewriter.getFunctionType({ptrType, ptrType}, {});
+        getOrInsertFuncDecl(module, rewriter, "hew_actor_set_terminate", setTerminateFuncType);
+        mlir::func::CallOp::create(rewriter, loc, "hew_actor_set_terminate", mlir::TypeRange{},
+                                   mlir::ValueRange{result, terminatePtr});
+      }
+    }
+
     rewriter.replaceOp(op, result);
     return mlir::success();
   }

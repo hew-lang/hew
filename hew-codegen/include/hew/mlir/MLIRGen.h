@@ -147,6 +147,7 @@ private:
     std::vector<mlir::Type> fieldHewTypes;    // Hew MLIR types: [user fields..., init params...]
     size_t numUserFields = 0;                 // count of user-declared state fields only
     std::vector<std::string> initParamNames;  // init parameter names (in declaration order)
+    bool hasTerminate = false;                // whether the actor has a terminate block
     std::optional<uint32_t> mailboxCapacity;
     int8_t overflowPolicy = 0;   // 0=none,1=drop_new,2=drop_old,3=block,4=fail,5=coalesce
     std::string coalesceKey;     // field name for coalesce key

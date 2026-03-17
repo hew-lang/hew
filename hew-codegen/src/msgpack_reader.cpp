@@ -148,7 +148,7 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
 /// boundary is internal to the current `hew` binary, so missing or
 /// mismatched versions are rejected rather than carrying compatibility
 /// fallbacks for older payloads.
-constexpr uint32_t CURRENT_SCHEMA_VERSION = 1;
+constexpr uint32_t CURRENT_SCHEMA_VERSION = 2;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 
@@ -302,6 +302,12 @@ static ast::ActorInit parseActorInit(const msgpack::object &obj) {
   return result;
 }
 
+static ast::ActorTerminate parseActorTerminate(const msgpack::object &obj) {
+  ast::ActorTerminate result;
+  result.body = parseBlock(mapReq(obj, "body"));
+  return result;
+}
+
 static ast::FieldDecl parseFieldDecl(const msgpack::object &obj) {
   ast::FieldDecl result;
   result.name = getString(mapReq(obj, "name"));
@@ -377,6 +383,9 @@ static ast::ActorDecl parseActorDecl(const msgpack::object &obj) {
   const auto *init = mapGet(obj, "init");
   if (init && !isNil(*init))
     result.init = parseActorInit(*init);
+  const auto *terminate = mapGet(obj, "terminate");
+  if (terminate && !isNil(*terminate))
+    result.terminate = parseActorTerminate(*terminate);
   result.fields = parseVec<ast::FieldDecl>(mapReq(obj, "fields"), parseFieldDecl);
   result.receive_fns = parseVec<ast::ReceiveFnDecl>(mapReq(obj, "receive_fns"), parseReceiveFnDecl);
   result.methods = parseVec<ast::FnDecl>(mapReq(obj, "methods"), parseFnDecl);

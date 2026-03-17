@@ -142,6 +142,22 @@ pub unsafe extern "C" fn hew_channel_send(sender: *mut HewChannelSender, data: *
     let _ = unsafe { (*sender).tx.send(bytes) };
 }
 
+/// Send a 64-bit integer through the channel. Blocks if the channel is full.
+///
+/// The integer is serialised as 8 little-endian bytes for the internal
+/// `Vec<u8>` transport.
+///
+/// # Safety
+///
+/// `sender` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_send_int(sender: *mut HewChannelSender, value: i64) {
+    cabi_guard!(sender.is_null());
+    let bytes = value.to_le_bytes().to_vec();
+    // SAFETY: sender is valid per caller contract.
+    let _ = unsafe { (*sender).tx.send(bytes) };
+}
+
 // ── Receive ─────────────────────────────────────────────────────────────────
 
 /// Allocate a NUL-terminated C string from a byte slice.
@@ -192,9 +208,9 @@ pub unsafe extern "C" fn hew_channel_recv(receiver: *mut HewChannelReceiver) -> 
 /// Try to receive a message without blocking.
 ///
 /// Returns a malloc-allocated NUL-terminated string if a message was
-/// available, or NULL if the channel is empty or closed.
+/// available, or a valid empty string if the channel is empty or closed.
 ///
-/// The caller must `free()` the returned pointer when non-NULL.
+/// The caller must `free()` the returned pointer.
 ///
 /// # Safety
 ///
@@ -205,7 +221,67 @@ pub unsafe extern "C" fn hew_channel_try_recv(receiver: *mut HewChannelReceiver)
     // SAFETY: receiver is valid per caller contract.
     match unsafe { (*receiver).rx.try_recv() } {
         Ok(item) => bytes_to_cstr(&item),
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => ptr::null_mut(),
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+            // Return a valid empty string so Hew string comparison works.
+            // SAFETY: libc::malloc returns a valid pointer or null.
+            let buf = unsafe { libc::malloc(1) };
+            if buf.is_null() {
+                return ptr::null_mut();
+            }
+            // SAFETY: buf has 1 byte allocated; writing NUL terminator.
+            unsafe { *buf.cast::<u8>() = 0 };
+            buf.cast::<c_char>()
+        }
+    }
+}
+
+/// Block until an integer message is available.
+///
+/// Returns 0 when the channel is closed (all senders dropped). The caller
+/// can distinguish "received 0" from "closed" by checking whether
+/// any senders are still alive, but for most use cases the close
+/// convention is to drain all messages first.
+///
+/// # Safety
+///
+/// `receiver` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_recv_int(receiver: *mut HewChannelReceiver) -> i64 {
+    cabi_guard!(receiver.is_null(), 0);
+    // SAFETY: receiver is valid per caller contract.
+    if let Ok(item) = unsafe { (*receiver).rx.recv() } {
+        return i64::from_le_bytes(item.try_into().unwrap_or([0; 8]));
+    }
+    0
+}
+
+/// Try to receive an integer without blocking.
+///
+/// Returns the integer value and sets `*out_valid` to 1 if a message was
+/// available. Sets `*out_valid` to 0 and returns 0 if the channel is
+/// empty or closed.
+///
+/// # Safety
+///
+/// `receiver` and `out_valid` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_channel_try_recv_int(
+    receiver: *mut HewChannelReceiver,
+    out_valid: *mut i32,
+) -> i64 {
+    cabi_guard!(receiver.is_null() || out_valid.is_null(), 0);
+    // SAFETY: receiver and out_valid are valid per caller contract.
+    match unsafe { (*receiver).rx.try_recv() } {
+        Ok(item) => {
+            // SAFETY: out_valid is valid per caller contract.
+            unsafe { *out_valid = 1 };
+            i64::from_le_bytes(item.try_into().unwrap_or([0; 8]))
+        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
+            // SAFETY: out_valid is valid per caller contract.
+            unsafe { *out_valid = 0 };
+            0
+        }
     }
 }
 
@@ -329,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn try_recv_returns_null_when_empty() {
+    fn try_recv_returns_empty_when_empty() {
         let pair = hew_channel_new(4);
         // SAFETY: pair was just created above.
         unsafe {
@@ -338,7 +414,11 @@ mod tests {
             hew_channel_pair_free(pair);
 
             let result = hew_channel_try_recv(rx);
-            assert!(result.is_null());
+            // Empty channel now returns a valid empty string, not NULL.
+            assert!(!result.is_null());
+            let received = CStr::from_ptr(result);
+            assert_eq!(received.to_str().unwrap(), "");
+            libc::free(result.cast());
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -393,6 +473,128 @@ mod tests {
 
             messages.sort();
             assert_eq!(messages, vec!["from-1", "from-2"]);
+
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn send_recv_int_basic() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            hew_channel_send_int(tx, 42);
+            hew_channel_send_int(tx, -7);
+
+            let v1 = hew_channel_recv_int(rx);
+            assert_eq!(v1, 42);
+            let v2 = hew_channel_recv_int(rx);
+            assert_eq!(v2, -7);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn recv_int_returns_zero_on_closed() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            hew_channel_sender_close(tx);
+            let val = hew_channel_recv_int(rx);
+            assert_eq!(val, 0, "closed channel should return 0");
+
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_int_returns_invalid_when_empty() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let mut valid: i32 = -1;
+            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0, "empty channel should set valid=0");
+            assert_eq!(val, 0);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_int_returns_value_when_available() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            hew_channel_send_int(tx, 99);
+            let mut valid: i32 = 0;
+            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1, "message available should set valid=1");
+            assert_eq!(val, 99);
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn int_multi_producer() {
+        let pair = hew_channel_new(8);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            let tx2 = hew_channel_sender_clone(tx);
+            let tx_addr = tx as usize;
+            let tx2_addr = tx2 as usize;
+
+            let t1 = thread::spawn(move || {
+                let tx = tx_addr as *mut HewChannelSender;
+                hew_channel_send_int(tx, 100);
+                hew_channel_sender_close(tx);
+            });
+
+            let t2 = thread::spawn(move || {
+                let tx2 = tx2_addr as *mut HewChannelSender;
+                hew_channel_send_int(tx2, 200);
+                hew_channel_sender_close(tx2);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            let mut values = Vec::new();
+            loop {
+                let v = hew_channel_recv_int(rx);
+                if v == 0 {
+                    break;
+                }
+                values.push(v);
+            }
+
+            values.sort_unstable();
+            assert_eq!(values, vec![100, 200]);
 
             hew_channel_receiver_close(rx);
         }

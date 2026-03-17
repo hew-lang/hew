@@ -253,6 +253,24 @@ impl Ty {
         }
     }
 
+    /// Construct `Sender<inner>`.
+    #[must_use]
+    pub fn sender(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Sender".to_string(),
+            args: vec![inner],
+        }
+    }
+
+    /// Construct `Receiver<inner>`.
+    #[must_use]
+    pub fn receiver(inner: Ty) -> Ty {
+        Ty::Named {
+            name: "Receiver".to_string(),
+            args: vec![inner],
+        }
+    }
+
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
@@ -356,6 +374,24 @@ impl Ty {
     pub fn as_sink(&self) -> Option<&Ty> {
         match self {
             Ty::Named { name, args } if name == "Sink" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Sender<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_sender(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Sender" && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
+    /// If this is `Receiver<T>`, return `Some(&T)`.
+    #[must_use]
+    pub fn as_receiver(&self) -> Option<&Ty> {
+        match self {
+            Ty::Named { name, args } if name == "Receiver" && args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }

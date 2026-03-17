@@ -304,6 +304,11 @@ mlir::Type MLIRGen::convertType(const ast::TypeExpr &type) {
     if (name == "Stream" || name == "Sink" || name == "stream.Stream" || name == "stream.Sink" ||
         name == "StreamPair" || name == "stream.StreamPair")
       return mlir::LLVM::LLVMPointerType::get(&context);
+    // Sender<T> and Receiver<T>: opaque MPSC channel handles
+    if (name == "Sender" || name == "Receiver" ||
+        name == "channel.Sender" || name == "channel.Receiver" ||
+        name == "ChannelPair" || name == "channel.ChannelPair")
+      return mlir::LLVM::LLVMPointerType::get(&context);
     // Data-driven handle type recognition (replaces hardcoded list).
     // Handle type metadata flows from the Rust type checker via serialization.
     if (knownHandleTypes.count(name)) {

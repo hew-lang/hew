@@ -3,6 +3,34 @@
 //! Stream/Sink methods and handle type representations are intrinsic to
 //! the compiler — they are NOT discovered from `.hew` files.
 
+/// Resolves a method call on a `Sender<T>` or `Receiver<T>` to its C symbol.
+///
+/// String channels use the existing `hew_channel_*` functions.
+/// Integer channels use the `hew_channel_*_int` variants.
+/// Falls back to String symbols when the inner type is unknown.
+#[must_use]
+pub fn resolve_channel_method(
+    handle_kind: &str,
+    method: &str,
+    inner_ty: Option<&crate::Ty>,
+) -> Option<&'static str> {
+    let is_int = inner_ty.is_some_and(crate::Ty::is_integer);
+    match (handle_kind, method, is_int) {
+        // Sender methods
+        ("Sender", "send", false) => Some("hew_channel_send"),
+        ("Sender", "send", true) => Some("hew_channel_send_int"),
+        ("Sender", "clone", _) => Some("hew_channel_sender_clone"),
+        ("Sender", "close", _) => Some("hew_channel_sender_close"),
+        // Receiver methods
+        ("Receiver", "recv", false) => Some("hew_channel_recv"),
+        ("Receiver", "recv", true) => Some("hew_channel_recv_int"),
+        ("Receiver", "try_recv", false) => Some("hew_channel_try_recv"),
+        ("Receiver", "try_recv", true) => Some("hew_channel_try_recv_int"),
+        ("Receiver", "close", _) => Some("hew_channel_receiver_close"),
+        _ => None,
+    }
+}
+
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///
 /// These types are not opaque handle types (`Ty::Named`) — they are `Ty::Stream` /

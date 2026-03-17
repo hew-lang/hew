@@ -1,8 +1,10 @@
-//! MPSC (multi-producer, single-consumer) channels.
+//! Generic MPSC (multi-producer, single-consumer) channels.
 //!
-//! Bounded, blocking channels for passing string messages between
-//! producers and a single consumer. Senders can be cloned for
-//! multi-producer use.
+//! Bounded, blocking channels for passing typed messages between
+//! producers and a single consumer. `Sender<T>` is cloneable for
+//! multi-producer use; `Receiver<T>` drains the channel.
+//!
+//! Supported element types: `String`, `int`.
 //!
 //! # Examples
 //!
@@ -25,17 +27,23 @@
 ///
 /// Created by `channel.new(capacity)`. Can be cloned for multi-producer
 /// use. Must be closed with `close()` when no longer needed.
+///
+/// The type parameter is managed by the compiler — the underlying runtime
+/// handle is type-erased.
 type Sender {}
 
 /// An opaque receiver handle.
 ///
 /// Created by `channel.new(capacity)`. Must be closed with `close()`
 /// when no longer needed.
+///
+/// The type parameter is managed by the compiler — the underlying runtime
+/// handle is type-erased.
 type Receiver {}
 
 // ── Sender methods ───────────────────────────────────────────────────
 
-/// Methods available on a `Sender`.
+/// Methods available on a `Sender<T>`.
 trait SenderMethods {
     /// Send a message through the channel.
     ///
@@ -52,7 +60,7 @@ trait SenderMethods {
 }
 
 impl SenderMethods for Sender {
-    /// Send a message through the channel.
+    /// Send a string message through the channel.
     fn send(tx: Sender, data: String) { hew_channel_send(tx, data); }
     /// Clone this sender for multi-producer use.
     fn clone(tx: Sender) -> Sender { hew_channel_sender_clone(tx) }
@@ -62,18 +70,18 @@ impl SenderMethods for Sender {
 
 // ── Receiver methods ─────────────────────────────────────────────────
 
-/// Methods available on a `Receiver`.
+/// Methods available on a `Receiver<T>`.
 trait ReceiverMethods {
     /// Block until a message is available and return it.
     ///
-    /// Returns an empty string when the channel is closed (all senders
-    /// dropped).
+    /// Returns a default value when the channel is closed (all senders
+    /// dropped): empty string for `String`, 0 for `int`.
     fn recv(rx: Receiver) -> String;
 
     /// Try to receive a message without blocking.
     ///
     /// Returns an empty string if no message is available or the channel
-    /// is closed.
+    /// is closed. Returns the value when a message was received.
     fn try_recv(rx: Receiver) -> String;
 
     /// Close this receiver and release resources.
@@ -81,9 +89,9 @@ trait ReceiverMethods {
 }
 
 impl ReceiverMethods for Receiver {
-    /// Block until a message is available and return it.
+    /// Block until a string message is available and return it.
     fn recv(rx: Receiver) -> String { hew_channel_recv(rx) }
-    /// Try to receive without blocking.
+    /// Try to receive a string without blocking.
     fn try_recv(rx: Receiver) -> String { hew_channel_try_recv(rx) }
     /// Close this receiver and release resources.
     fn close(rx: Receiver) { hew_channel_receiver_close(rx); }
@@ -93,13 +101,15 @@ impl ReceiverMethods for Receiver {
 
 /// Create a bounded MPSC channel with the given capacity.
 ///
-/// Returns a `(Sender, Receiver)` pair. The sender can be cloned for
-/// multi-producer use.
+/// Returns a `(Sender<T>, Receiver<T>)` pair. The sender can be cloned
+/// for multi-producer use. The element type `T` is inferred from usage.
 ///
 /// # Examples
 ///
 /// ```
 /// let (tx, rx) = channel.new(16);
+/// tx.send("hello");       // infers Sender<String>
+/// println(rx.recv());     // infers Receiver<String>
 /// ```
 pub fn new(capacity: i64) -> (Sender, Receiver) {
     let pair = hew_channel_new(capacity);
@@ -120,8 +130,11 @@ extern "C" {
     fn hew_channel_pair_receiver(pair: ChannelPair) -> Receiver;
     fn hew_channel_pair_free(pair: ChannelPair);
     fn hew_channel_send(tx: Sender, data: String);
+    fn hew_channel_send_int(tx: Sender, data: int);
     fn hew_channel_recv(rx: Receiver) -> String;
+    fn hew_channel_recv_int(rx: Receiver) -> int;
     fn hew_channel_try_recv(rx: Receiver) -> String;
+    fn hew_channel_try_recv_int(rx: Receiver) -> int;
     fn hew_channel_sender_clone(tx: Sender) -> Sender;
     fn hew_channel_sender_close(tx: Sender);
     fn hew_channel_receiver_close(rx: Receiver);

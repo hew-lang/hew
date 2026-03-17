@@ -1,0 +1,21 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(8);
+
+    tx.send(10);
+    tx.send(20);
+    tx.send(30);
+    tx.close();
+
+    // Drain all messages and sum them.
+    var total: int = 0;
+    var val = rx.recv();
+    while val != 0 {
+        total = total + val;
+        val = rx.recv();
+    }
+
+    println(total);
+    rx.close();
+}

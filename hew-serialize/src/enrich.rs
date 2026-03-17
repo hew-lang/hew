@@ -1672,6 +1672,16 @@ fn enrich_expr_with_diagnostics(
                 Some(Ty::Named { name, .. }) if name == "Sink" => {
                     hew_types::stdlib::resolve_stream_method("Sink", method).map(String::from)
                 }
+                Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
+                    hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
+                        .map(String::from)
+                }
+                Some(Ty::Named { name, args })
+                    if name == "Receiver" || name == "channel.Receiver" =>
+                {
+                    hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
+                        .map(String::from)
+                }
                 Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
                 _ => None,
             };

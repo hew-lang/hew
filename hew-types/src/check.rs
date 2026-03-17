@@ -5787,6 +5787,22 @@ impl Checker {
                             }
                         }
                     }
+                    // Channel constructor: inject a shared type variable so
+                    // Sender<T> and Receiver<T> from the same `new` call are
+                    // linked through unification.
+                    if key == "channel.new" {
+                        let t = Ty::Var(TypeVar::fresh());
+                        return Ty::Tuple(vec![
+                            Ty::Named {
+                                name: "channel.Sender".to_string(),
+                                args: vec![t.clone()],
+                            },
+                            Ty::Named {
+                                name: "channel.Receiver".to_string(),
+                                args: vec![t],
+                            },
+                        ]);
+                    }
                     return sig.return_type;
                 }
                 self.report_error(
@@ -6807,6 +6823,76 @@ impl Checker {
                             format!("no method `{method}` on `{resolved}`"),
                         );
                         Ty::Error
+                    }
+                }
+            }
+            // Sender<T> methods
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Sender" || name == "channel.Sender" => {
+                let inner = type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+                match method {
+                    "send" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &inner);
+                        }
+                        Ty::Unit
+                    }
+                    "clone" => Ty::sender(inner),
+                    "close" => Ty::Unit,
+                    _ => {
+                        if let Some(ty) =
+                            self.try_resolve_named_method("Sender", method, args, span)
+                        {
+                            ty
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::UndefinedMethod,
+                                span,
+                                format!("no method `{method}` on Sender<T>"),
+                            );
+                            Ty::Error
+                        }
+                    }
+                }
+            }
+            // Receiver<T> methods
+            (
+                Ty::Named {
+                    name,
+                    args: type_args,
+                },
+                _,
+            ) if name == "Receiver" || name == "channel.Receiver" => {
+                let inner = type_args
+                    .first()
+                    .cloned()
+                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+                match method {
+                    "recv" => inner.clone(),
+                    "try_recv" => inner,
+                    "close" => Ty::Unit,
+                    _ => {
+                        if let Some(ty) =
+                            self.try_resolve_named_method("Receiver", method, args, span)
+                        {
+                            ty
+                        } else {
+                            self.report_error(
+                                TypeErrorKind::UndefinedMethod,
+                                span,
+                                format!("no method `{method}` on Receiver<T>"),
+                            );
+                            Ty::Error
+                        }
                     }
                 }
             }
@@ -8215,6 +8301,17 @@ impl Checker {
                         if let Some((module, _)) = resolved_name.split_once('.') {
                             self.used_modules.borrow_mut().insert(module.to_string());
                         }
+                        // Auto-parameterise channel handle types: bare `Sender`
+                        // becomes `Sender<T>` with a fresh type variable so that
+                        // function parameters accept any channel element type.
+                        let args = match resolved_name.as_str() {
+                            "Sender" | "channel.Sender" | "Receiver" | "channel.Receiver"
+                                if args.is_empty() =>
+                            {
+                                vec![Ty::Var(TypeVar::fresh())]
+                            }
+                            _ => args,
+                        };
                         Ty::Named {
                             name: resolved_name,
                             args,

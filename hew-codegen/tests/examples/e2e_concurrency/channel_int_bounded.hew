@@ -1,0 +1,23 @@
+import std::channel::channel;
+
+fn main() {
+    // Capacity-1 channel: each send blocks until the previous message
+    // is consumed, verifying backpressure behaviour.
+    let (tx, rx) = channel.new(1);
+
+    tx.send(42);
+    let first = rx.recv();
+    println(first);
+
+    tx.send(99);
+    let second = rx.recv();
+    println(second);
+
+    tx.close();
+
+    // After closing, recv should return 0 (default for int on closed channel).
+    let closed_val = rx.recv();
+    println(closed_val);
+
+    rx.close();
+}

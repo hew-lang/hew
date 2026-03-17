@@ -102,8 +102,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", output_path.display()));
 
         let generated = generate_reader(&ast_source, &module_source);
+        // Normalize CRLF → LF so the comparison works on Windows (git
+        // may check out .cpp files with CRLF, but the generator emits LF).
         assert_eq!(
-            generated, checked_in,
+            generated,
+            checked_in.replace("\r\n", "\n"),
             "hew-codegen/src/msgpack_reader.cpp is out of date; run `make astgen`"
         );
     }

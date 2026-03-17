@@ -15,7 +15,7 @@ crate-type = ["staticlib", "lib"]
 [dependencies]
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
-quick-xml = "0.37"
+quick-xml = "0.39"
 libc = "0.2"
 
 [lints]

@@ -168,7 +168,7 @@ pub(crate) fn generate_self_signed_creds() -> Result<TlsCreds, String> {
         generate_simple_self_signed(subject_alt_names).map_err(|e| format!("rcgen: {e}"))?;
 
     let cert_der = certified_key.cert.der().to_vec();
-    let key_der = certified_key.key_pair.serialize_der();
+    let key_der = certified_key.signing_key.serialize_der();
 
     let cert = CertificateDer::from(cert_der.clone());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));

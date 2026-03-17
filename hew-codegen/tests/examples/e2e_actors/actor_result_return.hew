@@ -1,0 +1,28 @@
+actor BankAccount {
+    var balance: int;
+
+    receive fn withdraw(amount: int) -> Result<int, string> {
+        if amount <= balance {
+            balance = balance - amount;
+            Ok(balance)
+        } else {
+            Err("insufficient funds")
+        }
+    }
+}
+
+fn main() {
+    let acct = spawn BankAccount(balance: 1000);
+
+    let r1 = await acct.withdraw(100);
+    match r1 {
+        Ok(b) => println(b),
+        Err(e) => println(e),
+    }
+
+    let r2 = await acct.withdraw(5000);
+    match r2 {
+        Ok(b) => println(b),
+        Err(e) => println(e),
+    }
+}

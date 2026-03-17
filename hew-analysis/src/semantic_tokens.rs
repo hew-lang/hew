@@ -11,8 +11,8 @@ use crate::{token_modifiers, token_types, SemanticToken};
 /// Primitive type names that the lexer emits as `Identifier` but should be
 /// highlighted as types.
 const PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize",
-    "f32", "f64", "bool", "char", "string", "bytes", "void", "never", "duration",
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "bool",
+    "char", "string", "bytes", "void", "never", "duration",
 ];
 
 /// Well-known generic/collection/concurrency type names from the standard
@@ -20,19 +20,34 @@ const PRIMITIVE_TYPE_NAMES: &[&str] = &[
 /// `starts_with(uppercase)` heuristic below, but listing them explicitly
 /// makes the classification deterministic across source positions.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Result", "Option", "Ok", "Err", "Some", "None",
-    "Vec", "HashMap",
-    "Arc", "Rc", "Weak",
-    "ActorRef", "Task", "Scope", "Generator", "AsyncGenerator",
-    "Stream", "Sink",
-    "Send", "Frozen", "Copy",
-    "Range", "ActorStream",
+    "Result",
+    "Option",
+    "Ok",
+    "Err",
+    "Some",
+    "None",
+    "Vec",
+    "HashMap",
+    "Arc",
+    "Rc",
+    "Weak",
+    "ActorRef",
+    "Task",
+    "Scope",
+    "Generator",
+    "AsyncGenerator",
+    "Stream",
+    "Sink",
+    "Send",
+    "Frozen",
+    "Copy",
+    "Range",
+    "ActorStream",
 ];
 
 /// Returns `true` if `name` is a known type name (primitive or builtin).
 fn is_type_name(name: &str) -> bool {
-    PRIMITIVE_TYPE_NAMES.contains(&name)
-        || BUILTIN_TYPE_NAMES.contains(&name)
+    PRIMITIVE_TYPE_NAMES.contains(&name) || BUILTIN_TYPE_NAMES.contains(&name)
 }
 
 /// Classify a single lexer token into a semantic token type index.
@@ -208,7 +223,8 @@ mod tests {
         // `i32` at byte offset 8 should be TYPE, not VARIABLE
         let i32_tok = tokens.iter().find(|t| t.start == 8).unwrap();
         assert_eq!(
-            i32_tok.token_type, token_types::TYPE,
+            i32_tok.token_type,
+            token_types::TYPE,
             "i32 in parameter type should be TYPE"
         );
     }
@@ -238,7 +254,8 @@ mod tests {
             })
             .expect("u8 type annotation should produce a token");
         assert_eq!(
-            u8_tok.token_type, token_types::TYPE,
+            u8_tok.token_type,
+            token_types::TYPE,
             "u8 in let type annotation should be TYPE"
         );
     }
@@ -254,7 +271,8 @@ mod tests {
             })
             .expect("Point type should produce a token");
         assert_eq!(
-            point_tok.token_type, token_types::TYPE,
+            point_tok.token_type,
+            token_types::TYPE,
             "PascalCase identifier after `:` should be TYPE"
         );
     }
@@ -269,7 +287,8 @@ mod tests {
             .find(|t| &source[t.start..t.start + t.length] == "val")
             .expect("val should produce a token");
         assert_eq!(
-            val_tok.token_type, token_types::VARIABLE,
+            val_tok.token_type,
+            token_types::VARIABLE,
             "lowercase identifier after `:` in struct init should stay VARIABLE"
         );
     }
@@ -284,7 +303,8 @@ mod tests {
                 .find(|t| &source[t.start..t.start + t.length] == *ty)
                 .unwrap_or_else(|| panic!("{ty} should produce a token"));
             assert_eq!(
-                ty_tok.token_type, token_types::TYPE,
+                ty_tok.token_type,
+                token_types::TYPE,
                 "{ty} should be classified as TYPE"
             );
         }

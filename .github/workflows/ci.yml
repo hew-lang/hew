@@ -255,9 +255,11 @@ jobs:
       - name: Run tests with coverage
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests are covered without an explicit flag.
+        # hew-cli is excluded because it requires LLVM/MLIR to link its
+        # embedded codegen; coverage focuses on the Rust frontend crates.
         run: >
           cargo llvm-cov nextest
-          --workspace --exclude hew-wasm
+          --workspace --exclude hew-wasm --exclude hew-cli
           --lcov --output-path lcov.info
 
       - name: Generate HTML report
@@ -314,18 +316,25 @@ jobs:
           restore-keys: build-test-${{ runner.os }}-
 
       - name: Build Rust crates
-        run: cargo build -p hew-cli -p adze-cli -p hew-runtime -p hew-lsp --release
+        # hew-cli requires LLVM/MLIR for its embedded codegen; use check
+        # (type-check only) until LLVM provisioning is set up on Windows.
+        run: |
+          cargo check -p hew-cli --release
+          cargo build -p adze-cli -p hew-runtime -p hew-lsp --release
 
       - name: Run Rust workspace tests (no codegen)
         # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
         # that conflict with hew-runtime when both are linked into a
         # test binary (duplicate symbol errors).
+        # hew-cli is excluded because it requires LLVM/MLIR to link its
+        # embedded codegen; Windows LLVM provisioning is not yet set up.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
+          --exclude hew-cli
           --profile ci
 
       - name: Upload test reports
@@ -398,7 +407,11 @@ jobs:
 
       - name: Run Rust workspace tests
         # hew-wasm requires wasmtime, which is not needed for this macOS PR gate.
-        run: cargo nextest run --workspace --exclude hew-wasm --profile ci
+        # hew-cli requires LLVM/MLIR to link; exclude it when codegen is off.
+        run: >
+          cargo nextest run --workspace --exclude hew-wasm
+          ${{ !matrix.run_codegen && '--exclude hew-cli' || '' }}
+          --profile ci
 
       - name: Build libhew.a (runtime + stdlib)
         if: matrix.run_codegen

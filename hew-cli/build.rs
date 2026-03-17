@@ -45,7 +45,7 @@ fn main() {
         .or_else(|| find_tool("c++"))
         .or_else(|| find_tool("cl"));
 
-    configure_and_build(
+    if !configure_and_build(
         &source_dir,
         &build_dir,
         &target,
@@ -53,7 +53,14 @@ fn main() {
         llvm_prefix.as_ref(),
         cc,
         cxx,
-    );
+    ) {
+        // CMake configure failed — LLVM/MLIR not installed.  This is fine for
+        // `cargo clippy` / `cargo check` which only type-check; they don't
+        // link, so missing native symbols won't matter.  A real `cargo build`
+        // will fail at link time with clear missing-symbol errors.
+        println!("cargo:warning=LLVM/MLIR not found — skipping embedded codegen build");
+        return;
+    }
 
     let cargo_link_file = build_dir.join("hew_embedded_codegen.cargo");
     let cargo_link_lines = std::fs::read_to_string(&cargo_link_file)
@@ -66,6 +73,8 @@ fn main() {
     }
 }
 
+/// Configure and build the embedded codegen library.
+/// Returns `true` on success, `false` if cmake configure failed (LLVM not found).
 fn configure_and_build(
     source_dir: &Path,
     build_dir: &Path,
@@ -74,7 +83,7 @@ fn configure_and_build(
     llvm_prefix: Option<&PathBuf>,
     cc: Option<OsString>,
     cxx: Option<OsString>,
-) {
+) -> bool {
     // Reject unsupported cross-compilation: the embedded C++ codegen must be
     // built for the same architecture as the Rust target.  CMake builds for the
     // host by default, so a host≠target mismatch would silently embed a
@@ -173,7 +182,9 @@ fn configure_and_build(
         }
     }
 
-    run(&mut configure, "configure embedded codegen");
+    if !try_run(&mut configure, "configure embedded codegen") {
+        return false;
+    }
 
     let mut build = Command::new("cmake");
     build
@@ -182,6 +193,7 @@ fn configure_and_build(
         .arg("--target")
         .arg("HewCodegenCAPI");
     run(&mut build, "build embedded codegen");
+    true
 }
 
 fn run(command: &mut Command, description: &str) {
@@ -189,6 +201,21 @@ fn run(command: &mut Command, description: &str) {
         .status()
         .unwrap_or_else(|error| panic!("failed to {description}: {error}"));
     assert!(status.success(), "failed to {description}");
+}
+
+/// Like `run` but returns `false` on failure instead of panicking.
+fn try_run(command: &mut Command, description: &str) -> bool {
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(_) => {
+            println!("cargo:warning={description} failed (LLVM/MLIR may not be installed)");
+            false
+        }
+        Err(error) => {
+            println!("cargo:warning={description}: {error}");
+            false
+        }
+    }
 }
 
 fn path_display(value: OsString) -> String {

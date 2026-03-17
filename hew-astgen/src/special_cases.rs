@@ -1,3 +1,5 @@
+const CURRENT_SCHEMA_VERSION: u32 = hew_serialize::msgpack::SCHEMA_VERSION;
+
 /// Hard-coded C++ parser for Literal (custom serde, not derive(Serialize)).
 pub fn literal_parser() -> &'static str {
     r#"static ast::Literal parseLiteral(const msgpack::object &obj) {
@@ -11,13 +13,59 @@ pub fn literal_parser() -> &'static str {
   if (name == "Bool")
     return ast::LitBool{getBool(*payload)};
   if (name == "Char") {
-    // Rust char serializes as a string
+    // Rust char serializes as a UTF-8 string — decode full codepoint
     auto s = getString(*payload);
-    return ast::LitChar{s.empty() ? '\0' : s[0]};
+    if (s.empty())
+      return ast::LitChar{0};
+    auto c = static_cast<unsigned char>(s[0]);
+    char32_t cp;
+    if (c < 0x80) {
+      cp = c;
+    } else if ((c >> 5) == 0x6 && s.size() >= 2) {
+      cp = (char32_t(c & 0x1F) << 6) | (s[1] & 0x3F);
+    } else if ((c >> 4) == 0xE && s.size() >= 3) {
+      cp = (char32_t(c & 0x0F) << 12) | (char32_t(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    } else if ((c >> 3) == 0x1E && s.size() >= 4) {
+      cp = (char32_t(c & 0x07) << 18) | (char32_t(s[1] & 0x3F) << 12) |
+           (char32_t(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    } else {
+      cp = c; // fallback to raw byte
+    }
+    return ast::LitChar{cp};
   }
   if (name == "Duration")
     return ast::LitDuration{getInt(*payload)};
   fail("unknown Literal variant: " + name);
+}"#
+}
+
+/// Hard-coded parser for `AttributeArg` because the C++ AST deliberately stores
+/// only the positional and key/value forms.
+pub fn attribute_arg_parser() -> &'static str {
+    r#"static ast::AttributeArg parseAttributeArg(const msgpack::object &obj) {
+  auto [variant, payload] = getEnumVariant(obj);
+  if (variant == "Positional" && payload) {
+    return ast::AttributeArg{ast::AttributeArgPositional{getString(*payload)}};
+  }
+  if (variant == "KeyValue" && payload) {
+    ast::AttributeArgKeyValue kv;
+    kv.key = getString(mapReq(*payload, "key"));
+    kv.value = getString(mapReq(*payload, "value"));
+    return ast::AttributeArg{std::move(kv)};
+  }
+  fail("unknown AttributeArg variant: " + variant);
+}"#
+}
+
+/// Hard-coded parser for Attribute so special-cased receive parsing can reuse
+/// the same C++ representation without exposing a Duration variant.
+pub fn attribute_parser() -> &'static str {
+    r#"static ast::Attribute parseAttribute(const msgpack::object &obj) {
+  ast::Attribute attr;
+  attr.name = getString(mapReq(obj, "name"));
+  attr.args = parseVec<ast::AttributeArg>(mapReq(obj, "args"), parseAttributeArg);
+  attr.span = parseSpan(mapReq(obj, "span"));
+  return attr;
 }"#
 }
 
@@ -32,6 +80,85 @@ pub fn expr_type_entry_parser() -> &'static str {
 }"#
 }
 
+/// Hard-coded parser for `ModuleId` to preserve string-key compatibility in
+/// `ModuleGraph.modules`.
+pub fn module_id_parser() -> &'static str {
+    r#"static ast::ModuleId parseModuleId(const msgpack::object &obj) {
+  ast::ModuleId id;
+  // JSON input: module IDs are serialized as flat strings (e.g., "std::misc::log")
+  // because JSON objects require string keys. Split on "::" to recover path segments.
+  if (obj.type == msgpack::type::STR) {
+    auto s = getString(obj);
+    if (s == "(root)") {
+      // Root module has an empty path.
+      return id;
+    }
+    // Split on "::"
+    size_t pos = 0;
+    while (pos < s.size()) {
+      auto next = s.find("::", pos);
+      if (next == std::string::npos) {
+        id.path.push_back(s.substr(pos));
+        break;
+      }
+      id.path.push_back(s.substr(pos, next - pos));
+      pos = next + 2;
+    }
+    return id;
+  }
+  // Msgpack input: module IDs are serialized as {"path": ["seg1", "seg2", ...]}.
+  id.path = parseVec<std::string>(mapReq(obj, "path"),
+                                  [](const msgpack::object &o) { return getString(o); });
+  return id;
+}"#
+}
+
+pub fn module_import_parser() -> &'static str {
+    r#"static ast::ModuleImport parseModuleImport(const msgpack::object &obj) {
+  ast::ModuleImport mi;
+  mi.target = parseModuleId(mapReq(obj, "target"));
+  const auto *spec = mapGet(obj, "spec");
+  if (spec && !isNil(*spec)) {
+    auto [name, payload] = getEnumVariant(*spec);
+    if (name == "Glob") {
+      mi.spec = ast::ImportSpecGlob{};
+    } else if (name == "Names") {
+      mi.spec =
+          ast::ImportSpecNames{parseVec<ast::ImportName>(*payload, [](const msgpack::object &o) {
+            ast::ImportName n;
+            n.name = getString(mapReq(o, "name"));
+            const auto *alias = mapGet(o, "alias");
+            if (alias && !isNil(*alias))
+              n.alias = getString(*alias);
+            return n;
+          })};
+    }
+  }
+  mi.span = parseSpan(mapReq(obj, "span"));
+  return mi;
+}"#
+}
+
+pub fn module_parser() -> &'static str {
+    r#"static ast::Module parseModule(const msgpack::object &obj) {
+  ast::Module m;
+  m.id = parseModuleId(mapReq(obj, "id"));
+  m.items = parseVec<ast::Spanned<ast::Item>>(mapReq(obj, "items"), [](const msgpack::object &o) {
+    return parseSpanned<ast::Item>(o, parseItem);
+  });
+  m.imports = parseVec<ast::ModuleImport>(mapReq(obj, "imports"), parseModuleImport);
+  const auto *sp = mapGet(obj, "source_paths");
+  if (sp && !isNil(*sp)) {
+    m.source_paths =
+        parseVec<std::string>(*sp, [](const msgpack::object &o) { return getString(o); });
+  }
+  const auto *doc = mapGet(obj, "doc");
+  if (doc && !isNil(*doc))
+    m.doc = getString(*doc);
+  return m;
+}"#
+}
+
 /// Hard-coded C++ parser for `ModuleGraph` (`HashMap`<`ModuleId`, Module> with custom hasher).
 pub fn module_graph_parser() -> &'static str {
     r#"static ast::ModuleGraph parseModuleGraph(const msgpack::object &obj) {
@@ -40,12 +167,21 @@ pub fn module_graph_parser() -> &'static str {
   mg.topo_order = parseVec<ast::ModuleId>(mapReq(obj, "topo_order"), parseModuleId);
 
   const auto &modulesObj = mapReq(obj, "modules");
-  if (modulesObj.type != msgpack::type::MAP)
-    fail("expected map for ModuleGraph.modules");
-  for (uint32_t i = 0; i < modulesObj.via.map.size; ++i) {
-    auto id = parseModuleId(modulesObj.via.map.ptr[i].key);
-    auto mod = parseModule(modulesObj.via.map.ptr[i].val);
-    mg.modules.emplace(std::move(id), std::move(mod));
+  if (modulesObj.type == msgpack::type::ARRAY) {
+    for (uint32_t i = 0; i < modulesObj.via.array.size; ++i) {
+      const auto &pair = modulesObj.via.array.ptr[i];
+      if (pair.type == msgpack::type::ARRAY && pair.via.array.size == 2) {
+        auto id = parseModuleId(pair.via.array.ptr[0]);
+        auto mod = parseModule(pair.via.array.ptr[1]);
+        mg.modules.emplace(std::move(id), std::move(mod));
+      }
+    }
+  } else if (modulesObj.type == msgpack::type::MAP) {
+    for (uint32_t i = 0; i < modulesObj.via.map.size; ++i) {
+      auto id = parseModuleId(modulesObj.via.map.ptr[i].key);
+      auto mod = parseModule(modulesObj.via.map.ptr[i].val);
+      mg.modules.emplace(std::move(id), std::move(mod));
+    }
   }
   return mg;
 }"#
@@ -55,6 +191,16 @@ pub fn module_graph_parser() -> &'static str {
 pub fn program_parser() -> &'static str {
     r#"static ast::Program parseProgram(const msgpack::object &obj) {
   ast::Program prog;
+
+  // The embedded msgpack boundary is internal to the current `hew` binary, so
+  // require an explicit, exact schema version instead of carrying fallback
+  // decoding for older payloads.
+  prog.schema_version = static_cast<uint32_t>(getUint(mapReq(obj, "schema_version")));
+  if (prog.schema_version != CURRENT_SCHEMA_VERSION) {
+    fail("unsupported schema version " + std::to_string(prog.schema_version) +
+         " (expected: " + std::to_string(CURRENT_SCHEMA_VERSION) + ")");
+  }
+
   prog.items =
       parseVec<ast::Spanned<ast::Item>>(mapReq(obj, "items"), [](const msgpack::object &o) {
         return parseSpanned<ast::Item>(o, parseItem);
@@ -62,29 +208,38 @@ pub fn program_parser() -> &'static str {
   const auto *md = mapGet(obj, "module_doc");
   if (md && !isNil(*md))
     prog.module_doc = getString(*md);
-  const auto *et = mapGet(obj, "expr_types");
-  if (et && !isNil(*et))
-    prog.expr_types = parseVec<ast::ExprTypeEntry>(*et, parseExprTypeEntry);
+  prog.expr_types = parseVec<ast::ExprTypeEntry>(mapReq(obj, "expr_types"), parseExprTypeEntry);
 
   // Handle type metadata: list of known handle type names
-  const auto *ht = mapGet(obj, "handle_types");
-  if (ht && !isNil(*ht))
-    prog.handle_types =
-        parseVec<std::string>(*ht, [](const msgpack::object &o) { return getString(o); });
+  prog.handle_types =
+      parseVec<std::string>(mapReq(obj, "handle_types"), [](const msgpack::object &o) {
+        return getString(o);
+      });
 
   // Handle type representations: map of type name → repr string ("i32", etc.)
-  const auto *hr = mapGet(obj, "handle_type_repr");
-  if (hr && !isNil(*hr) && hr->type == msgpack::type::MAP) {
-    for (uint32_t i = 0; i < hr->via.map.size; ++i) {
-      auto &kv = hr->via.map.ptr[i];
-      std::string key = getString(kv.key);
-      std::string val = getString(kv.val);
-      prog.handle_type_repr[key] = val;
-    }
+  const auto &hr = mapReq(obj, "handle_type_repr");
+  if (hr.type != msgpack::type::MAP)
+    fail("expected map, got type " + std::to_string(hr.type));
+  for (uint32_t i = 0; i < hr.via.map.size; ++i) {
+    auto &kv = hr.via.map.ptr[i];
+    std::string key = getString(kv.key);
+    std::string val = getString(kv.val);
+    prog.handle_type_repr[key] = val;
   }
   const auto *mg = mapGet(obj, "module_graph");
   if (mg && !isNil(*mg))
     prog.module_graph = parseModuleGraph(*mg);
+
+  // Source path for debug info (optional — some frontend flows do not provide it)
+  const auto *sp = mapGet(obj, "source_path");
+  if (sp && !isNil(*sp))
+    prog.source_path = getString(*sp);
+
+  // Line map: byte offset of each line start (optional)
+  const auto *lm = mapGet(obj, "line_map");
+  if (lm && !isNil(*lm))
+    prog.line_map = parseVec<size_t>(
+        *lm, [](const msgpack::object &o) { return static_cast<size_t>(getUint(o)); });
 
   return prog;
 }"#
@@ -98,7 +253,12 @@ pub fn type_decl_parser() -> &'static str {
   if (vis && !isNil(*vis))
     td.visibility = parseVisibility(*vis);
   auto kindStr = getString(mapReq(obj, "kind"));
-  td.kind = (kindStr == "Enum") ? ast::TypeDeclKind::Enum : ast::TypeDeclKind::Struct;
+  if (kindStr == "Enum")
+    td.kind = ast::TypeDeclKind::Enum;
+  else if (kindStr == "Struct")
+    td.kind = ast::TypeDeclKind::Struct;
+  else
+    fail("unknown TypeDeclKind: " + kindStr);
   td.name = getString(mapReq(obj, "name"));
   const auto *tp = mapGet(obj, "type_params");
   if (tp && !isNil(*tp))
@@ -129,7 +289,662 @@ pub fn type_decl_parser() -> &'static str {
   const auto *dc = mapGet(obj, "doc_comment");
   if (dc && !isNil(*dc))
     td.doc_comment = getString(*dc);
+  const auto *w = mapGet(obj, "wire");
+  if (w && !isNil(*w))
+    td.wire = parseWireMetadata(*w);
+  const auto *ind = mapGet(obj, "is_indirect");
+  if (ind && !isNil(*ind))
+    td.is_indirect = getBool(*ind);
   return td;
+}"#
+}
+
+/// Hard-coded parser for `VariantDecl` (kind uses nested C++ types).
+pub fn variant_decl_parser() -> &'static str {
+    r#"static ast::VariantDecl parseVariantDecl(const msgpack::object &obj) {
+  ast::VariantDecl result;
+  result.name = getString(mapReq(obj, "name"));
+
+  const auto &kindObj = mapReq(obj, "kind");
+  auto [name, payload] = getEnumVariant(kindObj);
+  if (name == "Unit") {
+    result.kind = ast::VariantDecl::VariantUnit{};
+    return result;
+  }
+  if (name == "Tuple") {
+    ast::VariantDecl::VariantTuple tuple;
+    tuple.fields = parseVec<ast::Spanned<ast::TypeExpr>>(
+        *payload, [](const msgpack::object &o) { return parseSpanned<ast::TypeExpr>(o, parseTypeExpr); });
+    result.kind = std::move(tuple);
+    return result;
+  }
+  if (name == "Struct") {
+    ast::VariantDecl::VariantStruct s;
+    s.fields = parseVec<ast::VariantDecl::VariantStructField>(
+        *payload, [](const msgpack::object &o) {
+          uint32_t sz;
+          const auto *arr = arrayData(o, sz);
+          if (sz != 2)
+            fail("tuple should have 2 elements");
+          ast::VariantDecl::VariantStructField field;
+          field.name = getString(arr[0]);
+          field.ty = parseSpanned<ast::TypeExpr>(arr[1], parseTypeExpr);
+          return field;
+        });
+    result.kind = std::move(s);
+    return result;
+  }
+  fail("unknown VariantKind variant: " + name);
+}"#
+}
+
+/// Hard-coded parser for `TraitItem` (header uses `default_value` field name).
+pub fn trait_item_parser() -> &'static str {
+    r#"static ast::TraitItem parseTraitItem(const msgpack::object &obj) {
+  auto [name, payload] = getEnumVariant(obj);
+
+  if (name == "Method")
+    return ast::TraitItem{ast::TraitItemMethod{parseTraitMethod(*payload)}};
+  if (name == "AssociatedType") {
+    ast::TraitItemAssociatedType e;
+    e.name = getString(mapReq(*payload, "name"));
+    e.bounds = parseVec<ast::TraitBound>(mapReq(*payload, "bounds"), parseTraitBound);
+    const auto *default_value = mapGet(*payload, "default");
+    if (default_value && !isNil(*default_value))
+      e.default_value = parseSpanned<ast::TypeExpr>(*default_value, parseTypeExpr);
+    return ast::TraitItem{std::move(e)};
+  }
+  fail("unknown TraitItem variant: " + name);
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+pub fn match_arm_parser() -> &'static str {
+    r#"static ast::MatchArm parseMatchArm(const msgpack::object &obj) {
+  ast::MatchArm arm;
+  arm.pattern = parseSpanned<ast::Pattern>(mapReq(obj, "pattern"), parsePattern);
+  const auto *g = mapGet(obj, "guard");
+  if (g && !isNil(*g))
+    arm.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
+  arm.body = parseSpannedPtr<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  return arm;
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+pub fn select_arm_parser() -> &'static str {
+    r#"static ast::SelectArm parseSelectArm(const msgpack::object &obj) {
+  ast::SelectArm arm;
+  arm.binding = parseSpanned<ast::Pattern>(mapReq(obj, "binding"), parsePattern);
+  arm.source = parseSpannedPtr<ast::Expr>(mapReq(obj, "source"), parseExpr);
+  arm.body = parseSpannedPtr<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  return arm;
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+#[allow(
+    clippy::too_many_lines,
+    reason = "large string literal for C++ codegen"
+)]
+pub fn expr_parser() -> &'static str {
+    r#"static ast::Expr parseExpr(const msgpack::object &obj) {
+  auto [name, payload] = getEnumVariant(obj);
+
+  if (name == "Binary") {
+    ast::ExprBinary e;
+    e.left = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "left"), parseExpr));
+    e.op = parseBinaryOp(mapReq(*payload, "op"));
+    e.right = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "right"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Unary") {
+    ast::ExprUnary e;
+    e.op = parseUnaryOp(mapReq(*payload, "op"));
+    e.operand = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "operand"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Literal")
+    return ast::Expr{ast::ExprLiteral{parseLiteral(*payload)}, {}};
+  if (name == "Identifier")
+    return ast::Expr{ast::ExprIdentifier{getString(*payload)}, {}};
+  if (name == "Tuple") {
+    ast::ExprTuple e;
+    e.elements = parseVecPtr<ast::Spanned<ast::Expr>>(
+        *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Array") {
+    ast::ExprArray e;
+    e.elements = parseVecPtr<ast::Spanned<ast::Expr>>(
+        *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "MapLiteral") {
+    ast::ExprMapLiteral e;
+    if (payload) {
+      auto entriesArr = mapReq(*payload, "entries");
+      if (entriesArr.type == msgpack::type::ARRAY) {
+        for (uint32_t i = 0; i < entriesArr.via.array.size; ++i) {
+          auto &pairObj = entriesArr.via.array.ptr[i];
+          // Each entry is a 2-element array: [key, value]
+          if (pairObj.type != msgpack::type::ARRAY || pairObj.via.array.size != 2)
+            fail("MapLiteral entry must be a 2-element array, got size " +
+                 std::to_string(pairObj.type == msgpack::type::ARRAY ? pairObj.via.array.size : 0));
+          ast::ExprMapEntry entry;
+          entry.key = std::make_unique<ast::Spanned<ast::Expr>>(
+              parseSpanned<ast::Expr>(pairObj.via.array.ptr[0], parseExpr));
+          entry.value = std::make_unique<ast::Spanned<ast::Expr>>(
+              parseSpanned<ast::Expr>(pairObj.via.array.ptr[1], parseExpr));
+          e.entries.emplace_back(std::move(entry));
+        }
+      }
+    }
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "ArrayRepeat") {
+    ast::ExprArrayRepeat e;
+    e.value = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "value"), parseExpr));
+    e.count = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "count"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Block")
+    return ast::Expr{ast::ExprBlock{parseBlock(*payload)}, {}};
+  if (name == "If") {
+    ast::ExprIf e;
+    e.condition = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr));
+    e.then_block = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "then_block"), parseExpr));
+    const auto *eb = mapGet(*payload, "else_block");
+    if (eb && !isNil(*eb)) {
+      e.else_block =
+          std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*eb, parseExpr));
+    }
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "IfLet") {
+    ast::ExprIfLet e;
+    e.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.body = parseBlock(mapReq(*payload, "body"));
+    const auto *eb = mapGet(*payload, "else_body");
+    if (eb && !isNil(*eb))
+      e.else_body = parseBlock(*eb);
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Match") {
+    ast::ExprMatch e;
+    e.scrutinee = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "scrutinee"), parseExpr));
+    e.arms = parseVec<ast::MatchArm>(mapReq(*payload, "arms"), parseMatchArm);
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Lambda") {
+    ast::ExprLambda e;
+    e.is_move = getBool(mapReq(*payload, "is_move"));
+    const auto *tp = mapGet(*payload, "type_params");
+    if (tp && !isNil(*tp))
+      e.type_params = parseVec<ast::TypeParam>(*tp, parseTypeParam);
+    e.params = parseVec<ast::LambdaParam>(mapReq(*payload, "params"), parseLambdaParam);
+    const auto *rt = mapGet(*payload, "return_type");
+    if (rt && !isNil(*rt))
+      e.return_type = parseSpanned<ast::TypeExpr>(*rt, parseTypeExpr);
+    e.body = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "body"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Spawn") {
+    ast::ExprSpawn e;
+    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
+    e.args = parseVec<std::pair<std::string, std::unique_ptr<ast::Spanned<ast::Expr>>>>(
+        mapReq(*payload, "args"), [](const msgpack::object &o) {
+          // (String, Spanned<Expr>) = [name_str, spanned_expr]
+          uint32_t sz;
+          const auto *arr = arrayData(o, sz);
+          if (sz != 2)
+            fail("Spawn arg tuple should have 2 elements");
+          return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
+        });
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "SpawnLambdaActor") {
+    ast::ExprSpawnLambdaActor e;
+    e.is_move = getBool(mapReq(*payload, "is_move"));
+    e.params = parseVec<ast::LambdaParam>(mapReq(*payload, "params"), parseLambdaParam);
+    const auto *rt = mapGet(*payload, "return_type");
+    if (rt && !isNil(*rt))
+      e.return_type = parseSpanned<ast::TypeExpr>(*rt, parseTypeExpr);
+    e.body = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "body"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Scope") {
+    ast::ExprScope e;
+    const auto *bind = mapGet(*payload, "binding");
+    if (bind && !isNil(*bind))
+      e.binding = getString(*bind);
+    e.block = parseBlock(mapReq(*payload, "body"));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "InterpolatedString") {
+    ast::ExprInterpolatedString e;
+    e.parts = parseVec<ast::StringPart>(*payload, parseStringPart);
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Call") {
+    ast::ExprCall e;
+    e.function = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "function"), parseExpr));
+    const auto *ta = mapGet(*payload, "type_args");
+    if (ta && !isNil(*ta)) {
+      e.type_args = parseVec<ast::Spanned<ast::TypeExpr>>(*ta, [](const msgpack::object &o) {
+        return parseSpanned<ast::TypeExpr>(o, parseTypeExpr);
+      });
+    }
+    {
+      auto &argsArr = mapReq(*payload, "args");
+      if (argsArr.type == msgpack::type::ARRAY) {
+        auto &arrData = argsArr.via.array;
+        for (uint32_t j = 0; j < arrData.size; j++) {
+          e.args.push_back(parseCallArg(arrData.ptr[j]));
+        }
+      }
+    }
+    e.is_tail_call = getBool(mapReq(*payload, "is_tail_call"));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "MethodCall") {
+    ast::ExprMethodCall e;
+    e.receiver = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "receiver"), parseExpr));
+    e.method = getString(mapReq(*payload, "method"));
+    {
+      auto &argsArr = mapReq(*payload, "args");
+      if (argsArr.type == msgpack::type::ARRAY) {
+        auto &arrData = argsArr.via.array;
+        for (uint32_t j = 0; j < arrData.size; j++) {
+          e.args.push_back(parseCallArg(arrData.ptr[j]));
+        }
+      }
+    }
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "StructInit") {
+    ast::ExprStructInit e;
+    e.name = getString(mapReq(*payload, "name"));
+    e.fields = parseVec<std::pair<std::string, std::unique_ptr<ast::Spanned<ast::Expr>>>>(
+        mapReq(*payload, "fields"), [](const msgpack::object &o) {
+          // (String, Spanned<Expr>) = [name_str, spanned_expr]
+          uint32_t sz;
+          const auto *arr = arrayData(o, sz);
+          if (sz != 2)
+            fail("StructInit field tuple should have 2 elements");
+          return std::make_pair(getString(arr[0]), parseSpannedPtr<ast::Expr>(arr[1], parseExpr));
+        });
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Send") {
+    ast::ExprSend e;
+    e.target = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr));
+    e.message = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "message"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Select") {
+    ast::ExprSelect e;
+    e.arms = parseVec<ast::SelectArm>(mapReq(*payload, "arms"), parseSelectArm);
+    const auto *to = mapGet(*payload, "timeout");
+    if (to && !isNil(*to)) {
+      e.timeout = std::make_unique<ast::TimeoutClause>(parseTimeoutClause(*to));
+    }
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Join") {
+    ast::ExprJoin e;
+    e.exprs = parseVecPtr<ast::Spanned<ast::Expr>>(
+        *payload, [](const msgpack::object &o) { return parseSpanned<ast::Expr>(o, parseExpr); });
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Timeout") {
+    ast::ExprTimeout e;
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.duration = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "duration"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Unsafe")
+    return ast::Expr{ast::ExprUnsafe{parseBlock(*payload)}, {}};
+  if (name == "Yield") {
+    ast::ExprYield e;
+    if (payload && !isNil(*payload)) {
+      e.value =
+          std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
+    }
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Cooperate")
+    return ast::Expr{ast::ExprCooperate{}, {}};
+  if (name == "This")
+    return ast::Expr{ast::ExprThis{}, {}};
+  if (name == "FieldAccess") {
+    ast::ExprFieldAccess e;
+    e.object = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
+    e.field = getString(mapReq(*payload, "field"));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Index") {
+    ast::ExprIndex e;
+    e.object = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "object"), parseExpr));
+    e.index = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "index"), parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Cast") {
+    ast::ExprCast e;
+    e.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    e.ty = parseSpanned<ast::TypeExpr>(mapReq(*payload, "ty"), parseTypeExpr);
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "PostfixTry") {
+    ast::ExprPostfixTry e;
+    e.inner =
+        std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Range") {
+    ast::ExprRange e;
+    const auto *s = mapGet(*payload, "start");
+    if (s && !isNil(*s)) {
+      e.start = std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*s, parseExpr));
+    }
+    const auto *en = mapGet(*payload, "end");
+    if (en && !isNil(*en)) {
+      e.end = std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*en, parseExpr));
+    }
+    e.inclusive = getBool(mapReq(*payload, "inclusive"));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "Await") {
+    ast::ExprAwait e;
+    e.inner =
+        std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
+    return ast::Expr{std::move(e), {}};
+  }
+  if (name == "ScopeLaunch")
+    return ast::Expr{ast::ExprScopeLaunch{parseBlock(*payload)}, {}};
+  if (name == "ScopeSpawn")
+    return ast::Expr{ast::ExprScopeSpawn{parseBlock(*payload)}, {}};
+  if (name == "ScopeCancel")
+    return ast::Expr{ast::ExprScopeCancel{}, {}};
+
+  if (name == "RegexLiteral")
+    return ast::Expr{ast::ExprRegexLiteral{getString(*payload)}, {}};
+  if (name == "ByteStringLiteral")
+    return ast::Expr{
+        ast::ExprByteStringLiteral{parseVec<uint8_t>(
+            *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
+        {}};
+  if (name == "ByteArrayLiteral")
+    return ast::Expr{
+        ast::ExprByteArrayLiteral{parseVec<uint8_t>(
+            *payload, [](const msgpack::object &o) { return static_cast<uint8_t>(getInt(o)); })},
+        {}};
+  fail("unknown Expr variant: " + name);
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+pub fn else_block_parser() -> &'static str {
+    r#"static ast::ElseBlock parseElseBlock(const msgpack::object &obj) {
+  ast::ElseBlock eb;
+  eb.is_if = getBool(mapReq(obj, "is_if"));
+  const auto *ifs = mapGet(obj, "if_stmt");
+  if (ifs && !isNil(*ifs)) {
+    eb.if_stmt = parseSpannedPtr<ast::Stmt>(*ifs, parseStmt);
+  }
+  const auto *blk = mapGet(obj, "block");
+  if (blk && !isNil(*blk))
+    eb.block = parseBlock(*blk);
+  return eb;
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+#[allow(
+    clippy::too_many_lines,
+    reason = "large string literal for C++ codegen"
+)]
+pub fn stmt_parser() -> &'static str {
+    r#"static ast::Stmt parseStmt(const msgpack::object &obj) {
+  auto [name, payload] = getEnumVariant(obj);
+
+  if (name == "Let") {
+    ast::StmtLet s;
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    const auto *ty = mapGet(*payload, "ty");
+    if (ty && !isNil(*ty))
+      s.ty = parseSpanned<ast::TypeExpr>(*ty, parseTypeExpr);
+    const auto *val = mapGet(*payload, "value");
+    if (val && !isNil(*val))
+      s.value = parseSpanned<ast::Expr>(*val, parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Var") {
+    ast::StmtVar s;
+    s.name = getString(mapReq(*payload, "name"));
+    const auto *ty = mapGet(*payload, "ty");
+    if (ty && !isNil(*ty))
+      s.ty = parseSpanned<ast::TypeExpr>(*ty, parseTypeExpr);
+    const auto *val = mapGet(*payload, "value");
+    if (val && !isNil(*val))
+      s.value = parseSpanned<ast::Expr>(*val, parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Assign") {
+    ast::StmtAssign s;
+    s.target = parseSpanned<ast::Expr>(mapReq(*payload, "target"), parseExpr);
+    const auto *op = mapGet(*payload, "op");
+    if (op && !isNil(*op))
+      s.op = parseCompoundAssignOp(*op);
+    s.value = parseSpanned<ast::Expr>(mapReq(*payload, "value"), parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "If") {
+    ast::StmtIf s;
+    s.condition = parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr);
+    s.then_block = parseBlock(mapReq(*payload, "then_block"));
+    const auto *eb = mapGet(*payload, "else_block");
+    if (eb && !isNil(*eb))
+      s.else_block = parseElseBlock(*eb);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "IfLet") {
+    ast::StmtIfLet s;
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    s.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    s.body = parseBlock(mapReq(*payload, "body"));
+    const auto *eb = mapGet(*payload, "else_body");
+    if (eb && !isNil(*eb))
+      s.else_body = parseBlock(*eb);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Match") {
+    ast::StmtMatch s;
+    s.scrutinee = parseSpanned<ast::Expr>(mapReq(*payload, "scrutinee"), parseExpr);
+    s.arms = parseVec<ast::MatchArm>(mapReq(*payload, "arms"), parseMatchArm);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Loop") {
+    ast::StmtLoop s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    s.body = parseBlock(mapReq(*payload, "body"));
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "For") {
+    ast::StmtFor s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    s.is_await = getBool(mapReq(*payload, "is_await"));
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    s.iterable = parseSpanned<ast::Expr>(mapReq(*payload, "iterable"), parseExpr);
+    s.body = parseBlock(mapReq(*payload, "body"));
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "While") {
+    ast::StmtWhile s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    s.condition = parseSpanned<ast::Expr>(mapReq(*payload, "condition"), parseExpr);
+    s.body = parseBlock(mapReq(*payload, "body"));
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "WhileLet") {
+    ast::StmtWhileLet s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    s.pattern = parseSpanned<ast::Pattern>(mapReq(*payload, "pattern"), parsePattern);
+    s.expr = std::make_unique<ast::Spanned<ast::Expr>>(
+        parseSpanned<ast::Expr>(mapReq(*payload, "expr"), parseExpr));
+    s.body = parseBlock(mapReq(*payload, "body"));
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Break") {
+    ast::StmtBreak s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    const auto *val = mapGet(*payload, "value");
+    if (val && !isNil(*val))
+      s.value = parseSpanned<ast::Expr>(*val, parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Continue") {
+    ast::StmtContinue s;
+    const auto *lbl = mapGet(*payload, "label");
+    if (lbl && !isNil(*lbl))
+      s.label = getString(*lbl);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Return") {
+    ast::StmtReturn s;
+    if (payload && !isNil(*payload))
+      s.value = parseSpanned<ast::Expr>(*payload, parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Defer") {
+    ast::StmtDefer s;
+    s.expr =
+        std::make_unique<ast::Spanned<ast::Expr>>(parseSpanned<ast::Expr>(*payload, parseExpr));
+    return ast::Stmt{std::move(s), {}};
+  }
+  if (name == "Expression") {
+    ast::StmtExpression s;
+    s.expr = parseSpanned<ast::Expr>(*payload, parseExpr);
+    return ast::Stmt{std::move(s), {}};
+  }
+  fail("unknown Stmt variant: " + name);
+}"#
+}
+
+/// Hard-coded parser lifted from the working C++ reader.
+pub fn machine_transition_parser() -> &'static str {
+    r#"static ast::MachineTransition parseMachineTransition(const msgpack::object &obj) {
+  ast::MachineTransition mt;
+  mt.event_name = getString(mapReq(obj, "event_name"));
+  mt.source_state = getString(mapReq(obj, "source_state"));
+  mt.target_state = getString(mapReq(obj, "target_state"));
+  const auto *g = mapGet(obj, "guard");
+  if (g && !isNil(*g))
+    mt.guard = parseSpannedPtr<ast::Expr>(*g, parseExpr);
+  mt.body = parseSpanned<ast::Expr>(mapReq(obj, "body"), parseExpr);
+  return mt;
+}"#
+}
+/// Hard-coded parser lifted from the working C++ reader.
+pub fn child_spec_parser() -> &'static str {
+    r#"static ast::ChildSpec parseChildSpec(const msgpack::object &obj) {
+  ast::ChildSpec cs;
+  cs.name = getString(mapReq(obj, "name"));
+  cs.actor_type = getString(mapReq(obj, "actor_type"));
+  cs.args = parseVec<ast::Spanned<ast::Expr>>(mapReq(obj, "args"), [](const msgpack::object &o) {
+    return parseSpanned<ast::Expr>(o, parseExpr);
+  });
+  const auto *r = mapGet(obj, "restart");
+  if (r && !isNil(*r)) {
+    auto s = getString(*r);
+    if (s == "Permanent")
+      cs.restart = ast::RestartPolicy::Permanent;
+    else if (s == "Transient")
+      cs.restart = ast::RestartPolicy::Transient;
+    else if (s == "Temporary")
+      cs.restart = ast::RestartPolicy::Temporary;
+    else
+      fail("unknown RestartPolicy: " + s);
+  }
+  return cs;
+}"#
+}
+
+/// Hard-coded parser for `ReceiveFnDecl` because the C++ AST stores a derived
+/// periodic interval instead of the raw `attributes` vector.
+pub fn receive_fn_decl_parser() -> &'static str {
+    r#"static ast::ReceiveFnDecl parseReceiveFnDecl(const msgpack::object &obj) {
+  ast::ReceiveFnDecl rf;
+  rf.is_generator = getBool(mapReq(obj, "is_generator"));
+  rf.is_pure = getBool(mapReq(obj, "is_pure"));
+  rf.name = getString(mapReq(obj, "name"));
+  const auto *tp = mapGet(obj, "type_params");
+  if (tp && !isNil(*tp))
+    rf.type_params = parseVec<ast::TypeParam>(*tp, parseTypeParam);
+  rf.params = parseVec<ast::Param>(mapReq(obj, "params"), parseParam);
+  const auto *rt = mapGet(obj, "return_type");
+  if (rt && !isNil(*rt))
+    rf.return_type = parseSpanned<ast::TypeExpr>(*rt, parseTypeExpr);
+  const auto *wc = mapGet(obj, "where_clause");
+  if (wc && !isNil(*wc))
+    rf.where_clause = parseWhereClause(*wc);
+  rf.body = parseBlock(mapReq(obj, "body"));
+  rf.span = parseSpan(mapReq(obj, "span"));
+
+  const auto *attrs = mapGet(obj, "attributes");
+  if (attrs && !isNil(*attrs) && attrs->type == msgpack::type::ARRAY) {
+    for (uint32_t i = 0; i < attrs->via.array.size; ++i) {
+      const auto &attrObj = attrs->via.array.ptr[i];
+      auto attrName = getString(mapReq(attrObj, "name"));
+      if (attrName != "every")
+        continue;
+      const auto *argsArr = mapGet(attrObj, "args");
+      if (!argsArr || isNil(*argsArr) || argsArr->type != msgpack::type::ARRAY ||
+          argsArr->via.array.size != 1)
+        continue;
+
+      const auto &argObj = argsArr->via.array.ptr[0];
+      auto [variantName, payload] = getEnumVariant(argObj);
+      if (variantName == "Duration" && payload)
+        rf.periodic_interval_ns = getInt(*payload);
+    }
+  }
+
+  return rf;
 }"#
 }
 
@@ -138,13 +953,6 @@ pub fn public_api() -> &'static str {
     r"ast::Program parseMsgpackAST(const uint8_t *data, size_t size) {
   msgpack::object_handle oh = msgpack::unpack(reinterpret_cast<const char *>(data), size);
   return parseProgram(oh.get());
-}
-
-ast::Program parseJsonAST(const uint8_t *data, size_t size) {
-  // Parse JSON, convert to msgpack bytes, then reuse the existing parser.
-  auto j = nlohmann::json::parse(data, data + size);
-  auto msgpackBytes = nlohmann::json::to_msgpack(j);
-  return parseMsgpackAST(msgpackBytes.data(), msgpackBytes.size());
 }"
 }
 
@@ -160,7 +968,6 @@ pub fn file_header() -> &'static str {
 #include "hew/msgpack_reader.h"
 
 #include <msgpack.hpp>
-#include <nlohmann/json.hpp>
 
 #include <cassert>
 #include <stdexcept>
@@ -173,8 +980,9 @@ namespace hew {"#
 }
 
 /// Helper functions preamble (shared utilities used by all parsers).
-pub fn helpers_preamble() -> &'static str {
-    r#"// ── Error helper ────────────────────────────────────────────────────────────
+pub fn helpers_preamble() -> String {
+    let mut out = String::from(
+        r#"// ── Error helper ────────────────────────────────────────────────────────────
 
 [[noreturn]] static void fail(const std::string &msg) {
   throw std::runtime_error("msgpack AST parse error: " + msg);
@@ -191,8 +999,11 @@ static std::string getString(const msgpack::object &obj) {
 
 /// Get integer from msgpack object.
 static int64_t getInt(const msgpack::object &obj) {
-  if (obj.type == msgpack::type::POSITIVE_INTEGER)
+  if (obj.type == msgpack::type::POSITIVE_INTEGER) {
+    if (obj.via.u64 > static_cast<uint64_t>(INT64_MAX))
+      fail("unsigned value " + std::to_string(obj.via.u64) + " overflows int64_t");
     return static_cast<int64_t>(obj.via.u64);
+  }
   if (obj.type == msgpack::type::NEGATIVE_INTEGER)
     return obj.via.i64;
   fail("expected integer, got type " + std::to_string(obj.type));
@@ -203,7 +1014,7 @@ static uint64_t getUint(const msgpack::object &obj) {
   if (obj.type == msgpack::type::POSITIVE_INTEGER)
     return obj.via.u64;
   if (obj.type == msgpack::type::NEGATIVE_INTEGER)
-    return static_cast<uint64_t>(obj.via.i64);
+    fail("negative value " + std::to_string(obj.via.i64) + " cannot be converted to uint64_t");
   fail("expected unsigned integer, got type " + std::to_string(obj.type));
 }
 
@@ -223,6 +1034,20 @@ static bool getBool(const msgpack::object &obj) {
   if (obj.type == msgpack::type::BOOLEAN)
     return obj.via.boolean;
   fail("expected bool, got type " + std::to_string(obj.type));
+}
+
+/// Parse a Visibility enum from a msgpack object (string variant name).
+static ast::Visibility parseVisibility(const msgpack::object &obj) {
+  auto s = getString(obj);
+  if (s == "Pub")
+    return ast::Visibility::Pub;
+  if (s == "PubPackage")
+    return ast::Visibility::PubPackage;
+  if (s == "PubSuper")
+    return ast::Visibility::PubSuper;
+  if (s == "Private")
+    return ast::Visibility::Private;
+  fail("unknown Visibility variant: " + s);
 }
 
 /// Check if msgpack object is nil.
@@ -281,7 +1106,17 @@ static std::pair<std::string, const msgpack::object *> getEnumVariant(const msgp
     return {getString(kv.key), &kv.val};
   }
   fail("expected enum variant (string or single-entry map), got type " + std::to_string(obj.type));
-}"#
+}
+
+/// Exact schema version this reader understands. The embedded Rust→C++
+/// boundary is internal to the current `hew` binary, so missing or
+/// mismatched versions are rejected rather than carrying compatibility
+/// fallbacks for older payloads.
+constexpr uint32_t CURRENT_SCHEMA_VERSION = "#,
+    );
+    out.push_str(&CURRENT_SCHEMA_VERSION.to_string());
+    out.push(';');
+    out
 }
 
 /// Span/Spanned/Optional/Vec template helpers.
@@ -393,6 +1228,8 @@ mod tests {
         assert!(src.contains("parseModuleGraph("));
         assert!(src.contains("mg.root"));
         assert!(src.contains("mg.topo_order"));
+        assert!(src.contains("modulesObj.type == msgpack::type::ARRAY"));
+        assert!(src.contains("modulesObj.type == msgpack::type::MAP"));
         assert!(
             src.contains("mg.modules.emplace"),
             "Should iterate and emplace module entries"
@@ -400,16 +1237,27 @@ mod tests {
     }
 
     #[test]
+    fn module_id_parser_accepts_string_keys() {
+        let src = module_id_parser();
+        assert!(src.contains("obj.type == msgpack::type::STR"));
+        assert!(src.contains("s == \"(root)\""));
+        assert!(src.contains("s.find(\"::\", pos)"));
+        assert!(src.contains("mapReq(obj, \"path\")"));
+    }
+
+    #[test]
     fn program_parser_handles_optional_fields() {
         let src = program_parser();
         assert!(src.contains("parseProgram("));
-        // Required field
+        // Required fields
+        assert!(src.contains("mapReq(obj, \"schema_version\")"));
         assert!(src.contains("prog.items"));
+        // Required metadata fields stay strict at the embedded boundary.
+        assert!(src.contains("mapReq(obj, \"expr_types\")"));
+        assert!(src.contains("mapReq(obj, \"handle_types\")"));
+        assert!(src.contains("mapReq(obj, \"handle_type_repr\")"));
         // Optional fields checked with mapGet
         assert!(src.contains("mapGet(obj, \"module_doc\")"));
-        assert!(src.contains("mapGet(obj, \"expr_types\")"));
-        assert!(src.contains("mapGet(obj, \"handle_types\")"));
-        assert!(src.contains("mapGet(obj, \"handle_type_repr\")"));
         assert!(src.contains("mapGet(obj, \"module_graph\")"));
     }
 
@@ -425,6 +1273,46 @@ mod tests {
         assert!(src.contains("name == \"Field\""));
         assert!(src.contains("name == \"Variant\""));
         assert!(src.contains("name == \"Method\""));
+        assert!(src.contains("td.wire = parseWireMetadata(*w);"));
+        assert!(src.contains("td.is_indirect = getBool(*ind);"));
+    }
+
+    #[test]
+    fn helpers_preamble_uses_explicit_visibility_encoding() {
+        let src = helpers_preamble();
+        assert!(src.contains("static ast::Visibility parseVisibility"));
+        assert!(
+            !src.contains("Backward compatibility: old format used a bool."),
+            "Visibility decoding should not retain legacy bool fallbacks"
+        );
+    }
+
+    #[test]
+    fn helpers_preamble_tracks_serialize_schema_version() {
+        assert_eq!(
+            CURRENT_SCHEMA_VERSION,
+            hew_serialize::msgpack::SCHEMA_VERSION
+        );
+        let src = helpers_preamble();
+        assert!(src.contains(&format!(
+            "constexpr uint32_t CURRENT_SCHEMA_VERSION = {CURRENT_SCHEMA_VERSION};"
+        )));
+    }
+
+    #[test]
+    fn receive_fn_decl_parser_extracts_every_duration() {
+        let src = receive_fn_decl_parser();
+        assert!(src.contains("if (attrName != \"every\")"));
+        assert!(src.contains("variantName == \"Duration\""));
+        assert!(src.contains("rf.periodic_interval_ns = getInt(*payload);"));
+    }
+
+    #[test]
+    fn attribute_arg_parser_rejects_duration_variant() {
+        let src = attribute_arg_parser();
+        assert!(src.contains("variant == \"Positional\""));
+        assert!(src.contains("variant == \"KeyValue\""));
+        assert!(!src.contains("AttributeArgDuration"));
     }
 
     #[test]
@@ -434,7 +1322,10 @@ mod tests {
             src.contains("parseMsgpackAST("),
             "Missing msgpack entry point"
         );
-        assert!(src.contains("parseJsonAST("), "Missing JSON entry point");
+        assert!(
+            !src.contains("parseJsonAST("),
+            "Unexpected JSON entry point"
+        );
     }
 
     #[test]
@@ -443,6 +1334,7 @@ mod tests {
         assert!(src.contains("namespace hew {"));
         assert!(src.contains("#include \"hew/msgpack_reader.h\""));
         assert!(src.contains("#include <msgpack.hpp>"));
+        assert!(!src.contains("nlohmann/json.hpp"));
     }
 
     #[test]

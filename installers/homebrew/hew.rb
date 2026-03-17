@@ -30,7 +30,6 @@ class Hew < Formula
   def install
     bin.install "bin/hew"
     bin.install "bin/adze"
-    bin.install "bin/hew-codegen"
     bin.install "bin/hew-lsp"
     lib.install "lib/libhew.a"
 

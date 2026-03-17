@@ -496,7 +496,7 @@ fn cmd_version() {
         "release"
     };
     let git_hash = option_env!("HEW_GIT_HASH").unwrap_or("");
-    let dirty = if option_env!("HEW_GIT_DIRTY").is_some() {
+    let dirty = if option_env!("HEW_GIT_DIRTY") == Some("true") {
         "-dirty"
     } else {
         ""
@@ -543,11 +543,27 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
             "--debug" | "-g" => {
                 options.debug = true;
             }
+            "--link-lib" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --link-lib requires an argument");
+                    std::process::exit(1);
+                }
+                options.extra_libs.push(args[i].clone());
+            }
+            s if s.starts_with("--link-lib=") => {
+                options
+                    .extra_libs
+                    .push(s.strip_prefix("--link-lib=").unwrap().to_string());
+            }
             "--emit-ast" => {
                 set_codegen_mode(&mut options, compile::CodegenMode::EmitAst);
             }
             "--emit-json" => {
                 set_codegen_mode(&mut options, compile::CodegenMode::EmitJson);
+            }
+            "--emit-msgpack" => {
+                set_codegen_mode(&mut options, compile::CodegenMode::EmitMsgpack);
             }
             "--emit-mlir" => {
                 set_codegen_mode(&mut options, compile::CodegenMode::EmitMlir);
@@ -637,11 +653,12 @@ Build/check options:
   --debug, -g                     Build with debug info (no optimization, no stripping)
   --emit-ast                      Emit enriched AST as JSON
   --emit-json                     Emit full codegen IR as JSON (same as msgpack, for debugging)
+  --emit-msgpack                  Emit full codegen IR as msgpack
   --emit-mlir                     Emit MLIR instead of linking
   --emit-llvm                     Emit LLVM IR instead of linking
   --emit-obj                      Emit object code instead of linking
+  --link-lib <path>               Pass an extra library or linker argument to the native link step
   --pkg-path <dir>                Override package search directory (default: .adze/packages/)
-  --link-lib <path>               Extra static library to pass to the linker
 
 Fmt options:
   --check                         Check formatting without writing (exit 1 if unformatted)

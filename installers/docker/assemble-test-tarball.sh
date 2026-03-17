@@ -3,7 +3,7 @@
 # Must be run from the repo root after `make release`.
 #
 # Output: dist/test-tarball/ — a directory with the tarball layout:
-#   bin/hew, bin/hew-codegen
+#   bin/hew
 #   lib/libhew.a
 #   std/**/*.hew
 
@@ -22,9 +22,8 @@ fi
 rm -rf "${STAGING}"
 mkdir -p "${STAGING}/bin" "${STAGING}/lib" "${STAGING}/std"
 
-# Binaries
+# Binaries (codegen is embedded in the hew binary)
 install -m755 "${REPO_DIR}/target/release/hew" "${STAGING}/bin/hew"
-install -m755 "${REPO_DIR}/hew-codegen/build/src/hew-codegen" "${STAGING}/bin/hew-codegen"
 
 # Combined Hew library (runtime + all stdlib packages)
 install -m644 "${REPO_DIR}/target/release/libhew.a" "${STAGING}/lib/libhew.a"

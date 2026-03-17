@@ -131,6 +131,12 @@ jobs:
             lld-${{ env.LLVM_VERSION }} \
             libssl-dev pkg-config
 
+      - name: Configure embedded codegen toolchain (Linux)
+        run: |
+          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: taiki-e/install-action@nextest
@@ -379,6 +385,8 @@ jobs:
           brew install llvm@${{ env.LLVM_VERSION }} ninja
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
+          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
 
       - name: Cache hew-codegen build
         if: matrix.run_codegen

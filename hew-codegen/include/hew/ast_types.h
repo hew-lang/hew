@@ -776,6 +776,7 @@ struct WireFieldDecl {
   bool is_deprecated;
   std::optional<std::string> json_name;
   std::optional<std::string> yaml_name;
+  std::optional<uint32_t> since;
 };
 
 struct WireDecl {

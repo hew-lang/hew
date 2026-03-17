@@ -53,16 +53,18 @@ See [`examples/quic_mesh/`](examples/quic_mesh/) for a complete two-process QUIC
 
 ## Architecture
 
-The compiler has three layers: **Rust frontend** → **MLIR middle layer** → **LLVM backend**.
+The compiler has three layers: **Rust frontend** → **embedded MLIR middle layer** → **LLVM backend**.
 
 ```
 source.hew → Lexer → Parser → Type Checker → MessagePack Serialize
                (hew-lexer) (hew-parser) (hew-types)    (hew-serialize)
-                                                             │
-                                        ┌────────────────────┘
-                                        ▼ stdin (MessagePack AST)
-               hew-codegen (C++): MLIRGen → Hew dialect → LLVM dialect → LLVM IR → .o
-               hew (Rust):        cc .o + libhew_runtime.a → executable
+                                                              │
+                                         ▼ in-process C API
+               hew (Rust + C++):  hew_codegen_compile_msgpack
+                                         │
+                                         ▼
+                                  MLIRGen → Hew dialect → LLVM dialect → LLVM IR → .o
+               hew (Rust):        cc .o + libhew.a → executable
 ```
 
 > **Detailed diagrams:** See [`docs/diagrams.md`](docs/diagrams.md) for Mermaid sequence diagrams, state machines, and architecture visuals covering the full compilation pipeline, MLIR lowering stages, actor lifecycle, message flow, runtime layers, and wire protocol format.
@@ -119,9 +121,9 @@ Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.s
 | Rust          | stable (latest)         | Frontend compiler, runtime, package manager |
 | LLVM          | 22.1                    | MLIR code generation and LLVM backend       |
 | MLIR          | (bundled with LLVM 22)  | Hew dialect and lowering passes             |
-| CMake         | >= 3.20                 | Builds hew-codegen (C++ MLIR backend)       |
+| CMake         | >= 3.20                 | Builds the embedded C++ MLIR backend        |
 | Ninja         | any                     | CMake build generator                       |
-| clang/clang++ | any (LLVM 22 preferred) | C/C++ compilation of hew-codegen            |
+| clang/clang++ | any (LLVM 22 preferred) | C/C++ compilation of the MLIR backend       |
 
 **Install on Ubuntu/Debian:**
 

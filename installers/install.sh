@@ -261,7 +261,7 @@ main() {
     mkdir -p "${INSTALL_PREFIX}/bin" "${INSTALL_PREFIX}/lib" \
         "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/completions"
 
-    for b in hew adze hew-codegen hew-lsp; do
+    for b in hew adze hew-lsp; do
         if [ -f "${extracted_dir}/bin/${b}" ]; then
             cp -f "${extracted_dir}/bin/${b}" "${INSTALL_PREFIX}/bin/${b}"
             chmod +x "${INSTALL_PREFIX}/bin/${b}"

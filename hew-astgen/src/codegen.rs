@@ -20,6 +20,7 @@ const VEC_PTR_TYPES: &[&str] = &["Expr", "Stmt", "Pattern"];
 type DepClosures = HashMap<String, HashSet<String>>;
 
 /// Generate the complete `msgpack_reader_gen.cpp` content.
+#[allow(clippy::too_many_lines, reason = "sequential code generation steps")]
 pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
     let mut out = String::with_capacity(64 * 1024);
 
@@ -28,7 +29,7 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
     out.push_str("\n\n");
 
     // Helper functions
-    out.push_str(special_cases::helpers_preamble());
+    out.push_str(&special_cases::helpers_preamble());
     out.push_str("\n\n");
 
     // Forward declarations for recursive types
@@ -62,7 +63,10 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
         }
         // Special-cased types
         match type_def.name() {
-            "Program" | "ModuleGraph" | "TypeDecl" | "TypeBodyItem" => continue,
+            "Program" | "AttributeArg" | "Attribute" | "ModuleId" | "ModuleImport" | "Module"
+            | "ModuleGraph" | "TypeDecl" | "TypeBodyItem" | "VariantDecl" | "VariantKind"
+            | "TraitItem" | "MatchArm" | "SelectArm" | "Expr" | "ElseBlock" | "Stmt"
+            | "MachineTransition" | "ChildSpec" | "ReceiveFnDecl" => continue,
             _ => {}
         }
 
@@ -72,11 +76,81 @@ pub fn generate(types: &[TypeDef], type_map: &TypeMap) -> String {
 
     // Special-cased parsers that must appear after their dependencies
 
+    // AttributeArg / Attribute (special case - C++ header omits Duration variant)
+    out.push_str(
+        "// ── AttributeArg / Attribute ───────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::attribute_arg_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::attribute_parser());
+    out.push_str("\n\n");
+
     // TypeDecl (special case - method_storage)
     out.push_str(
         "// ── TypeDecl ────────────────────────────────────────────────────────────────\n\n",
     );
     out.push_str(special_cases::type_decl_parser());
+    out.push_str("\n\n");
+
+    // VariantDecl (special case - nested C++ variant storage types)
+    out.push_str(
+        "// ── VariantDecl ─────────────────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::variant_decl_parser());
+    out.push_str("\n\n");
+
+    // TraitItem (special case - header field renamed to default_value)
+    out.push_str(
+        "// ── TraitItem ───────────────────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::trait_item_parser());
+    out.push_str("\n\n");
+
+    // Recursive parser shapes with C++-specific ownership/layout
+    out.push_str(
+        "// ── MatchArm / SelectArm ──────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::match_arm_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::select_arm_parser());
+    out.push_str("\n\n");
+
+    out.push_str(
+        "// ── Expr ───────────────────────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::expr_parser());
+    out.push_str("\n\n");
+
+    out.push_str(
+        "// ── ElseBlock / Stmt / MachineTransition ─────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::else_block_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::stmt_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::machine_transition_parser());
+    out.push_str("\n\n");
+
+    out.push_str(
+        "// ── ChildSpec ──────────────────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::child_spec_parser());
+    out.push_str("\n\n");
+
+    out.push_str(
+        "// ── ReceiveFnDecl ──────────────────────────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::receive_fn_decl_parser());
+    out.push_str("\n\n");
+
+    out.push_str(
+        "// ── ModuleId / ModuleImport / Module ──────────────────────────────────────\n\n",
+    );
+    out.push_str(special_cases::module_id_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::module_import_parser());
+    out.push_str("\n\n");
+    out.push_str(special_cases::module_parser());
     out.push_str("\n\n");
 
     // ModuleGraph (special case - dual-format HashMap)
@@ -131,7 +205,71 @@ fn write_special_forward_decls(out: &mut String) {
     );
     let _ = writeln!(
         out,
+        "static ast::AttributeArg parseAttributeArg(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::Attribute parseAttribute(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
         "static ast::TypeDecl parseTypeDecl(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::ModuleId parseModuleId(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::ModuleImport parseModuleImport(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::Module parseModule(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::VariantDecl parseVariantDecl(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::TraitItem parseTraitItem(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::MatchArm parseMatchArm(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::SelectArm parseSelectArm(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::ElseBlock parseElseBlock(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::MachineTransition parseMachineTransition(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::ChildSpec parseChildSpec(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::ReceiveFnDecl parseReceiveFnDecl(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::TypeParam parseTypeParam(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::NamingCase parseNamingCase(const msgpack::object &obj);"
+    );
+    let _ = writeln!(
+        out,
+        "static ast::WireMetadata parseWireMetadata(const msgpack::object &obj);"
     );
     out.push('\n');
 }
@@ -215,14 +353,18 @@ fn write_variant_handler(
             );
         }
         EnumVariant::Newtype { ty, .. } => {
-            let parse_expr = gen_parse_expr(ty, "*payload", enum_name, dep_closures);
             // For Item enum, the variant struct IS the inner type, so we parse directly
             if enum_name == "Item" {
+                let parse_expr = match ty {
+                    RustType::Named(name) => format!("{}(*payload)", TypeMap::parse_fn_name(name)),
+                    _ => gen_parse_expr(ty, "*payload", enum_name, dep_closures),
+                };
                 let _ = writeln!(
                     out,
                     "  if (name == \"{variant_name}\") return {cpp_enum_type}{{{parse_expr}}};",
                 );
             } else {
+                let parse_expr = gen_parse_expr(ty, "*payload", enum_name, dep_closures);
                 let _ = writeln!(
                     out,
                     "  if (name == \"{variant_name}\") return {cpp_enum_type}{{ast::{cpp_struct}{{{parse_expr}}}}};",
@@ -490,11 +632,16 @@ fn is_incomplete_at(target_type: &str, current_type: &str, dep_closures: &DepClo
 /// Always generates by-value parsers (the caller handles ptr wrapping).
 fn gen_parse_fn_ref(ty: &RustType) -> String {
     match ty {
-        RustType::String => "[](const msgpack::object &o) { return getString(o); }".to_string(),
+        RustType::String | RustType::PathBuf => {
+            "[](const msgpack::object &o) { return getString(o); }".to_string()
+        }
         RustType::Bool => "[](const msgpack::object &o) { return getBool(o); }".to_string(),
         RustType::I64 => "[](const msgpack::object &o) { return getInt(o); }".to_string(),
         RustType::U64 | RustType::Usize => {
             "[](const msgpack::object &o) { return getUint(o); }".to_string()
+        }
+        RustType::U32 => {
+            "[](const msgpack::object &o) { return static_cast<uint32_t>(getUint(o)); }".to_string()
         }
         RustType::Named(name) => TypeMap::parse_fn_name(name),
         RustType::Spanned(inner) => {
@@ -707,7 +854,9 @@ fn topo_visit<'a>(
     visited.insert(name.to_string());
 
     if let Some(my_deps) = deps.get(name) {
-        for dep in my_deps {
+        let mut ordered_deps: Vec<_> = my_deps.iter().collect();
+        ordered_deps.sort_unstable();
+        for dep in ordered_deps {
             // Don't follow deps through forward-declared types (they break cycles)
             if !type_map.needs_forward_decl(dep) {
                 topo_visit(dep, deps, lookup, visited, result, type_map);
@@ -844,7 +993,7 @@ mod tests {
     // ── Simple enum codegen ────────────────────────────────────────────────
 
     #[test]
-    fn generates_simple_enum_string_dispatch() {
+    fn skips_visibility_in_favour_of_special_case() {
         let types = vec![TypeDef::SimpleEnum(SimpleEnum {
             name: "Visibility".to_string(),
             variants: vec![
@@ -857,18 +1006,8 @@ mod tests {
         let output = generate(&types, &tm);
 
         assert!(
-            output.contains("static ast::Visibility parseVisibility(const msgpack::object &obj)"),
-            "Should declare the parser function"
-        );
-        assert!(
-            output.contains(r#"if (s == "Public") return ast::Visibility::Public;"#),
-            "Should dispatch on string value"
-        );
-        assert!(output.contains(r#"if (s == "Private")"#));
-        assert!(output.contains(r#"if (s == "Crate")"#));
-        assert!(
-            output.contains(r#"fail("unknown Visibility: " + s);"#),
-            "Should have a fallback error"
+            !output.contains(r#"if (s == "Public") return ast::Visibility::Public;"#),
+            "Visibility should come from the hard-coded special case, not auto-generation"
         );
     }
 
@@ -1008,9 +1147,9 @@ mod tests {
     #[test]
     fn generates_struct_variant_with_field_parsing() {
         let types = vec![TypeDef::TaggedEnum(TaggedEnum {
-            name: "Stmt".to_string(),
+            name: "CallArg".to_string(),
             variants: vec![EnumVariant::Struct {
-                name: "Let".to_string(),
+                name: "Named".to_string(),
                 fields: vec![
                     FieldDef {
                         name: "name".to_string(),
@@ -1032,9 +1171,44 @@ mod tests {
         let tm = default_type_map();
         let output = generate(&types, &tm);
 
-        assert!(output.contains("ast::StmtLet e;"));
+        assert!(output.contains("ast::CallArgNamed e;"));
         assert!(output.contains(r#"e.name = getString(mapReq(*payload, "name"))"#));
         assert!(output.contains(r#"e.mutable = getBool(mapReq(*payload, "mutable"))"#));
+    }
+
+    #[test]
+    fn generated_output_is_deterministic() {
+        let types = vec![
+            TypeDef::Struct(StructDef {
+                name: "Leaf".to_string(),
+                fields: vec![],
+            }),
+            TypeDef::Struct(StructDef {
+                name: "Node".to_string(),
+                fields: vec![
+                    FieldDef {
+                        name: "left".to_string(),
+                        ty: RustType::Named("Leaf".to_string()),
+                        serde_skip: false,
+                        serde_default: false,
+                        serde_rename: None,
+                    },
+                    FieldDef {
+                        name: "right".to_string(),
+                        ty: RustType::Named("Block".to_string()),
+                        serde_skip: false,
+                        serde_default: false,
+                        serde_rename: None,
+                    },
+                ],
+            }),
+        ];
+        let tm = default_type_map();
+
+        let first = generate(&types, &tm);
+        let second = generate(&types, &tm);
+
+        assert_eq!(first, second);
     }
 
     // ── Forward declarations ───────────────────────────────────────────────

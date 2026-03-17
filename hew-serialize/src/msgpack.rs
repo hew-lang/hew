@@ -1,7 +1,7 @@
 //! `MessagePack` serialization for the Hew AST.
 //!
 //! Provides a compact binary serialization of the parsed (and optionally
-//! type-enriched) AST using `rmp-serde`. The C++ codegen backend
+//! type-enriched) AST using `rmp-serde`. Hew's embedded C++ codegen backend
 //! (`hew-codegen/src/msgpack_reader.cpp`) deserializes this format.
 
 use std::collections::{BTreeMap, HashMap};
@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
 /// Schema version for the msgpack AST boundary.
 ///
 /// Increment when the serialized format changes in a way that older C++
-/// codegen cannot understand. The C++ reader rejects versions higher than
-/// its own `CURRENT_SCHEMA_VERSION`, but accepts lower versions (including
-/// 0, which represents old payloads that pre-date versioning).
+/// codegen cannot understand. The embedded reader requires an explicit
+/// `schema_version` field and rejects mismatches instead of carrying
+/// fallback decoding for pre-versioned payloads.
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// An entry in the expression type map: `(start, end)` → `TypeExpr`.
@@ -37,8 +37,7 @@ pub struct ExprTypeEntry {
 /// expression type map from the type checker.
 ///
 /// Serialized as a `MessagePack` map with three keys: `"items"`,
-/// `"module_doc"`, and `"expr_types"`. The C++ reader treats
-/// `"expr_types"` as optional for backward compatibility.
+/// `"module_doc"`, and `"expr_types"`.
 #[derive(Debug, Serialize)]
 struct TypedProgram<'a> {
     /// Schema version — always serialized first so the C++ reader can

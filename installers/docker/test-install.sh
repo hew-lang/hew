@@ -9,7 +9,6 @@ echo ""
 # 1. Binaries
 echo "--- Binaries"
 test -x /usr/local/bin/hew && echo "  hew: ok"
-test -x /usr/local/bin/hew-codegen && echo "  hew-codegen: ok"
 
 # 2. Combined library
 echo ""

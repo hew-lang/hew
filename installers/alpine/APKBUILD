@@ -35,7 +35,6 @@ check() {
 package() {
   install -Dm755 "$builddir/bin/hew"          "$pkgdir/usr/bin/hew"
   install -Dm755 "$builddir/bin/adze"         "$pkgdir/usr/bin/adze"
-  install -Dm755 "$builddir/bin/hew-codegen"  "$pkgdir/usr/bin/hew-codegen"
   install -Dm755 "$builddir/bin/hew-lsp"      "$pkgdir/usr/bin/hew-lsp"
 
   install -Dm644 "$builddir/lib/libhew.a" \

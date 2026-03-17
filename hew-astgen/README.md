@@ -7,8 +7,16 @@ Reads `hew-parser/src/ast.rs`, parses the Rust type definitions using `syn`, and
 ## Usage
 
 ```sh
-cargo run -p hew-astgen
+make astgen
+# or:
+cargo run -q -p hew-astgen -- \
+  --ast hew-parser/src/ast.rs \
+  --module hew-parser/src/module.rs \
+  --output hew-codegen/src/msgpack_reader.cpp
 ```
+
+`cargo test -p hew-astgen` verifies that the checked-in
+`hew-codegen/src/msgpack_reader.cpp` matches the generator output.
 
 ## Part of the Hew compiler
 

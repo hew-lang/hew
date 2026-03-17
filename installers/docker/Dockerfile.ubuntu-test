@@ -40,7 +40,6 @@ RUN apt-get update \
 # release tarball extracts to, and that `make install` / deb / rpm / apk all
 # install from.
 COPY --from=tarball bin/hew           /usr/local/bin/hew
-COPY --from=tarball bin/hew-codegen   /usr/local/bin/hew-codegen
 COPY --from=tarball lib/libhew.a      /usr/local/lib/libhew.a
 COPY --from=tarball std/              /usr/local/share/hew/std/
 

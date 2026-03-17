@@ -8,7 +8,7 @@ Visual documentation of the Hew compilation pipeline, runtime architecture, and 
 
 ## 1. Compilation Pipeline
 
-The compiler has two process boundaries: a **Rust frontend** (lexer → parser → type checker → serializer) and a **C++ backend** (MLIR generation → lowering → LLVM → native code). They communicate via MessagePack over stdin.
+The compiler keeps the Rust frontend (lexer → parser → type checker → serializer) and C++ backend (MLIR generation → lowering → LLVM → native code), but the backend is now embedded inside the `hew` process. The Rust frontend serializes the typed program to MessagePack and hands it to the C++ layer through the embedded C API.
 
 ```mermaid
 sequenceDiagram
@@ -17,7 +17,8 @@ sequenceDiagram
     participant Parser as Parser<br/>(hew-parser)
     participant TypeChecker as Type Checker<br/>(hew-types)
     participant Serializer as Serializer<br/>(hew-serialize)
-    participant Codegen as hew-codegen<br/>(C++ process)
+    participant Hew as hew<br/>(Rust driver)
+    participant Codegen as Embedded codegen<br/>(C++ library)
     participant LLVM as LLVM Backend
     participant Linker as Linker (cc)
 
@@ -29,15 +30,17 @@ sequenceDiagram
     Note over TypeChecker: bidirectional HM inference<br/>TypeCheckOutput: types + diagnostics
     TypeChecker->>Serializer: typed AST + type map
     Note over Serializer: enrich.rs → msgpack.rs
-    Serializer->>Codegen: MessagePack binary (stdin pipe)
-    Note over Codegen: ── C++ process boundary ──
+    Serializer->>Hew: MessagePack binary
+    Hew->>Codegen: hew_codegen_compile_msgpack(...)
+    Note over Hew,Codegen: ── in-process FFI boundary ──
     Codegen->>Codegen: msgpack_reader.cpp → AST structs
     Codegen->>Codegen: MLIRGen.cpp → Hew MLIR dialect
     Codegen->>Codegen: lowerHewDialect (75+ patterns)
     Codegen->>Codegen: Lower std → LLVM dialect (11 passes)
     Codegen->>LLVM: translateModuleToLLVMIR
     LLVM->>LLVM: O3 optimization pipeline
-    LLVM->>Linker: object file (.o)
+    LLVM->>Hew: object file (.o)
+    Hew->>Linker: object file (.o)
     Linker->>Linker: .o + libhew_runtime.a + -lpthread -lm
     Note over Linker: native executable
 ```
@@ -96,7 +99,7 @@ The codegen pipeline in `hew-codegen/src/codegen.cpp` performs progressive lower
 
 ```mermaid
 flowchart TD
-    A["MessagePack AST<br/>(from Rust frontend via stdin)"] --> B["MLIRGen.cpp<br/>→ Hew MLIR Dialect"]
+    A["MessagePack AST<br/>(from Rust frontend in-process)"] --> B["MLIRGen.cpp<br/>→ Hew MLIR Dialect"]
 
     B --> PRE["<b>Pre-Lowering Optimization</b>"]
 

@@ -30,26 +30,7 @@ RUN cargo build --release \
     -p hew-lib
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Stage 2: hew-codegen with statically linked LLVM/MLIR
-# ═════════════════════════════════════════════════════════════════════════════
-FROM ghcr.io/hew-lang/llvm-alpine:22 AS codegen-builder
-
-COPY hew-codegen/ /src/hew-codegen/
-
-RUN cmake -S /src/hew-codegen -B /tmp/build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=clang \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_CXX_FLAGS="-fno-rtti" \
-    -DHEW_STATIC_LINK=ON \
-    -DLLVM_DIR=/opt/llvm-22/lib/cmake/llvm \
-    -DMLIR_DIR=/opt/llvm-22/lib/cmake/mlir
-
-RUN ninja -C /tmp/build -j$(nproc)
-RUN strip /tmp/build/src/hew-codegen
-
-# ═════════════════════════════════════════════════════════════════════════════
-# Stage 3: Minimal runtime image
+# Stage 2: Minimal runtime image
 # ═════════════════════════════════════════════════════════════════════════════
 FROM alpine:edge
 
@@ -63,11 +44,10 @@ RUN apk add --no-cache ca-certificates gcc musl-dev
 # Non-root user
 RUN adduser -D -u 1000 hew
 
-# Binaries
+# Binaries (codegen is embedded in the hew binary)
 COPY --from=rust-builder /src/target/release/hew     /usr/local/bin/hew
 COPY --from=rust-builder /src/target/release/adze    /usr/local/bin/adze
 COPY --from=rust-builder /src/target/release/hew-lsp /usr/local/bin/hew-lsp
-COPY --from=codegen-builder /tmp/build/src/hew-codegen /usr/local/bin/hew-codegen
 
 # Combined runtime + stdlib library
 COPY --from=rust-builder /src/target/release/libhew.a /usr/local/lib/hew/libhew.a

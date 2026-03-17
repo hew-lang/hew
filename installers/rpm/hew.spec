@@ -19,7 +19,7 @@ Source0:        https://github.com/hew-lang/hew/releases/download/v%{version}/he
 # Pre-built binaries — no compilation needed.
 %global debug_package %{nil}
 
-# LLVM/MLIR, libstdc++, zlib, and zstd are statically linked into hew-codegen.
+# LLVM/MLIR, libstdc++, zlib, and zstd are statically linked into hew.
 # Rust binaries link only glibc.  Let RPM auto-detect the actual deps.
 # AutoProv: no — we don't export reusable shared-library provides.
 AutoProv:       no
@@ -30,9 +30,8 @@ concurrent and distributed systems, featuring Erlang-inspired supervision
 trees and first-class async/await.
 
 This package provides:
-  - hew          the compiler driver
+  - hew          the compiler driver (with embedded MLIR codegen)
   - adze         the package manager
-  - hew-codegen  the MLIR code generator
   - hew-lsp      the language server
   - libhew.a     the combined runtime + stdlib static library
 
@@ -42,7 +41,6 @@ This package provides:
 %install
 install -Dm755 bin/hew          %{buildroot}%{_bindir}/hew
 install -Dm755 bin/adze         %{buildroot}%{_bindir}/adze
-install -Dm755 bin/hew-codegen  %{buildroot}%{_bindir}/hew-codegen
 install -Dm755 bin/hew-lsp      %{buildroot}%{_bindir}/hew-lsp
 
 install -Dm644 lib/libhew.a %{buildroot}%{_libdir}/hew/libhew.a
@@ -89,7 +87,6 @@ install -Dm644 NOTICE         %{buildroot}%{_licensedir}/%{name}/NOTICE
 %license LICENSE-MIT LICENSE-APACHE NOTICE
 %{_bindir}/hew
 %{_bindir}/adze
-%{_bindir}/hew-codegen
 %{_bindir}/hew-lsp
 %{_libdir}/hew/
 %{_datadir}/hew/

@@ -1,11 +1,52 @@
-//! Build command: parse, type-check, serialize to `MessagePack`, invoke
-//! `hew-codegen`, and link the final executable.
+//! Build command: parse, type-check, serialize to `MessagePack`, invoke the
+//! embedded MLIR/LLVM backend, and link the final executable.
 
 use std::collections::HashSet;
+use std::ffi::{CStr, CString};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use hew_parser::ast::{ImportDecl, Item, Spanned};
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "variants match C API enum naming"
+)]
+enum EmbeddedCodegenMode {
+    EmitMlir = 0,
+    EmitLlvm = 1,
+    EmitObject = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct EmbeddedCodegenOptions {
+    mode: u32,
+    debug_info: u8,
+    output_path: *const std::ffi::c_char,
+    target_triple: *const std::ffi::c_char,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct EmbeddedCodegenBuffer {
+    data: *mut std::ffi::c_char,
+    len: usize,
+}
+
+unsafe extern "C" {
+    fn hew_codegen_compile_msgpack(
+        data: *const u8,
+        size: usize,
+        options: *const EmbeddedCodegenOptions,
+        text_output: *mut EmbeddedCodegenBuffer,
+    ) -> std::ffi::c_int;
+    fn hew_codegen_buffer_free(buffer: EmbeddedCodegenBuffer);
+    fn hew_codegen_last_error() -> *const std::ffi::c_char;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CodegenMode {
@@ -13,18 +54,19 @@ pub enum CodegenMode {
     LinkExecutable,
     EmitAst,
     EmitJson,
+    EmitMsgpack,
     EmitMlir,
     EmitLlvm,
     EmitObj,
 }
 
 impl CodegenMode {
-    fn codegen_flag(self) -> Option<&'static str> {
+    fn embedded_mode(self) -> Option<EmbeddedCodegenMode> {
         match self {
-            Self::LinkExecutable | Self::EmitAst | Self::EmitJson => None,
-            Self::EmitMlir => Some("--emit-mlir"),
-            Self::EmitLlvm => Some("--emit-llvm"),
-            Self::EmitObj => Some("--emit-obj"),
+            Self::LinkExecutable | Self::EmitAst | Self::EmitJson | Self::EmitMsgpack => None,
+            Self::EmitMlir => Some(EmbeddedCodegenMode::EmitMlir),
+            Self::EmitLlvm => Some(EmbeddedCodegenMode::EmitLlvm),
+            Self::EmitObj => Some(EmbeddedCodegenMode::EmitObject),
         }
     }
 }
@@ -35,6 +77,7 @@ pub struct CompileOptions {
     pub no_typecheck: bool,
     pub codegen_mode: CodegenMode,
     pub target: Option<String>,
+    pub extra_libs: Vec<String>,
     /// Build with debug info (no optimizations, no stripping).
     pub debug: bool,
     /// Override the package search directory (default: `.adze/packages/`).
@@ -507,45 +550,29 @@ pub fn compile(
         line_map.as_deref(),
     );
 
-    // 5. Invoke hew-codegen
-    let codegen_bin = find_codegen_binary()?;
-    if let Some(codegen_flag) = options.codegen_mode.codegen_flag() {
-        let mut cmd = std::process::Command::new(&codegen_bin);
-        cmd.arg(codegen_flag)
-            .stdin(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
-        if let Some(target) = &options.target {
-            cmd.arg(format!("--target={target}"));
-        }
-        if options.debug {
-            cmd.arg("--debug");
-        }
+    if options.codegen_mode == CodegenMode::EmitMsgpack {
         if let Some(output_path) = output {
-            cmd.arg("-o").arg(output_path);
-            cmd.stdout(std::process::Stdio::null());
-        } else {
-            cmd.stdout(std::process::Stdio::inherit());
+            fs::write(output_path, &ast_data)
+                .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
+            return Ok(output_path.to_string());
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Error: cannot start hew-codegen: {e}"))?;
-
-        child
-            .stdin
-            .take()
-            .expect("stdin should be piped")
+        std::io::stdout()
             .write_all(&ast_data)
-            .map_err(|e| format!("Error: cannot write to hew-codegen: {e}"))?;
+            .map_err(|e| format!("Error: cannot write msgpack output: {e}"))?;
+        return Ok(String::new());
+    }
 
-        let status = child
-            .wait()
-            .map_err(|e| format!("Error: hew-codegen failed: {e}"))?;
-        if !status.success() {
-            return Err("codegen failed".into());
+    // 5. Run embedded codegen
+    if let Some(mode) = options.codegen_mode.embedded_mode() {
+        let text_output = run_embedded_codegen(&ast_data, mode, options, None)?;
+        if let Some(output_path) = output {
+            fs::write(output_path, &text_output)
+                .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
+            return Ok(output_path.to_string());
         }
-
-        return Ok(output.unwrap_or("").to_string());
+        print!("{}", String::from_utf8_lossy(&text_output));
+        return Ok(String::new());
     }
 
     let obj_temp = tempfile::Builder::new()
@@ -556,35 +583,12 @@ pub fn compile(
         .into_temp_path();
     let obj_path = obj_temp.display().to_string();
 
-    let mut cmd = std::process::Command::new(&codegen_bin);
-    cmd.arg("--emit-obj")
-        .arg("-o")
-        .arg(&obj_path)
-        .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
-    if let Some(target) = &options.target {
-        cmd.arg(format!("--target={target}"));
-    }
-    if options.debug {
-        cmd.arg("--debug");
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Error: cannot start hew-codegen: {e}"))?;
-
-    child
-        .stdin
-        .take()
-        .expect("stdin should be piped")
-        .write_all(&ast_data)
-        .map_err(|e| format!("Error: cannot write to hew-codegen: {e}"))?;
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("Error: hew-codegen failed: {e}"))?;
-    if !status.success() {
-        return Err("codegen failed".into());
-    }
+    run_embedded_codegen(
+        &ast_data,
+        EmbeddedCodegenMode::EmitObject,
+        options,
+        Some(&obj_path),
+    )?;
 
     // 6. Link
     let default_output = Path::new(input)
@@ -605,6 +609,7 @@ pub fn compile(
         &obj_path,
         output_path,
         options.target.as_deref(),
+        &options.extra_libs,
         options.debug,
     )?;
 
@@ -614,74 +619,85 @@ pub fn compile(
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Embedded backend bridge
 // ---------------------------------------------------------------------------
 
-pub(crate) fn find_codegen_binary() -> Result<String, String> {
-    // Allow explicit override via environment variable
-    if let Ok(path) = std::env::var("HEW_CODEGEN") {
-        let p = std::path::PathBuf::from(&path);
-        if p.exists() {
-            return Ok(path);
-        }
-        return Err(format!("Error: HEW_CODEGEN={path} does not exist"));
+fn run_embedded_codegen(
+    ast_data: &[u8],
+    mode: EmbeddedCodegenMode,
+    options: &CompileOptions,
+    output_path: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let output_path = output_path
+        .map(|path| {
+            CString::new(path).map_err(|_| format!("Error: output path contains NUL: {path}"))
+        })
+        .transpose()?;
+    let target_triple = options
+        .target
+        .as_deref()
+        .map(|target| {
+            CString::new(target).map_err(|_| format!("Error: target triple contains NUL: {target}"))
+        })
+        .transpose()?;
+
+    let ffi_options = EmbeddedCodegenOptions {
+        mode: mode as u32,
+        debug_info: u8::from(options.debug),
+        output_path: output_path
+            .as_ref()
+            .map_or(std::ptr::null(), |path| path.as_ptr()),
+        target_triple: target_triple
+            .as_ref()
+            .map_or(std::ptr::null(), |target| target.as_ptr()),
+    };
+    let mut buffer = EmbeddedCodegenBuffer {
+        data: std::ptr::null_mut(),
+        len: 0,
+    };
+
+    // SAFETY: hew_codegen_compile_msgpack is the C API entry point; ast_data
+    // points to a valid msgpack buffer, ffi_options is stack-allocated and valid
+    // for the call duration, buffer is an out-param filled by the callee.
+    let status = unsafe {
+        hew_codegen_compile_msgpack(
+            ast_data.as_ptr(),
+            ast_data.len(),
+            &raw const ffi_options,
+            &raw mut buffer,
+        )
+    };
+    if status != 0 {
+        return Err(last_embedded_codegen_error());
     }
 
-    let exe = std::env::current_exe().map_err(|e| format!("cannot find self: {e}"))?;
-    let exe_dir = exe.parent().expect("exe should have a parent directory");
-
-    let codegen_name = format!("hew-codegen{}", super::platform::exe_suffix());
-    let candidates = [
-        // Same directory as the hew binary (installed layout)
-        exe_dir.join(&codegen_name),
-        // Installed layout: <prefix>/lib/hew-codegen
-        exe_dir.join(format!("../lib/{codegen_name}")),
-        // Dev layout from target/debug/ or target/release/
-        exe_dir.join(format!("../../hew-codegen/build/src/{codegen_name}")),
-        // Dev layout from target/debug/deps/ (cargo test)
-        exe_dir.join(format!("../../../hew-codegen/build/src/{codegen_name}")),
-        // Windows MSVC: CMake puts binaries in Release/ or Debug/ subdirs
-        exe_dir.join(format!(
-            "../../hew-codegen/build/src/Release/{codegen_name}"
-        )),
-        exe_dir.join(format!("../../hew-codegen/build/src/Debug/{codegen_name}")),
-        exe_dir.join(format!(
-            "../../../hew-codegen/build/src/Release/{codegen_name}"
-        )),
-        exe_dir.join(format!(
-            "../../../hew-codegen/build/src/Debug/{codegen_name}"
-        )),
-        // Sanitizer build
-        exe_dir.join(format!(
-            "../../hew-codegen/build-sanitizer/src/{codegen_name}"
-        )),
-    ];
-
-    for c in &candidates {
-        if c.exists() {
-            return Ok(c
-                .canonicalize()
-                .unwrap_or_else(|_| c.clone())
-                .display()
-                .to_string());
-        }
+    if buffer.data.is_null() || buffer.len == 0 {
+        return Ok(Vec::new());
     }
 
-    // Try PATH
-    if std::process::Command::new("hew-codegen")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
-    {
-        return Ok("hew-codegen".into());
-    }
+    // SAFETY: buffer.data was allocated by the C codegen and is valid for
+    // buffer.len bytes. We copy into owned Rust memory before freeing.
+    let bytes = unsafe {
+        let slice = std::slice::from_raw_parts(buffer.data.cast::<u8>(), buffer.len);
+        let owned = slice.to_vec();
+        hew_codegen_buffer_free(buffer);
+        owned
+    };
+    Ok(bytes)
+}
 
-    Err(
-        "Error: cannot find hew-codegen binary. Build with: cd hew-codegen/build && cmake --build ."
-            .into(),
-    )
+fn last_embedded_codegen_error() -> String {
+    // SAFETY: hew_codegen_last_error returns either null or a valid C string
+    // that remains valid until the next codegen call.
+    let error = unsafe { hew_codegen_last_error() };
+    if error.is_null() {
+        "embedded codegen failed".into()
+    } else {
+        // SAFETY: non-null return is a valid NUL-terminated C string.
+        unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 /// Validate that every module-path import in `items` is either a stdlib module
@@ -752,8 +768,9 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
 /// `resolve_file_imports` logic), constructs [`Module`] nodes and import
 /// edges, and computes a topological ordering.  The graph is stored on
 /// `program.module_graph` for serialisation; the existing `resolved_items`
-/// on each `ImportDecl` remain populated so that `flatten_import_items` can
-/// continue to work as a temporary compatibility shim.
+/// on each `ImportDecl` also stay populated because imported items are not
+/// serialised directly and the enrichment/codegen pipeline still consumes the
+/// flattened top-level item list.
 #[expect(
     clippy::too_many_arguments,
     reason = "module graph construction needs all context"
@@ -778,7 +795,8 @@ fn build_module_graph(
         std::fs::canonicalize(source_file).unwrap_or_else(|_| source_file.to_path_buf());
     let source_dir = input_canonical.parent().unwrap_or(Path::new("."));
 
-    // Phase 1: resolve imports (populates resolved_items for flatten compat).
+    // Phase 1: resolve imports so imported definitions remain available for
+    // flattening into the top-level item list before enrichment/codegen.
     let mut imported = HashSet::new();
     imported.insert(input_canonical.clone());
     resolve_file_imports(

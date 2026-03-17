@@ -5070,9 +5070,9 @@ int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
 
 // ── Full pipeline ─────────────────────────────────────────────────────────
 
-int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
-  llvm::LLVMContext llvmContext;
-
+std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
+                                                       const CodegenOptions &opts,
+                                                       llvm::LLVMContext &llvmContext) {
   // Set pointer width so lowering patterns emit correct size_t type.
   // wasm32 uses 32-bit pointers/sizes; default is 64-bit.
   int ptrWidth = 64;
@@ -5110,12 +5110,12 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
   // Reject unsupported ops early when targeting WASM.
   if (opts.target_triple.find("wasm") != std::string::npos) {
     if (mlir::failed(validateWasmUnsupportedOps(module)))
-      return 1;
+      return nullptr;
   }
 
   auto llvmModule = lowerToLLVMIR(module, llvmContext, opts.debug_info);
   if (!llvmModule)
-    return 1;
+    return nullptr;
 
   // Emit DWARF debug info when in debug mode and source path is available.
   // This wraps the raw debug locations (from MLIR FileLineColLoc) in proper
@@ -5148,6 +5148,15 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
       mainFn->setLinkage(llvm::Function::InternalLinkage);
     }
   }
+
+  return llvmModule;
+}
+
+int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = buildLLVMModule(module, opts, llvmContext);
+  if (!llvmModule)
+    return 1;
 
   // If --emit-llvm, just print LLVM IR
   if (opts.emit_llvm_ir) {

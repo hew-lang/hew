@@ -95,15 +95,6 @@ set(MSGPACK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(MSGPACK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(msgpack-cxx)
 
-# ── nlohmann/json (header-only, for --input-json debug mode) ─────────────────
-FetchContent_Declare(
-  nlohmann_json
-  URL      https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz
-  # Hash omitted — GitHub tarballs are regenerated and may vary
-)
-set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(nlohmann_json)
-
 # ── Testing ──────────────────────────────────────────────────────────────────
 enable_testing()
 

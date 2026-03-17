@@ -172,15 +172,6 @@ build_tarball() {
     info "cargo" "hew-cli adze-cli hew-lsp hew-serialize hew-lib (release)..."
     cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib --release
 
-    if [[ -f "${REPO_DIR}/hew-codegen/build/build.ninja" ]]; then
-        local jobs
-        jobs="$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
-        info "cmake" "hew-codegen (release, -j${jobs})..."
-        cmake --build "${REPO_DIR}/hew-codegen/build" --config Release -j"${jobs}"
-    else
-        warn "hew-codegen/build not configured; hew-codegen will be absent. Run 'make codegen' first."
-    fi
-
     step "Assembling tarball"
     local staging_root="${DIST_DIR}/.staging-$$"
     local staging="${staging_root}/hew-v${VERSION}-${PLATFORM}"
@@ -195,11 +186,6 @@ build_tarball() {
             warn "binary not found: target/release/${bin}"
         fi
     done
-
-    if [[ -f "${REPO_DIR}/hew-codegen/build/src/hew-codegen" ]]; then
-        cp "${REPO_DIR}/hew-codegen/build/src/hew-codegen" "${staging}/bin/"
-        chmod +x "${staging}/bin/hew-codegen"
-    fi
 
     if [[ -f "${REPO_DIR}/target/release/libhew.a" ]]; then
         cp "${REPO_DIR}/target/release/libhew.a" "${staging}/lib/"
@@ -418,8 +404,8 @@ build_alpine() {
 
     # ── Build Alpine-specific musl tarball ────────────────────────────────────
     # Alpine needs musl-linked binaries (not glibc).  The Rust binaries are
-    # built with --target x86_64-unknown-linux-musl, and hew-codegen is built
-    # natively on Alpine edge with LLVM+MLIR compiled from source.
+    # built with --target x86_64-unknown-linux-musl.  MLIR/LLVM codegen is
+    # embedded in the hew binary via static linking.
 
     _init_tarball_vars
     local alpine_platform="linux-musl-${TARGET_ARCH}"
@@ -450,16 +436,6 @@ build_alpine() {
             cargo build --release --target "${musl_target}" \
                 -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib)
 
-        # Build hew-codegen natively on Alpine edge
-        info "docker" "Building hew-codegen natively on Alpine edge..."
-        local codegen_out="${DIST_DIR}/.alpine-codegen-$$"
-        mkdir -p "${codegen_out}"
-        docker run --rm \
-            -v "${REPO_DIR}:/src:ro" \
-            -v "${codegen_out}:/output" \
-            alpine:edge \
-            sh /src/installers/alpine/build-alpine-codegen.sh
-
         # Assemble Alpine tarball
         local staging_root="${DIST_DIR}/.alpine-staging-$$"
         local staging="${staging_root}/hew-v${VERSION}-${alpine_platform}"
@@ -475,14 +451,6 @@ build_alpine() {
                 warn "musl binary not found: ${musl_release}/${bin}"
             fi
         done
-
-        if [[ -f "${codegen_out}/hew-codegen" ]]; then
-            cp "${codegen_out}/hew-codegen" "${staging}/bin/"
-            chmod +x "${staging}/bin/hew-codegen"
-        else
-            warn "Alpine-native hew-codegen not found"
-        fi
-        rm -rf "${codegen_out}"
 
         if [[ -f "${musl_release}/libhew.a" ]]; then
             cp "${musl_release}/libhew.a" "${staging}/lib/"
@@ -595,13 +563,12 @@ RUN tar -xzf /tmp/hew.tar.gz && mv hew-v*-linux-* hew
 
 FROM alpine:3.21
 # gcompat: glibc compatibility shim for glibc-linked Rust binaries.
-# hew-codegen is fully static (LLVM/MLIR/libstdc++/zlib/zstd baked in).
+# MLIR/LLVM codegen is embedded in the hew binary.
 RUN apk add --no-cache \
       gcompat \
       ca-certificates
 COPY --from=fetch /tmp/hew-install/hew/bin/hew           /usr/local/bin/hew
 COPY --from=fetch /tmp/hew-install/hew/bin/adze          /usr/local/bin/adze
-COPY --from=fetch /tmp/hew-install/hew/bin/hew-codegen   /usr/local/bin/hew-codegen
 COPY --from=fetch /tmp/hew-install/hew/bin/hew-lsp       /usr/local/bin/hew-lsp
 COPY --from=fetch /tmp/hew-install/hew/lib               /usr/local/lib/hew/
 COPY --from=fetch /tmp/hew-install/hew/std               /usr/local/share/hew/std/

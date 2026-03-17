@@ -96,6 +96,9 @@ jobs:
             fi
 
             # ── Rust builds ────────────────────────────────────────────────
+            export LLVM_PREFIX="${LLVM_PREFIX}"
+            export CC=clang
+            export CXX=clang++
 
             # Build runtime (release + debug for E2E tests)
             cargo build -p hew-runtime --release

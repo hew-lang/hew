@@ -29,8 +29,9 @@ impl TypeMap {
                 .map(String::from)
                 .collect(),
             skip_types: vec![
-                "Literal",  // custom serde, hard-coded parser
-                "IntRadix", // only used by Literal internally, not in wire format
+                "Literal",    // custom serde, hard-coded parser
+                "IntRadix",   // only used by Literal internally, not in wire format
+                "Visibility", // custom reader enforces the explicit enum wire encoding
             ]
             .into_iter()
             .map(String::from)
@@ -45,6 +46,7 @@ impl TypeMap {
             ("Pattern", "Pat"),
             ("StringPart", "StringPart"),
             ("CallArg", "CallArg"),
+            ("AttributeArg", "AttributeArg"),
             ("TraitItem", "TraitItem"),
             ("ImportSpec", "ImportSpec"),
             ("OverflowPolicy", "Overflow"),
@@ -371,6 +373,7 @@ mod tests {
         let tm = TypeMap::new();
         assert!(tm.should_skip("Literal"));
         assert!(tm.should_skip("IntRadix"));
+        assert!(tm.should_skip("Visibility"));
         assert!(!tm.should_skip("Expr"));
     }
 

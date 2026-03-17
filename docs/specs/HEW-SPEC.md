@@ -3756,7 +3756,7 @@ let msg2 = MyMessage::decode_json(json_str)?;
 
 ## 8. Compilation model
 
-The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to hew-codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Actor and concurrency operations produce clear compile-time errors on WASM targets.
+The Rust frontend processes source code into a typed AST, serializes it to MessagePack, and passes it to Hew's embedded C++ codegen for MLIR generation, LLVM lowering, and native code emission. The Rust frontend is also compiled to WASM (via `hew-wasm/`) for in-browser diagnostics. Native WASM compilation is supported via `hew build --target=wasm32-wasi`, which compiles `hew-runtime` for `wasm32-wasip1` (thread-dependent modules gated out) and links with WASI libc. Actor and concurrency operations produce clear compile-time errors on WASM targets.
 
 ### 8.0 WASM32 target capabilities
 
@@ -3782,7 +3782,7 @@ These operations require preemptive OS threads, which the current WASM runtime d
 > **Visual diagrams:** See [`docs/diagrams.md`](../diagrams.md) for Mermaid sequence diagrams and flowcharts of the compilation pipeline and MLIR lowering stages.
 
 ```
-Source (.hew) → hew (Rust: lex/parse/typecheck) → MessagePack AST → hew-codegen (C++: MLIRGen → MLIR → LLVM IR → native)
+Source (.hew) → hew (Rust: lex/parse/typecheck) → MessagePack AST → embedded codegen (C++: MLIRGen → MLIR → LLVM IR → native)
 ```
 
 Each stage is invocable independently via compiler flags (`--no-typecheck`, `--emit-mlir`, `--emit-llvm`, `--emit-obj`).
@@ -3806,7 +3806,7 @@ All bases produce the same `i64` value at parse time; the base is purely a sourc
 
 ### 8.3 Parsing
 
-The parser (`hew-parser/src/parser.rs`) is implemented in Rust as a recursive-descent parser with Pratt precedence for expressions. It produces a typed AST (`hew-parser/src/ast.rs`) representing the full program structure: functions, actors, structs, enums, extern blocks, type aliases, and top-level expressions. The AST is serialized to MessagePack and passed to the C++ codegen backend.
+The parser (`hew-parser/src/parser.rs`) is implemented in Rust as a recursive-descent parser with Pratt precedence for expressions. It produces a typed AST (`hew-parser/src/ast.rs`) representing the full program structure: functions, actors, structs, enums, extern blocks, type aliases, and top-level expressions. The AST is serialized to MessagePack and passed to the embedded C++ codegen backend.
 
 ### 8.4 Type Checking
 
@@ -3816,7 +3816,7 @@ When type check output is available, it is provided to the MLIR generation stage
 
 ### 8.5 MLIR Generation
 
-`MLIRGen` (`hew-codegen/src/mlir/MLIRGen.cpp`) receives the MessagePack-encoded AST from the Rust frontend (deserialized by `msgpack_reader.cpp`) and translates it into MLIR using a combination of the Hew dialect and standard MLIR dialects.
+`MLIRGen` (`hew-codegen/src/mlir/MLIRGen.cpp`) receives the MessagePack-encoded AST from the Rust frontend (deserialized by `msgpack_reader.cpp` inside the embedded backend) and translates it into MLIR using a combination of the Hew dialect and standard MLIR dialects.
 
 **Hew dialect operations** (`hew.*`):
 
@@ -4501,14 +4501,14 @@ The kernel standard library includes:
 **Phase 1: Rust Frontend + C++ MLIR Codegen (Current)**
 
 ```
-Source (.hew) → hew (Rust) → MessagePack → hew-codegen (C++/MLIR) → native
-hew-codegen compiles Hew programs
+Source (.hew) → hew (Rust) → MessagePack → embedded codegen (C++/MLIR) → native
+hew compiles Hew programs through its embedded MLIR backend
 ```
 
 **Phase 2: Hew Implementation (Kernel)**
 
 ```
-hew-codegen (C++/MLIR) → hewcpp.hew (Hew source) → hewcpp2 (Hew binary)
+embedded codegen (C++/MLIR) → hewcpp.hew (Hew source) → hewcpp2 (Hew binary)
 hewcpp2 can compile full Hew, including itself
 ```
 

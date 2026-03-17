@@ -37,6 +37,13 @@ class Codegen {
 public:
   explicit Codegen(mlir::MLIRContext &context);
 
+  /// Run the MLIR-to-LLVM pipeline and return the resulting LLVM module.
+  /// Applies target data layout, wasm-specific wrapping, and optional debug info.
+  /// Returns nullptr on failure.
+  std::unique_ptr<llvm::Module> buildLLVMModule(mlir::ModuleOp module,
+                                                const CodegenOptions &opts,
+                                                llvm::LLVMContext &llvmContext);
+
   /// Full pipeline: MLIR module -> object file (or LLVM IR dump).
   /// Linking is handled by the Rust CLI (hew-cli/src/link.rs).
   /// Returns 0 on success, non-zero on error.

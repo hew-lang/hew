@@ -4,9 +4,8 @@
 # Triggers on tag push matching `v*` (e.g. v0.1.0).
 #
 # Artifacts per platform:
-#   bin/hew           — compiler driver
+#   bin/hew           — compiler driver (with embedded MLIR codegen)
 #   bin/adze          — package manager
-#   bin/hew-codegen   — C++ MLIR compiler (statically linked)
 #   bin/hew-lsp       — Language Server Protocol server
 #   lib/libhew.a      — combined runtime + stdlib static library
 #   std/              — standard library sources
@@ -61,9 +60,6 @@ jobs:
           - target: linux-aarch64
             os: ubuntu-24.04-arm
             rust_target: aarch64-unknown-linux-gnu
-          - target: darwin-x86_64
-            os: macos-15
-            rust_target: x86_64-apple-darwin
           - target: darwin-aarch64
             os: macos-14
             rust_target: aarch64-apple-darwin
@@ -72,8 +68,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows and macOS x86_64 MLIR builds can be flaky — don't block the release
-    continue-on-error: ${{ startsWith(matrix.target, 'windows') || matrix.target == 'darwin-x86_64' }}
+    # Windows MLIR builds can be flaky — don't block the release
+    continue-on-error: ${{ startsWith(matrix.target, 'windows') }}
     # 180 min to accommodate first-run LLVM build from source on Windows (~90-120 min)
     timeout-minutes: 180
 
@@ -111,6 +107,19 @@ jobs:
           LLVM_PREFIX="$(brew --prefix llvm@${{ env.LLVM_VERSION }})"
           echo "LLVM_PREFIX=${LLVM_PREFIX}" >> "$GITHUB_ENV"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+
+      - name: Configure embedded codegen toolchain (Linux)
+        if: startsWith(matrix.target, 'linux')
+        run: |
+          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Configure embedded codegen toolchain (macOS)
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          echo "CC=${LLVM_PREFIX}/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=${LLVM_PREFIX}/bin/clang++" >> "$GITHUB_ENV"
 
       - name: Install build tools (Windows)
         if: startsWith(matrix.target, 'windows')
@@ -180,6 +189,14 @@ jobs:
           path: C:\llvm-22
           key: llvm-mlir-22.1.0-win64-msvc-v1
 
+      - name: Configure embedded codegen toolchain (Windows)
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          echo "LLVM_PREFIX=C:\llvm-22" >> $env:GITHUB_ENV
+          echo "CC=cl" >> $env:GITHUB_ENV
+          echo "CXX=cl" >> $env:GITHUB_ENV
+        shell: pwsh
+
       # ── Rust toolchain ──────────────────────────────────────────────────
 
       - name: Install Rust
@@ -203,6 +220,8 @@ jobs:
       # ── Rust builds ─────────────────────────────────────────────────────
 
       - name: Build hew, adze, and hew-lsp
+        env:
+          HEW_EMBED_STATIC: "1"
         run: cargo build -p hew-cli -p adze-cli -p hew-lsp --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
@@ -216,50 +235,6 @@ jobs:
       - name: Smoke test hew-lsp (Windows)
         if: startsWith(matrix.target, 'windows')
         run: ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
-
-      # ── hew-codegen (CMake + MLIR) ───────────────────────────────────────────
-
-      - name: Configure hew-codegen (Linux)
-        if: startsWith(matrix.target, 'linux')
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=clang-${{ env.LLVM_VERSION }} \
-            -DCMAKE_CXX_COMPILER=clang++-${{ env.LLVM_VERSION }} \
-            -DHEW_STATIC_LINK=ON \
-            -DLLVM_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/llvm \
-            -DMLIR_DIR=/usr/lib/llvm-${{ env.LLVM_VERSION }}/lib/cmake/mlir
-
-      - name: Configure hew-codegen (macOS)
-        if: startsWith(matrix.target, 'darwin')
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER="${LLVM_PREFIX}/bin/clang" \
-            -DCMAKE_CXX_COMPILER="${LLVM_PREFIX}/bin/clang++" \
-            -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)" \
-            -DCMAKE_EXE_LINKER_FLAGS="-L${LLVM_PREFIX}/lib/c++ -Wl,-rpath,${LLVM_PREFIX}/lib/c++" \
-            -DHEW_STATIC_LINK=ON \
-            -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-
-      - name: Configure hew-codegen (Windows)
-        if: startsWith(matrix.target, 'windows')
-        run: |
-          cd hew-codegen
-          cmake -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_C_COMPILER=cl `
-            -DCMAKE_CXX_COMPILER=cl `
-            -DHEW_STATIC_LINK=ON `
-            -DLLVM_DIR="C:\llvm-22\lib\cmake\llvm" `
-            -DMLIR_DIR="C:\llvm-22\lib\cmake\mlir"
-        shell: pwsh
-
-      - name: Build hew-codegen
-        run: cmake --build hew-codegen/build --config Release
 
       # ── Package archive ─────────────────────────────────────────────────
 
@@ -276,7 +251,6 @@ jobs:
           # Binaries
           cp "target/${{ matrix.rust_target }}/release/hew"           "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/adze"          "${ARCHIVE_NAME}/bin/"
-          cp "hew-codegen/build/src/hew-codegen"                            "${ARCHIVE_NAME}/bin/"
           cp "target/${{ matrix.rust_target }}/release/hew-lsp"          "${ARCHIVE_NAME}/bin/"
           chmod +x "${ARCHIVE_NAME}/bin/"*
 
@@ -295,7 +269,7 @@ jobs:
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
           # Strip binaries
-          for b in hew adze hew-codegen hew-lsp; do
+          for b in hew adze hew-lsp; do
             strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
           done
 
@@ -313,7 +287,6 @@ jobs:
           Copy-Item "target/${{ matrix.rust_target }}/release/hew.exe"          "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/adze.exe"         "${ArchiveName}/bin/"
           Copy-Item "target/${{ matrix.rust_target }}/release/hew-lsp.exe"            "${ArchiveName}/bin/"
-          Copy-Item "hew-codegen/build/src/hew-codegen.exe"                      "${ArchiveName}/bin/"
           Copy-Item "${ReleaseDir}/hew.lib"                                      "${ArchiveName}/lib/"
 
           # Standard library sources (all .hew files, including subdirectories)
@@ -359,13 +332,13 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew adze hew-codegen hew-lsp; do
+          for bin in hew adze hew-lsp; do
             codesign --force --options runtime --timestamp \
               --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
           done
 
           # Verify signatures
-          for bin in hew adze hew-codegen hew-lsp; do
+          for bin in hew adze hew-lsp; do
             codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
           done
 
@@ -519,18 +492,8 @@ jobs:
             fi
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
+            HEW_EMBED_STATIC=1 cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize --release
             cargo build -p hew-lib --release
-
-            # ── hew-codegen (statically linked) ────────────────────────────
-            cd hew-codegen
-            cmake -B build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DHEW_STATIC_LINK=ON \
-              -DLLVM_DIR="${LLVM_PREFIX}/lib/cmake/llvm" \
-              -DMLIR_DIR="${LLVM_PREFIX}/lib/cmake/mlir"
-            cmake --build build -j$(sysctl -n hw.ncpu)
-            cd ..
 
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
@@ -541,7 +504,6 @@ jobs:
             # Binaries
             cp target/release/hew           "${ARCHIVE_NAME}/bin/"
             cp target/release/adze          "${ARCHIVE_NAME}/bin/"
-            cp hew-codegen/build/src/hew-codegen "${ARCHIVE_NAME}/bin/"
             cp target/release/hew-lsp       "${ARCHIVE_NAME}/bin/"
             chmod +x "${ARCHIVE_NAME}/bin/"*
 
@@ -560,7 +522,7 @@ jobs:
             cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
             # Strip binaries
-            for b in hew adze hew-codegen hew-lsp; do
+            for b in hew adze hew-lsp; do
               strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
             done
 
@@ -665,8 +627,24 @@ jobs:
         with:
           targets: ${{ matrix.rust_musl_target }}
 
-      - name: Install musl cross-compiler
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install musl cross-compiler and LLVM/MLIR
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update && sudo apt-get install -y \
+            musl-tools cmake ninja-build \
+            llvm-${{ env.LLVM_VERSION }}-dev \
+            libmlir-${{ env.LLVM_VERSION }}-dev \
+            mlir-${{ env.LLVM_VERSION }}-tools \
+            clang-${{ env.LLVM_VERSION }}
+
+      - name: Configure LLVM toolchain (musl)
+        run: |
+          echo "LLVM_PREFIX=/usr/lib/llvm-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CC=clang-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
+          echo "CXX=clang++-${{ env.LLVM_VERSION }}" >> "$GITHUB_ENV"
 
       - name: Cache Rust artifacts (musl)
         uses: actions/cache@v4
@@ -685,25 +663,10 @@ jobs:
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
+          HEW_EMBED_STATIC: "1"
         run: |
           cargo build --release --target ${{ matrix.rust_musl_target }} \
             -p hew-cli -p adze-cli -p hew-lsp -p hew-serialize -p hew-lib
-
-      - name: Build hew-codegen natively on Alpine
-        run: |
-          mkdir -p /tmp/alpine-codegen-out
-          # Use pre-built LLVM image from GHCR (~2 min vs ~30 min from source).
-          # Falls back to alpine:edge + full LLVM build if image not available.
-          IMAGE="ghcr.io/hew-lang/llvm-alpine:22"
-          if ! docker pull "${IMAGE}" 2>/dev/null; then
-            echo "::warning::Pre-built LLVM image not found, building from source (~30 min)"
-            IMAGE="alpine:edge"
-          fi
-          docker run --rm \
-            -v "$PWD:/src:ro" \
-            -v /tmp/alpine-codegen-out:/output \
-            "${IMAGE}" \
-            sh /src/installers/alpine/build-alpine-codegen.sh
 
       - name: Assemble Alpine tarball and build .apk
         run: |
@@ -722,15 +685,12 @@ jobs:
             chmod +x "${ARCHIVE_NAME}/bin/${bin}"
           done
 
-          cp /tmp/alpine-codegen-out/hew-codegen "${ARCHIVE_NAME}/bin/"
-          chmod +x "${ARCHIVE_NAME}/bin/hew-codegen"
-
           cp "${MUSL_REL}/libhew.a" "${ARCHIVE_NAME}/lib/"
           cp -r std/. "${ARCHIVE_NAME}/std/"
           cp completions/* "${ARCHIVE_NAME}/completions/" 2>/dev/null || true
           cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
 
-          for b in hew adze hew-codegen hew-lsp; do
+          for b in hew adze hew-lsp; do
             strip "${ARCHIVE_NAME}/bin/${b}" 2>/dev/null || true
           done
 
@@ -966,9 +926,6 @@ jobs:
             binary: hew-lsp
           - target: linux-aarch64
             vscode_target: linux-arm64
-            binary: hew-lsp
-          - target: darwin-x86_64
-            vscode_target: darwin-x64
             binary: hew-lsp
           - target: darwin-aarch64
             vscode_target: darwin-arm64

@@ -49,7 +49,7 @@ in stdenv.mkDerivation rec {
 
     install -Dm755 bin/hew          $out/bin/hew
     install -Dm755 bin/adze         $out/bin/adze
-    install -Dm755 bin/hew-codegen  $out/bin/hew-codegen
+    install -Dm755 bin/hew-lsp      $out/bin/hew-lsp
     install -Dm644 lib/libhew.a $out/lib/hew/libhew.a
 
     if [ -d std ]; then

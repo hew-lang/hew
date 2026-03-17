@@ -395,43 +395,10 @@ mod tests {
     use super::*;
     use std::sync::OnceLock;
 
-    /// Skip tests that require the full compilation pipeline (hew + hew-codegen)
-    /// when hew-codegen is not available (e.g. in CI Rust-only test jobs).
-    ///
-    /// Verifies the pipeline end-to-end by attempting to compile a trivial
-    /// program. `hew --version` alone is not sufficient because the hew
-    /// binary can exist without the separate hew-codegen binary.
+    /// Skip tests that require the linked native backend when this crate was
+    /// built without the embedded MLIR/LLVM bridge.
     fn require_codegen() -> bool {
-        if !ensure_test_toolchain() {
-            return false;
-        }
-        let Ok(hew) = find_hew_binary() else {
-            return false;
-        };
-
-        // Try to compile a trivial program to verify hew-codegen is available.
-        let dir = std::env::temp_dir();
-        let pid = std::process::id();
-        let src = dir.join(format!("hew_codegen_check_{pid}.hew"));
-        let bin = dir.join(format!(
-            "hew_codegen_check_{pid}{}",
-            crate::platform::exe_suffix()
-        ));
-        if std::fs::write(&src, "fn main() {}\n").is_err() {
-            return false;
-        }
-        let ok = Command::new(&hew)
-            .args([
-                "build",
-                &src.display().to_string(),
-                "-o",
-                &bin.display().to_string(),
-            ])
-            .output()
-            .is_ok_and(|o| o.status.success());
-        let _ = std::fs::remove_file(&src);
-        let _ = std::fs::remove_file(&bin);
-        ok
+        ensure_test_toolchain() && find_hew_binary().is_ok()
     }
 
     /// Ensure the full native test toolchain is available before tests that

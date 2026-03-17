@@ -72,6 +72,7 @@
 #include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include <climits>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 using namespace hew;
@@ -4616,7 +4617,7 @@ static void transformCoroutineGenerators(llvm::Module &M) {
     auto *DoneFn = M.getFunction(baseName + "__done");
 
     if (!InitFn || !NextFn || !DoneFn) {
-      llvm::report_fatal_error(llvm::Twine("missing generator stubs for '") + baseName +
+      throw std::runtime_error("missing generator stubs for '" + baseName +
                                "' — coroutine IR generation is incomplete");
     }
 
@@ -5070,9 +5071,9 @@ int Codegen::emitObjectFile(llvm::Module &module, const std::string &path,
 
 // ── Full pipeline ─────────────────────────────────────────────────────────
 
-int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
-  llvm::LLVMContext llvmContext;
-
+std::unique_ptr<llvm::Module> Codegen::buildLLVMModule(mlir::ModuleOp module,
+                                                       const CodegenOptions &opts,
+                                                       llvm::LLVMContext &llvmContext) {
   // Set pointer width so lowering patterns emit correct size_t type.
   // wasm32 uses 32-bit pointers/sizes; default is 64-bit.
   int ptrWidth = 64;
@@ -5095,12 +5096,12 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
     std::string error;
     auto *target = llvm::TargetRegistry::lookupTarget(triple, error);
     if (!target)
-      llvm::report_fatal_error(llvm::Twine("cannot find target for triple '") + triple.str() +
+      throw std::runtime_error("cannot find target for triple '" + triple.str() +
                                "': " + error);
     llvm::TargetOptions tOpts;
     auto tm = target->createTargetMachine(triple, "generic", "", tOpts, llvm::Reloc::PIC_);
     if (!tm)
-      llvm::report_fatal_error(llvm::Twine("cannot create target machine for triple '") +
+      throw std::runtime_error("cannot create target machine for triple '" +
                                triple.str() + "'");
     auto dl = tm->createDataLayout().getStringRepresentation();
     module->setAttr(mlir::LLVM::LLVMDialect::getDataLayoutAttrName(),
@@ -5110,12 +5111,12 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
   // Reject unsupported ops early when targeting WASM.
   if (opts.target_triple.find("wasm") != std::string::npos) {
     if (mlir::failed(validateWasmUnsupportedOps(module)))
-      return 1;
+      return nullptr;
   }
 
   auto llvmModule = lowerToLLVMIR(module, llvmContext, opts.debug_info);
   if (!llvmModule)
-    return 1;
+    return nullptr;
 
   // Emit DWARF debug info when in debug mode and source path is available.
   // This wraps the raw debug locations (from MLIR FileLineColLoc) in proper
@@ -5148,6 +5149,15 @@ int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
       mainFn->setLinkage(llvm::Function::InternalLinkage);
     }
   }
+
+  return llvmModule;
+}
+
+int Codegen::compile(mlir::ModuleOp module, const CodegenOptions &opts) {
+  llvm::LLVMContext llvmContext;
+  auto llvmModule = buildLLVMModule(module, opts, llvmContext);
+  if (!llvmModule)
+    return 1;
 
   // If --emit-llvm, just print LLVM IR
   if (opts.emit_llvm_ir) {

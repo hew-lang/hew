@@ -137,9 +137,9 @@ static std::string findHewCli() {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: parse source -> AST (via hew CLI) -> MLIR module
-// Writes source to a temp file, invokes `hew build --emit-json`, deserializes
-// JSON AST. Returns a null ModuleOp on failure, prints errors.
+// Helper: parse source -> TypedProgram msgpack (via hew CLI) -> MLIR module.
+// Writes source to temp files, invokes `hew build --emit-msgpack -o`, then
+// deserializes the msgpack payload with the production reader.
 // ---------------------------------------------------------------------------
 static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &source,
                                    bool dumpIR = false) {
@@ -156,69 +156,63 @@ static mlir::ModuleOp generateMLIR(mlir::MLIRContext &ctx, const std::string &so
     tmp << source;
   }
 
-  // Invoke hew build --emit-json via popen
+  std::string astPath = (std::filesystem::temp_directory_path() /
+                         ("test_mlirgen_" + std::to_string(getpid()) + ".msgpack"))
+                            .string();
+
+  // Invoke hew build --emit-msgpack -o <file>
   static std::string hewCli = findHewCli();
 #ifdef _WIN32
-  // _popen() routes through cmd.exe /c which mis-parses interior \"
-  // escapes the CRT adds.  Wrapping the whole string in an extra pair of
-  // quotes makes cmd /c strip only the outer quotes and pass the interior
-  // ones through to the child process unchanged.
-  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>NUL\"";
+  std::string cmd = "\"\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+                    "\" --emit-msgpack 2>NUL\"";
 #else
-  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" --emit-json 2>/dev/null";
+  std::string cmd = "\"" + hewCli + "\" build \"" + tmpPath + "\" -o \"" + astPath +
+                    "\" --emit-msgpack 2>/dev/null";
 #endif
-#ifdef _WIN32
-  FILE *pipe = _popen(cmd.c_str(), "r");
-#else
-  FILE *pipe = popen(cmd.c_str(), "r");
-#endif
-  if (!pipe) {
-    printf("  Failed to start hew CLI\n");
-    std::filesystem::remove(tmpPath);
-    return {};
-  }
-
-  std::vector<uint8_t> astData;
-  uint8_t buf[4096];
-  while (size_t n = fread(buf, 1, sizeof(buf), pipe)) {
-    astData.insert(astData.end(), buf, buf + n);
-  }
-
-#ifdef _WIN32
-  int rc = _pclose(pipe);
-#else
-  int rc = pclose(pipe);
-#endif
+  int rc = std::system(cmd.c_str());
   std::filesystem::remove(tmpPath);
+  if (std::filesystem::exists(astPath)) {
+    std::ifstream astFile(astPath, std::ios::binary);
+    std::vector<uint8_t> astData(std::istreambuf_iterator<char>(astFile), {});
+    std::filesystem::remove(astPath);
+
+    if (rc != 0) {
+      printf("  hew CLI failed (exit %d)\n", rc);
+      return {};
+    }
+
+    if (astData.empty()) {
+      printf("  hew CLI produced no output\n");
+      return {};
+    }
+
+    hew::ast::Program program;
+    try {
+      program = hew::parseMsgpackAST(astData.data(), astData.size());
+    } catch (const std::exception &e) {
+      printf("  Failed to parse msgpack AST: %s\n", e.what());
+      return {};
+    }
+
+    hew::MLIRGen mlirGen(ctx);
+    auto module = mlirGen.generate(program);
+
+    if (module && dumpIR) {
+      printf("\n--- MLIR ---\n");
+      module.dump();
+      printf("--- End ---\n");
+    }
+
+    return module;
+  }
 
   if (rc != 0) {
     printf("  hew CLI failed (exit %d)\n", rc);
-    return {};
+  } else {
+    printf("  hew CLI produced no msgpack file\n");
   }
-
-  if (astData.empty()) {
-    printf("  hew CLI produced no output\n");
-    return {};
-  }
-
-  hew::ast::Program program;
-  try {
-    program = hew::parseJsonAST(astData.data(), astData.size());
-  } catch (const std::exception &e) {
-    printf("  Failed to parse JSON AST: %s\n", e.what());
-    return {};
-  }
-
-  hew::MLIRGen mlirGen(ctx);
-  auto module = mlirGen.generate(program);
-
-  if (module && dumpIR) {
-    printf("\n--- MLIR ---\n");
-    module.dump();
-    printf("--- End ---\n");
-  }
-
-  return module;
+  std::filesystem::remove(astPath);
+  return {};
 }
 
 // ============================================================================

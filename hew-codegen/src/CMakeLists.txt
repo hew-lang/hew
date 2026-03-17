@@ -21,7 +21,6 @@ target_include_directories(HewMLIRDialect PUBLIC
 
 target_link_libraries(HewMLIRDialect PUBLIC
   msgpack-cxx
-  nlohmann_json::nlohmann_json
 )
 
 add_dependencies(HewMLIRDialect HewOpsIncGen HewTypesIncGen)
@@ -246,24 +245,214 @@ target_link_libraries(HewCodegen PUBLIC
   HewMLIRDialect
 )
 
-# ── hew-codegen executable (msgpack AST → object file) ───────────────────────
-add_executable(hew-codegen
-  codegen_main.cpp
+# ── Embedded C API for Rust CLI cutover ─────────────────────────────────────
+add_library(HewCodegenCAPI STATIC
+  codegen_capi.cpp
 )
 
-target_link_libraries(hew-codegen PRIVATE
+target_link_libraries(HewCodegenCAPI PUBLIC
   HewCodegen
   HewMLIRDialect
 )
 
-target_include_directories(hew-codegen PRIVATE
+target_include_directories(HewCodegenCAPI PUBLIC
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_BINARY_DIR}/include
 )
 
+set_target_properties(HewCodegenCAPI PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib
+)
+
+set(HEW_EMBEDDED_CARGO_FILE "${PROJECT_BINARY_DIR}/hew_embedded_codegen.cargo")
+file(WRITE "${HEW_EMBEDDED_CARGO_FILE}" "")
+
+function(hew_embedded_append line)
+  file(APPEND "${HEW_EMBEDDED_CARGO_FILE}" "${line}\n")
+endfunction()
+
+function(hew_shared_lib_name out_var path)
+  get_filename_component(_name "${path}" NAME)
+  string(REGEX REPLACE "^lib" "" _name "${_name}")
+  string(REGEX REPLACE "\\.(so|dylib|dll|lib)(\\..*)?$" "" _name "${_name}")
+  set(${out_var} "${_name}" PARENT_SCOPE)
+endfunction()
+
+function(hew_emit_system_link_items)
+  foreach(_item IN LISTS ARGN)
+    if("${_item}" STREQUAL "")
+      continue()
+    endif()
+    if("${_item}" MATCHES "z3")
+      continue()
+    endif()
+    if(HEW_STATIC_LINK AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       ("${_item}" STREQUAL "-lz" OR "${_item}" STREQUAL "-lzstd"))
+      continue()
+    endif()
+    if("${_item}" MATCHES "^-l(.+)$")
+      set(_lib "${CMAKE_MATCH_1}")
+      if("${_lib}" STREQUAL "stdc++" OR "${_lib}" STREQUAL "c++")
+        continue()
+      endif()
+      hew_embedded_append("cargo:rustc-link-lib=${_lib}")
+    elseif(IS_ABSOLUTE "${_item}")
+      hew_embedded_append("cargo:rustc-link-arg=${_item}")
+    else()
+      hew_embedded_append("cargo:rustc-link-arg=${_item}")
+    endif()
+  endforeach()
+endfunction()
+
+function(hew_emit_cxx_runtime)
+  if(HEW_STATIC_LINK AND NOT MSVC AND NOT APPLE)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+       (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
+        CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+      execute_process(
+        COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.a
+        OUTPUT_VARIABLE _hew_libstdcpp
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+      )
+      if(NOT _hew_libstdcpp OR _hew_libstdcpp STREQUAL "libstdc++.a")
+        message(FATAL_ERROR "HEW_STATIC_LINK requires libstdc++.a for the embedded Rust final link")
+      endif()
+      get_filename_component(_hew_libstdcpp_dir "${_hew_libstdcpp}" DIRECTORY)
+      hew_embedded_append("cargo:rustc-link-search=native=${_hew_libstdcpp_dir}")
+      hew_embedded_append("cargo:rustc-link-lib=static=stdc++")
+      hew_embedded_append("cargo:rustc-link-arg=-static-libgcc")
+      return()
+    endif()
+  endif()
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    hew_embedded_append("cargo:rustc-link-lib=dylib=stdc++")
+  elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    hew_embedded_append("cargo:rustc-link-lib=dylib=c++")
+  endif()
+endfunction()
+
+find_program(LLVM_CONFIG_EXE
+  NAMES llvm-config llvm-config-22
+  PATHS "${LLVM_TOOLS_BINARY_DIR}" "${LLVM_DIR}/../../../bin"
+  NO_DEFAULT_PATH)
+if(NOT LLVM_CONFIG_EXE)
+  find_program(LLVM_CONFIG_EXE NAMES llvm-config llvm-config-22)
+endif()
+
+hew_embedded_append("cargo:rustc-link-search=native=${PROJECT_BINARY_DIR}/lib")
+hew_embedded_append("cargo:rustc-link-search=native=${PROJECT_BINARY_DIR}/src")
+hew_embedded_append("cargo:rustc-link-lib=static=HewCodegenCAPI")
+hew_embedded_append("cargo:rustc-link-lib=static=HewCodegen")
+hew_embedded_append("cargo:rustc-link-lib=static=HewMLIRDialect")
+
+if(HEW_STATIC_LINK)
+  hew_embedded_append("cargo:rustc-link-search=native=${LLVM_LIBRARY_DIR}")
+
+  # Glob all MLIR and LLVM static archives from the library directory.
+  # Both llvm_map_components_to_libnames() and hand-curated MLIR lists
+  # miss transitive dependencies.  With --start-group/--end-group the
+  # linker resolves cross-archive references and drops unused archives,
+  # so including the full set is safe and costs only link time.
+  if(MSVC)
+    file(GLOB _hew_all_mlir_archives "${LLVM_LIBRARY_DIR}/MLIR*.lib")
+    file(GLOB _hew_all_llvm_archives "${LLVM_LIBRARY_DIR}/LLVM*.lib")
+  else()
+    file(GLOB _hew_all_mlir_archives "${LLVM_LIBRARY_DIR}/libMLIR*.a")
+    file(GLOB _hew_all_llvm_archives "${LLVM_LIBRARY_DIR}/libLLVM*.a")
+  endif()
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,--start-group")
+  endif()
+
+  foreach(_archive ${_hew_all_mlir_archives} ${_hew_all_llvm_archives})
+    get_filename_component(_name "${_archive}" NAME)
+    if(MSVC)
+      string(REGEX REPLACE "\\.lib$" "" _name "${_name}")
+    else()
+      string(REGEX REPLACE "^lib" "" _name "${_name}")
+      string(REGEX REPLACE "\\.a$" "" _name "${_name}")
+    endif()
+    # Skip Polly — optional LLVM extension, archives may not be installed
+    if(NOT "${_name}" MATCHES "^Polly")
+      hew_embedded_append("cargo:rustc-link-lib=static=${_name}")
+    endif()
+  endforeach()
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,--end-group")
+  endif()
+
+  # Platform-specific static compression libraries (Linux only)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(_HEW_ZLIB_STATIC)
+      get_filename_component(_hew_zlib_dir "${_HEW_ZLIB_STATIC}" DIRECTORY)
+      hew_embedded_append("cargo:rustc-link-search=native=${_hew_zlib_dir}")
+      hew_embedded_append("cargo:rustc-link-lib=static=z")
+    else()
+      hew_embedded_append("cargo:rustc-link-lib=z")
+    endif()
+    if(_HEW_ZSTD_STATIC)
+      get_filename_component(_hew_zstd_dir "${_HEW_ZSTD_STATIC}" DIRECTORY)
+      hew_embedded_append("cargo:rustc-link-search=native=${_hew_zstd_dir}")
+      hew_embedded_append("cargo:rustc-link-lib=static=zstd")
+    else()
+      hew_embedded_append("cargo:rustc-link-lib=zstd")
+    endif()
+  endif()
+
+  # System libraries required by LLVM (rt, dl, m, xml2, etc.)
+  if(NOT LLVM_CONFIG_EXE)
+    message(FATAL_ERROR
+      "HEW_STATIC_LINK=ON requires llvm-config to determine system library "
+      "dependencies. Set LLVM_CONFIG_EXE or ensure llvm-config is on PATH.")
+  endif()
+  execute_process(
+    COMMAND "${LLVM_CONFIG_EXE}" --system-libs --link-static
+    OUTPUT_VARIABLE HEW_LLVM_SYSTEM_LIBS_RAW
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  separate_arguments(HEW_LLVM_SYSTEM_LIBS NATIVE_COMMAND "${HEW_LLVM_SYSTEM_LIBS_RAW}")
+  hew_emit_system_link_items(${HEW_LLVM_SYSTEM_LIBS})
+
+  # macOS: Homebrew deps (zstd, zlib, xml2) may not be on the default search
+  # path.  Add /opt/homebrew/lib (Apple Silicon) or /usr/local/lib (Intel).
+  if(APPLE)
+    foreach(_hew_brew_lib "/opt/homebrew/lib" "/usr/local/lib")
+      if(IS_DIRECTORY "${_hew_brew_lib}")
+        hew_embedded_append("cargo:rustc-link-search=native=${_hew_brew_lib}")
+      endif()
+    endforeach()
+  endif()
+
+  # macOS: Homebrew LLVM libc++ search path and rpath
+  if(APPLE)
+    get_filename_component(_hew_llvm_libcxx_dir "${LLVM_LIBRARY_DIR}/c++" ABSOLUTE)
+    if(IS_DIRECTORY "${_hew_llvm_libcxx_dir}")
+      hew_embedded_append("cargo:rustc-link-search=native=${_hew_llvm_libcxx_dir}")
+      hew_embedded_append("cargo:rustc-link-arg=-Wl,-rpath,${_hew_llvm_libcxx_dir}")
+    endif()
+  endif()
+else()
+  hew_embedded_append("cargo:rustc-link-search=native=${LLVM_LIBRARY_DIR}")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE)
+    hew_embedded_append("cargo:rustc-link-arg=-Wl,-rpath,${LLVM_LIBRARY_DIR}")
+  endif()
+
+  hew_shared_lib_name(_hew_mlir_name "${MLIR_SHARED_LIB}")
+  hew_shared_lib_name(_hew_llvm_name "${LLVM_SHARED_LIB}")
+  hew_embedded_append("cargo:rustc-link-lib=dylib=${_hew_mlir_name}")
+  hew_embedded_append("cargo:rustc-link-lib=dylib=${_hew_llvm_name}")
+endif()
+
+hew_emit_cxx_runtime()
+
 if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
   if(NOT MSVC AND NOT APPLE)
-    target_link_options(hew-codegen PRIVATE -s)
+    target_link_options(HewCodegenCAPI PRIVATE -s)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
        (CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND
         CMAKE_SYSTEM_NAME STREQUAL "Linux"))
@@ -273,12 +462,12 @@ if(HEW_STATIC_LINK AND CMAKE_BUILD_TYPE STREQUAL "Release")
       # removes libstdc++.so.6 and libgcc_s.so.1 from NEEDED entries.
       # Clang on FreeBSD/BSD uses libc++ (not libstdc++) so these flags
       # are deliberately excluded there.
-      target_link_options(hew-codegen PRIVATE -static-libgcc -static-libstdc++)
+      target_link_options(HewCodegenCAPI PRIVATE -static-libgcc -static-libstdc++)
     endif()
   endif()
   if(APPLE)
-    add_custom_command(TARGET hew-codegen POST_BUILD
-      COMMAND strip $<TARGET_FILE:hew-codegen>
-      COMMENT "Stripping hew-codegen (macOS)")
+    add_custom_command(TARGET HewCodegenCAPI POST_BUILD
+      COMMAND strip $<TARGET_FILE:HewCodegenCAPI>
+      COMMENT "Stripping embedded codegen library (macOS)")
   endif()
 endif()

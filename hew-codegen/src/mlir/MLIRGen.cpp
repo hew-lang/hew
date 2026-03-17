@@ -84,6 +84,7 @@ static ast::WireDecl wireMetadataToWireDecl(const ast::TypeDecl &td) {
     wf.is_deprecated = fm.is_deprecated;
     wf.json_name = fm.json_name;
     wf.yaml_name = fm.yaml_name;
+    wf.since = fm.since;
     wd.fields.push_back(std::move(wf));
   }
 

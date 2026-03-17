@@ -1,6 +1,6 @@
 //! Linker invocation: drives `cc` (or `wasm-ld` for WASM targets) to produce
-//! the final binary from the object file emitted by `hew-codegen` and the
-//! combined Hew library (`libhew.a`).
+//! the final binary from the object file emitted by Hew's embedded codegen
+//! backend and the combined Hew library (`libhew.a`).
 
 fn hew_lib_name() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -23,6 +23,7 @@ pub fn link_executable(
     object_path: &str,
     output_path: &str,
     target: Option<&str>,
+    extra_libs: &[String],
     debug: bool,
 ) -> Result<(), String> {
     if target.is_some_and(|t| t.starts_with("wasm32")) {
@@ -125,6 +126,10 @@ pub fn link_executable(
         "-lntdll",
         "-ladvapi32",
     ]);
+
+    for lib in extra_libs {
+        cmd.arg(lib);
+    }
 
     let output = cmd
         .output()

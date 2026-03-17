@@ -4,8 +4,7 @@
 # Builds all project artifacts into build/ with a predictable layout:
 #
 #   build/
-#     bin/hew              — compiler driver (Rust)
-#     bin/hew-codegen      — MLIR code generator (C++)
+#     bin/hew              — compiler driver (Rust, embeds MLIR/LLVM backend)
 #     bin/adze             — package manager (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/wasm32-wasip1/libhew_runtime.a — WASM runtime (if built)
@@ -19,7 +18,8 @@
 #   make release      — build everything (release, optimized)
 #   make hew          — just the compiler driver
 #   make adze         — just the package manager
-#   make codegen      — just hew-codegen (C++ MLIR)
+#   make astgen       — regenerate the C++ msgpack reader from Rust AST defs
+#   make codegen      — C++ MLIR test infrastructure (unit tests + E2E harness)
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime (requires: rustup target add wasm32-wasip1)
@@ -34,7 +34,7 @@
 #   make clean        — remove build/, target/, hew-codegen/build/
 # ============================================================================
 
-.PHONY: all hew adze codegen runtime stdlib wasm-runtime wasm wasm-dist release
+.PHONY: all hew adze astgen codegen runtime stdlib wasm-runtime wasm wasm-dist release
 .PHONY: test test-all test-rust test-codegen test-stdlib test-hew test-wasm test-cpp lint grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release
@@ -53,10 +53,10 @@ ifeq ($(origin CXX),default)
 endif
 export CC CXX
 
-# Static linking for hew-codegen — on by default so dev and release builds
-# match what we ship.  With this enabled, hew-codegen requires no LLVM shared
-# libraries at runtime (only standard system libs: libstdc++, libgcc_s, libc,
-# libz, libzstd, libz3 — all available on standard Linux distros).
+ASTGEN_ARGS = --ast hew-parser/src/ast.rs --module hew-parser/src/module.rs --output hew-codegen/src/msgpack_reader.cpp
+
+# Static linking for the C++ test infrastructure — on by default so dev and
+# release test builds match what the embedded codegen uses.
 #
 # To build with shared LLVM instead (faster cold-link, requires LLVM at runtime):
 #   make HEW_STATIC=0
@@ -84,7 +84,7 @@ WASM_RELEASE_DIR := target/wasm32-wasip1/release
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew adze codegen runtime stdlib assemble
+all: hew adze runtime stdlib assemble
 
 # ── Rust targets ────────────────────────────────────────────────────────────
 
@@ -128,10 +128,12 @@ wasm-dist: wasm
 	cp hew-wasm/pkg/hew_wasm_bg.wasm $(HEW_RUN)/static/wasm/hew_wasm_bg.wasm
 	@echo "==> Done. Commit in hew.sh and hew.run."
 
-# ── C++ codegen target ──────────────────────────────────────────────────────
+# ── C++ test infrastructure ──────────────────────────────────────────────────
 
-# Build hew-codegen: configure with CMake if needed, then build with Ninja.
-# Requires LLVM 21 and MLIR to be installed.
+# Build hew-codegen libraries and test executables.  The codegen is embedded
+# in the `hew` binary via build.rs; this CMake build exists only for C++ unit
+# tests (test_mlirgen, test_mlir_dialect, test_translate) and the ctest E2E
+# harness.  No standalone binary is produced.
 #
 # Auto-detects LLVM/MLIR paths:
 #   Linux (apt.llvm.org):  /usr/lib/llvm-<ver>/lib/cmake/{llvm,mlir}
@@ -185,6 +187,9 @@ ifeq ($(shell uname -s),Darwin)
   endif
 endif
 
+astgen:
+	cargo run -q -p hew-astgen -- $(ASTGEN_ARGS)
+
 codegen:
 ifeq ($(shell uname -s),Darwin)
 	cmake -B hew-codegen/build -G Ninja \
@@ -201,12 +206,10 @@ endif
 
 # Create symlinks from build/ into the real output locations.
 # This gives you one stable directory to point PATH at during development.
-assemble: | hew adze codegen runtime stdlib
+assemble: | hew adze runtime stdlib
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@# Compiler driver
 	@ln -sfn ../../$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
-	@# MLIR code generator
-	@ln -sfn ../../hew-codegen/build/src/hew-codegen    $(BUILD_DIR)/bin/hew-codegen
 	@# Package manager
 	@ln -sfn ../../$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
 	@# Combined Hew library (runtime + all stdlib packages)
@@ -228,31 +231,16 @@ assemble: | hew adze codegen runtime stdlib
 
 # Build everything in release mode and repoint the build/ symlinks.
 release:
-	cargo build -p hew-cli --release
+	HEW_EMBED_STATIC=1 cargo build -p hew-cli --release
 	cargo build -p adze-cli --release
 	cargo build -p hew-lib --release
 	cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
-ifeq ($(shell uname -s),Darwin)
-	cmake -B hew-codegen/build -G Ninja \
-		-DCMAKE_BUILD_TYPE=Release \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-else
-	cmake -B hew-codegen/build -G Ninja \
-		-DCMAKE_BUILD_TYPE=Release \
-		-DCMAKE_C_COMPILER=$(CC) \
-		-DCMAKE_CXX_COMPILER=$(CXX) \
-		$(CMAKE_EXTRA_ARGS) \
-		-S hew-codegen
-endif
-	cmake --build hew-codegen/build
 	$(MAKE) assemble-release
 
 # Assemble build/ with release symlinks.
 assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
-	@ln -sfn ../../hew-codegen/build/src/hew-codegen    $(BUILD_DIR)/bin/hew-codegen
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
@@ -473,7 +461,6 @@ install: install-check
 	install -d $(DESTDIR)$(PREFIX)/std
 	install -d $(DESTDIR)$(PREFIX)/completions
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
-	install -m 755 hew-codegen/build/src/hew-codegen      $(DESTDIR)$(PREFIX)/bin/hew-codegen
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
 	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@if [ -f $(WASM_RELEASE_DIR)/libhew_runtime.a ]; then \
@@ -495,8 +482,6 @@ install: install-check
 install-check:
 	@test -f $(RELEASE_DIR)/hew \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	@test -f hew-codegen/build/src/hew-codegen \
-		|| { echo "Error: hew-codegen not built. Run 'make release' first."; exit 1; }
 	@test -f $(RELEASE_DIR)/libhew.a \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
 

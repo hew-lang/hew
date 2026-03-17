@@ -44,7 +44,6 @@ override_dh_auto_install:
 
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew          $(DESTDIR)/usr/bin/hew
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/adze         $(DESTDIR)/usr/bin/adze
-	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-codegen  $(DESTDIR)/usr/bin/hew-codegen
 	install -m755 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/bin/hew-lsp      $(DESTDIR)/usr/bin/hew-lsp 2>/dev/null || true
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/lib/libhew.a \
 	              $(DESTDIR)/usr/lib/hew/libhew.a
@@ -68,7 +67,7 @@ override_dh_auto_install:
 	install -m644 hew-v$(HEW_VERSION)-linux-$(HEW_ARCH)/NOTICE \
 	              $(DESTDIR)/usr/share/doc/hew/NOTICE
 
-# hew-codegen is statically linked (LLVM/MLIR/libstdc++/zlib/zstd baked in).
+# LLVM/MLIR and libstdc++ are statically linked into the hew binary.
 # Rust binaries link only glibc.  dpkg-shlibdeps auto-detects the actual
 # runtime deps from the installed binaries and populates ${shlibs:Depends}.
 

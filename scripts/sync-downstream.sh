@@ -2,7 +2,7 @@
 # sync-downstream.sh — Comprehensive downstream sync for the Hew ecosystem.
 #
 # Validates syntax-data.json against the lexer, generates artefacts into dist/,
-# then distributes them to downstream repos and checked-in editor assets.
+# then distributes them to all downstream repos.
 #
 # Usage:
 #   ./scripts/sync-downstream.sh           # generate + distribute
@@ -223,15 +223,6 @@ if node "$TOOLS_DIR/generate-nano.mjs" 2>&1 | tail -2; then
     ok "dist/hew.nanorc generated"
 else
     fail "nano syntax generation failed!"
-    ERRORS=$((ERRORS + 1))
-fi
-
-# 2c. mobile editor bundle
-info "Generating mobile editor bundle..."
-if node "$TOOLS_DIR/generate-mobile-editor-assets.mjs" 2>&1 | tail -2; then
-    ok "dist/hew.mobile-editor.json generated"
-else
-    fail "Mobile editor bundle generation failed!"
     ERRORS=$((ERRORS + 1))
 fi
 
@@ -517,7 +508,7 @@ if [ -f "$DIST_DIR/hew.nanorc" ]; then
     else
         cp "$DIST_DIR/hew.nanorc" "$REPO_ROOT/editors/nano/hew.nanorc"
         cd "$REPO_ROOT"
-        if [ -z "$(git status --short --untracked-files=all -- editors/nano/hew.nanorc 2>/dev/null)" ]; then
+        if git diff --quiet editors/nano/hew.nanorc 2>/dev/null; then
             ok "Already up to date"
         else
             ok "Updated editors/nano/hew.nanorc"
@@ -526,33 +517,6 @@ if [ -f "$DIST_DIR/hew.nanorc" ]; then
     fi
 else
     warn "dist/hew.nanorc not available (skipped)"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# 3h. editors/ — copy dist/hew.mobile-editor.json → editors/mobile/hew.mobile-editor.json
-next_step "editors/mobile (mobile editor bundle)..."
-if [ -f "$DIST_DIR/hew.mobile-editor.json" ]; then
-    if $CHECK_ONLY; then
-        info "Comparing dist/hew.mobile-editor.json with editors/mobile/hew.mobile-editor.json..."
-        if cmp -s "$DIST_DIR/hew.mobile-editor.json" "$REPO_ROOT/editors/mobile/hew.mobile-editor.json" 2>/dev/null; then
-            ok "Already in sync"
-        else
-            fail "Drift detected in editors/mobile/hew.mobile-editor.json"
-            DRIFTS=$((DRIFTS + 1))
-        fi
-    else
-        mkdir -p "$REPO_ROOT/editors/mobile"
-        cp "$DIST_DIR/hew.mobile-editor.json" "$REPO_ROOT/editors/mobile/hew.mobile-editor.json"
-        cd "$REPO_ROOT"
-        if [ -z "$(git status --short --untracked-files=all -- editors/mobile/hew.mobile-editor.json 2>/dev/null)" ]; then
-            ok "Already up to date"
-        else
-            ok "Updated editors/mobile/hew.mobile-editor.json"
-            UPDATED=$((UPDATED + 1))
-        fi
-    fi
-else
-    warn "dist/hew.mobile-editor.json not available (skipped)"
     SKIPPED=$((SKIPPED + 1))
 fi
 

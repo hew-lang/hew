@@ -17,3 +17,4 @@ workspace = true
 syn = { version = "2", features = ["full", "extra-traits"] }
 proc-macro2 = "1"
 quote = "1"
+hew-serialize = { path = "../hew-serialize" }

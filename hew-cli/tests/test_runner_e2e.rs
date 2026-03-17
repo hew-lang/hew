@@ -12,7 +12,7 @@ fn require_codegen() -> bool {
     static BUILD_OK: OnceLock<bool> = OnceLock::new();
     *BUILD_OK.get_or_init(|| {
         Command::new("make")
-            .args(["hew", "codegen", "runtime", "stdlib"])
+            .args(["runtime", "stdlib"])
             .current_dir(repo_root())
             .status()
             .is_ok_and(|status| status.success())

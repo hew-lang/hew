@@ -20,14 +20,4 @@ namespace hew {
 /// Throws std::runtime_error on parse failures.
 ast::Program parseMsgpackAST(const uint8_t *data, size_t size);
 
-/// Parse a JSON-encoded Hew Program AST.
-///
-/// Parses the JSON into an in-memory representation, converts it to msgpack
-/// bytes, and feeds those through the existing msgpack parser. This avoids
-/// duplicating the deserialization logic while providing a human-readable
-/// input format for debugging.
-///
-/// Throws std::runtime_error on parse failures.
-ast::Program parseJsonAST(const uint8_t *data, size_t size);
-
 } // namespace hew

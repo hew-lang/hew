@@ -4,28 +4,6 @@ Syntax highlighting and editor configuration for editors other than VSCode.
 
 For VSCode, see [vscode-hew](https://github.com/hew-lang/vscode-hew).
 
-## Mobile editors (Android / iOS)
-
-Shared mobile-facing editor data lives at `editors/mobile/hew.mobile-editor.json`.
-
-It is generated from `docs/syntax-data.json` and is designed for app-bundled
-use in Android and iOS editors:
-
-- `completion_catalog.items`: shared language-level completions
-- `lexical`: canonical lexical groups, operators, prefixes, suffixes, and comment styles
-- `highlighting.textmate_scopes`: grouped tokens for lightweight highlighters
-- `downstream.tree_sitter_sync`: grouped lists aligned with the existing tree-sitter sync tool
-
-Regenerate it with:
-
-```sh
-node tools/downstream/generate-mobile-editor-assets.mjs
-./scripts/sync-downstream.sh
-```
-
-Mobile clients should treat this file as shared static language data, then merge
-it with document-local symbols or platform-specific editing behaviour in-app.
-
 ## Vim / Neovim
 
 Install via any plugin manager from [hew-lang/vim-hew](https://github.com/hew-lang/vim-hew):

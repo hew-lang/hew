@@ -491,3 +491,38 @@ consumers like codegen only see `type_args: None` and cannot specialize. Storing
 type arguments in `TypeCheckOutput` and backfilling during enrichment keeps the codegen
 simple — it only has to handle one path (explicit type args) instead of re-inferring
 types at the MLIR level.
+
+### CMake-generated .cargo files beat manual link lists
+
+When embedding a C++ library into a Rust binary, have CMake write a file of raw
+`cargo:rustc-link-lib=...` / `cargo:rustc-link-search=...` lines. The Rust build.rs
+reads and prints them verbatim.  This keeps CMake as the sole authority on linking —
+no duplicated library lists, no manual platform branching in Rust.
+See: `hew-codegen/src/CMakeLists.txt` `hew_embedded_append()` function.
+
+### LLVM cmake helpers undercount static libraries
+
+`llvm_map_components_to_libnames()` returns ~95 libraries but static linking needs
+~250.  `llvm-config --libs --link-static` gets LLVM right but misses MLIR entirely.
+The working solution is `file(GLOB ... "libMLIR*.a" "libLLVM*.a")` with linker groups
+(`--start-group`/`--end-group`) to handle circular dependencies.
+
+### Cargo uses cc not c++, so -static-libstdc++ fails
+
+When Cargo links a Rust binary, it invokes `cc` not `c++`, so `-static-libstdc++`
+is silently ignored.  Fix: ask CMake to resolve `libstdc++.a` via
+`${CMAKE_CXX_COMPILER} -print-file-name=libstdc++.a` and emit it as an explicit
+`cargo:rustc-link-lib=static=stdc++`.
+See: `hew-codegen/src/CMakeLists.txt` `hew_emit_cxx_runtime()`.
+
+### Prefer LLVM_PREFIX/bin/clang over PATH on macOS
+
+On macOS, Apple Clang from PATH cannot consume LLVM 22 bitcode in the MLIR static
+archives.  `build.rs` must prefer `${LLVM_PREFIX}/bin/clang` (Homebrew LLVM) before
+falling back to generic PATH search.  Explicit CC/CXX env vars still take priority.
+
+### Cross-arch embedded codegen fails silently
+
+CMake always builds for the host architecture.  If Cargo's TARGET differs in arch
+from HOST, the embedded C++ library will be wrong-arch.  Detect this at configure
+time and fail with a clear message rather than producing a broken binary.

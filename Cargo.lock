@@ -1464,6 +1464,7 @@ dependencies = [
 name = "hew-astgen"
 version = "0.2.0"
 dependencies = [
+ "hew-serialize",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

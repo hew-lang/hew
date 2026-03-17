@@ -983,3 +983,37 @@ functions returning `Result<T, IoError>` directly.
   explicit type args and handles them through the existing monomorphization path.
 - Added E2E tests: `generic_implicit_identity` (single-param, int + string) and
   `generic_implicit_multi` (multi-arg generic with int + string specializations).
+
+### Single-binary codegen cutover
+
+- **Decision:** Embed the C++ MLIR/LLVM codegen directly into the `hew` Rust binary
+  instead of shipping a separate `hew-codegen` executable.  The Rust driver calls the
+  C++ backend through a thin C API (`hew_codegen_compile_msgpack`) rather than spawning
+  a child process and piping MessagePack over stdin.
+
+- **Why:** Eliminates a process boundary (spawn + pipe + wait), removes a binary from
+  packaging, and makes the compiler self-contained.  Users install one binary that does
+  everything: parse, type-check, lower to LLVM IR, link.
+
+- **Architecture:** `hew-cli/build.rs` invokes CMake to compile the C++ code into
+  `libHewCodegenCAPI.a`.  CMake generates a `.cargo` file containing link directives
+  that Cargo reads — zero parsing, CMake is the sole authority on what to link.
+
+- **Static vs. shared:** `HEW_EMBED_STATIC=1` (release) statically links all of
+  MLIR + LLVM + libstdc++ into a ~127MB self-contained binary.  Dev mode uses shared
+  linking for ~2s incremental builds.  The `.cargo` file abstraction means the same
+  Rust code handles both modes.
+
+- **Key decisions:**
+  - Glob all `libMLIR*.a` / `libLLVM*.a` with `--start-group`/`--end-group` instead
+    of curating a library list (MLIR's cmake helpers miss transitive deps).
+  - Prefer `${LLVM_PREFIX}/bin/clang` over PATH clang to avoid Apple Clang on macOS.
+  - Reject cross-arch compilation with a clear error (host→target arch mismatch would
+    silently embed wrong-arch code).
+  - Clean cutover: no fallback to standalone binary, no compatibility paths.
+  - Standalone `hew-codegen` executable deleted.  CMake now builds only libraries and
+    test executables (test_mlirgen, test_mlir_dialect, test_translate).
+
+- **Removed from shipping:** standalone hew-codegen binary stripped from release.yml,
+  all installers (shell, PowerShell, Docker, Alpine, Debian, RPM, Arch, Nix, Homebrew),
+  and the nightly sanitizer workflow was simplified to use the same build directory.

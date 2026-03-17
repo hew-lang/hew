@@ -6716,6 +6716,7 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "next" => Ty::option(inner),
+                    "next_bytes" => Ty::Bytes,
                     "close" => Ty::Unit,
                     "lines" => Ty::stream(Ty::String),
                     "collect" => Ty::String,
@@ -6796,6 +6797,13 @@ impl Checker {
                         Ty::Unit
                     }
                     "close" | "flush" => Ty::Unit,
+                    "write_bytes" => {
+                        if let Some(arg) = args.first() {
+                            let (expr, sp) = arg.expr();
+                            self.check_against(expr, sp, &Ty::Bytes);
+                        }
+                        Ty::Unit
+                    }
                     "encode" => {
                         // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
                         Ty::sink(Ty::Var(TypeVar::fresh()))

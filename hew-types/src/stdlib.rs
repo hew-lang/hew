@@ -13,12 +13,14 @@ pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static
     match (stream_kind, method) {
         // Stream<T> methods
         ("Stream", "next") => Some("hew_stream_next"),
+        ("Stream", "next_bytes") => Some("hew_stream_next_bytes"),
         ("Stream", "close") => Some("hew_stream_close"),
         ("Stream", "lines") => Some("hew_stream_lines"),
         ("Stream", "chunks") => Some("hew_stream_chunks"),
         ("Stream", "collect") => Some("hew_stream_collect_string"),
         // Sink<T> methods
         ("Sink", "write") => Some("hew_sink_write_string"),
+        ("Sink", "write_bytes") => Some("hew_sink_write_bytes"),
         ("Sink", "flush") => Some("hew_sink_flush"),
         ("Sink", "close") => Some("hew_sink_close"),
         _ => None,

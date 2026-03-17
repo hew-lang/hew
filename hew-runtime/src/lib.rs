@@ -279,6 +279,8 @@ pub mod routing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod stream;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod stream_bytes;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tracing;
 
 // ── Ecosystem modules (feature-gated) ───────────────────────────────────────

@@ -2814,65 +2814,9 @@ impl Checker {
             }
         }
 
-        // Emit dead code warnings using reachability analysis.
-        // Entry points: main, actor handlers (Type::method), and _ prefixed functions.
-        let mut reachable = HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
+        self.emit_dead_code_warnings();
 
-        // Seed with entry points
-        for fn_name in self.fn_def_spans.keys() {
-            if fn_name == "main" || fn_name.contains("::") || fn_name.starts_with('_') {
-                reachable.insert(fn_name.clone());
-                queue.push_back(fn_name.clone());
-            }
-        }
-
-        // Also seed actor receive fns — they appear as call_graph keys
-        // (e.g. "Actor::method") but aren't in fn_def_spans.
-        for caller in self.call_graph.keys() {
-            if caller.contains("::") && reachable.insert(caller.clone()) {
-                queue.push_back(caller.clone());
-            }
-        }
-
-        // BFS through call graph
-        while let Some(caller) = queue.pop_front() {
-            if let Some(callees) = self.call_graph.get(&caller) {
-                for callee in callees {
-                    if reachable.insert(callee.clone()) {
-                        queue.push_back(callee.clone());
-                    }
-                }
-            }
-        }
-
-        for (fn_name, def_span) in &self.fn_def_spans {
-            if fn_name == "main" || fn_name.starts_with('_') {
-                continue;
-            }
-            // Skip receive handlers (Type::method format) and test functions
-            if fn_name.contains("::") {
-                continue;
-            }
-            // Skip stdlib module functions — imported modules register all their
-            // functions, and users typically only call a subset.
-            if fn_name.starts_with("std.") || fn_name.contains('.') {
-                continue;
-            }
-            if reachable.contains(fn_name) {
-                continue;
-            }
-            self.warnings.push(TypeError {
-                severity: crate::error::Severity::Warning,
-                kind: TypeErrorKind::DeadCode,
-                span: def_span.clone(),
-                message: format!("function `{fn_name}` is never called"),
-                notes: vec![],
-                suggestions: vec![format!(
-                    "if this is intentional, prefix with underscore: `_{fn_name}`"
-                )],
-            });
-        }
+        self.default_unconstrained_range_types(&expr_types);
 
         // Move data out of Checker — it is not used after check_program.
         // Resolve any remaining type variables in expr_types via the
@@ -2915,6 +2859,78 @@ impl Checker {
         output.cycle_capable_actors = cycle_capable;
 
         output
+    }
+
+    /// Default unconstrained Range type variables to i64.  When both range
+    /// bounds are coercible integer literals (e.g. `0..10`) the type checker
+    /// creates `Range<fresh_var>`.  If nothing constrains the variable it
+    /// reaches the serializer unresolved.  Bind those to i64 so both the
+    /// Range and any derived bindings (loop induction variable) resolve.
+    fn default_unconstrained_range_types(&mut self, expr_types: &HashMap<SpanKey, Ty>) {
+        for ty in expr_types.values() {
+            if let Ty::Named { name, args } = ty {
+                if name == "Range" && args.len() == 1 {
+                    if let Ty::Var(v) = &args[0] {
+                        if self.subst.lookup(*v).is_none() {
+                            self.subst.insert(*v, Ty::I64);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Emit warnings for functions that are never called (dead code).
+    /// Uses BFS reachability from entry points: main, actor handlers, and
+    /// underscore-prefixed functions.
+    fn emit_dead_code_warnings(&mut self) {
+        let mut reachable = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+
+        for fn_name in self.fn_def_spans.keys() {
+            if fn_name == "main" || fn_name.contains("::") || fn_name.starts_with('_') {
+                reachable.insert(fn_name.clone());
+                queue.push_back(fn_name.clone());
+            }
+        }
+
+        for caller in self.call_graph.keys() {
+            if caller.contains("::") && reachable.insert(caller.clone()) {
+                queue.push_back(caller.clone());
+            }
+        }
+
+        while let Some(caller) = queue.pop_front() {
+            if let Some(callees) = self.call_graph.get(&caller) {
+                for callee in callees {
+                    if reachable.insert(callee.clone()) {
+                        queue.push_back(callee.clone());
+                    }
+                }
+            }
+        }
+
+        for (fn_name, def_span) in &self.fn_def_spans {
+            if fn_name == "main" || fn_name.starts_with('_') || fn_name.contains("::") {
+                continue;
+            }
+            if fn_name.starts_with("std.") || fn_name.contains('.') {
+                continue;
+            }
+            if reachable.contains(fn_name) {
+                continue;
+            }
+            self.warnings.push(TypeError {
+                severity: crate::error::Severity::Warning,
+                kind: TypeErrorKind::DeadCode,
+                span: def_span.clone(),
+                message: format!("function `{fn_name}` is never called"),
+                notes: vec![],
+                suggestions: vec![format!(
+                    "if this is intentional, prefix with underscore: `_{fn_name}`"
+                )],
+            });
+        }
     }
 
     fn check_item(&mut self, item: &Item, span: &Span) {

@@ -221,6 +221,17 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     "async generator type is not representable in serialized TypeExpr",
                 ));
             }
+            ("Range", 1) => {
+                let inner = match &args[0] {
+                    Ty::Var(_) => &Ty::I64,
+                    other => other,
+                };
+                let inner_expr = require_converted(inner, "Range element type")?;
+                TypeExpr::Named {
+                    name: "Range".into(),
+                    type_args: Some(vec![inner_expr]),
+                }
+            }
             _ => {
                 let type_args = if args.is_empty() {
                     None

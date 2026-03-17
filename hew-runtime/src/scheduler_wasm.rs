@@ -396,6 +396,9 @@ unsafe fn activate_actor_wasm(actor: *mut HewActor) {
     if cur_state == HewActorState::Stopping as i32 {
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
+        // NOTE: WASM terminate is handled by the WASM hew_actor_close path
+        // or by cleanup_all_actors at process exit. The WASM scheduler's
+        // HewActor struct is a simplified copy without terminate_fn.
         return;
     }
 

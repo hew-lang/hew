@@ -1,0 +1,5 @@
+=== Terminate On Stop ===
+worker 1 ping
+worker 1 terminated
+after stop
+=== End ===

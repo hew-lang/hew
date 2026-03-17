@@ -240,13 +240,20 @@ pub unsafe extern "C" fn hew_scope_wait_all(scope: *mut HewScope) {
         }
         // CAS to STOPPED if not already.
         let state = a.actor_state.load(Ordering::Acquire);
-        if state != HewActorState::Stopped as i32 {
-            let _ = a.actor_state.compare_exchange(
-                state,
-                HewActorState::Stopped as i32,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+        if state != HewActorState::Stopped as i32
+            && state != HewActorState::Crashed as i32
+            && a.actor_state
+                .compare_exchange(
+                    state,
+                    HewActorState::Stopped as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+        {
+            // Won the CAS — run terminate for this actor.
+            // SAFETY: actor just transitioned to Stopped; not being dispatched.
+            unsafe { actor::call_terminate_fn(actor_ptr) };
         }
     }
 

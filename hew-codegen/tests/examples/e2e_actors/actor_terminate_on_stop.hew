@@ -1,0 +1,24 @@
+// Test: terminate block runs at actor stop, not at process exit
+// Exercises: stop(ref) triggers terminate; output appears before "after stop"
+actor Worker {
+    let id: int;
+
+    receive fn ping() {
+        println(f"worker {id} ping");
+    }
+
+    terminate {
+        println(f"worker {id} terminated");
+    }
+}
+
+fn main() {
+    println("=== Terminate On Stop ===");
+    let w = spawn Worker(id: 1);
+    await w.ping();
+    stop(w);
+    // Give scheduler time to finalise STOPPING → STOPPED and run terminate.
+    sleep_ms(100);
+    println("after stop");
+    println("=== End ===");
+}

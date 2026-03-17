@@ -232,7 +232,7 @@ struct ExitMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64};
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
@@ -249,6 +249,7 @@ mod tests {
             init_state_size: 0,
             coalesce_key_fn: None,
             terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: std::ptr::null_mut(),
             supervisor_child_index: 0,

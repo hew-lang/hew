@@ -719,6 +719,20 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         }
       }
     }
+    // Track MPSC channel handle variables so the codegen uses ptr not struct.
+    if (stmt.value) {
+      if (auto *ce = std::get_if<ast::ExprCall>(&stmt.value->value.kind)) {
+        if (ce->function) {
+          if (auto *fi = std::get_if<ast::ExprIdentifier>(&ce->function->value.kind)) {
+            if (fi->name == "hew_channel_sender_clone" ||
+                fi->name == "hew_channel_pair_sender")
+              handleVarTypes[varName] = "Sender";
+            else if (fi->name == "hew_channel_pair_receiver")
+              handleVarTypes[varName] = "Receiver";
+          }
+        }
+      }
+    }
 
     // Vec/HashMap string getters now return owned (strdup'd) copies
     bool isBorrowedGetString = false;

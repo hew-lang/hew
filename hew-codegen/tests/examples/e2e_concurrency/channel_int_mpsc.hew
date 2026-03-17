@@ -1,0 +1,28 @@
+import std::channel::channel;
+
+fn producer(tx: Sender, base: int) {
+    tx.send(base + 1);
+    tx.send(base + 2);
+    tx.close();
+}
+
+fn main() {
+    let (tx, rx) = channel.new(8);
+    let tx2 = tx.clone();
+
+    // Two producers send distinct integer ranges.
+    producer(tx, 100);
+    producer(tx2, 200);
+
+    // Drain all messages and print.
+    var count: int = 0;
+    var val = rx.recv();
+    while val != 0 {
+        println(val);
+        count = count + 1;
+        val = rx.recv();
+    }
+
+    println(count);
+    rx.close();
+}

@@ -1,0 +1,26 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+
+    // Send two messages, then close.
+    tx.send("alpha");
+    tx.send("beta");
+    tx.close();
+
+    // try_recv should return the messages.
+    let first = rx.try_recv();
+    let second = rx.try_recv();
+    // After both consumed and sender closed, try_recv returns empty string.
+    let third = rx.try_recv();
+
+    println(first);
+    println(second);
+
+    // third is empty string — channel drained and closed.
+    if third == "" {
+        println("empty");
+    }
+
+    rx.close();
+}

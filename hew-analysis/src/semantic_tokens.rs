@@ -16,7 +16,7 @@ const PRIMITIVE_TYPE_NAMES: &[&str] = &[
 ];
 
 /// Well-known generic/collection/concurrency type names from the standard
-/// library.  These are always PascalCase, so they'd be caught by the
+/// library.  These are always `PascalCase`, so they'd be caught by the
 /// `starts_with(uppercase)` heuristic below, but listing them explicitly
 /// makes the classification deterministic across source positions.
 const BUILTIN_TYPE_NAMES: &[&str] = &[

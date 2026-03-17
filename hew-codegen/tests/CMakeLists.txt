@@ -359,6 +359,8 @@ add_e2e_file_test(actor_message_ordering  e2e_actors actor_message_ordering)
 add_e2e_file_test(actor_this_complex      e2e_actors actor_this_complex)
 add_e2e_file_test(actor_field_mutation    e2e_actors actor_field_mutation)
 add_e2e_file_test(actor_periodic_timer   e2e_actors actor_periodic_timer)
+add_e2e_file_test(actor_terminate        e2e_actors actor_terminate)
+add_e2e_file_test(actor_terminate_fields e2e_actors actor_terminate_fields)
 
 # Concurrency (8 tests)
 add_e2e_file_test(supervision_basic   e2e_concurrency actor_supervision_basic)

@@ -1,0 +1,22 @@
+// Test: Actor terminate block — basic cleanup on shutdown
+// Exercises: terminate block runs when actor is freed
+actor Logger {
+    let label: string;
+
+    receive fn log(msg: string) {
+        println(f"[{label}] {msg}");
+    }
+
+    terminate {
+        println(f"[{label}] shutting down");
+    }
+}
+
+fn main() {
+    println("=== Actor Terminate ===");
+    let a = spawn Logger(label: "app");
+    a.log("hello");
+    a.log("world");
+    await a.log("done");
+    println("=== End ===");
+}

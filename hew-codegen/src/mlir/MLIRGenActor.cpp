@@ -148,7 +148,6 @@ void MLIRGen::registerActorDecl(const ast::ActorDecl &decl) {
   actorInfo.fieldHewTypes = std::move(fieldHewTypes);
   actorInfo.numUserFields = numUserFields;
   actorInfo.initParamNames = std::move(initParamNames);
-  actorInfo.hasTerminate = decl.terminate.has_value();
   actorInfo.mailboxCapacity = decl.mailbox_capacity;
 
   if (decl.overflow_policy) {

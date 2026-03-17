@@ -38,6 +38,9 @@ fn item_to_symbol(item: &Item, item_span: OffsetSpan) -> SymbolInfo {
             if a.init.is_some() {
                 children.push(make_symbol("init", SymbolKind::Constructor, item_span));
             }
+            if a.terminate.is_some() {
+                children.push(make_symbol("terminate", SymbolKind::Method, item_span));
+            }
             for recv in &a.receive_fns {
                 let recv_span = if recv.span.is_empty() {
                     item_span

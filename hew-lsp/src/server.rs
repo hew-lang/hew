@@ -1881,6 +1881,9 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
             if let Some(init) = &a.init {
                 count_idents_in_block(&init.body, counts);
             }
+            if let Some(term) = &a.terminate {
+                count_idents_in_block(&term.body, counts);
+            }
             for recv in &a.receive_fns {
                 count_idents_in_block(&recv.body, counts);
             }

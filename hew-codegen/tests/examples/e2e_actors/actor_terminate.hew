@@ -1,5 +1,5 @@
 // Test: Actor terminate block — basic cleanup on shutdown
-// Exercises: terminate block runs when actor is freed
+// Exercises: terminate block runs at process exit for actors still idle
 actor Logger {
     let label: string;
 

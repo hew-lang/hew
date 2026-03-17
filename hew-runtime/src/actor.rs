@@ -164,6 +164,11 @@ pub struct HewActor {
     /// Guard flag ensuring the terminate callback runs exactly once.
     pub terminate_called: AtomicBool,
 
+    /// Set to `true` after the terminate callback returns (or was skipped).
+    /// Free paths spin-wait on this to avoid freeing state while terminate
+    /// is still running on another thread.
+    pub terminate_finished: AtomicBool,
+
     /// Error code set by `hew_actor_trap` (0 = no error).
     pub error_code: AtomicI32,
 
@@ -349,6 +354,14 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // SAFETY: Caller guarantees `actor` is valid.
     let a = unsafe { &*actor };
 
+    // Wait for any in-progress terminate callback to complete. This
+    // prevents freeing state while another thread is running terminate.
+    while a.terminate_called.load(Ordering::Acquire)
+        && !a.terminate_finished.load(Ordering::Acquire)
+    {
+        std::hint::spin_loop();
+    }
+
     // SAFETY: State was malloc'd by deep_copy_state.
     unsafe {
         libc::free(a.state);
@@ -423,10 +436,12 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     }
 
     let Some(terminate_fn) = a.terminate_fn else {
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     };
 
     if a.state.is_null() {
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     }
 
@@ -466,12 +481,14 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         }
     } else {
         // Terminate block crashed via signal/longjmp. The actor is
-        // already in a terminal state so hew_actor_trap would be a
-        // no-op — just clear the recovery context and log.
-        crate::signal::clear_dispatch_recovery();
-        eprintln!("hew: actor {} terminate block crashed", a.id);
+        // already in a terminal state so hew_actor_trap is a no-op for
+        // the state transition, but handle_crash_recovery properly
+        // clears in_recovery and logs a crash report.
+        // SAFETY: called immediately after sigsetjmp returned non-zero.
+        unsafe { crate::signal::handle_crash_recovery() };
     }
 
+    a.terminate_finished.store(true, Ordering::Release);
     set_current_actor(prev_actor);
 }
 
@@ -491,12 +508,13 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
         return;
     }
 
-    let terminate_fn = match a.terminate_fn {
-        Some(f) => f,
-        None => return,
+    let Some(terminate_fn) = a.terminate_fn else {
+        a.terminate_finished.store(true, Ordering::Release);
+        return;
     };
 
     if a.state.is_null() {
+        a.terminate_finished.store(true, Ordering::Release);
         return;
     }
 
@@ -504,6 +522,7 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         unsafe { terminate_fn(state) };
     }));
+    a.terminate_finished.store(true, Ordering::Release);
 }
 
 /// Actor spawn options for [`hew_actor_spawn_opts`].
@@ -608,6 +627,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         coalesce_key_fn: None,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -692,6 +712,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         coalesce_key_fn: opts.coalesce_key_fn,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -757,6 +778,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         coalesce_key_fn: None,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -1050,6 +1072,13 @@ pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
         return -1;
     }
 
+    // Run terminate for actors freed while still Idle (never explicitly
+    // stopped). terminate_called prevents double-execution.
+    if state != HewActorState::Crashed as i32 {
+        // SAFETY: actor is valid, not being dispatched (wait loop above).
+        unsafe { call_terminate_fn(actor) };
+    }
+
     // SAFETY: Caller guarantees `actor` is valid and not being dispatched.
     unsafe { free_actor_resources(actor) };
     0
@@ -1098,9 +1127,10 @@ pub unsafe extern "C" fn hew_actor_get_budget(actor: *const HewActor) -> u32 {
 
 /// Register a terminate callback on an actor.
 ///
-/// The terminate function is called with the actor's state pointer just
-/// before the actor's resources are freed. Panics inside the callback
-/// are caught and do not prevent cleanup.
+/// The terminate function is called with the actor's state pointer when
+/// the actor transitions to the Stopped state (or at process exit for
+/// actors still idle). Panics inside the callback are caught and do not
+/// prevent cleanup.
 ///
 /// # Safety
 ///
@@ -1971,6 +2001,7 @@ pub unsafe extern "C" fn hew_actor_spawn(
         coalesce_key_fn: None,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -2025,6 +2056,7 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         coalesce_key_fn: None,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -2094,6 +2126,7 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         coalesce_key_fn: opts.coalesce_key_fn,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,

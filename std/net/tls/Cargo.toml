@@ -16,7 +16,7 @@ crate-type = ["staticlib", "lib"]
 hew-cabi = { path = "../../../hew-cabi" }
 hew-runtime = { path = "../../../hew-runtime" }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-webpki-roots = "0.26"
+webpki-roots = "1"
 libc = "0.2"
 
 [lints]

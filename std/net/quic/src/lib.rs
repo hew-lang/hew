@@ -193,7 +193,7 @@ fn server_config_from_pem(cert_pem: &str, key_pem: &str) -> Result<ServerConfig,
 fn self_signed_server_config() -> Result<ServerConfig, BoxError> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let cert_der = CertificateDer::from(cert.cert);
-    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
 
     let crypto = rustls::ServerConfig::builder_with_provider(ring_provider())
         .with_protocol_versions(rustls::DEFAULT_VERSIONS)?
@@ -1782,7 +1782,7 @@ mod tests {
             .expect("self-signed test certificate");
         let cert_pem = CString::new(cert.cert.pem()).expect("certificate PEM must be NUL-free");
         let key_pem =
-            CString::new(cert.key_pair.serialize_pem()).expect("key PEM must be NUL-free");
+            CString::new(cert.signing_key.serialize_pem()).expect("key PEM must be NUL-free");
         let addr = c":0";
 
         // SAFETY: all C strings are valid and NUL-terminated.

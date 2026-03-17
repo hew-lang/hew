@@ -83,6 +83,17 @@ fn push_node(stack: &mut [Frame], top_level: &mut Vec<XmlNodeKind>, node: XmlNod
     }
 }
 
+/// Flush the accumulated text buffer into the tree if it contains
+/// non-whitespace content.
+fn flush_text(buf: &mut String, stack: &mut [Frame], top_level: &mut Vec<XmlNodeKind>) {
+    if buf.trim().is_empty() {
+        buf.clear();
+    } else {
+        let text = std::mem::take(buf);
+        push_node(stack, top_level, XmlNodeKind::Text(text));
+    }
+}
+
 /// Build a tree of [`XmlNodeKind`] from an XML string using quick-xml.
 fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
     use quick_xml::events::Event;
@@ -92,9 +103,17 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
     let mut stack: Vec<Frame> = Vec::new();
     let mut top_level: Vec<XmlNodeKind> = Vec::new();
 
+    // quick-xml 0.38+ emits entity references (`&lt;`, `&amp;`, etc.) as
+    // separate `Event::GeneralRef` events rather than embedding them in
+    // `BytesText`.  We accumulate consecutive Text and GeneralRef events
+    // into a single buffer and flush it as one `XmlNodeKind::Text` when a
+    // non-text event arrives.
+    let mut text_buf = String::new();
+
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
+                flush_text(&mut text_buf, &mut stack, &mut top_level);
                 let (tag, attributes) = extract_tag_and_attrs(e);
                 stack.push(Frame {
                     tag,
@@ -103,6 +122,7 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
                 });
             }
             Ok(Event::End(_)) => {
+                flush_text(&mut text_buf, &mut stack, &mut top_level);
                 let frame = stack.pop()?;
                 let node = XmlNodeKind::Element {
                     tag: frame.tag,
@@ -112,6 +132,7 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
                 push_node(&mut stack, &mut top_level, node);
             }
             Ok(Event::Empty(ref e)) => {
+                flush_text(&mut text_buf, &mut stack, &mut top_level);
                 let (tag, attributes) = extract_tag_and_attrs(e);
                 let node = XmlNodeKind::Element {
                     tag,
@@ -121,18 +142,31 @@ fn parse_xml(xml: &str) -> Option<XmlNodeKind> {
                 push_node(&mut stack, &mut top_level, node);
             }
             Ok(Event::Text(ref e)) => {
-                let text = e.unescape().ok()?.to_string();
-                if !text.trim().is_empty() {
-                    push_node(&mut stack, &mut top_level, XmlNodeKind::Text(text));
-                }
+                text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
+            Ok(Event::GeneralRef(ref e)) => match e.as_ref() {
+                b"lt" => text_buf.push('<'),
+                b"gt" => text_buf.push('>'),
+                b"amp" => text_buf.push('&'),
+                b"quot" => text_buf.push('"'),
+                b"apos" => text_buf.push('\''),
+                _ => {
+                    if let Ok(Some(ch)) = e.resolve_char_ref() {
+                        text_buf.push(ch);
+                    }
+                }
+            },
             Ok(Event::CData(ref e)) => {
+                flush_text(&mut text_buf, &mut stack, &mut top_level);
                 let text = String::from_utf8_lossy(e.as_ref()).to_string();
                 if !text.is_empty() {
                     push_node(&mut stack, &mut top_level, XmlNodeKind::Text(text));
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok(Event::Eof) => {
+                flush_text(&mut text_buf, &mut stack, &mut top_level);
+                break;
+            }
             Ok(_) => {}
             Err(_) => return None,
         }

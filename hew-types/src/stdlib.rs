@@ -41,6 +41,7 @@ pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static
     match (stream_kind, method) {
         // Stream<T> methods
         ("Stream", "next") => Some("hew_stream_next"),
+        ("Stream", "next_bytes") => Some("hew_stream_next_bytes"),
         ("Stream", "close") => Some("hew_stream_close"),
         ("Stream", "lines") => Some("hew_stream_lines"),
         ("Stream", "chunks") => Some("hew_stream_chunks"),

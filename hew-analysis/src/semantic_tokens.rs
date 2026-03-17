@@ -8,6 +8,48 @@ use hew_lexer::Token;
 
 use crate::{token_modifiers, token_types, SemanticToken};
 
+/// Primitive type names that the lexer emits as `Identifier` but should be
+/// highlighted as types.
+const PRIMITIVE_TYPE_NAMES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "bool",
+    "char", "string", "bytes", "void", "never", "duration",
+];
+
+/// Well-known generic/collection/concurrency type names from the standard
+/// library.  These are always `PascalCase`, so they'd be caught by the
+/// `starts_with(uppercase)` heuristic below, but listing them explicitly
+/// makes the classification deterministic across source positions.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
+    "Result",
+    "Option",
+    "Ok",
+    "Err",
+    "Some",
+    "None",
+    "Vec",
+    "HashMap",
+    "Arc",
+    "Rc",
+    "Weak",
+    "ActorRef",
+    "Task",
+    "Scope",
+    "Generator",
+    "AsyncGenerator",
+    "Stream",
+    "Sink",
+    "Send",
+    "Frozen",
+    "Copy",
+    "Range",
+    "ActorStream",
+];
+
+/// Returns `true` if `name` is a known type name (primitive or builtin).
+fn is_type_name(name: &str) -> bool {
+    PRIMITIVE_TYPE_NAMES.contains(&name) || BUILTIN_TYPE_NAMES.contains(&name)
+}
+
 /// Classify a single lexer token into a semantic token type index.
 fn classify_token(token: &Token<'_>) -> Option<u32> {
     if token.is_keyword() {
@@ -45,6 +87,12 @@ fn is_type_decl_context(prev: Option<&Token<'_>>) -> bool {
     prev.is_some_and(Token::is_type_decl_keyword)
 }
 
+/// Returns `true` if the previous token introduces a type annotation context
+/// (`:` or `->`), meaning the next identifier is likely a type name.
+fn is_type_annotation_context(prev: Option<&Token<'_>>) -> bool {
+    matches!(prev, Some(Token::Colon | Token::Arrow))
+}
+
 /// Build semantic tokens from Hew source code.
 ///
 /// Returns a list of [`SemanticToken`] values with **absolute byte offsets**
@@ -60,13 +108,22 @@ pub fn build_semantic_tokens(source: &str) -> Vec<SemanticToken> {
         let Some(mut token_type) = classify_token(token) else {
             continue;
         };
-        if matches!(token, Token::Identifier(_)) {
+        if let Token::Identifier(name) = token {
             let prev = i
                 .checked_sub(1)
                 .and_then(|idx| lexer_tokens.get(idx).map(|(prev, _)| prev));
             if is_function_decl_context(prev) {
                 token_type = token_types::FUNCTION;
             } else if is_type_decl_context(prev) {
+                token_type = token_types::TYPE;
+            } else if is_type_name(name) {
+                // Known primitive/builtin type name — always a type regardless
+                // of position.
+                token_type = token_types::TYPE;
+            } else if is_type_annotation_context(prev)
+                && name.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                // PascalCase identifier after `:` or `->` — user-defined type.
                 token_type = token_types::TYPE;
             }
         }
@@ -158,6 +215,99 @@ mod tests {
         // `calc` should be typed as FUNCTION
         let calc = tokens.iter().find(|t| t.start == 3).unwrap();
         assert_eq!(calc.token_type, token_types::FUNCTION);
+    }
+
+    #[test]
+    fn param_type_annotation_classified_as_type() {
+        let tokens = build_semantic_tokens("fn f(x: i32) {}");
+        // `i32` at byte offset 8 should be TYPE, not VARIABLE
+        let i32_tok = tokens.iter().find(|t| t.start == 8).unwrap();
+        assert_eq!(
+            i32_tok.token_type,
+            token_types::TYPE,
+            "i32 in parameter type should be TYPE"
+        );
+    }
+
+    #[test]
+    fn return_type_classified_as_type() {
+        let tokens = build_semantic_tokens("fn f() -> f64 { 0.0 }");
+        // `f64` after `->` should be TYPE
+        let f64_tok = tokens
+            .iter()
+            .find(|t| {
+                t.token_type == token_types::TYPE
+                    && &"fn f() -> f64 { 0.0 }"[t.start..t.start + t.length] == "f64"
+            })
+            .expect("f64 return type should be classified as TYPE");
+        assert_eq!(f64_tok.token_type, token_types::TYPE);
+    }
+
+    #[test]
+    fn let_type_annotation_classified_as_type() {
+        let tokens = build_semantic_tokens("let x: u8 = 0;");
+        let u8_tok = tokens
+            .iter()
+            .find(|t| {
+                let text = &"let x: u8 = 0;"[t.start..t.start + t.length];
+                text == "u8"
+            })
+            .expect("u8 type annotation should produce a token");
+        assert_eq!(
+            u8_tok.token_type,
+            token_types::TYPE,
+            "u8 in let type annotation should be TYPE"
+        );
+    }
+
+    #[test]
+    fn user_type_after_colon_classified_as_type() {
+        let tokens = build_semantic_tokens("fn f(p: Point) {}");
+        let point_tok = tokens
+            .iter()
+            .find(|t| {
+                let text = &"fn f(p: Point) {}"[t.start..t.start + t.length];
+                text == "Point"
+            })
+            .expect("Point type should produce a token");
+        assert_eq!(
+            point_tok.token_type,
+            token_types::TYPE,
+            "PascalCase identifier after `:` should be TYPE"
+        );
+    }
+
+    #[test]
+    fn lowercase_identifier_after_colon_stays_variable() {
+        // In struct init or named args, `name: value` — value stays VARIABLE
+        let source = "fn f() { let x = Foo { name: val }; }";
+        let tokens = build_semantic_tokens(source);
+        let val_tok = tokens
+            .iter()
+            .find(|t| &source[t.start..t.start + t.length] == "val")
+            .expect("val should produce a token");
+        assert_eq!(
+            val_tok.token_type,
+            token_types::VARIABLE,
+            "lowercase identifier after `:` in struct init should stay VARIABLE"
+        );
+    }
+
+    #[test]
+    fn all_primitive_types_classified() {
+        for ty in super::PRIMITIVE_TYPE_NAMES {
+            let source = format!("fn f(x: {ty}) {{}}");
+            let tokens = build_semantic_tokens(&source);
+            let ty_tok = tokens
+                .iter()
+                .find(|t| &source[t.start..t.start + t.length] == *ty)
+                .unwrap_or_else(|| panic!("{ty} should produce a token"));
+            assert_eq!(
+                ty_tok.token_type,
+                token_types::TYPE,
+                "{ty} should be classified as TYPE"
+            );
+        }
     }
 
     #[test]

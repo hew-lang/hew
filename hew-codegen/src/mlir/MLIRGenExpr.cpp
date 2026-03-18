@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <functional>
 #include <string>
 
 using namespace hew;
@@ -4856,7 +4857,43 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   funcLevelDropExcludeVars.clear();
   if (lam.body) {
-    auto collectReturnVars = [](const ast::Expr &expr, std::set<std::string> &out) {
+    // Mutually recursive helpers: expr ↔ block ↔ stmtIf
+    auto &excludeVars = funcLevelDropExcludeVars;
+    std::function<void(const ast::Expr &, std::set<std::string> &)> collectReturnVars;
+    std::function<void(const ast::Block &, std::set<std::string> &)> fromBlock;
+    std::function<void(const ast::StmtIf &, std::set<std::string> &)> fromStmtIf;
+    fromStmtIf = [&fromBlock, &fromStmtIf](
+        const ast::StmtIf &si, std::set<std::string> &out) {
+      fromBlock(si.then_block, out);
+      if (si.else_block) {
+        if (si.else_block->block)
+          fromBlock(*si.else_block->block, out);
+        if (si.else_block->if_stmt) {
+          const auto &nested = si.else_block->if_stmt->value;
+          if (auto *nif = std::get_if<ast::StmtIf>(&nested.kind))
+            fromStmtIf(*nif, out);
+        }
+      }
+    };
+    fromBlock = [&collectReturnVars, &fromStmtIf](
+        const ast::Block &blk, std::set<std::string> &out) {
+      if (blk.trailing_expr) {
+        collectReturnVars(blk.trailing_expr->value, out);
+      } else if (!blk.stmts.empty()) {
+        const auto &last = blk.stmts.back()->value;
+        if (auto *es = std::get_if<ast::StmtExpression>(&last.kind))
+          collectReturnVars(es->expr.value, out);
+        else if (auto *ifs = std::get_if<ast::StmtIf>(&last.kind))
+          fromStmtIf(*ifs, out);
+        else if (auto *ms = std::get_if<ast::StmtMatch>(&last.kind)) {
+          for (const auto &arm : ms->arms)
+            if (arm.body)
+              collectReturnVars(arm.body->value, out);
+        }
+      }
+    };
+    collectReturnVars = [&collectReturnVars, &fromBlock](
+        const ast::Expr &expr, std::set<std::string> &out) {
       if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
         out.insert(id->name);
       } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
@@ -4864,20 +4901,31 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
           if (auto *fid = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
             out.insert(fid->name);
         }
+      } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block)
+          collectReturnVars(ifE->then_block->value, out);
+        if (ifE->else_block && *ifE->else_block)
+          collectReturnVars((*ifE->else_block)->value, out);
+      } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        fromBlock(ifLet->body, out);
+        if (ifLet->else_body)
+          fromBlock(*ifLet->else_body, out);
+      } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms) {
+          if (arm.body)
+            collectReturnVars(arm.body->value, out);
+        }
+      } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+        fromBlock(blockE->block, out);
       }
     };
-    // If the body is a block expression, look at its trailing expression.
+    // If the body is a block expression, use fromBlock to handle
+    // trailing expressions and StmtIf/StmtMatch in last position.
     if (auto *blockExpr = std::get_if<ast::ExprBlock>(&lam.body->value.kind)) {
-      if (blockExpr->block.trailing_expr) {
-        collectReturnVars(blockExpr->block.trailing_expr->value, funcLevelDropExcludeVars);
-      } else if (!blockExpr->block.stmts.empty()) {
-        const auto &lastStmt = blockExpr->block.stmts.back()->value;
-        if (auto *es = std::get_if<ast::StmtExpression>(&lastStmt.kind))
-          collectReturnVars(es->expr.value, funcLevelDropExcludeVars);
-      }
+      fromBlock(blockExpr->block, excludeVars);
     } else {
       // Simple expression body — e.g. `(x) => x`
-      collectReturnVars(lam.body->value, funcLevelDropExcludeVars);
+      collectReturnVars(lam.body->value, excludeVars);
     }
   }
 

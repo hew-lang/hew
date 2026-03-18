@@ -6791,8 +6791,10 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 // Reject concrete element types that lack runtime
                 // implementations.  Only String and bytes are supported;
-                // type variables pass through (checked at instantiation).
-                let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_));
+                // type variables and Ty::Error pass through (Error
+                // preserves the original diagnostic instead of masking it).
+                let is_supported =
+                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
                 if !is_supported {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -6889,7 +6891,8 @@ impl Checker {
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_));
+                let is_supported =
+                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
                 if !is_supported {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

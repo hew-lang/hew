@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <string>
@@ -3757,7 +3758,46 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // For struct init expressions, collect all field variable references to
   // prevent double-free when the struct takes ownership of the values.
   funcLevelDropExcludeVars.clear();
-  auto collectExcludeVars = [](const ast::Expr &expr, std::set<std::string> &out) {
+  // Recursively collect identifiers from the return position of an
+  // expression (including if/match/block branches) so their owning
+  // variables are excluded from the function-level drop scope.
+  // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
+  std::function<void(const ast::Expr &, std::set<std::string> &)> collectExcludeVars;
+  std::function<void(const ast::Block &, std::set<std::string> &)> collectExcludeVarsFromBlock;
+  std::function<void(const ast::StmtIf &, std::set<std::string> &)> collectExcludeVarsFromStmtIf;
+  collectExcludeVarsFromStmtIf = [&collectExcludeVarsFromBlock, &collectExcludeVarsFromStmtIf](
+      const ast::StmtIf &ifStmt, std::set<std::string> &out) {
+    collectExcludeVarsFromBlock(ifStmt.then_block, out);
+    if (ifStmt.else_block) {
+      if (ifStmt.else_block->block)
+        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out);
+      if (ifStmt.else_block->if_stmt) {
+        const auto &nested = ifStmt.else_block->if_stmt->value;
+        if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+          collectExcludeVarsFromStmtIf(*nestedIf, out);
+      }
+    }
+  };
+  collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf](
+      const ast::Block &blk, std::set<std::string> &out) {
+    if (blk.trailing_expr) {
+      collectExcludeVars(blk.trailing_expr->value, out);
+    } else if (!blk.stmts.empty()) {
+      const auto &last = blk.stmts.back()->value;
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
+        collectExcludeVars(exprStmt->expr.value, out);
+      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
+        collectExcludeVarsFromStmtIf(*ifStmt, out);
+      } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
+        for (const auto &arm : matchStmt->arms) {
+          if (arm.body)
+            collectExcludeVars(arm.body->value, out);
+        }
+      }
+    }
+  };
+  collectExcludeVars = [&collectExcludeVars, &collectExcludeVarsFromBlock](
+      const ast::Expr &expr, std::set<std::string> &out) {
     if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
       out.insert(identExpr->name);
     } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
@@ -3765,16 +3805,25 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
           out.insert(id->name);
       }
+    } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+      if (ifE->then_block)
+        collectExcludeVars(ifE->then_block->value, out);
+      if (ifE->else_block && *ifE->else_block)
+        collectExcludeVars((*ifE->else_block)->value, out);
+    } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+      collectExcludeVarsFromBlock(ifLet->body, out);
+      if (ifLet->else_body)
+        collectExcludeVarsFromBlock(*ifLet->else_body, out);
+    } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+      for (const auto &arm : matchE->arms) {
+        if (arm.body)
+          collectExcludeVars(arm.body->value, out);
+      }
+    } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+      collectExcludeVarsFromBlock(blockE->block, out);
     }
   };
-  if (fn.body.trailing_expr) {
-    collectExcludeVars(fn.body.trailing_expr->value, funcLevelDropExcludeVars);
-  } else if (!fn.body.stmts.empty()) {
-    const auto &last = fn.body.stmts.back()->value;
-    if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
-      collectExcludeVars(exprStmt->expr.value, funcLevelDropExcludeVars);
-    }
-  }
+  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars);
 
   // Generate the function body
   mlir::Value bodyValue = generateBlock(fn.body);

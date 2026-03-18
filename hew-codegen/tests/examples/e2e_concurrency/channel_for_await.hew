@@ -1,0 +1,19 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+
+    tx.send("hello");
+    tx.send("world");
+    tx.send("");
+    tx.close();
+
+    // for await drains the channel, breaking on None (channel closed).
+    // Empty string "" must be received, not confused with closure.
+    for await msg in rx {
+        println(f"got: [{msg}]");
+    }
+
+    println("done");
+    rx.close();
+}

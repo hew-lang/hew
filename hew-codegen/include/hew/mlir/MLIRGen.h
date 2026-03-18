@@ -644,6 +644,7 @@ private:
   std::unordered_map<std::string, std::string> streamHandleVarTypes;
 
   void generateForStreamStmt(const ast::StmtFor &stmt);
+  void generateForReceiverStmt(const ast::StmtFor &stmt, const ast::TypeNamed *receiverType);
 
   // Hidden __gen_frame field index in actor state struct:
   // "ActorName.methodName" → struct field index (for storing HewGenCtx*)

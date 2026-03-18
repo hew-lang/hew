@@ -1670,6 +1670,212 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
   }
 }
 
+// ── for await: channel Receiver<T> iteration ────────────────────────────
+//
+// Lowers `for await item in rx { body }` into a loop that calls
+// hew_channel_recv (string) or hew_channel_recv_int (int) on each
+// iteration, breaking when the channel is closed.
+void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
+                                      const ast::TypeNamed *receiverType) {
+  auto location = currentLoc;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  auto i1Type = builder.getI1Type();
+  auto i32Type = builder.getI32Type();
+  auto i64Type = builder.getI64Type();
+
+  // Determine element type: int or string (default).
+  bool isIntChannel = false;
+  if (receiverType && receiverType->type_args && !receiverType->type_args->empty()) {
+    if (auto *inner = std::get_if<ast::TypeNamed>(&(*receiverType->type_args)[0].value.kind))
+      isIntChannel = (inner->name == "int" || inner->name == "i64");
+  }
+
+  // Generate the receiver pointer expression.
+  mlir::Value rxPtr = generateExpression(stmt.iterable.value);
+  if (!rxPtr)
+    return;
+
+  // Loop-control flags (break/continue/return support).
+  auto lc = pushLoopControl(stmt.label, location);
+
+  if (isIntChannel) {
+    // ── Int channel: recv_int(rx, &out_valid) → i64 ────────────────
+    // Hoist or reuse the shared out_valid alloca.
+    if (!channelIntOutValidAlloca) {
+      auto savedIP = builder.saveInsertionPoint();
+      auto &entryBlock = currentFunction.front();
+      builder.setInsertionPointToStart(&entryBlock);
+      auto one = mlir::arith::ConstantIntOp::create(builder, builder.getUnknownLoc(), 1, 64);
+      channelIntOutValidAlloca =
+          mlir::LLVM::AllocaOp::create(builder, builder.getUnknownLoc(), ptrType, i32Type, one);
+      builder.restoreInsertionPoint(savedIP);
+    }
+
+    // Alloca to pass the received value from before-region to after-region.
+    auto one64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
+    auto itemAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, i64Type, one64);
+
+    auto whileOp =
+        mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
+
+    // ── Before region: recv and check validity ──
+    auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
+    builder.setInsertionPointToStart(beforeBlock);
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i64Type});
+    getOrCreateExternFunc("hew_channel_recv_int", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv_int");
+    auto rawVal =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type}, calleeAttr,
+                                   mlir::ValueRange{rxPtr, channelIntOutValidAlloca})
+            .getResult();
+    mlir::LLVM::StoreOp::create(builder, location, rawVal, itemAlloca);
+
+    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+    auto zero32 = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                               validFlag, zero32);
+    auto isActive =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+    mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isValid, isActive);
+    combinedCond = andNotReturned(combinedCond, location);
+
+    mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
+
+    // ── After region: bind loop variable, run body ──
+    auto *afterBlock = builder.createBlock(&whileOp.getAfter());
+    builder.setInsertionPointToStart(afterBlock);
+    auto falseVal = createIntConstant(builder, location, i1Type, 0);
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
+
+    {
+      SymbolTableScopeT bodyScope(symbolTable);
+      MutableTableScopeT bodyMutScope(mutableVars);
+
+      auto currentItem = mlir::LLVM::LoadOp::create(builder, location, i64Type, itemAlloca);
+
+      std::string loopVarName = "_recv_item";
+      if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind))
+        loopVarName = identPat->name;
+      declareVariable(loopVarName, currentItem);
+
+      if (returnFlag) {
+        auto flagVal =
+            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+        auto trueConst = createIntConstant(builder, location, i1Type, 1);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        pushDropScope();
+        generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                           lc.continueFlag, location);
+        popDropScope();
+        ensureYieldTerminator(location);
+        builder.setInsertionPointAfter(guard);
+      } else {
+        pushDropScope();
+        generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                           lc.continueFlag, location);
+        popDropScope();
+      }
+    }
+
+    ensureYieldTerminator(location);
+    popLoopControl(lc, whileOp);
+
+  } else {
+    // ── String channel: recv(rx) → ptr (NULL = closed) ─────────────
+    // Nearly identical to generateForStreamStmt but calls hew_channel_recv.
+    auto one64 = mlir::arith::ConstantIntOp::create(builder, location, i64Type, 1);
+    auto itemPtrAlloca = mlir::LLVM::AllocaOp::create(builder, location, ptrType, ptrType, one64);
+    auto nullPtrVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
+
+    auto whileOp =
+        mlir::scf::WhileOp::create(builder, location, mlir::TypeRange{}, mlir::ValueRange{});
+
+    // ── Before region: recv and check for NULL ──
+    auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
+    builder.setInsertionPointToStart(beforeBlock);
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_channel_recv", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv");
+    auto itemPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                              calleeAttr, mlir::ValueRange{rxPtr})
+                       .getResult();
+
+    mlir::LLVM::StoreOp::create(builder, location, itemPtr, itemPtrAlloca);
+
+    auto notNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                              itemPtr, nullPtrVal);
+    auto isActive =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+    mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, notNull, isActive);
+    combinedCond = andNotReturned(combinedCond, location);
+
+    mlir::scf::ConditionOp::create(builder, location, combinedCond, mlir::ValueRange{});
+
+    // ── After region: bind loop variable, run body ──
+    auto *afterBlock = builder.createBlock(&whileOp.getAfter());
+    builder.setInsertionPointToStart(afterBlock);
+    auto falseVal = createIntConstant(builder, location, i1Type, 0);
+    mlir::memref::StoreOp::create(builder, location, falseVal, lc.continueFlag);
+
+    {
+      SymbolTableScopeT bodyScope(symbolTable);
+      MutableTableScopeT bodyMutScope(mutableVars);
+
+      auto currentItemPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
+
+      std::string loopVarName = "_recv_item";
+      if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind))
+        loopVarName = identPat->name;
+      declareVariable(loopVarName, currentItemPtr);
+
+      pushDropScope();
+      registerDroppable(loopVarName, "hew_string_drop");
+      if (returnFlag) {
+        auto flagVal =
+            mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+        auto trueConst = createIntConstant(builder, location, i1Type, 1);
+        auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+        auto guard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, notReturned,
+                                             /*withElseRegion=*/false);
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        pushDropScope();
+        generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                           lc.continueFlag, location);
+        popDropScope();
+        ensureYieldTerminator(location);
+        builder.setInsertionPointAfter(guard);
+      } else {
+        pushDropScope();
+        generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(),
+                                           lc.continueFlag, location);
+        popDropScope();
+      }
+      popDropScope();
+    }
+
+    ensureYieldTerminator(location);
+    popLoopControl(lc, whileOp);
+
+    // Free the last fetched item if non-null (handles break case).
+    auto lastItem = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
+                                                lastItem, nullPtrVal);
+    auto cleanupIf = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, isNotNull,
+                                             /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&cleanupIf.getThenRegion().front());
+    auto dropAttr = mlir::SymbolRefAttr::get(&context, "hew_string_drop");
+    hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{}, dropAttr,
+                               mlir::ValueRange{lastItem});
+    builder.setInsertionPointAfter(cleanupIf);
+  }
+}
+
 // ── for await: cross-actor stream iteration ─────────────────────────────
 void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
   auto location = currentLoc;
@@ -1718,6 +1924,23 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
           }
         }
       }
+    }
+  }
+
+  // Check if the iterable is a Receiver<T> variable for channel iteration.
+  if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&stmt.iterable.value.kind)) {
+    if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
+      auto *named = std::get_if<ast::TypeNamed>(&typeExpr->kind);
+      if (named && (named->name == "Receiver" || named->name == "channel.Receiver")) {
+        generateForReceiverStmt(stmt, named);
+        return;
+      }
+    }
+    // Also check the handle-var type map (fallback).
+    auto hit = handleVarTypes.find(identExpr->name);
+    if (hit != handleVarTypes.end() && hit->second == "Receiver") {
+      generateForReceiverStmt(stmt, nullptr);
+      return;
     }
   }
 

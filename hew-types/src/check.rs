@@ -3782,6 +3782,12 @@ impl Checker {
                     {
                         args[0].clone()
                     }
+                    Ty::Named { name, args }
+                        if (name == "Receiver" || name == "channel.Receiver")
+                            && !args.is_empty() =>
+                    {
+                        args[0].clone()
+                    }
                     _ => Ty::Var(TypeVar::fresh()),
                 };
                 self.env.push_scope();

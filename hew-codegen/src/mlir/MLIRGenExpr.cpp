@@ -1363,6 +1363,108 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       return generateLogEmit(call.args, logLevel);
   }
 
+  // ── Intercept channel try_recv → Option<T> wrapping ──────────────────
+  // The enricher rewrites rx.try_recv() into hew_channel_try_recv(rx) or
+  // hew_channel_try_recv_int(rx). The runtime returns NULL (string) or
+  // uses an out_valid flag (int) to indicate "no message". We wrap the
+  // raw result in Option<T> here.
+  if (calleeName == "hew_channel_try_recv") {
+    // String variant: hew_channel_try_recv(rx) → ptr (NULL = empty).
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_try_recv expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+    auto stringType = hew::StringRefType::get(&context);
+
+    // Declare and call the extern function (returns ptr, NULL for empty).
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_channel_try_recv", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_try_recv");
+    auto rawPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                             calleeAttr, mlir::ValueRange{rxArg})
+                      .getResult();
+
+    // Build Option<String>: null → None (tag 0), non-null → Some (tag 1).
+    auto optionType = hew::OptionEnumType::get(&context, stringType);
+    auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull =
+        mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+
+    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
+    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
+
+    // Assemble LLVM struct { i32 tag, ptr payload } and bitcast to Option.
+    auto optLLVMType =
+        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, ptrType});
+    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
+    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
+                                                     llvm::ArrayRef<int64_t>{0});
+    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr,
+                                                         llvm::ArrayRef<int64_t>{1});
+
+    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+  }
+
+  if (calleeName == "hew_channel_try_recv_int") {
+    // Int variant: hew_channel_try_recv_int(rx, &out_valid) → i64.
+    // The enricher only passes 1 arg (rx); we synthesise the out_valid alloca.
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_try_recv_int expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+    auto i64Type = builder.getI64Type();
+
+    // Allocate out_valid flag on the stack.
+    auto one = mlir::arith::ConstantIntOp::create(builder, location, 1, 64);
+    auto outValidAlloca =
+        mlir::LLVM::AllocaOp::create(builder, location, ptrType, i32Type, one);
+
+    // Declare the extern with the correct 2-arg ABI: (ptr, ptr) → i64.
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i64Type});
+    getOrCreateExternFunc("hew_channel_try_recv_int", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_try_recv_int");
+    auto rawVal =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type}, calleeAttr,
+                                   mlir::ValueRange{rxArg, outValidAlloca})
+            .getResult();
+
+    // Load the validity flag.
+    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, outValidAlloca);
+
+    // Build Option<int>: valid=0 → None (tag 0), valid≠0 → Some (tag 1).
+    auto optionType = hew::OptionEnumType::get(&context, i64Type);
+    auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                               validFlag, zero);
+
+    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
+    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto tag = mlir::arith::SelectOp::create(builder, location, isValid, oneTag, zeroTag);
+
+    auto optLLVMType =
+        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, i64Type});
+    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
+    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
+                                                     llvm::ArrayRef<int64_t>{0});
+    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawVal,
+                                                         llvm::ArrayRef<int64_t>{1});
+
+    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+  }
+
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
     auto genIt = genericFunctions.find(calleeName);

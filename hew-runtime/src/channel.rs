@@ -208,9 +208,11 @@ pub unsafe extern "C" fn hew_channel_recv(receiver: *mut HewChannelReceiver) -> 
 /// Try to receive a message without blocking.
 ///
 /// Returns a malloc-allocated NUL-terminated string if a message was
-/// available, or a valid empty string if the channel is empty or closed.
+/// available, or NULL if the channel is empty or closed. This lets the
+/// caller distinguish "received empty string" (`Some("")`) from
+/// "nothing available" (`None`).
 ///
-/// The caller must `free()` the returned pointer.
+/// The caller must `free()` the returned pointer when non-NULL.
 ///
 /// # Safety
 ///
@@ -221,17 +223,7 @@ pub unsafe extern "C" fn hew_channel_try_recv(receiver: *mut HewChannelReceiver)
     // SAFETY: receiver is valid per caller contract.
     match unsafe { (*receiver).rx.try_recv() } {
         Ok(item) => bytes_to_cstr(&item),
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-            // Return a valid empty string so Hew string comparison works.
-            // SAFETY: libc::malloc returns a valid pointer or null.
-            let buf = unsafe { libc::malloc(1) };
-            if buf.is_null() {
-                return ptr::null_mut();
-            }
-            // SAFETY: buf has 1 byte allocated; writing NUL terminator.
-            unsafe { *buf.cast::<u8>() = 0 };
-            buf.cast::<c_char>()
-        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => ptr::null_mut(),
     }
 }
 
@@ -405,7 +397,7 @@ mod tests {
     }
 
     #[test]
-    fn try_recv_returns_empty_when_empty() {
+    fn try_recv_returns_null_when_empty() {
         let pair = hew_channel_new(4);
         // SAFETY: pair was just created above.
         unsafe {
@@ -414,11 +406,63 @@ mod tests {
             hew_channel_pair_free(pair);
 
             let result = hew_channel_try_recv(rx);
-            // Empty channel now returns a valid empty string, not NULL.
-            assert!(!result.is_null());
+            assert!(result.is_null(), "empty channel should return NULL");
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_distinguishes_empty_string_from_no_message() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Send an actual empty string.
+            let empty = b"\0";
+            hew_channel_send(tx, empty.as_ptr().cast());
+
+            // try_recv should return a valid (non-NULL) pointer to a NUL byte.
+            let result = hew_channel_try_recv(rx);
+            assert!(!result.is_null(), "empty string message should be non-NULL");
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "");
             libc::free(result.cast());
+
+            // Now the channel is empty — try_recv should return NULL.
+            let result2 = hew_channel_try_recv(rx);
+            assert!(result2.is_null(), "drained channel should return NULL");
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_int_distinguishes_zero_from_no_message() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Send the value 0.
+            hew_channel_send_int(tx, 0);
+
+            let mut valid: i32 = -1;
+            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1, "received 0 should set valid=1");
+            assert_eq!(val, 0);
+
+            // Now the channel is empty.
+            let val2 = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0, "drained channel should set valid=0");
+            assert_eq!(val2, 0);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);

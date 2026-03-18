@@ -1,0 +1,30 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+
+    // Send an empty string — must be distinguishable from "no message".
+    tx.send("");
+    // Send zero — must be distinguishable from "no message".
+    tx.send("zero");
+
+    // try_recv on non-empty channel returns Some.
+    match rx.try_recv() {
+        Some(v) => println(f"got: [{v}]"),
+        None => println("unexpected none"),
+    }
+    match rx.try_recv() {
+        Some(v) => println(f"got: [{v}]"),
+        None => println("unexpected none"),
+    }
+
+    tx.close();
+
+    // Channel drained and closed — try_recv returns None.
+    match rx.try_recv() {
+        Some(v) => println(f"unexpected: [{v}]"),
+        None => println("none"),
+    }
+
+    rx.close();
+}

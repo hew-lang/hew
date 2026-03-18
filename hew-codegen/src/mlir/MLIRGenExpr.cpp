@@ -1379,7 +1379,6 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       return nullptr;
 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-    auto i32Type = builder.getI32Type();
     auto stringType = hew::StringRefType::get(&context);
 
     // Declare and call the extern function (returns ptr, NULL for empty).
@@ -1390,26 +1389,27 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                              calleeAttr, mlir::ValueRange{rxArg})
                       .getResult();
 
-    // Build Option<String>: null → None (tag 0), non-null → Some (tag 1).
+    // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, stringType);
     auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-    auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
 
-    // Assemble LLVM struct { i32 tag, ptr payload } and bitcast to Option.
-    auto optLLVMType =
-        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, ptrType});
-    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
-                                                     llvm::ArrayRef<int64_t>{0});
-    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr,
-                                                         llvm::ArrayRef<int64_t>{1});
-
-    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+    return ifOp.getResult(0);
   }
 
   if (calleeName == "hew_channel_try_recv_int") {
@@ -1450,25 +1450,27 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     // Load the validity flag.
     auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
 
-    // Build Option<int>: valid=0 → None (tag 0), valid≠0 → Some (tag 1).
+    // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, i64Type);
     auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-    auto tag = mlir::arith::SelectOp::create(builder, location, isValid, oneTag, zeroTag);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
 
-    auto optLLVMType =
-        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, i64Type});
-    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
-                                                     llvm::ArrayRef<int64_t>{0});
-    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawVal,
-                                                         llvm::ArrayRef<int64_t>{1});
-
-    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+    return ifOp.getResult(0);
   }
 
   // ── Intercept channel recv → Option<T> wrapping ──────────────────────
@@ -1485,7 +1487,6 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       return nullptr;
 
     auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-    auto i32Type = builder.getI32Type();
     auto stringType = hew::StringRefType::get(&context);
 
     auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
@@ -1495,25 +1496,27 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
                                              calleeAttr, mlir::ValueRange{rxArg})
                       .getResult();
 
-    // Build Option<String>: null → None (tag 0), non-null → Some (tag 1).
+    // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, stringType);
     auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-    auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
 
-    auto optLLVMType =
-        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, ptrType});
-    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
-                                                     llvm::ArrayRef<int64_t>{0});
-    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr,
-                                                         llvm::ArrayRef<int64_t>{1});
-
-    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+    return ifOp.getResult(0);
   }
 
   if (calleeName == "hew_channel_recv_int") {
@@ -1551,25 +1554,27 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
 
     auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
 
-    // Build Option<int>: valid=0 → None (tag 0), valid≠0 → Some (tag 1).
+    // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
     auto optionType = hew::OptionEnumType::get(&context, i64Type);
     auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-    auto tag = mlir::arith::SelectOp::create(builder, location, isValid, oneTag, zeroTag);
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
 
-    auto optLLVMType =
-        mlir::LLVM::LLVMStructType::getLiteral(&context, {i32Type, i64Type});
-    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-    auto withTag = mlir::LLVM::InsertValueOp::create(builder, location, undef, tag,
-                                                     llvm::ArrayRef<int64_t>{0});
-    auto withPayload = mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawVal,
-                                                         llvm::ArrayRef<int64_t>{1});
-
-    return hew::BitcastOp::create(builder, location, optionType, withPayload).getResult();
+    return ifOp.getResult(0);
   }
 
   // Handle generic function calls with explicit type arguments

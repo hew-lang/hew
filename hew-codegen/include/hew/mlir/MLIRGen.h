@@ -691,9 +691,12 @@ private:
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
-  // Variable name to exclude from function-level drops (the returned variable).
-  // Set by generateFunction before generateBlock, cleared after.
-  std::set<std::string> funcLevelDropExcludeVars;
+  // (name, scope-depth) pairs to exclude from drops.  The depth is relative
+  // to funcLevelDropScopeBase so that a shadowed binding in an inner scope
+  // is NOT confused with the same-named return variable at depth 0.
+  std::set<std::pair<std::string, size_t>> funcLevelDropExcludeVars;
+  // dropScopes.size() at the point where the current function body starts.
+  size_t funcLevelDropScopeBase = 0;
   void pushDropScope();
   void popDropScope();
   void registerDroppable(const std::string &varName, const std::string &dropFunc,

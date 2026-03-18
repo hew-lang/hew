@@ -3578,11 +3578,13 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   auto prevReturnSlot = returnSlot;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
   channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
+  funcLevelDropScopeBase = dropScopes.size();
   currentFnDefers.clear();
 
   uint32_t paramIdx = 0;
@@ -3635,6 +3637,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   returnSlot = prevReturnSlot;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+  funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
@@ -3718,6 +3721,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto prevReturnSlot = returnSlot;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
@@ -3758,72 +3762,83 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // For struct init expressions, collect all field variable references to
   // prevent double-free when the struct takes ownership of the values.
   funcLevelDropExcludeVars.clear();
+  funcLevelDropScopeBase = dropScopes.size();
   // Recursively collect identifiers from the return position of an
   // expression (including if/match/block branches) so their owning
   // variables are excluded from the function-level drop scope.
+  // Each entry stores (name, depth) where depth is the drop-scope nesting
+  // level relative to the function body.  This prevents a shadowed binding
+  // in an inner scope from being confused with the returned variable.
   // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
-  std::function<void(const ast::Expr &, std::set<std::string> &)> collectExcludeVars;
-  std::function<void(const ast::Block &, std::set<std::string> &)> collectExcludeVarsFromBlock;
-  std::function<void(const ast::StmtIf &, std::set<std::string> &)> collectExcludeVarsFromStmtIf;
+  using ExcludeSet = std::set<std::pair<std::string, size_t>>;
+  std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectExcludeVars;
+  std::function<void(const ast::Block &, ExcludeSet &, size_t)> collectExcludeVarsFromBlock;
+  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> collectExcludeVarsFromStmtIf;
   collectExcludeVarsFromStmtIf = [&collectExcludeVarsFromBlock, &collectExcludeVarsFromStmtIf](
-      const ast::StmtIf &ifStmt, std::set<std::string> &out) {
-    collectExcludeVarsFromBlock(ifStmt.then_block, out);
+      const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth) {
+    // StmtIf branches go through generateBlock which pushes a scope → depth+1
+    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1);
     if (ifStmt.else_block) {
       if (ifStmt.else_block->block)
-        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out);
+        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1);
       if (ifStmt.else_block->if_stmt) {
         const auto &nested = ifStmt.else_block->if_stmt->value;
+        // else-if doesn't add a scope — stay at same depth
         if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
-          collectExcludeVarsFromStmtIf(*nestedIf, out);
+          collectExcludeVarsFromStmtIf(*nestedIf, out, depth);
       }
     }
   };
   collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf](
-      const ast::Block &blk, std::set<std::string> &out) {
+      const ast::Block &blk, ExcludeSet &out, size_t depth) {
     if (blk.trailing_expr) {
-      collectExcludeVars(blk.trailing_expr->value, out);
+      collectExcludeVars(blk.trailing_expr->value, out, depth);
     } else if (!blk.stmts.empty()) {
       const auto &last = blk.stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
-        collectExcludeVars(exprStmt->expr.value, out);
+        collectExcludeVars(exprStmt->expr.value, out, depth);
       } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
-        collectExcludeVarsFromStmtIf(*ifStmt, out);
+        collectExcludeVarsFromStmtIf(*ifStmt, out, depth);
       } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
         for (const auto &arm : matchStmt->arms) {
           if (arm.body)
-            collectExcludeVars(arm.body->value, out);
+            collectExcludeVars(arm.body->value, out, depth);
         }
       }
     }
   };
   collectExcludeVars = [&collectExcludeVars, &collectExcludeVarsFromBlock](
-      const ast::Expr &expr, std::set<std::string> &out) {
+      const ast::Expr &expr, ExcludeSet &out, size_t depth) {
     if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
-      out.insert(identExpr->name);
+      out.insert({identExpr->name, depth});
     } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
       for (const auto &[fieldName, fieldVal] : si->fields) {
         if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-          out.insert(id->name);
+          out.insert({id->name, depth});
       }
     } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+      // ExprIf doesn't push scopes — branches stay at same depth
       if (ifE->then_block)
-        collectExcludeVars(ifE->then_block->value, out);
+        collectExcludeVars(ifE->then_block->value, out, depth);
       if (ifE->else_block && *ifE->else_block)
-        collectExcludeVars((*ifE->else_block)->value, out);
+        collectExcludeVars((*ifE->else_block)->value, out, depth);
     } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
-      collectExcludeVarsFromBlock(ifLet->body, out);
+      // ExprIfLet bodies are blocks → generateBlock pushes scope
+      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1);
       if (ifLet->else_body)
-        collectExcludeVarsFromBlock(*ifLet->else_body, out);
+        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1);
     } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+      // ExprMatch arms don't push scopes — stay at same depth
       for (const auto &arm : matchE->arms) {
         if (arm.body)
-          collectExcludeVars(arm.body->value, out);
+          collectExcludeVars(arm.body->value, out, depth);
       }
     } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
-      collectExcludeVarsFromBlock(blockE->block, out);
+      // ExprBlock → generateBlock pushes scope
+      collectExcludeVarsFromBlock(blockE->block, out, depth + 1);
     }
   };
-  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars);
+  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0);
 
   // Generate the function body
   mlir::Value bodyValue = generateBlock(fn.body);
@@ -3929,6 +3944,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   returnSlot = prevReturnSlot;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+  funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
@@ -4004,11 +4020,13 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto prevReturnSlot = returnSlot;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     auto prevFnDefers = std::move(currentFnDefers);
     returnFlag = nullptr;
     returnSlot = nullptr;
     channelIntOutValidAlloca = nullptr;
     funcLevelDropExcludeVars.clear();
+    funcLevelDropScopeBase = dropScopes.size();
     currentFnDefers.clear();
 
     // Bind function parameters
@@ -4051,6 +4069,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     returnSlot = prevReturnSlot;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
+    funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
     currentFnDefers = std::move(prevFnDefers);
     currentFunction = prevFunction;
     builder.restoreInsertionPoint(savedIP);
@@ -4286,6 +4305,13 @@ void MLIRGen::popDropScope() {
     auto *parentOp = block->getParentOp();
     bool isFuncLevel = mlir::isa<mlir::func::FuncOp>(parentOp);
 
+    // Scope depth relative to the current function body.  Used to match
+    // (name, depth) pairs in funcLevelDropExcludeVars so that a shadowed
+    // variable in an inner scope is not confused with the returned variable.
+    size_t relDepth = (dropScopes.size() > funcLevelDropScopeBase)
+                          ? dropScopes.size() - 1 - funcLevelDropScopeBase
+                          : 0;
+
     if (isFuncLevel) {
       // Function-level scope: emit drops here while the symbol table is
       // still alive (the DropScopeGuard destructor runs before the
@@ -4306,7 +4332,7 @@ void MLIRGen::popDropScope() {
         emitDeferredCalls();
         auto &scope = dropScopes.back();
         for (auto it = scope.rbegin(); it != scope.rend(); ++it)
-          if (!funcLevelDropExcludeVars.count(it->varName))
+          if (!funcLevelDropExcludeVars.count({it->varName, relDepth}))
             emitDropEntry(*it);
       }
       dropScopes.pop_back();
@@ -4324,14 +4350,13 @@ void MLIRGen::popDropScope() {
         }
       }
 
-      // Inner-scope drop helper: skip variables in funcLevelDropExcludeVars.
-      // A value-producing branch (if/match inside a lambda/function) may
-      // yield a variable declared in this inner scope.  The function-level
-      // analysis already marked it for exclusion; honour that here so the
-      // value is not freed before scf.yield transfers it to the caller.
+      // Inner-scope drop helper: skip variables whose (name, depth) pair
+      // matches funcLevelDropExcludeVars.  This ensures only the specific
+      // scope that actually yields the return value is excluded, not a
+      // shadowed variable with the same name at a different depth.
       auto emitScopeDropsExcluding = [&](const std::vector<DropEntry> &scope) {
         for (auto it = scope.rbegin(); it != scope.rend(); ++it)
-          if (!funcLevelDropExcludeVars.count(it->varName))
+          if (!funcLevelDropExcludeVars.count({it->varName, relDepth}))
             emitDropEntry(*it);
       };
 
@@ -4469,6 +4494,10 @@ void MLIRGen::emitDropsExcept(const std::set<std::string> &excludeVars) {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
+  // NOTE: This uses name-based exclusion which can't handle shadowed variables
+  // correctly (lookupVariable resolves to the innermost binding, not the
+  // DropEntry's original alloca).  Fixing this properly requires storing the
+  // mlir::Value in DropEntry.  See deferred TODO.
   for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt)
     for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it)
       if (!excludeVars.count(it->varName))

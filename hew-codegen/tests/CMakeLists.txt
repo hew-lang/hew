@@ -710,6 +710,7 @@ add_e2e_file_test(drop_trait            e2e_drop_trait drop_trait)
 add_e2e_file_test(drop_nested_struct    e2e_drop_trait drop_nested_struct)
 add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
 add_e2e_file_test(drop_early_return     e2e_drop_scope drop_early_return)
+add_e2e_file_test(drop_shadow_return    e2e_drop_scope drop_shadow_return)
 
 # ── Return statement tests ───────────────────────────────────────────────────
 add_e2e_file_test(return_after_drop     e2e_return return_after_drop)

@@ -4849,83 +4849,86 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   returnSlot = nullptr;
   channelIntOutValidAlloca = nullptr;
 
-  // Save/restore funcLevelDropExcludeVars so the lambda's body block
-  // (which is function-level from popDropScope's perspective) doesn't
-  // inherit the enclosing function's excludes.  Collect the lambda body's
-  // trailing expression identifiers so the return value is NOT dropped
-  // before the return op.
+  // Save/restore funcLevelDropExcludeVars and funcLevelDropScopeBase so the
+  // lambda's body block (which is function-level from popDropScope's
+  // perspective) doesn't inherit the enclosing function's excludes.  Collect
+  // the lambda body's trailing expression identifiers so the return value is
+  // NOT dropped before the return op.
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
+  funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
-    // Mutually recursive helpers: expr ↔ block ↔ stmtIf
+    // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
+    using ExcludeSet = std::set<std::pair<std::string, size_t>>;
     auto &excludeVars = funcLevelDropExcludeVars;
-    std::function<void(const ast::Expr &, std::set<std::string> &)> collectReturnVars;
-    std::function<void(const ast::Block &, std::set<std::string> &)> fromBlock;
-    std::function<void(const ast::StmtIf &, std::set<std::string> &)> fromStmtIf;
+    std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectReturnVars;
+    std::function<void(const ast::Block &, ExcludeSet &, size_t)> fromBlock;
+    std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> fromStmtIf;
     fromStmtIf = [&fromBlock, &fromStmtIf](
-        const ast::StmtIf &si, std::set<std::string> &out) {
-      fromBlock(si.then_block, out);
+        const ast::StmtIf &si, ExcludeSet &out, size_t depth) {
+      fromBlock(si.then_block, out, depth + 1);
       if (si.else_block) {
         if (si.else_block->block)
-          fromBlock(*si.else_block->block, out);
+          fromBlock(*si.else_block->block, out, depth + 1);
         if (si.else_block->if_stmt) {
           const auto &nested = si.else_block->if_stmt->value;
           if (auto *nif = std::get_if<ast::StmtIf>(&nested.kind))
-            fromStmtIf(*nif, out);
+            fromStmtIf(*nif, out, depth);
         }
       }
     };
     fromBlock = [&collectReturnVars, &fromStmtIf](
-        const ast::Block &blk, std::set<std::string> &out) {
+        const ast::Block &blk, ExcludeSet &out, size_t depth) {
       if (blk.trailing_expr) {
-        collectReturnVars(blk.trailing_expr->value, out);
+        collectReturnVars(blk.trailing_expr->value, out, depth);
       } else if (!blk.stmts.empty()) {
         const auto &last = blk.stmts.back()->value;
         if (auto *es = std::get_if<ast::StmtExpression>(&last.kind))
-          collectReturnVars(es->expr.value, out);
+          collectReturnVars(es->expr.value, out, depth);
         else if (auto *ifs = std::get_if<ast::StmtIf>(&last.kind))
-          fromStmtIf(*ifs, out);
+          fromStmtIf(*ifs, out, depth);
         else if (auto *ms = std::get_if<ast::StmtMatch>(&last.kind)) {
           for (const auto &arm : ms->arms)
             if (arm.body)
-              collectReturnVars(arm.body->value, out);
+              collectReturnVars(arm.body->value, out, depth);
         }
       }
     };
     collectReturnVars = [&collectReturnVars, &fromBlock](
-        const ast::Expr &expr, std::set<std::string> &out) {
+        const ast::Expr &expr, ExcludeSet &out, size_t depth) {
       if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
-        out.insert(id->name);
+        out.insert({id->name, depth});
       } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
         for (const auto &[fieldName, fieldVal] : si->fields) {
           if (auto *fid = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
-            out.insert(fid->name);
+            out.insert({fid->name, depth});
         }
       } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
         if (ifE->then_block)
-          collectReturnVars(ifE->then_block->value, out);
+          collectReturnVars(ifE->then_block->value, out, depth);
         if (ifE->else_block && *ifE->else_block)
-          collectReturnVars((*ifE->else_block)->value, out);
+          collectReturnVars((*ifE->else_block)->value, out, depth);
       } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
-        fromBlock(ifLet->body, out);
+        fromBlock(ifLet->body, out, depth + 1);
         if (ifLet->else_body)
-          fromBlock(*ifLet->else_body, out);
+          fromBlock(*ifLet->else_body, out, depth + 1);
       } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
         for (const auto &arm : matchE->arms) {
           if (arm.body)
-            collectReturnVars(arm.body->value, out);
+            collectReturnVars(arm.body->value, out, depth);
         }
       } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
-        fromBlock(blockE->block, out);
+        fromBlock(blockE->block, out, depth + 1);
       }
     };
     // If the body is a block expression, use fromBlock to handle
     // trailing expressions and StmtIf/StmtMatch in last position.
     if (auto *blockExpr = std::get_if<ast::ExprBlock>(&lam.body->value.kind)) {
-      fromBlock(blockExpr->block, excludeVars);
+      fromBlock(blockExpr->block, excludeVars, 0);
     } else {
       // Simple expression body — e.g. `(x) => x`
-      collectReturnVars(lam.body->value, excludeVars);
+      collectReturnVars(lam.body->value, excludeVars, 0);
     }
   }
 
@@ -4934,6 +4937,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     bodyVal = generateExpression(lam.body->value);
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
+  funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
     auto bodyType = bodyVal.getType();

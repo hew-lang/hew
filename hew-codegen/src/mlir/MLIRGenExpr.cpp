@@ -3207,10 +3207,30 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           emitError(location) << "Stream::" << method << " requires a closure argument";
           return mlir::Value{};
         }
+        // Determine the stream's element type to pick the right ABI.
+        bool isBytesStream = false;
+        if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
+          isBytesStream = typeExprStreamElement(*typeExpr) == "bytes";
         // Set the expected closure type so that parameter types in unannotated
-        // lambdas can be inferred (e.g. `(s) => s + "!"` infers s: String).
-        mlir::Type retType = (method == "map") ? strType : mlir::Type{builder.getI1Type()};
-        auto expectedClosure = hew::ClosureType::get(&context, {strType}, retType);
+        // lambdas can be inferred.
+        // For bytes streams the closure receives/returns hew.vec<i32> (bytes).
+        mlir::Type paramType;
+        if (isBytesStream)
+          paramType = hew::VecType::get(&context, builder.getI32Type());
+        else
+          paramType = strType;
+        mlir::Type retType;
+        if (method == "map") {
+          retType = paramType; // fn(T) -> T
+        } else {
+          // Filter predicate: fn(T) -> bool.
+          // For bytes streams, use i32 return type to match the runtime's
+          // BytesFilterFn ABI.  The codegen will zext the i1 comparison
+          // result to i32 when lowering the closure.
+          retType = isBytesStream ? mlir::Type{builder.getI32Type()}
+                                  : mlir::Type{builder.getI1Type()};
+        }
+        auto expectedClosure = hew::ClosureType::get(&context, {paramType}, retType);
         pendingLambdaExpectedType = expectedClosure;
         auto closureVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
         pendingLambdaExpectedType.reset();
@@ -3226,9 +3246,12 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
         // RC-clone env_ptr so the lazy stream adapter keeps its own reference alive.
         auto clonedEnv = hew::RcCloneOp::create(builder, location, ptrType, envPtr).getResult();
-        // Call the runtime adapter constructor.
-        std::string runtimeFn =
-            (method == "map") ? "hew_stream_map_string" : "hew_stream_filter_string";
+        // Dispatch to the correct runtime function based on element type.
+        std::string runtimeFn;
+        if (isBytesStream)
+          runtimeFn = (method == "map") ? "hew_stream_map_bytes" : "hew_stream_filter_bytes";
+        else
+          runtimeFn = (method == "map") ? "hew_stream_map_string" : "hew_stream_filter_string";
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, runtimeFn);
         auto resultStream =
             hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,

@@ -15,5 +15,4 @@ fn main() {
     for await item in input {
         println(item);
     }
-    input.close();
 }

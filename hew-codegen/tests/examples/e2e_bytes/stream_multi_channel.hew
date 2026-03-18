@@ -20,6 +20,4 @@ fn main() {
     for await item in b {
         println(item);
     }
-    a.close();
-    b.close();
 }

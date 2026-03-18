@@ -19,7 +19,7 @@ fn main() {
     let path = tmp + "/hew_relay_test.txt";
     unsafe { hew_file_write(path, "helloworld_test"); }
 
-    let (sink, input) = stream.channel(8);
+    let (sink, input) = stream.pipe(8);
 
     relay_file(path, sink);
 

@@ -1,8 +1,8 @@
 import std::stream;
 
 fn main() {
-    // Use the generic bytes_channel constructor — returns (Sink<bytes>, Stream<bytes>).
-    let (sink, input) = stream.bytes_channel(8);
+    // Use the generic bytes_pipe constructor — returns (Sink<bytes>, Stream<bytes>).
+    let (sink, input) = stream.bytes_pipe(8);
 
     // Build byte buffers: "Hi" (72, 105), empty, "!" (33)
     let buf1: bytes = bytes::new();

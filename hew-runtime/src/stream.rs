@@ -501,6 +501,8 @@ impl StreamBacking for MapBytesStream {
         // If the closure mutated and returned the same pointer, skip to
         // avoid a double-free (result_vec will be freed below).
         if result_vec != input_vec {
+            // SAFETY: input_vec was allocated by u8_to_hwvec and is no longer
+            // referenced — the closure returned a different allocation.
             unsafe { hew_cabi::vec::hew_vec_free(input_vec) };
         }
         if result_vec.is_null() {
@@ -564,6 +566,8 @@ impl StreamBacking for FilterBytesStream {
             // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
             let keep = unsafe { (self.fn_ptr)(self.env_ptr, tmp_vec) };
             // Free the temporary vec — the predicate borrows it, not owns it.
+            // SAFETY: tmp_vec was allocated by u8_to_hwvec and the predicate
+            // only reads it (returns i32 bool, not the vec).
             unsafe { hew_cabi::vec::hew_vec_free(tmp_vec) };
             if keep != 0 {
                 return Some(item);

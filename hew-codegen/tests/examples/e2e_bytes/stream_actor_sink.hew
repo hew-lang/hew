@@ -11,7 +11,7 @@ actor Writer {
 }
 
 fn main() {
-    let (sink, input) = stream.channel(8);
+    let (sink, input) = stream.pipe(8);
 
     let w = spawn Writer;
     w.write_items(sink);

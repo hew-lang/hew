@@ -1,9 +1,9 @@
 import std::stream;
 
 fn main() {
-    let (sink_a, a) = stream.channel(4);
+    let (sink_a, a) = stream.pipe(4);
 
-    let (sink_b, b) = stream.channel(4);
+    let (sink_b, b) = stream.pipe(4);
 
     sink_a.write("alpha");
     sink_b.write("beta");

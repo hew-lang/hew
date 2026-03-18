@@ -16,7 +16,7 @@ fn main() {
         Ok(s) => s,
         Err(e) => { panic(e); },
     };
-    stream.pipe(source, dest);
+    stream.forward(source, dest);
 
     let result = unsafe { hew_file_read(out_path) };
     println(result);

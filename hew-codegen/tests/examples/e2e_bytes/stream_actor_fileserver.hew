@@ -21,7 +21,7 @@ fn main() {
     let path = tmp + "/hew_serve_test.txt";
     unsafe { hew_file_write(path, "alpha\nbeta\ngamma\n"); }
 
-    let (sink, input) = stream.channel(8);
+    let (sink, input) = stream.pipe(8);
 
     let server = spawn FileServer;
     server.serve(path, sink);

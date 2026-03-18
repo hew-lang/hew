@@ -18,7 +18,7 @@
 //! import std::stream;
 //!
 //! fn main() {
-//!     let (sink, input) = stream.channel(16);
+//!     let (sink, input) = stream.pipe(16);
 //!
 //!     sink.write("hello");
 //!     sink.write("world");
@@ -50,9 +50,9 @@ type Sink<T> {}
 
 // ── Constructors ──────────────────────────────────────────────────────
 
-/// Create a bounded in-memory string channel with the given capacity.
+/// Create a bounded in-memory string pipe with the given capacity.
 /// Returns a `(Sink<String>, Stream<String>)` pair for writing and reading.
-pub fn channel(capacity: i64) -> (Sink<String>, Stream<String>) {
+pub fn pipe(capacity: i64) -> (Sink<String>, Stream<String>) {
     unsafe {
         let pair = hew_stream_channel(capacity);
         let sink = hew_stream_pair_sink(pair);
@@ -62,9 +62,9 @@ pub fn channel(capacity: i64) -> (Sink<String>, Stream<String>) {
     }
 }
 
-/// Create a bounded in-memory bytes channel with the given capacity.
+/// Create a bounded in-memory bytes pipe with the given capacity.
 /// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
-pub fn bytes_channel(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
+pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     unsafe {
         let pair = hew_stream_channel(capacity);
         let sink = hew_stream_pair_sink(pair);
@@ -127,9 +127,9 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
 /// ```
 /// let file = stream.from_file("data.txt");
 /// let body = req.respond_stream(200, "text/plain")?;
-/// stream.pipe(file, body);  // streams file directly to HTTP response
+/// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```
-pub fn pipe(source: Stream<String>, dest: Sink<String>) {
+pub fn forward(source: Stream<String>, dest: Sink<String>) {
     unsafe { hew_stream_pipe(source, dest) };
 }
 

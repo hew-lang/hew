@@ -6778,6 +6778,14 @@ impl Checker {
                 .cloned()
                 .unwrap_or(Ty::Var(TypeVar::fresh())),
             // Stream<T> methods
+            //
+            // LIMITATION: Stream element-type validation only triggers here (on
+            // method resolution).  A function parameter typed `Stream<MyStruct>`
+            // passes typecheck if no stream methods are called on it.  Ideally
+            // we would reject unsupported element types in resolve_type_expr when
+            // the Stream<T> type is first formed, but that requires propagating
+            // the span and restructuring the named-type resolution path.  For
+            // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
                     name,

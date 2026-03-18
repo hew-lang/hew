@@ -125,7 +125,7 @@ pub fn to_file(path: String) -> Result<Sink<String>, String> {
 /// # Examples
 ///
 /// ```
-/// let file = stream.from_file("data.txt");
+/// let file = stream.from_file("data.txt")?;
 /// let body = req.respond_stream(200, "text/plain")?;
 /// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```

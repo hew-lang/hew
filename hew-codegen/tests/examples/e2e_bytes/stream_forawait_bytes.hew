@@ -1,0 +1,21 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    let buf1: bytes = bytes::new();
+    buf1.push(72);
+    buf1.push(105);
+
+    let buf2: bytes = bytes::new();
+    buf2.push(33);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.close();
+
+    for await item in input {
+        println(item.len());
+    }
+    println("done");
+}

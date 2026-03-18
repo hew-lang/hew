@@ -8,13 +8,17 @@
 //! - Both are move-only and `Send` (safe to pass to actors)
 //! - Both auto-close when dropped (RAII); explicit `.close()` is optional
 //!
+//! The element type `T` determines which runtime marshalling the compiler emits:
+//! - `Stream<String>` / `Sink<String>` — null-terminated C string ABI
+//! - `Stream<bytes>` / `Sink<bytes>` — length-prefixed byte buffer ABI
+//!
 //! # Example
 //!
 //! ```
 //! import std::stream;
 //!
 //! fn main() {
-//!     let (sink, input) = stream.channel(16);
+//!     let (sink, input) = stream.pipe(16);
 //!
 //!     sink.write("hello");
 //!     sink.write("world");
@@ -26,83 +30,41 @@
 //! }
 //! ```
 
-/// A readable stream handle.
-type Stream {}
+/// A readable stream handle, parameterised by element type.
+type Stream<T> {}
 
-/// A writable sink handle.
-type Sink {}
+/// A writable sink handle, parameterised by element type.
+type Sink<T> {}
 
-// ── Stream methods ────────────────────────────────────────────────────
+// ── Stream<T> methods ─────────────────────────────────────────────────
+//
+// Method resolution is handled by the compiler intrinsic in
+// `hew-types/src/stdlib.rs`.  The enricher dispatches `.next()` and
+// other methods to the correct C symbol based on `T`.
 
-/// Methods available on a `Stream`.
-trait StreamMethods {
-    /// Pull the next item from the stream. Returns the item, or signals EOF.
-    fn next(strm: Stream) -> String;
-
-    /// Close this stream and release resources early (optional — auto-closes on drop).
-    fn close(strm: Stream);
-
-    /// Wrap with a line-delimited adapter. Yields one line per next().
-    fn lines(strm: Stream) -> Stream;
-
-    /// Wrap with a fixed-size chunking adapter.
-    fn chunks(strm: Stream, size: i64) -> Stream;
-
-    /// Consume the entire stream and concatenate as a single string.
-    fn collect(strm: Stream) -> String;
-
-    /// Yield at most `n` items from this stream.
-    fn take(strm: Stream, n: i64) -> Stream;
-}
-
-impl StreamMethods for Stream {
-    /// Pull the next item from the stream, or signal EOF.
-    fn next(strm: Stream) -> String { unsafe { hew_stream_next(strm) } }
-    /// Close this stream and release resources early.
-    fn close(strm: Stream) { unsafe { hew_stream_close(strm) }; }
-    /// Wrap with a line-delimited adapter yielding one line per `next()`.
-    fn lines(strm: Stream) -> Stream { unsafe { hew_stream_lines(strm) } }
-    /// Wrap with a fixed-size chunking adapter.
-    fn chunks(strm: Stream, size: i64) -> Stream { unsafe { hew_stream_chunks(strm, size) } }
-    /// Consume the entire stream and concatenate as a single string.
-    fn collect(strm: Stream) -> String { unsafe { hew_stream_collect_string(strm) } }
-    /// Yield at most `n` items from this stream.
-    fn take(strm: Stream, n: i64) -> Stream { unsafe { hew_stream_take(strm, n) } }
-}
-
-// ── Sink methods ──────────────────────────────────────────────────────
-
-/// Methods available on a `Sink`.
-trait SinkMethods {
-    /// Write a value to the sink.
-    fn write(sink: Sink, data: String);
-
-    /// Write raw bytes to the sink.
-    fn write_bytes(sink: Sink, data: bytes);
-
-    /// Flush any buffered data.
-    fn flush(sink: Sink);
-
-    /// Close the sink, signaling EOF to the reader (optional — auto-closes on drop).
-    fn close(sink: Sink);
-}
-
-impl SinkMethods for Sink {
-    /// Write a value to the sink.
-    fn write(sink: Sink, data: String) { unsafe { hew_sink_write_string(sink, data) }; }
-    /// Write raw bytes to the sink.
-    fn write_bytes(sink: Sink, data: bytes) { unsafe { hew_sink_write_bytes(sink, data) }; }
-    /// Flush any buffered data.
-    fn flush(sink: Sink) { unsafe { hew_sink_flush(sink) }; }
-    /// Close the sink, signalling EOF to the reader.
-    fn close(sink: Sink) { unsafe { hew_sink_close(sink) }; }
-}
+// ── Sink<T> methods ───────────────────────────────────────────────────
+//
+// `.write(value)` dispatches to `hew_sink_write_string` for String
+// or `hew_sink_write_bytes` for bytes.  `.flush()` and `.close()`
+// are element-type-independent.
 
 // ── Constructors ──────────────────────────────────────────────────────
 
-/// Create a bounded in-memory channel with the given capacity.
-/// Returns a `(Sink, Stream)` pair for writing and reading.
-pub fn channel(capacity: i64) -> (Sink, Stream) {
+/// Create a bounded in-memory string pipe with the given capacity.
+/// Returns a `(Sink<String>, Stream<String>)` pair for writing and reading.
+pub fn pipe(capacity: i64) -> (Sink<String>, Stream<String>) {
+    unsafe {
+        let pair = hew_stream_channel(capacity);
+        let sink = hew_stream_pair_sink(pair);
+        let input = hew_stream_pair_stream(pair);
+        hew_stream_pair_free(pair);
+        (sink, input)
+    }
+}
+
+/// Create a bounded in-memory bytes pipe with the given capacity.
+/// Returns a `(Sink<bytes>, Stream<bytes>)` pair for writing and reading.
+pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     unsafe {
         let pair = hew_stream_channel(capacity);
         let sink = hew_stream_pair_sink(pair);
@@ -122,7 +84,7 @@ pub fn channel(capacity: i64) -> (Sink, Stream) {
 /// let file = stream.from_file("data.txt")?;
 /// for await line in file.lines() { println(line); }
 /// ```
-pub fn from_file(path: String) -> Result<Stream, String> {
+pub fn from_file(path: String) -> Result<Stream<String>, String> {
     unsafe {
         let s = hew_stream_from_file_read(path);
         if hew_stream_is_valid(s) {
@@ -144,7 +106,7 @@ pub fn from_file(path: String) -> Result<Stream, String> {
 /// sink.write("hello");
 /// // sink auto-closes when dropped
 /// ```
-pub fn to_file(path: String) -> Result<Sink, String> {
+pub fn to_file(path: String) -> Result<Sink<String>, String> {
     unsafe {
         let s = hew_stream_from_file_write(path);
         if hew_sink_is_valid(s) {
@@ -163,11 +125,11 @@ pub fn to_file(path: String) -> Result<Sink, String> {
 /// # Examples
 ///
 /// ```
-/// let file = stream.from_file("data.txt");
+/// let file = stream.from_file("data.txt")?;
 /// let body = req.respond_stream(200, "text/plain")?;
-/// stream.pipe(file, body);  // streams file directly to HTTP response
+/// stream.forward(file, body);  // streams file directly to HTTP response
 /// ```
-pub fn pipe(source: Stream, dest: Sink) {
+pub fn forward(source: Stream<String>, dest: Sink<String>) {
     unsafe { hew_stream_pipe(source, dest) };
 }
 
@@ -178,24 +140,29 @@ type StreamPair {}
 
 extern "C" {
     fn hew_stream_channel(capacity: i64) -> StreamPair;
-    fn hew_stream_pair_sink(pair: StreamPair) -> Sink;
-    fn hew_stream_pair_stream(pair: StreamPair) -> Stream;
+    fn hew_stream_pair_sink(pair: StreamPair) -> Sink<String>;
+    fn hew_stream_pair_stream(pair: StreamPair) -> Stream<String>;
     fn hew_stream_pair_free(pair: StreamPair);
-    fn hew_stream_from_file_read(path: String) -> Stream;
-    fn hew_stream_from_file_write(path: String) -> Sink;
-    fn hew_stream_is_valid(stream: Stream) -> bool;
-    fn hew_sink_is_valid(sink: Sink) -> bool;
+    fn hew_stream_from_file_read(path: String) -> Stream<String>;
+    fn hew_stream_from_file_write(path: String) -> Sink<String>;
+    fn hew_stream_is_valid(stream: Stream<String>) -> bool;
+    fn hew_sink_is_valid(sink: Sink<String>) -> bool;
     fn hew_stream_last_error() -> String;
-    fn hew_stream_next(stream: Stream) -> String;
-    fn hew_stream_next_bytes(stream: Stream) -> bytes;
-    fn hew_stream_collect_string(stream: Stream) -> String;
-    fn hew_stream_close(stream: Stream);
-    fn hew_stream_lines(stream: Stream) -> Stream;
-    fn hew_stream_chunks(stream: Stream, size: i64) -> Stream;
-    fn hew_stream_pipe(source: Stream, dest: Sink);
-    fn hew_stream_take(stream: Stream, n: i64) -> Stream;
-    fn hew_sink_write_string(sink: Sink, data: String);
-    fn hew_sink_write_bytes(sink: Sink, data: bytes);
-    fn hew_sink_flush(sink: Sink);
-    fn hew_sink_close(sink: Sink);
+    fn hew_stream_close(stream: Stream<String>);
+    fn hew_stream_lines(stream: Stream<String>) -> Stream<String>;
+    fn hew_stream_chunks(stream: Stream<String>, size: i64) -> Stream<String>;
+    fn hew_stream_pipe(source: Stream<String>, dest: Sink<String>);
+    fn hew_stream_take(stream: Stream<String>, n: i64) -> Stream<String>;
+    fn hew_sink_flush(sink: Sink<String>);
+    fn hew_sink_close(sink: Sink<String>);
+
+    // Element-type-specific runtime functions used by enricher dispatch.
+    // String element operations
+    fn hew_stream_next(stream: Stream<String>) -> String;
+    fn hew_stream_collect_string(stream: Stream<String>) -> String;
+    fn hew_sink_write_string(sink: Sink<String>, data: String);
+
+    // Bytes element operations
+    fn hew_stream_next_bytes(stream: Stream<bytes>) -> bytes;
+    fn hew_sink_write_bytes(sink: Sink<bytes>, data: bytes);
 }

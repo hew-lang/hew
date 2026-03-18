@@ -1,0 +1,32 @@
+// Regression test: shadowed variable in inner scope must still be dropped
+// even when an outer variable of the same name is in the return position.
+
+type Resource {
+    id: int;
+}
+
+impl Drop for Resource {
+    fn drop(res: Resource) {
+        print("drop ");
+        println(res.id);
+    }
+}
+
+fn mk_outer() -> Resource {
+    let x = Resource { id: 1 };
+    if true {
+        let x = Resource { id: 2 };
+        println("inner scope");
+    }
+    // Inner x (id:2) should be dropped when the if-body scope exits.
+    // Outer x (id:1) is returned and must NOT be dropped here.
+    x
+}
+
+fn main() -> int {
+    let result = mk_outer();
+    print("returned ");
+    println(result.id);
+    // result (id:1) should be dropped at end of main
+    return 0;
+}

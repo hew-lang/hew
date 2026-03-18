@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
+#include <functional>
 #include <string>
 
 using namespace hew;
@@ -1610,6 +1611,51 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     }
   }
 
+  // ── Enriched Stream<bytes>.next() → Option<bytes> ─────────────────────
+  // The enricher rewrites `.next()` on `Stream<bytes>` to a direct call to
+  // `hew_stream_next_bytes(stream)`.  The C function returns a raw ptr
+  // (null=EOF, non-null=HewVec*); we wrap that into Option<bytes>.
+  if (calleeName == "hew_stream_next_bytes") {
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_stream_next_bytes expects exactly 1 argument";
+      return nullptr;
+    }
+    auto streamVal = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!streamVal)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto bytesType = hew::VecType::get(&context, builder.getI32Type());
+    auto optType = hew::OptionEnumType::get(&context, bytesType);
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_stream_next_bytes", externFuncType);
+
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next_bytes");
+    auto rawPtr =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
+                                   mlir::ValueRange{streamVal})
+            .getResult();
+
+    // Build Option<bytes>: null → None (tag 0), non-null → Some (tag 1).
+    auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location,
+                                                 mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+    auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
+    auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
+
+    auto optLLVMType = mlir::LLVM::LLVMStructType::getLiteral(
+        &context, {builder.getI32Type(), ptrType});
+    auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
+    auto withTag =
+        mlir::LLVM::InsertValueOp::create(builder, location, undef, tag, llvm::ArrayRef<int64_t>{0});
+    auto withPayload =
+        mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr, llvm::ArrayRef<int64_t>{1});
+
+    return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
+  }
+
   // Handle built-in print/println
   if (calleeName == "println") {
     return generatePrintCall(call, /*newline=*/true);
@@ -1928,6 +1974,66 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
     if (call.is_tail_call)
       callOp->setAttr("hew.tail_call", builder.getUnitAttr());
+
+    // After a call that takes ownership of stream/sink arguments, null out
+    // the corresponding RAII allocas so scope-exit auto-close is a no-op.
+    // This handles: explicit .close(), stream.forward (pipe), and adapter
+    // functions (lines, chunks, map, filter, take, collect) that consume
+    // the input stream.
+    {
+      // Map: argument index → true if that arg's handle is consumed.
+      // Most consuming functions consume arg 0; hew_stream_pipe consumes both.
+      std::vector<size_t> consumedArgIndices;
+      if (calleeName == "hew_stream_close" || calleeName == "hew_sink_close" ||
+          calleeName == "hew_stream_pair_free" || calleeName == "hew_stream_lines" ||
+          calleeName == "hew_stream_chunks" || calleeName == "hew_stream_map_string" ||
+          calleeName == "hew_stream_map_bytes" || calleeName == "hew_stream_filter_string" ||
+          calleeName == "hew_stream_filter_bytes" || calleeName == "hew_stream_take" ||
+          calleeName == "hew_stream_collect" || calleeName == "hew_stream_collect_string" ||
+          calleeName == "hew_stream_collect_bytes") {
+        consumedArgIndices.push_back(0);
+      } else if (calleeName == "hew_stream_pipe") {
+        consumedArgIndices.push_back(0);
+        consumedArgIndices.push_back(1);
+      }
+      // For user-defined functions (not hew_* runtime), assume all
+      // stream/sink arguments transfer ownership to the callee.
+      // Limitation: functions that only observe (borrow) a handle will
+      // disable the caller's auto-close, causing a leak. A proper fix
+      // requires move semantics in the type system. For now this is
+      // the lesser evil vs double-frees from callee-consumed handles.
+      static const std::unordered_set<std::string> nonConsumingFns = {
+          "hew_sink_write",        "hew_sink_write_string",
+          "hew_sink_write_bytes",  "hew_sink_flush",
+          "hew_stream_is_valid",   "hew_sink_is_valid",
+          "hew_stream_is_closed",  "hew_stream_next",
+          "hew_stream_next_sized", "hew_stream_next_bytes",
+          "hew_stream_pair_sink",  "hew_stream_pair_stream"};
+      if (consumedArgIndices.empty() &&
+          (calleeName.substr(0, 4) != "hew_" ||
+           calleeName.find("stream") != std::string::npos ||
+           calleeName.find("sink") != std::string::npos) &&
+          !nonConsumingFns.count(calleeName)) {
+        // For non-runtime or unknown runtime calls, null all stream/sink args
+        for (size_t i = 0; i < call.args.size(); ++i) {
+          auto *id = std::get_if<ast::ExprIdentifier>(
+              &ast::callArgExpr(call.args[i]).value.kind);
+          if (!id)
+            continue;
+          if (streamHandleVarTypes.count(id->name))
+            consumedArgIndices.push_back(i);
+        }
+      }
+      for (size_t argIdx : consumedArgIndices) {
+        if (argIdx >= call.args.size())
+          continue;
+        auto *id = std::get_if<ast::ExprIdentifier>(
+            &ast::callArgExpr(call.args[argIdx]).value.kind);
+        if (!id)
+          continue;
+        nullOutRaiiAlloca(id->name);
+      }
+    }
 
     // Drop RC environments of temporary closure arguments after the call.
     // Closures bound to variables are dropped by popDropScope; only inline
@@ -3162,10 +3268,30 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           emitError(location) << "Stream::" << method << " requires a closure argument";
           return mlir::Value{};
         }
+        // Determine the stream's element type to pick the right ABI.
+        bool isBytesStream = false;
+        if (auto *typeExpr = resolvedTypeOf(mc.receiver->span))
+          isBytesStream = typeExprStreamElement(*typeExpr) == "bytes";
         // Set the expected closure type so that parameter types in unannotated
-        // lambdas can be inferred (e.g. `(s) => s + "!"` infers s: String).
-        mlir::Type retType = (method == "map") ? strType : mlir::Type{builder.getI1Type()};
-        auto expectedClosure = hew::ClosureType::get(&context, {strType}, retType);
+        // lambdas can be inferred.
+        // For bytes streams the closure receives/returns hew.vec<i32> (bytes).
+        mlir::Type paramType;
+        if (isBytesStream)
+          paramType = hew::VecType::get(&context, builder.getI32Type());
+        else
+          paramType = strType;
+        mlir::Type retType;
+        if (method == "map") {
+          retType = paramType; // fn(T) -> T
+        } else {
+          // Filter predicate: fn(T) -> bool.
+          // Both String and bytes filter runtime ABIs expect i32 return type
+          // (StringFilterFn and BytesFilterFn both return i32).  The codegen
+          // will zext the i1 comparison result to i32 when lowering the
+          // closure.
+          retType = builder.getI32Type();
+        }
+        auto expectedClosure = hew::ClosureType::get(&context, {paramType}, retType);
         pendingLambdaExpectedType = expectedClosure;
         auto closureVal = generateExpression(ast::callArgExpr(mc.args[0]).value);
         pendingLambdaExpectedType.reset();
@@ -3181,9 +3307,12 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
         auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, closureVal);
         // RC-clone env_ptr so the lazy stream adapter keeps its own reference alive.
         auto clonedEnv = hew::RcCloneOp::create(builder, location, ptrType, envPtr).getResult();
-        // Call the runtime adapter constructor.
-        std::string runtimeFn =
-            (method == "map") ? "hew_stream_map_string" : "hew_stream_filter_string";
+        // Dispatch to the correct runtime function based on element type.
+        std::string runtimeFn;
+        if (isBytesStream)
+          runtimeFn = (method == "map") ? "hew_stream_map_bytes" : "hew_stream_filter_bytes";
+        else
+          runtimeFn = (method == "map") ? "hew_stream_map_string" : "hew_stream_filter_string";
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, runtimeFn);
         auto resultStream =
             hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
@@ -3191,6 +3320,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                 .getResult();
         // Drop the caller's reference to the closure env (stream adapter holds its own clone).
         hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+        // Null RAII alloca — map/filter consume the input stream.
+        if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          nullOutRaiiAlloca(recvId->name);
         return resultStream;
       }
       if (method == "take") {
@@ -3203,50 +3335,13 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           return mlir::Value{};
         countVal = coerceType(countVal, i64Type, location);
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_take");
-        return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
-                                          mlir::ValueRange{receiver, countVal})
+        auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                  calleeAttr,
+                                                  mlir::ValueRange{receiver, countVal})
             .getResult();
-      }
-      // next_bytes() → Option<bytes>
-      // Calls hew_stream_next_bytes (returns ptr: null=EOF, non-null=data)
-      // then wraps into Option<bytes>: null→None (tag 0), non-null→Some (tag 1).
-      if (method == "next_bytes") {
-        auto bytesType = hew::VecType::get(&context, builder.getI32Type());
-        auto optType = hew::OptionEnumType::get(&context, bytesType);
-
-        // Ensure the extern function is declared.
-        auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
-        getOrCreateExternFunc("hew_stream_next_bytes", externFuncType);
-
-        // Call hew_stream_next_bytes(stream) → !llvm.ptr (null on EOF).
-        auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_next_bytes");
-        auto rawPtr =
-            hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
-                                       mlir::ValueRange{receiver})
-                .getResult();
-
-        // Build Option<bytes> as LLVM struct { i32 tag, ptr payload }.
-        // Option lowering: { i32=0 → None, i32=1 → Some }.
-        auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-        auto isNotNull = mlir::LLVM::ICmpOp::create(builder, location,
-                                                     mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
-
-        // Select tag: non-null → 1 (Some), null → 0 (None).
-        auto oneTag = mlir::arith::ConstantIntOp::create(builder, location, 1, 32);
-        auto zeroTag = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
-        auto tag = mlir::arith::SelectOp::create(builder, location, isNotNull, oneTag, zeroTag);
-
-        // Assemble the LLVM struct { i32, ptr }.
-        auto optLLVMType = mlir::LLVM::LLVMStructType::getLiteral(
-            &context, {builder.getI32Type(), ptrType});
-        auto undef = mlir::LLVM::UndefOp::create(builder, location, optLLVMType);
-        auto withTag =
-            mlir::LLVM::InsertValueOp::create(builder, location, undef, tag, llvm::ArrayRef<int64_t>{0});
-        auto withPayload =
-            mlir::LLVM::InsertValueOp::create(builder, location, withTag, rawPtr, llvm::ArrayRef<int64_t>{1});
-
-        // Bitcast the LLVM struct to the Hew OptionEnumType.
-        return hew::BitcastOp::create(builder, location, optType, withPayload).getResult();
+        if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          nullOutRaiiAlloca(recvId->name);
+        return result;
       }
     }
   }
@@ -4821,10 +4916,129 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   returnSlot = nullptr;
   channelIntOutValidAlloca = nullptr;
 
+  // Save/restore funcLevelDropExcludeVars and funcLevelDropScopeBase so the
+  // lambda's body block (which is function-level from popDropScope's
+  // perspective) doesn't inherit the enclosing function's excludes.  Collect
+  // the lambda body's trailing expression identifiers so the return value is
+  // NOT dropped before the return op.
+  auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  auto savedDropScopeBase = funcLevelDropScopeBase;
+  funcLevelDropExcludeVars.clear();
+  funcLevelReturnVarNames.clear();
+  funcLevelDropScopeBase = dropScopes.size();
+  if (lam.body) {
+    // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
+    using ExcludeSet = std::set<std::pair<std::string, size_t>>;
+    auto &excludeVars = funcLevelDropExcludeVars;
+    std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectReturnVars;
+    std::function<void(const ast::Block &, ExcludeSet &, size_t)> fromBlock;
+    std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> fromStmtIf;
+    fromStmtIf = [&fromBlock, &fromStmtIf](
+        const ast::StmtIf &si, ExcludeSet &out, size_t depth) {
+      fromBlock(si.then_block, out, depth + 1);
+      if (si.else_block) {
+        if (si.else_block->block)
+          fromBlock(*si.else_block->block, out, depth + 1);
+        if (si.else_block->if_stmt) {
+          const auto &nested = si.else_block->if_stmt->value;
+          if (auto *nif = std::get_if<ast::StmtIf>(&nested.kind))
+            fromStmtIf(*nif, out, depth);
+        }
+      }
+    };
+    fromBlock = [&collectReturnVars, &fromStmtIf](
+        const ast::Block &blk, ExcludeSet &out, size_t depth) {
+      if (blk.trailing_expr) {
+        collectReturnVars(blk.trailing_expr->value, out, depth);
+      } else if (!blk.stmts.empty()) {
+        const auto &last = blk.stmts.back()->value;
+        if (auto *es = std::get_if<ast::StmtExpression>(&last.kind))
+          collectReturnVars(es->expr.value, out, depth);
+        else if (auto *ifs = std::get_if<ast::StmtIf>(&last.kind))
+          fromStmtIf(*ifs, out, depth);
+        else if (auto *ms = std::get_if<ast::StmtMatch>(&last.kind)) {
+          for (const auto &arm : ms->arms)
+            if (arm.body)
+              collectReturnVars(arm.body->value, out, depth);
+        }
+      }
+      // Scan let/var bindings whose RHS is a match/if/block — the arm
+      // results are ownership-transferred into the binding.
+      for (const auto &stmt : blk.stmts) {
+        const ast::Expr *rhs = nullptr;
+        if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
+          if (letStmt->value)
+            rhs = &letStmt->value->value;
+        } else if (auto *varStmt = std::get_if<ast::StmtVar>(&stmt->value.kind)) {
+          if (varStmt->value)
+            rhs = &varStmt->value->value;
+        }
+        if (!rhs)
+          continue;
+        if (std::get_if<ast::ExprMatch>(&rhs->kind) ||
+            std::get_if<ast::ExprIf>(&rhs->kind) ||
+            std::get_if<ast::ExprIfLet>(&rhs->kind) ||
+            std::get_if<ast::ExprBlock>(&rhs->kind)) {
+          collectReturnVars(*rhs, out, depth);
+        }
+      }
+    };
+    collectReturnVars = [&collectReturnVars, &fromBlock](
+        const ast::Expr &expr, ExcludeSet &out, size_t depth) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+        out.insert({id->name, depth});
+      } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
+        for (const auto &[fieldName, fieldVal] : si->fields) {
+          if (auto *fid = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
+            out.insert({fid->name, depth});
+        }
+      } else if (auto *ifE = std::get_if<ast::ExprIf>(&expr.kind)) {
+        if (ifE->then_block)
+          collectReturnVars(ifE->then_block->value, out, depth);
+        if (ifE->else_block && *ifE->else_block)
+          collectReturnVars((*ifE->else_block)->value, out, depth);
+      } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
+        fromBlock(ifLet->body, out, depth + 1);
+        if (ifLet->else_body)
+          fromBlock(*ifLet->else_body, out, depth + 1);
+      } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
+        for (const auto &arm : matchE->arms) {
+          if (arm.body)
+            collectReturnVars(arm.body->value, out, depth);
+        }
+      } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
+        fromBlock(blockE->block, out, depth + 1);
+      } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
+        for (const auto &elem : tupleE->elements)
+          collectReturnVars(elem->value, out, depth);
+      } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+        fromBlock(unsafeE->block, out, depth + 1);
+      } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
+        for (const auto &arg : callE->args)
+          collectReturnVars(ast::callArgExpr(arg).value, out, depth);
+      }
+    };
+    // If the body is a block expression, use fromBlock to handle
+    // trailing expressions and StmtIf/StmtMatch in last position.
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&lam.body->value.kind)) {
+      fromBlock(blockExpr->block, excludeVars, 0);
+    } else {
+      // Simple expression body — e.g. `(x) => x`
+      collectReturnVars(lam.body->value, excludeVars, 0);
+    }
+    // Build flat return-var name set for RAII exclusion
+    for (const auto &[name, depth] : excludeVars)
+      funcLevelReturnVarNames.insert(name);
+  }
+
   mlir::Value bodyVal = nullptr;
   if (lam.body) {
     bodyVal = generateExpression(lam.body->value);
   }
+  funcLevelDropExcludeVars = std::move(savedExcludeVars);
+  funcLevelReturnVarNames = std::move(savedReturnVarNames);
+  funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
     auto bodyType = bodyVal.getType();

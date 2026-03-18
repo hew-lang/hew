@@ -102,7 +102,7 @@ trait RequestMethods {
     /// body.write("chunk 2");
     /// body.close();
     /// ```
-    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink;
+    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;
 
 }
 
@@ -128,7 +128,7 @@ impl RequestMethods for Request {
         unsafe { hew_http_respond_json(req, status, json) }
     }
     /// Begin a streaming response and return a `Sink` for chunked output.
-    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink {
+    fn respond_stream(req: Request, status: i32, content_type: String) -> Sink<String> {
         unsafe { hew_http_respond_stream(req, status, content_type) }
     }
 }
@@ -169,7 +169,7 @@ extern "C" {
     fn hew_http_respond(req: Request, status: i32, content_type: String, content_length: i64, body: String) -> i32;
     fn hew_http_respond_text(req: Request, status: i32, body: String) -> i32;
     fn hew_http_respond_json(req: Request, status: i32, json: String) -> i32;
-    fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink;
+    fn hew_http_respond_stream(req: Request, status: i32, content_type: String) -> Sink<String>;
     fn hew_http_server_close(server: Server);
     fn hew_http_request_free(req: Request);
 }

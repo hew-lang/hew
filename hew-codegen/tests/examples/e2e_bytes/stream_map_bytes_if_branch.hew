@@ -1,0 +1,35 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    let buf1: bytes = bytes::new();
+    buf1.push(10);
+    buf1.push(20);
+
+    let buf2: bytes = bytes::new();
+    buf2.push(30);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.close();
+
+    // Map with if-branch: returned value is created inside the branch block.
+    // Regression test: the branch-local variable must not be dropped before
+    // scf.yield transfers it to the caller.
+    let mapped = input.map((x) => {
+        if x.len() > 1 {
+            let y: bytes = bytes::new();
+            y.push(99);
+            y.push(98);
+            y
+        } else {
+            x
+        }
+    });
+
+    for await item in mapped {
+        println(item.len());
+    }
+    println("done");
+}

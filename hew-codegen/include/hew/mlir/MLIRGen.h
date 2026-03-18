@@ -688,12 +688,24 @@ private:
     std::string varName;
     std::string dropFuncName;
     bool isUserDrop = false;
+    /// For stream/sink RAII: alloca storing the handle pointer.
+    /// emitDropEntry will null-check before calling close, then null out
+    /// the alloca so explicit .close() + scope-exit don't double-free.
+    mlir::Value closeAlloca;
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
-  // Variable name to exclude from function-level drops (the returned variable).
-  // Set by generateFunction before generateBlock, cleared after.
-  std::set<std::string> funcLevelDropExcludeVars;
+  // (name, scope-depth) pairs to exclude from drops.  The depth is relative
+  // to funcLevelDropScopeBase so that a shadowed binding in an inner scope
+  // is NOT confused with the same-named return variable at depth 0.
+  std::set<std::pair<std::string, size_t>> funcLevelDropExcludeVars;
+  // Flat set of variable names appearing anywhere in the return expression,
+  // ignoring depth.  Used for RAII close exclusion where the depth-based
+  // tracking doesn't work (variables declared in an unsafe block at depth 1
+  // can appear in if/match arms at depth 2+).
+  std::set<std::string> funcLevelReturnVarNames;
+  // dropScopes.size() at the point where the current function body starts.
+  size_t funcLevelDropScopeBase = 0;
   void pushDropScope();
   void popDropScope();
   void registerDroppable(const std::string &varName, const std::string &dropFunc,
@@ -703,6 +715,8 @@ private:
   /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
   /// bitcast, drop).  No-op if the variable is not found.
   void emitDropEntry(const DropEntry &entry);
+  /// Null out a variable's RAII close alloca (after ownership transfer).
+  void nullOutRaiiAlloca(const std::string &varName);
   /// Emit a drop for a single variable if it has a registered drop function.
   void emitDropForVariable(const std::string &varName);
   void emitDropsForScope(const std::vector<DropEntry> &scope);

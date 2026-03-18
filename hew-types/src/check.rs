@@ -3767,7 +3767,9 @@ impl Checker {
                     Ty::Named { name, args } if name == "Range" && args.len() == 1 => {
                         args[0].clone()
                     }
-                    Ty::Named { name, args } if name == "Stream" && args.len() == 1 => {
+                    Ty::Named { name, args }
+                        if (name == "Stream" || name == "stream.Stream") && args.len() == 1 =>
+                    {
                         args[0].clone()
                     }
                     Ty::Named { name, args } if name == "Vec" => {
@@ -6776,27 +6778,75 @@ impl Checker {
                 .cloned()
                 .unwrap_or(Ty::Var(TypeVar::fresh())),
             // Stream<T> methods
+            //
+            // LIMITATION: Stream element-type validation only triggers here (on
+            // method resolution).  A function parameter typed `Stream<MyStruct>`
+            // passes typecheck if no stream methods are called on it.  Ideally
+            // we would reject unsupported element types in resolve_type_expr when
+            // the Stream<T> type is first formed, but that requires propagating
+            // the span and restructuring the named-type resolution path.  For
+            // now codegen will fail if the type is actually used.
             (
                 Ty::Named {
                     name,
                     args: type_args,
                 },
                 _,
-            ) if name == "Stream" => {
+            ) if name == "Stream" || name == "stream.Stream" => {
                 let inner = type_args
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
+                // Reject concrete element types that lack runtime
+                // implementations.  Only String and bytes are supported;
+                // type variables and Ty::Error pass through (Error
+                // preserves the original diagnostic instead of masking it).
+                let is_supported =
+                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
+                if !is_supported {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Stream<{inner}>` is not supported; \
+                             Stream<T> is currently only implemented for String and bytes"
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 match method {
                     "next" => Ty::option(inner),
-                    "next_bytes" => Ty::option(Ty::Bytes),
                     "close" => Ty::Unit,
-                    "lines" => Ty::stream(Ty::String),
-                    "collect" => Ty::String,
-                    "chunks" => {
+                    "lines" => {
+                        if inner != Ty::String {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`lines()` is only supported on `Stream<String>`, \
+                                     not `Stream<{inner}>`"
+                                ),
+                            );
+                        }
+                        Ty::stream(Ty::String)
+                    }
+                    "collect" => {
+                        if inner != Ty::String {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`collect()` is only supported on `Stream<String>`, \
+                                     not `Stream<{inner}>`"
+                                ),
+                            );
+                        }
+                        Ty::String
+                    }
+                    "chunks" | "take" => {
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I32);
+                            self.check_against(expr, sp, &Ty::I64);
                         }
                         Ty::stream(inner)
                     }
@@ -6804,40 +6854,33 @@ impl Checker {
                         // Returns Stream<T> where T is inferred; codec type arg not yet resolved
                         Ty::stream(Ty::Var(TypeVar::fresh()))
                     }
-                    // Functional operators — fn(String) -> String / bool, return Stream<String>
+                    // Functional operators — fn(T) -> T / bool, return Stream<T>
                     "map" => {
-                        // Argument is a closure fn(String) -> String.
-                        // Check the closure against the expected type so that the
-                        // closure parameter type is inferred as String.
-                        let ret_ty = Ty::Var(TypeVar::fresh());
+                        // Closure takes the stream's element type and returns
+                        // the same type.  For String streams: fn(String) -> String;
+                        // for bytes streams: fn(bytes) -> bytes.
                         let expected_fn = Ty::Function {
-                            params: vec![Ty::String],
-                            ret: Box::new(ret_ty.clone()),
+                            params: vec![inner.clone()],
+                            ret: Box::new(inner.clone()),
                         };
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &expected_fn);
                         }
-                        Ty::stream(Ty::String)
+                        Ty::stream(inner)
                     }
                     "filter" => {
-                        // Argument is a predicate fn(String) -> bool.
+                        // Predicate takes the stream's element type and
+                        // returns bool.
                         let expected_fn = Ty::Function {
-                            params: vec![Ty::String],
+                            params: vec![inner.clone()],
                             ret: Box::new(Ty::Bool),
                         };
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &expected_fn);
                         }
-                        Ty::stream(Ty::String)
-                    }
-                    "take" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I64);
-                        }
-                        Ty::stream(Ty::String)
+                        Ty::stream(inner)
                     }
                     _ => {
                         self.report_error(
@@ -6856,11 +6899,24 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "Sink" => {
+            ) if name == "Sink" || name == "stream.Sink" => {
                 let inner = type_args
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
+                let is_supported =
+                    matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_) | Ty::Error);
+                if !is_supported {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Sink<{inner}>` is not supported; \
+                             Sink<T> is currently only implemented for String and bytes"
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 match method {
                     "write" => {
                         if let Some(arg) = args.first() {
@@ -6870,13 +6926,6 @@ impl Checker {
                         Ty::Unit
                     }
                     "close" | "flush" => Ty::Unit,
-                    "write_bytes" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::Bytes);
-                        }
-                        Ty::Unit
-                    }
                     "encode" => {
                         // Returns Sink<Row> where Row is inferred; codec type arg not yet resolved
                         Ty::sink(Ty::Var(TypeVar::fresh()))

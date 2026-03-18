@@ -1,0 +1,19 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.pipe(8);
+
+    sink.write("apple");
+    sink.write("kiwi");
+    sink.write("banana");
+    sink.write("fig");
+    sink.close();
+
+    // Inline filter in for-await: no intermediate variable.
+    // Regression test: ExprMethodCall returning Stream<T> must use the stream
+    // iteration path, not the actor mailbox path.
+    for await item in input.filter((s) => s.len() > 3) {
+        println(item);
+    }
+    println("done");
+}

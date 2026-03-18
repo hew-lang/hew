@@ -1,0 +1,33 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    // Write three buffers of different lengths
+    let buf1: bytes = bytes::new();
+    buf1.push(1);
+    buf1.push(2);
+    buf1.push(3);
+
+    let buf2: bytes = bytes::new();
+    buf2.push(4);
+
+    let buf3: bytes = bytes::new();
+    buf3.push(5);
+    buf3.push(6);
+    buf3.push(7);
+    buf3.push(8);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.write(buf3);
+    sink.close();
+
+    // Keep only items with length > 2
+    let filtered = input.filter((b) => b.len() > 2);
+
+    for await item in filtered {
+        println(item.len());
+    }
+    println("done");
+}

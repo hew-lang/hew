@@ -1017,3 +1017,31 @@ functions returning `Result<T, IoError>` directly.
 - **Removed from shipping:** standalone hew-codegen binary stripped from release.yml,
   all installers (shell, PowerShell, Docker, Alpine, Debian, RPM, Arch, Nix, Homebrew),
   and the nightly sanitizer workflow was simplified to use the same build directory.
+
+## Stream/Sink RAII Auto-Close and Drop Exclusion Fixes
+
+- **What:** Three fixes for the stream/bytes API: (1) let-bound match return double-frees
+  in bytes map, (2) Stream/Sink RAII auto-close on scope exit, (3) type guard for
+  `lines()` on `Stream<bytes>`.
+
+- **Why:** Without RAII auto-close, every Stream/Sink handle requires an explicit
+  `.close()` call. Forgetting one causes consumer deadlocks (waiting for EOF that
+  never arrives). The let-bound match fix prevents double-frees when match arms
+  flow through let bindings to function returns.
+
+- **RAII approach:** Each Stream/Sink variable gets a `closeAlloca` (`memref<llvm.ptr>`)
+  storing the handle pointer. On scope exit, codegen loads from the alloca, null-checks
+  via `scf::IfOp`, and calls close. Explicit `.close()`, consuming runtime functions,
+  and user function calls null the alloca so scope-exit close is a no-op.
+
+- **Key decisions:**
+  - Ownership transfer heuristic: user functions receiving stream/sink args are assumed
+    to take ownership (alloca nulled). Functions that only observe would leak, but
+    double-frees are worse. Proper fix requires move semantics in the type system.
+  - Block expression tail values need alloca null-out before scope pop, or the
+    scope-exit close fires on a handle being returned to the outer scope.
+  - Non-consuming function allowlist uses actual runtime names (`hew_sink_write_string`,
+    not `hew_sink_write`) discovered by checking enricher rewriting.
+  - The `funcLevelReturnVarNames` flat name set handles the depth mismatch caused by
+    the enricher's `unsafe {}` wrapper (variables at depth 1, return expressions at
+    depth 2+).

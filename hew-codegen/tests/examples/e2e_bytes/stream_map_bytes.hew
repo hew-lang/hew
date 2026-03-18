@@ -1,0 +1,30 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    // Write bytes with NUL in the middle: [72, 0, 105]
+    let buf1: bytes = bytes::new();
+    buf1.push(72);
+    buf1.push(0);
+    buf1.push(105);
+
+    // Second buffer: [33]
+    let buf2: bytes = bytes::new();
+    buf2.push(33);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.close();
+
+    // Map: append byte 42 to each item
+    let mapped = input.map((b) => {
+        b.push(42);
+        b
+    });
+
+    for await item in mapped {
+        println(item.len());
+    }
+    println("done");
+}

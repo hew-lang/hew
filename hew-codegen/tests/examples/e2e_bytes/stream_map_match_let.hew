@@ -1,0 +1,38 @@
+import std::stream;
+
+// Regression test: let-bound match with branch-local bytes variables.
+// Without the drop-exclusion fix, `y` in the match arm is freed at arm
+// exit even though its value was moved into `out`, causing a double-free.
+fn main() {
+    let (sink, input) = stream.bytes_pipe(8);
+
+    let buf1: bytes = bytes::new();
+    buf1.push(72);
+    buf1.push(105);
+
+    let buf2: bytes = bytes::new();
+    buf2.push(33);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.close();
+
+    let mode = 1;
+
+    let mapped = input.map((x) => {
+        let out = match mode {
+            1 => {
+                let y: bytes = bytes::new();
+                y.push(9);
+                y
+            },
+            _ => x,
+        };
+        out
+    });
+
+    for await item in mapped {
+        println(item.len());
+    }
+    println("done");
+}

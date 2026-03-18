@@ -1,0 +1,12 @@
+import std::stream;
+
+// Stream<int> should be rejected at method resolution, not silently
+// fall back to the String ABI.
+fn process(input: Stream<int>) {
+    match input.next() {
+        Some(item) => println(item),
+        None => {},
+    }
+}
+
+fn main() {}

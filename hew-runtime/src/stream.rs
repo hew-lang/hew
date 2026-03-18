@@ -53,6 +53,8 @@ pub use hew_cabi::sink::{into_sink_ptr, set_last_error, take_last_error, HewSink
 // so we re-export it here for Rust callers but don't redefine the C symbol.
 pub use hew_cabi::sink::hew_stream_last_error;
 
+use hew_cabi::vec::HewVec;
+
 /// Returns 1 if the stream pointer is non-null (valid), 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hew_stream_is_valid(stream: *const HewStream) -> i32 {
@@ -460,6 +462,130 @@ impl StreamBacking for FilterStringStream {
 }
 
 impl Drop for FilterStringStream {
+    fn drop(&mut self) {
+        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
+        unsafe { hew_rc_drop_env(self.env_ptr) };
+    }
+}
+
+// ── Map adapter (bytes) ───────────────────────────────────────────────────────
+
+/// Calling convention for bytes map closures.
+///
+/// The closure receives a `*mut HewVec` (bytes) and returns a new `*mut HewVec`.
+/// Both the input and the return value are owned: the closure frees the input,
+/// and the caller owns the returned vec.
+type BytesMapFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> *mut HewVec;
+
+/// Wraps a stream and lazily applies a `fn(bytes) -> bytes` closure to every item.
+#[derive(Debug)]
+struct MapBytesStream {
+    upstream: Box<dyn StreamBacking>,
+    fn_ptr: BytesMapFn,
+    env_ptr: *const c_void,
+}
+
+// SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
+// environment that is only accessed from one thread at a time.
+unsafe impl Send for MapBytesStream {}
+
+impl StreamBacking for MapBytesStream {
+    fn next(&mut self) -> Option<Item> {
+        let item = self.upstream.next()?;
+        // Convert raw item bytes to a HewVec for the closure.
+        // SAFETY: u8_to_hwvec allocates a fresh HewVec.
+        let input_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
+        // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
+        let result_vec = unsafe { (self.fn_ptr)(self.env_ptr, input_vec) };
+        // Free the input vec when the closure returned a new allocation.
+        // If the closure mutated and returned the same pointer, skip to
+        // avoid a double-free (result_vec will be freed below).
+        if result_vec != input_vec {
+            // SAFETY: input_vec was allocated by u8_to_hwvec and is no longer
+            // referenced — the closure returned a different allocation.
+            unsafe { hew_cabi::vec::hew_vec_free(input_vec) };
+        }
+        if result_vec.is_null() {
+            return Some(Vec::new());
+        }
+        // SAFETY: result_vec is a valid HewVec returned by the closure.
+        let result_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(result_vec) };
+        // Free the closure's returned vec.
+        // SAFETY: result_vec was allocated by the closure.
+        unsafe { hew_cabi::vec::hew_vec_free(result_vec) };
+        Some(result_bytes)
+    }
+
+    fn close(&mut self) {
+        self.upstream.close();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.upstream.is_closed()
+    }
+}
+
+impl Drop for MapBytesStream {
+    fn drop(&mut self) {
+        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
+        unsafe { hew_rc_drop_env(self.env_ptr) };
+    }
+}
+
+// ── Filter adapter (bytes) ────────────────────────────────────────────────────
+
+/// Calling convention for bytes filter closures.
+///
+/// The closure receives a `*mut HewVec` (bytes) and returns non-zero to keep
+/// the item.  The closure does NOT take ownership — the caller frees the vec
+/// after the predicate returns.
+type BytesFilterFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> i32;
+
+/// Wraps a stream and lazily skips items for which the predicate returns false.
+#[derive(Debug)]
+struct FilterBytesStream {
+    upstream: Box<dyn StreamBacking>,
+    fn_ptr: BytesFilterFn,
+    env_ptr: *const c_void,
+    done: bool,
+}
+
+// SAFETY: same as MapBytesStream.
+unsafe impl Send for FilterBytesStream {}
+
+impl StreamBacking for FilterBytesStream {
+    fn next(&mut self) -> Option<Item> {
+        loop {
+            if self.done {
+                return None;
+            }
+            let item = self.upstream.next()?;
+            // Build a temporary HewVec for the predicate.
+            // SAFETY: u8_to_hwvec allocates a fresh HewVec.
+            let tmp_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
+            // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
+            let keep = unsafe { (self.fn_ptr)(self.env_ptr, tmp_vec) };
+            // Free the temporary vec — the predicate borrows it, not owns it.
+            // SAFETY: tmp_vec was allocated by u8_to_hwvec and the predicate
+            // only reads it (returns i32 bool, not the vec).
+            unsafe { hew_cabi::vec::hew_vec_free(tmp_vec) };
+            if keep != 0 {
+                return Some(item);
+            }
+        }
+    }
+
+    fn close(&mut self) {
+        self.done = true;
+        self.upstream.close();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.done || self.upstream.is_closed()
+    }
+}
+
+impl Drop for FilterBytesStream {
     fn drop(&mut self) {
         // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
         unsafe { hew_rc_drop_env(self.env_ptr) };
@@ -1045,6 +1171,70 @@ pub unsafe extern "C" fn hew_stream_filter_string(
     })
 }
 
+/// Wrap a bytes stream with a lazy map adapter.
+///
+/// The closure receives a `*mut HewVec` (bytes) and returns a new `*mut HewVec`.
+/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
+///
+/// Returns a new `HewStream*`. Takes ownership of `stream`.
+///
+/// # Safety
+///
+/// - `stream` must be a valid `HewStream` pointer.
+/// - `fn_ptr` must be a valid Hew closure matching the
+///   `(env: *const c_void, data: *mut HewVec) -> *mut HewVec` ABI.
+/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_map_bytes(
+    stream: *mut HewStream,
+    fn_ptr: *const c_void,
+    env_ptr: *const c_void,
+) -> *mut HewStream {
+    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
+    let fn_typed: BytesMapFn = unsafe { std::mem::transmute(fn_ptr) };
+    into_stream_ptr(MapBytesStream {
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        fn_ptr: fn_typed,
+        env_ptr,
+    })
+}
+
+/// Wrap a bytes stream with a lazy filter adapter.
+///
+/// Items for which `fn_ptr(env_ptr, item_vec)` returns zero are skipped.
+/// The adapter takes ownership of `stream` and of one RC reference to `env_ptr`.
+///
+/// Returns a new `HewStream*`. Takes ownership of `stream`.
+///
+/// # Safety
+///
+/// - `stream` must be a valid `HewStream` pointer.
+/// - `fn_ptr` must match the `(env: *const c_void, data: *mut HewVec) -> i32` ABI.
+/// - `env_ptr` must be null or a valid Hew RC block already retained for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_filter_bytes(
+    stream: *mut HewStream,
+    fn_ptr: *const c_void,
+    env_ptr: *const c_void,
+) -> *mut HewStream {
+    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
+    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
+    let fn_typed: BytesFilterFn = unsafe { std::mem::transmute(fn_ptr) };
+    into_stream_ptr(FilterBytesStream {
+        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
+        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        fn_ptr: fn_typed,
+        env_ptr,
+        done: false,
+    })
+}
+
 /// Wrap a stream with a take adapter that yields at most `n` items.
 ///
 /// Returns a new `HewStream*`. Takes ownership of `stream`.
@@ -1063,4 +1253,69 @@ pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut
         upstream: unsafe { ptr::read(&raw const owned.inner) },
         remaining: limit,
     })
+}
+
+// ── Bytes bridge: HewVec ↔ raw-byte marshalling ──────────────────────────────
+//
+// These functions bridge the type-erased stream runtime (raw byte buffers) to
+// the `bytes` (`HewVec<i32>`) representation used by the Hew language.
+// The enricher dispatches here when the stream element type is `bytes`.
+
+/// Read the next item from a stream and return it as a `bytes` value.
+///
+/// Returns a `*mut HewVec` (i32-element vec, one byte per slot) on success —
+/// including for zero-length items — or **null** on EOF.  The caller owns the
+/// returned vec and must eventually free it.
+///
+/// # Safety
+///
+/// `stream` must be a valid stream pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_stream_next_bytes(stream: *mut HewStream) -> *mut HewVec {
+    if stream.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut size: usize = 0;
+    // SAFETY: stream is valid per caller contract; size is a valid local.
+    let raw_ptr = unsafe { hew_stream_next_sized(stream, std::ptr::addr_of_mut!(size)) };
+    if raw_ptr.is_null() {
+        return std::ptr::null_mut(); // EOF
+    }
+    // SAFETY: raw_ptr is valid for `size` bytes (from hew_stream_next_sized contract).
+    let raw = unsafe { std::slice::from_raw_parts(raw_ptr.cast::<u8>(), size) };
+    // SAFETY: u8_to_hwvec allocates a new HewVec; raw slice is valid.
+    let vec = unsafe { hew_cabi::vec::u8_to_hwvec(raw) };
+    // SAFETY: raw_ptr was allocated by libc::malloc inside hew_stream_next_sized.
+    unsafe { libc::free(raw_ptr) };
+    vec
+}
+
+/// Write a `bytes` value to a sink.
+///
+/// Extracts the raw byte content from the `HewVec` and writes it as a single
+/// stream item.  Zero-length writes are forwarded — they are valid data, not
+/// no-ops.  Does nothing only if `sink` or `data` is null.
+///
+/// # Safety
+///
+/// `sink` must be a valid sink pointer.  `data` must be a valid `HewVec`
+/// pointer (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_sink_write_bytes(sink: *mut HewSink, data: *mut HewVec) {
+    if sink.is_null() || data.is_null() {
+        return;
+    }
+    // SAFETY: data is a valid HewVec per caller contract.
+    let bytes = unsafe { hew_cabi::vec::hwvec_to_u8(data) };
+    if bytes.is_empty() {
+        // hew_sink_write short-circuits on size=0, but empty bytes are valid
+        // data items that must be delivered.  Write directly to the backing.
+        // SAFETY: sink is valid per caller contract.
+        unsafe { (*sink).inner.write_item(&[]) };
+    } else {
+        // SAFETY: sink is valid; bytes slice is valid for its length.
+        unsafe {
+            hew_sink_write(sink, bytes.as_ptr().cast::<c_void>(), bytes.len());
+        }
+    }
 }

@@ -15,7 +15,7 @@ impl Drop for HttpReq {
 }
 
 actor Handler {
-    receive fn handle(req: HttpReq, sink: Sink) {
+    receive fn handle(req: HttpReq, sink: Sink<String>) {
         let path = req.path;
         sink.write(f"handled: {path}");
         sink.close();
@@ -24,9 +24,9 @@ actor Handler {
 }
 
 fn main() {
-    let (sink1, resp1) = stream.channel(4);
-    let (sink2, resp2) = stream.channel(4);
-    let (sink3, resp3) = stream.channel(4);
+    let (sink1, resp1) = stream.pipe(4);
+    let (sink2, resp2) = stream.pipe(4);
+    let (sink3, resp3) = stream.pipe(4);
 
     let h1 = spawn Handler;
     h1.handle(HttpReq { path: "/api/users" }, sink1);

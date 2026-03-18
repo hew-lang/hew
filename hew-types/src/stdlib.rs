@@ -33,21 +33,41 @@ pub fn resolve_channel_method(
 
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///
+/// The `element_type` parameter carries the resolved inner type name (e.g.
+/// `"bytes"` or `"String"`).  When the element is `bytes`, the enricher
+/// dispatches to the bytes-specific runtime entry points; all other types
+/// (including `None` / unknown) fall through to the default string ABI.
+///
 /// These types are not opaque handle types (`Ty::Named`) — they are `Ty::Stream` /
 /// `Ty::Sink` variants.  This resolver is called separately from
 /// `resolve_handle_method` and covers both the read and write sides.
 #[must_use]
-pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static str> {
+pub fn resolve_stream_method(
+    stream_kind: &str,
+    method: &str,
+    element_type: Option<&str>,
+) -> Option<&'static str> {
+    let is_bytes = element_type == Some("bytes");
     match (stream_kind, method) {
-        // Stream<T> methods
-        ("Stream", "next") => Some("hew_stream_next"),
+        // Stream<T> methods — element-type-dependent
+        ("Stream", "next") => Some(if is_bytes {
+            "hew_stream_next_bytes"
+        } else {
+            "hew_stream_next"
+        }),
+        ("Stream", "collect") => Some("hew_stream_collect_string"),
+        // Stream<T> methods — element-type-independent
         ("Stream", "close") => Some("hew_stream_close"),
         ("Stream", "lines") => Some("hew_stream_lines"),
         ("Stream", "chunks") => Some("hew_stream_chunks"),
-        ("Stream", "collect") => Some("hew_stream_collect_string"),
-        // Sink<T> methods
-        ("Sink", "write") => Some("hew_sink_write_string"),
-        ("Sink", "write_bytes") => Some("hew_sink_write_bytes"),
+        ("Stream", "take") => Some("hew_stream_take"),
+        // Sink<T> methods — element-type-dependent
+        ("Sink", "write") => Some(if is_bytes {
+            "hew_sink_write_bytes"
+        } else {
+            "hew_sink_write_string"
+        }),
+        // Sink<T> methods — element-type-independent
         ("Sink", "flush") => Some("hew_sink_flush"),
         ("Sink", "close") => Some("hew_sink_close"),
         _ => None,

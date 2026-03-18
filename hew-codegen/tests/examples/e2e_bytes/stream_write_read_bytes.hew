@@ -1,7 +1,8 @@
 import std::stream;
 
 fn main() {
-    let (sink, input) = stream.channel(8);
+    // Use the generic bytes_pipe constructor — returns (Sink<bytes>, Stream<bytes>).
+    let (sink, input) = stream.bytes_pipe(8);
 
     // Build byte buffers: "Hi" (72, 105), empty, "!" (33)
     let buf1: bytes = bytes::new();
@@ -13,16 +14,18 @@ fn main() {
     let buf2: bytes = bytes::new();
     buf2.push(33);
 
-    sink.write_bytes(buf1);
-    sink.write_bytes(empty);
-    sink.write_bytes(buf2);
+    // Generic `.write(b)` dispatches to hew_sink_write_bytes for Sink<bytes>.
+    sink.write(buf1);
+    sink.write(empty);
+    sink.write(buf2);
     sink.close();
 
-    // Read back using Option<bytes> match
+    // Generic `.next()` dispatches to hew_stream_next_bytes for Stream<bytes>,
+    // returning Option<bytes>.
     var count: int = 0;
     var done = false;
     while !done {
-        match input.next_bytes() {
+        match input.next() {
             Some(data) => {
                 println(data.len());
                 count = count + 1;

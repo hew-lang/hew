@@ -1,7 +1,7 @@
 import std::stream;
 
 fn main() {
-    let (sink, input) = stream.channel(16);
+    let (sink, input) = stream.pipe(16);
 
     sink.write("apple");
     sink.write("kiwi");

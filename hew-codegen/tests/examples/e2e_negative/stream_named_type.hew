@@ -1,0 +1,17 @@
+// Stream<T> should reject named types that are not String or bytes.
+import std::stream;
+
+type Colour {
+    r: int,
+    g: int,
+    b: int,
+}
+
+fn process(input: Stream<Colour>) {
+    match input.next() {
+        Some(item) => println("got item"),
+        None => {},
+    }
+}
+
+fn main() {}

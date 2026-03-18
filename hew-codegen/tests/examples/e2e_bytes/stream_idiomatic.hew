@@ -1,8 +1,8 @@
 import std::stream;
 
 fn main() {
-    // Create a bounded channel
-    let (sink, input) = stream.channel(8);
+    // Create a bounded pipe
+    let (sink, input) = stream.pipe(8);
 
     // Write using method syntax — no manual size needed
     sink.write("hello");
@@ -13,5 +13,4 @@ fn main() {
     for await item in input {
         println(item);
     }
-    input.close();
 }

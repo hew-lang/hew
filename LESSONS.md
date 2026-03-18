@@ -526,3 +526,21 @@ falling back to generic PATH search.  Explicit CC/CXX env vars still take priori
 CMake always builds for the host architecture.  If Cargo's TARGET differs in arch
 from HOST, the embedded C++ library will be wrong-arch.  Detect this at configure
 time and fail with a clear message rather than producing a broken binary.
+
+## Stream RAII: enricher function names differ from runtime function names
+The enricher rewrites `sink.write("hello")` to `hew_sink_write_string(sink, "hello")`,
+not `hew_sink_write`. Always check the actual function names in `hew-runtime/src/stream.rs`
+rather than assuming the naming convention. The wrong name in a non-consuming allowlist
+caused silent alloca nulling that disabled auto-close entirely.
+
+## Block tail expression RAII conflict
+When a block expression `{ ...; stream_var }` returns a stream handle, the block's
+scope-exit RAII close fires AFTER the tail expression is evaluated but BEFORE the
+outer binding receives the value. Fix: null the tail expression variable's RAII alloca
+between `generateExpression(trailing_expr)` and the `DropScopeGuard` destructor.
+
+## Enricher unsafe wrapper shifts AST depth
+The enricher wraps ALL function bodies in `unsafe {}`. Variables declared at "depth 1"
+(inside the unsafe) appear in return expressions at "depth 2+" (inside if/match arms).
+Depth-based `funcLevelDropExcludeVars` misses them. Solution: maintain a flat
+`funcLevelReturnVarNames` set (depth-independent) checked only for RAII close entries.

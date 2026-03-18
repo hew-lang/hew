@@ -225,6 +225,7 @@ add_e2e_reject_test(machine_dup_transition e2e_negative machine_dup_transition "
 add_e2e_reject_test(bounds_not_satisfied e2e_negative bounds_not_satisfied "does not implement trait")
 add_e2e_reject_test(shadowing_same_scope  e2e_negative shadowing_same_scope  "already defined in this scope")
 add_e2e_reject_test(shadowing_actor_field e2e_negative shadowing_actor_field "shadows a binding in an outer scope")
+add_e2e_reject_test(channel_unsupported_type e2e_negative channel_unsupported_type "is not supported")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

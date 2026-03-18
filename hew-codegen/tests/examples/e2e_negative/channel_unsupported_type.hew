@@ -1,0 +1,8 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+    tx.send(true);
+    tx.close();
+    rx.close();
+}

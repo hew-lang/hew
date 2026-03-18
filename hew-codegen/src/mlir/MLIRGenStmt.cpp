@@ -1611,6 +1611,12 @@ void MLIRGen::generateForStreamStmt(const ast::StmtFor &stmt) {
     // Load the item pointer stashed by the before-region.
     auto currentItemPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
 
+    // Transfer ownership: null out itemPtrAlloca immediately after loading
+    // so the loop variable is the sole owner. If break fires, the post-loop
+    // cleanup sees null and skips the drop (the loop variable's drop scope
+    // already freed it).
+    mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
+
     std::string loopVarName = "_stream_item";
     if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
       loopVarName = identPat->name;
@@ -1876,6 +1882,12 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
 
       auto currentItemPtr = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
 
+      // Transfer ownership: null out itemPtrAlloca immediately after loading
+      // so the loop variable is the sole owner. If break fires, the post-loop
+      // cleanup sees null and skips the drop (the loop variable's drop scope
+      // already freed it).
+      mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
+
       std::string loopVarName = "_recv_item";
       if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind))
         loopVarName = identPat->name;
@@ -1905,10 +1917,6 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
       }
       popDropScope();
     }
-
-    // Null out the item pointer after the loop variable scope has dropped it.
-    // This prevents the post-loop cleanup from re-dropping a stale pointer.
-    mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
 
     ensureYieldTerminator(location);
     popLoopControl(lc, whileOp);

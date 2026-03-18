@@ -228,6 +228,7 @@ add_e2e_reject_test(shadowing_actor_field e2e_negative shadowing_actor_field "sh
 add_e2e_reject_test(channel_unsupported_type e2e_negative channel_unsupported_type "is not supported")
 add_e2e_reject_test(stream_int_reject    e2e_negative stream_int_reject    "Stream<T> is currently only implemented for String and bytes")
 add_e2e_reject_test(stream_named_type    e2e_negative stream_named_type    "Stream<T> is currently only implemented for String and bytes")
+add_e2e_reject_test(stream_bytes_lines_reject e2e_negative stream_bytes_lines_reject "lines()` is only supported on `Stream<String>`")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")
@@ -764,7 +765,9 @@ add_e2e_file_test(stream_map_bytes_fresh  e2e_bytes stream_map_bytes_fresh)
 add_e2e_file_test(stream_filter_bytes     e2e_bytes stream_filter_bytes)
 add_e2e_file_test(stream_filter_inline    e2e_bytes stream_filter_inline)
 add_e2e_file_test(stream_map_bytes_if_branch e2e_bytes stream_map_bytes_if_branch)
+add_e2e_file_test(stream_map_match_let    e2e_bytes stream_map_match_let)
 add_e2e_file_test(stream_take_bytes       e2e_bytes stream_take_bytes)
+add_e2e_file_test(stream_sink_auto_close  e2e_bytes stream_sink_auto_close)
 
 # ── Link/Monitor tests ──────────────────────────────────────────────────────
 add_e2e_file_test(link_monitor          e2e_link_monitor link_monitor)

@@ -3806,6 +3806,30 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         }
       }
     }
+    // Scan all let/var bindings whose RHS is a match/if/block expression.
+    // The arm/branch results are ownership-transferred into the binding,
+    // so the branch-local variables producing those results must be
+    // excluded from drops at their enclosing block scope exit.
+    for (const auto &stmt : blk.stmts) {
+      const ast::Expr *rhs = nullptr;
+      if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
+        if (letStmt->value)
+          rhs = &letStmt->value->value;
+      } else if (auto *varStmt = std::get_if<ast::StmtVar>(&stmt->value.kind)) {
+        if (varStmt->value)
+          rhs = &varStmt->value->value;
+      }
+      if (!rhs)
+        continue;
+      // Only trace into match/if/block expressions whose arm results
+      // transfer ownership into the let binding.
+      if (std::get_if<ast::ExprMatch>(& rhs->kind) ||
+          std::get_if<ast::ExprIf>(& rhs->kind) ||
+          std::get_if<ast::ExprIfLet>(& rhs->kind) ||
+          std::get_if<ast::ExprBlock>(& rhs->kind)) {
+        collectExcludeVars(*rhs, out, depth);
+      }
+    }
   };
   collectExcludeVars = [&collectExcludeVars, &collectExcludeVarsFromBlock](
       const ast::Expr &expr, ExcludeSet &out, size_t depth) {
@@ -3836,13 +3860,31 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
       // ExprBlock → generateBlock pushes scope
       collectExcludeVarsFromBlock(blockE->block, out, depth + 1);
+    } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
+      for (const auto &elem : tupleE->elements)
+        collectExcludeVars(elem->value, out, depth);
+    } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+      // ExprUnsafe wraps a Block — descend like ExprBlock
+      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1);
+    } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
+      // Constructors like Ok(x), Some(x) — descend into arguments
+      for (const auto &arg : callE->args)
+        collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
     }
   };
   collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0);
 
+  // Build a flat (depth-independent) set of variable names appearing in the
+  // return expression.  Used by RAII close exclusion where the depth-based
+  // set doesn't work (enricher-wrapped unsafe blocks shift depths).
+  funcLevelReturnVarNames.clear();
+  for (const auto &[name, depth] : funcLevelDropExcludeVars)
+    funcLevelReturnVarNames.insert(name);
+
   // Generate the function body
   mlir::Value bodyValue = generateBlock(fn.body);
   funcLevelDropExcludeVars.clear();
+  funcLevelReturnVarNames.clear();
 
   // Infer return type from body if not explicitly annotated (skip for
   // implicit main — we handle its return separately below).
@@ -3871,6 +3913,14 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
         for (const auto &[fieldName, fieldVal] : si->fields) {
           if (auto *id = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
+            out.insert(id->name);
+        }
+        return;
+      }
+      // Tuple: collect identifiers from each element
+      if (auto *te = std::get_if<ast::ExprTuple>(&expr.kind)) {
+        for (const auto &elem : te->elements) {
+          if (auto *id = std::get_if<ast::ExprIdentifier>(&elem->value.kind))
             out.insert(id->name);
         }
         return;
@@ -4331,9 +4381,16 @@ void MLIRGen::popDropScope() {
       if (!hasRealTerminator(block)) {
         emitDeferredCalls();
         auto &scope = dropScopes.back();
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it)
-          if (!funcLevelDropExcludeVars.count({it->varName, relDepth}))
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+          // RAII close entries use depth-independent name check because the
+          // enricher's unsafe-block wrapping shifts depths.
+          if (it->closeAlloca) {
+            if (!funcLevelReturnVarNames.count(it->varName))
+              emitDropEntry(*it);
+          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
             emitDropEntry(*it);
+          }
+        }
       }
       dropScopes.pop_back();
       return;
@@ -4355,9 +4412,14 @@ void MLIRGen::popDropScope() {
       // scope that actually yields the return value is excluded, not a
       // shadowed variable with the same name at a different depth.
       auto emitScopeDropsExcluding = [&](const std::vector<DropEntry> &scope) {
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it)
-          if (!funcLevelDropExcludeVars.count({it->varName, relDepth}))
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+          if (it->closeAlloca) {
+            if (!funcLevelReturnVarNames.count(it->varName))
+              emitDropEntry(*it);
+          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
             emitDropEntry(*it);
+          }
+        }
       };
 
       // Guard drops with !returnFlag: when an early return stores a value
@@ -4398,6 +4460,25 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
 }
 
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
+  // Stream/Sink RAII: load from alloca, null-check, call close, null out.
+  // This prevents double-free if .close() was called explicitly (which
+  // nulls the same alloca).
+  if (entry.closeAlloca) {
+    auto loc = builder.getUnknownLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto ptr = mlir::memref::LoadOp::create(builder, loc, entry.closeAlloca, mlir::ValueRange{});
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto i1Type = builder.getI1Type();
+    auto isNotNull = mlir::LLVM::ICmpOp::create(builder, loc, i1Type,
+                                                  mlir::LLVM::ICmpPredicate::ne, ptr, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, ptr, entry.dropFuncName, false);
+    mlir::memref::StoreOp::create(builder, loc, nullPtr, entry.closeAlloca, mlir::ValueRange{});
+    builder.setInsertionPointAfter(guard);
+    return;
+  }
   auto val = lookupVariable(entry.varName);
   if (!val)
     return;
@@ -4409,6 +4490,20 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     dropVal = hew::BitcastOp::create(builder, builder.getUnknownLoc(), ptrType, dropVal);
   hew::DropOp::create(builder, builder.getUnknownLoc(), dropVal, entry.dropFuncName,
                       entry.isUserDrop);
+}
+
+void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {
+  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt) {
+    for (auto &entry : *scopeIt) {
+      if (entry.varName == varName && entry.closeAlloca) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto nullPtr = mlir::LLVM::ZeroOp::create(builder, builder.getUnknownLoc(), ptrType);
+        mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), nullPtr, entry.closeAlloca,
+                                      mlir::ValueRange{});
+        return;
+      }
+    }
+  }
 }
 
 void MLIRGen::emitDropForVariable(const std::string &varName) {

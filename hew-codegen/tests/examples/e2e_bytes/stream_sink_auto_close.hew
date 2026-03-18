@@ -1,0 +1,17 @@
+import std::stream;
+
+// Regression test: Sink auto-close when going out of scope.
+// Without RAII auto-close, the consumer deadlocks waiting for EOF.
+fn main() {
+    let input = {
+        let (sink, input): (Sink<String>, Stream<String>) = stream.pipe(8);
+        sink.write("hello");
+        sink.write("world");
+        // sink goes out of scope here — should auto-close
+        input
+    };
+    for await item in input {
+        println(item);
+    }
+    println("done");
+}

@@ -6817,7 +6817,19 @@ impl Checker {
                 match method {
                     "next" => Ty::option(inner),
                     "close" => Ty::Unit,
-                    "lines" => Ty::stream(Ty::String),
+                    "lines" => {
+                        if inner != Ty::String {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "`lines()` is only supported on `Stream<String>`, \
+                                     not `Stream<{inner}>`"
+                                ),
+                            );
+                        }
+                        Ty::stream(Ty::String)
+                    }
                     "collect" => {
                         if inner != Ty::String {
                             self.report_error(

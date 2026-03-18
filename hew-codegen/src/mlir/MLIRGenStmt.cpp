@@ -266,7 +266,14 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
         return nullptr;
       }
     }
-    return generateExpression(block.trailing_expr->value);
+    auto result = generateExpression(block.trailing_expr->value);
+    // Null RAII close alloca for the tail expression variable so the
+    // block's scope-exit drop doesn't close a handle being returned.
+    if (auto *id = std::get_if<ast::ExprIdentifier>(
+            &block.trailing_expr->value.kind)) {
+      nullOutRaiiAlloca(id->name);
+    }
+    return result;
   }
 
   // The parser often places the trailing expression (last expression before })
@@ -379,7 +386,12 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
     if (std::holds_alternative<ast::StmtExpression>(lastStmt.kind)) {
       auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind);
       if (exprStmt) {
-        return generateExpression(exprStmt->expr.value);
+        auto result = generateExpression(exprStmt->expr.value);
+        if (auto *id = std::get_if<ast::ExprIdentifier>(
+                &exprStmt->expr.value.kind)) {
+          nullOutRaiiAlloca(id->name);
+        }
+        return result;
       }
     }
 
@@ -734,6 +746,31 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
+    // ── RAII auto-close for Stream/Sink handles ──────────────────────────
+    // When a Stream/Sink goes out of scope, call the appropriate close
+    // function.  An alloca tracks the live handle pointer; explicit
+    // .close() nulls the alloca so the scope-exit close is a no-op.
+    {
+      auto sit = streamHandleVarTypes.find(varName);
+      if (sit != streamHandleVarTypes.end() && value) {
+        std::string closeFn;
+        if (sit->second == "Stream")
+          closeFn = "hew_stream_close";
+        else if (sit->second == "Sink")
+          closeFn = "hew_sink_close";
+        else if (sit->second == "Pair")
+          closeFn = "hew_stream_pair_free";
+        if (!closeFn.empty()) {
+          auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+          auto allocaType = mlir::MemRefType::get({}, ptrType);
+          auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
+          mlir::memref::StoreOp::create(builder, location, value, closeAlloca, mlir::ValueRange{});
+          if (!dropScopes.empty())
+            dropScopes.back().push_back({varName, closeFn, false, closeAlloca});
+        }
+      }
+    }
+
     // Vec/HashMap string getters now return owned (strdup'd) copies
     bool isBorrowedGetString = false;
 
@@ -839,6 +876,43 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
 
   } else if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
     bindTuplePatternFields(*tuplePat, value, location);
+
+    // ── Track + RAII auto-close for destructured Stream/Sink tuple elements ──
+    // When `let (sink, input): (Sink<T>, Stream<T>) = stream.pipe(N)`,
+    // the tuple type annotation tells us which elements are Stream/Sink.
+    if (stmt.ty) {
+      if (auto *tupleType = std::get_if<ast::TypeTuple>(&stmt.ty->value.kind)) {
+        for (size_t i = 0; i < tupleType->elements.size() && i < tuplePat->elements.size(); ++i) {
+          auto *elemIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[i]->value.kind);
+          if (!elemIdent)
+            continue;
+          auto elemStream = typeExprStreamKind(tupleType->elements[i].value);
+          if (elemStream.empty())
+            continue;
+          streamHandleVarTypes[elemIdent->name] = elemStream;
+          // Register RAII auto-close
+          std::string closeFn;
+          if (elemStream == "Stream")
+            closeFn = "hew_stream_close";
+          else if (elemStream == "Sink")
+            closeFn = "hew_sink_close";
+          else if (elemStream == "Pair")
+            closeFn = "hew_stream_pair_free";
+          if (!closeFn.empty()) {
+            auto elemVal = lookupVariable(elemIdent->name);
+            if (elemVal) {
+              auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+              auto allocaType = mlir::MemRefType::get({}, ptrType);
+              auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
+              mlir::memref::StoreOp::create(builder, location, elemVal, closeAlloca,
+                                            mlir::ValueRange{});
+              if (!dropScopes.empty())
+                dropScopes.back().push_back({elemIdent->name, closeFn, false, closeAlloca});
+            }
+          }
+        }
+      }
+    }
   } else if (std::holds_alternative<ast::PatStruct>(pattern.kind)) {
     bindLetSubPattern(pattern, value, location);
   } else {
@@ -894,6 +968,28 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
     auto streamStr = typeExprStreamKind(stmt.ty->value);
     if (!streamStr.empty())
       streamHandleVarTypes[varNameStr] = streamStr;
+  }
+
+  // ── RAII auto-close for Stream/Sink handles (var) ───────────────────────
+  {
+    auto sit = streamHandleVarTypes.find(varNameStr);
+    if (sit != streamHandleVarTypes.end() && initValue) {
+      std::string closeFn;
+      if (sit->second == "Stream")
+        closeFn = "hew_stream_close";
+      else if (sit->second == "Sink")
+        closeFn = "hew_sink_close";
+      else if (sit->second == "Pair")
+        closeFn = "hew_stream_pair_free";
+      if (!closeFn.empty()) {
+        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+        auto allocaType = mlir::MemRefType::get({}, ptrType);
+        auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
+        mlir::memref::StoreOp::create(builder, location, initValue, closeAlloca, mlir::ValueRange{});
+        if (!dropScopes.empty())
+          dropScopes.back().push_back({varNameStr, closeFn, false, closeAlloca});
+      }
+    }
   }
 
   // Register drop functions for collections and strings declared with var.

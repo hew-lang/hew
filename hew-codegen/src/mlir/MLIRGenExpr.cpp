@@ -1975,6 +1975,66 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     if (call.is_tail_call)
       callOp->setAttr("hew.tail_call", builder.getUnitAttr());
 
+    // After a call that takes ownership of stream/sink arguments, null out
+    // the corresponding RAII allocas so scope-exit auto-close is a no-op.
+    // This handles: explicit .close(), stream.forward (pipe), and adapter
+    // functions (lines, chunks, map, filter, take, collect) that consume
+    // the input stream.
+    {
+      // Map: argument index → true if that arg's handle is consumed.
+      // Most consuming functions consume arg 0; hew_stream_pipe consumes both.
+      std::vector<size_t> consumedArgIndices;
+      if (calleeName == "hew_stream_close" || calleeName == "hew_sink_close" ||
+          calleeName == "hew_stream_pair_free" || calleeName == "hew_stream_lines" ||
+          calleeName == "hew_stream_chunks" || calleeName == "hew_stream_map_string" ||
+          calleeName == "hew_stream_map_bytes" || calleeName == "hew_stream_filter_string" ||
+          calleeName == "hew_stream_filter_bytes" || calleeName == "hew_stream_take" ||
+          calleeName == "hew_stream_collect" || calleeName == "hew_stream_collect_string" ||
+          calleeName == "hew_stream_collect_bytes") {
+        consumedArgIndices.push_back(0);
+      } else if (calleeName == "hew_stream_pipe") {
+        consumedArgIndices.push_back(0);
+        consumedArgIndices.push_back(1);
+      }
+      // For user-defined functions (not hew_* runtime), assume all
+      // stream/sink arguments transfer ownership to the callee.
+      // Limitation: functions that only observe (borrow) a handle will
+      // disable the caller's auto-close, causing a leak. A proper fix
+      // requires move semantics in the type system. For now this is
+      // the lesser evil vs double-frees from callee-consumed handles.
+      static const std::unordered_set<std::string> nonConsumingFns = {
+          "hew_sink_write",        "hew_sink_write_string",
+          "hew_sink_write_bytes",  "hew_sink_flush",
+          "hew_stream_is_valid",   "hew_sink_is_valid",
+          "hew_stream_is_closed",  "hew_stream_next",
+          "hew_stream_next_sized", "hew_stream_next_bytes",
+          "hew_stream_pair_sink",  "hew_stream_pair_stream"};
+      if (consumedArgIndices.empty() &&
+          (calleeName.substr(0, 4) != "hew_" ||
+           calleeName.find("stream") != std::string::npos ||
+           calleeName.find("sink") != std::string::npos) &&
+          !nonConsumingFns.count(calleeName)) {
+        // For non-runtime or unknown runtime calls, null all stream/sink args
+        for (size_t i = 0; i < call.args.size(); ++i) {
+          auto *id = std::get_if<ast::ExprIdentifier>(
+              &ast::callArgExpr(call.args[i]).value.kind);
+          if (!id)
+            continue;
+          if (streamHandleVarTypes.count(id->name))
+            consumedArgIndices.push_back(i);
+        }
+      }
+      for (size_t argIdx : consumedArgIndices) {
+        if (argIdx >= call.args.size())
+          continue;
+        auto *id = std::get_if<ast::ExprIdentifier>(
+            &ast::callArgExpr(call.args[argIdx]).value.kind);
+        if (!id)
+          continue;
+        nullOutRaiiAlloca(id->name);
+      }
+    }
+
     // Drop RC environments of temporary closure arguments after the call.
     // Closures bound to variables are dropped by popDropScope; only inline
     // lambdas (ExprLambda in the AST) need explicit drop here.
@@ -3260,6 +3320,9 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                 .getResult();
         // Drop the caller's reference to the closure env (stream adapter holds its own clone).
         hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
+        // Null RAII alloca — map/filter consume the input stream.
+        if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          nullOutRaiiAlloca(recvId->name);
         return resultStream;
       }
       if (method == "take") {
@@ -3272,9 +3335,13 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           return mlir::Value{};
         countVal = coerceType(countVal, i64Type, location);
         auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_stream_take");
-        return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType}, calleeAttr,
-                                          mlir::ValueRange{receiver, countVal})
+        auto result = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                                  calleeAttr,
+                                                  mlir::ValueRange{receiver, countVal})
             .getResult();
+        if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind))
+          nullOutRaiiAlloca(recvId->name);
+        return result;
       }
     }
   }
@@ -4855,8 +4922,10 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   // the lambda body's trailing expression identifiers so the return value is
   // NOT dropped before the return op.
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
+  funcLevelReturnVarNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
     // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
@@ -4894,6 +4963,26 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
               collectReturnVars(arm.body->value, out, depth);
         }
       }
+      // Scan let/var bindings whose RHS is a match/if/block — the arm
+      // results are ownership-transferred into the binding.
+      for (const auto &stmt : blk.stmts) {
+        const ast::Expr *rhs = nullptr;
+        if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
+          if (letStmt->value)
+            rhs = &letStmt->value->value;
+        } else if (auto *varStmt = std::get_if<ast::StmtVar>(&stmt->value.kind)) {
+          if (varStmt->value)
+            rhs = &varStmt->value->value;
+        }
+        if (!rhs)
+          continue;
+        if (std::get_if<ast::ExprMatch>(&rhs->kind) ||
+            std::get_if<ast::ExprIf>(&rhs->kind) ||
+            std::get_if<ast::ExprIfLet>(&rhs->kind) ||
+            std::get_if<ast::ExprBlock>(&rhs->kind)) {
+          collectReturnVars(*rhs, out, depth);
+        }
+      }
     };
     collectReturnVars = [&collectReturnVars, &fromBlock](
         const ast::Expr &expr, ExcludeSet &out, size_t depth) {
@@ -4920,6 +5009,14 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         }
       } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
         fromBlock(blockE->block, out, depth + 1);
+      } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
+        for (const auto &elem : tupleE->elements)
+          collectReturnVars(elem->value, out, depth);
+      } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
+        fromBlock(unsafeE->block, out, depth + 1);
+      } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
+        for (const auto &arg : callE->args)
+          collectReturnVars(ast::callArgExpr(arg).value, out, depth);
       }
     };
     // If the body is a block expression, use fromBlock to handle
@@ -4930,6 +5027,9 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
       // Simple expression body — e.g. `(x) => x`
       collectReturnVars(lam.body->value, excludeVars, 0);
     }
+    // Build flat return-var name set for RAII exclusion
+    for (const auto &[name, depth] : excludeVars)
+      funcLevelReturnVarNames.insert(name);
   }
 
   mlir::Value bodyVal = nullptr;
@@ -4937,6 +5037,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     bodyVal = generateExpression(lam.body->value);
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
+  funcLevelReturnVarNames = std::move(savedReturnVarNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {

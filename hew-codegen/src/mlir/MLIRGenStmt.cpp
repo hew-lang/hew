@@ -1978,10 +1978,22 @@ void MLIRGen::generateForAwaitStmt(const ast::StmtFor &stmt) {
     }
   }
 
-  // Also handle non-identifier expressions that produce a Stream type (e.g.
-  // free-function calls like hew_stream_lines(raw)). ExprMethodCall on actors
-  // is intentionally left for the mailbox iteration path below.
-  if (!std::get_if<ast::ExprMethodCall>(&stmt.iterable.value.kind)) {
+  // Check resolved type for any iterable expression.  Method calls that
+  // return Stream<T> (e.g. stream.filter(f), stream.map(f)) use the stream
+  // iteration path.  Actor receive-gen methods also resolve to Stream<T>,
+  // so for ExprMethodCall we must check the RECEIVER type: if it is already
+  // Stream<T>, the method is a stream combinator; if it is ActorRef<T>,
+  // it falls through to the mailbox iteration path below.
+  if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.iterable.value.kind)) {
+    if (mc->receiver) {
+      if (auto *recvType = resolvedTypeOf(mc->receiver->span)) {
+        if (typeExprStreamKind(*recvType) == "Stream") {
+          generateForStreamStmt(stmt);
+          return;
+        }
+      }
+    }
+  } else {
     if (auto *typeExpr = resolvedTypeOf(stmt.iterable.span)) {
       if (typeExprStreamKind(*typeExpr) == "Stream") {
         generateForStreamStmt(stmt);

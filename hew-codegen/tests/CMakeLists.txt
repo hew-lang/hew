@@ -227,6 +227,7 @@ add_e2e_reject_test(shadowing_same_scope  e2e_negative shadowing_same_scope  "al
 add_e2e_reject_test(shadowing_actor_field e2e_negative shadowing_actor_field "shadows a binding in an outer scope")
 add_e2e_reject_test(channel_unsupported_type e2e_negative channel_unsupported_type "is not supported")
 add_e2e_reject_test(stream_int_reject    e2e_negative stream_int_reject    "Stream<T> is currently only implemented for String and bytes")
+add_e2e_reject_test(stream_named_type    e2e_negative stream_named_type    "Stream<T> is currently only implemented for String and bytes")
 
 # ── Runtime panic tests (compile succeeds, runtime panics cleanly) ────────────
 add_e2e_panic_test(panic_msg e2e_panic panic_msg "something went wrong")

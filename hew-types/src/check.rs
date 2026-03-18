@@ -6790,32 +6790,10 @@ impl Checker {
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 // Reject concrete element types that lack runtime
-                // implementations.  String and bytes are supported; type
-                // variables and named type parameters pass through (they
-                // will be checked at instantiation time).
-                let is_unsupported_concrete = matches!(
-                    &inner,
-                    Ty::I8
-                        | Ty::I16
-                        | Ty::I32
-                        | Ty::I64
-                        | Ty::U8
-                        | Ty::U16
-                        | Ty::U32
-                        | Ty::U64
-                        | Ty::F32
-                        | Ty::F64
-                        | Ty::Bool
-                        | Ty::Char
-                        | Ty::Duration
-                        | Ty::Unit
-                        | Ty::Never
-                        | Ty::Tuple(_)
-                        | Ty::Array(_, _)
-                        | Ty::Slice(_)
-                        | Ty::Function { .. }
-                );
-                if is_unsupported_concrete {
+                // implementations.  Only String and bytes are supported;
+                // type variables pass through (checked at instantiation).
+                let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_));
+                if !is_supported {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -6911,29 +6889,8 @@ impl Checker {
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let is_unsupported_concrete = matches!(
-                    &inner,
-                    Ty::I8
-                        | Ty::I16
-                        | Ty::I32
-                        | Ty::I64
-                        | Ty::U8
-                        | Ty::U16
-                        | Ty::U32
-                        | Ty::U64
-                        | Ty::F32
-                        | Ty::F64
-                        | Ty::Bool
-                        | Ty::Char
-                        | Ty::Duration
-                        | Ty::Unit
-                        | Ty::Never
-                        | Ty::Tuple(_)
-                        | Ty::Array(_, _)
-                        | Ty::Slice(_)
-                        | Ty::Function { .. }
-                );
-                if is_unsupported_concrete {
+                let is_supported = matches!(&inner, Ty::String | Ty::Bytes | Ty::Var(_));
+                if !is_supported {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,

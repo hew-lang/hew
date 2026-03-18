@@ -6823,10 +6823,10 @@ impl Checker {
                         }
                         Ty::String
                     }
-                    "chunks" => {
+                    "chunks" | "take" => {
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I32);
+                            self.check_against(expr, sp, &Ty::I64);
                         }
                         Ty::stream(inner)
                     }
@@ -6859,13 +6859,6 @@ impl Checker {
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &expected_fn);
-                        }
-                        Ty::stream(inner)
-                    }
-                    "take" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I64);
                         }
                         Ty::stream(inner)
                     }

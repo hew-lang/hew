@@ -745,6 +745,11 @@ private:
   // Per-function slot for storing the return value.
   mlir::Value returnSlot; // memref<LLVM storage of ReturnType>, nullptr when not active
 
+  // ── Channel recv int out-valid alloca ────────────────────────
+  // Hoisted to function entry block and reused across all
+  // recv_int / try_recv_int call sites to avoid stack growth in loops.
+  mlir::Value channelIntOutValidAlloca; // LLVM ptr to i32, nullptr when not active
+
   // ── Try/catch context ────────────────────────────────────────
   // When non-null, PostfixTry (?) jumps here instead of func.return.
   mlir::Block *tryErrorDest = nullptr;

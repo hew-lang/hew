@@ -6,18 +6,24 @@ fn main() {
     let (tx, rx) = channel.new(1);
 
     tx.send(42);
-    let first = rx.recv();
-    println(first);
+    match rx.recv() {
+        Some(first) => println(first),
+        None => println("unexpected none"),
+    }
 
     tx.send(99);
-    let second = rx.recv();
-    println(second);
+    match rx.recv() {
+        Some(second) => println(second),
+        None => println("unexpected none"),
+    }
 
     tx.close();
 
-    // After closing, recv should return 0 (default for int on closed channel).
-    let closed_val = rx.recv();
-    println(closed_val);
+    // After closing, recv should return None.
+    match rx.recv() {
+        Some(v) => println(v),
+        None => println("none"),
+    }
 
     rx.close();
 }

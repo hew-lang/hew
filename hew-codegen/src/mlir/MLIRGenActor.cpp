@@ -300,8 +300,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         currentFunction = bodyFnOp;
         auto prevReturnFlag = returnFlag;
         auto prevReturnSlot = returnSlot;
+        auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
         returnFlag = nullptr;
         returnSlot = nullptr;
+        channelIntOutValidAlloca = nullptr;
 
         auto argsPtr = entryBlock->getArgument(0);
         auto genCtxArg = entryBlock->getArgument(1);
@@ -351,6 +353,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         currentFunction = prevFunction;
         returnFlag = prevReturnFlag;
         returnSlot = prevReturnSlot;
+        channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
         builder.restoreInsertionPoint(savedIP);
       }
 
@@ -479,8 +482,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = funcOp;
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     returnFlag = nullptr;
     returnSlot = nullptr;
+    channelIntOutValidAlloca = nullptr;
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
@@ -518,6 +523,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -540,8 +546,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = initFuncOp;
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     returnFlag = nullptr;
     returnSlot = nullptr;
+    channelIntOutValidAlloca = nullptr;
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
@@ -585,6 +593,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -607,8 +616,10 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = terminateFuncOp;
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     returnFlag = nullptr;
     returnSlot = nullptr;
+    channelIntOutValidAlloca = nullptr;
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
@@ -624,6 +635,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -1162,8 +1174,10 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     currentFunction = recvFuncOp;
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     returnFlag = nullptr;
     returnSlot = nullptr;
+    channelIntOutValidAlloca = nullptr;
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
@@ -1201,6 +1215,7 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     currentFunction = prevFunction;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   }
 
   // Generate dispatch function (always calls receive, ignores msg_type)

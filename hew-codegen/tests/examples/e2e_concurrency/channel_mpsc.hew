@@ -18,11 +18,15 @@ fn main() {
 
     // The single consumer drains all messages.
     var count: int = 0;
-    var msg = rx.recv();
-    while msg != "" {
-        println(msg);
-        count = count + 1;
-        msg = rx.recv();
+    var done = false;
+    while !done {
+        match rx.recv() {
+            Some(msg) => {
+                println(msg);
+                count = count + 1;
+            },
+            None => { done = true; },
+        }
     }
 
     println(count);

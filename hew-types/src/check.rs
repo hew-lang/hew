@@ -6936,8 +6936,7 @@ impl Checker {
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
-                    "recv" => inner.clone(),
-                    "try_recv" => Ty::option(inner),
+                    "recv" | "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
                     _ => {
                         if let Some(ty) =

@@ -3575,10 +3575,12 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   currentFunction = funcOp;
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
+  auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
+  channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
   currentFnDefers.clear();
 
@@ -3630,6 +3632,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
 
   returnFlag = prevReturnFlag;
   returnSlot = prevReturnSlot;
+  channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
@@ -3712,10 +3715,12 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
+  auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
+  channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
   currentFnDefers.clear();
   uint32_t paramIdx = 0;
@@ -3873,6 +3878,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // Restore previous function state
   returnFlag = prevReturnFlag;
   returnSlot = prevReturnSlot;
+  channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
@@ -3947,10 +3953,12 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
 
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
     auto prevFnDefers = std::move(currentFnDefers);
     returnFlag = nullptr;
     returnSlot = nullptr;
+    channelIntOutValidAlloca = nullptr;
     funcLevelDropExcludeVars.clear();
     currentFnDefers.clear();
 
@@ -3992,6 +4000,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     currentCoroPromisePtr = prevCoroPromisePtr;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
     currentFnDefers = std::move(prevFnDefers);
     currentFunction = prevFunction;

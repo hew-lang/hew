@@ -3224,11 +3224,11 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
           retType = paramType; // fn(T) -> T
         } else {
           // Filter predicate: fn(T) -> bool.
-          // For bytes streams, use i32 return type to match the runtime's
-          // BytesFilterFn ABI.  The codegen will zext the i1 comparison
-          // result to i32 when lowering the closure.
-          retType = isBytesStream ? mlir::Type{builder.getI32Type()}
-                                  : mlir::Type{builder.getI1Type()};
+          // Both String and bytes filter runtime ABIs expect i32 return type
+          // (StringFilterFn and BytesFilterFn both return i32).  The codegen
+          // will zext the i1 comparison result to i32 when lowering the
+          // closure.
+          retType = builder.getI32Type();
         }
         auto expectedClosure = hew::ClosureType::get(&context, {paramType}, retType);
         pendingLambdaExpectedType = expectedClosure;
@@ -4848,10 +4848,44 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   returnSlot = nullptr;
   channelIntOutValidAlloca = nullptr;
 
+  // Save/restore funcLevelDropExcludeVars so the lambda's body block
+  // (which is function-level from popDropScope's perspective) doesn't
+  // inherit the enclosing function's excludes.  Collect the lambda body's
+  // trailing expression identifiers so the return value is NOT dropped
+  // before the return op.
+  auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  funcLevelDropExcludeVars.clear();
+  if (lam.body) {
+    auto collectReturnVars = [](const ast::Expr &expr, std::set<std::string> &out) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&expr.kind)) {
+        out.insert(id->name);
+      } else if (auto *si = std::get_if<ast::ExprStructInit>(&expr.kind)) {
+        for (const auto &[fieldName, fieldVal] : si->fields) {
+          if (auto *fid = std::get_if<ast::ExprIdentifier>(&fieldVal->value.kind))
+            out.insert(fid->name);
+        }
+      }
+    };
+    // If the body is a block expression, look at its trailing expression.
+    if (auto *blockExpr = std::get_if<ast::ExprBlock>(&lam.body->value.kind)) {
+      if (blockExpr->block.trailing_expr) {
+        collectReturnVars(blockExpr->block.trailing_expr->value, funcLevelDropExcludeVars);
+      } else if (!blockExpr->block.stmts.empty()) {
+        const auto &lastStmt = blockExpr->block.stmts.back()->value;
+        if (auto *es = std::get_if<ast::StmtExpression>(&lastStmt.kind))
+          collectReturnVars(es->expr.value, funcLevelDropExcludeVars);
+      }
+    } else {
+      // Simple expression body — e.g. `(x) => x`
+      collectReturnVars(lam.body->value, funcLevelDropExcludeVars);
+    }
+  }
+
   mlir::Value bodyVal = nullptr;
   if (lam.body) {
     bodyVal = generateExpression(lam.body->value);
   }
+  funcLevelDropExcludeVars = std::move(savedExcludeVars);
 
   if (!returnType && bodyVal && bodyVal.getType()) {
     auto bodyType = bodyVal.getType();

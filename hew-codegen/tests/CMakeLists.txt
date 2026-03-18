@@ -759,6 +759,7 @@ add_e2e_file_test(stream_map_filter_collect e2e_bytes stream_map_filter_collect)
 add_e2e_file_test(stream_write_read_bytes  e2e_bytes stream_write_read_bytes)
 add_e2e_file_test(stream_forawait_bytes   e2e_bytes stream_forawait_bytes)
 add_e2e_file_test(stream_map_bytes        e2e_bytes stream_map_bytes)
+add_e2e_file_test(stream_map_bytes_fresh  e2e_bytes stream_map_bytes_fresh)
 add_e2e_file_test(stream_filter_bytes     e2e_bytes stream_filter_bytes)
 add_e2e_file_test(stream_take_bytes       e2e_bytes stream_take_bytes)
 

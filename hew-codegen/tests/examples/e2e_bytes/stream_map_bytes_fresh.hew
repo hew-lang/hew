@@ -1,0 +1,29 @@
+import std::stream;
+
+fn main() {
+    let (sink, input) = stream.bytes_channel(8);
+
+    // Write two buffers
+    let buf1: bytes = bytes::new();
+    buf1.push(10);
+    buf1.push(20);
+
+    let buf2: bytes = bytes::new();
+    buf2.push(30);
+
+    sink.write(buf1);
+    sink.write(buf2);
+    sink.close();
+
+    // Map: return a FRESH buffer (not the input) to exercise ownership transfer.
+    let mapped = input.map((x) => {
+        let y: bytes = bytes::new();
+        y.push(42);
+        y
+    });
+
+    for await item in mapped {
+        println(item.len());
+    }
+    println("done");
+}

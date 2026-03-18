@@ -1683,11 +1683,23 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
   auto i32Type = builder.getI32Type();
   auto i64Type = builder.getI64Type();
 
-  // Determine element type: int or string (default).
+  // Determine element type: int or string.
   bool isIntChannel = false;
+  bool isStringChannel = false;
   if (receiverType && receiverType->type_args && !receiverType->type_args->empty()) {
-    if (auto *inner = std::get_if<ast::TypeNamed>(&(*receiverType->type_args)[0].value.kind))
+    if (auto *inner = std::get_if<ast::TypeNamed>(&(*receiverType->type_args)[0].value.kind)) {
       isIntChannel = (inner->name == "int" || inner->name == "i64");
+      if (!isIntChannel)
+        isStringChannel = (inner->name == "String" || inner->name == "string");
+    }
+  } else {
+    // No type args: default to String for backward compatibility.
+    isStringChannel = true;
+  }
+
+  if (!isIntChannel && !isStringChannel) {
+    emitError(location) << "for await on Receiver<T> is currently only supported for String and int";
+    return;
   }
 
   // Generate the receiver pointer expression.

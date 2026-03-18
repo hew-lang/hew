@@ -3579,6 +3579,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
+  auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
@@ -3642,6 +3643,7 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
+  pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
@@ -3726,6 +3728,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
+  auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
@@ -4003,6 +4006,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
+  pendingFunctionParamDrops = std::move(prevPendingParamDrops);
   currentFnDefers = std::move(prevFnDefers);
   currentFunction = prevFunction;
   builder.restoreInsertionPoint(savedIP);
@@ -4079,6 +4083,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
+    auto prevPendingParamDrops = std::move(pendingFunctionParamDrops);
     auto prevFnDefers = std::move(currentFnDefers);
     returnFlag = nullptr;
     returnSlot = nullptr;
@@ -4132,6 +4137,7 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
+    pendingFunctionParamDrops = std::move(prevPendingParamDrops);
     currentFnDefers = std::move(prevFnDefers);
     currentFunction = prevFunction;
     builder.restoreInsertionPoint(savedIP);
@@ -4472,6 +4478,10 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
 }
 
 std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
+  // NOTE: This operates on AST type annotations only.  Closure types are
+  // detected by runtime type (hew::ClosureType) in MLIRGenStmt.cpp, not by
+  // annotation, so they cannot be handled here.  When activating param drops,
+  // closure params need separate handling via mlir::isa<hew::ClosureType>.
   auto *named = std::get_if<ast::TypeNamed>(&ty.kind);
   if (!named)
     return "";
@@ -4517,14 +4527,29 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
   auto val = lookupVariable(entry.varName);
   if (!val)
     return;
+  auto loc = builder.getUnknownLoc();
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Value dropVal = val;
   if (mlir::isa<hew::ClosureType>(val.getType()))
-    dropVal = hew::ClosureGetEnvOp::create(builder, builder.getUnknownLoc(), ptrType, val);
+    dropVal = hew::ClosureGetEnvOp::create(builder, loc, ptrType, val);
   if (!mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()) && !entry.isUserDrop)
-    dropVal = hew::BitcastOp::create(builder, builder.getUnknownLoc(), ptrType, dropVal);
-  hew::DropOp::create(builder, builder.getUnknownLoc(), dropVal, entry.dropFuncName,
-                      entry.isUserDrop);
+    dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+
+  // Null-guard: skip the drop if the value is a null pointer.  This handles
+  // zero-initialized allocas (early return before the let-binding) and will
+  // support null-after-move once ownership transfer tracking is added.
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType())) {
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(
+        builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne, dropVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+    builder.setInsertionPointAfter(guard);
+    return;
+  }
+  hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
 }
 
 void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {

@@ -3598,6 +3598,10 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   // of emitting an illegal func.return inside an scf.if.
   initReturnFlagAndSlot(resultTypes, location);
 
+  // NOTE: param drops are not yet registered here.  Adding them requires
+  // null-after-move tracking to avoid double-frees when a param is consumed
+  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+
   mlir::Value bodyValue = generateBlock(*method.body);
 
   auto *currentBlock = builder.getInsertionBlock();
@@ -3881,6 +3885,10 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   for (const auto &[name, depth] : funcLevelDropExcludeVars)
     funcLevelReturnVarNames.insert(name);
 
+  // NOTE: param drops are not yet registered here.  Adding them requires
+  // null-after-move tracking to avoid double-frees when a param is consumed
+  // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+
   // Generate the function body
   mlir::Value bodyValue = generateBlock(fn.body);
   funcLevelDropExcludeVars.clear();
@@ -4102,6 +4110,10 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
       suspendMarker.setPrivate();
       builder.restoreInsertionPoint(savedIP2);
     }
+
+    // NOTE: param drops are not yet registered here.  Adding them requires
+    // null-after-move tracking to avoid double-frees when a param is consumed
+    // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
 
     // Generate the function body naturally — loops, conditionals all work
     generateBlock(fn.body);
@@ -4459,6 +4471,25 @@ void MLIRGen::unregisterDroppable(const std::string &varName) {
   }
 }
 
+std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
+  auto *named = std::get_if<ast::TypeNamed>(&ty.kind);
+  if (!named)
+    return "";
+  auto typeName = resolveTypeAlias(named->name);
+  if (typeName == "Vec" || typeName == "bytes")
+    return "hew_vec_free";
+  if (typeName == "HashMap")
+    return "hew_hashmap_free_impl";
+  if (typeName == "HashSet")
+    return "hew_hashset_free";
+  if (typeName == "String" || typeName == "string" || typeName == "str")
+    return "hew_string_drop";
+  auto dropIt = userDropFuncs.find(typeName);
+  if (dropIt != userDropFuncs.end())
+    return dropIt->second;
+  return "";
+}
+
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
   // Stream/Sink RAII: load from alloca, null-check, call close, null out.
   // This prevents double-free if .close() was called explicitly (which
@@ -4479,6 +4510,10 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     builder.setInsertionPointAfter(guard);
     return;
   }
+  // lookupVariable handles dominance correctly: let-bindings are promoted
+  // to alloca+store when returnFlag is active (see declareVariable), so
+  // lookupVariable creates a fresh memref::LoadOp at the current insertion
+  // point, which always dominates the DropOp.
   auto val = lookupVariable(entry.varName);
   if (!val)
     return;

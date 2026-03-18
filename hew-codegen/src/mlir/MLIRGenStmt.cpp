@@ -241,6 +241,9 @@ mlir::Value MLIRGen::generateBlock(const ast::Block &block) {
     ~DropScopeGuard() { gen.popDropScope(); }
   } dropGuard(*this);
 
+  // NOTE: pendingFunctionParamDrops drain point — currently disabled until
+  // null-after-move tracking prevents double-frees from consumed params.
+
   // Determine if this block is the direct function body (for return guard logic).
   // Only use the returnFlag guarded path at the function body level when a
   // returnSlot exists (non-void functions), not in nested blocks or void functions.

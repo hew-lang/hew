@@ -706,6 +706,17 @@ private:
   std::set<std::string> funcLevelReturnVarNames;
   // dropScopes.size() at the point where the current function body starts.
   size_t funcLevelDropScopeBase = 0;
+  /// Pending parameter drops: populated before generateBlock, drained at
+  /// the start of the function-level drop scope.  Each entry is
+  /// (paramName, dropFuncName, isUserDrop).
+  struct PendingParamDrop {
+    std::string name;
+    std::string dropFunc;
+    bool isUserDrop = false;
+  };
+  std::vector<PendingParamDrop> pendingFunctionParamDrops;
+  /// Determine the drop function for a type annotation, or "" if none needed.
+  std::string dropFuncForType(const ast::TypeExpr &ty) const;
   void pushDropScope();
   void popDropScope();
   void registerDroppable(const std::string &varName, const std::string &dropFunc,

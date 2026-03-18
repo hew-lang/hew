@@ -4323,6 +4323,18 @@ void MLIRGen::popDropScope() {
             builder.setInsertionPoint(yieldOp);
         }
       }
+
+      // Inner-scope drop helper: skip variables in funcLevelDropExcludeVars.
+      // A value-producing branch (if/match inside a lambda/function) may
+      // yield a variable declared in this inner scope.  The function-level
+      // analysis already marked it for exclusion; honour that here so the
+      // value is not freed before scf.yield transfers it to the caller.
+      auto emitScopeDropsExcluding = [&](const std::vector<DropEntry> &scope) {
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it)
+          if (!funcLevelDropExcludeVars.count(it->varName))
+            emitDropEntry(*it);
+      };
+
       // Guard drops with !returnFlag: when an early return stores a value
       // to returnSlot, we must not free it (or any other inner-scope var
       // that might alias it). The arena will reclaim the memory.
@@ -4334,11 +4346,11 @@ void MLIRGen::popDropScope() {
         auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, notReturned,
                                              /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
-        emitDropsForScope(dropScopes.back());
+        emitScopeDropsExcluding(dropScopes.back());
         // scf.if auto-adds yield; set insertion after guard
         builder.setInsertionPointAfter(guard);
       } else {
-        emitDropsForScope(dropScopes.back());
+        emitScopeDropsExcluding(dropScopes.back());
       }
     }
   }

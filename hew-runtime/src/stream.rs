@@ -497,6 +497,12 @@ impl StreamBacking for MapBytesStream {
         let input_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
         // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
         let result_vec = unsafe { (self.fn_ptr)(self.env_ptr, input_vec) };
+        // Free the input vec when the closure returned a new allocation.
+        // If the closure mutated and returned the same pointer, skip to
+        // avoid a double-free (result_vec will be freed below).
+        if result_vec != input_vec {
+            unsafe { hew_cabi::vec::hew_vec_free(input_vec) };
+        }
         if result_vec.is_null() {
             return Some(Vec::new());
         }
@@ -529,7 +535,8 @@ impl Drop for MapBytesStream {
 /// Calling convention for bytes filter closures.
 ///
 /// The closure receives a `*mut HewVec` (bytes) and returns non-zero to keep
-/// the item.  The closure does NOT take ownership — the caller still owns the vec.
+/// the item.  The closure does NOT take ownership — the caller frees the vec
+/// after the predicate returns.
 type BytesFilterFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> i32;
 
 /// Wraps a stream and lazily skips items for which the predicate returns false.
@@ -555,8 +562,9 @@ impl StreamBacking for FilterBytesStream {
             // SAFETY: u8_to_hwvec allocates a fresh HewVec.
             let tmp_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
             // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
-            // The closure takes ownership of tmp_vec (drops it on return).
             let keep = unsafe { (self.fn_ptr)(self.env_ptr, tmp_vec) };
+            // Free the temporary vec — the predicate borrows it, not owns it.
+            unsafe { hew_cabi::vec::hew_vec_free(tmp_vec) };
             if keep != 0 {
                 return Some(item);
             }

@@ -1734,6 +1734,22 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
     auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
     builder.setInsertionPointToStart(beforeBlock);
 
+    // Check isActive (and !returnFlag) before calling recv to avoid
+    // blocking after break or return.
+    auto isActive =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+    mlir::Value shouldRecv = isActive;
+    if (returnFlag) {
+      auto flagVal =
+          mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+      auto trueConst = createIntConstant(builder, location, i1Type, 1);
+      auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+      shouldRecv = mlir::arith::AndIOp::create(builder, location, isActive, notReturned);
+    }
+    auto recvGuard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, shouldRecv,
+                                             /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&recvGuard.getThenRegion().front());
+
     auto externFuncType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i64Type});
     getOrCreateExternFunc("hew_channel_recv_int", externFuncType);
     auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv_int");
@@ -1743,12 +1759,13 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
             .getResult();
     mlir::LLVM::StoreOp::create(builder, location, rawVal, itemAlloca);
 
+    ensureYieldTerminator(location);
+    builder.setInsertionPointAfter(recvGuard);
+
     auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
     auto zero32 = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero32);
-    auto isActive =
-        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
     mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, isValid, isActive);
     combinedCond = andNotReturned(combinedCond, location);
 
@@ -1811,6 +1828,22 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
     auto *beforeBlock = builder.createBlock(&whileOp.getBefore());
     builder.setInsertionPointToStart(beforeBlock);
 
+    // Check isActive (and !returnFlag) before calling recv to avoid
+    // blocking after break or return.
+    auto isActive =
+        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+    mlir::Value shouldRecv = isActive;
+    if (returnFlag) {
+      auto flagVal =
+          mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
+      auto trueConst = createIntConstant(builder, location, i1Type, 1);
+      auto notReturned = mlir::arith::XOrIOp::create(builder, location, flagVal, trueConst);
+      shouldRecv = mlir::arith::AndIOp::create(builder, location, isActive, notReturned);
+    }
+    auto recvGuard = mlir::scf::IfOp::create(builder, location, mlir::TypeRange{}, shouldRecv,
+                                             /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&recvGuard.getThenRegion().front());
+
     auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
     getOrCreateExternFunc("hew_channel_recv", externFuncType);
     auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv");
@@ -1820,10 +1853,12 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
 
     mlir::LLVM::StoreOp::create(builder, location, itemPtr, itemPtrAlloca);
 
+    ensureYieldTerminator(location);
+    builder.setInsertionPointAfter(recvGuard);
+
+    auto storedItem = mlir::LLVM::LoadOp::create(builder, location, ptrType, itemPtrAlloca);
     auto notNull = mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne,
-                                              itemPtr, nullPtrVal);
-    auto isActive =
-        mlir::memref::LoadOp::create(builder, location, lc.activeFlag, mlir::ValueRange{});
+                                              storedItem, nullPtrVal);
     mlir::Value combinedCond = mlir::arith::AndIOp::create(builder, location, notNull, isActive);
     combinedCond = andNotReturned(combinedCond, location);
 
@@ -1870,6 +1905,10 @@ void MLIRGen::generateForReceiverStmt(const ast::StmtFor &stmt,
       }
       popDropScope();
     }
+
+    // Null out the item pointer after the loop variable scope has dropped it.
+    // This prevents the post-loop cleanup from re-dropping a stale pointer.
+    mlir::LLVM::StoreOp::create(builder, location, nullPtrVal, itemPtrAlloca);
 
     ensureYieldTerminator(location);
     popLoopControl(lc, whileOp);

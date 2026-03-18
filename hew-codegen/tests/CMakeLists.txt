@@ -378,6 +378,7 @@ add_e2e_file_test(channel_try_recv_int_option e2e_concurrency channel_try_recv_i
 add_e2e_file_test(channel_recv_option         e2e_concurrency channel_recv_option)
 add_e2e_file_test(channel_recv_int_option     e2e_concurrency channel_recv_int_option)
 add_e2e_file_test(channel_for_await           e2e_concurrency channel_for_await)
+add_e2e_file_test(channel_for_await_break    e2e_concurrency channel_for_await_break)
 add_e2e_file_test(channel_for_await_int       e2e_concurrency channel_for_await_int)
 add_e2e_file_test(concurrent_counter  e2e_concurrency concurrent_counter)
 add_e2e_file_test(deadlock_avoidance  e2e_concurrency deadlock_avoidance)

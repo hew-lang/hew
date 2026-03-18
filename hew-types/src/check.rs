@@ -3782,6 +3782,12 @@ impl Checker {
                     {
                         args[0].clone()
                     }
+                    Ty::Named { name, args }
+                        if (name == "Receiver" || name == "channel.Receiver")
+                            && !args.is_empty() =>
+                    {
+                        args[0].clone()
+                    }
                     _ => Ty::Var(TypeVar::fresh()),
                 };
                 self.env.push_scope();
@@ -6903,6 +6909,21 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &inner);
                         }
+                        // Validate after unification so the concrete type is known.
+                        let resolved_inner = self.subst.resolve(&inner);
+                        if !matches!(resolved_inner, Ty::Var(_) | Ty::String)
+                            && !resolved_inner.is_integer()
+                        {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                format!(
+                                    "Channel<{resolved_inner}> is not supported; \
+                                     only Channel<String> and Channel<int> are currently supported"
+                                ),
+                            );
+                            return Ty::Error;
+                        }
                         Ty::Unit
                     }
                     "clone" => Ty::sender(inner),
@@ -6935,9 +6956,22 @@ impl Checker {
                     .first()
                     .cloned()
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
+                let resolved_inner = self.subst.resolve(&inner);
+                if !matches!(resolved_inner, Ty::Var(_) | Ty::String)
+                    && !resolved_inner.is_integer()
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "Channel<{resolved_inner}> is not supported; \
+                             only Channel<String> and Channel<int> are currently supported"
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 match method {
-                    "recv" => inner.clone(),
-                    "try_recv" => inner,
+                    "recv" | "try_recv" => Ty::option(inner),
                     "close" => Ty::Unit,
                     _ => {
                         if let Some(ty) =

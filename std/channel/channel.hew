@@ -4,6 +4,10 @@
 //! producers and a single consumer. `Sender<T>` is cloneable for
 //! multi-producer use; `Receiver<T>` drains the channel.
 //!
+//! Both `recv()` and `try_recv()` return `Option<T>`, where `None`
+//! indicates the channel is closed (all senders dropped) or empty
+//! (for `try_recv` only).
+//!
 //! Supported element types: `String`, `int`.
 //!
 //! # Examples
@@ -14,11 +18,12 @@
 //! fn main() {
 //!     let (tx, rx) = channel.new(8);
 //!     tx.send("hello");
-//!     tx.send("world");
 //!     tx.close();
 //!
-//!     println(rx.recv());  // hello
-//!     println(rx.recv());  // world
+//!     match rx.recv() {
+//!         Some(msg) => println(msg),  // hello
+//!         None => println("closed"),
+//!     }
 //!     rx.close();
 //! }
 //! ```
@@ -74,15 +79,15 @@ impl SenderMethods for Sender {
 trait ReceiverMethods {
     /// Block until a message is available and return it.
     ///
-    /// Returns a default value when the channel is closed (all senders
-    /// dropped): empty string for `String`, 0 for `int`.
-    fn recv(rx: Receiver) -> String;
+    /// Returns `Some(value)` if a message was received, or `None` when the
+    /// channel is closed (all senders dropped).
+    fn recv(rx: Receiver) -> Option<String>;
 
     /// Try to receive a message without blocking.
     ///
-    /// Returns an empty string if no message is available or the channel
-    /// is closed. Returns the value when a message was received.
-    fn try_recv(rx: Receiver) -> String;
+    /// Returns `Some(value)` if a message was available, or `None` if
+    /// the channel is empty or closed.
+    fn try_recv(rx: Receiver) -> Option<String>;
 
     /// Close this receiver and release resources.
     fn close(rx: Receiver);
@@ -90,9 +95,9 @@ trait ReceiverMethods {
 
 impl ReceiverMethods for Receiver {
     /// Block until a string message is available and return it.
-    fn recv(rx: Receiver) -> String { hew_channel_recv(rx) }
+    fn recv(rx: Receiver) -> Option<String> { hew_channel_recv(rx) }
     /// Try to receive a string without blocking.
-    fn try_recv(rx: Receiver) -> String { hew_channel_try_recv(rx) }
+    fn try_recv(rx: Receiver) -> Option<String> { hew_channel_try_recv(rx) }
     /// Close this receiver and release resources.
     fn close(rx: Receiver) { hew_channel_receiver_close(rx); }
 }
@@ -131,10 +136,9 @@ extern "C" {
     fn hew_channel_pair_free(pair: ChannelPair);
     fn hew_channel_send(tx: Sender, data: String);
     fn hew_channel_send_int(tx: Sender, data: int);
-    fn hew_channel_recv(rx: Receiver) -> String;
-    fn hew_channel_recv_int(rx: Receiver) -> int;
-    fn hew_channel_try_recv(rx: Receiver) -> String;
-    fn hew_channel_try_recv_int(rx: Receiver) -> int;
+    // hew_channel_recv, hew_channel_recv_int, hew_channel_try_recv, and
+    // hew_channel_try_recv_int are declared by codegen with the correct
+    // ABI (Option wrapping / out-parameter).
     fn hew_channel_sender_clone(tx: Sender) -> Sender;
     fn hew_channel_sender_close(tx: Sender);
     fn hew_channel_receiver_close(rx: Receiver);

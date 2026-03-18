@@ -1,0 +1,27 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(8);
+
+    tx.send("alpha");
+    tx.send("beta");
+    tx.send("gamma");
+    tx.send("delta");
+
+    // Break after the second message. The loop must exit immediately
+    // without blocking on recv() and without double-freeing the string.
+    var count = 0;
+    for await msg in rx {
+        count = count + 1;
+        println(f"got: {msg}");
+        if count == 2 {
+            break;
+        }
+    }
+
+    println(f"received {count} messages");
+
+    // Channel is still open — remaining messages are available.
+    tx.close();
+    rx.close();
+}

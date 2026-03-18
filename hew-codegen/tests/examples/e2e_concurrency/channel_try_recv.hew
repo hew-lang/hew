@@ -8,18 +8,23 @@ fn main() {
     tx.send("beta");
     tx.close();
 
-    // try_recv should return the messages.
+    // try_recv should return Some(message) while messages are available.
     let first = rx.try_recv();
     let second = rx.try_recv();
-    // After both consumed and sender closed, try_recv returns empty string.
+    // After both consumed and sender closed, try_recv returns None.
     let third = rx.try_recv();
 
-    println(first);
-    println(second);
-
-    // third is empty string — channel drained and closed.
-    if third == "" {
-        println("empty");
+    match first {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match second {
+        Some(v) => println(v),
+        None => println("none"),
+    }
+    match third {
+        Some(_) => println("unexpected"),
+        None => println("none"),
     }
 
     rx.close();

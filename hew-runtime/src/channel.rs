@@ -178,10 +178,10 @@ fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
 }
 
 /// Block until a message is available and return it as a malloc-allocated
-/// NUL-terminated string. Returns an empty string (valid pointer to NUL
-/// byte) when the channel is closed (all senders dropped).
+/// NUL-terminated string. Returns NULL when the channel is closed (all
+/// senders dropped), letting codegen wrap the result as `Option<String>`.
 ///
-/// The caller must `free()` the returned pointer.
+/// The caller must `free()` the returned pointer when non-NULL.
 ///
 /// # Safety
 ///
@@ -193,24 +193,18 @@ pub unsafe extern "C" fn hew_channel_recv(receiver: *mut HewChannelReceiver) -> 
     if let Ok(item) = unsafe { (*receiver).rx.recv() } {
         return bytes_to_cstr(&item);
     }
-    // Channel closed — return a valid empty string so Hew string
-    // comparison (`msg == ""`) works correctly.
-    // SAFETY: libc::malloc returns a valid pointer or null.
-    let buf = unsafe { libc::malloc(1) };
-    if buf.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: buf has 1 byte allocated; writing NUL terminator.
-    unsafe { *buf.cast::<u8>() = 0 };
-    buf.cast::<c_char>()
+    // Channel closed — return NULL so codegen wraps as None.
+    ptr::null_mut()
 }
 
 /// Try to receive a message without blocking.
 ///
 /// Returns a malloc-allocated NUL-terminated string if a message was
-/// available, or a valid empty string if the channel is empty or closed.
+/// available, or NULL if the channel is empty or closed. This lets the
+/// caller distinguish "received empty string" (`Some("")`) from
+/// "nothing available" (`None`).
 ///
-/// The caller must `free()` the returned pointer.
+/// The caller must `free()` the returned pointer when non-NULL.
 ///
 /// # Safety
 ///
@@ -221,37 +215,33 @@ pub unsafe extern "C" fn hew_channel_try_recv(receiver: *mut HewChannelReceiver)
     // SAFETY: receiver is valid per caller contract.
     match unsafe { (*receiver).rx.try_recv() } {
         Ok(item) => bytes_to_cstr(&item),
-        Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
-            // Return a valid empty string so Hew string comparison works.
-            // SAFETY: libc::malloc returns a valid pointer or null.
-            let buf = unsafe { libc::malloc(1) };
-            if buf.is_null() {
-                return ptr::null_mut();
-            }
-            // SAFETY: buf has 1 byte allocated; writing NUL terminator.
-            unsafe { *buf.cast::<u8>() = 0 };
-            buf.cast::<c_char>()
-        }
+        Err(TryRecvError::Empty | TryRecvError::Disconnected) => ptr::null_mut(),
     }
 }
 
 /// Block until an integer message is available.
 ///
-/// Returns 0 when the channel is closed (all senders dropped). The caller
-/// can distinguish "received 0" from "closed" by checking whether
-/// any senders are still alive, but for most use cases the close
-/// convention is to drain all messages first.
+/// Returns the integer value and sets `*out_valid` to 1 if a message was
+/// received. Sets `*out_valid` to 0 and returns 0 when the channel is
+/// closed (all senders dropped), letting codegen wrap as `Option<int>`.
 ///
 /// # Safety
 ///
-/// `receiver` must be a valid pointer.
+/// `receiver` and `out_valid` must be valid pointers.
 #[no_mangle]
-pub unsafe extern "C" fn hew_channel_recv_int(receiver: *mut HewChannelReceiver) -> i64 {
-    cabi_guard!(receiver.is_null(), 0);
-    // SAFETY: receiver is valid per caller contract.
+pub unsafe extern "C" fn hew_channel_recv_int(
+    receiver: *mut HewChannelReceiver,
+    out_valid: *mut i32,
+) -> i64 {
+    cabi_guard!(receiver.is_null() || out_valid.is_null(), 0);
+    // SAFETY: receiver and out_valid are valid per caller contract.
     if let Ok(item) = unsafe { (*receiver).rx.recv() } {
+        // SAFETY: out_valid is valid per caller contract.
+        unsafe { *out_valid = 1 };
         return i64::from_le_bytes(item.try_into().unwrap_or([0; 8]));
     }
+    // SAFETY: out_valid is valid per caller contract.
+    unsafe { *out_valid = 0 };
     0
 }
 
@@ -384,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn recv_returns_empty_on_closed() {
+    fn recv_returns_null_on_closed() {
         let pair = hew_channel_new(4);
         // SAFETY: pair was just created above.
         unsafe {
@@ -394,18 +384,15 @@ mod tests {
 
             hew_channel_sender_close(tx);
             let result = hew_channel_recv(rx);
-            // Closed channel returns a valid empty string, not NULL.
-            assert!(!result.is_null());
-            let received = CStr::from_ptr(result);
-            assert_eq!(received.to_str().unwrap(), "");
-            libc::free(result.cast());
+            // Closed channel returns NULL so codegen can wrap as None.
+            assert!(result.is_null());
 
             hew_channel_receiver_close(rx);
         }
     }
 
     #[test]
-    fn try_recv_returns_empty_when_empty() {
+    fn try_recv_returns_null_when_empty() {
         let pair = hew_channel_new(4);
         // SAFETY: pair was just created above.
         unsafe {
@@ -414,11 +401,63 @@ mod tests {
             hew_channel_pair_free(pair);
 
             let result = hew_channel_try_recv(rx);
-            // Empty channel now returns a valid empty string, not NULL.
-            assert!(!result.is_null());
+            assert!(result.is_null(), "empty channel should return NULL");
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_distinguishes_empty_string_from_no_message() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Send an actual empty string.
+            let empty = b"\0";
+            hew_channel_send(tx, empty.as_ptr().cast());
+
+            // try_recv should return a valid (non-NULL) pointer to a NUL byte.
+            let result = hew_channel_try_recv(rx);
+            assert!(!result.is_null(), "empty string message should be non-NULL");
             let received = CStr::from_ptr(result);
             assert_eq!(received.to_str().unwrap(), "");
             libc::free(result.cast());
+
+            // Now the channel is empty — try_recv should return NULL.
+            let result2 = hew_channel_try_recv(rx);
+            assert!(result2.is_null(), "drained channel should return NULL");
+
+            hew_channel_sender_close(tx);
+            hew_channel_receiver_close(rx);
+        }
+    }
+
+    #[test]
+    fn try_recv_int_distinguishes_zero_from_no_message() {
+        let pair = hew_channel_new(4);
+        // SAFETY: pair was just created above.
+        unsafe {
+            let tx = hew_channel_pair_sender(pair);
+            let rx = hew_channel_pair_receiver(pair);
+            hew_channel_pair_free(pair);
+
+            // Send the value 0.
+            hew_channel_send_int(tx, 0);
+
+            let mut valid: i32 = -1;
+            let val = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1, "received 0 should set valid=1");
+            assert_eq!(val, 0);
+
+            // Now the channel is empty.
+            let val2 = hew_channel_try_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0, "drained channel should set valid=0");
+            assert_eq!(val2, 0);
 
             hew_channel_sender_close(tx);
             hew_channel_receiver_close(rx);
@@ -465,9 +504,6 @@ mod tests {
                 }
                 let s = CStr::from_ptr(result).to_str().unwrap().to_owned();
                 libc::free(result.cast());
-                if s.is_empty() {
-                    break;
-                }
                 messages.push(s);
             }
 
@@ -490,9 +526,12 @@ mod tests {
             hew_channel_send_int(tx, 42);
             hew_channel_send_int(tx, -7);
 
-            let v1 = hew_channel_recv_int(rx);
+            let mut valid: i32 = 0;
+            let v1 = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1);
             assert_eq!(v1, 42);
-            let v2 = hew_channel_recv_int(rx);
+            let v2 = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 1);
             assert_eq!(v2, -7);
 
             hew_channel_sender_close(tx);
@@ -501,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn recv_int_returns_zero_on_closed() {
+    fn recv_int_returns_invalid_on_closed() {
         let pair = hew_channel_new(4);
         // SAFETY: pair was just created above.
         unsafe {
@@ -510,8 +549,10 @@ mod tests {
             hew_channel_pair_free(pair);
 
             hew_channel_sender_close(tx);
-            let val = hew_channel_recv_int(rx);
-            assert_eq!(val, 0, "closed channel should return 0");
+            let mut valid: i32 = -1;
+            let val = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
+            assert_eq!(valid, 0, "closed channel should set out_valid to 0");
+            assert_eq!(val, 0);
 
             hew_channel_receiver_close(rx);
         }
@@ -585,9 +626,10 @@ mod tests {
             t2.join().unwrap();
 
             let mut values = Vec::new();
+            let mut valid: i32 = 0;
             loop {
-                let v = hew_channel_recv_int(rx);
-                if v == 0 {
+                let v = hew_channel_recv_int(rx, std::ptr::addr_of_mut!(valid));
+                if valid == 0 {
                     break;
                 }
                 values.push(v);

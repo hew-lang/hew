@@ -10,10 +10,12 @@ fn main() {
 
     // Drain all messages and sum them.
     var total: int = 0;
-    var val = rx.recv();
-    while val != 0 {
-        total = total + val;
-        val = rx.recv();
+    var done = false;
+    while !done {
+        match rx.recv() {
+            Some(val) => { total = total + val; },
+            None => { done = true; },
+        }
     }
 
     println(total);

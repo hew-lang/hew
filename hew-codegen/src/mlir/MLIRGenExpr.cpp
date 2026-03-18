@@ -1363,6 +1363,220 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       return generateLogEmit(call.args, logLevel);
   }
 
+  // ── Intercept channel try_recv → Option<T> wrapping ──────────────────
+  // The enricher rewrites rx.try_recv() into hew_channel_try_recv(rx) or
+  // hew_channel_try_recv_int(rx). The runtime returns NULL (string) or
+  // uses an out_valid flag (int) to indicate "no message". We wrap the
+  // raw result in Option<T> here.
+  if (calleeName == "hew_channel_try_recv") {
+    // String variant: hew_channel_try_recv(rx) → ptr (NULL = empty).
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_try_recv expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto stringType = hew::StringRefType::get(&context);
+
+    // Declare and call the extern function (returns ptr, NULL for empty).
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_channel_try_recv", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_try_recv");
+    auto rawPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                             calleeAttr, mlir::ValueRange{rxArg})
+                      .getResult();
+
+    // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
+    auto optionType = hew::OptionEnumType::get(&context, stringType);
+    auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull =
+        mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
+
+    return ifOp.getResult(0);
+  }
+
+  if (calleeName == "hew_channel_try_recv_int") {
+    // Int variant: hew_channel_try_recv_int(rx, &out_valid) → i64.
+    // The enricher only passes 1 arg (rx); we synthesise the out_valid alloca.
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_try_recv_int expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+    auto i64Type = builder.getI64Type();
+
+    // Reuse a single out_valid alloca hoisted to the function entry block.
+    if (!channelIntOutValidAlloca) {
+      auto savedIP = builder.saveInsertionPoint();
+      auto &entryBlock = currentFunction.front();
+      builder.setInsertionPointToStart(&entryBlock);
+      auto one = mlir::arith::ConstantIntOp::create(builder, builder.getUnknownLoc(), 1, 64);
+      channelIntOutValidAlloca =
+          mlir::LLVM::AllocaOp::create(builder, builder.getUnknownLoc(), ptrType, i32Type, one);
+      builder.restoreInsertionPoint(savedIP);
+    }
+
+    // Declare the extern with the correct 2-arg ABI: (ptr, ptr) → i64.
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i64Type});
+    getOrCreateExternFunc("hew_channel_try_recv_int", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_try_recv_int");
+    auto rawVal =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type}, calleeAttr,
+                                   mlir::ValueRange{rxArg, channelIntOutValidAlloca})
+            .getResult();
+
+    // Load the validity flag.
+    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+
+    // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
+    auto optionType = hew::OptionEnumType::get(&context, i64Type);
+    auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                               validFlag, zero);
+
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
+
+    return ifOp.getResult(0);
+  }
+
+  // ── Intercept channel recv → Option<T> wrapping ──────────────────────
+  // Same as try_recv but for the blocking variant. The runtime returns
+  // NULL (string) or uses out_valid (int) when the channel is closed.
+  if (calleeName == "hew_channel_recv") {
+    // String variant: hew_channel_recv(rx) → ptr (NULL = closed).
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_recv expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto stringType = hew::StringRefType::get(&context);
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType}, {ptrType});
+    getOrCreateExternFunc("hew_channel_recv", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv");
+    auto rawPtr = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{ptrType},
+                                             calleeAttr, mlir::ValueRange{rxArg})
+                      .getResult();
+
+    // Build Option<String> via EnumConstructOp (matches HashMap.get() path).
+    auto optionType = hew::OptionEnumType::get(&context, stringType);
+    auto nullVal = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull =
+        mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
+
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
+
+    return ifOp.getResult(0);
+  }
+
+  if (calleeName == "hew_channel_recv_int") {
+    // Int variant: hew_channel_recv_int(rx, &out_valid) → i64.
+    if (call.args.size() != 1) {
+      emitError(location) << "hew_channel_recv_int expects 1 argument";
+      return nullptr;
+    }
+    auto rxArg = generateExpression(ast::callArgExpr(call.args[0]).value);
+    if (!rxArg)
+      return nullptr;
+
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto i32Type = builder.getI32Type();
+    auto i64Type = builder.getI64Type();
+
+    // Reuse a single out_valid alloca hoisted to the function entry block.
+    if (!channelIntOutValidAlloca) {
+      auto savedIP = builder.saveInsertionPoint();
+      auto &entryBlock = currentFunction.front();
+      builder.setInsertionPointToStart(&entryBlock);
+      auto one = mlir::arith::ConstantIntOp::create(builder, builder.getUnknownLoc(), 1, 64);
+      channelIntOutValidAlloca =
+          mlir::LLVM::AllocaOp::create(builder, builder.getUnknownLoc(), ptrType, i32Type, one);
+      builder.restoreInsertionPoint(savedIP);
+    }
+
+    auto externFuncType = mlir::FunctionType::get(&context, {ptrType, ptrType}, {i64Type});
+    getOrCreateExternFunc("hew_channel_recv_int", externFuncType);
+    auto calleeAttr = mlir::SymbolRefAttr::get(&context, "hew_channel_recv_int");
+    auto rawVal =
+        hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type}, calleeAttr,
+                                   mlir::ValueRange{rxArg, channelIntOutValidAlloca})
+            .getResult();
+
+    auto validFlag = mlir::LLVM::LoadOp::create(builder, location, i32Type, channelIntOutValidAlloca);
+
+    // Build Option<int> via EnumConstructOp (matches HashMap.get() path).
+    auto optionType = hew::OptionEnumType::get(&context, i64Type);
+    auto zero = mlir::arith::ConstantIntOp::create(builder, location, 0, 32);
+    auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
+                                               validFlag, zero);
+
+    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
+                                        /*withElseRegion=*/true);
+    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    auto someVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+    auto noneVal = hew::EnumConstructOp::create(
+        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+    builder.setInsertionPointAfter(ifOp);
+
+    return ifOp.getResult(0);
+  }
+
   // Handle generic function calls with explicit type arguments
   if (call.type_args.has_value() && !call.type_args->empty()) {
     auto genIt = genericFunctions.find(calleeName);
@@ -4602,8 +4816,10 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   mlir::Value savedReturnFlag = returnFlag;
   mlir::Value savedReturnSlot = returnSlot;
+  mlir::Value savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
   returnFlag = nullptr;
   returnSlot = nullptr;
+  channelIntOutValidAlloca = nullptr;
 
   mlir::Value bodyVal = nullptr;
   if (lam.body) {
@@ -4636,6 +4852,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   returnFlag = savedReturnFlag;
   returnSlot = savedReturnSlot;
+  channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
   currentFunction = savedFunction;
   builder.restoreInsertionPoint(savedIP);
 
@@ -4800,10 +5017,12 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   auto savedFunction = currentFunction;
   auto savedReturnFlag = returnFlag;
+  auto savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto savedScopePtr = currentScopePtr;
   auto savedTaskScopePtr = currentTaskScopePtr;
   currentFunction = taskFn;
   returnFlag = nullptr;
+  channelIntOutValidAlloca = nullptr;
   currentScopePtr = nullptr;
   currentTaskScopePtr = nullptr;
 
@@ -4840,6 +5059,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   currentFunction = savedFunction;
   returnFlag = savedReturnFlag;
+  channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;
 

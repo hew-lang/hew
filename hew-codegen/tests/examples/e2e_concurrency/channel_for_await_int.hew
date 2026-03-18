@@ -1,0 +1,21 @@
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx) = channel.new(4);
+
+    tx.send(0);
+    tx.send(42);
+    tx.send(-1);
+    tx.close();
+
+    // for await drains the int channel, breaking on None (closed).
+    // 0 must be received, not confused with closure.
+    var total: int = 0;
+    for await val in rx {
+        println(val);
+        total = total + val;
+    }
+
+    println(f"total: {total}");
+    rx.close();
+}

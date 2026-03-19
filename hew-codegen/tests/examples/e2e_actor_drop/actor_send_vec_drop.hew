@@ -1,0 +1,27 @@
+// Test: Named Vec<int> sent to an actor is properly cleaned up by the sender.
+// The runtime deep-copies Vec args via hew_vec_clone(), so the sender keeps
+// the original. Before this fix, unregisterDroppable suppressed the sender's
+// Vec drop, leaking the original allocation.
+//
+// Verifies no crash or double-free from retained sender drop, and that the
+// actor receives correct data through the deep-copied Vec.
+
+actor Summer {
+    receive fn total(nums: Vec<int>) {
+        var sum = 0;
+        for i in 0..nums.len() {
+            sum = sum + nums.get(i);
+        }
+        println(f"sum: {sum}");
+    }
+}
+
+fn main() {
+    let s = spawn Summer;
+    let data: Vec<int> = [];
+    data.push(10);
+    data.push(20);
+    data.push(30);
+    s.total(data);
+    sleep_ms(50);
+}

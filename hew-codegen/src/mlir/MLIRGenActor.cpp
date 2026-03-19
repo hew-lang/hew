@@ -1431,11 +1431,24 @@ mlir::Value MLIRGen::generateActorMethodSend(mlir::Value actorPtr, const ActorIn
                              builder.getI32IntegerAttr(static_cast<int32_t>(msgIdx)), *argVals);
   }
 
-  // Suppress sender-side Drop for moved (non-Copy) identifier arguments.
-  // Ownership transfers to the actor; the sender must not free the handle.
-  for (const auto &arg : args) {
-    const auto &argSpanned = ast::callArgExpr(arg);
-    if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind)) {
+  // Ownership at the actor boundary depends on the transport:
+  //
+  // Wire sends: the struct is serialized into an independent bytes buffer.
+  // No pointer sharing — sender always retains ownership and drops normally.
+  //
+  // Non-wire sends (deepCopyOwnedArgs in codegen.cpp): String, Vec, HashMap,
+  // and Closure are deep-copied — sender drops normally.  Everything else
+  // passes the raw pointer through (shared) — sender must NOT drop.
+  if (!wireNames) {
+    for (size_t i = 0; i < args.size() && i < argVals->size(); ++i) {
+      const auto &argSpanned = ast::callArgExpr(args[i]);
+      auto *identExpr = std::get_if<ast::ExprIdentifier>(&argSpanned.value.kind);
+      if (!identExpr)
+        continue;
+      auto argType = (*argVals)[i].getType();
+      if (mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
+                    hew::ClosureType>(argType))
+        continue;
       unregisterDroppable(identExpr->name);
     }
   }
@@ -1541,9 +1554,16 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
                              mlir::ValueRange{msgVal});
   }
 
-  // Suppress sender-side Drop for the moved message variable.
-  if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
-    unregisterDroppable(identExpr->name);
+  // Wire sends serialize the value into independent bytes — no sharing.
+  // Non-wire sends only deep-copy String/Vec/HashMap/Closure — everything
+  // else shares the raw pointer and the sender must not drop.
+  if (!wireNames) {
+    if (auto *identExpr = std::get_if<ast::ExprIdentifier>(&expr.message->value.kind)) {
+      if (!mlir::isa<hew::StringRefType, hew::VecType, hew::HashMapType,
+                     hew::ClosureType>(msgVal.getType())) {
+        unregisterDroppable(identExpr->name);
+      }
+    }
   }
 
   return nullptr; // send is a statement, returns void

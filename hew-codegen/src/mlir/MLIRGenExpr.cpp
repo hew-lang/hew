@@ -4821,6 +4821,81 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
 }
 
 // ============================================================================
+// Closure env drop function generation
+// ============================================================================
+
+/// Generate a small function `__env_drop_N(ptr)` that, for each mutable-capture
+/// field in the env struct, loads the RC cell pointer and calls `hew_rc_drop`.
+/// Also handles inner closure captures whose env RC needs dropping.
+/// Returns a `FuncPtrOp` value pointing to the generated function, or a null
+/// zero pointer if the env has no RC-backed captures.
+mlir::Value MLIRGen::generateEnvDropFn(
+    const std::vector<CapturedVarInfo> &capturedVars,
+    mlir::LLVM::LLVMStructType envStructType, mlir::Location location) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+
+  // Collect indices of fields that need RC drops.
+  llvm::SmallVector<size_t, 4> rcFieldIndices;
+  for (size_t i = 0; i < capturedVars.size(); ++i) {
+    if (capturedVars[i].isMutable ||
+        mlir::isa<hew::ClosureType>(capturedVars[i].value.getType()))
+      rcFieldIndices.push_back(i);
+  }
+  if (rcFieldIndices.empty())
+    return mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+
+  // Ensure hew_rc_drop is declared.
+  auto rcDropType =
+      builder.getFunctionType({ptrType}, {});
+  getOrCreateExternFunc("hew_rc_drop", rcDropType);
+
+  // Generate the drop function.
+  std::string fnName = "__env_drop_" + std::to_string(envDropCounter++);
+  auto fnType = builder.getFunctionType({ptrType}, {});
+
+  auto savedIP = builder.saveInsertionPoint();
+  auto savedFunction = currentFunction;
+  builder.setInsertionPointToEnd(module.getBody());
+
+  auto dropFn = mlir::func::FuncOp::create(builder, location, fnName, fnType);
+  dropFn.setVisibility(mlir::SymbolTable::Visibility::Private);
+  auto *entryBlock = dropFn.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+  currentFunction = dropFn;
+
+  auto envArg = entryBlock->getArgument(0);
+  for (size_t idx : rcFieldIndices) {
+    auto gep = mlir::LLVM::GEPOp::create(
+        builder, location, ptrType, envStructType, envArg,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{
+            static_cast<int32_t>(0), static_cast<int32_t>(idx)});
+    auto fieldVal = mlir::LLVM::LoadOp::create(
+        builder, location, ptrType, gep);
+    // Null-guard: the field may be zero if the lambda was only partially
+    // initialised (shouldn't happen normally, but be safe).
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(
+        builder, location, builder.getI1Type(),
+        mlir::LLVM::ICmpPredicate::ne, fieldVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(
+        builder, location, mlir::TypeRange{}, isNotNull,
+        /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    mlir::func::CallOp::create(builder, location, "hew_rc_drop",
+                                mlir::TypeRange{}, mlir::ValueRange{fieldVal});
+    builder.setInsertionPointAfter(guard);
+  }
+  mlir::func::ReturnOp::create(builder, location);
+
+  currentFunction = savedFunction;
+  builder.restoreInsertionPoint(savedIP);
+
+  return hew::FuncPtrOp::create(builder, location, ptrType,
+                                 mlir::SymbolRefAttr::get(&context, fnName))
+      .getResult();
+}
+
+// ============================================================================
 // Lambda expression generation
 // ============================================================================
 
@@ -5108,8 +5183,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
     auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, nullDropFn);
+    auto envDropFnPtr = generateEnvDropFn(capturedVars, envStructType, location);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, envDropFnPtr);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
@@ -5117,6 +5192,10 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
             hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
         hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
+      // Mutable captures are RC cells; clone so the cell survives
+      // scope-exit drops when the closure escapes.
+      if (capturedVars[i].isMutable)
+        hew::RcCloneOp::create(builder, location, ptrType, capturedVars[i].value);
       auto gepOp = mlir::LLVM::GEPOp::create(
           builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
@@ -5220,8 +5299,9 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
     auto envSize =
         hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
-    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullPtr, envSize, nullPtr);
+    auto envDropFnPtr = generateEnvDropFn(capturedVars, envStructType, location);
+    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, envDropFnPtr);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
@@ -5229,6 +5309,8 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
             hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
         hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
+      if (capturedVars[i].isMutable)
+        hew::RcCloneOp::create(builder, location, ptrType, capturedVars[i].value);
       auto gepOp = mlir::LLVM::GEPOp::create(
           builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});

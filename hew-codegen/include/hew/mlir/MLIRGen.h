@@ -665,6 +665,13 @@ private:
   };
   void gatherCapturedVars(const std::set<std::string> &freeVars,
                           std::vector<CapturedVarInfo> &capturedVars, mlir::Location location);
+  /// Generate a per-closure env drop function that calls hew_rc_drop on each
+  /// captured mutable RC cell.  Returns a FuncPtrOp value (or null zero if
+  /// no mutable captures exist).
+  mlir::Value generateEnvDropFn(
+      const std::vector<CapturedVarInfo> &capturedVars,
+      mlir::LLVM::LLVMStructType envStructType, mlir::Location location);
+  unsigned envDropCounter = 0;
 
   /// Collect identifiers used in a block that are free (not locally defined).
   void collectFreeVarsInBlock(const ast::Block &block, const std::set<std::string> &bound,

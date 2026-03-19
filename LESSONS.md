@@ -544,3 +544,28 @@ The enricher wraps ALL function bodies in `unsafe {}`. Variables declared at "de
 (inside the unsafe) appear in return expressions at "depth 2+" (inside if/match arms).
 Depth-based `funcLevelDropExcludeVars` misses them. Solution: maintain a flat
 `funcLevelReturnVarNames` set (depth-independent) checked only for RAII close entries.
+
+## lookupVariable dominance guarantee via alloca promotion
+
+When `returnFlag` is active in the codegen, `declareVariable` (MLIRGen.cpp:878-916)
+promotes `let` bindings to `memref` alloca in the function entry block + `memref.store`.
+This means `lookupVariable` creates a fresh `memref::LoadOp` at the current insertion
+point, which always dominates. You CANNOT store raw SSA values at declaration time for
+later use in drops — they may be inside `scf.if` guard regions. Always use
+`lookupVariable` at the drop site.
+
+## Param drops require null-after-move to be safe
+
+Function parameter drops cause double-frees because the codegen has no ownership
+transfer tracking. Match destructuring, callee moves, and returns all consume values
+without nulling the storage. Before adding ANY new drop registrations (params, struct
+fields, closure captures), implement null-after-move: store null into the variable's
+alloca after consumption, and null-check in `emitDropEntry` before calling the drop
+function.
+
+## ctest cmake cache HEW_CLI path in worktrees
+
+When using `git worktree`, the cmake configuration caches `HEW_CLI` from `find_program`.
+If the cmake cache points to a different checkout's binary (e.g., main's release build),
+tests will run against the wrong compiler. Delete `CMakeCache.txt` and rebuild to
+reconfigure. Symptom: tests pass when run manually but fail in ctest.

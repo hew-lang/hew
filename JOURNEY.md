@@ -1045,3 +1045,37 @@ functions returning `Result<T, IoError>` directly.
   - The `funcLevelReturnVarNames` flat name set handles the depth mismatch caused by
     the enricher's `unsafe {}` wrapper (variables at depth 1, return expressions at
     depth 2+).
+
+## RAII Phase 1: Parameter Drops and the Null-After-Move Prerequisite
+
+- **What:** Investigated adding automatic drop calls for function parameters at scope
+  exit, as the first step toward proper Rust-style RAII across the codegen.
+
+- **Approach 1 (abandoned): dropValue in DropEntry.** Stored the raw `mlir::Value`
+  from the parameter declaration site. Failed because `declareVariable` promotes
+  `let` bindings to `alloca+store` when `returnFlag` is active — the raw SSA value
+  lives inside an `scf.if(!returnFlag)` guard and doesn't dominate the drop site.
+  `lookupVariable` is the correct mechanism because it creates a fresh `memref::LoadOp`
+  from the alloca, which always dominates.
+
+- **Approach 2 (double-free): pendingFunctionParamDrops.** Registered params for drop
+  via the existing `registerDroppable` mechanism. All 522 tests passed on compile, but
+  13+ tests hit double-frees at runtime. Root cause: the codegen has no ownership
+  transfer tracking. When a param is consumed by match destructuring (`match t { ... }`
+  frees the indirect enum), callee move (`sink.write(data)` frees `data` in the runtime),
+  or return, the param drop at function exit frees already-freed memory.
+
+- **Decision:** Param drops require **null-after-move** as a prerequisite. Without
+  nulling out a variable's storage after consumption, any new drop registration is
+  unsafe. This applies to all owned values, not just params.
+
+- **Key discovery: declareVariable alloca promotion.** When `returnFlag` is active
+  (non-void functions), `declareVariable` (MLIRGen.cpp:878-916) promotes `let` bindings
+  to `memref` alloca+store in the function entry block. This means `lookupVariable`
+  always returns a value that dominates any point in the function. This is the correct
+  mechanism for drop emission and is the foundation for null-after-move (store null
+  into the alloca after consumption).
+
+- **Path forward:** Implement null-check-before-drop in `emitDropEntry`, then add
+  null-after-move at consumption sites (match destructuring, callee args, return).
+  Only then re-enable param drops.

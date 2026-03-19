@@ -740,6 +740,10 @@ private:
   /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
   /// bitcast, drop).  No-op if the variable is not found.
   void emitDropEntry(const DropEntry &entry);
+  /// After calling a user-defined Drop function, emit drops for each owned
+  /// field of the struct (String, Vec, HashMap, etc.).  The user's Drop body
+  /// runs first (can read field values), then we free the heap allocations.
+  void emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc);
   /// Null out a variable's RAII close alloca (after ownership transfer).
   void nullOutRaiiAlloca(const std::string &varName);
   /// Emit a drop for a single variable if it has a registered drop function.

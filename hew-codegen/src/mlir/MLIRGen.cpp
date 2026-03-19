@@ -4620,7 +4620,39 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     builder.setInsertionPointAfter(guard);
     return;
   }
-  hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+   hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+  if (entry.isUserDrop)
+    emitFieldDropsForUserStruct(val, loc);
+}
+
+void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified())
+    return;
+  auto it = structTypes.find(structTy.getName().str());
+  if (it == structTypes.end())
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  for (const auto &field : it->second.fields) {
+    auto drop = dropFuncForMLIRType(field.semanticType);
+    if (drop.empty())
+      continue;
+    // Check if this field's drop is itself a user-defined Drop (nested struct).
+    bool fieldIsUserDrop = false;
+    if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType))
+      if (fst.isIdentified())
+        fieldIsUserDrop = userDropFuncs.count(fst.getName().str()) > 0;
+    auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, structVal,
+                                            builder.getStringAttr(field.name),
+                                            builder.getI64IntegerAttr(field.index));
+    mlir::Value dropVal = fieldVal;
+    if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
+      dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+    hew::DropOp::create(builder, loc, dropVal, drop, fieldIsUserDrop);
+    // Recursively drop owned fields of nested user-drop structs.
+    if (fieldIsUserDrop)
+      emitFieldDropsForUserStruct(fieldVal, loc);
+  }
 }
 
 void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {

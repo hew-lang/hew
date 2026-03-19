@@ -2046,14 +2046,19 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     }
 
     // Drop RC environments of temporary closure arguments after the call.
-    // Closures bound to variables are dropped by popDropScope; only inline
-    // lambdas (ExprLambda in the AST) need explicit drop here.
+    // Variable-bound closures (identifiers, field accesses) are dropped by
+    // popDropScope via their let-binding registration.  All other closure
+    // arguments (inline lambdas, call-returned closures, block expressions)
+    // are unbound temporaries that need explicit cleanup here.
     {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       for (size_t i = 0; i < args.size() && i < call.args.size(); ++i) {
         if (!mlir::isa<hew::ClosureType>(args[i].getType()))
           continue;
-        if (!std::holds_alternative<ast::ExprLambda>(ast::callArgExpr(call.args[i]).value.kind))
+        const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+        if (std::holds_alternative<ast::ExprIdentifier>(argExpr.kind))
+          continue;
+        if (std::holds_alternative<ast::ExprFieldAccess>(argExpr.kind))
           continue;
         auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, args[i]);
         hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);

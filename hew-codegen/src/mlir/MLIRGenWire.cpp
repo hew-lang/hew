@@ -188,7 +188,12 @@ void MLIRGen::preRegisterWireStructType(const ast::WireDecl &decl) {
   for (const auto &field : decl.fields) {
     auto mlirTy = wireTypeToMLIR(builder, field.ty);
     fieldTypes.push_back(mlirTy);
-    info.fields.push_back({field.name, mlirTy, mlirTy, fieldIdx, ""});
+    // Preserve Hew-level semantic type for owned-field detection.
+    // wireTypeToMLIR maps String/bytes to !llvm.ptr, losing type info.
+    auto semanticTy = (field.ty == "String" || field.ty == "string")
+                          ? mlir::Type(hew::StringRefType::get(&context))
+                          : mlirTy;
+    info.fields.push_back({field.name, mlirTy, semanticTy, fieldIdx, field.ty});
     ++fieldIdx;
   }
   info.mlirType = mlir::LLVM::LLVMStructType::getIdentified(&context, declName);

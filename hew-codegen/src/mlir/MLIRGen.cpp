@@ -4552,9 +4552,39 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
       auto it = userDropFuncs.find(structTy.getName().str());
       if (it != userDropFuncs.end())
         return it->second;
+      // Structs without user Drop but with owned fields (String, Vec, etc.)
+      // get a sentinel drop that emitDropEntry handles by freeing fields.
+      if (structHasOwnedFields(structTy.getName().str()))
+        return "__auto_field_drop";
     }
   }
   return "";
+}
+
+bool MLIRGen::structHasOwnedFields(const std::string &name) const {
+  auto it = structTypes.find(name);
+  if (it == structTypes.end())
+    return false;
+  for (const auto &field : it->second.fields) {
+    // Recursive check: use a simplified test — only check Hew-level heap types,
+    // not nested structs (those are handled by recursive field drops).
+    if (mlir::isa<hew::StringRefType>(field.semanticType) ||
+        mlir::isa<hew::VecType>(field.semanticType) ||
+        mlir::isa<hew::HashMapType>(field.semanticType) ||
+        mlir::isa<hew::ClosureType>(field.semanticType))
+      return true;
+    if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
+      if (fst.isIdentified()) {
+        if (fst.getName() == "HewHashSet")
+          return true;
+        if (userDropFuncs.count(fst.getName().str()))
+          return true;
+        if (structHasOwnedFields(fst.getName().str()))
+          return true;
+      }
+    }
+  }
+  return false;
 }
 
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
@@ -4592,6 +4622,14 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
   }
   if (!val)
     return;
+
+  // Auto-field-drop: struct has no user Drop but has owned fields (String,
+  // Vec, etc.).  Just drop the fields directly — no function call needed.
+  if (entry.dropFuncName == "__auto_field_drop") {
+    emitFieldDropsForUserStruct(val, loc);
+    return;
+  }
+
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Value dropVal = val;
   if (mlir::isa<hew::ClosureType>(val.getType()))

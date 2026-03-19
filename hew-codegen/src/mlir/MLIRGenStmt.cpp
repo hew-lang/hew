@@ -862,6 +862,12 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
+    // NOTE: auto-field-drop for non-Drop structs with owned fields (wire
+    // structs, etc.) is deferred. The challenge is that struct fields may
+    // be borrowed (field access returns raw pointer, not owned copy), so
+    // auto-dropping fields at scope exit causes double-frees. This needs
+    // ownership tracking per field, which is a larger project.
+
     // Register closure env for RAII cleanup via hew_rc_drop.
     if (mlir::isa<hew::ClosureType>(value.getType())) {
       registerDroppable(varName, "hew_rc_drop");

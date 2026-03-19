@@ -71,6 +71,13 @@ void MLIRGen::bindTuplePatternFields(const ast::PatTuple &tp, mlir::Value tupleV
 
     if (auto *elemIdent = std::get_if<ast::PatIdentifier>(&elem->value.kind)) {
       declareVariable(elemIdent->name, elemVal);
+      auto drop = dropFuncForMLIRType(elemVal.getType());
+      if (!drop.empty()) {
+        bool isUser = false;
+        if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(elemVal.getType()))
+          isUser = st.isIdentified() && userDropFuncs.count(st.getName().str());
+        registerDroppable(elemIdent->name, drop, isUser);
+      }
     } else if (auto *elemTuple = std::get_if<ast::PatTuple>(&elem->value.kind)) {
       bindTuplePatternFields(*elemTuple, elemVal, location);
     }

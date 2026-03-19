@@ -4542,8 +4542,13 @@ std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
     return "hew_vec_free";
   if (mlir::isa<hew::HashMapType>(type))
     return "hew_hashmap_free_impl";
+  if (mlir::isa<hew::ClosureType>(type))
+    return "hew_rc_drop";
   if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type)) {
     if (structTy.isIdentified()) {
+      // HashSet uses identified struct "HewHashSet"
+      if (structTy.getName() == "HewHashSet")
+        return "hew_hashset_free";
       auto it = userDropFuncs.find(structTy.getName().str());
       if (it != userDropFuncs.end())
         return it->second;

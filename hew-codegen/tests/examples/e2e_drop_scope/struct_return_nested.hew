@@ -1,0 +1,33 @@
+// Regression test: return of a struct from inside a nested scope (if body)
+// must produce the early-return value, not the trailing expression.
+// This exercises the lazy returnSlot creation for aggregate types.
+
+type Resource {
+    name: String;
+}
+
+impl Drop for Resource {
+    fn drop(res: Resource) {
+        print("drop ");
+        println(res.name);
+    }
+}
+
+fn pick(flag: bool) -> Resource {
+    let outer = Resource { name: "outer" };
+    if flag {
+        let inner = Resource { name: "inner" };
+        return inner;
+    }
+    outer
+}
+
+fn main() -> int {
+    let r1 = pick(true);
+    print("got ");
+    println(r1.name);
+    let r2 = pick(false);
+    print("got ");
+    println(r2.name);
+    return 0;
+}

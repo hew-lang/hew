@@ -4917,9 +4917,13 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   mlir::Value savedReturnFlag = returnFlag;
   mlir::Value savedReturnSlot = returnSlot;
   mlir::Value savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
+  bool savedReturnSlotIsLazy = returnSlotIsLazy;
+  mlir::Value savedEarlyReturnFlag = earlyReturnFlag;
   returnFlag = nullptr;
   returnSlot = nullptr;
   channelIntOutValidAlloca = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
 
   // Save/restore funcLevelDropExcludeVars and funcLevelDropScopeBase so the
   // lambda's body block (which is function-level from popDropScope's
@@ -4928,9 +4932,11 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   // NOT dropped before the return op.
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  auto savedEarlyReturnVarNames = std::move(funcLevelEarlyReturnVarNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
+  funcLevelEarlyReturnVarNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
     // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
@@ -5043,6 +5049,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
+  funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
@@ -5071,6 +5078,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   returnFlag = savedReturnFlag;
   returnSlot = savedReturnSlot;
+  returnSlotIsLazy = savedReturnSlotIsLazy;
+  earlyReturnFlag = savedEarlyReturnFlag;
   channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
   currentFunction = savedFunction;
   builder.restoreInsertionPoint(savedIP);
@@ -5136,7 +5145,11 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
   currentTaskScopePtr = taskScopePtr;
 
   auto savedReturnFlag = returnFlag;
+  auto savedReturnSlotIsLazy = returnSlotIsLazy;
+  auto savedEarlyReturnFlag2 = earlyReturnFlag;
   returnFlag = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
   mlir::Value bodyResult = nullptr;
   if (se.binding.has_value()) {
     SymbolTableScopeT bindingScope(symbolTable);
@@ -5146,6 +5159,8 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
     bodyResult = generateBlock(se.block);
   }
   returnFlag = savedReturnFlag;
+  returnSlotIsLazy = savedReturnSlotIsLazy;
+  earlyReturnFlag = savedEarlyReturnFlag2;
 
   currentScopePtr = prevScope;
   currentTaskScopePtr = prevTaskScope;
@@ -5236,11 +5251,15 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   auto savedFunction = currentFunction;
   auto savedReturnFlag = returnFlag;
+  auto savedReturnSlotIsLazy3 = returnSlotIsLazy;
+  auto savedEarlyReturnFlag3 = earlyReturnFlag;
   auto savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto savedScopePtr = currentScopePtr;
   auto savedTaskScopePtr = currentTaskScopePtr;
   currentFunction = taskFn;
   returnFlag = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
   channelIntOutValidAlloca = nullptr;
   currentScopePtr = nullptr;
   currentTaskScopePtr = nullptr;
@@ -5278,6 +5297,8 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   currentFunction = savedFunction;
   returnFlag = savedReturnFlag;
+  returnSlotIsLazy = savedReturnSlotIsLazy3;
+  earlyReturnFlag = savedEarlyReturnFlag3;
   channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;

@@ -1,0 +1,29 @@
+// Regression test: return of a struct from inside a for-loop body.
+// Exercises lazy returnSlot for aggregate types inside scf.for.
+
+type Item {
+    value: int;
+}
+
+impl Drop for Item {
+    fn drop(item: Item) {
+        print("drop ");
+        println(item.value);
+    }
+}
+
+fn find_first_even(n: int) -> Item {
+    for i in 0..n {
+        if i % 2 == 0 {
+            return Item { value: i };
+        }
+    }
+    Item { value: -1 }
+}
+
+fn main() -> int {
+    let result = find_first_even(5);
+    print("found ");
+    println(result.value);
+    return 0;
+}

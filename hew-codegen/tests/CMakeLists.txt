@@ -712,6 +712,9 @@ add_e2e_file_test(drop_nested_struct    e2e_drop_trait drop_nested_struct)
 add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
 add_e2e_file_test(drop_early_return     e2e_drop_scope drop_early_return)
 add_e2e_file_test(drop_shadow_return    e2e_drop_scope drop_shadow_return)
+add_e2e_file_test(struct_return_nested  e2e_drop_scope struct_return_nested)
+add_e2e_file_test(struct_return_loop    e2e_drop_scope struct_return_loop)
+add_e2e_file_test(struct_return_outer   e2e_drop_scope struct_return_outer)
 
 # ── Temporary materialization tests ──────────────────────────────────────────
 add_e2e_file_test(temp_user_drop        e2e_temp_materialization temp_user_drop)

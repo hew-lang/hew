@@ -2933,16 +2933,23 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
   if (!directlyInFunc && returnFlag) {
     // Inside an SCF region: store to return slot and set flag instead of
     // emitting func.return (which is invalid inside SCF ops).
-    if (stmt.value && returnSlot) {
-      auto val = generateExpression(stmt.value->value);
-      if (val) {
-        auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
-        val = coerceType(val, slotType, location);
-        mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+    if (stmt.value) {
+      // Lazily create returnSlot for aggregate types that skipped eager creation.
+      ensureReturnSlot(location);
+      if (returnSlot) {
+        auto val = generateExpression(stmt.value->value);
+        if (val) {
+          auto slotType = mlir::cast<mlir::MemRefType>(returnSlot.getType()).getElementType();
+          val = coerceType(val, slotType, location);
+          mlir::memref::StoreOp::create(builder, location, val, returnSlot);
+        }
       }
     }
     auto trueVal = createIntConstant(builder, location, builder.getI1Type(), 1);
     mlir::memref::StoreOp::create(builder, location, trueVal, returnFlag);
+    // Mark that an EXPLICIT return statement was taken (not a trailing expression).
+    if (earlyReturnFlag)
+      mlir::memref::StoreOp::create(builder, location, trueVal, earlyReturnFlag);
     // Also set the innermost continue flag so that remaining statements
     // in the current loop iteration are skipped.
     if (!loopContinueStack.empty()) {

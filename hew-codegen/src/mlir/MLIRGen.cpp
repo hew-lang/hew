@@ -3874,9 +3874,25 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       // ExprUnsafe wraps a Block — descend like ExprBlock
       collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1);
     } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
-      // Constructors like Ok(x), Some(x) — descend into arguments
-      for (const auto &arg : callE->args)
-        collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
+      // Only descend into enum variant constructors (Ok, Some, Err, etc.)
+      // where argument ownership transfers to the return value.  Regular
+      // function calls borrow arguments — the return value is independent.
+      //
+      // Enum variants are simple uppercase identifiers without :: path
+      // separators.  Qualified paths like Vec::new, Node::lookup, and
+      // generated names like Metric_from_yaml are NOT constructors.
+      bool isVariantCtor = false;
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&callE->function->value.kind)) {
+        const auto &name = id->name;
+        if (!name.empty() && name.find("::") == std::string::npos &&
+            name.find('_') == std::string::npos &&
+            std::isupper(static_cast<unsigned char>(name[0])))
+          isVariantCtor = true;
+      }
+      if (isVariantCtor) {
+        for (const auto &arg : callE->args)
+          collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
+      }
     }
   };
   collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0);

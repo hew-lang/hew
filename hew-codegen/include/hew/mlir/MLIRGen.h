@@ -699,6 +699,10 @@ private:
     /// emitDropEntry will null-check before calling close, then null out
     /// the alloca so explicit .close() + scope-exit don't double-free.
     mlir::Value closeAlloca;
+    /// Direct reference to the variable's promoted alloca slot.  When set,
+    /// emitDropEntry loads from this instead of lookupVariable, which may
+    /// fail after the declaring scope (e.g. match arm) has been popped.
+    mlir::Value promotedSlot;
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;

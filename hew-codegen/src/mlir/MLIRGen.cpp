@@ -4490,7 +4490,13 @@ void MLIRGen::popDropScope() {
 void MLIRGen::registerDroppable(const std::string &varName, const std::string &dropFunc,
                                 bool isUserDrop) {
   if (!dropScopes.empty()) {
-    dropScopes.back().push_back({varName, dropFunc, isUserDrop});
+    DropEntry entry{varName, dropFunc, isUserDrop};
+    // Capture the promoted alloca (if any) so the drop works even after
+    // the declaring scope's MutableTableScopeT has been popped (e.g. when
+    // a let-binding or materialized temp is inside a match arm whose
+    // symbol table scope ends before function-level drops fire).
+    entry.promotedSlot = getMutableVarSlot(varName);
+    dropScopes.back().push_back(std::move(entry));
   }
 }
 
@@ -4545,14 +4551,21 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     builder.setInsertionPointAfter(guard);
     return;
   }
-  // lookupVariable handles dominance correctly: let-bindings are promoted
-  // to alloca+store when returnFlag is active (see declareVariable), so
-  // lookupVariable creates a fresh memref::LoadOp at the current insertion
-  // point, which always dominates the DropOp.
-  auto val = lookupVariable(entry.varName);
+  // When a promoted alloca was captured at registration time, load from it
+  // directly.  This is necessary because the symbol table scope that held
+  // the variable entry may have been popped (e.g. match arm scope exits
+  // before function-level drops fire).
+  mlir::Value val;
+  auto loc = builder.getUnknownLoc();
+  if (entry.promotedSlot) {
+    val = mlir::memref::LoadOp::create(builder, loc, entry.promotedSlot).getResult();
+    if (auto semIt = slotSemanticTypes.find(entry.promotedSlot); semIt != slotSemanticTypes.end())
+      val = coerceType(val, semIt->second, loc);
+  } else {
+    val = lookupVariable(entry.varName);
+  }
   if (!val)
     return;
-  auto loc = builder.getUnknownLoc();
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Value dropVal = val;
   if (mlir::isa<hew::ClosureType>(val.getType()))
@@ -4754,9 +4767,37 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
 
   // Prefix with \x00 to prevent collision with user identifiers (the lexer
   // rejects null bytes, so no user binding can shadow this name).
-  std::string tmpName = std::string("\0__tmp_", 7) + std::to_string(tempMaterializationCounter++);
-  declareVariable(tmpName, val);
-  registerDroppable(tmpName, info.dropFunc, info.isUserDrop);
+  std::string tmpRawName = std::string("\0__tmp_", 7) + std::to_string(tempMaterializationCounter++);
+  auto tmpName = intern(tmpRawName);
+
+  // Always create a hoisted alloca at function entry.  This ensures:
+  // 1. The alloca dominates function-level drops (which fire after inner
+  //    scopes like match arms have been popped).
+  // 2. Zero-initialization means the null-guard in emitDropEntry safely
+  //    skips the drop when the creating scope was never entered.
+  // 3. registerDroppable captures the alloca in DropEntry::promotedSlot,
+  //    making drops independent of symbol table lifetime.
+  auto semanticType = val.getType();
+  auto storageType = toSlotStorageType(semanticType);
+  auto memrefType = mlir::MemRefType::get({}, storageType);
+
+  auto savedIP = builder.saveInsertionPoint();
+  auto &entryBlock = currentFunction.front();
+  builder.setInsertionPointToStart(&entryBlock);
+  auto alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+    auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
+    mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
+  }
+  builder.restoreInsertionPoint(savedIP);
+
+  auto stored = coerceType(val, storageType, builder.getUnknownLoc());
+  mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), stored, alloca);
+  if (storageType != semanticType)
+    slotSemanticTypes[alloca] = semanticType;
+  mutableVars.insert(tmpName, alloca);
+
+  registerDroppable(tmpName.str(), info.dropFunc, info.isUserDrop);
   return true;
 }
 

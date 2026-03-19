@@ -819,6 +819,7 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
                 "hew_hashset_new";
         // Method calls that provably create new collections (not aliases).
+        // .get() on Vec<Vec<T>> returns a borrowed pointer, NOT a new allocation.
         bool isNewCollectionMethod = false;
         if (stmt.value) {
           if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
@@ -826,14 +827,23 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
                                    mc->method == "keys" || mc->method == "values" ||
                                    mc->method == "chars" || mc->method == "bytes_vec" ||
                                    mc->method == "collect" || mc->method == "map" ||
-                                   mc->method == "filter";
+                                   mc->method == "filter" || mc->method == "encode" ||
+                                   mc->method == "clone" || mc->method == "to_vec" ||
+                                   mc->method == "to_bytes";
           }
         }
-        if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod))
+        // Bytes literals (b"..." and bytes [...]) are Vec constructors.
+        bool isBytesLiteral = false;
+        if (stmt.value) {
+          const auto &vk = stmt.value->value.kind;
+          isBytesLiteral = std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
+                           std::holds_alternative<ast::ExprByteArrayLiteral>(vk);
+        }
+        if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod || isBytesLiteral))
           registerDroppable(varName, "hew_vec_free");
-        else if (typeName == "HashMap" && isHashMapCtor)
+        else if (typeName == "HashMap" && (isHashMapCtor || isNewCollectionMethod))
           registerDroppable(varName, "hew_hashmap_free_impl");
-        else if (typeName == "HashSet" && isHashSetCtor)
+        else if (typeName == "HashSet" && (isHashSetCtor || isNewCollectionMethod))
           registerDroppable(varName, "hew_hashset_free");
         else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                  !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
@@ -877,9 +887,16 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
           isStringExpr = std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
                          std::holds_alternative<ast::ExprCall>(vk);
           // Method calls that produce OWNED strings should be dropped.
-          // .get() on Vec/HashMap now returns strdup'd owned copies.
-          if (std::get_if<ast::ExprMethodCall>(&vk)) {
+          if (std::get_if<ast::ExprMethodCall>(&vk))
             isStringExpr = true;
+          // Look through unsafe {} wrappers to the inner expression.
+          if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
+            if (ue->block.trailing_expr) {
+              const auto &inner = ue->block.trailing_expr->value.kind;
+              if (std::holds_alternative<ast::ExprCall>(inner) ||
+                  std::holds_alternative<ast::ExprMethodCall>(inner))
+                isStringExpr = true;
+            }
           }
         }
         if (!isBorrowedGetString && isStringExpr)
@@ -897,12 +914,29 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
       }
       if (!isOwned && stmt.value) {
-        if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
+        const auto &vk = stmt.value->value.kind;
+        // Known methods that return new collections (not borrowed pointers).
+        if (auto *mc = std::get_if<ast::ExprMethodCall>(&vk)) {
           isOwned = mc->method == "lines" || mc->method == "split" ||
                     mc->method == "keys" || mc->method == "values" ||
                     mc->method == "chars" || mc->method == "bytes_vec" ||
                     mc->method == "collect" || mc->method == "map" ||
-                    mc->method == "filter";
+                    mc->method == "filter" || mc->method == "encode" ||
+                    mc->method == "clone" || mc->method == "to_vec" ||
+                    mc->method == "to_bytes";
+        }
+        // Bytes literals are Vec constructors.
+        if (std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
+            std::holds_alternative<ast::ExprByteArrayLiteral>(vk))
+          isOwned = true;
+        // Look through unsafe {} wrappers.
+        if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
+          if (ue->block.trailing_expr) {
+            const auto &inner = ue->block.trailing_expr->value.kind;
+            if (std::holds_alternative<ast::ExprCall>(inner) ||
+                std::holds_alternative<ast::ExprMethodCall>(inner))
+              isOwned = true;
+          }
         }
       }
       auto alreadyRegistered = [&]() {

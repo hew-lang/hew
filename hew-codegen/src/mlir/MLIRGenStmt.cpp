@@ -791,7 +791,18 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             defOp->hasAttr("callee") &&
             mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
                 "hew_hashset_new";
-        if ((typeName == "Vec" || typeName == "bytes") && isVecCtor)
+        // Method calls that provably create new collections (not aliases).
+        bool isNewCollectionMethod = false;
+        if (stmt.value) {
+          if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
+            isNewCollectionMethod = mc->method == "lines" || mc->method == "split" ||
+                                   mc->method == "keys" || mc->method == "values" ||
+                                   mc->method == "chars" || mc->method == "bytes_vec" ||
+                                   mc->method == "collect" || mc->method == "map" ||
+                                   mc->method == "filter";
+          }
+        }
+        if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod))
           registerDroppable(varName, "hew_vec_free");
         else if (typeName == "HashMap" && isHashMapCtor)
           registerDroppable(varName, "hew_hashmap_free_impl");
@@ -847,6 +858,36 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         if (!isBorrowedGetString && isStringExpr)
           registerDroppable(varName, "hew_string_drop");
       }
+    }
+
+    // Fallback: register drops for Vec/HashMap by MLIR type when the type
+    // annotation path above didn't fire (e.g. no annotation, or inferred type).
+    // Only register for constructors and provably-new-allocation methods.
+    if (value) {
+      auto valType = value.getType();
+      bool isOwned = false;
+      if (auto *defOp = value.getDefiningOp()) {
+        isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
+      }
+      if (!isOwned && stmt.value) {
+        if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
+          isOwned = mc->method == "lines" || mc->method == "split" ||
+                    mc->method == "keys" || mc->method == "values" ||
+                    mc->method == "chars" || mc->method == "bytes_vec" ||
+                    mc->method == "collect" || mc->method == "map" ||
+                    mc->method == "filter";
+        }
+      }
+      auto alreadyRegistered = [&]() {
+        if (dropScopes.empty()) return false;
+        for (auto &e : dropScopes.back())
+          if (e.varName == varName) return true;
+        return false;
+      };
+      if (isOwned && mlir::isa<hew::VecType>(valType) && !alreadyRegistered())
+        registerDroppable(varName, "hew_vec_free");
+      else if (isOwned && mlir::isa<hew::HashMapType>(valType) && !alreadyRegistered())
+        registerDroppable(varName, "hew_hashmap_free_impl");
     }
 
     // Register user-defined Drop from struct init
@@ -2794,22 +2835,30 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
     }
 
     // Bind element to the pattern variable
+    std::string boundElemName;
     if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
-      auto patName = identPat->name;
-      declareVariable(patName, elem);
+      boundElemName = identPat->name;
+      declareVariable(boundElemName, elem);
       // Register loop variable for actor dispatch when iterating Vec<ActorRef<T>>
       if (isVecPtr && collType.find("Vec<ActorRef<") == 0) {
         auto start = std::string("Vec<ActorRef<").size();
         auto end = collType.rfind(">>");
         if (end != std::string::npos) {
           std::string innerActorName = collType.substr(start, end - start);
-          actorVarTypes[patName] = innerActorName;
+          actorVarTypes[boundElemName] = innerActorName;
         }
       }
     }
 
     // Generate loop body
     pushDropScope();
+    // Register drop for owned loop variable (e.g. String from Vec<String>).
+    // VecGetOp returns a strdup'd copy each iteration; must be freed.
+    if (!boundElemName.empty()) {
+      auto dropFn = dropFuncForMLIRType(elem.getType());
+      if (!dropFn.empty())
+        registerDroppable(boundElemName, dropFn);
+    }
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
                                        location);
     popDropScope();
@@ -2901,23 +2950,39 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
         hew::HashMapGetOp::create(builder, location, hmValType, collection, key).getResult();
 
     // Bind variables from the pattern
+    std::string boundKeyName, boundValName;
     if (auto *tuplePat = std::get_if<ast::PatTuple>(&stmt.pattern.value.kind)) {
       if (tuplePat->elements.size() >= 1) {
         if (auto *kIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[0]->value.kind)) {
-          declareVariable(kIdent->name, key);
+          boundKeyName = kIdent->name;
+          declareVariable(boundKeyName, key);
         }
       }
       if (tuplePat->elements.size() >= 2) {
         if (auto *vIdent = std::get_if<ast::PatIdentifier>(&tuplePat->elements[1]->value.kind)) {
-          declareVariable(vIdent->name, val);
+          boundValName = vIdent->name;
+          declareVariable(boundValName, val);
         }
       }
     } else if (auto *identPat = std::get_if<ast::PatIdentifier>(&stmt.pattern.value.kind)) {
-      declareVariable(identPat->name, key);
+      boundKeyName = identPat->name;
+      declareVariable(boundKeyName, key);
     }
 
     // Generate loop body
     pushDropScope();
+    // Register drops for owned loop variables (String keys/values from HashMap).
+    // VecGetOp and HashMapGetOp return strdup'd copies; must be freed each iteration.
+    if (!boundKeyName.empty()) {
+      auto dropFn = dropFuncForMLIRType(key.getType());
+      if (!dropFn.empty())
+        registerDroppable(boundKeyName, dropFn);
+    }
+    if (!boundValName.empty()) {
+      auto dropFn = dropFuncForMLIRType(val.getType());
+      if (!dropFn.empty())
+        registerDroppable(boundValName, dropFn);
+    }
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
                                        location);
     popDropScope();

@@ -4797,12 +4797,15 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   if (std::holds_alternative<ast::ExprLiteral>(astExpr.kind))
     return {};
 
+  // Index access: Vec<int>[i] borrows, but Vec<String>[i] returns a strdup'd
+  // copy via hew_vec_get_str.  Treat String-typed index results as owned temps.
+  if (std::holds_alternative<ast::ExprIndex>(astExpr.kind)) {
+    if (!mlir::isa<hew::StringRefType>(val.getType()))
+      return {};
+  }
+
   // Field accesses borrow from the receiver — not owned temporaries.
   if (std::holds_alternative<ast::ExprFieldAccess>(astExpr.kind))
-    return {};
-
-  // Index access borrows from the collection — not owned temporaries.
-  if (std::holds_alternative<ast::ExprIndex>(astExpr.kind))
     return {};
 
   // Value types never need drops.

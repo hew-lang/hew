@@ -1947,6 +1947,11 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
       }
     }
 
+    // Materialize heap-allocated temporaries as implicit let-bindings so they
+    // enter the normal scope-exit drop system.  This prevents leaks from
+    // expressions like foo(Vec::new()), println(f"count: {n}"), etc.
+    materializeTemporary(val, argSpanned.value);
+
     args.push_back(val);
   }
 
@@ -2129,15 +2134,15 @@ mlir::Value MLIRGen::generatePrintCall(const ast::ExprCall &call, bool newline) 
   if (!val)
     return nullptr;
 
+  // Materialize temporary strings (f-strings, to_string(), etc.) so they
+  // are dropped at scope exit instead of requiring ad-hoc cleanup.
+  materializeTemporary(val, ast::callArgExpr(call.args[0]).value);
+
   auto printOp = hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
   // Propagate unsigned type info so the lowering uses unsigned print routines.
   if (auto *argType = resolvedTypeOf(ast::callArgExpr(call.args[0]).span))
     if (isUnsignedTypeExpr(*argType))
       printOp->setAttr("is_unsigned", builder.getBoolAttr(true));
-
-  if (!std::holds_alternative<ast::ExprIdentifier>(ast::callArgExpr(call.args[0]).value.kind) &&
-      isTemporaryString(val))
-    emitStringDrop(val);
 
   return nullptr; // print returns void
 }

@@ -1,0 +1,29 @@
+// Test: User-defined Drop wrapper around String verifies f-string temporaries
+// are cleaned up. The Drop impl prints on cleanup so the test is falsifiable:
+// removing materialization would remove the "freed:" lines from output.
+
+type Label {
+    text: String;
+}
+
+impl Drop for Label {
+    fn drop(l: Label) {
+        println(f"freed: {l.text}");
+    }
+}
+
+fn show(l: Label) {
+    println(f"show: {l.text}");
+}
+
+fn make_label(s: String) -> Label {
+    return Label { text: s };
+}
+
+fn main() {
+    // Temporary from function call returning user-Drop type.
+    show(make_label("alpha"));
+    // Temporary from struct init with f-string field.
+    show(Label { text: f"item-{2}" });
+    println("done");
+}

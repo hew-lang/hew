@@ -3010,12 +3010,26 @@ struct DropOpLowering : public mlir::OpConversionPattern<hew::DropOp> {
                                       mlir::ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto module = op->getParentOfType<mlir::ModuleOp>();
+    auto funcName = op.getDropFn().str();
+    auto argVal = adaptor.getValue();
+
+    // User-defined drop functions take the struct type directly.
+    // Look up the existing declaration to get the correct signature.
+    if (op.getIsUserDrop()) {
+      if (auto existingFunc = module.lookupSymbol<mlir::func::FuncOp>(funcName)) {
+        mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
+                                    mlir::ValueRange{argVal});
+        rewriter.eraseOp(op);
+        return mlir::success();
+      }
+    }
+
+    // Runtime drops take !llvm.ptr.
     auto ptrType = mlir::LLVM::LLVMPointerType::get(op.getContext());
     auto funcType = rewriter.getFunctionType({ptrType}, {});
-    auto funcName = op.getDropFn().str();
     getOrInsertFuncDecl(module, rewriter, funcName, funcType);
     mlir::func::CallOp::create(rewriter, loc, funcName, mlir::TypeRange{},
-                               mlir::ValueRange{adaptor.getValue()});
+                               mlir::ValueRange{argVal});
     rewriter.eraseOp(op);
     return mlir::success();
   }

@@ -741,6 +741,23 @@ private:
   /// a variable load or a constant).  Safe to drop after consumption.
   bool isTemporaryString(mlir::Value v);
 
+  // ── Temporary materialization ─────────────────────────────────────
+  /// Counter for generating unique __tmp_N implicit let-binding names.
+  unsigned tempMaterializationCounter = 0;
+  struct DropInfo {
+    std::string dropFunc;
+    bool isUserDrop = false;
+  };
+  /// Detect whether an expression result is a heap-allocated temporary and
+  /// return the appropriate drop function + user-drop flag.
+  /// Returns empty dropFunc if the value is not a droppable temporary.
+  DropInfo inferDropFuncForTemporary(mlir::Value val,
+                                     const ast::Expr &astExpr) const;
+  /// If `val` is a heap-allocated temporary (not already bound to a variable),
+  /// create an implicit `__tmp_N` let-binding and register it for scope-exit
+  /// drop.  Returns true if a binding was created.
+  bool materializeTemporary(mlir::Value val, const ast::Expr &astExpr);
+
   // ── Error tracking ────────────────────────────────────────────────
   unsigned errorCount_ = 0;
 

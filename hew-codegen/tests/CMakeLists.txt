@@ -713,6 +713,11 @@ add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
 add_e2e_file_test(drop_early_return     e2e_drop_scope drop_early_return)
 add_e2e_file_test(drop_shadow_return    e2e_drop_scope drop_shadow_return)
 
+# ── Temporary materialization tests ──────────────────────────────────────────
+add_e2e_file_test(temp_user_drop        e2e_temp_materialization temp_user_drop)
+add_e2e_file_test(temp_fstring_drop     e2e_temp_materialization temp_fstring_drop)
+add_e2e_file_test(temp_collection_drop  e2e_temp_materialization temp_collection_drop)
+
 # ── Return statement tests ───────────────────────────────────────────────────
 add_e2e_file_test(return_after_drop     e2e_return return_after_drop)
 

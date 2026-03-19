@@ -4600,8 +4600,12 @@ void MLIRGen::emitAllDrops() {
   auto *parentOp = builder.getInsertionBlock()->getParentOp();
   if (!mlir::isa<mlir::func::FuncOp>(parentOp))
     return;
-  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt)
-    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it)
+  // Only iterate drop scopes belonging to the current function (from
+  // funcLevelDropScopeBase onwards).  Without this limit, nested function
+  // generation (e.g. generic specialization) would emit drops for the
+  // caller's variables, referencing allocas from a different FuncOp.
+  for (size_t i = dropScopes.size(); i > funcLevelDropScopeBase; --i)
+    for (auto it = dropScopes[i - 1].rbegin(); it != dropScopes[i - 1].rend(); ++it)
       emitDropEntry(*it);
 }
 
@@ -4639,6 +4643,98 @@ bool MLIRGen::isTemporaryString(mlir::Value v) {
   return true;
 }
 
+MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
+                                                     const ast::Expr &astExpr) const {
+  if (!val)
+    return {};
+
+  // Identifiers are already variable-bound — not temporaries.
+  if (std::holds_alternative<ast::ExprIdentifier>(astExpr.kind))
+    return {};
+
+  // Literals (int, float, bool, char, string constants) don't heap-allocate.
+  if (std::holds_alternative<ast::ExprLiteral>(astExpr.kind))
+    return {};
+
+  // Field accesses borrow from the receiver — not owned temporaries.
+  if (std::holds_alternative<ast::ExprFieldAccess>(astExpr.kind))
+    return {};
+
+  // Index access borrows from the collection — not owned temporaries.
+  if (std::holds_alternative<ast::ExprIndex>(astExpr.kind))
+    return {};
+
+  // Value types never need drops.
+  auto valType = val.getType();
+  if (mlir::isa<mlir::IntegerType>(valType) || mlir::isa<mlir::FloatType>(valType) ||
+      mlir::isa<mlir::IndexType>(valType))
+    return {};
+
+  // Block arguments and variable loads are NOT temporaries.
+  if (mlir::isa<mlir::BlockArgument>(val))
+    return {};
+  if (val.getDefiningOp<mlir::memref::LoadOp>())
+    return {};
+  // Global string constants are NOT temporaries.
+  if (val.getDefiningOp<hew::ConstantOp>())
+    return {};
+
+  // Closures are handled by existing RC drop mechanism (emitted post-call
+  // for inline lambdas, and by let-stmt registration for bound closures).
+  if (mlir::isa<hew::ClosureType>(valType))
+    return {};
+
+  // LLVM literal struct types (dyn Trait fat pointers, anonymous tuples) are
+  // value types at the LLVM level.  Identified (user-defined) structs fall
+  // through to the resolvedTypeOf check which detects Drop implementations.
+  if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(valType))
+    if (!structTy.isIdentified())
+      return {};
+
+  // Try the resolved AST type first — most reliable source of drop information.
+  if (auto *resolvedType = resolvedTypeOf(astExpr.span)) {
+    auto dropFunc = dropFuncForType(*resolvedType);
+    if (!dropFunc.empty()) {
+      // Check whether this is a user-defined Drop implementation.
+      bool isUser = false;
+      if (auto *named = std::get_if<ast::TypeNamed>(&resolvedType->kind)) {
+        auto typeName = resolveTypeAlias(named->name);
+        isUser = userDropFuncs.count(typeName) > 0;
+      }
+      return {dropFunc, isUser};
+    }
+  }
+
+  // For StringRefType without a resolved type, use the isTemporaryString
+  // heuristic (already filters out constants, loads, and block args above).
+  if (mlir::isa<hew::StringRefType>(valType))
+    return {"hew_string_drop", false};
+
+  // Check defining op for known constructors (fallback when resolved type
+  // is unavailable, e.g. from runtime calls with no AST annotation).
+  if (auto *defOp = val.getDefiningOp()) {
+    if (mlir::isa<hew::VecNewOp>(defOp))
+      return {"hew_vec_free", false};
+    if (mlir::isa<hew::HashMapNewOp>(defOp))
+      return {"hew_hashmap_free_impl", false};
+  }
+
+  return {};
+}
+
+bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
+  auto info = inferDropFuncForTemporary(val, astExpr);
+  if (info.dropFunc.empty())
+    return false;
+
+  // Prefix with \x00 to prevent collision with user identifiers (the lexer
+  // rejects null bytes, so no user binding can shadow this name).
+  std::string tmpName = std::string("\0__tmp_", 7) + std::to_string(tempMaterializationCounter++);
+  declareVariable(tmpName, val);
+  registerDroppable(tmpName, info.dropFunc, info.isUserDrop);
+  return true;
+}
+
 void MLIRGen::emitDropsExcept(const std::string &excludeVar) {
   std::set<std::string> excludeSet;
   excludeSet.insert(excludeVar);
@@ -4653,8 +4749,11 @@ void MLIRGen::emitDropsExcept(const std::set<std::string> &excludeVars) {
   // correctly (lookupVariable resolves to the innermost binding, not the
   // DropEntry's original alloca).  Fixing this properly requires storing the
   // mlir::Value in DropEntry.  See deferred TODO.
-  for (auto scopeIt = dropScopes.rbegin(); scopeIt != dropScopes.rend(); ++scopeIt)
-    for (auto it = scopeIt->rbegin(); it != scopeIt->rend(); ++it)
+  //
+  // Only iterate scopes from funcLevelDropScopeBase onwards to avoid
+  // cross-function drops in nested function generation.
+  for (size_t i = dropScopes.size(); i > funcLevelDropScopeBase; --i)
+    for (auto it = dropScopes[i - 1].rbegin(); it != dropScopes[i - 1].rend(); ++it)
       if (!excludeVars.count(it->varName))
         emitDropEntry(*it);
 }

@@ -1,0 +1,23 @@
+// Test: User-defined Drop on temporary struct passed to function.
+// Verifies that the sender-side copy is dropped at scope exit.
+
+type Resource {
+    name: String;
+}
+
+impl Drop for Resource {
+    fn drop(r: Resource) {
+        println(f"freed: {r.name}");
+    }
+}
+
+fn process(r: Resource) {
+    println(f"processing: {r.name}");
+}
+
+fn main() {
+    // Temporary struct init — materialized and dropped at scope exit.
+    process(Resource { name: "alpha" });
+    process(Resource { name: "beta" });
+    println("done");
+}

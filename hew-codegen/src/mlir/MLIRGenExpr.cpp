@@ -1130,6 +1130,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   // Arithmetic
   case ast::BinaryOp::Add:
     if (isPtr) {
+      // Materialize heap-allocated intermediates (previous ConcatOp results,
+      // ToStringOp results) so they are freed at scope exit.  Constants,
+      // variable loads, and identifiers are skipped by inferDropFuncForTemporary.
+      materializeTemporary(lhs, expr.left->value);
+      materializeTemporary(rhs, expr.right->value);
       return hew::StringConcatOp::create(builder, location, hew::StringRefType::get(&context), lhs,
                                          rhs)
           .getResult();

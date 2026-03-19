@@ -1910,6 +1910,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!left || !right)
       return nullptr;
     hew::AssertEqOp::create(builder, location, left, right);
+    materializeTemporary(left, ast::callArgExpr(args[0]).value);
+    materializeTemporary(right, ast::callArgExpr(args[1]).value);
     return nullptr;
   }
 
@@ -1924,6 +1926,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!left || !right)
       return nullptr;
     hew::AssertNeOp::create(builder, location, left, right);
+    materializeTemporary(left, ast::callArgExpr(args[0]).value);
+    materializeTemporary(right, ast::callArgExpr(args[1]).value);
     return nullptr;
   }
 

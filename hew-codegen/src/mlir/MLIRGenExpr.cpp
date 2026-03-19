@@ -4794,6 +4794,18 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
       heapCellRebindings[originalSlot] = newAlloca;
       heapCellValueTypes[newAlloca] = valueType;
 
+      // The mutable variable was promoted from stack to RC heap for
+      // closure capture; the RC allocation must be freed at scope exit.
+      // Use a synthetic name (not fv) because the rebound mutable var
+      // alloca holds a ptr-to-ptr which confuses emitDropEntry's
+      // type coercion.  A plain let-binding of the raw cellPtr avoids this.
+      {
+        std::string rcName =
+            std::string("\0__rc_cell_", 11) + std::to_string(tempMaterializationCounter++);
+        declareVariable(rcName, cellPtr);
+        registerDroppable(rcName, "hew_rc_drop");
+      }
+
       capturedVars.push_back({fv, cellPtr, true, valueType});
       continue;
     }

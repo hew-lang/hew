@@ -3439,6 +3439,15 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
   auto dataPtr = hew::ArenaMallocOp::create(builder, location, ptrType, sizeVal);
   mlir::LLVM::StoreOp::create(builder, location, concreteVal, dataPtr);
 
+  // Register data pointer for scope-exit cleanup so the heap copy is freed.
+  // The fat pointer is a value type (stack struct); only the data pointer leaks.
+  {
+    std::string tmpName =
+        std::string("\0__dyn_data_", 12) + std::to_string(tempMaterializationCounter++);
+    declareVariable(tmpName, dataPtr);
+    registerDroppable(tmpName, "free");
+  }
+
   // Get vtable pointer via VtableRefOp
   llvm::SmallVector<mlir::Attribute> funcAttrs;
   for (const auto &shimName : implInfo->shimFunctions)

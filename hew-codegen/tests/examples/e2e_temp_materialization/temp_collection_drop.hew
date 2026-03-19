@@ -1,0 +1,36 @@
+// Test: Vec temporary returned from a function and passed directly
+// to another function is materialized and dropped at scope exit.
+// Uses a Drop wrapper so the cleanup is observable in output.
+
+type Bag {
+    items: Vec<int>;
+}
+
+impl Drop for Bag {
+    fn drop(b: Bag) {
+        println(f"freed bag len={b.items.len()}");
+    }
+}
+
+fn make_bag(n: int) -> Bag {
+    let v = Vec::new();
+    for i in 0..n {
+        v.push(i);
+    }
+    return Bag { items: v };
+}
+
+fn total(b: Bag) -> int {
+    var sum = 0;
+    for i in 0..b.items.len() {
+        sum = sum + b.items.get(i);
+    }
+    return sum;
+}
+
+fn main() {
+    // Temporary Bag from make_bag() — materialized, dropped at scope exit.
+    println(f"total={total(make_bag(4))}");
+    println(f"total={total(make_bag(3))}");
+    println("done");
+}

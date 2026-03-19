@@ -1,3 +1,6 @@
 handled: /api/users
 handled: /api/items
 handled: /health
+drop /health
+drop /api/items
+drop /api/users

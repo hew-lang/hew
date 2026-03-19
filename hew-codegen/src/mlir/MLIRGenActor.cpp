@@ -1296,6 +1296,9 @@ MLIRGen::generateActorCallArgs(const std::vector<ast::CallArg> &args, mlir::Loca
     auto val = generateExpression(argSpanned.value);
     if (!val)
       return std::nullopt;
+    // Materialize temporaries: the runtime deep-copies args at the actor
+    // boundary, so the caller still owns the original and must drop it.
+    materializeTemporary(val, argSpanned.value);
     argVals.push_back(val);
   }
   return argVals;
@@ -1494,6 +1497,10 @@ mlir::Value MLIRGen::generateSendExpr(const ast::ExprSend &expr) {
   auto msgVal = generateExpression(expr.message->value);
   if (!actorVal || !msgVal)
     return nullptr;
+
+  // Materialize temporary messages: the runtime deep-copies at the actor
+  // boundary, so the caller owns the original and must drop it.
+  materializeTemporary(msgVal, expr.message->value);
 
   // Check if the message type is a wire struct
   const WireWrapperNames *wireNames = nullptr;

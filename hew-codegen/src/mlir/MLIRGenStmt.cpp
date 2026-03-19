@@ -2988,7 +2988,11 @@ void MLIRGen::generateReturnStmt(const ast::StmtReturn &stmt) {
 }
 
 void MLIRGen::generateExprStmt(const ast::StmtExpression &stmt) {
-  generateExpression(stmt.expr.value);
+  auto val = generateExpression(stmt.expr.value);
+  // Materialize discarded heap-allocated temporaries (e.g. bare function
+  // calls whose return value is an owned string or collection).
+  if (val)
+    materializeTemporary(val, stmt.expr.value);
 }
 
 // ============================================================================

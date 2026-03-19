@@ -91,6 +91,16 @@ void MLIRGen::bindConstructorPatternVars(const ast::PatConstructor &ctor, mlir::
       auto payloadVal =
           hew::EnumExtractPayloadOp::create(builder, location, fieldTy, scrutinee, fieldIdx);
       declareVariable(subIdent->name, payloadVal);
+      // Register drop for extracted enum payload (e.g. String from Option<String>).
+      // The payload is extracted by value — the enum wrapper has no destructor,
+      // so this binding is the sole owner of the heap allocation.
+      auto drop = dropFuncForMLIRType(payloadVal.getType());
+      if (!drop.empty()) {
+        bool isUser = false;
+        if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(payloadVal.getType()))
+          isUser = st.isIdentified() && userDropFuncs.count(st.getName().str());
+        registerDroppable(subIdent->name, drop, isUser);
+      }
     } else if (auto *subTuple = std::get_if<ast::PatTuple>(&subPat.kind)) {
       int64_t fieldIdx = resolvePayloadFieldIndex(ctorName, i);
       auto fieldTy = getEnumFieldType(scrutinee.getType(), fieldIdx);
@@ -345,6 +355,13 @@ mlir::Value MLIRGen::generateMatchArmsChain(mlir::Value scrutinee,
               auto payloadVal = hew::EnumExtractPayloadOp::create(builder, location, fieldTy,
                                                                   scrutinee, fieldIdx);
               declareVariable(pf.name, payloadVal);
+              auto drop = dropFuncForMLIRType(payloadVal.getType());
+              if (!drop.empty()) {
+                bool isUser = false;
+                if (auto st = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(payloadVal.getType()))
+                  isUser = st.isIdentified() && userDropFuncs.count(st.getName().str());
+                registerDroppable(pf.name, drop, isUser);
+              }
             }
           }
         }

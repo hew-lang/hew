@@ -4531,6 +4531,23 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
   return "";
 }
 
+std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
+  if (mlir::isa<hew::StringRefType>(type))
+    return "hew_string_drop";
+  if (mlir::isa<hew::VecType>(type))
+    return "hew_vec_free";
+  if (mlir::isa<hew::HashMapType>(type))
+    return "hew_hashmap_free_impl";
+  if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type)) {
+    if (structTy.isIdentified()) {
+      auto it = userDropFuncs.find(structTy.getName().str());
+      if (it != userDropFuncs.end())
+        return it->second;
+    }
+  }
+  return "";
+}
+
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
   // Stream/Sink RAII: load from alloca, null-check, call close, null out.
   // This prevents double-free if .close() was called explicitly (which
@@ -4584,6 +4601,13 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
                                          /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&guard.getThenRegion().front());
     hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+    // Null out the promoted slot after dropping to prevent double-free
+    // when the drop scope fires again (e.g. while loop body re-entry
+    // where the alloca still holds the previous iteration's freed pointer).
+    if (entry.promotedSlot) {
+      auto zero = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+      mlir::memref::StoreOp::create(builder, loc, zero, entry.promotedSlot);
+    }
     builder.setInsertionPointAfter(guard);
     return;
   }

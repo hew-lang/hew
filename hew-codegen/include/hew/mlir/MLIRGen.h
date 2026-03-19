@@ -728,6 +728,9 @@ private:
   std::vector<PendingParamDrop> pendingFunctionParamDrops;
   /// Determine the drop function for a type annotation, or "" if none needed.
   std::string dropFuncForType(const ast::TypeExpr &ty) const;
+  /// Infer the drop function for an MLIR-typed value (used for match pattern
+  /// bindings where only the MLIR type is available, not the AST type).
+  std::string dropFuncForMLIRType(mlir::Type type) const;
   void pushDropScope();
   void popDropScope();
   void registerDroppable(const std::string &varName, const std::string &dropFunc,

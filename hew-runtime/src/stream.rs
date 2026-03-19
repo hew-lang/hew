@@ -39,7 +39,6 @@ use std::collections::VecDeque;
 use std::ffi::{c_char, c_void, CStr};
 use std::fs;
 use std::io::{BufReader, Read, Write};
-use std::mem::ManuallyDrop;
 use std::ptr;
 use std::sync::mpsc;
 
@@ -360,6 +359,24 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
         inner: Box::new(backing),
         closed: false,
     }))
+}
+
+/// Consume a `HewStream` pointer, extract its inner backing, and free the
+/// outer allocation.  Equivalent to `Box::from_raw` + field move, but marks
+/// the stream as closed first so `HewStream::drop` won't double-close.
+///
+/// # Safety
+///
+/// `stream` must be a valid `HewStream` pointer allocated via `Box::into_raw`.
+unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking> {
+    // Move the inner backing out of the HewStream shell.
+    let inner = unsafe { ptr::read(&raw const (*stream).inner) };
+    // Deallocate the HewStream shell without running Drop (which would
+    // double-close/double-free the inner we just moved out).
+    unsafe {
+        std::alloc::dealloc(stream.cast::<u8>(), std::alloc::Layout::new::<HewStream>());
+    }
+    inner
 }
 
 // into_sink_ptr is defined in hew_cabi::sink and re-exported above.
@@ -975,13 +992,10 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(LinesStream {
         buf: Vec::new(),
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         done: false,
     })
 }
@@ -1002,14 +1016,11 @@ pub unsafe extern "C" fn hew_stream_chunks(
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
     let size = usize::try_from(chunk_size.max(1)).unwrap_or(1);
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    // ManuallyDrop prevents the HewStream Drop from running (we're transferring inner).
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(ChunksStream {
         buf: Vec::new(),
         chunk_size: size,
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         done: false,
     })
 }
@@ -1127,13 +1138,11 @@ pub unsafe extern "C" fn hew_stream_map_string(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: StringMapFn = unsafe { std::mem::transmute(fn_ptr) };
     into_stream_ptr(MapStringStream {
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         fn_ptr: fn_typed,
         env_ptr,
     })
@@ -1158,13 +1167,11 @@ pub unsafe extern "C" fn hew_stream_filter_string(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: StringFilterFn = unsafe { std::mem::transmute(fn_ptr) };
     into_stream_ptr(FilterStringStream {
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         fn_ptr: fn_typed,
         env_ptr,
         done: false,
@@ -1191,13 +1198,11 @@ pub unsafe extern "C" fn hew_stream_map_bytes(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: BytesMapFn = unsafe { std::mem::transmute(fn_ptr) };
     into_stream_ptr(MapBytesStream {
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         fn_ptr: fn_typed,
         env_ptr,
     })
@@ -1222,13 +1227,11 @@ pub unsafe extern "C" fn hew_stream_filter_bytes(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: BytesFilterFn = unsafe { std::mem::transmute(fn_ptr) };
     into_stream_ptr(FilterBytesStream {
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         fn_ptr: fn_typed,
         env_ptr,
         done: false,
@@ -1246,11 +1249,9 @@ pub unsafe extern "C" fn hew_stream_filter_bytes(
 pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
     let limit = usize::try_from(n.max(0)).unwrap_or(0);
-    // SAFETY: stream was allocated with Box::into_raw; we take ownership.
-    let owned = ManuallyDrop::new(unsafe { Box::from_raw(stream) });
+    let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(TakeStream {
-        // SAFETY: owned.inner is valid; ManuallyDrop ensures no double-free.
-        upstream: unsafe { ptr::read(&raw const owned.inner) },
+        upstream,
         remaining: limit,
     })
 }

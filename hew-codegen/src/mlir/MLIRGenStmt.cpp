@@ -757,13 +757,40 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
     // .close() nulls the alloca so the scope-exit close is a no-op.
     {
       auto sit = streamHandleVarTypes.find(varName);
-      if (sit != streamHandleVarTypes.end() && value) {
+      // Also detect stream pipeline method calls (.filter, .map, .take, .chunks)
+      // which create new Box<HewStream> handles not tracked by streamHandleVarTypes.
+      bool isStreamPipelineResult = false;
+      if (sit == streamHandleVarTypes.end() && stmt.value) {
+        if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
+          if (mc->method == "filter" || mc->method == "map" ||
+              mc->method == "take" || mc->method == "chunks") {
+            // Verify the receiver is a known stream.
+            if (mc->receiver) {
+              if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
+                auto recvSit = streamHandleVarTypes.find(recvId->name);
+                if (recvSit != streamHandleVarTypes.end() && recvSit->second == "Stream")
+                  isStreamPipelineResult = true;
+              }
+              if (!isStreamPipelineResult) {
+                if (auto *typeExpr = resolvedTypeOf(mc->receiver->span))
+                  isStreamPipelineResult = typeExprStreamKind(*typeExpr) == "Stream";
+              }
+            }
+          }
+        }
+      }
+      if (isStreamPipelineResult) {
+        streamHandleVarTypes[varName] = "Stream";
+      }
+      if ((sit != streamHandleVarTypes.end() || isStreamPipelineResult) && value) {
         std::string closeFn;
-        if (sit->second == "Stream")
+        std::string kind = isStreamPipelineResult ? "Stream" :
+            (sit != streamHandleVarTypes.end() ? sit->second : "");
+        if (kind == "Stream")
           closeFn = "hew_stream_close";
-        else if (sit->second == "Sink")
+        else if (kind == "Sink")
           closeFn = "hew_sink_close";
-        else if (sit->second == "Pair")
+        else if (kind == "Pair")
           closeFn = "hew_stream_pair_free";
         if (!closeFn.empty()) {
           auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);

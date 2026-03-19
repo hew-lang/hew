@@ -646,6 +646,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             auto calleeName = fnIdent->name;
             if (generatorFunctions.count(calleeName)) {
               generatorVarTypes[varName] = calleeName;
+              // Generator handle is a malloc'd coroutine frame; free at scope exit.
+              registerDroppable(varName, "free");
             }
             // Track supervisor_child() calls
             if (calleeName == "supervisor_child" && callExpr->args.size() >= 2) {
@@ -2448,6 +2450,14 @@ void MLIRGen::generateForGeneratorStmt(const ast::StmtFor &stmt, const std::stri
   mlir::Value genPtr = generateExpression(stmt.iterable.value);
   if (!genPtr)
     return;
+
+  // Generator handle is a malloc'd coroutine frame; free at scope exit.
+  {
+    std::string tmpName =
+        std::string("\0__gen_frame_", 13) + std::to_string(tempMaterializationCounter++);
+    declareVariable(tmpName, genPtr);
+    registerDroppable(tmpName, "free");
+  }
 
   std::string nextName = genFuncName + "__next";
   std::string doneName = genFuncName + "__done";

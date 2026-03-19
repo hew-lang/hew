@@ -1,0 +1,23 @@
+// Test: Named String value sent to an actor is properly handled. The runtime
+// deep-copies String args via strdup(), so the sender keeps the original.
+// Before this fix, unregisterDroppable suppressed the sender's string drop,
+// leaking the original string allocation.
+//
+// This test verifies no crash or double-free from the retained sender drop.
+
+fn make_greeting(name: String) -> String {
+    return f"hello {name}";
+}
+
+actor Echo {
+    receive fn say(msg: String) {
+        println(f"echo: {msg}");
+    }
+}
+
+fn main() {
+    let e = spawn Echo;
+    let greeting = make_greeting("world");
+    e.say(greeting);
+    sleep_ms(50);
+}

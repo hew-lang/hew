@@ -718,6 +718,10 @@ add_e2e_file_test(temp_user_drop        e2e_temp_materialization temp_user_drop)
 add_e2e_file_test(temp_fstring_drop     e2e_temp_materialization temp_fstring_drop)
 add_e2e_file_test(temp_collection_drop  e2e_temp_materialization temp_collection_drop)
 
+# ── Actor send ownership tests ───────────────────────────────────────────────
+add_e2e_file_test(actor_send_named_drop e2e_actor_drop actor_send_named_drop)
+add_e2e_file_test(actor_send_vec_drop e2e_actor_drop actor_send_vec_drop)
+
 # ── Return statement tests ───────────────────────────────────────────────────
 add_e2e_file_test(return_after_drop     e2e_return return_after_drop)
 

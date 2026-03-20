@@ -1269,6 +1269,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringConcatOp::create(builder, location, hew::StringRefType::get(&context), a, b)
         .getResult();
   }
@@ -1282,6 +1284,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("length"), s, mlir::ValueRange{})
         .getResult();
@@ -1623,6 +1626,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto idx = generateExpression(ast::callArgExpr(args[1]).value);
     if (!s || !idx)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     // Coerce idx to i32 (runtime function expects i32)
     idx = coerceType(idx, builder.getI32Type(), location);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
@@ -1641,6 +1645,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto end = generateExpression(ast::callArgExpr(args[2]).value);
     if (!s || !start || !end)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     // Coerce start/end to i32 (runtime function expects i32)
     start = coerceType(start, builder.getI32Type(), location);
     end = coerceType(end, builder.getI32Type(), location);
@@ -1660,6 +1665,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("find"), a, mlir::ValueRange{b})
         .getResult();
@@ -1675,6 +1682,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI1Type(),
                                        builder.getStringAttr("contains"), a, mlir::ValueRange{b})
         .getResult();
@@ -1690,6 +1699,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("starts_with"), a, mlir::ValueRange{b})
         .getResult();
@@ -1705,6 +1716,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("ends_with"), a, mlir::ValueRange{b})
         .getResult();
@@ -1719,6 +1732,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("trim"), s, mlir::ValueRange{})
         .getResult();
@@ -1735,6 +1749,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto to = generateExpression(ast::callArgExpr(args[2]).value);
     if (!s || !from || !to)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
+    materializeTemporary(from, ast::callArgExpr(args[1]).value);
+    materializeTemporary(to, ast::callArgExpr(args[2]).value);
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("replace"), s,
                                        mlir::ValueRange{from, to})
@@ -1750,6 +1767,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("to_int"), s, mlir::ValueRange{})
         .getResult();
@@ -1881,6 +1899,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto path = generateExpression(ast::callArgExpr(args[0]).value);
     if (!path)
       return nullptr;
+    materializeTemporary(path, ast::callArgExpr(args[0]).value);
     return hew::RuntimeCallOp::create(
                builder, location, mlir::TypeRange{hew::StringRefType::get(&context)},
                mlir::SymbolRefAttr::get(&context, "hew_read_file"), mlir::ValueRange{path})

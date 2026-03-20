@@ -4809,15 +4809,34 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
       heapCellValueTypes[newAlloca] = valueType;
 
       // The mutable variable was promoted from stack to RC heap for
-      // closure capture; the RC allocation must be freed at scope exit.
-      // Use a synthetic name (not fv) because the rebound mutable var
-      // alloca holds a ptr-to-ptr which confuses emitDropEntry's
-      // type coercion.  A plain let-binding of the raw cellPtr avoids this.
+      // closure capture; the RC allocation must be freed when the
+      // original var's scope ends.  Register at the FUNCTION-level
+      // drop scope (not the current scope) because scope blocks and
+      // closures may create these cells inside nested scopes, but the
+      // mutable var itself lives in the enclosing function.  Dropping
+      // at block scope would free the cell before scope.join/destroy
+      // run (causing use-after-free in scope spawn patterns).
+      //
+      // Use a hoisted alloca so the drop works after the declaring
+      // scope's symbol table has been popped.
       {
         std::string rcName =
             std::string("\0__rc_cell_", 11) + std::to_string(tempMaterializationCounter++);
-        declareVariable(rcName, cellPtr);
-        registerDroppable(rcName, "hew_rc_drop");
+        auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
+        auto savedIP = builder.saveInsertionPoint();
+        auto &entryBlock = currentFunction.front();
+        builder.setInsertionPointToStart(&entryBlock);
+        auto rcAlloca =
+            mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), ptrMemrefType);
+        auto zero = mlir::LLVM::ZeroOp::create(builder, builder.getUnknownLoc(), ptrType);
+        mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, rcAlloca);
+        builder.restoreInsertionPoint(savedIP);
+        mlir::memref::StoreOp::create(builder, location, cellPtr, rcAlloca);
+
+        DropEntry entry{rcName, "hew_rc_drop", false};
+        entry.promotedSlot = rcAlloca;
+        if (dropScopes.size() > funcLevelDropScopeBase)
+          dropScopes[funcLevelDropScopeBase].push_back(std::move(entry));
       }
 
       capturedVars.push_back({fv, cellPtr, true, valueType});
@@ -5257,21 +5276,92 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
 
   auto savedReturnFlag = returnFlag;
   returnFlag = nullptr;
-  mlir::Value bodyResult = nullptr;
-  if (se.binding.has_value()) {
-    SymbolTableScopeT bindingScope(symbolTable);
-    declareVariable(*se.binding, scopePtr);
-    bodyResult = generateBlock(se.block);
-  } else {
-    bodyResult = generateBlock(se.block);
-  }
-  returnFlag = savedReturnFlag;
 
+  // Manually create scopes instead of calling generateBlock, so that
+  // scope.join/destroy happen BEFORE the block-level drops fire.
+  // This is critical because scope spawns create RC cells for mutable
+  // captures; those cells must survive until tasks complete and the
+  // env drops run (during scope.destroy).
+  SymbolTableScopeT bindingScope(symbolTable);
+  if (se.binding.has_value())
+    declareVariable(*se.binding, scopePtr);
+
+  SymbolTableScopeT varScope(symbolTable);
+  MutableTableScopeT mutScope(mutableVars);
+  pushDropScope();
+
+  const auto &stmts = se.block.stmts;
+
+  mlir::Value bodyResult = nullptr;
+  if (se.block.trailing_expr) {
+    // Block has an explicit trailing expression.
+    for (const auto &stmtPtr : stmts) {
+      generateStatement(stmtPtr->value);
+      if (hasRealTerminator(builder.getInsertionBlock()))
+        break;
+    }
+    bodyResult = generateExpression(se.block.trailing_expr->value);
+    // Null RAII close alloca so scope-exit drop doesn't close a
+    // handle being returned out of the scope block.
+    if (auto *id = std::get_if<ast::ExprIdentifier>(
+            &se.block.trailing_expr->value.kind))
+      nullOutRaiiAlloca(id->name);
+  } else if (!stmts.empty()) {
+    // No trailing_expr — generate all but the last statement, then handle
+    // the last one specially (mirrors generateBlock's value-producing
+    // final-statement logic for if/match/loop/expr-stmt endings).
+    for (size_t i = 0; i + 1 < stmts.size(); ++i) {
+      generateStatement(stmts[i]->value);
+      if (hasRealTerminator(builder.getInsertionBlock()))
+        break;
+    }
+    if (!hasRealTerminator(builder.getInsertionBlock())) {
+      const auto &lastStmt = stmts.back()->value;
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind)) {
+        bodyResult = generateExpression(exprStmt->expr.value);
+        if (auto *id = std::get_if<ast::ExprIdentifier>(
+                &exprStmt->expr.value.kind))
+          nullOutRaiiAlloca(id->name);
+      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+        bodyResult = generateIfStmtAsExpr(*ifStmt);
+      } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+        auto loc_ = loc(lastStmt.span);
+        auto scrutinee = generateExpression(matchNode->scrutinee.value);
+        if (scrutinee) {
+          scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, loc_,
+                                                 &matchNode->arms);
+          mlir::Type resultType;
+          if (currentFunction && currentFunction.getResultTypes().size() == 1)
+            resultType = currentFunction.getResultTypes()[0];
+          else
+            resultType = builder.getI32Type();
+          bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+        }
+      } else if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtWhileLet>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtFor>(lastStmt.kind)) {
+        lastBreakValue = nullptr;
+        generateStatement(lastStmt);
+        if (lastBreakValue)
+          bodyResult = lastBreakValue;
+      } else {
+        generateStatement(lastStmt);
+      }
+    }
+  }
+
+  // Join and destroy scope BEFORE the drop scope pops.
+  // scope.destroy calls hew_task_free which drops env RC cells.
+  // The block-level RC cell drops must fire AFTER this.
   currentScopePtr = prevScope;
   currentTaskScopePtr = prevTaskScope;
-
   hew::ScopeJoinOp::create(builder, location, scopePtr, taskScopePtr);
   hew::ScopeDestroyOp::create(builder, location, scopePtr, taskScopePtr);
+
+  popDropScope();
+
+  returnFlag = savedReturnFlag;
 
   return bodyResult;
 }

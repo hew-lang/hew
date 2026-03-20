@@ -2945,11 +2945,11 @@ void MLIRGen::generateForVec(const ast::StmtFor &stmt, mlir::Value collection,
     // Generate loop body
     pushDropScope();
     // Register drop for owned loop variable (e.g. String from Vec<String>).
-    // VecGetOp returns a strdup'd copy each iteration; must be freed.
-    if (!boundElemName.empty()) {
-      auto dropFn = dropFuncForMLIRType(elem.getType());
-      if (!dropFn.empty())
-        registerDroppable(boundElemName, dropFn);
+    // Only String elements are owned copies — hew_vec_get_str returns strdup.
+    // Other types (structs, ints, pointers) are borrowed loads from Vec storage;
+    // dropping them would free memory still owned by the Vec.
+    if (!boundElemName.empty() && mlir::isa<hew::StringRefType>(elem.getType())) {
+      registerDroppable(boundElemName, "hew_string_drop");
     }
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
                                        location);
@@ -3064,17 +3064,12 @@ void MLIRGen::generateForHashMap(const ast::StmtFor &stmt, mlir::Value collectio
     // Generate loop body
     pushDropScope();
     // Register drops for owned loop variables (String keys/values from HashMap).
-    // VecGetOp and HashMapGetOp return strdup'd copies; must be freed each iteration.
-    if (!boundKeyName.empty()) {
-      auto dropFn = dropFuncForMLIRType(key.getType());
-      if (!dropFn.empty())
-        registerDroppable(boundKeyName, dropFn);
-    }
-    if (!boundValName.empty()) {
-      auto dropFn = dropFuncForMLIRType(val.getType());
-      if (!dropFn.empty())
-        registerDroppable(boundValName, dropFn);
-    }
+    // Only String types are owned copies (strdup'd). Other types are borrowed
+    // from the HashMap's internal storage; dropping them would be a double-free.
+    if (!boundKeyName.empty() && mlir::isa<hew::StringRefType>(key.getType()))
+      registerDroppable(boundKeyName, "hew_string_drop");
+    if (!boundValName.empty() && mlir::isa<hew::StringRefType>(val.getType()))
+      registerDroppable(boundValName, "hew_string_drop");
     generateLoopBodyWithContinueGuards(stmt.body.stmts, 0, stmt.body.stmts.size(), lc.continueFlag,
                                        location);
     popDropScope();

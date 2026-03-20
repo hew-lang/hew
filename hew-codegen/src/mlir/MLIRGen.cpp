@@ -4675,14 +4675,20 @@ void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location 
     auto drop = dropFuncForMLIRType(field.semanticType);
     if (drop.empty())
       continue;
+    auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, structVal,
+                                            builder.getStringAttr(field.name),
+                                            builder.getI64IntegerAttr(field.index));
+    // __auto_field_drop sentinel: recurse into nested struct fields
+    // instead of emitting a DropOp for the non-existent function.
+    if (drop == "__auto_field_drop") {
+      emitFieldDropsForUserStruct(fieldVal, loc);
+      continue;
+    }
     // Check if this field's drop is itself a user-defined Drop (nested struct).
     bool fieldIsUserDrop = false;
     if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType))
       if (fst.isIdentified())
         fieldIsUserDrop = userDropFuncs.count(fst.getName().str()) > 0;
-    auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, structVal,
-                                            builder.getStringAttr(field.name),
-                                            builder.getI64IntegerAttr(field.index));
     mlir::Value dropVal = fieldVal;
     if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
       dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);

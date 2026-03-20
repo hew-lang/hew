@@ -898,6 +898,25 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
           if (mc->method != "get")
             isOwned = true;
         }
+        // Function calls where the callee is an external/imported function
+        // (no body in this module) return fresh allocations. Local functions
+        // may return parameters unchanged, so only mark imported calls owned.
+        if (auto *call = std::get_if<ast::ExprCall>(&vk)) {
+          // Look through hew.bitcast to find the underlying CallOp.
+          mlir::Value callResult = value;
+          if (auto *defOp = callResult.getDefiningOp()) {
+            if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() > 0)
+              callResult = defOp->getOperand(0);
+          }
+          if (auto *defOp = callResult.getDefiningOp()) {
+            if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(defOp)) {
+              if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(callOp.getCallee())) {
+                if (callee.isExternal())
+                  isOwned = true;
+              }
+            }
+          }
+        }
         // Bytes literals are Vec constructors.
         if (std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
             std::holds_alternative<ast::ExprByteArrayLiteral>(vk))
@@ -922,6 +941,29 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
         registerDroppable(varName, "hew_vec_free");
       else if (isOwned && mlir::isa<hew::HashMapType>(valType) && !alreadyRegistered())
         registerDroppable(varName, "hew_hashmap_free_impl");
+      // Module function calls return !llvm.ptr, losing the Hew type info.
+      // Fall back to the resolved AST type or callee function signature to
+      // detect Vec/HashMap/String returns from module functions.
+      else if (isOwned && mlir::isa<mlir::LLVM::LLVMPointerType>(valType) && !alreadyRegistered()) {
+        std::string dropFn;
+        // Try resolved AST type first
+        if (stmt.value) {
+          if (auto *resolvedType = resolvedTypeOf(stmt.value->span))
+            dropFn = dropFuncForType(*resolvedType);
+        }
+        // Fall back to callee function's return type
+        if (dropFn.empty() && value.getDefiningOp()) {
+          if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(value.getDefiningOp())) {
+            if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(callOp.getCallee())) {
+              auto funcType = callee.getFunctionType();
+              if (funcType.getNumResults() > 0)
+                dropFn = dropFuncForMLIRType(funcType.getResult(0));
+            }
+          }
+        }
+        if (!dropFn.empty())
+          registerDroppable(varName, dropFn);
+      }
     }
 
     // Register user-defined Drop from struct init

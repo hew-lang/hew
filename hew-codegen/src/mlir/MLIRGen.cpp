@@ -1127,6 +1127,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       return nullptr;
     bool newline = (name == "println_str");
     hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
+    materializeTemporary(val, ast::callArgExpr(args[0]).value);
     return nullptr;
   }
 
@@ -1268,6 +1269,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringConcatOp::create(builder, location, hew::StringRefType::get(&context), a, b)
         .getResult();
   }
@@ -1281,6 +1284,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("length"), s, mlir::ValueRange{})
         .getResult();
@@ -1296,6 +1300,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("equals"), a, mlir::ValueRange{b})
         .getResult();
@@ -1622,6 +1628,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto idx = generateExpression(ast::callArgExpr(args[1]).value);
     if (!s || !idx)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     // Coerce idx to i32 (runtime function expects i32)
     idx = coerceType(idx, builder.getI32Type(), location);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
@@ -1640,6 +1647,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto end = generateExpression(ast::callArgExpr(args[2]).value);
     if (!s || !start || !end)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     // Coerce start/end to i32 (runtime function expects i32)
     start = coerceType(start, builder.getI32Type(), location);
     end = coerceType(end, builder.getI32Type(), location);
@@ -1659,6 +1667,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("find"), a, mlir::ValueRange{b})
         .getResult();
@@ -1674,6 +1684,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI1Type(),
                                        builder.getStringAttr("contains"), a, mlir::ValueRange{b})
         .getResult();
@@ -1689,6 +1701,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("starts_with"), a, mlir::ValueRange{b})
         .getResult();
@@ -1704,6 +1718,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("ends_with"), a, mlir::ValueRange{b})
         .getResult();
@@ -1718,6 +1734,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("trim"), s, mlir::ValueRange{})
         .getResult();
@@ -1734,6 +1751,9 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto to = generateExpression(ast::callArgExpr(args[2]).value);
     if (!s || !from || !to)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
+    materializeTemporary(from, ast::callArgExpr(args[1]).value);
+    materializeTemporary(to, ast::callArgExpr(args[2]).value);
     return hew::StringMethodOp::create(builder, location, hew::StringRefType::get(&context),
                                        builder.getStringAttr("replace"), s,
                                        mlir::ValueRange{from, to})
@@ -1749,6 +1769,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto s = generateExpression(ast::callArgExpr(args[0]).value);
     if (!s)
       return nullptr;
+    materializeTemporary(s, ast::callArgExpr(args[0]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("to_int"), s, mlir::ValueRange{})
         .getResult();
@@ -1794,6 +1815,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto addr = generateExpression(ast::callArgExpr(args[0]).value);
     if (!addr)
       return nullptr;
+    materializeTemporary(addr, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_start"),
                                mlir::ValueRange{addr});
@@ -1817,6 +1839,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto addr = generateExpression(ast::callArgExpr(args[0]).value);
     if (!addr)
       return nullptr;
+    materializeTemporary(addr, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_connect"),
                                mlir::ValueRange{addr});
@@ -1832,6 +1855,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto tname = generateExpression(ast::callArgExpr(args[0]).value);
     if (!tname)
       return nullptr;
+    materializeTemporary(tname, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_set_transport"),
                                mlir::ValueRange{tname});
@@ -1848,6 +1872,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto actorVal = generateExpression(ast::callArgExpr(args[1]).value);
     if (!regName || !actorVal)
       return nullptr;
+    materializeTemporary(regName, ast::callArgExpr(args[0]).value);
     // Pass the actor ref pointer directly; the runtime extracts the PID.
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_register"),
@@ -1864,6 +1889,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto lookupName = generateExpression(ast::callArgExpr(args[0]).value);
     if (!lookupName)
       return nullptr;
+    materializeTemporary(lookupName, ast::callArgExpr(args[0]).value);
     auto u64Ty = builder.getI64Type();
     return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{u64Ty},
                                       mlir::SymbolRefAttr::get(&context, "hew_node_api_lookup"),
@@ -1880,6 +1906,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto path = generateExpression(ast::callArgExpr(args[0]).value);
     if (!path)
       return nullptr;
+    materializeTemporary(path, ast::callArgExpr(args[0]).value);
     return hew::RuntimeCallOp::create(
                builder, location, mlir::TypeRange{hew::StringRefType::get(&context)},
                mlir::SymbolRefAttr::get(&context, "hew_read_file"), mlir::ValueRange{path})
@@ -1910,6 +1937,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!left || !right)
       return nullptr;
     hew::AssertEqOp::create(builder, location, left, right);
+    materializeTemporary(left, ast::callArgExpr(args[0]).value);
+    materializeTemporary(right, ast::callArgExpr(args[1]).value);
     return nullptr;
   }
 
@@ -1924,6 +1953,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     if (!left || !right)
       return nullptr;
     hew::AssertNeOp::create(builder, location, left, right);
+    materializeTemporary(left, ast::callArgExpr(args[0]).value);
+    materializeTemporary(right, ast::callArgExpr(args[1]).value);
     return nullptr;
   }
 
@@ -3439,6 +3470,15 @@ mlir::Value MLIRGen::coerceToDynTrait(mlir::Value concreteVal, const std::string
   auto dataPtr = hew::ArenaMallocOp::create(builder, location, ptrType, sizeVal);
   mlir::LLVM::StoreOp::create(builder, location, concreteVal, dataPtr);
 
+  // Register data pointer for scope-exit cleanup so the heap copy is freed.
+  // The fat pointer is a value type (stack struct); only the data pointer leaks.
+  {
+    std::string tmpName =
+        std::string("\0__dyn_data_", 12) + std::to_string(tempMaterializationCounter++);
+    declareVariable(tmpName, dataPtr);
+    registerDroppable(tmpName, "free");
+  }
+
   // Get vtable pointer via VtableRefOp
   llvm::SmallVector<mlir::Attribute> funcAttrs;
   for (const auto &shimName : implInfo->shimFunctions)
@@ -3779,33 +3819,38 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
   using ExcludeSet = std::set<std::pair<std::string, size_t>>;
   std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectExcludeVars;
-  std::function<void(const ast::Block &, ExcludeSet &, size_t)> collectExcludeVarsFromBlock;
-  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> collectExcludeVarsFromStmtIf;
+  std::function<void(const ast::Block &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromBlock;
+  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromStmtIf;
   collectExcludeVarsFromStmtIf = [&collectExcludeVarsFromBlock, &collectExcludeVarsFromStmtIf](
-      const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth) {
+      const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth, bool producesValue) {
     // StmtIf branches go through generateBlock which pushes a scope → depth+1
-    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1);
+    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1, producesValue);
     if (ifStmt.else_block) {
       if (ifStmt.else_block->block)
-        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1);
+        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1, producesValue);
       if (ifStmt.else_block->if_stmt) {
         const auto &nested = ifStmt.else_block->if_stmt->value;
         // else-if doesn't add a scope — stay at same depth
         if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
-          collectExcludeVarsFromStmtIf(*nestedIf, out, depth);
+          collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
       }
     }
   };
   collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf](
-      const ast::Block &blk, ExcludeSet &out, size_t depth) {
+      const ast::Block &blk, ExcludeSet &out, size_t depth, bool producesValue) {
     if (blk.trailing_expr) {
       collectExcludeVars(blk.trailing_expr->value, out, depth);
-    } else if (!blk.stmts.empty()) {
+    } else if (producesValue && !blk.stmts.empty()) {
+      // When the block is expected to produce a value (non-void function
+      // body, expression-position block), the last statement's expression
+      // IS the implicit return value.  Exclude its variables from drops.
+      // When the block does NOT produce a value (void/unit functions),
+      // the last statement's result is discarded — do NOT exclude.
       const auto &last = blk.stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
         collectExcludeVars(exprStmt->expr.value, out, depth);
       } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
-        collectExcludeVarsFromStmtIf(*ifStmt, out, depth);
+        collectExcludeVarsFromStmtIf(*ifStmt, out, depth, true);
       } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
         for (const auto &arm : matchStmt->arms) {
           if (arm.body)
@@ -3855,9 +3900,9 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         collectExcludeVars((*ifE->else_block)->value, out, depth);
     } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
       // ExprIfLet bodies are blocks → generateBlock pushes scope
-      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1);
+      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1, true);
       if (ifLet->else_body)
-        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1);
+        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1, true);
     } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
       // ExprMatch arms don't push scopes — stay at same depth
       for (const auto &arm : matchE->arms) {
@@ -3866,20 +3911,49 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       }
     } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
       // ExprBlock → generateBlock pushes scope
-      collectExcludeVarsFromBlock(blockE->block, out, depth + 1);
+      collectExcludeVarsFromBlock(blockE->block, out, depth + 1, true);
     } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
       for (const auto &elem : tupleE->elements)
         collectExcludeVars(elem->value, out, depth);
     } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
       // ExprUnsafe wraps a Block — descend like ExprBlock
-      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1);
+      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1, true);
     } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
-      // Constructors like Ok(x), Some(x) — descend into arguments
-      for (const auto &arg : callE->args)
-        collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
+      // Only descend into enum variant constructors (Ok, Some, Err, etc.)
+      // where argument ownership transfers to the return value.  Regular
+      // function calls borrow arguments — the return value is independent.
+      //
+      // Enum variants are simple uppercase identifiers without :: path
+      // separators.  Qualified paths like Vec::new, Node::lookup, and
+      // generated names like Metric_from_yaml are NOT constructors.
+      bool isVariantCtor = false;
+      if (auto *id = std::get_if<ast::ExprIdentifier>(&callE->function->value.kind)) {
+        const auto &name = id->name;
+        if (!name.empty() && name.find("::") == std::string::npos &&
+            name.find('_') == std::string::npos &&
+            std::isupper(static_cast<unsigned char>(name[0])))
+          isVariantCtor = true;
+      }
+      if (isVariantCtor) {
+        for (const auto &arg : callE->args)
+          collectExcludeVars(ast::callArgExpr(arg).value, out, depth);
+      }
     }
   };
-  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0);
+  // Determine whether the function body produces a value (non-void return).
+  // When producesValue is false, the last statement's result is discarded,
+  // so variables in it should NOT be excluded from drops.
+  bool fnProducesValue = false;
+  if (fn.return_type) {
+    // Check if return type is unit/void — if not, the body produces a value.
+    if (auto *named = std::get_if<ast::TypeNamed>(&fn.return_type->value.kind)) {
+      fnProducesValue = (named->name != "()" && named->name != "unit" &&
+                         named->name != "void" && named->name != "Never");
+    } else {
+      fnProducesValue = true; // Tuple, generic, etc. — non-void
+    }
+  }
+  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0, fnProducesValue);
 
   // Build a flat (depth-independent) set of variable names appearing in the
   // return expression.  Used by RAII close exclusion where the depth-based
@@ -4465,7 +4539,13 @@ void MLIRGen::popDropScope() {
 void MLIRGen::registerDroppable(const std::string &varName, const std::string &dropFunc,
                                 bool isUserDrop) {
   if (!dropScopes.empty()) {
-    dropScopes.back().push_back({varName, dropFunc, isUserDrop});
+    DropEntry entry{varName, dropFunc, isUserDrop};
+    // Capture the promoted alloca (if any) so the drop works even after
+    // the declaring scope's MutableTableScopeT has been popped (e.g. when
+    // a let-binding or materialized temp is inside a match arm whose
+    // symbol table scope ends before function-level drops fire).
+    entry.promotedSlot = getMutableVarSlot(varName);
+    dropScopes.back().push_back(std::move(entry));
   }
 }
 
@@ -4500,6 +4580,58 @@ std::string MLIRGen::dropFuncForType(const ast::TypeExpr &ty) const {
   return "";
 }
 
+std::string MLIRGen::dropFuncForMLIRType(mlir::Type type) const {
+  if (mlir::isa<hew::StringRefType>(type))
+    return "hew_string_drop";
+  if (mlir::isa<hew::VecType>(type))
+    return "hew_vec_free";
+  if (mlir::isa<hew::HashMapType>(type))
+    return "hew_hashmap_free_impl";
+  if (mlir::isa<hew::ClosureType>(type))
+    return "hew_rc_drop";
+  if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(type)) {
+    if (structTy.isIdentified()) {
+      // HashSet uses identified struct "HewHashSet"
+      if (structTy.getName() == "HewHashSet")
+        return "hew_hashset_free";
+      auto it = userDropFuncs.find(structTy.getName().str());
+      if (it != userDropFuncs.end())
+        return it->second;
+      // Structs without user Drop but with owned fields (String, Vec, etc.)
+      // get a sentinel drop that emitDropEntry handles by freeing fields.
+      if (structHasOwnedFields(structTy.getName().str()))
+        return "__auto_field_drop";
+    }
+  }
+  return "";
+}
+
+bool MLIRGen::structHasOwnedFields(const std::string &name) const {
+  auto it = structTypes.find(name);
+  if (it == structTypes.end())
+    return false;
+  for (const auto &field : it->second.fields) {
+    // Recursive check: use a simplified test — only check Hew-level heap types,
+    // not nested structs (those are handled by recursive field drops).
+    if (mlir::isa<hew::StringRefType>(field.semanticType) ||
+        mlir::isa<hew::VecType>(field.semanticType) ||
+        mlir::isa<hew::HashMapType>(field.semanticType) ||
+        mlir::isa<hew::ClosureType>(field.semanticType))
+      return true;
+    if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType)) {
+      if (fst.isIdentified()) {
+        if (fst.getName() == "HewHashSet")
+          return true;
+        if (userDropFuncs.count(fst.getName().str()))
+          return true;
+        if (structHasOwnedFields(fst.getName().str()))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 void MLIRGen::emitDropEntry(const DropEntry &entry) {
   // Stream/Sink RAII: load from alloca, null-check, call close, null out.
   // This prevents double-free if .close() was called explicitly (which
@@ -4520,14 +4652,29 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     builder.setInsertionPointAfter(guard);
     return;
   }
-  // lookupVariable handles dominance correctly: let-bindings are promoted
-  // to alloca+store when returnFlag is active (see declareVariable), so
-  // lookupVariable creates a fresh memref::LoadOp at the current insertion
-  // point, which always dominates the DropOp.
-  auto val = lookupVariable(entry.varName);
+  // When a promoted alloca was captured at registration time, load from it
+  // directly.  This is necessary because the symbol table scope that held
+  // the variable entry may have been popped (e.g. match arm scope exits
+  // before function-level drops fire).
+  mlir::Value val;
+  auto loc = builder.getUnknownLoc();
+  if (entry.promotedSlot) {
+    val = mlir::memref::LoadOp::create(builder, loc, entry.promotedSlot).getResult();
+    if (auto semIt = slotSemanticTypes.find(entry.promotedSlot); semIt != slotSemanticTypes.end())
+      val = coerceType(val, semIt->second, loc);
+  } else {
+    val = lookupVariable(entry.varName);
+  }
   if (!val)
     return;
-  auto loc = builder.getUnknownLoc();
+
+  // Auto-field-drop: struct has no user Drop but has owned fields (String,
+  // Vec, etc.).  Just drop the fields directly — no function call needed.
+  if (entry.dropFuncName == "__auto_field_drop") {
+    emitFieldDropsForUserStruct(val, loc);
+    return;
+  }
+
   auto ptrType = mlir::LLVM::LLVMPointerType::get(builder.getContext());
   mlir::Value dropVal = val;
   if (mlir::isa<hew::ClosureType>(val.getType()))
@@ -4546,10 +4693,55 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
                                          /*withElseRegion=*/false);
     builder.setInsertionPointToStart(&guard.getThenRegion().front());
     hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+    // Null out the promoted slot after dropping to prevent double-free
+    // when the drop scope fires again (e.g. while loop body re-entry
+    // where the alloca still holds the previous iteration's freed pointer).
+    if (entry.promotedSlot) {
+      auto zero = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+      mlir::memref::StoreOp::create(builder, loc, zero, entry.promotedSlot);
+    }
     builder.setInsertionPointAfter(guard);
     return;
   }
-  hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+   hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+  if (entry.isUserDrop)
+    emitFieldDropsForUserStruct(val, loc);
+}
+
+void MLIRGen::emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc) {
+  auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(structVal.getType());
+  if (!structTy || !structTy.isIdentified())
+    return;
+  auto it = structTypes.find(structTy.getName().str());
+  if (it == structTypes.end())
+    return;
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+  for (const auto &field : it->second.fields) {
+    auto drop = dropFuncForMLIRType(field.semanticType);
+    if (drop.empty())
+      continue;
+    auto fieldVal = hew::FieldGetOp::create(builder, loc, field.type, structVal,
+                                            builder.getStringAttr(field.name),
+                                            builder.getI64IntegerAttr(field.index));
+    // __auto_field_drop sentinel: recurse into nested struct fields
+    // instead of emitting a DropOp for the non-existent function.
+    if (drop == "__auto_field_drop") {
+      emitFieldDropsForUserStruct(fieldVal, loc);
+      continue;
+    }
+    // Check if this field's drop is itself a user-defined Drop (nested struct).
+    bool fieldIsUserDrop = false;
+    if (auto fst = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(field.semanticType))
+      if (fst.isIdentified())
+        fieldIsUserDrop = userDropFuncs.count(fst.getName().str()) > 0;
+    mlir::Value dropVal = fieldVal;
+    if (!fieldIsUserDrop && !mlir::isa<mlir::LLVM::LLVMPointerType>(dropVal.getType()))
+      dropVal = hew::BitcastOp::create(builder, loc, ptrType, dropVal);
+    hew::DropOp::create(builder, loc, dropVal, drop, fieldIsUserDrop);
+    // Recursively drop owned fields of nested user-drop structs.
+    if (fieldIsUserDrop)
+      emitFieldDropsForUserStruct(fieldVal, loc);
+  }
 }
 
 void MLIRGen::nullOutRaiiAlloca(const std::string &varName) {
@@ -4652,16 +4844,22 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   if (std::holds_alternative<ast::ExprIdentifier>(astExpr.kind))
     return {};
 
-  // Literals (int, float, bool, char, string constants) don't heap-allocate.
-  if (std::holds_alternative<ast::ExprLiteral>(astExpr.kind))
-    return {};
+  // Non-string literals (int, float, bool, char) don't heap-allocate.
+  // String literals DO heap-allocate (strdup from cstr) and need drops.
+  if (auto *lit = std::get_if<ast::ExprLiteral>(&astExpr.kind)) {
+    if (!std::holds_alternative<ast::LitString>(lit->lit))
+      return {};
+  }
+
+  // Index access: Vec<int>[i] borrows, but Vec<String>[i] returns a strdup'd
+  // copy via hew_vec_get_str.  Treat String-typed index results as owned temps.
+  if (std::holds_alternative<ast::ExprIndex>(astExpr.kind)) {
+    if (!mlir::isa<hew::StringRefType>(val.getType()))
+      return {};
+  }
 
   // Field accesses borrow from the receiver — not owned temporaries.
   if (std::holds_alternative<ast::ExprFieldAccess>(astExpr.kind))
-    return {};
-
-  // Index access borrows from the collection — not owned temporaries.
-  if (std::holds_alternative<ast::ExprIndex>(astExpr.kind))
     return {};
 
   // Value types never need drops.
@@ -4675,9 +4873,12 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
     return {};
   if (val.getDefiningOp<mlir::memref::LoadOp>())
     return {};
-  // Global string constants are NOT temporaries.
-  if (val.getDefiningOp<hew::ConstantOp>())
-    return {};
+  // Non-string global constants are value types — not temporaries.
+  // String constants ARE heap-allocated (strdup in lowering) and need drops.
+  if (val.getDefiningOp<hew::ConstantOp>()) {
+    if (!mlir::isa<hew::StringRefType>(val.getType()))
+      return {};
+  }
 
   // Closures are handled by existing RC drop mechanism (emitted post-call
   // for inline lambdas, and by let-stmt registration for bound closures).
@@ -4729,9 +4930,69 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
 
   // Prefix with \x00 to prevent collision with user identifiers (the lexer
   // rejects null bytes, so no user binding can shadow this name).
-  std::string tmpName = std::string("\0__tmp_", 7) + std::to_string(tempMaterializationCounter++);
-  declareVariable(tmpName, val);
-  registerDroppable(tmpName, info.dropFunc, info.isUserDrop);
+  std::string tmpRawName = std::string("\0__tmp_", 7) + std::to_string(tempMaterializationCounter++);
+  auto tmpName = intern(tmpRawName);
+
+  // Always create a hoisted alloca at function entry.  This ensures:
+  // 1. The alloca dominates function-level drops (which fire after inner
+  //    scopes like match arms have been popped).
+  // 2. Zero-initialization means the null-guard in emitDropEntry safely
+  //    skips the drop when the creating scope was never entered.
+  // 3. registerDroppable captures the alloca in DropEntry::promotedSlot,
+  //    making drops independent of symbol table lifetime.
+  auto semanticType = val.getType();
+  auto storageType = toSlotStorageType(semanticType);
+  auto memrefType = mlir::MemRefType::get({}, storageType);
+
+  auto savedIP = builder.saveInsertionPoint();
+  auto &entryBlock = currentFunction.front();
+  builder.setInsertionPointToStart(&entryBlock);
+  auto alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+    auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
+    mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
+  }
+  builder.restoreInsertionPoint(savedIP);
+
+  // In loops, the alloca may already hold a value from a previous
+  // iteration.  Drop it before storing the new value to prevent leaks
+  // from overwritten temporaries.
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+    auto loc = builder.getUnknownLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto oldVal = mlir::memref::LoadOp::create(builder, loc, alloca, mlir::ValueRange{}).getResult();
+    if (storageType != ptrType && isPointerLikeType(semanticType))
+      oldVal = hew::BitcastOp::create(builder, loc, ptrType, oldVal);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(
+        builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne, oldVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, oldVal, info.dropFunc, false);
+    builder.setInsertionPointAfter(guard);
+  }
+
+  auto stored = coerceType(val, storageType, builder.getUnknownLoc());
+  mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), stored, alloca);
+  if (storageType != semanticType)
+    slotSemanticTypes[alloca] = semanticType;
+  mutableVars.insert(tmpName, alloca);
+
+  registerDroppable(tmpName.str(), info.dropFunc, info.isUserDrop);
+
+  // When inside a nested scope (e.g. while-loop body), the scope-exit
+  // drop may be skipped by an early return (returnFlag guards it).
+  // Register a DUPLICATE drop at function level as a safety net: the
+  // scope-exit drop nulls the alloca after freeing, so the function-level
+  // drop is a no-op in the normal case and only fires when scope-exit
+  // was skipped.
+  if (dropScopes.size() > funcLevelDropScopeBase + 1) {
+    DropEntry funcEntry{tmpName.str(), info.dropFunc, info.isUserDrop};
+    funcEntry.promotedSlot = alloca;
+    dropScopes[funcLevelDropScopeBase].push_back(std::move(funcEntry));
+  }
+
   return true;
 }
 

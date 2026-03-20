@@ -665,6 +665,13 @@ private:
   };
   void gatherCapturedVars(const std::set<std::string> &freeVars,
                           std::vector<CapturedVarInfo> &capturedVars, mlir::Location location);
+  /// Generate a per-closure env drop function that calls hew_rc_drop on each
+  /// captured mutable RC cell.  Returns a FuncPtrOp value (or null zero if
+  /// no mutable captures exist).
+  mlir::Value generateEnvDropFn(
+      const std::vector<CapturedVarInfo> &capturedVars,
+      mlir::LLVM::LLVMStructType envStructType, mlir::Location location);
+  unsigned envDropCounter = 0;
 
   /// Collect identifiers used in a block that are free (not locally defined).
   void collectFreeVarsInBlock(const ast::Block &block, const std::set<std::string> &bound,
@@ -692,6 +699,10 @@ private:
     /// emitDropEntry will null-check before calling close, then null out
     /// the alloca so explicit .close() + scope-exit don't double-free.
     mlir::Value closeAlloca;
+    /// Direct reference to the variable's promoted alloca slot.  When set,
+    /// emitDropEntry loads from this instead of lookupVariable, which may
+    /// fail after the declaring scope (e.g. match arm) has been popped.
+    mlir::Value promotedSlot;
   };
   std::vector<std::vector<DropEntry>> dropScopes;
   std::unordered_map<std::string, std::string> userDropFuncs;
@@ -717,6 +728,12 @@ private:
   std::vector<PendingParamDrop> pendingFunctionParamDrops;
   /// Determine the drop function for a type annotation, or "" if none needed.
   std::string dropFuncForType(const ast::TypeExpr &ty) const;
+  /// Infer the drop function for an MLIR-typed value (used for match pattern
+  /// bindings where only the MLIR type is available, not the AST type).
+  std::string dropFuncForMLIRType(mlir::Type type) const;
+  /// Returns true if the named struct has at least one owned field (String,
+  /// Vec, HashMap, etc.) that requires drop at scope exit.
+  bool structHasOwnedFields(const std::string &name) const;
   void pushDropScope();
   void popDropScope();
   void registerDroppable(const std::string &varName, const std::string &dropFunc,
@@ -726,6 +743,10 @@ private:
   /// Emit the DropOp for a single DropEntry (lookup, closure-env extract,
   /// bitcast, drop).  No-op if the variable is not found.
   void emitDropEntry(const DropEntry &entry);
+  /// After calling a user-defined Drop function, emit drops for each owned
+  /// field of the struct (String, Vec, HashMap, etc.).  The user's Drop body
+  /// runs first (can read field values), then we free the heap allocations.
+  void emitFieldDropsForUserStruct(mlir::Value structVal, mlir::Location loc);
   /// Null out a variable's RAII close alloca (after ownership transfer).
   void nullOutRaiiAlloca(const std::string &varName);
   /// Emit a drop for a single variable if it has a registered drop function.

@@ -700,10 +700,13 @@ pub unsafe extern "C" fn hew_vec_join_str(
     let mut total: usize = 0;
     for i in 0..len {
         // SAFETY: i is within bounds per hew_vec_len contract.
+        // hew_vec_get_str returns a strdup'd copy — free after measuring.
         let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
         if !s.is_null() {
             // SAFETY: s is a valid NUL-terminated C string.
             total += unsafe { CStr::from_ptr(s) }.to_bytes().len();
+            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
+            unsafe { libc::free(s as *mut _) };
         }
         if i < len - 1 {
             total += sep_bytes.len();
@@ -719,6 +722,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
     let mut offset = 0;
     for i in 0..len {
         // SAFETY: i is within bounds per hew_vec_len contract.
+        // hew_vec_get_str returns a strdup'd copy — free after copying.
         let s = unsafe { crate::vec::hew_vec_get_str(v, i) };
         if !s.is_null() {
             // SAFETY: s is a valid NUL-terminated C string.
@@ -726,6 +730,8 @@ pub unsafe extern "C" fn hew_vec_join_str(
             // SAFETY: offset + bytes.len() <= total.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.add(offset), bytes.len()) };
             offset += bytes.len();
+            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
+            unsafe { libc::free(s as *mut _) };
         }
         if i < len - 1 {
             // SAFETY: offset + sep_bytes.len() <= total.

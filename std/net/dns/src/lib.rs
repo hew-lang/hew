@@ -47,7 +47,11 @@ pub unsafe extern "C" fn hew_dns_resolve(hostname: *const c_char) -> *mut HewVec
     for addr in addrs {
         let ip = str_to_malloc(&addr.ip().to_string());
         // SAFETY: vec is a valid HewVec; ip is a malloc'd C string.
-        unsafe { hew_cabi::vec::hew_vec_push_str(vec, ip) };
+        // push_str internally strdup's, so free the original.
+        unsafe {
+            hew_cabi::vec::hew_vec_push_str(vec, ip);
+            libc::free(ip.cast());
+        }
     }
 
     vec

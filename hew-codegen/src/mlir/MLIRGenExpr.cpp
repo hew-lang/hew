@@ -1092,6 +1092,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       emitError(location, "ordering comparison on actor references is not supported");
       return nullptr;
     }
+    materializeTemporary(lhs, expr.left->value);
+    materializeTemporary(rhs, expr.right->value);
     auto cmpResult =
         hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                     builder.getStringAttr("compare"), lhs, mlir::ValueRange{rhs});
@@ -1115,6 +1117,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return mlir::arith::CmpIOp::create(builder, location, pred, lhsI, rhsI).getResult();
     }
     // String equality: equals() returns non-zero on match.
+    // Materialize string temporaries (e.g. v.get(i)) so they are freed
+    // at scope exit.  Without this, strdup'd copies from method calls
+    // leak through comparison expressions.
+    materializeTemporary(lhs, expr.left->value);
+    materializeTemporary(rhs, expr.right->value);
     auto eqResult =
         hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                     builder.getStringAttr("equals"), lhs, mlir::ValueRange{rhs});
@@ -1130,6 +1137,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
   // Arithmetic
   case ast::BinaryOp::Add:
     if (isPtr) {
+      // Materialize heap-allocated intermediates (previous ConcatOp results,
+      // ToStringOp results) so they are freed at scope exit.  Constants,
+      // variable loads, and identifiers are skipped by inferDropFuncForTemporary.
+      materializeTemporary(lhs, expr.left->value);
+      materializeTemporary(rhs, expr.right->value);
       return hew::StringConcatOp::create(builder, location, hew::StringRefType::get(&context), lhs,
                                          rhs)
           .getResult();
@@ -2041,14 +2053,19 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     }
 
     // Drop RC environments of temporary closure arguments after the call.
-    // Closures bound to variables are dropped by popDropScope; only inline
-    // lambdas (ExprLambda in the AST) need explicit drop here.
+    // Variable-bound closures (identifiers, field accesses) are dropped by
+    // popDropScope via their let-binding registration.  All other closure
+    // arguments (inline lambdas, call-returned closures, block expressions)
+    // are unbound temporaries that need explicit cleanup here.
     {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
       for (size_t i = 0; i < args.size() && i < call.args.size(); ++i) {
         if (!mlir::isa<hew::ClosureType>(args[i].getType()))
           continue;
-        if (!std::holds_alternative<ast::ExprLambda>(ast::callArgExpr(call.args[i]).value.kind))
+        const auto &argExpr = ast::callArgExpr(call.args[i]).value;
+        if (std::holds_alternative<ast::ExprIdentifier>(argExpr.kind))
+          continue;
+        if (std::holds_alternative<ast::ExprFieldAccess>(argExpr.kind))
           continue;
         auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, args[i]);
         hew::DropOp::create(builder, location, envPtr, "hew_rc_drop", false);
@@ -3839,6 +3856,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto val = generateExpression(ast::callArgExpr(arg).value);
         if (!val)
           return nullptr;
+        materializeTemporary(val, ast::callArgExpr(arg).value);
         if (i < calleeFuncType.getNumInputs()) {
           auto expectedType = calleeFuncType.getInput(i);
           if (val.getType() != expectedType)
@@ -3867,6 +3885,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           auto val = generateExpression(ast::callArgExpr(mc.args[i]).value);
           if (!val)
             return nullptr;
+          materializeTemporary(val, ast::callArgExpr(mc.args[i]).value);
           if (i < calleeFuncType.getNumInputs()) {
             auto expectedType = calleeFuncType.getInput(i);
             if (val.getType() != expectedType)
@@ -4789,6 +4808,37 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
       heapCellRebindings[originalSlot] = newAlloca;
       heapCellValueTypes[newAlloca] = valueType;
 
+      // The mutable variable was promoted from stack to RC heap for
+      // closure capture; the RC allocation must be freed when the
+      // original var's scope ends.  Register at the FUNCTION-level
+      // drop scope (not the current scope) because scope blocks and
+      // closures may create these cells inside nested scopes, but the
+      // mutable var itself lives in the enclosing function.  Dropping
+      // at block scope would free the cell before scope.join/destroy
+      // run (causing use-after-free in scope spawn patterns).
+      //
+      // Use a hoisted alloca so the drop works after the declaring
+      // scope's symbol table has been popped.
+      {
+        std::string rcName =
+            std::string("\0__rc_cell_", 11) + std::to_string(tempMaterializationCounter++);
+        auto ptrMemrefType = mlir::MemRefType::get({}, ptrType);
+        auto savedIP = builder.saveInsertionPoint();
+        auto &entryBlock = currentFunction.front();
+        builder.setInsertionPointToStart(&entryBlock);
+        auto rcAlloca =
+            mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), ptrMemrefType);
+        auto zero = mlir::LLVM::ZeroOp::create(builder, builder.getUnknownLoc(), ptrType);
+        mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, rcAlloca);
+        builder.restoreInsertionPoint(savedIP);
+        mlir::memref::StoreOp::create(builder, location, cellPtr, rcAlloca);
+
+        DropEntry entry{rcName, "hew_rc_drop", false};
+        entry.promotedSlot = rcAlloca;
+        if (dropScopes.size() > funcLevelDropScopeBase)
+          dropScopes[funcLevelDropScopeBase].push_back(std::move(entry));
+      }
+
       capturedVars.push_back({fv, cellPtr, true, valueType});
       continue;
     }
@@ -4796,6 +4846,81 @@ void MLIRGen::gatherCapturedVars(const std::set<std::string> &freeVars,
     if (auto val = lookupVariable(fv))
       capturedVars.push_back({fv, val, false, nullptr});
   }
+}
+
+// ============================================================================
+// Closure env drop function generation
+// ============================================================================
+
+/// Generate a small function `__env_drop_N(ptr)` that, for each mutable-capture
+/// field in the env struct, loads the RC cell pointer and calls `hew_rc_drop`.
+/// Also handles inner closure captures whose env RC needs dropping.
+/// Returns a `FuncPtrOp` value pointing to the generated function, or a null
+/// zero pointer if the env has no RC-backed captures.
+mlir::Value MLIRGen::generateEnvDropFn(
+    const std::vector<CapturedVarInfo> &capturedVars,
+    mlir::LLVM::LLVMStructType envStructType, mlir::Location location) {
+  auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+
+  // Collect indices of fields that need RC drops.
+  llvm::SmallVector<size_t, 4> rcFieldIndices;
+  for (size_t i = 0; i < capturedVars.size(); ++i) {
+    if (capturedVars[i].isMutable ||
+        mlir::isa<hew::ClosureType>(capturedVars[i].value.getType()))
+      rcFieldIndices.push_back(i);
+  }
+  if (rcFieldIndices.empty())
+    return mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+
+  // Ensure hew_rc_drop is declared.
+  auto rcDropType =
+      builder.getFunctionType({ptrType}, {});
+  getOrCreateExternFunc("hew_rc_drop", rcDropType);
+
+  // Generate the drop function.
+  std::string fnName = "__env_drop_" + std::to_string(envDropCounter++);
+  auto fnType = builder.getFunctionType({ptrType}, {});
+
+  auto savedIP = builder.saveInsertionPoint();
+  auto savedFunction = currentFunction;
+  builder.setInsertionPointToEnd(module.getBody());
+
+  auto dropFn = mlir::func::FuncOp::create(builder, location, fnName, fnType);
+  dropFn.setVisibility(mlir::SymbolTable::Visibility::Private);
+  auto *entryBlock = dropFn.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+  currentFunction = dropFn;
+
+  auto envArg = entryBlock->getArgument(0);
+  for (size_t idx : rcFieldIndices) {
+    auto gep = mlir::LLVM::GEPOp::create(
+        builder, location, ptrType, envStructType, envArg,
+        llvm::ArrayRef<mlir::LLVM::GEPArg>{
+            static_cast<int32_t>(0), static_cast<int32_t>(idx)});
+    auto fieldVal = mlir::LLVM::LoadOp::create(
+        builder, location, ptrType, gep);
+    // Null-guard: the field may be zero if the lambda was only partially
+    // initialised (shouldn't happen normally, but be safe).
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(
+        builder, location, builder.getI1Type(),
+        mlir::LLVM::ICmpPredicate::ne, fieldVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(
+        builder, location, mlir::TypeRange{}, isNotNull,
+        /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    mlir::func::CallOp::create(builder, location, "hew_rc_drop",
+                                mlir::TypeRange{}, mlir::ValueRange{fieldVal});
+    builder.setInsertionPointAfter(guard);
+  }
+  mlir::func::ReturnOp::create(builder, location);
+
+  currentFunction = savedFunction;
+  builder.restoreInsertionPoint(savedIP);
+
+  return hew::FuncPtrOp::create(builder, location, ptrType,
+                                 mlir::SymbolRefAttr::get(&context, fnName))
+      .getResult();
 }
 
 // ============================================================================
@@ -5039,7 +5164,17 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   mlir::Value bodyVal = nullptr;
   if (lam.body) {
+    // Expression-bodied lambdas (e.g. (s) => s + "!") don't have a block
+    // to push/pop drop scopes.  Wrap them so materialized temporaries
+    // (string constants in concat, etc.) are dropped inside the lambda,
+    // not leaked into the enclosing function's drop scope.
+    // Block-bodied lambdas already manage their own scopes via generateBlock.
+    bool needsExprScope = !std::holds_alternative<ast::ExprBlock>(lam.body->value.kind);
+    if (needsExprScope)
+      pushDropScope();
     bodyVal = generateExpression(lam.body->value);
+    if (needsExprScope)
+      popDropScope();
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
@@ -5086,8 +5221,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
         hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
     auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    auto nullDropFn = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, nullDropFn);
+    auto envDropFnPtr = generateEnvDropFn(capturedVars, envStructType, location);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, envDropFnPtr);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
@@ -5095,6 +5230,10 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
             hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
         hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
+      // Mutable captures are RC cells; clone so the cell survives
+      // scope-exit drops when the closure escapes.
+      if (capturedVars[i].isMutable)
+        hew::RcCloneOp::create(builder, location, ptrType, capturedVars[i].value);
       auto gepOp = mlir::LLVM::GEPOp::create(
           builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
@@ -5137,21 +5276,92 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
 
   auto savedReturnFlag = returnFlag;
   returnFlag = nullptr;
-  mlir::Value bodyResult = nullptr;
-  if (se.binding.has_value()) {
-    SymbolTableScopeT bindingScope(symbolTable);
-    declareVariable(*se.binding, scopePtr);
-    bodyResult = generateBlock(se.block);
-  } else {
-    bodyResult = generateBlock(se.block);
-  }
-  returnFlag = savedReturnFlag;
 
+  // Manually create scopes instead of calling generateBlock, so that
+  // scope.join/destroy happen BEFORE the block-level drops fire.
+  // This is critical because scope spawns create RC cells for mutable
+  // captures; those cells must survive until tasks complete and the
+  // env drops run (during scope.destroy).
+  SymbolTableScopeT bindingScope(symbolTable);
+  if (se.binding.has_value())
+    declareVariable(*se.binding, scopePtr);
+
+  SymbolTableScopeT varScope(symbolTable);
+  MutableTableScopeT mutScope(mutableVars);
+  pushDropScope();
+
+  const auto &stmts = se.block.stmts;
+
+  mlir::Value bodyResult = nullptr;
+  if (se.block.trailing_expr) {
+    // Block has an explicit trailing expression.
+    for (const auto &stmtPtr : stmts) {
+      generateStatement(stmtPtr->value);
+      if (hasRealTerminator(builder.getInsertionBlock()))
+        break;
+    }
+    bodyResult = generateExpression(se.block.trailing_expr->value);
+    // Null RAII close alloca so scope-exit drop doesn't close a
+    // handle being returned out of the scope block.
+    if (auto *id = std::get_if<ast::ExprIdentifier>(
+            &se.block.trailing_expr->value.kind))
+      nullOutRaiiAlloca(id->name);
+  } else if (!stmts.empty()) {
+    // No trailing_expr — generate all but the last statement, then handle
+    // the last one specially (mirrors generateBlock's value-producing
+    // final-statement logic for if/match/loop/expr-stmt endings).
+    for (size_t i = 0; i + 1 < stmts.size(); ++i) {
+      generateStatement(stmts[i]->value);
+      if (hasRealTerminator(builder.getInsertionBlock()))
+        break;
+    }
+    if (!hasRealTerminator(builder.getInsertionBlock())) {
+      const auto &lastStmt = stmts.back()->value;
+      if (auto *exprStmt = std::get_if<ast::StmtExpression>(&lastStmt.kind)) {
+        bodyResult = generateExpression(exprStmt->expr.value);
+        if (auto *id = std::get_if<ast::ExprIdentifier>(
+                &exprStmt->expr.value.kind))
+          nullOutRaiiAlloca(id->name);
+      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&lastStmt.kind)) {
+        bodyResult = generateIfStmtAsExpr(*ifStmt);
+      } else if (auto *matchNode = std::get_if<ast::StmtMatch>(&lastStmt.kind)) {
+        auto loc_ = loc(lastStmt.span);
+        auto scrutinee = generateExpression(matchNode->scrutinee.value);
+        if (scrutinee) {
+          scrutinee = derefIndirectEnumScrutinee(scrutinee, matchNode->scrutinee.span, loc_,
+                                                 &matchNode->arms);
+          mlir::Type resultType;
+          if (currentFunction && currentFunction.getResultTypes().size() == 1)
+            resultType = currentFunction.getResultTypes()[0];
+          else
+            resultType = builder.getI32Type();
+          bodyResult = generateMatchImpl(scrutinee, matchNode->arms, resultType, loc_);
+        }
+      } else if (std::holds_alternative<ast::StmtLoop>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtWhile>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtWhileLet>(lastStmt.kind) ||
+                 std::holds_alternative<ast::StmtFor>(lastStmt.kind)) {
+        lastBreakValue = nullptr;
+        generateStatement(lastStmt);
+        if (lastBreakValue)
+          bodyResult = lastBreakValue;
+      } else {
+        generateStatement(lastStmt);
+      }
+    }
+  }
+
+  // Join and destroy scope BEFORE the drop scope pops.
+  // scope.destroy calls hew_task_free which drops env RC cells.
+  // The block-level RC cell drops must fire AFTER this.
   currentScopePtr = prevScope;
   currentTaskScopePtr = prevTaskScope;
-
   hew::ScopeJoinOp::create(builder, location, scopePtr, taskScopePtr);
   hew::ScopeDestroyOp::create(builder, location, scopePtr, taskScopePtr);
+
+  popDropScope();
+
+  returnFlag = savedReturnFlag;
 
   return bodyResult;
 }
@@ -5198,8 +5408,9 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
     auto envSize =
         hew::SizeOfOp::create(builder, location, sizeType(), mlir::TypeAttr::get(envStructType));
 
-    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
-    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullPtr, envSize, nullPtr);
+    auto envDropFnPtr = generateEnvDropFn(capturedVars, envStructType, location);
+    auto nullData = mlir::LLVM::ZeroOp::create(builder, location, ptrType);
+    envPtrVal = hew::RcNewOp::create(builder, location, ptrType, nullData, envSize, envDropFnPtr);
 
     for (size_t i = 0; i < capturedVars.size(); ++i) {
       if (mlir::isa<hew::ClosureType>(capturedVars[i].value.getType())) {
@@ -5207,6 +5418,8 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
             hew::ClosureGetEnvOp::create(builder, location, ptrType, capturedVars[i].value);
         hew::RcCloneOp::create(builder, location, ptrType, innerEnv);
       }
+      if (capturedVars[i].isMutable)
+        hew::RcCloneOp::create(builder, location, ptrType, capturedVars[i].value);
       auto gepOp = mlir::LLVM::GEPOp::create(
           builder, location, ptrType, envStructType, envPtrVal,
           llvm::ArrayRef<mlir::LLVM::GEPArg>{static_cast<int32_t>(0), static_cast<int32_t>(i)});
@@ -5245,6 +5458,15 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   currentScopePtr = nullptr;
   currentTaskScopePtr = nullptr;
 
+  // Save/restore drop scope state so the task body's drops don't leak into
+  // the enclosing function's drop scopes (same pattern as lambda codegen).
+  auto savedDropScopeBase = funcLevelDropScopeBase;
+  auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  funcLevelDropScopeBase = dropScopes.size();
+  funcLevelDropExcludeVars.clear();
+  funcLevelReturnVarNames.clear();
+
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
 
@@ -5275,6 +5497,10 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   }
 
   auto bodyResult = generateBlock(block);
+
+  funcLevelDropScopeBase = savedDropScopeBase;
+  funcLevelDropExcludeVars = std::move(savedExcludeVars);
+  funcLevelReturnVarNames = std::move(savedReturnVarNames);
 
   currentFunction = savedFunction;
   returnFlag = savedReturnFlag;

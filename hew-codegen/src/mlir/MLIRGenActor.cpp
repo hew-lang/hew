@@ -483,32 +483,73 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
+    auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     returnFlag = nullptr;
     returnSlot = nullptr;
     channelIntOutValidAlloca = nullptr;
+    funcLevelDropScopeBase = dropScopes.size();
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
     declareVariable("self", selfPtr);
 
+    // Push a drop scope for receive handler params.  Actor message args
+    // are deep-copied by the sender (strdup/clone), so the handler owns
+    // them and must free at scope exit.
+    pushDropScope();
+
     // Bind message parameters (starting at argument 1)
     {
       size_t pi = 0;
       for (const auto &param : recv.params) {
-        declareVariable(param.name, entryBlock->getArgument(pi + 1));
+        auto argVal = entryBlock->getArgument(pi + 1);
+        declareVariable(param.name, argVal);
         // Register ActorRef<T> parameters for actor method dispatch
         {
           auto actorName = typeExprToActorName(param.ty.value);
           if (!actorName.empty())
             actorVarTypes[param.name] = actorName;
         }
-        // HashMap dispatch now uses typed hew::HashMapType; no string tracking needed.
+
+        // Register drops for owned types (deep-copied at actor boundary)
+        auto argType = argVal.getType();
+        if (mlir::isa<hew::StringRefType>(argType))
+          registerDroppable(param.name, "hew_string_drop");
+        else if (mlir::isa<hew::VecType>(argType))
+          registerDroppable(param.name, "hew_vec_free");
+        else if (mlir::isa<hew::HashMapType>(argType))
+          registerDroppable(param.name, "hew_hashmap_free_impl");
+        else if (mlir::isa<hew::ClosureType>(argType))
+          registerDroppable(param.name, "hew_rc_drop");
+
         ++pi;
+      }
+    }
+
+    // Exclude trailing-expression variables from param drops so returning
+    // an owned param doesn't free it before the return.  Uses the same
+    // funcLevelDropExcludeVars mechanism as normal functions.
+    auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
+    funcLevelDropExcludeVars.clear();
+    if (recv.body.trailing_expr) {
+      if (auto *id = std::get_if<ast::ExprIdentifier>(
+              &recv.body.trailing_expr->value.kind))
+        funcLevelDropExcludeVars.insert({id->name, 0});
+    } else if (!recv.body.stmts.empty()) {
+      const auto &last = recv.body.stmts.back()->value;
+      if (auto *es = std::get_if<ast::StmtExpression>(&last.kind)) {
+        if (auto *id = std::get_if<ast::ExprIdentifier>(&es->expr.value.kind))
+          funcLevelDropExcludeVars.insert({id->name, 0});
       }
     }
 
     // Generate function body
     mlir::Value bodyValue = generateBlock(recv.body);
+
+    // Pop the param drop scope — popDropScope emits drops for owned params
+    // (excluding any trailing-expression variable via funcLevelDropExcludeVars)
+    popDropScope();
+    funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
 
     // Emit return
     if (!hasRealTerminator(builder.getInsertionBlock())) {
@@ -524,6 +565,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+    funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -1175,9 +1217,11 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
+    auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     returnFlag = nullptr;
     returnSlot = nullptr;
     channelIntOutValidAlloca = nullptr;
+    funcLevelDropScopeBase = dropScopes.size();
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
@@ -1216,9 +1260,8 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+    funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   }
-
-  // Generate dispatch function (always calls receive, ignores msg_type)
   std::string dispatchName = actorName + "_dispatch";
   auto dispatchType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
   builder.setInsertionPointToEnd(module.getBody());

@@ -874,28 +874,8 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
           }
         }
       }
-      if (!alreadyRegistered && !isHandle) {
-        bool isStringExpr = false;
-        if (stmt.value) {
-          const auto &vk = stmt.value->value.kind;
-          isStringExpr = std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
-                         std::holds_alternative<ast::ExprCall>(vk);
-          // Method calls that produce OWNED strings should be dropped.
-          if (std::get_if<ast::ExprMethodCall>(&vk))
-            isStringExpr = true;
-          // Look through unsafe {} wrappers to the inner expression.
-          if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
-            if (ue->block.trailing_expr) {
-              const auto &inner = ue->block.trailing_expr->value.kind;
-              if (std::holds_alternative<ast::ExprCall>(inner) ||
-                  std::holds_alternative<ast::ExprMethodCall>(inner))
-                isStringExpr = true;
-            }
-          }
-        }
-        if (!isBorrowedGetString && isStringExpr)
-          registerDroppable(varName, "hew_string_drop");
-      }
+      if (!alreadyRegistered && !isHandle && !isBorrowedGetString)
+        registerDroppable(varName, "hew_string_drop");
     }
 
     // Fallback: register drops for Vec/HashMap by MLIR type when the type
@@ -1149,6 +1129,44 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
         registerDroppable(varNameStr, "hew_hashset_free");
       else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
                !handleVarTypes.count(varNameStr) && !streamHandleVarTypes.count(varNameStr))
+        registerDroppable(varNameStr, "hew_string_drop");
+    }
+  }
+
+  // Fallback: register string drop by MLIR type when no type annotation is
+  // present (common for module functions where the type checker doesn't
+  // propagate stmt.ty for inferred types).  Only register for values that
+  // are provably OWNED (calls, method calls, concat, interpolation, literals).
+  // Variable loads and block arguments are borrowed — do NOT register.
+  if (initValue && mlir::isa<hew::StringRefType>(initValue.getType()) &&
+      !handleVarTypes.count(varNameStr) && !streamHandleVarTypes.count(varNameStr)) {
+    bool alreadyRegistered = false;
+    if (!dropScopes.empty()) {
+      for (auto &e : dropScopes.back()) {
+        if (e.varName == varNameStr) {
+          alreadyRegistered = true;
+          break;
+        }
+      }
+    }
+    if (!alreadyRegistered) {
+      bool isOwned = false;
+      if (auto *defOp = initValue.getDefiningOp()) {
+        isOwned = mlir::isa<hew::StringConcatOp>(defOp) ||
+                  defOp->getName().getStringRef() == "hew.to_string" ||
+                  defOp->getName().getStringRef() == "hew.constant" ||
+                  mlir::isa<mlir::func::CallOp>(defOp);
+      }
+      if (stmt.value) {
+        const auto &vk = stmt.value->value.kind;
+        if (std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
+            std::holds_alternative<ast::ExprCall>(vk) ||
+            std::holds_alternative<ast::ExprMethodCall>(vk) ||
+            std::holds_alternative<ast::ExprBinary>(vk) ||
+            std::holds_alternative<ast::ExprLiteral>(vk))
+          isOwned = true;
+      }
+      if (isOwned)
         registerDroppable(varNameStr, "hew_string_drop");
     }
   }

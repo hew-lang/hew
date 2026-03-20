@@ -369,10 +369,11 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
 ///
 /// `stream` must be a valid `HewStream` pointer allocated via `Box::into_raw`.
 unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking> {
-    // Move the inner backing out of the HewStream shell.
+    // SAFETY: stream is a valid HewStream pointer per the function contract.
     let inner = unsafe { ptr::read(&raw const (*stream).inner) };
-    // Deallocate the HewStream shell without running Drop (which would
-    // double-close/double-free the inner we just moved out).
+    // SAFETY: stream was allocated via Box::into_raw(Box::new(HewStream { .. })),
+    // so deallocating with Layout::new::<HewStream>() is correct. We use dealloc
+    // instead of Box::from_raw to avoid running Drop (which would double-free inner).
     unsafe {
         std::alloc::dealloc(stream.cast::<u8>(), std::alloc::Layout::new::<HewStream>());
     }
@@ -992,6 +993,7 @@ pub unsafe extern "C" fn hew_stream_pipe(stream: *mut HewStream, sink: *mut HewS
 #[no_mangle]
 pub unsafe extern "C" fn hew_stream_lines(stream: *mut HewStream) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(LinesStream {
         buf: Vec::new(),
@@ -1016,6 +1018,7 @@ pub unsafe extern "C" fn hew_stream_chunks(
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
     let size = usize::try_from(chunk_size.max(1)).unwrap_or(1);
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(ChunksStream {
         buf: Vec::new(),
@@ -1138,6 +1141,7 @@ pub unsafe extern "C" fn hew_stream_map_string(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: StringMapFn = unsafe { std::mem::transmute(fn_ptr) };
@@ -1167,6 +1171,7 @@ pub unsafe extern "C" fn hew_stream_filter_string(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: StringFilterFn = unsafe { std::mem::transmute(fn_ptr) };
@@ -1198,6 +1203,7 @@ pub unsafe extern "C" fn hew_stream_map_bytes(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: BytesMapFn = unsafe { std::mem::transmute(fn_ptr) };
@@ -1227,6 +1233,7 @@ pub unsafe extern "C" fn hew_stream_filter_bytes(
     env_ptr: *const c_void,
 ) -> *mut HewStream {
     cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
     let fn_typed: BytesFilterFn = unsafe { std::mem::transmute(fn_ptr) };
@@ -1249,6 +1256,7 @@ pub unsafe extern "C" fn hew_stream_filter_bytes(
 pub unsafe extern "C" fn hew_stream_take(stream: *mut HewStream, n: i64) -> *mut HewStream {
     cabi_guard!(stream.is_null(), ptr::null_mut());
     let limit = usize::try_from(n.max(0)).unwrap_or(0);
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
     let upstream = unsafe { consume_stream_inner(stream) };
     into_stream_ptr(TakeStream {
         upstream,

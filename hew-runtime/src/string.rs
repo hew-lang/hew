@@ -705,6 +705,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
         if !s.is_null() {
             // SAFETY: s is a valid NUL-terminated C string.
             total += unsafe { CStr::from_ptr(s) }.to_bytes().len();
+            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
             unsafe { libc::free(s as *mut _) };
         }
         if i < len - 1 {
@@ -729,6 +730,7 @@ pub unsafe extern "C" fn hew_vec_join_str(
             // SAFETY: offset + bytes.len() <= total.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.add(offset), bytes.len()) };
             offset += bytes.len();
+            // SAFETY: s was strdup'd by hew_vec_get_str — we own it.
             unsafe { libc::free(s as *mut _) };
         }
         if i < len - 1 {

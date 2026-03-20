@@ -5458,6 +5458,15 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   currentScopePtr = nullptr;
   currentTaskScopePtr = nullptr;
 
+  // Save/restore drop scope state so the task body's drops don't leak into
+  // the enclosing function's drop scopes (same pattern as lambda codegen).
+  auto savedDropScopeBase = funcLevelDropScopeBase;
+  auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
+  auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  funcLevelDropScopeBase = dropScopes.size();
+  funcLevelDropExcludeVars.clear();
+  funcLevelReturnVarNames.clear();
+
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
 
@@ -5488,6 +5497,10 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   }
 
   auto bodyResult = generateBlock(block);
+
+  funcLevelDropScopeBase = savedDropScopeBase;
+  funcLevelDropExcludeVars = std::move(savedExcludeVars);
+  funcLevelReturnVarNames = std::move(savedReturnVarNames);
 
   currentFunction = savedFunction;
   returnFlag = savedReturnFlag;

@@ -964,11 +964,42 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
-    // NOTE: auto-field-drop for non-Drop structs with owned fields (wire
-    // structs, etc.) is deferred. The challenge is that struct fields may
-    // be borrowed (field access returns raw pointer, not owned copy), so
-    // auto-dropping fields at scope exit causes double-frees. This needs
-    // ownership tracking per field, which is a larger project.
+    // Auto-field-drop for wire structs with owned fields (String, Vec, etc.).
+    // Wire structs decoded from JSON/binary/YAML contain freshly-allocated
+    // field copies. Safe to drop at scope exit when the struct was freshly
+    // created (struct init, function/method call, decode).
+    // Non-wire structs are excluded: generic instantiations and user structs
+    // may have borrowed fields that would cause double-frees.
+    if (value && !dropScopes.empty()) {
+      auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
+      if (structTy && structTy.isIdentified() &&
+          !userDropFuncs.count(structTy.getName().str()) &&
+          wireStructNames.count(structTy.getName().str())) {
+        bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
+        if (needsFieldDrop) {
+          bool isOwnedStruct = false;
+          if (stmt.value) {
+            const auto &vk = stmt.value->value.kind;
+            isOwnedStruct = std::holds_alternative<ast::ExprStructInit>(vk) ||
+                            std::holds_alternative<ast::ExprCall>(vk) ||
+                            std::holds_alternative<ast::ExprMethodCall>(vk);
+            if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
+              if (ue->block.trailing_expr) {
+                const auto &inner = ue->block.trailing_expr->value.kind;
+                isOwnedStruct = std::holds_alternative<ast::ExprCall>(inner) ||
+                                std::holds_alternative<ast::ExprMethodCall>(inner) ||
+                                std::holds_alternative<ast::ExprStructInit>(inner);
+              }
+            }
+          }
+          bool alreadyReg = false;
+          for (auto &e : dropScopes.back())
+            if (e.varName == varName) { alreadyReg = true; break; }
+          if (isOwnedStruct && !alreadyReg)
+            registerDroppable(varName, "__auto_field_drop");
+        }
+      }
+    }
 
     // Register closure env for RAII cleanup via hew_rc_drop.
     if (mlir::isa<hew::ClosureType>(value.getType())) {

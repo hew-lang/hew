@@ -1217,9 +1217,11 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
+    auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
     returnFlag = nullptr;
     returnSlot = nullptr;
     channelIntOutValidAlloca = nullptr;
+    funcLevelDropScopeBase = dropScopes.size();
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = recvEntry->getArgument(0);
@@ -1258,9 +1260,8 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+    funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   }
-
-  // Generate dispatch function (always calls receive, ignores msg_type)
   std::string dispatchName = actorName + "_dispatch";
   auto dispatchType = builder.getFunctionType({ptrType, i32Type, ptrType, sizeType()}, {});
   builder.setInsertionPointToEnd(module.getBody());

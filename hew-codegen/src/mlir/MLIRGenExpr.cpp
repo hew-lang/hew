@@ -1092,6 +1092,8 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       emitError(location, "ordering comparison on actor references is not supported");
       return nullptr;
     }
+    materializeTemporary(lhs, expr.left->value);
+    materializeTemporary(rhs, expr.right->value);
     auto cmpResult =
         hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                     builder.getStringAttr("compare"), lhs, mlir::ValueRange{rhs});
@@ -1115,6 +1117,11 @@ mlir::Value MLIRGen::generateBinaryExpr(const ast::ExprBinary &expr) {
       return mlir::arith::CmpIOp::create(builder, location, pred, lhsI, rhsI).getResult();
     }
     // String equality: equals() returns non-zero on match.
+    // Materialize string temporaries (e.g. v.get(i)) so they are freed
+    // at scope exit.  Without this, strdup'd copies from method calls
+    // leak through comparison expressions.
+    materializeTemporary(lhs, expr.left->value);
+    materializeTemporary(rhs, expr.right->value);
     auto eqResult =
         hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                     builder.getStringAttr("equals"), lhs, mlir::ValueRange{rhs});

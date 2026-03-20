@@ -4903,6 +4903,25 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
   }
   builder.restoreInsertionPoint(savedIP);
 
+  // In loops, the alloca may already hold a value from a previous
+  // iteration.  Drop it before storing the new value to prevent leaks
+  // from overwritten temporaries.
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+    auto loc = builder.getUnknownLoc();
+    auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
+    auto oldVal = mlir::memref::LoadOp::create(builder, loc, alloca, mlir::ValueRange{}).getResult();
+    if (storageType != ptrType && isPointerLikeType(semanticType))
+      oldVal = hew::BitcastOp::create(builder, loc, ptrType, oldVal);
+    auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+    auto isNotNull = mlir::LLVM::ICmpOp::create(
+        builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne, oldVal, nullPtr);
+    auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                         /*withElseRegion=*/false);
+    builder.setInsertionPointToStart(&guard.getThenRegion().front());
+    hew::DropOp::create(builder, loc, oldVal, info.dropFunc, false);
+    builder.setInsertionPointAfter(guard);
+  }
+
   auto stored = coerceType(val, storageType, builder.getUnknownLoc());
   mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), stored, alloca);
   if (storageType != semanticType)
@@ -4910,6 +4929,19 @@ bool MLIRGen::materializeTemporary(mlir::Value val, const ast::Expr &astExpr) {
   mutableVars.insert(tmpName, alloca);
 
   registerDroppable(tmpName.str(), info.dropFunc, info.isUserDrop);
+
+  // When inside a nested scope (e.g. while-loop body), the scope-exit
+  // drop may be skipped by an early return (returnFlag guards it).
+  // Register a DUPLICATE drop at function level as a safety net: the
+  // scope-exit drop nulls the alloca after freeing, so the function-level
+  // drop is a no-op in the normal case and only fires when scope-exit
+  // was skipped.
+  if (dropScopes.size() > funcLevelDropScopeBase + 1) {
+    DropEntry funcEntry{tmpName.str(), info.dropFunc, info.isUserDrop};
+    funcEntry.promotedSlot = alloca;
+    dropScopes[funcLevelDropScopeBase].push_back(std::move(funcEntry));
+  }
+
   return true;
 }
 

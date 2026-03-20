@@ -1300,6 +1300,8 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto b = generateExpression(ast::callArgExpr(args[1]).value);
     if (!a || !b)
       return nullptr;
+    materializeTemporary(a, ast::callArgExpr(args[0]).value);
+    materializeTemporary(b, ast::callArgExpr(args[1]).value);
     return hew::StringMethodOp::create(builder, location, builder.getI32Type(),
                                        builder.getStringAttr("equals"), a, mlir::ValueRange{b})
         .getResult();
@@ -1813,6 +1815,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto addr = generateExpression(ast::callArgExpr(args[0]).value);
     if (!addr)
       return nullptr;
+    materializeTemporary(addr, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_start"),
                                mlir::ValueRange{addr});
@@ -1836,6 +1839,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto addr = generateExpression(ast::callArgExpr(args[0]).value);
     if (!addr)
       return nullptr;
+    materializeTemporary(addr, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_connect"),
                                mlir::ValueRange{addr});
@@ -1851,6 +1855,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto tname = generateExpression(ast::callArgExpr(args[0]).value);
     if (!tname)
       return nullptr;
+    materializeTemporary(tname, ast::callArgExpr(args[0]).value);
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_set_transport"),
                                mlir::ValueRange{tname});
@@ -1867,6 +1872,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto actorVal = generateExpression(ast::callArgExpr(args[1]).value);
     if (!regName || !actorVal)
       return nullptr;
+    materializeTemporary(regName, ast::callArgExpr(args[0]).value);
     // Pass the actor ref pointer directly; the runtime extracts the PID.
     hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{},
                                mlir::SymbolRefAttr::get(&context, "hew_node_api_register"),
@@ -1883,6 +1889,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
     auto lookupName = generateExpression(ast::callArgExpr(args[0]).value);
     if (!lookupName)
       return nullptr;
+    materializeTemporary(lookupName, ast::callArgExpr(args[0]).value);
     auto u64Ty = builder.getI64Type();
     return hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{u64Ty},
                                       mlir::SymbolRefAttr::get(&context, "hew_node_api_lookup"),

@@ -818,19 +818,13 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
             defOp->hasAttr("callee") &&
             mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
                 "hew_hashset_new";
-        // Method calls that provably create new collections (not aliases).
-        // .get() on Vec<Vec<T>> returns a borrowed pointer, NOT a new allocation.
+        // Method calls that return new collections.  Only .get() on
+        // Vec<Vec<T>> borrows — everything else allocates fresh.
+        // ExprCall (user functions) excluded — may return input unchanged.
         bool isNewCollectionMethod = false;
         if (stmt.value) {
-          if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
-            isNewCollectionMethod = mc->method == "lines" || mc->method == "split" ||
-                                   mc->method == "keys" || mc->method == "values" ||
-                                   mc->method == "chars" || mc->method == "bytes_vec" ||
-                                   mc->method == "collect" || mc->method == "map" ||
-                                   mc->method == "filter" || mc->method == "encode" ||
-                                   mc->method == "clone" || mc->method == "to_vec" ||
-                                   mc->method == "to_bytes";
-          }
+          if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind))
+            isNewCollectionMethod = (mc->method != "get");
         }
         // Bytes literals (b"..." and bytes [...]) are Vec constructors.
         bool isBytesLiteral = false;
@@ -915,15 +909,14 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
       if (!isOwned && stmt.value) {
         const auto &vk = stmt.value->value.kind;
-        // Known methods that return new collections (not borrowed pointers).
+        // Method calls generally return fresh allocations.  Only `.get()`
+        // on Vec<Vec<T>> / Vec<HashMap<K,V>> is a known borrowing accessor
+        // (it returns a raw pointer into Vec storage).  For Vec<String>,
+        // .get() returns strdup, so it IS owned — but that's tracked
+        // separately via hew_vec_get_str.
         if (auto *mc = std::get_if<ast::ExprMethodCall>(&vk)) {
-          isOwned = mc->method == "lines" || mc->method == "split" ||
-                    mc->method == "keys" || mc->method == "values" ||
-                    mc->method == "chars" || mc->method == "bytes_vec" ||
-                    mc->method == "collect" || mc->method == "map" ||
-                    mc->method == "filter" || mc->method == "encode" ||
-                    mc->method == "clone" || mc->method == "to_vec" ||
-                    mc->method == "to_bytes";
+          if (mc->method != "get")
+            isOwned = true;
         }
         // Bytes literals are Vec constructors.
         if (std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
@@ -1425,6 +1418,11 @@ void MLIRGen::generateAssignStmt(const ast::StmtAssign &stmt) {
               }
               rhs = coerceType(rhs, field.type, location);
               mlir::LLVM::StoreOp::create(builder, location, rhs, fieldPtr);
+              // Ownership transfer: the RHS is now owned by the actor
+              // state.  Unregister any drop for the source variable so
+              // the handler exit doesn't free the actor's field.
+              if (auto *rhsIdent = std::get_if<ast::ExprIdentifier>(&stmt.value.value.kind))
+                unregisterDroppable(rhsIdent->name);
               return;
             }
           }

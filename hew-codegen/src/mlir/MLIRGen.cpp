@@ -1127,6 +1127,7 @@ mlir::Value MLIRGen::generateBuiltinCall(const std::string &name,
       return nullptr;
     bool newline = (name == "println_str");
     hew::PrintOp::create(builder, location, val, builder.getBoolAttr(newline));
+    materializeTemporary(val, ast::callArgExpr(args[0]).value);
     return nullptr;
   }
 
@@ -4817,9 +4818,12 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
   if (std::holds_alternative<ast::ExprIdentifier>(astExpr.kind))
     return {};
 
-  // Literals (int, float, bool, char, string constants) don't heap-allocate.
-  if (std::holds_alternative<ast::ExprLiteral>(astExpr.kind))
-    return {};
+  // Non-string literals (int, float, bool, char) don't heap-allocate.
+  // String literals DO heap-allocate (strdup from cstr) and need drops.
+  if (auto *lit = std::get_if<ast::ExprLiteral>(&astExpr.kind)) {
+    if (!std::holds_alternative<ast::LitString>(lit->lit))
+      return {};
+  }
 
   // Index access: Vec<int>[i] borrows, but Vec<String>[i] returns a strdup'd
   // copy via hew_vec_get_str.  Treat String-typed index results as owned temps.
@@ -4843,9 +4847,12 @@ MLIRGen::DropInfo MLIRGen::inferDropFuncForTemporary(mlir::Value val,
     return {};
   if (val.getDefiningOp<mlir::memref::LoadOp>())
     return {};
-  // Global string constants are NOT temporaries.
-  if (val.getDefiningOp<hew::ConstantOp>())
-    return {};
+  // Non-string global constants are value types — not temporaries.
+  // String constants ARE heap-allocated (strdup in lowering) and need drops.
+  if (val.getDefiningOp<hew::ConstantOp>()) {
+    if (!mlir::isa<hew::StringRefType>(val.getType()))
+      return {};
+  }
 
   // Closures are handled by existing RC drop mechanism (emitted post-call
   // for inline lambdas, and by let-stmt registration for bound closures).

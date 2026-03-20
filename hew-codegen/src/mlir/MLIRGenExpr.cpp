@@ -3856,6 +3856,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         auto val = generateExpression(ast::callArgExpr(arg).value);
         if (!val)
           return nullptr;
+        materializeTemporary(val, ast::callArgExpr(arg).value);
         if (i < calleeFuncType.getNumInputs()) {
           auto expectedType = calleeFuncType.getInput(i);
           if (val.getType() != expectedType)
@@ -3884,6 +3885,7 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           auto val = generateExpression(ast::callArgExpr(mc.args[i]).value);
           if (!val)
             return nullptr;
+          materializeTemporary(val, ast::callArgExpr(mc.args[i]).value);
           if (i < calleeFuncType.getNumInputs()) {
             auto expectedType = calleeFuncType.getInput(i);
             if (val.getType() != expectedType)
@@ -5143,7 +5145,17 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   mlir::Value bodyVal = nullptr;
   if (lam.body) {
+    // Expression-bodied lambdas (e.g. (s) => s + "!") don't have a block
+    // to push/pop drop scopes.  Wrap them so materialized temporaries
+    // (string constants in concat, etc.) are dropped inside the lambda,
+    // not leaked into the enclosing function's drop scope.
+    // Block-bodied lambdas already manage their own scopes via generateBlock.
+    bool needsExprScope = !std::holds_alternative<ast::ExprBlock>(lam.body->value.kind);
+    if (needsExprScope)
+      pushDropScope();
     bodyVal = generateExpression(lam.body->value);
+    if (needsExprScope)
+      popDropScope();
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);

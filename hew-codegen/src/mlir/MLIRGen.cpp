@@ -3792,33 +3792,38 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // These three helpers are mutually recursive (expr ↔ block ↔ stmtIf).
   using ExcludeSet = std::set<std::pair<std::string, size_t>>;
   std::function<void(const ast::Expr &, ExcludeSet &, size_t)> collectExcludeVars;
-  std::function<void(const ast::Block &, ExcludeSet &, size_t)> collectExcludeVarsFromBlock;
-  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t)> collectExcludeVarsFromStmtIf;
+  std::function<void(const ast::Block &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromBlock;
+  std::function<void(const ast::StmtIf &, ExcludeSet &, size_t, bool)> collectExcludeVarsFromStmtIf;
   collectExcludeVarsFromStmtIf = [&collectExcludeVarsFromBlock, &collectExcludeVarsFromStmtIf](
-      const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth) {
+      const ast::StmtIf &ifStmt, ExcludeSet &out, size_t depth, bool producesValue) {
     // StmtIf branches go through generateBlock which pushes a scope → depth+1
-    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1);
+    collectExcludeVarsFromBlock(ifStmt.then_block, out, depth + 1, producesValue);
     if (ifStmt.else_block) {
       if (ifStmt.else_block->block)
-        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1);
+        collectExcludeVarsFromBlock(*ifStmt.else_block->block, out, depth + 1, producesValue);
       if (ifStmt.else_block->if_stmt) {
         const auto &nested = ifStmt.else_block->if_stmt->value;
         // else-if doesn't add a scope — stay at same depth
         if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
-          collectExcludeVarsFromStmtIf(*nestedIf, out, depth);
+          collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
       }
     }
   };
   collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf](
-      const ast::Block &blk, ExcludeSet &out, size_t depth) {
+      const ast::Block &blk, ExcludeSet &out, size_t depth, bool producesValue) {
     if (blk.trailing_expr) {
       collectExcludeVars(blk.trailing_expr->value, out, depth);
-    } else if (!blk.stmts.empty()) {
+    } else if (producesValue && !blk.stmts.empty()) {
+      // When the block is expected to produce a value (non-void function
+      // body, expression-position block), the last statement's expression
+      // IS the implicit return value.  Exclude its variables from drops.
+      // When the block does NOT produce a value (void/unit functions),
+      // the last statement's result is discarded — do NOT exclude.
       const auto &last = blk.stmts.back()->value;
       if (auto *exprStmt = std::get_if<ast::StmtExpression>(&last.kind)) {
         collectExcludeVars(exprStmt->expr.value, out, depth);
       } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&last.kind)) {
-        collectExcludeVarsFromStmtIf(*ifStmt, out, depth);
+        collectExcludeVarsFromStmtIf(*ifStmt, out, depth, true);
       } else if (auto *matchStmt = std::get_if<ast::StmtMatch>(&last.kind)) {
         for (const auto &arm : matchStmt->arms) {
           if (arm.body)
@@ -3868,9 +3873,9 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         collectExcludeVars((*ifE->else_block)->value, out, depth);
     } else if (auto *ifLet = std::get_if<ast::ExprIfLet>(&expr.kind)) {
       // ExprIfLet bodies are blocks → generateBlock pushes scope
-      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1);
+      collectExcludeVarsFromBlock(ifLet->body, out, depth + 1, true);
       if (ifLet->else_body)
-        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1);
+        collectExcludeVarsFromBlock(*ifLet->else_body, out, depth + 1, true);
     } else if (auto *matchE = std::get_if<ast::ExprMatch>(&expr.kind)) {
       // ExprMatch arms don't push scopes — stay at same depth
       for (const auto &arm : matchE->arms) {
@@ -3879,13 +3884,13 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       }
     } else if (auto *blockE = std::get_if<ast::ExprBlock>(&expr.kind)) {
       // ExprBlock → generateBlock pushes scope
-      collectExcludeVarsFromBlock(blockE->block, out, depth + 1);
+      collectExcludeVarsFromBlock(blockE->block, out, depth + 1, true);
     } else if (auto *tupleE = std::get_if<ast::ExprTuple>(&expr.kind)) {
       for (const auto &elem : tupleE->elements)
         collectExcludeVars(elem->value, out, depth);
     } else if (auto *unsafeE = std::get_if<ast::ExprUnsafe>(&expr.kind)) {
       // ExprUnsafe wraps a Block — descend like ExprBlock
-      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1);
+      collectExcludeVarsFromBlock(unsafeE->block, out, depth + 1, true);
     } else if (auto *callE = std::get_if<ast::ExprCall>(&expr.kind)) {
       // Only descend into enum variant constructors (Ok, Some, Err, etc.)
       // where argument ownership transfers to the return value.  Regular
@@ -3908,7 +3913,20 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       }
     }
   };
-  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0);
+  // Determine whether the function body produces a value (non-void return).
+  // When producesValue is false, the last statement's result is discarded,
+  // so variables in it should NOT be excluded from drops.
+  bool fnProducesValue = false;
+  if (fn.return_type) {
+    // Check if return type is unit/void — if not, the body produces a value.
+    if (auto *named = std::get_if<ast::TypeNamed>(&fn.return_type->value.kind)) {
+      fnProducesValue = (named->name != "()" && named->name != "unit" &&
+                         named->name != "void" && named->name != "Never");
+    } else {
+      fnProducesValue = true; // Tuple, generic, etc. — non-void
+    }
+  }
+  collectExcludeVarsFromBlock(fn.body, funcLevelDropExcludeVars, 0, fnProducesValue);
 
   // Build a flat (depth-independent) set of variable names appearing in the
   // return expression.  Used by RAII close exclusion where the depth-based

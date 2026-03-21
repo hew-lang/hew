@@ -1,0 +1,33 @@
+// Regression test: return of an outer-scope variable from inside an if-body.
+// The returned variable must NOT be dropped before the caller uses it.
+// Exercises path-specific drop exclusion in the function epilogue.
+
+type Resource {
+    name: String;
+}
+
+impl Drop for Resource {
+    fn drop(res: Resource) {
+        print("drop ");
+        println(res.name);
+    }
+}
+
+fn pick(flag: bool) -> Resource {
+    let outer = Resource { name: "outer" };
+    if flag {
+        return outer;
+    }
+    let fallback = Resource { name: "fallback" };
+    fallback
+}
+
+fn main() -> int {
+    let r1 = pick(true);
+    print("got ");
+    println(r1.name);
+    let r2 = pick(false);
+    print("got ");
+    println(r2.name);
+    return 0;
+}

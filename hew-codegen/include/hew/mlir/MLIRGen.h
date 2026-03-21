@@ -218,6 +218,15 @@ private:
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr);
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
+  std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
+                                                      const ast::ExprIdentifier &ident,
+                                                      mlir::Location location);
+  std::optional<mlir::Value> generateHandleMethodCall(const ast::ExprMethodCall &mc,
+                                                      mlir::Value receiver,
+                                                      mlir::Location location);
+  std::optional<mlir::Value> generateActorMethodCall(const ast::ExprMethodCall &mc,
+                                                     mlir::Value receiver,
+                                                     mlir::Location location);
   std::optional<mlir::Value> generateBuiltinMethodCall(const ast::ExprMethodCall &expr,
                                                        mlir::Value receiver,
                                                        mlir::Location location);

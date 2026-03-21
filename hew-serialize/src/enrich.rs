@@ -385,11 +385,16 @@ pub fn enrich_program(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
     let mut diagnostics = Vec::new();
+    let mut import_paths: Vec<String> = Vec::new();
     for (item, _span) in &mut program.items {
+        // Collect import module paths for extern synthesis (avoids a second pass).
+        if let Item::Import(import_decl) = &*item {
+            import_paths.push(import_decl.path.join("::"));
+        }
         enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
     }
     normalize_all_types(program, registry);
-    synthesize_stdlib_externs(program, registry)?;
+    synthesize_stdlib_externs_from_imports(program, &import_paths, registry)?;
     Ok(EnrichProgramDiagnostics { diagnostics })
 }
 
@@ -477,65 +482,63 @@ fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry:
     }
 }
 
-/// Synthesize `ExternBlock` items for each stdlib import.
+/// Synthesize `ExternBlock` items for stdlib imports.
 ///
-/// The serializer embeds extern function declarations as top-level
-/// `ExternBlock` items so the C++ backend can generate extern declarations.
-fn synthesize_stdlib_externs(
+/// Takes pre-collected import module paths (from the enrichment pass) so we
+/// don't need to re-iterate `program.items`.
+fn synthesize_stdlib_externs_from_imports(
     program: &mut Program,
+    import_paths: &[String],
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     let mut new_items: Vec<Spanned<Item>> = Vec::new();
 
-    for (item, _span) in &program.items {
-        if let Item::Import(import_decl) = item {
-            let module_path = import_decl.path.join("::");
-            if let Some(info) = registry.get(&module_path) {
-                let extern_fns = info
-                    .functions
-                    .iter()
-                    .map(|(name, params, ret_ty)| {
-                        let param_exprs = params
-                            .iter()
-                            .enumerate()
-                            .map(|(index, ty)| {
-                                let type_expr = require_converted(
-                                    ty,
-                                    format!("stdlib extern `{name}` parameter {index}"),
-                                )?;
-                                Ok(Param {
-                                    name: format!("p{index}"),
-                                    ty: type_expr,
-                                    is_mutable: false,
-                                })
+    for module_path in import_paths {
+        if let Some(info) = registry.get(module_path) {
+            let extern_fns = info
+                .functions
+                .iter()
+                .map(|(name, params, ret_ty)| {
+                    let param_exprs = params
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            let type_expr = require_converted(
+                                ty,
+                                format!("stdlib extern `{name}` parameter {index}"),
+                            )?;
+                            Ok(Param {
+                                name: format!("p{index}"),
+                                ty: type_expr,
+                                is_mutable: false,
                             })
-                            .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
-                        let return_type = if matches!(ret_ty, Ty::Unit) {
-                            None
-                        } else {
-                            Some(require_converted(
-                                ret_ty,
-                                format!("stdlib extern `{name}` return type"),
-                            )?)
-                        };
-                        Ok(ExternFnDecl {
-                            name: name.clone(),
-                            params: param_exprs,
-                            return_type,
-                            is_variadic: false,
                         })
+                        .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
+                    let return_type = if matches!(ret_ty, Ty::Unit) {
+                        None
+                    } else {
+                        Some(require_converted(
+                            ret_ty,
+                            format!("stdlib extern `{name}` return type"),
+                        )?)
+                    };
+                    Ok(ExternFnDecl {
+                        name: name.clone(),
+                        params: param_exprs,
+                        return_type,
+                        is_variadic: false,
                     })
-                    .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
+                })
+                .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
 
-                if !extern_fns.is_empty() {
-                    new_items.push((
-                        Item::ExternBlock(ExternBlock {
-                            abi: "C".to_string(),
-                            functions: extern_fns,
-                        }),
-                        0..0,
-                    ));
-                }
+            if !extern_fns.is_empty() {
+                new_items.push((
+                    Item::ExternBlock(ExternBlock {
+                        abi: "C".to_string(),
+                        functions: extern_fns,
+                    }),
+                    0..0,
+                ));
             }
         }
     }

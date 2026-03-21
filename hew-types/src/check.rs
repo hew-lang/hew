@@ -5687,6 +5687,119 @@ impl Checker {
         ty
     }
 
+    fn check_hashmap_method(
+        &mut self,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let key_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        let val_ty = type_args
+            .get(1)
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        match method {
+            "insert" => {
+                self.check_arity(args, 2, "`HashMap::insert`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &key_ty);
+                }
+                if let Some(arg) = args.get(1) {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &val_ty);
+                }
+                Ty::Unit
+            }
+            "get" | "remove" => {
+                self.check_arity(args, 1, &format!("`HashMap::{method}`"), span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &key_ty);
+                }
+                Ty::option(val_ty)
+            }
+            "contains_key" => {
+                self.check_arity(args, 1, "`HashMap::contains_key`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &key_ty);
+                }
+                Ty::Bool
+            }
+            "keys" => {
+                self.check_arity(args, 0, "`HashMap::keys`", span);
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![key_ty],
+                }
+            }
+            "values" => {
+                self.check_arity(args, 0, "`HashMap::values`", span);
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![val_ty],
+                }
+            }
+            "len" => Ty::I64,
+            "is_empty" => Ty::Bool,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on HashMap"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    fn check_hashset_method(
+        &mut self,
+        type_args: &[Ty],
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let elem_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        match method {
+            "insert" => {
+                self.check_arity(args, 1, "`HashSet::insert`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                Ty::Bool
+            }
+            "contains" | "remove" => {
+                self.check_arity(args, 1, &format!("`HashSet::{method}`"), span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                Ty::Bool
+            }
+            "len" => Ty::I64,
+            "is_empty" => Ty::Bool,
+            "clear" => Ty::Unit,
+            _ => {
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on HashSet"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     fn check_vec_method(
         &mut self,
         type_args: &[Ty],
@@ -5966,71 +6079,7 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "HashMap" => {
-                let key_ty = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let val_ty = type_args
-                    .get(1)
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                match method {
-                    "insert" => {
-                        self.check_arity(args, 2, "`HashMap::insert`", span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &key_ty);
-                        }
-                        if let Some(arg) = args.get(1) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &val_ty);
-                        }
-                        Ty::Unit
-                    }
-                    "get" | "remove" => {
-                        self.check_arity(args, 1, &format!("`HashMap::{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &key_ty);
-                        }
-                        Ty::option(val_ty)
-                    }
-                    "contains_key" => {
-                        self.check_arity(args, 1, "`HashMap::contains_key`", span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &key_ty);
-                        }
-                        // Returns bool
-                        Ty::Bool
-                    }
-                    "keys" => {
-                        self.check_arity(args, 0, "`HashMap::keys`", span);
-                        Ty::Named {
-                            name: "Vec".to_string(),
-                            args: vec![key_ty],
-                        }
-                    }
-                    "values" => {
-                        self.check_arity(args, 0, "`HashMap::values`", span);
-                        Ty::Named {
-                            name: "Vec".to_string(),
-                            args: vec![val_ty],
-                        }
-                    }
-                    "len" => Ty::I64,
-                    "is_empty" => Ty::Bool,
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on HashMap"),
-                        );
-                        Ty::Error
-                    }
-                }
-            }
+            ) if name == "HashMap" => self.check_hashmap_method(type_args, method, args, span),
             // HashSet methods
             (
                 Ty::Named {
@@ -6038,41 +6087,7 @@ impl Checker {
                     args: type_args,
                 },
                 _,
-            ) if name == "HashSet" => {
-                let elem_ty = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                match method {
-                    "insert" => {
-                        self.check_arity(args, 1, "`HashSet::insert`", span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &elem_ty);
-                        }
-                        Ty::Bool
-                    }
-                    "contains" | "remove" => {
-                        self.check_arity(args, 1, &format!("`HashSet::{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &elem_ty);
-                        }
-                        Ty::Bool
-                    }
-                    "len" => Ty::I64,
-                    "is_empty" => Ty::Bool,
-                    "clear" => Ty::Unit,
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on HashSet"),
-                        );
-                        Ty::Error
-                    }
-                }
-            }
+            ) if name == "HashSet" => self.check_hashset_method(type_args, method, args, span),
             // bytes methods (ref-counted byte buffer)
             (Ty::Bytes, _) => match method {
                 "push" => {

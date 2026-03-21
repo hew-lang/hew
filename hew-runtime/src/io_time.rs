@@ -58,9 +58,7 @@ pub unsafe extern "C" fn hew_milliseconds(ms: c_int) -> HewDuration {
 /// for calling `free()` on the returned pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hew_read_file(path: *const c_char) -> *mut c_char {
-    if path.is_null() {
-        return std::ptr::null_mut();
-    }
+    cabi_guard!(path.is_null(), std::ptr::null_mut());
     // SAFETY: caller guarantees `path` is a valid C string.
     let c_path = unsafe { CStr::from_ptr(path) };
     let Ok(rust_path) = c_path.to_str() else {
@@ -273,9 +271,7 @@ mod platform {
         msg_type: c_int,
         events: c_int,
     ) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
@@ -302,9 +298,7 @@ mod platform {
     /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
     #[no_mangle]
     pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
@@ -331,9 +325,7 @@ mod platform {
     /// All registered actor pointers must still be valid.
     #[no_mangle]
     pub unsafe extern "C" fn hew_io_poller_poll(p: *mut HewIoPoller, timeout_ms: c_int) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
@@ -472,9 +464,7 @@ mod platform {
         msg_type: c_int,
         events: c_int,
     ) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
@@ -536,9 +526,7 @@ mod platform {
     /// `p` must be a valid pointer returned by [`hew_io_poller_new`].
     #[no_mangle]
     pub unsafe extern "C" fn hew_io_poller_unregister(p: *mut HewIoPoller, fd: c_int) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 
@@ -591,9 +579,7 @@ mod platform {
     /// All registered actor pointers must still be valid.
     #[no_mangle]
     pub unsafe extern "C" fn hew_io_poller_poll(p: *mut HewIoPoller, timeout_ms: c_int) -> c_int {
-        if p.is_null() {
-            return -1;
-        }
+        cabi_guard!(p.is_null(), -1);
         // SAFETY: caller guarantees `p` is valid.
         let poller = unsafe { &mut *p };
 

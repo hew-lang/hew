@@ -420,6 +420,9 @@ fn try_steal_from_peers(
     reason = "actor activation state machine with multiple CAS transitions"
 )]
 fn activate_actor(actor: *mut HewActor) {
+    if actor.is_null() {
+        return;
+    }
     // SAFETY: Only valid actor pointers are ever enqueued by the runtime.
     let a = unsafe { &*actor };
 

@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_void};
 
 use crate::tagged_union::{
     decode_const_ptr, decode_f64, decode_i32, decode_i64, decode_mut_ptr, encode_f64, encode_i32,
-    encode_i64, encode_ptr, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
+    encode_i64, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
 };
 
 /// ABI-stable `Option<T>` representation.
@@ -68,21 +68,6 @@ pub extern "C" fn hew_option_some_f64(val: f64) -> HewOption {
     }
 }
 
-/// Create a `Some(ptr)` option.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer or null. The caller is responsible for
-/// the lifetime of the pointed-to data.
-#[no_mangle]
-pub unsafe extern "C" fn hew_option_some_ptr(val: *mut c_void) -> HewOption {
-    HewOption {
-        tag: TAG_VARIANT_1,
-        _pad: 0,
-        value: encode_ptr(val),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Predicates
 // ---------------------------------------------------------------------------
@@ -131,21 +116,6 @@ pub extern "C" fn hew_option_unwrap_f64(opt: HewOption) -> f64 {
         std::process::abort();
     }
     decode_f64(opt.value)
-}
-
-/// Unwrap the pointer value. Aborts if `None`.
-///
-/// # Safety
-///
-/// Caller must ensure the original pointer is still valid.
-#[no_mangle]
-pub unsafe extern "C" fn hew_option_unwrap_ptr(opt: HewOption) -> *mut c_void {
-    if is_variant_0(opt.tag) {
-        eprintln!("hew: unwrap called on None");
-        std::process::abort();
-    }
-    // SAFETY: caller guarantees the stored pointer is valid.
-    decode_mut_ptr(opt.value)
 }
 
 // ---------------------------------------------------------------------------

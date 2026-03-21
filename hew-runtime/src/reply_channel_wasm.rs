@@ -51,9 +51,7 @@ pub extern "C" fn hew_reply_channel_new() -> *mut WasmReplyChannel {
 /// `ch` must be a valid pointer returned by [`hew_reply_channel_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
-    if ch.is_null() {
-        return;
-    }
+    cabi_guard!(ch.is_null());
 
     // SAFETY: Caller guarantees `ch` is valid while retaining a new reference.
     unsafe {
@@ -73,9 +71,7 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut WasmReplyChannel) {
 /// - Must be called at most once per channel.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply(ch: *mut WasmReplyChannel, value: *mut c_void, size: usize) {
-    if ch.is_null() {
-        return;
-    }
+    cabi_guard!(ch.is_null());
 
     // SAFETY: Caller guarantees `ch` is valid and single-writer.
     unsafe {
@@ -124,9 +120,7 @@ pub(crate) unsafe fn reply_take(ch: *mut WasmReplyChannel) -> *mut c_void {
 /// not be used after the final release.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
-    if ch.is_null() {
-        return;
-    }
+    cabi_guard!(ch.is_null());
 
     // SAFETY: Caller guarantees `ch` is a live reply channel reference.
     unsafe {
@@ -150,9 +144,7 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut WasmReplyChannel) {
 /// remain valid until its remaining references are released.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut WasmReplyChannel) {
-    if ch.is_null() {
-        return;
-    }
+    cabi_guard!(ch.is_null());
 
     // SAFETY: Caller guarantees `ch` is valid; WASM reply channels are single-threaded.
     unsafe {

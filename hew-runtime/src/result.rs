@@ -8,8 +8,8 @@ use std::ffi::{c_char, c_void};
 use std::ptr;
 
 use crate::tagged_union::{
-    decode_f64, decode_i32, decode_i64, decode_mut_ptr, encode_f64, encode_i32, encode_i64,
-    encode_ptr, is_variant_0, is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
+    decode_f64, decode_i32, decode_i64, encode_f64, encode_i32, encode_i64, is_variant_0,
+    is_variant_1, TAG_VARIANT_0, TAG_VARIANT_1,
 };
 
 /// ABI-stable `Result<T, E>` representation.
@@ -64,21 +64,6 @@ pub extern "C" fn hew_result_ok_f64(val: f64) -> HewResult {
         tag: TAG_VARIANT_0,
         error_code: 0,
         value: encode_f64(val),
-        error_msg: ptr::null_mut(),
-    }
-}
-
-/// Create an `Ok(ptr)` result.
-///
-/// # Safety
-///
-/// `val` must be a valid pointer or null.
-#[no_mangle]
-pub unsafe extern "C" fn hew_result_ok_ptr(val: *mut c_void) -> HewResult {
-    HewResult {
-        tag: TAG_VARIANT_0,
-        error_code: 0,
-        value: encode_ptr(val),
         error_msg: ptr::null_mut(),
     }
 }
@@ -216,21 +201,6 @@ pub extern "C" fn hew_result_unwrap_f64(res: *const HewResult) -> f64 {
         abort_with_error(r);
     }
     decode_f64(r.value)
-}
-
-/// Unwrap the pointer value. Aborts with error message if `Err`.
-///
-/// # Safety
-///
-/// Caller must ensure the original pointer is still valid.
-#[no_mangle]
-pub unsafe extern "C" fn hew_result_unwrap_ptr(res: *const HewResult) -> *mut c_void {
-    // SAFETY: caller guarantees `res` is valid.
-    let r = unsafe { &*res };
-    if is_variant_1(r.tag) {
-        abort_with_error(r);
-    }
-    decode_mut_ptr(r.value)
 }
 
 // ---------------------------------------------------------------------------

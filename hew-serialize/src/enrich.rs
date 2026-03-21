@@ -176,128 +176,130 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
         TypeExpr::Tuple(Vec::new())
     } else {
         match ty {
+            Ty::Named { name, args } => match (name.as_str(), args.len()) {
+                ("Option", 1) => {
+                    let inner_expr = require_converted(&args[0], "Option inner type")?;
+                    TypeExpr::Option(Box::new(inner_expr))
+                }
+                ("Result", 2) => {
+                    let ok_expr = require_converted(&args[0], "Result ok type")?;
+                    let err_expr = require_converted(&args[1], "Result error type")?;
+                    TypeExpr::Result {
+                        ok: Box::new(ok_expr),
+                        err: Box::new(err_expr),
+                    }
+                }
+                ("Generator", _) => {
+                    return Err(TypeExprConversionError::unsupported(
+                        ty,
+                        "generator type is not representable in serialized TypeExpr",
+                    ));
+                }
+                ("AsyncGenerator", _) => {
+                    return Err(TypeExprConversionError::unsupported(
+                        ty,
+                        "async generator type is not representable in serialized TypeExpr",
+                    ));
+                }
+                ("Range", 1) => {
+                    let inner = match &args[0] {
+                        Ty::Var(_) => &Ty::I64,
+                        other => other,
+                    };
+                    let inner_expr = require_converted(inner, "Range element type")?;
+                    TypeExpr::Named {
+                        name: "Range".into(),
+                        type_args: Some(vec![inner_expr]),
+                    }
+                }
+                _ => {
+                    let type_args = if args.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            args.iter()
+                                .enumerate()
+                                .map(|(index, arg)| {
+                                    require_converted(
+                                        arg,
+                                        format!("type argument {index} of `{name}`"),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        )
+                    };
+                    TypeExpr::Named {
+                        name: name.clone(),
+                        type_args,
+                    }
+                }
+            },
 
-        Ty::Named { name, args } => match (name.as_str(), args.len()) {
-            ("Option", 1) => {
-                let inner_expr = require_converted(&args[0], "Option inner type")?;
-                TypeExpr::Option(Box::new(inner_expr))
-            }
-            ("Result", 2) => {
-                let ok_expr = require_converted(&args[0], "Result ok type")?;
-                let err_expr = require_converted(&args[1], "Result error type")?;
-                TypeExpr::Result {
-                    ok: Box::new(ok_expr),
-                    err: Box::new(err_expr),
+            Ty::Function { params, ret } => {
+                let param_exprs = params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        require_converted(param, format!("function parameter {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret_expr = require_converted(ret, "function return type")?;
+                TypeExpr::Function {
+                    params: param_exprs,
+                    return_type: Box::new(ret_expr),
                 }
             }
-            ("Generator", _) => {
-                return Err(TypeExprConversionError::unsupported(
-                    ty,
-                    "generator type is not representable in serialized TypeExpr",
-                ));
-            }
-            ("AsyncGenerator", _) => {
-                return Err(TypeExprConversionError::unsupported(
-                    ty,
-                    "async generator type is not representable in serialized TypeExpr",
-                ));
-            }
-            ("Range", 1) => {
-                let inner = match &args[0] {
-                    Ty::Var(_) => &Ty::I64,
-                    other => other,
-                };
-                let inner_expr = require_converted(inner, "Range element type")?;
-                TypeExpr::Named {
-                    name: "Range".into(),
-                    type_args: Some(vec![inner_expr]),
+
+            Ty::Closure { params, ret, .. } => {
+                let param_exprs = params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        require_converted(param, format!("closure parameter {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret_expr = require_converted(ret, "closure return type")?;
+                TypeExpr::Function {
+                    params: param_exprs,
+                    return_type: Box::new(ret_expr),
                 }
             }
-            _ => {
-                let type_args = if args.is_empty() {
-                    None
-                } else {
-                    Some(
-                        args.iter()
-                            .enumerate()
-                            .map(|(index, arg)| {
-                                require_converted(arg, format!("type argument {index} of `{name}`"))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    )
-                };
-                TypeExpr::Named {
-                    name: name.clone(),
-                    type_args,
+
+            Ty::Tuple(elements) => {
+                let elem_exprs = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| {
+                        require_converted(element, format!("tuple element {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                TypeExpr::Tuple(elem_exprs)
+            }
+            Ty::Array(element, size) => {
+                let elem = require_converted(element, "array element type")?;
+                TypeExpr::Array {
+                    element: Box::new(elem),
+                    size: *size,
                 }
             }
-        },
-
-        Ty::Function { params, ret } => {
-            let param_exprs = params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    require_converted(param, format!("function parameter {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let ret_expr = require_converted(ret, "function return type")?;
-            TypeExpr::Function {
-                params: param_exprs,
-                return_type: Box::new(ret_expr),
+            Ty::Slice(element) => {
+                let elem = require_converted(element, "slice element type")?;
+                TypeExpr::Slice(Box::new(elem))
             }
-        }
 
-        Ty::Closure { params, ret, .. } => {
-            let param_exprs = params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    require_converted(param, format!("closure parameter {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let ret_expr = require_converted(ret, "closure return type")?;
-            TypeExpr::Function {
-                params: param_exprs,
-                return_type: Box::new(ret_expr),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => {
+                let pointee_expr = require_converted(pointee, "pointer pointee type")?;
+                TypeExpr::Pointer {
+                    is_mutable: *is_mutable,
+                    pointee: Box::new(pointee_expr),
+                }
             }
-        }
 
-        Ty::Tuple(elements) => {
-            let elem_exprs = elements
-                .iter()
-                .enumerate()
-                .map(|(index, element)| {
-                    require_converted(element, format!("tuple element {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            TypeExpr::Tuple(elem_exprs)
-        }
-        Ty::Array(element, size) => {
-            let elem = require_converted(element, "array element type")?;
-            TypeExpr::Array {
-                element: Box::new(elem),
-                size: *size,
-            }
-        }
-        Ty::Slice(element) => {
-            let elem = require_converted(element, "slice element type")?;
-            TypeExpr::Slice(Box::new(elem))
-        }
-
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => {
-            let pointee_expr = require_converted(pointee, "pointer pointee type")?;
-            TypeExpr::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee_expr),
-            }
-        }
-
-        Ty::TraitObject { traits } => {
-            let bounds = traits
+            Ty::TraitObject { traits } => {
+                let bounds = traits
                 .iter()
                 .enumerate()
                 .map(|(bound_index, b)| {
@@ -325,29 +327,29 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
-            TypeExpr::TraitObject(bounds)
-        }
-        Ty::Var(_) => {
-            return Err(TypeExprConversionError::unsupported(
-                ty,
-                "unresolved type variable reached serializer",
-            ));
-        }
-        Ty::Error => {
-            return Err(TypeExprConversionError::unsupported(
-                ty,
-                "type-checker error sentinel reached serializer",
-            ));
-        }
+                TypeExpr::TraitObject(bounds)
+            }
+            Ty::Var(_) => {
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "unresolved type variable reached serializer",
+                ));
+            }
+            Ty::Error => {
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "type-checker error sentinel reached serializer",
+                ));
+            }
 
-        // Machine types map to Named for serialization
-        Ty::Machine { name } => TypeExpr::Named {
-            name: name.clone(),
-            type_args: None,
-        },
-        // Primitives, Unit, and Never are handled by the table above
-        _ => unreachable!("primitive_name should have matched {ty:?}"),
-    }
+            // Machine types map to Named for serialization
+            Ty::Machine { name } => TypeExpr::Named {
+                name: name.clone(),
+                type_args: None,
+            },
+            // Primitives, Unit, and Never are handled by the table above
+            _ => unreachable!("primitive_name should have matched {ty:?}"),
+        }
     };
 
     Ok((te, span))
@@ -1591,10 +1593,7 @@ fn enrich_method_call(
             if c_symbol != *method {
                 let old_args = std::mem::take(args);
                 expr.0 = Expr::Call {
-                    function: Box::new((
-                        Expr::Identifier(c_symbol.clone()),
-                        receiver.1.clone(),
-                    )),
+                    function: Box::new((Expr::Identifier(c_symbol.clone()), receiver.1.clone())),
                     type_args: None,
                     args: old_args,
                     is_tail_call: false,
@@ -1741,9 +1740,7 @@ fn enrich_expr_with_diagnostics_inner(
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
-        Expr::MethodCall {
-            receiver, args, ..
-        } => {
+        Expr::MethodCall { receiver, args, .. } => {
             enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;

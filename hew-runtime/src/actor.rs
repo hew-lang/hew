@@ -4,6 +4,7 @@
 //! actor state machine constants. The full actor API (spawn, send, activate)
 //! will be implemented in a future iteration.
 
+use crate::util::MutexExt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -264,12 +265,7 @@ static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
 /// Register an actor in the live tracking set.
 fn track_actor(actor: *mut HewActor) {
-    let mut guard = match LIVE_ACTORS.lock() {
-        Ok(g) => g,
-        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-        // data remains valid after a thread panic.
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = LIVE_ACTORS.lock_or_recover();
     guard
         .get_or_insert_with(HashSet::new)
         .insert(ActorPtr(actor));
@@ -280,12 +276,7 @@ fn track_actor(actor: *mut HewActor) {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
 fn untrack_actor(actor: *mut HewActor) -> bool {
-    let mut guard = match LIVE_ACTORS.lock() {
-        Ok(g) => g,
-        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-        // data remains valid after a thread panic.
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = LIVE_ACTORS.lock_or_recover();
     if let Some(set) = guard.as_mut() {
         return set.remove(&ActorPtr(actor));
     }
@@ -301,12 +292,7 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
 /// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
-        let mut guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-            // data remains valid after a thread panic.
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = LIVE_ACTORS.lock_or_recover();
         match guard.as_mut() {
             Some(set) => std::mem::take(set),
             None => HashSet::new(),
@@ -872,12 +858,7 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     size: usize,
 ) -> c_int {
     let sent_local = {
-        let guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-            // data remains valid after a thread panic.
-            Err(e) => e.into_inner(),
-        };
+        let guard = LIVE_ACTORS.lock_or_recover();
         guard.as_ref().is_some_and(|set| {
             set.iter().any(|ptr| {
                 let actor = ptr.0;
@@ -1628,10 +1609,7 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 
     // Look up actor and send packed message.
     let sent = {
-        let guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let guard = LIVE_ACTORS.lock_or_recover();
         guard.as_ref().is_some_and(|set| {
             set.iter().any(|actor_ptr| {
                 let actor = actor_ptr.0;

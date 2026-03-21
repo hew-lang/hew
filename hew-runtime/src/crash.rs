@@ -11,6 +11,7 @@
 //! - [`RECENT_CRASHES`] — global ring buffer of recent crashes (64 entries)
 //! - C ABI functions for allocating/managing crash statistics
 
+use crate::util::MutexExt;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -306,10 +307,7 @@ pub unsafe extern "C" fn hew_crash_log_last() -> CrashReport {
 pub fn snapshot_crashes_json() -> String {
     use std::fmt::Write as _;
 
-    let crashes = match RECENT_CRASHES.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let crashes = RECENT_CRASHES.lock_or_recover();
 
     let mut json = String::from("[");
     for (i, crash) in crashes.iter().rev().enumerate() {

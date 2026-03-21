@@ -4,6 +4,7 @@
 //! using the Noise XX handshake pattern (`Noise_XX_25519_ChaChaPoly_BLAKE2s`).
 //! Per-connection `snow::TransportState` objects handle encrypt/decrypt.
 
+use crate::util::{MutexExt, RwLockExt};
 use std::collections::HashSet;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fs::{self, OpenOptions};
@@ -632,10 +633,7 @@ unsafe fn allowlist_copy_key(public_key: *const u8) -> Option<[u8; KEY_LEN]> {
 }
 
 fn allowlist_sync_active(list_ptr: *mut HewPeerAllowlist, list: &HewPeerAllowlist) {
-    let mut active = match ACTIVE_ALLOWLIST.write() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut active = ACTIVE_ALLOWLIST.write_or_recover();
     if let Some(current) = active.as_mut() {
         if current.ptr == list_ptr as usize {
             current.list = list.clone();
@@ -644,10 +642,7 @@ fn allowlist_sync_active(list_ptr: *mut HewPeerAllowlist, list: &HewPeerAllowlis
 }
 
 pub(crate) fn hew_allowlist_check_active_peer(public_key: &[u8; KEY_LEN]) -> bool {
-    let active = match ACTIVE_ALLOWLIST.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let active = ACTIVE_ALLOWLIST.read_or_recover();
     match active.as_ref() {
         Some(current) => current.list.allows(public_key),
         // Design choice: strict mode is fail-closed. If the active strict list is
@@ -678,10 +673,7 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
     let ptr = Box::into_raw(Box::new(list.clone()));
     #[cfg(not(test))]
     {
-        let mut active = match ACTIVE_ALLOWLIST.write() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut active = ACTIVE_ALLOWLIST.write_or_recover();
         *active = Some(ActiveAllowlist {
             ptr: ptr as usize,
             list,
@@ -711,10 +703,7 @@ pub unsafe extern "C" fn hew_allowlist_add(
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
-    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let _guard = ALLOWLIST_OPS_LOCK.lock_or_recover();
     // SAFETY: list was validated non-null and caller owns this pointer.
     let list_ref = unsafe { &mut *list };
     list_ref.keys.insert(key);
@@ -740,10 +729,7 @@ pub unsafe extern "C" fn hew_allowlist_remove(
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return -1;
     };
-    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let _guard = ALLOWLIST_OPS_LOCK.lock_or_recover();
     // SAFETY: list was validated non-null and caller owns this pointer.
     let list_ref = unsafe { &mut *list };
     list_ref.keys.remove(&key);
@@ -769,10 +755,7 @@ pub unsafe extern "C" fn hew_allowlist_check(
     let Some(key) = (unsafe { allowlist_copy_key(public_key) }) else {
         return 0;
     };
-    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let _guard = ALLOWLIST_OPS_LOCK.lock_or_recover();
     // SAFETY: list was validated non-null and caller owns this pointer.
     let list_ref = unsafe { &*list };
     c_int::from(list_ref.allows(&key))
@@ -787,15 +770,9 @@ pub unsafe extern "C" fn hew_allowlist_check(
 #[no_mangle]
 pub unsafe extern "C" fn hew_allowlist_free(list: *mut HewPeerAllowlist) {
     cabi_guard!(list.is_null());
-    let _guard = match ALLOWLIST_OPS_LOCK.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let _guard = ALLOWLIST_OPS_LOCK.lock_or_recover();
     {
-        let mut active = match ACTIVE_ALLOWLIST.write() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut active = ACTIVE_ALLOWLIST.write_or_recover();
         if let Some(current) = active.as_ref() {
             if current.ptr == list as usize {
                 let strict_mode = current.list.mode == AllowlistMode::Strict;

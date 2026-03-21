@@ -4,6 +4,7 @@
 //! monitors actor B, if B dies, A receives a DOWN message but does NOT crash.
 //! This module implements the monitor table and death notification logic.
 
+use crate::util::RwLockExt;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -89,10 +90,7 @@ pub unsafe extern "C" fn hew_actor_monitor(watcher: *mut HewActor, target: *mut 
     };
 
     let shard_index = get_shard_index(target_id);
-    let mut shard = match MONITOR_TABLE[shard_index].write() {
-        Ok(guard) => guard,
-        Err(e) => e.into_inner(),
-    };
+    let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
     shard
         .monitors
         .entry(target_id)
@@ -117,10 +115,7 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
     for shard_index in 0..MONITOR_SHARDS {
-        let mut shard = match MONITOR_TABLE[shard_index].write() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
 
         if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {
             // Remove from monitors list
@@ -145,10 +140,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
 
     // Take all monitors for this actor ID.
     let monitors = {
-        let mut shard = match MONITOR_TABLE[shard_index].write() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut shard = MONITOR_TABLE[shard_index].write_or_recover();
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
 
         // Also remove from ref_to_monitor mapping

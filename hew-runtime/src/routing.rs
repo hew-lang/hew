@@ -3,6 +3,7 @@
 //! Maps remote node IDs (high 16 bits of a PID) to active transport
 //! connection handles.
 
+use crate::util::RwLockExt;
 use std::collections::HashMap;
 use std::ffi::c_int;
 use std::sync::RwLock;
@@ -69,10 +70,7 @@ pub unsafe extern "C" fn hew_routing_add_route(
     }
     // SAFETY: caller guarantees `table` is valid.
     let table = unsafe { &*table };
-    let mut routes = match table.routes.write() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut routes = table.routes.write_or_recover();
     routes.insert(node_id, conn);
 }
 
@@ -88,10 +86,7 @@ pub unsafe extern "C" fn hew_routing_remove_route(table: *mut HewRoutingTable, n
     }
     // SAFETY: caller guarantees `table` is valid.
     let table = unsafe { &*table };
-    let mut routes = match table.routes.write() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut routes = table.routes.write_or_recover();
     routes.remove(&node_id);
 }
 
@@ -118,10 +113,7 @@ pub unsafe extern "C" fn hew_routing_lookup(table: *mut HewRoutingTable, target_
         return HEW_ROUTE_LOCAL_OR_MISSING;
     }
 
-    let routes = match table.routes.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let routes = table.routes.read_or_recover();
     routes
         .get(&node_id)
         .copied()
@@ -157,10 +149,7 @@ pub unsafe extern "C" fn hew_routing_is_local(
 pub fn snapshot_routing_json(table: &HewRoutingTable) -> String {
     use std::fmt::Write as _;
 
-    let routes = match table.routes.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let routes = table.routes.read_or_recover();
 
     let mut json = String::new();
     let _ = write!(

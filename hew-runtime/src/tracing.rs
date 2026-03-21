@@ -27,6 +27,7 @@
 //! - [`hew_trace_event_count`] — Number of recorded events.
 //! - [`hew_trace_drain`] — Drain recorded events into a buffer.
 
+use crate::util::MutexExt;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::c_int;
@@ -204,10 +205,7 @@ pub fn drain_events(max: usize) -> Vec<HewTraceEvent> {
     if max == 0 {
         return Vec::new();
     }
-    let mut events = match TRACE_EVENTS.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut events = TRACE_EVENTS.lock_or_recover();
     let count = events.len().min(max);
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
@@ -225,10 +223,7 @@ fn record_event(event: HewTraceEvent) {
     if !TRACING_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let mut events = match TRACE_EVENTS.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut events = TRACE_EVENTS.lock_or_recover();
     while events.len() >= MAX_TRACE_EVENTS {
         events.pop_front();
     }
@@ -497,10 +492,7 @@ pub extern "C" fn hew_trace_reset() {
 pub fn drain_events_json() -> String {
     use std::fmt::Write as _;
 
-    let mut events = match TRACE_EVENTS.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut events = TRACE_EVENTS.lock_or_recover();
 
     let count = events.len().min(256);
     let mut json = String::from("[");

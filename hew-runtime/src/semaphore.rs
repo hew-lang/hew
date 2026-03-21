@@ -1,5 +1,6 @@
 //! Hew runtime: counting semaphore for concurrency control.
 
+use crate::util::{CondvarExt, MutexExt};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,15 +43,9 @@ pub unsafe extern "C" fn hew_semaphore_acquire(sem: *mut HewSemaphore) {
 
     // SAFETY: Caller guarantees `sem` is a valid, properly aligned pointer.
     let sem = unsafe { &*sem };
-    let mut guard = match sem.count.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = sem.count.lock_or_recover();
     while *guard <= 0 {
-        guard = match sem.condvar.wait(guard) {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        guard = sem.condvar.wait_or_recover(guard);
     }
     *guard -= 1;
 }
@@ -70,10 +65,7 @@ pub unsafe extern "C" fn hew_semaphore_try_acquire(sem: *mut HewSemaphore) -> i3
 
     // SAFETY: Caller guarantees `sem` is a valid, properly aligned pointer.
     let sem = unsafe { &*sem };
-    let mut guard = match sem.count.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = sem.count.lock_or_recover();
     if *guard > 0 {
         *guard -= 1;
         1
@@ -105,20 +97,14 @@ pub unsafe extern "C" fn hew_semaphore_acquire_timeout(
     // SAFETY: Caller guarantees `sem` is a valid, properly aligned pointer.
     let sem = unsafe { &*sem };
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
-    let mut guard = match sem.count.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = sem.count.lock_or_recover();
 
     while *guard <= 0 {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return 0;
         }
-        let (new_guard, wait_result) = match sem.condvar.wait_timeout(guard, remaining) {
-            Ok(result) => result,
-            Err(e) => e.into_inner(),
-        };
+        let (new_guard, wait_result) = sem.condvar.wait_timeout_or_recover(guard, remaining);
         guard = new_guard;
         if wait_result.timed_out() && *guard <= 0 {
             return 0;
@@ -144,10 +130,7 @@ pub unsafe extern "C" fn hew_semaphore_release(sem: *mut HewSemaphore) {
 
     // SAFETY: Caller guarantees `sem` is a valid, properly aligned pointer.
     let sem = unsafe { &*sem };
-    let mut guard = match sem.count.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = sem.count.lock_or_recover();
     *guard += 1;
     drop(guard);
     sem.condvar.notify_one();
@@ -168,10 +151,7 @@ pub unsafe extern "C" fn hew_semaphore_count(sem: *const HewSemaphore) -> i32 {
 
     // SAFETY: Caller guarantees `sem` is a valid, properly aligned pointer.
     let sem = unsafe { &*sem };
-    *match sem.count.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
+    *sem.count.lock_or_recover()
 }
 
 // ── Cleanup ─────────────────────────────────────────────────────────────

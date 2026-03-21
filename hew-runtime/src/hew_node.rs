@@ -3,6 +3,7 @@
 //! Integrates transport, connection manager, SWIM membership, and
 //! name/actor registry wiring.
 
+use crate::util::{CondvarExt, MutexExt, RwLockExt};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;
@@ -129,10 +130,7 @@ pub(crate) unsafe fn try_remote_send(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     if *guard == 0 {
         return -1;
     }
@@ -289,10 +287,7 @@ fn handle_inbound_ask(
 
 /// Encode and send a reply envelope back to the source node.
 fn send_reply_envelope(target_node_id: u16, request_id: u64, reply_data: &[u8]) {
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     if *guard == 0 {
         return;
     }
@@ -305,10 +300,7 @@ fn send_reply_envelope(target_node_id: u16, request_id: u64, reply_data: &[u8]) 
 
     // Find the connection for the target node.
     let conn_id = {
-        let map = match node_ref.conn_by_node.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let map = node_ref.conn_by_node.lock_or_recover();
         match map.get(&target_node_id) {
             Some(&id) => id,
             None => return,
@@ -379,10 +371,7 @@ extern "C" fn node_registry_gossip_callback(
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
-    let mut map = match registry.remote_names.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut map = registry.remote_names.lock_or_recover();
     if is_add {
         map.insert(key, actor_pid);
     } else {
@@ -697,10 +686,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
         .name(thread_name)
         .spawn(move || accept_loop(transport, conn_mgr, stop.as_ref()));
     if let Ok(h) = handle {
-        let mut guard = match node.accept_thread.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = node.accept_thread.lock_or_recover();
         *guard = Some(h);
     } else {
         fail_start!("hew_node_start: failed to spawn accept thread");
@@ -744,20 +730,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
 
     node.state.store(NODE_STATE_STOPPING, Ordering::Release);
     {
-        let mut guard = match CURRENT_NODE.write() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = CURRENT_NODE.write_or_recover();
         if *guard == ptr::from_mut(node) as usize {
             *guard = 0;
         }
     }
     node.accept_stop.store(true, Ordering::Release);
     {
-        let mut guard = match node.accept_thread.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = node.accept_thread.lock_or_recover();
         if let Some(handle) = guard.take() {
             let _ = handle.join();
         }
@@ -800,10 +780,7 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
     }
 
     {
-        let mut guard = match node.conn_by_node.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = node.conn_by_node.lock_or_recover();
         guard.clear();
     }
 
@@ -871,10 +848,7 @@ pub unsafe extern "C" fn hew_node_register(
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let mut map = match reg.remote_names.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut map = reg.remote_names.lock_or_recover();
     map.insert(key.clone(), actor);
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
@@ -913,10 +887,7 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let mut map = match reg.remote_names.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut map = reg.remote_names.lock_or_recover();
     map.remove(&key);
 
     // Propagate removal to cluster gossip.
@@ -955,10 +926,7 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let map = match reg.remote_names.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let map = reg.remote_names.lock_or_recover();
     map.get(&key).copied().unwrap_or(0)
 }
 
@@ -1005,10 +973,7 @@ pub unsafe extern "C" fn hew_node_send(
     let mut conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
     if conn_id < 0 {
         conn_id = {
-            let map = match node.conn_by_node.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let map = node.conn_by_node.lock_or_recover();
             let Some(conn_id) = map.get(&target_node_id) else {
                 return -1;
             };
@@ -1100,10 +1065,7 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
     };
 
     {
-        let mut map = match node.conn_by_node.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut map = node.conn_by_node.lock_or_recover();
         map.insert(peer_node_id, conn_id);
     }
 
@@ -1165,10 +1127,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
     // Read the current node pointer (hew_node_stop will clear CURRENT_NODE).
     let ptr = {
-        let guard = match CURRENT_NODE.read() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let guard = CURRENT_NODE.read_or_recover();
         *guard as *mut HewNode
     };
     if ptr.is_null() {
@@ -1191,10 +1150,7 @@ pub unsafe extern "C" fn hew_node_api_connect(addr: *const c_char) -> c_int {
     if addr.is_null() {
         return -1;
     }
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     let node = *guard as *mut HewNode;
     if node.is_null() {
         set_last_error("Node::connect: no active node");
@@ -1220,10 +1176,7 @@ pub unsafe extern "C" fn hew_node_api_register(
     }
     // SAFETY: actor was null-checked above and is a valid HewActor pointer.
     let actor_id = unsafe { (*actor).pid };
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     let node = *guard as *mut HewNode;
     if node.is_null() {
         set_last_error("Node::register: no active node");
@@ -1243,10 +1196,7 @@ pub unsafe extern "C" fn hew_node_api_lookup(name: *const c_char) -> u64 {
     if name.is_null() {
         return 0;
     }
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     let node = *guard as *mut HewNode;
     if node.is_null() {
         return 0;
@@ -1339,10 +1289,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
     }
 
     // Remote path: send message over mesh with request_id, wait for reply.
-    let guard = match CURRENT_NODE.read() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = CURRENT_NODE.read_or_recover();
     let node_ptr = *guard as *mut HewNode;
     if node_ptr.is_null() {
         return alloc_zeroed_reply();
@@ -1359,10 +1306,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
             // SAFETY: routing_table is valid while node is running.
             unsafe { crate::routing::hew_routing_lookup(node.routing_table, pid) };
         if cid < 0 {
-            let map = match node.conn_by_node.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let map = node.conn_by_node.lock_or_recover();
             match map.get(&target_node_id) {
                 Some(&id) => cid = id,
                 None => return alloc_zeroed_reply(),
@@ -1444,10 +1388,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
             REPLY_TABLE.remove(request_id);
             return alloc_zeroed_reply();
         }
-        let (new_guard, wait_result) = match pending.cond.wait_timeout(data_guard, remaining) {
-            Ok(r) => r,
-            Err(e) => e.into_inner(),
-        };
+        let (new_guard, wait_result) = pending.cond.wait_timeout_or_recover(data_guard, remaining);
         data_guard = new_guard;
         if wait_result.timed_out() && data_guard.is_none() {
             REPLY_TABLE.remove(request_id);
@@ -1513,10 +1454,7 @@ mod tests {
 
     #[test]
     fn node_lifecycle_start_stop() {
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
         // SAFETY: bind_addr is a valid C string for the duration of this test.
@@ -1540,10 +1478,7 @@ mod tests {
 
     #[test]
     fn local_registry_register_and_lookup() {
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
 
         crate::registry::hew_registry_clear();
 
@@ -1581,10 +1516,7 @@ mod tests {
     #[test]
     #[ignore = "can be flaky on shared CI networking"]
     fn two_node_connect_and_handshake() {
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
 
         crate::registry::hew_registry_clear();
 
@@ -1760,10 +1692,7 @@ mod tests {
     fn remote_lookup_via_registry_gossip() {
         // Verify that a registry gossip callback populates remote_names
         // and that hew_node_lookup falls through to it.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
         crate::registry::hew_registry_clear();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");
@@ -1814,10 +1743,7 @@ mod tests {
     #[test]
     fn register_emits_gossip_event() {
         // Verify that hew_node_register queues a gossip event in the cluster.
-        let _guard = match NODE_TEST_LOCK.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let _guard = NODE_TEST_LOCK.lock_or_recover();
         crate::registry::hew_registry_clear();
 
         let bind_addr = CString::new("127.0.0.1:0").expect("valid bind addr");

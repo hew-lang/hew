@@ -3,6 +3,7 @@
 //! Runs on a dedicated OS thread (not a Hew actor) so it remains
 //! responsive even when the scheduler is overloaded.
 
+use crate::util::MutexExt;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
@@ -113,10 +114,7 @@ fn json_response(req: Request, body: &str) {
 
 /// `GET /api/metrics` — current scheduler counters.
 fn serve_current_metrics(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
-    let ring_guard = match ring.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let ring_guard = ring.lock_or_recover();
 
     let snap = crate::profiler::metrics::MetricsSnapshot::capture(ring_guard.epoch());
     drop(ring_guard);
@@ -157,10 +155,7 @@ fn serve_memory(req: Request) {
 
 /// `GET /api/metrics/history` — time-series from ring buffer.
 fn serve_history(req: Request, ring: &Arc<Mutex<MetricsRing>>) {
-    let ring_guard = match ring.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let ring_guard = ring.lock_or_recover();
     let entries = ring_guard.read_all();
     drop(ring_guard);
 

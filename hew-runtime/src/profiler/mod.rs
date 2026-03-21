@@ -20,6 +20,7 @@ pub mod metrics;
 pub mod pprof;
 mod server;
 
+use crate::util::MutexExt;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -106,10 +107,7 @@ pub fn maybe_start_with_context(
 fn sampler_loop(ring: &Arc<Mutex<MetricsRing>>) {
     loop {
         thread::sleep(Duration::from_secs(1));
-        let mut ring_guard = match ring.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut ring_guard = ring.lock_or_recover();
         ring_guard.sample();
     }
 }

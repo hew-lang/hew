@@ -13,6 +13,7 @@
 //! 3. **Terminate** — Force-stop any remaining actors and shut down the
 //!    scheduler.
 
+use crate::util::MutexExt;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -144,10 +145,7 @@ pub(crate) unsafe fn free_registered_supervisors() {
 
 #[cfg(feature = "profiler")]
 pub(crate) fn registered_supervisors_snapshot() -> Vec<*mut crate::supervisor::HewSupervisor> {
-    let sups = match TOP_LEVEL_SUPERVISORS.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let sups = TOP_LEVEL_SUPERVISORS.lock_or_recover();
     sups.iter().map(|sup| sup.0).collect()
 }
 

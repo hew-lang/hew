@@ -5,6 +5,7 @@
 //! blocks in [`hew_reply_wait`] (or [`hew_reply_wait_timeout`]) until
 //! the value is ready.
 
+use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -133,10 +134,7 @@ pub unsafe extern "C" fn hew_reply(ch: *mut HewReplyChannel, value: *mut c_void,
         (*ch).ready.store(true, Ordering::Release);
 
         // Wake the condvar waiter.
-        let guard = match (*ch).lock.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let guard = (*ch).lock.lock_or_recover();
         (*ch).cond.notify_one();
         drop(guard);
         hew_reply_channel_free(ch);
@@ -170,15 +168,9 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
         }
 
         // Slow path: wait on condvar.
-        let mut guard = match (*ch).lock.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = (*ch).lock.lock_or_recover();
         while !(*ch).ready.load(Ordering::Acquire) {
-            guard = match (*ch).cond.wait(guard) {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            guard = (*ch).cond.wait_or_recover(guard);
         }
         let result = (*ch).value;
         (*ch).value = ptr::null_mut();
@@ -216,15 +208,9 @@ pub(crate) unsafe fn hew_reply_wait_with_size(
         }
 
         // Slow path: wait on condvar.
-        let mut guard = match (*ch).lock.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = (*ch).lock.lock_or_recover();
         while !(*ch).ready.load(Ordering::Acquire) {
-            guard = match (*ch).cond.wait(guard) {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            guard = (*ch).cond.wait_or_recover(guard);
         }
         let result = (*ch).value;
         *out_size = (*ch).value_size;
@@ -261,20 +247,14 @@ pub unsafe extern "C" fn hew_reply_wait_timeout(
 
         let deadline =
             Instant::now() + Duration::from_millis(u64::try_from(timeout_ms.max(0)).unwrap_or(0));
-        let mut guard = match (*ch).lock.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = (*ch).lock.lock_or_recover();
 
         while !(*ch).ready.load(Ordering::Acquire) {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return ptr::null_mut();
             }
-            let (new_guard, wait_result) = match (*ch).cond.wait_timeout(guard, remaining) {
-                Ok(result) => result,
-                Err(e) => e.into_inner(),
-            };
+            let (new_guard, wait_result) = (*ch).cond.wait_timeout_or_recover(guard, remaining);
             guard = new_guard;
             if wait_result.timed_out() && !(*ch).ready.load(Ordering::Acquire) {
                 return ptr::null_mut();

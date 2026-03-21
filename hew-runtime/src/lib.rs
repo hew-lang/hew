@@ -76,6 +76,8 @@ macro_rules! cabi_guard {
     };
 }
 
+pub(crate) mod util;
+
 // Profiler (must be declared before other modules so the global
 // allocator is installed before any allocations occur).
 // Not available on WASM — profiler requires HTTP server for dashboard.

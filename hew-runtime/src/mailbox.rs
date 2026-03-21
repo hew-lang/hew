@@ -15,6 +15,7 @@
 //!
 //! System messages use a separate lock-free MPSC queue.
 
+use crate::util::{CondvarExt, MutexExt};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::ptr;
@@ -629,10 +630,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
                 }
                 HewOverflowPolicy::Block => {
                     // Wait on condvar until space is available.
-                    let mut q = match mb.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mb.slow_path.lock_or_recover();
                     loop {
                         if mb.closed.load(Ordering::Acquire) {
                             return HewError::ErrActorStopped as i32;
@@ -641,10 +639,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
                         if len < mb.capacity {
                             break;
                         }
-                        q = match mb.not_full.wait(q) {
-                            Ok(g) => g,
-                            Err(e) => e.into_inner(),
-                        };
+                        q = mb.not_full.wait_or_recover(q);
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, size) };
@@ -659,10 +654,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
                     return HewError::Ok as i32;
                 }
                 HewOverflowPolicy::Coalesce => {
-                    let mut q = match mb.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mb.slow_path.lock_or_recover();
                     // Scan for an existing message with the same coalesce key.
                     // SAFETY: `data` validity guaranteed by caller.
                     let incoming_key =
@@ -706,10 +698,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
                                 if len < mb.capacity {
                                     break;
                                 }
-                                q = match mb.not_full.wait(q) {
-                                    Ok(g) => g,
-                                    Err(e) => e.into_inner(),
-                                };
+                                q = mb.not_full.wait_or_recover(q);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, size) };
@@ -745,10 +734,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
                 }
                 // DROP_OLD: dequeue the oldest message, then push the new one.
                 HewOverflowPolicy::DropOld => {
-                    let mut q = match mb.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mb.slow_path.lock_or_recover();
                     if let Some(old) = q.user_queue.pop_front() {
                         // SAFETY: node was allocated by msg_node_alloc.
                         unsafe { hew_msg_node_free(old) };
@@ -777,10 +763,7 @@ pub unsafe extern "C" fn hew_mailbox_send(
     }
 
     if mb.use_slow_path {
-        let mut q = match mb.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut q = mb.slow_path.lock_or_recover();
         q.user_queue.push_back(node);
     } else {
         // SAFETY: `node` was just allocated with next == null.
@@ -827,10 +810,7 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
     }
 
     if mb.use_slow_path {
-        let mut q = match mb.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut q = mb.slow_path.lock_or_recover();
         q.user_queue.push_back(node);
     } else {
         // SAFETY: `node` was just allocated with next == null.
@@ -920,10 +900,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                     if node.is_null() {
                         return -1;
                     }
-                    let mut q = match mbr.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mbr.slow_path.lock_or_recover();
                     if let Some(old) = q.user_queue.pop_front() {
                         // SAFETY: node was allocated by msg_node_alloc.
                         unsafe { hew_msg_node_free(old) };
@@ -936,10 +913,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                     return 2;
                 }
                 HewOverflowPolicy::Coalesce => {
-                    let mut q = match mbr.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mbr.slow_path.lock_or_recover();
                     // Scan for an existing message with the same coalesce key.
                     // SAFETY: `data` validity guaranteed by caller.
                     let incoming_key = unsafe {
@@ -1004,10 +978,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                                 if len < mbr.capacity {
                                     break;
                                 }
-                                q = match mbr.not_full.wait(q) {
-                                    Ok(g) => g,
-                                    Err(e) => e.into_inner(),
-                                };
+                                q = mbr.not_full.wait_or_recover(q);
                             }
                             // SAFETY: `data` validity guaranteed by caller.
                             let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
@@ -1027,10 +998,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                 HewOverflowPolicy::Fail => return -1,
                 HewOverflowPolicy::Block => {
                     // Wait on condvar until space is available.
-                    let mut q = match mbr.slow_path.lock() {
-                        Ok(g) => g,
-                        Err(e) => e.into_inner(),
-                    };
+                    let mut q = mbr.slow_path.lock_or_recover();
                     loop {
                         if mbr.closed.load(Ordering::Acquire) {
                             return -1;
@@ -1039,10 +1007,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
                         if len < mbr.capacity {
                             break;
                         }
-                        q = match mbr.not_full.wait(q) {
-                            Ok(g) => g,
-                            Err(e) => e.into_inner(),
-                        };
+                        q = mbr.not_full.wait_or_recover(q);
                     }
                     // SAFETY: `data` validity guaranteed by caller.
                     let node = unsafe { msg_node_alloc(msg_type, data, data_size) };
@@ -1067,10 +1032,7 @@ pub unsafe extern "C" fn hew_mailbox_try_push(
     }
 
     if mbr.use_slow_path {
-        let mut q = match mbr.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut q = mbr.slow_path.lock_or_recover();
         q.user_queue.push_back(node);
     } else {
         // SAFETY: `node` was just allocated with next == null.
@@ -1137,10 +1099,7 @@ pub unsafe extern "C" fn hew_mailbox_try_recv(mb: *mut HewMailbox) -> *mut HewMs
 
     // User messages: slow path uses mutex, fast path uses lock-free queue.
     if mb.use_slow_path {
-        let mut q = match mb.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut q = mb.slow_path.lock_or_recover();
         if let Some(node) = q.user_queue.pop_front() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
@@ -1199,10 +1158,7 @@ pub unsafe extern "C" fn hew_mailbox_has_messages(mb: *mut HewMailbox) -> i32 {
     }
 
     if mb.use_slow_path {
-        let q = match mb.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let q = mb.slow_path.lock_or_recover();
         i32::from(!q.user_queue.is_empty())
     } else {
         i32::from(mb.user_fast.has_messages())
@@ -1262,10 +1218,7 @@ pub unsafe extern "C" fn hew_mailbox_free(mb: *mut HewMailbox) {
 
     // Drain slow-path user queue (if used).
     {
-        let mut q = match mailbox.slow_path.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut q = mailbox.slow_path.lock_or_recover();
         while let Some(node) = q.user_queue.pop_front() {
             // SAFETY: Each node was allocated by `msg_node_alloc`.
             unsafe { hew_msg_node_free(node) };

@@ -254,9 +254,7 @@ fn record_lifecycle_event(actor_id: u64, event_type: i32, msg_type: i32) {
 /// `hi` and `lo` must be valid, non-null pointers.
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_new_id(hi: *mut u64, lo: *mut u64) {
-    if hi.is_null() || lo.is_null() {
-        return;
-    }
+    cabi_guard!(hi.is_null() || lo.is_null());
     // SAFETY: caller guarantees hi and lo are valid.
     unsafe {
         *hi = next_random_id();
@@ -362,9 +360,7 @@ pub extern "C" fn hew_trace_lifecycle(actor_id: u64, event_type: i32) {
 /// `ctx` must be a valid pointer to a [`HewTraceContext`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_set_context(ctx: *const HewTraceContext) {
-    if ctx.is_null() {
-        return;
-    }
+    cabi_guard!(ctx.is_null());
     // SAFETY: caller guarantees `ctx` is valid.
     let new_ctx = unsafe { *ctx };
     CURRENT_CONTEXT.with(|c| c.set(new_ctx));
@@ -377,9 +373,7 @@ pub unsafe extern "C" fn hew_trace_set_context(ctx: *const HewTraceContext) {
 /// `out` must be a valid pointer to a [`HewTraceContext`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_get_context(out: *mut HewTraceContext) {
-    if out.is_null() {
-        return;
-    }
+    cabi_guard!(out.is_null());
     let ctx = CURRENT_CONTEXT.with(Cell::get);
     // SAFETY: caller guarantees `out` is valid.
     unsafe { *out = ctx };
@@ -439,9 +433,7 @@ pub extern "C" fn hew_trace_event_count() -> u64 {
 /// Panics if the internal event buffer mutex is poisoned.
 #[no_mangle]
 pub unsafe extern "C" fn hew_trace_drain(out: *mut HewTraceEvent, max_count: u32) -> u32 {
-    if out.is_null() || max_count == 0 {
-        return 0;
-    }
+    cabi_guard!(out.is_null() || max_count == 0, 0);
     let mut events = TRACE_EVENTS.lock().unwrap();
     let count = events.len().min(max_count as usize);
     for i in 0..count {

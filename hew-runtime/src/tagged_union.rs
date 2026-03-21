@@ -21,9 +21,6 @@ pub(crate) fn encode_i64(value: i64) -> u64 {
 pub(crate) fn encode_f64(value: f64) -> u64 {
     value.to_bits()
 }
-pub(crate) fn encode_ptr<T>(value: *mut T) -> u64 {
-    value as u64
-}
 pub(crate) fn decode_i32(value: u64) -> i32 {
     value as i32
 }

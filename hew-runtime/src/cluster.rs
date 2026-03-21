@@ -41,6 +41,7 @@
 //! - [`hew_cluster_notify_connection_lost`] — Notify SWIM when a connection drops.
 //! - [`hew_cluster_notify_connection_established`] — Notify SWIM when a connection is restored.
 
+use crate::util::MutexExt;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::Mutex;
@@ -235,10 +236,7 @@ impl HewCluster {
 
     /// Add or update a member in the membership list.
     fn upsert_member(&self, node_id: u16, state: i32, incarnation: u64, addr: &[u8]) {
-        let mut members = match self.members.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut members = self.members.lock_or_recover();
 
         if let Some(existing) = members.iter_mut().find(|m| m.node_id == node_id) {
             if existing.state == MEMBER_DEAD && state == MEMBER_ALIVE {
@@ -280,10 +278,7 @@ impl HewCluster {
 
     /// Emit a gossip event.
     fn emit_event(&self, node_id: u16, new_state: i32, incarnation: u64) {
-        let mut events = match self.events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut events = self.events.lock_or_recover();
         // Deduplicate: remove older event for this node.
         events.retain(|e| e.node_id != node_id);
         // Add new event.
@@ -342,10 +337,7 @@ impl HewCluster {
         reason = "used when wiring gossip into SWIM message piggybacking"
     )]
     fn take_gossip(&self, max_count: usize) -> Vec<MemberEvent> {
-        let mut events = match self.events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut events = self.events.lock_or_recover();
         let mut result = Vec::with_capacity(max_count);
         for event in events.iter_mut() {
             if result.len() >= max_count {
@@ -395,10 +387,7 @@ impl HewCluster {
 
     /// Update `last_seen_ms` for a member.
     fn update_last_seen(&self, node_id: u16) {
-        let mut members = match self.members.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut members = self.members.lock_or_recover();
         if let Some(m) = members.iter_mut().find(|m| m.node_id == node_id) {
             // SAFETY: hew_now_ms has no preconditions.
             m.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
@@ -412,10 +401,7 @@ impl HewCluster {
     fn tick(&mut self, now_ms: u64) {
         self.last_tick_ms = now_ms;
 
-        let mut members = match self.members.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut members = self.members.lock_or_recover();
 
         let suspect_timeout = u64::from(self.config.suspect_timeout_ms);
         let ping_timeout = u64::from(self.config.ping_timeout_ms);
@@ -453,10 +439,7 @@ impl HewCluster {
     /// Notify SWIM state machine that a connection dropped.
     fn notify_connection_lost(&self, node_id: u16) {
         let member = {
-            let members = match self.members.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let members = self.members.lock_or_recover();
             members
                 .iter()
                 .find(|m| m.node_id == node_id)
@@ -478,10 +461,7 @@ impl HewCluster {
     /// Notify SWIM state machine that a connection was established.
     fn notify_connection_established(&self, node_id: u16) {
         let member = {
-            let members = match self.members.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let members = self.members.lock_or_recover();
             members
                 .iter()
                 .find(|m| m.node_id == node_id)
@@ -505,10 +485,7 @@ impl HewCluster {
 
     /// Get the next ping target (round-robin through members).
     fn next_ping_target(&mut self) -> Option<u16> {
-        let members = match self.members.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let members = self.members.lock_or_recover();
 
         let alive_members: Vec<u16> = members
             .iter()
@@ -530,10 +507,7 @@ impl HewCluster {
 
     /// Queue a registry add event for gossip dissemination.
     pub fn emit_registry_add(&self, name: &str, actor_pid: u64) {
-        let mut events = match self.registry_events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut events = self.registry_events.lock_or_recover();
         // Deduplicate: remove prior event for the same name.
         events.retain(|e| e.name != name);
         if events.len() >= MAX_GOSSIP_EVENTS {
@@ -549,10 +523,7 @@ impl HewCluster {
 
     /// Queue a registry remove event for gossip dissemination.
     pub fn emit_registry_remove(&self, name: &str) {
-        let mut events = match self.registry_events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut events = self.registry_events.lock_or_recover();
         events.retain(|e| e.name != name);
         if events.len() >= MAX_GOSSIP_EVENTS {
             events.pop_front();
@@ -568,10 +539,7 @@ impl HewCluster {
     /// Get pending registry gossip events (up to `max_count`),
     /// incrementing dissemination counters and pruning expired events.
     pub fn take_registry_gossip(&self, max_count: usize) -> Vec<RegistryEvent> {
-        let mut events = match self.registry_events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let mut events = self.registry_events.lock_or_recover();
         let mut result = Vec::with_capacity(max_count);
         for event in events.iter_mut() {
             if result.len() >= max_count {
@@ -586,10 +554,7 @@ impl HewCluster {
 
     /// Get the number of pending registry gossip events.
     pub fn registry_gossip_count(&self) -> usize {
-        let events = match self.registry_events.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let events = self.registry_events.lock_or_recover();
         events.len()
     }
 
@@ -701,10 +666,7 @@ pub unsafe extern "C" fn hew_cluster_member_count(cluster: *mut HewCluster) -> c
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    let members = match cluster.members.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let members = cluster.members.lock_or_recover();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -951,10 +913,7 @@ pub unsafe extern "C" fn hew_cluster_alive_count(cluster: *mut HewCluster) -> c_
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    let members = match cluster.members.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let members = cluster.members.lock_or_recover();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -977,10 +936,7 @@ pub unsafe extern "C" fn hew_cluster_gossip_count(cluster: *mut HewCluster) -> c
     }
     // SAFETY: caller guarantees `cluster` is valid.
     let cluster = unsafe { &*cluster };
-    let events = match cluster.events.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let events = cluster.events.lock_or_recover();
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
@@ -1003,10 +959,7 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
     // SAFETY: hew_now_ms has no preconditions.
     let now_ms = unsafe { crate::io_time::hew_now_ms() };
 
-    let members = match cluster.members.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let members = cluster.members.lock_or_recover();
 
     let mut json = String::from("[");
     for (i, m) in members.iter().enumerate() {

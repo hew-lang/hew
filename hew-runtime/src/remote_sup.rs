@@ -4,6 +4,7 @@
 //! remote PIDs, watches SWIM membership for remote node death, and invokes a
 //! callback when monitored actors are considered dead.
 
+use crate::util::MutexExt;
 use std::collections::HashMap;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -101,17 +102,10 @@ pub struct HewRemoteSupervisor {
 
 impl HewRemoteSupervisor {
     fn remote_death_dispatch(&self) -> Option<RemoteDeathDispatch> {
-        let callback = *match self.callback.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let callback = *self.callback.lock_or_recover();
         let callback = callback?;
 
-        let monitored = match self.monitored.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        }
-        .clone();
+        let monitored = self.monitored.lock_or_recover().clone();
         Some(RemoteDeathDispatch {
             callback,
             remote_node_id: self.remote_node_id,
@@ -121,19 +115,13 @@ impl HewRemoteSupervisor {
     }
 
     fn reset_quarantine_state(&self) {
-        let mut state = match self.quarantine_state.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut state = self.quarantine_state.lock_or_recover();
         *state = QuarantineState::default();
     }
 
     fn process_membership_event(&self, event: u8) -> Option<RemoteDeathDispatch> {
         let now = Instant::now();
-        let mut state = match self.quarantine_state.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut state = self.quarantine_state.lock_or_recover();
         let quarantine = Duration::from_millis(self.dead_quarantine_ms);
 
         let should_dispatch = match event {
@@ -182,10 +170,7 @@ impl HewRemoteSupervisor {
     fn poll_quarantine(&self) -> Option<RemoteDeathDispatch> {
         let now = Instant::now();
         let quarantine = Duration::from_millis(self.dead_quarantine_ms);
-        let mut state = match self.quarantine_state.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut state = self.quarantine_state.lock_or_recover();
 
         if !state.pending_dead || state.notified_dead {
             return None;
@@ -217,10 +202,7 @@ extern "C" fn remote_sup_membership_callback(node_id: u16, event: u8, user_data:
     let cluster_key = user_data as usize;
     let mut dispatches = Vec::new();
     let subscriptions = cluster_subscriptions();
-    let registry = match subscriptions.lock() {
-        Ok(guard) => guard,
-        Err(e) => e.into_inner(),
-    };
+    let registry = subscriptions.lock_or_recover();
     if let Some(supervisors) = registry.get(&cluster_key) {
         for sup_addr in supervisors {
             // SAFETY: pointers are registered by start and removed by stop under the same lock.
@@ -295,10 +277,7 @@ pub unsafe extern "C" fn hew_remote_sup_monitor(
     if pid_node != 0 && pid_node != sup.remote_node_id {
         return -1;
     }
-    let mut monitored = match sup.monitored.lock() {
-        Ok(guard) => guard,
-        Err(e) => e.into_inner(),
-    };
+    let mut monitored = sup.monitored.lock_or_recover();
     if monitored.contains(&remote_pid) {
         return -1;
     }
@@ -325,10 +304,7 @@ pub unsafe extern "C" fn hew_remote_sup_unmonitor(
 
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    let mut monitored = match sup.monitored.lock() {
-        Ok(guard) => guard,
-        Err(e) => e.into_inner(),
-    };
+    let mut monitored = sup.monitored.lock_or_recover();
     let Some(idx) = monitored.iter().position(|pid| *pid == remote_pid) else {
         return -1;
     };
@@ -366,10 +342,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
     let cluster_key = node.cluster as usize;
     let subscriptions = cluster_subscriptions();
     {
-        let mut registry = match subscriptions.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut registry = subscriptions.lock_or_recover();
         let entry = registry.entry(cluster_key).or_default();
         if entry.is_empty() {
             // SAFETY: cluster pointer is valid while node is alive.
@@ -415,10 +388,7 @@ pub unsafe extern "C" fn hew_remote_sup_start(sup: *mut HewRemoteSupervisor) -> 
         sup.running.store(false, Ordering::Release);
         let mut clear_cluster_callback = false;
         {
-            let mut registry = match subscriptions.lock() {
-                Ok(guard) => guard,
-                Err(e) => e.into_inner(),
-            };
+            let mut registry = subscriptions.lock_or_recover();
             if let Some(entry) = registry.get_mut(&cluster_key) {
                 entry.retain(|addr| *addr != sup_addr);
                 if entry.is_empty() {
@@ -465,10 +435,7 @@ pub unsafe extern "C" fn hew_remote_sup_stop(sup: *mut HewRemoteSupervisor) -> c
     let subscriptions = cluster_subscriptions();
     let mut clear_cluster_callback = false;
     {
-        let mut registry = match subscriptions.lock() {
-            Ok(guard) => guard,
-            Err(e) => e.into_inner(),
-        };
+        let mut registry = subscriptions.lock_or_recover();
         if let Some(entry) = registry.get_mut(&cluster_key) {
             entry.retain(|addr| *addr != sup_addr);
             if entry.is_empty() {
@@ -513,10 +480,7 @@ pub unsafe extern "C" fn hew_remote_sup_set_callback(
 
     // SAFETY: caller guarantees `sup` is valid.
     let sup = unsafe { &*sup };
-    *match sup.callback.lock() {
-        Ok(guard) => guard,
-        Err(e) => e.into_inner(),
-    } = callback;
+    *sup.callback.lock_or_recover() = callback;
 }
 
 /// Free a remote supervisor.

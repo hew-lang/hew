@@ -6,6 +6,7 @@
 //! Registration is O(1) and lock-free for the common path (spawn/free).
 //! Enumeration (used by the HTTP API) takes a brief lock.
 
+use crate::util::MutexExt;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -40,10 +41,7 @@ pub unsafe fn register(actor: *mut HewActor) {
     }
     // SAFETY: Actor was just allocated and is valid.
     let id = unsafe { (*actor).id };
-    let mut guard = match REGISTRY.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = REGISTRY.lock_or_recover();
     guard
         .get_or_insert_with(HashMap::new)
         .insert(id, SendPtr(actor));
@@ -60,10 +58,7 @@ pub unsafe fn unregister(actor: *mut HewActor) {
     }
     // SAFETY: Actor is still valid at this point (called before free).
     let id = unsafe { (*actor).id };
-    let mut guard = match REGISTRY.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = REGISTRY.lock_or_recover();
     if let Some(map) = guard.as_mut() {
         map.remove(&id);
     }
@@ -90,10 +85,7 @@ pub struct ActorSnapshot {
 
 /// Enumerate all live actors and return a snapshot of their stats.
 pub fn snapshot_all() -> Vec<ActorSnapshot> {
-    let guard = match REGISTRY.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
+    let guard = REGISTRY.lock_or_recover();
 
     let Some(map) = guard.as_ref() else {
         return Vec::new();

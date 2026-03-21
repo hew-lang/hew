@@ -4,6 +4,7 @@
 //! actor state machine constants. The full actor API (spawn, send, activate)
 //! will be implemented in a future iteration.
 
+use crate::util::MutexExt;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -264,12 +265,7 @@ static LIVE_ACTORS: Mutex<Option<HashSet<ActorPtr>>> = Mutex::new(None);
 
 /// Register an actor in the live tracking set.
 fn track_actor(actor: *mut HewActor) {
-    let mut guard = match LIVE_ACTORS.lock() {
-        Ok(g) => g,
-        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-        // data remains valid after a thread panic.
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = LIVE_ACTORS.lock_or_recover();
     guard
         .get_or_insert_with(HashSet::new)
         .insert(ActorPtr(actor));
@@ -280,12 +276,7 @@ fn track_actor(actor: *mut HewActor) {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by [`cleanup_all_actors`]).
 fn untrack_actor(actor: *mut HewActor) -> bool {
-    let mut guard = match LIVE_ACTORS.lock() {
-        Ok(g) => g,
-        // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-        // data remains valid after a thread panic.
-        Err(e) => e.into_inner(),
-    };
+    let mut guard = LIVE_ACTORS.lock_or_recover();
     if let Some(set) = guard.as_mut() {
         return set.remove(&ActorPtr(actor));
     }
@@ -301,12 +292,7 @@ fn untrack_actor(actor: *mut HewActor) -> bool {
 /// or when no dispatch is in progress (WASM).
 pub(crate) unsafe fn cleanup_all_actors() {
     let actors = {
-        let mut guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-            // data remains valid after a thread panic.
-            Err(e) => e.into_inner(),
-        };
+        let mut guard = LIVE_ACTORS.lock_or_recover();
         match guard.as_mut() {
             Some(set) => std::mem::take(set),
             None => HashSet::new(),
@@ -581,50 +567,48 @@ unsafe fn deep_copy_state(src: *mut c_void, size: usize) -> *mut c_void {
     }
 }
 
-/// Spawn a new actor with an unbounded mailbox.
+/// Configuration for the internal actor spawn helper.
 ///
-/// The initial state is deep-copied. The returned pointer must be freed
-/// with [`hew_actor_free`].
-///
-/// # Safety
-///
-/// - `state` must point to at least `state_size` readable bytes, or be
-///   null when `state_size` is 0.
-/// - `dispatch` will be called from worker threads with the actor's
-///   state pointer.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_spawn(
+/// All three public spawn functions build one of these and delegate to
+/// [`spawn_actor_internal`].
+struct ActorSpawnConfig {
     state: *mut c_void,
     state_size: usize,
     dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
-) -> *mut HewActor {
-    // SAFETY: Caller guarantees `state` validity.
-    let actor_state = unsafe { deep_copy_state(state, state_size) };
-    // SAFETY: Caller guarantees `state` validity (second copy for restart).
-    let init_state = unsafe { deep_copy_state(state, state_size) };
+    mailbox: *mut c_void,
+    budget: i32,
+    coalesce_key_fn: Option<unsafe extern "C" fn(i32, *mut c_void, usize) -> u64>,
+}
 
-    // SAFETY: hew_mailbox_new returns a valid pointer.
-    let mailbox = unsafe { mailbox::hew_mailbox_new() };
-    // SAFETY: mailbox pointer is valid.
-    unsafe {
-        mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
-    }
+/// Shared implementation for all native actor spawn functions.
+///
+/// # Safety
+///
+/// - `config.state` must be a deep-copied allocation (or null for zero-sized state).
+/// - `config.mailbox` must be a valid mailbox pointer (already configured).
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
+)]
+unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
+    // SAFETY: Caller already deep-copied state; make a second copy for restart.
+    let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
 
     let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
     let actor = Box::new(HewActor {
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: actor_id,
-        pid: actor_id, // unified: pid == id (location-transparent)
-        state: actor_state,
-        state_size,
-        dispatch,
-        mailbox: mailbox.cast(),
+        pid: actor_id,
+        state: config.state,
+        state_size: config.state_size,
+        dispatch: config.dispatch,
+        mailbox: config.mailbox,
         actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(HEW_MSG_BUDGET),
+        budget: AtomicI32::new(config.budget),
         init_state,
-        init_state_size: state_size,
-        coalesce_key_fn: None,
+        init_state_size: config.state_size,
+        coalesce_key_fn: config.coalesce_key_fn,
         terminate_fn: None,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
@@ -652,6 +636,96 @@ pub unsafe extern "C" fn hew_actor_spawn(
     raw
 }
 
+/// Shared implementation for all WASM actor spawn functions.
+///
+/// # Safety
+///
+/// Same requirements as [`spawn_actor_internal`] but for WASM targets.
+#[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
+)]
+unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
+    // SAFETY: Caller already deep-copied state; make a second copy for restart.
+    let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
+
+    let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let actor = Box::new(HewActor {
+        sched_link_next: AtomicPtr::new(ptr::null_mut()),
+        id: serial,
+        pid: serial,
+        state: config.state,
+        state_size: config.state_size,
+        dispatch: config.dispatch,
+        mailbox: config.mailbox,
+        actor_state: AtomicI32::new(HewActorState::Idle as i32),
+        budget: AtomicI32::new(config.budget),
+        init_state,
+        init_state_size: config.state_size,
+        coalesce_key_fn: config.coalesce_key_fn,
+        terminate_fn: None,
+        terminate_called: AtomicBool::new(false),
+        terminate_finished: AtomicBool::new(false),
+        error_code: AtomicI32::new(0),
+        supervisor: ptr::null_mut(),
+        supervisor_child_index: -1,
+        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+        idle_count: AtomicI32::new(0),
+        hibernation_threshold: AtomicI32::new(0),
+        hibernating: AtomicI32::new(0),
+        prof_messages_processed: AtomicU64::new(0),
+        prof_processing_time_ns: AtomicU64::new(0),
+        arena: ptr::null_mut(),
+    });
+
+    let raw = Box::into_raw(actor);
+    track_actor(raw);
+    raw
+}
+
+/// Spawn a new actor with an unbounded mailbox.
+///
+/// The initial state is deep-copied. The returned pointer must be freed
+/// with [`hew_actor_free`].
+///
+/// # Safety
+///
+/// - `state` must point to at least `state_size` readable bytes, or be
+///   null when `state_size` is 0.
+/// - `dispatch` will be called from worker threads with the actor's
+///   state pointer.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_spawn(
+    state: *mut c_void,
+    state_size: usize,
+    dispatch: Option<unsafe extern "C" fn(*mut c_void, i32, *mut c_void, usize)>,
+) -> *mut HewActor {
+    // SAFETY: Caller guarantees `state` validity.
+    let actor_state = unsafe { deep_copy_state(state, state_size) };
+
+    // SAFETY: hew_mailbox_new returns a valid pointer.
+    let mailbox = unsafe { mailbox::hew_mailbox_new() };
+    // SAFETY: mailbox pointer is valid.
+    unsafe {
+        mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
+    }
+
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
+    unsafe {
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size,
+            dispatch,
+            mailbox: mailbox.cast(),
+            budget: HEW_MSG_BUDGET,
+            coalesce_key_fn: None,
+        })
+    }
+}
+
 /// Spawn a new actor from a [`HewActorOpts`] struct.
 ///
 /// Uses a bounded mailbox if `opts.mailbox_capacity > 0`.
@@ -660,7 +734,6 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ///
 /// - `opts` must be a valid pointer to a [`HewActorOpts`].
 /// - Same state/dispatch requirements as [`hew_actor_spawn`].
-///
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor {
@@ -672,8 +745,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 
     // SAFETY: Caller guarantees state validity.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
-    // SAFETY: Caller guarantees state validity (second copy for restart).
-    let init_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
@@ -696,45 +767,17 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         HEW_MSG_BUDGET
     };
 
-    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: actor_id,
-        pid: actor_id, // unified: pid == id (location-transparent)
-        state: actor_state,
-        state_size: opts.state_size,
-        dispatch: opts.dispatch,
-        mailbox: mailbox.cast(),
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(budget),
-        init_state,
-        init_state_size: opts.state_size,
-        coalesce_key_fn: opts.coalesce_key_fn,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: crate::arena::hew_arena_new(),
-    });
-
-    let raw = Box::into_raw(actor);
-    track_actor(raw);
-    #[cfg(feature = "profiler")]
-    // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
-        crate::profiler::actor_registry::register(raw);
-    };
-    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
-    raw
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size: opts.state_size,
+            dispatch: opts.dispatch,
+            mailbox: mailbox.cast(),
+            budget,
+            coalesce_key_fn: opts.coalesce_key_fn,
+        })
+    }
 }
 
 /// Spawn a new actor with a bounded mailbox.
@@ -752,8 +795,6 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
-    // SAFETY: Caller guarantees `state` validity (second copy for restart).
-    let init_state = unsafe { deep_copy_state(state, state_size) };
 
     // SAFETY: Returns a valid pointer.
     let mailbox = unsafe { mailbox::hew_mailbox_new_bounded(capacity) };
@@ -762,45 +803,17 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
         mailbox::hew_mailbox_set_coalesce_config(mailbox, None, HewOverflowPolicy::DropOld);
     }
 
-    let actor_id = crate::pid::next_actor_id(NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed));
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: actor_id,
-        pid: actor_id, // unified: pid == id
-        state: actor_state,
-        state_size,
-        dispatch,
-        mailbox: mailbox.cast(),
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(HEW_MSG_BUDGET),
-        init_state,
-        init_state_size: state_size,
-        coalesce_key_fn: None,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: crate::arena::hew_arena_new(),
-    });
-
-    let raw = Box::into_raw(actor);
-    track_actor(raw);
-    #[cfg(feature = "profiler")]
-    // SAFETY: `raw` was just allocated by `Box::into_raw` and is valid.
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
     unsafe {
-        crate::profiler::actor_registry::register(raw);
-    };
-    crate::tracing::hew_trace_lifecycle(actor_id, crate::tracing::SPAN_SPAWN);
-    raw
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size,
+            dispatch,
+            mailbox: mailbox.cast(),
+            budget: HEW_MSG_BUDGET,
+            coalesce_key_fn: None,
+        })
+    }
 }
 
 // ── Send ────────────────────────────────────────────────────────────────
@@ -872,12 +885,7 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     size: usize,
 ) -> c_int {
     let sent_local = {
-        let guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            // Policy: poison-ok — LIVE_ACTORS is a global append/remove registry;
-            // data remains valid after a thread panic.
-            Err(e) => e.into_inner(),
-        };
+        let guard = LIVE_ACTORS.lock_or_recover();
         guard.as_ref().is_some_and(|set| {
             set.iter().any(|ptr| {
                 let actor = ptr.0;
@@ -1628,10 +1636,7 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
 
     // Look up actor and send packed message.
     let sent = {
-        let guard = match LIVE_ACTORS.lock() {
-            Ok(g) => g,
-            Err(e) => e.into_inner(),
-        };
+        let guard = LIVE_ACTORS.lock_or_recover();
         guard.as_ref().is_some_and(|set| {
             set.iter().any(|actor_ptr| {
                 let actor = actor_ptr.0;
@@ -1980,44 +1985,20 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
-    // SAFETY: Caller guarantees `state` validity (second copy for restart).
-    let init_state = unsafe { deep_copy_state(state, state_size) };
     // SAFETY: hew_mailbox_new is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new() };
 
-    let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: serial,
-        pid: serial, // unified: pid == id,
-        state: actor_state,
-        state_size,
-        dispatch,
-        mailbox,
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(HEW_MSG_BUDGET),
-        init_state,
-        init_state_size: state_size,
-        coalesce_key_fn: None,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: ptr::null_mut(),
-    });
-
-    let raw = Box::into_raw(actor);
-    track_actor(raw);
-    raw
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
+    unsafe {
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size,
+            dispatch,
+            mailbox,
+            budget: HEW_MSG_BUDGET,
+            coalesce_key_fn: None,
+        })
+    }
 }
 
 /// Spawn a new actor with a bounded mailbox (WASM).
@@ -2035,44 +2016,20 @@ pub unsafe extern "C" fn hew_actor_spawn_bounded(
 ) -> *mut HewActor {
     // SAFETY: Caller guarantees `state` validity.
     let actor_state = unsafe { deep_copy_state(state, state_size) };
-    // SAFETY: Caller guarantees `state` validity (second copy for restart).
-    let init_state = unsafe { deep_copy_state(state, state_size) };
     // SAFETY: hew_mailbox_new_bounded is a trusted FFI constructor returning a valid mailbox pointer.
     let mailbox = unsafe { hew_mailbox_new_bounded(capacity) };
 
-    let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: serial,
-        pid: serial, // unified: pid == id,
-        state: actor_state,
-        state_size,
-        dispatch,
-        mailbox,
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(HEW_MSG_BUDGET),
-        init_state,
-        init_state_size: state_size,
-        coalesce_key_fn: None,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: ptr::null_mut(),
-    });
-
-    let raw = Box::into_raw(actor);
-    track_actor(raw);
-    raw
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
+    unsafe {
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size,
+            dispatch,
+            mailbox,
+            budget: HEW_MSG_BUDGET,
+            coalesce_key_fn: None,
+        })
+    }
 }
 
 /// Spawn a new actor from options (WASM).
@@ -2091,8 +2048,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 
     // SAFETY: Caller guarantees opts.init_state is readable for opts.state_size bytes.
     let actor_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
-    // SAFETY: Same as above (second copy for restart).
-    let init_state = unsafe { deep_copy_state(opts.init_state, opts.state_size) };
 
     let mailbox = if opts.mailbox_capacity > 0 {
         let capacity = usize::try_from(opts.mailbox_capacity).unwrap_or(usize::MAX);
@@ -2110,39 +2065,17 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
         HEW_MSG_BUDGET
     };
 
-    let serial = NEXT_ACTOR_SERIAL.fetch_add(1, Ordering::Relaxed);
-    let actor = Box::new(HewActor {
-        sched_link_next: AtomicPtr::new(ptr::null_mut()),
-        id: serial,
-        pid: serial, // unified: pid == id,
-        state: actor_state,
-        state_size: opts.state_size,
-        dispatch: opts.dispatch,
-        mailbox,
-        actor_state: AtomicI32::new(HewActorState::Idle as i32),
-        budget: AtomicI32::new(budget),
-        init_state,
-        init_state_size: opts.state_size,
-        coalesce_key_fn: opts.coalesce_key_fn,
-        terminate_fn: None,
-        terminate_called: AtomicBool::new(false),
-        terminate_finished: AtomicBool::new(false),
-        error_code: AtomicI32::new(0),
-        supervisor: ptr::null_mut(),
-        supervisor_child_index: -1,
-        priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
-        reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
-        idle_count: AtomicI32::new(0),
-        hibernation_threshold: AtomicI32::new(0),
-        hibernating: AtomicI32::new(0),
-        prof_messages_processed: AtomicU64::new(0),
-        prof_processing_time_ns: AtomicU64::new(0),
-        arena: ptr::null_mut(),
-    });
-
-    let raw = Box::into_raw(actor);
-    track_actor(raw);
-    raw
+    // SAFETY: actor_state is a fresh deep-copy; mailbox is valid.
+    unsafe {
+        spawn_actor_internal(ActorSpawnConfig {
+            state: actor_state,
+            state_size: opts.state_size,
+            dispatch: opts.dispatch,
+            mailbox,
+            budget,
+            coalesce_key_fn: opts.coalesce_key_fn,
+        })
+    }
 }
 
 /// Send a message to an actor (WASM, fire-and-forget).

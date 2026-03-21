@@ -933,57 +933,56 @@ pub unsafe extern "C" fn hew_string_index_of(
     unsafe { p.offset_from(s) as i32 }
 }
 
-// Linker-provided symbols marking the extent of the loaded binary.
-// String literals in `.rodata` fall within these bounds — we must not
-// free them.
-
-#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
-unsafe extern "C" {
-    #[link_name = "__executable_start"]
-    static EXEC_START: u8;
-    #[link_name = "_end"]
-    static EXEC_END: u8;
-}
+// ── Static string detection ─────────────────────────────────────────────
+//
+// String literals live in the binary's read-only data segment. We must
+// never pass them to `free()`. Each platform exposes the loaded binary
+// extent differently, but the check is always: is `ptr` inside [start, end)?
 
 /// Returns `true` if `ptr` points into the binary's loaded segments
-/// (text, rodata, data, bss).  Such pointers must never be passed to
-/// `free`.
-#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
+/// (text, rodata, data, bss). Such pointers must never be passed to `free`.
 fn is_static_string(ptr: *const u8) -> bool {
     let addr = ptr as usize;
+    let (start, end) = static_string_bounds();
+    addr >= start && addr < end
+}
+
+/// ELF (Linux, FreeBSD, etc.): linker-provided symbols give the loaded extent directly.
+#[cfg(all(not(target_arch = "wasm32"), not(windows), not(target_os = "macos")))]
+fn static_string_bounds() -> (usize, usize) {
+    unsafe extern "C" {
+        #[link_name = "__executable_start"]
+        static EXEC_START: u8;
+        #[link_name = "_end"]
+        static EXEC_END: u8;
+    }
     // SAFETY: These are linker-defined symbols provided by the ELF linker;
     // taking their address is safe and gives the loaded extent of the binary.
     let start = (&raw const EXEC_START) as usize;
     let end = (&raw const EXEC_END) as usize;
-    addr >= start && addr < end
+    (start, end)
 }
 
-/// macOS Mach-O version: uses `_mh_execute_header` and segment commands
-/// to determine the loaded extent of the main executable.
+/// macOS Mach-O: walk `_mh_execute_header` load commands to find the
+/// executable's virtual memory extent. Cached after first computation.
 #[cfg(target_os = "macos")]
-fn is_static_string(ptr: *const u8) -> bool {
-    // On macOS, __executable_start and _end don't exist. Instead we use
-    // the mach_header to walk load commands and find the executable's
-    // virtual memory extent.
-    unsafe extern "C" {
-        // Provided by the Mach-O linker for the main executable.
-        #[link_name = "_mh_execute_header"]
-        static MH_HEADER: u8;
-    }
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    static CACHED_START: AtomicUsize = AtomicUsize::new(0);
-    static CACHED_END: AtomicUsize = AtomicUsize::new(0);
+fn static_string_bounds() -> (usize, usize) {
+    use std::sync::OnceLock;
 
-    let mut start = CACHED_START.load(Ordering::Relaxed);
-    let mut end = CACHED_END.load(Ordering::Relaxed);
-    if start == 0 {
-        // Walk Mach-O load commands to find vmaddr range.
+    static BOUNDS: OnceLock<(usize, usize)> = OnceLock::new();
+
+    *BOUNDS.get_or_init(|| {
+        unsafe extern "C" {
+            #[link_name = "_mh_execute_header"]
+            static MH_HEADER: u8;
+        }
+
         let header = &raw const MH_HEADER;
-        // mach_header_64: magic(4) + cpu(4) + cpusub(4) + filetype(4) + ncmds(4) + sizeofcmds(4) + flags(4) + reserved(4) = 32 bytes
+        // mach_header_64: 32 bytes total (magic + cpu + cpusub + filetype + ncmds + sizeofcmds + flags + reserved)
         // SAFETY: `header` points to our own Mach-O header; the load command
         // fields at fixed offsets are guaranteed by the kernel loader.
         let ncmds = unsafe { *((header as usize + 16) as *const u32) };
-        let mut cmd_ptr = header as usize + 32; // past mach_header_64
+        let mut cmd_ptr = header as usize + 32;
         let mut lo = usize::MAX;
         let mut hi = 0usize;
         for _ in 0..ncmds {
@@ -993,7 +992,6 @@ fn is_static_string(ptr: *const u8) -> bool {
             let cmdsize = unsafe { *((cmd_ptr + 4) as *const u32) } as usize;
             // LC_SEGMENT_64 = 0x19
             if cmd == 0x19 {
-                // segment_command_64: cmd(4) + cmdsize(4) + segname(16) + vmaddr(8) + vmsize(8)
                 #[expect(
                     clippy::cast_possible_truncation,
                     reason = "64-bit platform only; Mach-O is macOS-specific"
@@ -1015,46 +1013,39 @@ fn is_static_string(ptr: *const u8) -> bool {
         }
         // The file vmaddrs are relative to the image base; add the slide.
         let slide = header as usize - lo;
-        start = lo + slide;
-        end = hi + slide;
-        CACHED_START.store(start, Ordering::Relaxed);
-        CACHED_END.store(end, Ordering::Relaxed);
-    }
-    let addr = ptr as usize;
-    addr >= start && addr < end
+        (lo + slide, hi + slide)
+    })
 }
 
-/// Windows PE version: checks if the pointer falls within the loaded image.
+/// Windows PE: read `SizeOfImage` from the PE optional header.
+/// Cached after first computation.
 #[cfg(windows)]
-fn is_static_string(ptr: *const u8) -> bool {
-    unsafe extern "C" {
-        // MSVC/LLD provide __ImageBase at the DOS header of the loaded executable.
-        #[link_name = "__ImageBase"]
-        static IMAGE_BASE: u8;
-    }
-    let base = (&raw const IMAGE_BASE) as usize;
-    let addr = ptr as usize;
-    // Read SizeOfImage from the PE optional header.
-    // Offset 0x3C in the DOS header is e_lfanew (PE signature offset).
-    // SizeOfImage is 80 bytes past the PE signature in a PE32+ (64-bit) image.
-    // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
-    let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
-    // SAFETY: pe_off was read from the DOS header of a valid mapped image; the SizeOfImage field
-    // SAFETY: lies within the PE optional header for that image.
-    let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
-    addr >= base && addr < base + image_size
+fn static_string_bounds() -> (usize, usize) {
+    use std::sync::OnceLock;
+
+    static BOUNDS: OnceLock<(usize, usize)> = OnceLock::new();
+
+    *BOUNDS.get_or_init(|| {
+        unsafe extern "C" {
+            #[link_name = "__ImageBase"]
+            static IMAGE_BASE: u8;
+        }
+        let base = (&raw const IMAGE_BASE) as usize;
+        // SAFETY: __ImageBase is always a valid PE image mapped by the OS loader.
+        let pe_off = unsafe { *((base + 0x3C) as *const u32) } as usize;
+        // SAFETY: pe_off + 80 lands within the PE optional header of a valid mapped image.
+        let image_size = unsafe { *((base + pe_off + 24 + 56) as *const u32) } as usize;
+        (base, base + image_size)
+    })
 }
 
-/// WASM version: static data lives below `__heap_base` in linear memory.
-/// Anything at or above `__heap_base` was allocated by `malloc`.
+/// WASM: static data lives below `__heap_base` in linear memory.
 #[cfg(target_arch = "wasm32")]
-fn is_static_string(ptr: *const u8) -> bool {
+fn static_string_bounds() -> (usize, usize) {
     unsafe extern "C" {
         static __heap_base: u8;
     }
-    let addr = ptr as usize;
-    let heap_start = (&raw const __heap_base) as usize;
-    addr < heap_start
+    (0, (&raw const __heap_base) as usize)
 }
 
 /// Free a string if it was heap-allocated.  Safe to call with null or

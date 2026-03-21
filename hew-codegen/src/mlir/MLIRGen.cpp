@@ -870,6 +870,25 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
 // Symbol table operations
 // ============================================================================
 
+mlir::Value MLIRGen::createHoistedAlloca(mlir::Type storageType, mlir::Type semanticType) {
+  auto memrefType = mlir::MemRefType::get({}, storageType);
+  mlir::Value alloca;
+  if (returnFlag && currentFunction) {
+    auto savedIP = builder.saveInsertionPoint();
+    auto &entryBlock = currentFunction.front();
+    builder.setInsertionPointToStart(&entryBlock);
+    alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
+    if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
+      auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
+      mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
+    }
+    builder.restoreInsertionPoint(savedIP);
+  } else {
+    alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
+  }
+  return alloca;
+}
+
 void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
   // Intern the name so the StringRef stored in the ScopedHashTable
   // outlives any transient std::string (e.g. from ident_name()).
@@ -889,21 +908,7 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
                       mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) ||
                       mlir::isa<mlir::IndexType>(storageType) || isPointerLikeType(semanticType);
     if (canPromote) {
-      auto memrefType = mlir::MemRefType::get({}, storageType);
-      // Insert alloca at function entry block start (dominates everything)
-      auto savedIP = builder.saveInsertionPoint();
-      auto &entryBlock = currentFunction.front();
-      builder.setInsertionPointToStart(&entryBlock);
-      auto alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
-      // Zero-initialize pointer-like allocas so that unconditional drops
-      // at function exit are safe even when the variable's definition was
-      // skipped (e.g. early return before the let-binding).
-      // hew_vec_free/hew_hashmap_free_impl/hew_string_drop all accept null.
-      if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
-        auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
-        mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
-      }
-      builder.restoreInsertionPoint(savedIP);
+      auto alloca = createHoistedAlloca(storageType, semanticType);
       // Store the value at the current insertion point
       auto storedValue = coerceType(value, storageType, builder.getUnknownLoc());
       mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
@@ -920,26 +925,7 @@ void MLIRGen::declareMutableVariable(llvm::StringRef name, mlir::Type type,
                                      mlir::Value initialValue) {
   name = intern(name.str());
   auto storageType = toSlotStorageType(type);
-  auto memrefType = mlir::MemRefType::get({}, storageType);
-  mlir::Value alloca;
-  // When return guards are active, hoist alloca to function entry block
-  // so it dominates all uses across sibling guard regions.
-  if (returnFlag && currentFunction) {
-    auto savedIP = builder.saveInsertionPoint();
-    auto &entryBlock = currentFunction.front();
-    builder.setInsertionPointToStart(&entryBlock);
-    alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
-    // Zero-initialize pointer-like allocas so that unconditional drops
-    // at function exit are safe even when the variable's definition was
-    // skipped (e.g. early return before the let-binding).
-    if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(type)) {
-      auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
-      mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
-    }
-    builder.restoreInsertionPoint(savedIP);
-  } else {
-    alloca = mlir::memref::AllocaOp::create(builder, builder.getUnknownLoc(), memrefType);
-  }
+  auto alloca = createHoistedAlloca(storageType, type);
   if (initialValue) {
     auto storedValue = coerceType(initialValue, storageType, builder.getUnknownLoc());
     mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), storedValue, alloca);
@@ -4439,6 +4425,17 @@ void MLIRGen::pushDropScope() {
   dropScopes.emplace_back();
 }
 
+void MLIRGen::emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth) {
+  for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+    if (it->closeAlloca) {
+      if (!funcLevelReturnVarNames.count(it->varName))
+        emitDropEntry(*it);
+    } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
+      emitDropEntry(*it);
+    }
+  }
+}
+
 void MLIRGen::popDropScope() {
   if (dropScopes.empty())
     return;
@@ -4472,17 +4469,7 @@ void MLIRGen::popDropScope() {
       // will be true and this block is skipped entirely.
       if (!hasRealTerminator(block)) {
         emitDeferredCalls();
-        auto &scope = dropScopes.back();
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          // RAII close entries use depth-independent name check because the
-          // enricher's unsafe-block wrapping shifts depths.
-          if (it->closeAlloca) {
-            if (!funcLevelReturnVarNames.count(it->varName))
-              emitDropEntry(*it);
-          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-            emitDropEntry(*it);
-          }
-        }
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
       }
       dropScopes.pop_back();
       return;
@@ -4499,24 +4486,6 @@ void MLIRGen::popDropScope() {
         }
       }
 
-      // Inner-scope drop helper: skip variables whose (name, depth) pair
-      // matches funcLevelDropExcludeVars.  This ensures only the specific
-      // scope that actually yields the return value is excluded, not a
-      // shadowed variable with the same name at a different depth.
-      auto emitScopeDropsExcluding = [&](const std::vector<DropEntry> &scope) {
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          if (it->closeAlloca) {
-            if (!funcLevelReturnVarNames.count(it->varName))
-              emitDropEntry(*it);
-          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-            emitDropEntry(*it);
-          }
-        }
-      };
-
-      // Guard drops with !returnFlag: when an early return stores a value
-      // to returnSlot, we must not free it (or any other inner-scope var
-      // that might alias it). The arena will reclaim the memory.
       if (returnFlag) {
         auto loc = builder.getUnknownLoc();
         auto flagVal = mlir::memref::LoadOp::create(builder, loc, returnFlag, mlir::ValueRange{});
@@ -4525,11 +4494,11 @@ void MLIRGen::popDropScope() {
         auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, notReturned,
                                              /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
-        emitScopeDropsExcluding(dropScopes.back());
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
         // scf.if auto-adds yield; set insertion after guard
         builder.setInsertionPointAfter(guard);
       } else {
-        emitScopeDropsExcluding(dropScopes.back());
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
       }
     }
   }

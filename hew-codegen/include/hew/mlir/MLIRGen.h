@@ -178,6 +178,15 @@ private:
   void generateStatement(const ast::Stmt &stmt);
   void generateLetStmt(const ast::StmtLet &stmt);
   void generateVarStmt(const ast::StmtVar &stmt);
+
+  /// Shared drop registration for both let and var bindings.
+  /// Registers Stream/Sink RAII close, collection/string drops,
+  /// user-defined drops, wire struct field drops, and closure env cleanup.
+  void registerDropsForVariable(
+      const std::string &varName, mlir::Value value,
+      const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
+      const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
+      bool isMutable, mlir::Location location);
   void generateAssignStmt(const ast::StmtAssign &stmt);
   void generateIfStmt(const ast::StmtIf &stmt);
   mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt);
@@ -368,6 +377,11 @@ private:
 
   /// Declare a mutable variable (allocates a memref slot).
   void declareMutableVariable(llvm::StringRef name, mlir::Type type, mlir::Value initialValue);
+
+  /// Create a memref alloca for a variable slot. When return guards are active,
+  /// hoists the alloca to the function entry block and zero-initialises
+  /// pointer-like types so unconditional drops are safe.
+  mlir::Value createHoistedAlloca(mlir::Type storageType, mlir::Type semanticType);
 
   /// Store to a mutable variable.
   void storeVariable(llvm::StringRef name, mlir::Value value);
@@ -736,6 +750,10 @@ private:
   bool structHasOwnedFields(const std::string &name) const;
   void pushDropScope();
   void popDropScope();
+  /// Emit drops for a scope, excluding variables that match the
+  /// funcLevelDropExcludeVars (by name+depth) or funcLevelReturnVarNames
+  /// (for RAII close entries).
+  void emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth);
   void registerDroppable(const std::string &varName, const std::string &dropFunc,
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).
@@ -813,6 +831,39 @@ private:
   // Hoisted to function entry block and reused across all
   // recv_int / try_recv_int call sites to avoid stack growth in loops.
   mlir::Value channelIntOutValidAlloca; // LLVM ptr to i32, nullptr when not active
+
+  /// RAII guard that saves/restores function generation state.
+  /// On construction: saves currentFunction, returnFlag, returnSlot,
+  /// channelIntOutValidAlloca; sets currentFunction to newFunc and
+  /// resets the rest to nullptr.
+  /// On destruction: restores all saved values.
+  struct FunctionGenerationScope {
+    MLIRGen &gen;
+    mlir::func::FuncOp prevFunction;
+    mlir::Value prevReturnFlag;
+    mlir::Value prevReturnSlot;
+    mlir::Value prevChannelIntOutValidAlloca;
+
+    FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
+        : gen(g), prevFunction(g.currentFunction), prevReturnFlag(g.returnFlag),
+          prevReturnSlot(g.returnSlot),
+          prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
+      gen.currentFunction = newFunc;
+      gen.returnFlag = nullptr;
+      gen.returnSlot = nullptr;
+      gen.channelIntOutValidAlloca = nullptr;
+    }
+
+    ~FunctionGenerationScope() {
+      gen.currentFunction = prevFunction;
+      gen.returnFlag = prevReturnFlag;
+      gen.returnSlot = prevReturnSlot;
+      gen.channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+    }
+
+    FunctionGenerationScope(const FunctionGenerationScope &) = delete;
+    FunctionGenerationScope &operator=(const FunctionGenerationScope &) = delete;
+  };
 
   // ── Try/catch context ────────────────────────────────────────
   // When non-null, PostfixTry (?) jumps here instead of func.return.

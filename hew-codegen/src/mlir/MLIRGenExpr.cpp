@@ -4988,7 +4988,6 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
                              : mlir::FunctionType::get(&context, funcParamTypes, {});
 
   auto savedIP = builder.saveInsertionPoint();
-  auto savedFunction = currentFunction;
 
   builder.setInsertionPointToEnd(module.getBody());
   auto funcOp = mlir::func::FuncOp::create(builder, location, lambdaName, funcType);
@@ -4996,7 +4995,8 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
 
   auto &entryBlock = *funcOp.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
-  currentFunction = funcOp;
+
+  FunctionGenerationScope funcScope(*this, funcOp);
 
   SymbolTableScopeT scope(symbolTable);
   MutableTableScopeT mutScope(mutableVars);
@@ -5038,13 +5038,6 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
       }
     }
   }
-
-  mlir::Value savedReturnFlag = returnFlag;
-  mlir::Value savedReturnSlot = returnSlot;
-  mlir::Value savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
-  returnFlag = nullptr;
-  returnSlot = nullptr;
-  channelIntOutValidAlloca = nullptr;
 
   // Save/restore funcLevelDropExcludeVars and funcLevelDropScopeBase so the
   // lambda's body block (which is function-level from popDropScope's
@@ -5204,10 +5197,6 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
     }
   }
 
-  returnFlag = savedReturnFlag;
-  returnSlot = savedReturnSlot;
-  channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
-  currentFunction = savedFunction;
   builder.restoreInsertionPoint(savedIP);
 
   mlir::Value envPtrVal;
@@ -5447,14 +5436,9 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
 
   auto taskArg = entryBlock->getArgument(0);
 
-  auto savedFunction = currentFunction;
-  auto savedReturnFlag = returnFlag;
-  auto savedChannelIntOutValidAlloca = channelIntOutValidAlloca;
+  FunctionGenerationScope funcScope(*this, taskFn);
   auto savedScopePtr = currentScopePtr;
   auto savedTaskScopePtr = currentTaskScopePtr;
-  currentFunction = taskFn;
-  returnFlag = nullptr;
-  channelIntOutValidAlloca = nullptr;
   currentScopePtr = nullptr;
   currentTaskScopePtr = nullptr;
 
@@ -5502,9 +5486,6 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
 
-  currentFunction = savedFunction;
-  returnFlag = savedReturnFlag;
-  channelIntOutValidAlloca = savedChannelIntOutValidAlloca;
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;
 

@@ -5687,6 +5687,141 @@ impl Checker {
         ty
     }
 
+    fn check_vec_method(
+        &mut self,
+        type_args: &[Ty],
+        receiver_ty: &Ty,
+        resolved: &Ty,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        let elem_ty = type_args
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Var(TypeVar::fresh()));
+        match method {
+            "push" => {
+                self.check_arity(args, 1, "`Vec::push`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                Ty::Unit
+            }
+            "pop" => elem_ty,
+            "len" => Ty::I64,
+            "get" | "remove" => {
+                self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                elem_ty
+            }
+            "contains" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                Ty::Bool
+            }
+            "is_empty" => Ty::Bool,
+            "clear" => {
+                self.check_arity(args, 0, "`Vec::clear`", span);
+                Ty::Unit
+            }
+            "set" => {
+                if let Some(idx) = args.first() {
+                    let (expr, sp) = idx.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                if let Some(val) = args.get(1) {
+                    let (expr, sp) = val.expr();
+                    self.check_against(expr, sp, &elem_ty);
+                }
+                Ty::Unit
+            }
+            "append" | "extend" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, receiver_ty);
+                }
+                Ty::Unit
+            }
+            "join" => {
+                self.check_arity(args, 1, "`Vec::join`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                if elem_ty != Ty::String {
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!("`Vec::join` is only available on Vec<String>, not Vec<{elem_ty}>"),
+                    );
+                }
+                Ty::String
+            }
+            "map" => {
+                self.check_arity(args, 1, "`Vec::map`", span);
+                let ret_ty = Ty::Var(TypeVar::fresh());
+                let expected_fn = Ty::Function {
+                    params: vec![elem_ty.clone()],
+                    ret: Box::new(ret_ty.clone()),
+                };
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &expected_fn);
+                }
+                let resolved_ret = self.subst.resolve(&ret_ty);
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![resolved_ret],
+                }
+            }
+            "filter" => {
+                self.check_arity(args, 1, "`Vec::filter`", span);
+                let expected_fn = Ty::Function {
+                    params: vec![elem_ty.clone()],
+                    ret: Box::new(Ty::Bool),
+                };
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &expected_fn);
+                }
+                resolved.clone()
+            }
+            "fold" => {
+                self.check_arity(args, 2, "`Vec::fold`", span);
+                let acc_ty = if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp)
+                } else {
+                    Ty::Var(TypeVar::fresh())
+                };
+                let expected_fn = Ty::Function {
+                    params: vec![acc_ty.clone(), elem_ty.clone()],
+                    ret: Box::new(acc_ty.clone()),
+                };
+                if let Some(arg) = args.get(1) {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &expected_fn);
+                }
+                self.subst.resolve(&acc_ty)
+            }
+            _ => {
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on Vec"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "pattern matching type checker with many variants"
@@ -5822,136 +5957,7 @@ impl Checker {
                 },
                 _,
             ) if name == "Vec" => {
-                let elem_ty = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                match method {
-                    "push" => {
-                        self.check_arity(args, 1, "`Vec::push`", span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &elem_ty);
-                        }
-                        Ty::Unit
-                    }
-                    "pop" => elem_ty,
-                    "len" => Ty::I64,
-                    "get" | "remove" => {
-                        self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::I64);
-                        }
-                        elem_ty
-                    }
-                    "contains" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &elem_ty);
-                        }
-                        Ty::Bool
-                    }
-                    "is_empty" => Ty::Bool,
-                    "clear" => {
-                        self.check_arity(args, 0, "`Vec::clear`", span);
-                        Ty::Unit
-                    }
-                    "set" => {
-                        if let Some(idx) = args.first() {
-                            let (expr, sp) = idx.expr();
-                            self.check_against(expr, sp, &Ty::I64);
-                        }
-                        if let Some(val) = args.get(1) {
-                            let (expr, sp) = val.expr();
-                            self.check_against(expr, sp, &elem_ty);
-                        }
-                        Ty::Unit
-                    }
-                    "append" | "extend" => {
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &receiver_ty);
-                        }
-                        Ty::Unit
-                    }
-                    "join" => {
-                        self.check_arity(args, 1, "`Vec::join`", span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &Ty::String);
-                        }
-                        if elem_ty != Ty::String {
-                            self.report_error(
-                                TypeErrorKind::UndefinedMethod,
-                                span,
-                                format!(
-                                    "`Vec::join` is only available on Vec<String>, not Vec<{elem_ty}>"
-                                ),
-                            );
-                        }
-                        Ty::String
-                    }
-                    "map" => {
-                        self.check_arity(args, 1, "`Vec::map`", span);
-                        // The closure takes one element and returns a new type
-                        let ret_ty = Ty::Var(TypeVar::fresh());
-                        let expected_fn = Ty::Function {
-                            params: vec![elem_ty.clone()],
-                            ret: Box::new(ret_ty.clone()),
-                        };
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &expected_fn);
-                        }
-                        let resolved_ret = self.subst.resolve(&ret_ty);
-                        Ty::Named {
-                            name: "Vec".to_string(),
-                            args: vec![resolved_ret],
-                        }
-                    }
-                    "filter" => {
-                        self.check_arity(args, 1, "`Vec::filter`", span);
-                        // The closure takes one element and returns Bool
-                        let expected_fn = Ty::Function {
-                            params: vec![elem_ty.clone()],
-                            ret: Box::new(Ty::Bool),
-                        };
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &expected_fn);
-                        }
-                        resolved.clone()
-                    }
-                    "fold" => {
-                        self.check_arity(args, 2, "`Vec::fold`", span);
-                        // First arg is the initial accumulator value
-                        let acc_ty = if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp)
-                        } else {
-                            Ty::Var(TypeVar::fresh())
-                        };
-                        // Second arg is a closure (acc, elem) -> acc
-                        let expected_fn = Ty::Function {
-                            params: vec![acc_ty.clone(), elem_ty.clone()],
-                            ret: Box::new(acc_ty.clone()),
-                        };
-                        if let Some(arg) = args.get(1) {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, &expected_fn);
-                        }
-                        self.subst.resolve(&acc_ty)
-                    }
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!("no method `{method}` on Vec"),
-                        );
-                        Ty::Error
-                    }
-                }
+                self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span)
             }
             // HashMap methods
             (

@@ -319,6 +319,10 @@ set(_E2E_MANUAL_EXCLUSIONS
   "e2e_hashmap_forin/hashmap_forin"
   # Warn test (uses run_e2e_warn_test.cmake)
   "e2e_coverage/shadowing_nested_warns"
+  # Legacy inline tests kept for backward compatibility (also auto-discovered
+  # as file-based tests under their e2e_* category)
+  "e2e_array/dynamic_index"
+  "e2e_duration/duration"
   # Broken .expected files — test exists but output doesn't match
   "e2e_hashset/hashset_no_double_eval"
   "e2e_memory/rc_basic"

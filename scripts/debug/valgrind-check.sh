@@ -17,11 +17,11 @@ trap 'rm -rf "$TMPDIR"' EXIT
 PROGRAMS=(
     "examples/fibonacci.hew"
     "examples/actor_fib.hew"
-    "hew-codegen/tests/examples/e2e_supervisor_basic/supervisor_basic.hew"
-    "hew-codegen/tests/examples/e2e_supervisor_nested/supervisor_nested.hew"
+    "hew-codegen/tests/examples/e2e_supervisor/supervisor_basic.hew"
+    "hew-codegen/tests/examples/e2e_supervisor/supervisor_nested.hew"
     "hew-codegen/tests/examples/test_hashmap_basic.hew"
     "hew-codegen/tests/examples/test_vec_basic.hew"
-    "hew-codegen/tests/examples/e2e_string_drop/string_drop.hew"
+    "hew-codegen/tests/examples/e2e_strings/string_drop.hew"
 )
 
 FAIL=0

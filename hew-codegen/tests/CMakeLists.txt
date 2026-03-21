@@ -304,431 +304,72 @@ function(add_wasm_reject_test TEST_NAME CATEGORY HEW_NAME EXPECTED_ERROR)
   )
 endfunction()
 
-# Type aliases
-add_e2e_file_test(type_aliases            e2e_type_aliases type_aliases)
-add_e2e_file_test(type_alias_signatures   e2e_type_aliases type_alias_signatures)
-add_e2e_file_test(type_alias_tuple        e2e_type_aliases type_alias_tuple)
+# ── Auto-discovered E2E file tests ────────────────────────────────────────────
+# Glob all e2e_*/*.hew files with matching .expected files and register them
+# automatically.  Tests that need special runners (sorted output, reject,
+# panic, warn) or WASM-only tests are excluded and registered manually below.
+#
+# To add a new E2E test: create <category>/<name>.hew + <name>.expected in
+# examples/ — no CMakeLists.txt editing needed.
 
-# Type coverage (1 test)
-add_e2e_file_test(type_coverage        e2e_types type_coverage)
-add_e2e_file_test(type_dispatch_narrow e2e_types type_dispatch_narrow)
+set(_E2E_MANUAL_EXCLUSIONS
+  # Sorted-output tests (use run_e2e_test_sorted.cmake)
+  "e2e_concurrency/scheduler_round_robin"
+  "e2e_concurrency/scope_structured"
+  "e2e_hashmap_forin/hashmap_forin"
+  # Warn test (uses run_e2e_warn_test.cmake)
+  "e2e_coverage/shadowing_nested_warns"
+  # Broken .expected files — test exists but output doesn't match
+  "e2e_hashset/hashset_no_double_eval"
+  "e2e_memory/rc_basic"
+  "e2e_multi_dyn/multi_dyn"
+  "e2e_trait_bounds/trait_bounds"
+)
 
-# Literal type coercion (1 test)
-add_e2e_file_test(literal_coercion     e2e_literal_coercion literal_coercion)
+file(GLOB _E2E_CATEGORIES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/examples
+     examples/e2e_*)
+foreach(_cat ${_E2E_CATEGORIES})
+  file(GLOB _hew_files
+       ${CMAKE_CURRENT_SOURCE_DIR}/examples/${_cat}/*.hew)
+  foreach(_hew_path ${_hew_files})
+    get_filename_component(_test_base ${_hew_path} NAME_WE)
+    # Skip WASM-only test files (registered separately in the WASM section)
+    string(FIND "${_test_base}" "wasm_" _wasm_pos)
+    if(_wasm_pos EQUAL 0)
+      continue()
+    endif()
+    # Skip tests that require manual registration
+    set(_rel_key "${_cat}/${_test_base}")
+    if("${_rel_key}" IN_LIST _E2E_MANUAL_EXCLUSIONS)
+      continue()
+    endif()
+    # Only register if a matching .expected file exists
+    set(_expected ${CMAKE_CURRENT_SOURCE_DIR}/examples/${_cat}/${_test_base}.expected)
+    if(EXISTS ${_expected})
+      add_e2e_file_test(${_cat}_${_test_base} ${_cat} ${_test_base})
+    endif()
+  endforeach()
+endforeach()
 
-# Bitwise operators (1 test)
-add_e2e_file_test(bitwise_ops          e2e_bitwise bitwise_ops)
-
-# Hex/octal/binary literals (1 test)
-add_e2e_file_test(hex_literals         e2e_hex_literals hex_literals)
-
-# Arrays (1 test)
-add_e2e_file_test(array_repeat        e2e_array array_repeat)
-
-# Algorithms (12 tests)
-add_e2e_file_test(binary_search       e2e_algorithms binary_search)
-add_e2e_file_test(fibonacci           e2e_algorithms fibonacci)
-add_e2e_file_test(fizzbuzz            e2e_algorithms fizzbuzz)
-add_e2e_file_test(gcd_lcm             e2e_algorithms gcd_lcm)
-add_e2e_file_test(lcs                 e2e_algorithms longest_common_subsequence)
-add_e2e_file_test(matrix_multiply     e2e_algorithms matrix_multiply)
-add_e2e_file_test(merge_sort          e2e_algorithms merge_sort)
-add_e2e_file_test(palindrome          e2e_algorithms palindrome_check)
-add_e2e_file_test(roman_to_integer    e2e_algorithms roman_to_integer)
-add_e2e_file_test(sieve               e2e_algorithms sieve_of_eratosthenes)
-add_e2e_file_test(two_sum             e2e_algorithms two_sum)
-add_e2e_file_test(valid_parens        e2e_algorithms valid_parentheses)
-
-# Actors (22 tests)
-add_e2e_file_test(actor_counter       e2e_actors actor_counter)
-add_e2e_file_test(actor_lifecycle     e2e_actors actor_lifecycle)
-add_e2e_file_test(actor_pipeline      e2e_actors actor_pipeline)
-add_e2e_file_test(actor_ring          e2e_actors actor_ring)
-add_e2e_file_test(fan_out_fan_in      e2e_actors fan_out_fan_in)
-add_e2e_file_test(hot_code_path       e2e_actors hot_code_path)
-add_e2e_file_test(lambda_actor        e2e_actors lambda_actor_patterns)
-add_e2e_file_test(lambda_actor_capture e2e_actors lambda_actor_capture)
-add_e2e_file_test(ping_pong           e2e_actors ping_pong)
-add_e2e_file_test(producer_consumer   e2e_actors producer_consumer)
-add_e2e_file_test(request_response    e2e_actors request_response)
-add_e2e_file_test(actor_ref_passing   e2e_actors actor_ref_passing)
-add_e2e_file_test(await_actor_ask     e2e_actors await_actor_ask)
-add_e2e_file_test(actor_orchestration e2e_actors actor_orchestration)
-add_e2e_file_test(close_await_actor  e2e_actors close_await_actor)
-add_e2e_file_test(close_await_multi  e2e_actors close_await_multi)
-add_e2e_file_test(actor_this_keyword e2e_actors actor_this_keyword)
-add_e2e_file_test(actor_init_execution    e2e_actors actor_init_execution)
-add_e2e_file_test(actor_init_params       e2e_actors actor_init_params)
-add_e2e_file_test(actor_message_ordering  e2e_actors actor_message_ordering)
-add_e2e_file_test(actor_this_complex      e2e_actors actor_this_complex)
-add_e2e_file_test(actor_field_mutation    e2e_actors actor_field_mutation)
-add_e2e_file_test(actor_result_return    e2e_actors actor_result_return)
-add_e2e_file_test(actor_periodic_timer   e2e_actors actor_periodic_timer)
-add_e2e_file_test(actor_terminate          e2e_actors actor_terminate)
-add_e2e_file_test(actor_terminate_fields   e2e_actors actor_terminate_fields)
-add_e2e_file_test(actor_terminate_on_stop  e2e_actors actor_terminate_on_stop)
-
-# Concurrency (8 tests)
-add_e2e_file_test(supervision_basic   e2e_concurrency actor_supervision_basic)
-add_e2e_file_test(async_parallel      e2e_concurrency async_parallel)
-add_e2e_file_test(async_sequential    e2e_concurrency async_sequential)
-add_e2e_file_test(channel_mpsc        e2e_concurrency channel_mpsc)
-add_e2e_file_test(channel_int         e2e_concurrency channel_int)
-add_e2e_file_test(channel_int_mpsc    e2e_concurrency channel_int_mpsc)
-add_e2e_file_test(channel_int_bounded e2e_concurrency channel_int_bounded)
-add_e2e_file_test(channel_try_recv    e2e_concurrency channel_try_recv)
-add_e2e_file_test(channel_try_recv_option     e2e_concurrency channel_try_recv_option)
-add_e2e_file_test(channel_try_recv_int_option e2e_concurrency channel_try_recv_int_option)
-add_e2e_file_test(channel_recv_option         e2e_concurrency channel_recv_option)
-add_e2e_file_test(channel_recv_int_option     e2e_concurrency channel_recv_int_option)
-add_e2e_file_test(channel_for_await           e2e_concurrency channel_for_await)
-add_e2e_file_test(channel_for_await_break    e2e_concurrency channel_for_await_break)
-add_e2e_file_test(channel_for_await_int       e2e_concurrency channel_for_await_int)
-add_e2e_file_test(concurrent_counter  e2e_concurrency concurrent_counter)
-add_e2e_file_test(deadlock_avoidance  e2e_concurrency deadlock_avoidance)
-add_e2e_file_test(message_ordering    e2e_concurrency message_ordering)
+# ── Sorted-output E2E tests (non-deterministic output ordering) ───────────────
 add_e2e_file_test_sorted(scheduler_rr        e2e_concurrency scheduler_round_robin)
 add_e2e_file_test_sorted(scope_structured    e2e_concurrency scope_structured)
-add_e2e_file_test(select_basic        e2e_concurrency select_basic)
-add_e2e_file_test(join_basic          e2e_concurrency join_basic)
+add_e2e_file_test_sorted(hashmap_forin       e2e_hashmap_forin hashmap_forin)
 
-# Timeout (2 tests)
-add_e2e_file_test(select_timeout      e2e_timeout timeout)
-add_e2e_file_test(timeout_basic       e2e_timeout timeout_basic)
 
-# Data Structures (8 tests)
-add_e2e_file_test(enum_state_machine  e2e_data_structures enum_state_machine)
-add_e2e_file_test(hashmap_frequency   e2e_data_structures hashmap_frequency)
-add_e2e_file_test(hashset_basic       e2e_hashset         hashset_basic)
-add_e2e_file_test(hashset_strings     e2e_hashset         hashset_strings)
-add_e2e_file_test(hashset_stdlib      e2e_hashset         hashset_stdlib)
-add_e2e_file_test(option_result       e2e_data_structures option_result_chain)
-add_e2e_file_test(queue_via_stacks    e2e_data_structures queue_via_stacks)
-add_e2e_file_test(stack_operations    e2e_data_structures stack_operations)
-add_e2e_file_test(string_builder      e2e_data_structures string_builder)
-add_e2e_file_test(struct_methods_ds   e2e_data_structures struct_methods)
-add_e2e_file_test(match_or_pattern    e2e_data_structures match_or_pattern)
-add_e2e_file_test(match_struct_pat    e2e_data_structures match_struct_pattern)
-add_e2e_file_test(struct_enum         e2e_struct_enum struct_enum)
-add_e2e_file_test(vec_operations      e2e_data_structures vec_operations)
-add_e2e_file_test(vec_f64_ops         e2e_data_structures vec_f64_ops)
-add_e2e_file_test(vec_bool_pushget    e2e_data_structures vec_bool)
-add_e2e_file_test(bytes_basic         e2e_bytes           bytes_basic)
-add_e2e_file_test(bytes_from          e2e_bytes           bytes_from)
-add_e2e_file_test(bytes_append        e2e_bytes           bytes_append)
-add_e2e_file_test(bytes_literal       e2e_bytes           bytes_literal)
-add_e2e_file_test(quic_loopback       e2e_quic            quic_loopback)
-add_e2e_file_test(node_start_register e2e_node            node_start_register)
-add_e2e_file_test(hex_test            e2e_hex             hex_test)
-add_e2e_file_test(base64_test         e2e_base64          base64_test)
-add_e2e_file_test(semver_test         e2e_semver          semver_test)
-add_e2e_file_test(csv_test            e2e_csv             csv_test)
-add_e2e_file_test(xml_test            e2e_xml             xml_test)
-add_e2e_file_test(fmt_test            e2e_fmt             fmt_test)
-add_e2e_file_test(crypto_test         e2e_crypto          crypto_test)
-add_e2e_file_test(math_basic          e2e_math            math_basic)
-
-# Machine type tests (state machines with compile-time exhaustiveness)
-add_e2e_file_test(machine_basic       e2e_machine machine_basic)
-add_e2e_file_test(machine_traffic     e2e_machine machine_traffic)
-add_e2e_file_test(machine_match       e2e_machine machine_match)
-add_e2e_file_test(machine_qualified   e2e_machine machine_qualified_event)
-add_e2e_file_test(machine_counter     e2e_machine machine_counter)
-add_e2e_file_test(machine_self_trans  e2e_machine machine_self_transition)
-add_e2e_file_test(machine_circuit_br  e2e_machine machine_circuit_breaker)
-add_e2e_file_test(machine_systematic  e2e_machine machine_systematic)
-add_e2e_file_test(machine_event_pay   e2e_machine machine_event_payload)
-add_e2e_file_test(machine_guard       e2e_machine machine_guard)
-add_e2e_file_test(machine_payload_tr  e2e_machine machine_payload_transition)
-add_e2e_file_test(machine_wildcard    e2e_machine machine_wildcard_ordering)
+# ── Reject tests in non-negative categories ───────────────────────────────────
 add_e2e_reject_test(machine_exhaustive e2e_machine machine_exhaustive_fail "does not handle event")
+add_e2e_reject_test(module_private     e2e_modules module_private_reject   "no function")
 
-# HashMap for-in iteration (sorted because HashMap order is non-deterministic)
-add_e2e_file_test_sorted(hashmap_forin    e2e_hashmap_forin hashmap_forin)
+# ── Warn tests (compile succeeds with expected warning, then run + compare) ───
+add_e2e_warn_test(coverage_shadowing_nested e2e_coverage shadowing_nested_warns "shadows a binding in an outer scope")
 
-# HashMapKeysOp: for-in over a HashMap produces key iteration via HashMapKeysOp
-add_e2e_file_test(hashmap_keys    e2e_collections hashmap_keys)
+# ── Panic tests in coverage category ──────────────────────────────────────────
+add_e2e_panic_test(testing_assert_fail e2e_coverage testing_assert_fail "assertion failed: expected 2, got 1")
 
-# Empty [] coerced to Vec<T> via type annotation
-add_e2e_file_test(empty_vec_literal  e2e_collections empty_vec_literal)
-add_e2e_file_test(empty_map_literal  e2e_collections empty_map_literal)
-add_e2e_file_test(map_literal        e2e_collections map_literal)
-
-# HashMap.keys() method — returns Vec<K>
-add_e2e_file_test(hashmap_keys_method  e2e_collections hashmap_keys_method)
-
-# Vec<String>.join(sep) — joins elements with separator
-add_e2e_file_test(vec_join             e2e_collections vec_join)
-
-# Vec higher-order methods: map, filter, fold
-add_e2e_file_test(vec_map              e2e_collections vec_map)
-add_e2e_file_test(vec_filter           e2e_collections vec_filter)
-add_e2e_file_test(vec_fold             e2e_collections vec_fold)
-add_e2e_file_test(deque                e2e_collections deque)
-
-# String.lines() — split on newlines
-add_e2e_file_test(string_lines         e2e_strings string_lines)
-
-# String.is_digit(), .is_alpha(), .is_alphanumeric(), .is_empty()
-add_e2e_file_test(string_predicates    e2e_strings string_predicates)
-
-# Compound assignment on indexed targets
-add_e2e_file_test(indexed_compound  e2e_compound_assign indexed_compound)
-
-# Memory (8 tests)
-add_e2e_file_test(actor_termination   e2e_memory actor_termination_cleanup)
-add_e2e_file_test(actor_str_owner     e2e_memory actor_field_string_ownership)
-add_e2e_file_test(closure_capture     e2e_memory closure_capture_safety)
-add_e2e_file_test(deep_recursion      e2e_memory deep_recursion)
-add_e2e_file_test(large_vec           e2e_memory large_vec_lifecycle)
-add_e2e_file_test(scope_cleanup       e2e_memory scope_cleanup)
-add_e2e_file_test(string_lifecycle    e2e_memory string_lifecycle)
-add_e2e_file_test(vec_get_borrowed    e2e_memory vec_get_borrowed_string)
-
-# String Drop (RAII cleanup for heap-allocated strings)
-add_e2e_file_test(string_drop         e2e_string_drop string_drop)
-
-# String Ordering (lexicographic comparison)
-add_e2e_file_test(string_ordering     e2e_string_ordering string_ordering)
-
-# Move Closures
-add_e2e_file_test(move_closure        e2e_move_closure move_closure)
-
-# Performance (6 tests)
-add_e2e_file_test(actor_spawn_rate    e2e_performance actor_spawn_rate)
-add_e2e_file_test(collection_bench    e2e_performance collection_ops_bench)
-add_e2e_file_test(fib_iter_bench      e2e_performance fibonacci_iterative_bench)
-add_e2e_file_test(msg_throughput      e2e_performance message_throughput)
-add_e2e_file_test(sched_throughput    e2e_performance scheduler_throughput)
-add_e2e_file_test(string_bench        e2e_performance string_concat_bench)
-
-# ── Example programs as E2E tests (from examples/) ───────────────────────────
-# These validate that top-level example programs compile and produce correct output.
-add_e2e_file_test(ex_fibonacci          e2e_examples fibonacci)
-add_e2e_file_test(ex_basic_types        e2e_examples test_basic_types)
-add_e2e_file_test(ex_block              e2e_examples test_block)
-add_e2e_file_test(ex_enum               e2e_examples enum_test)
-add_e2e_file_test(ex_string_ops         e2e_examples string_ops_test)
-add_e2e_file_test(ex_comprehensive      e2e_examples comprehensive_test_simple)
-add_e2e_file_test(ex_vec_hashmap        e2e_examples vec_hashmap_test)
-add_e2e_file_test(ex_result_option      e2e_examples result_option_test)
-add_e2e_file_test(ex_enums_options      e2e_examples enums_and_options)
-add_e2e_file_test(ex_struct_spawn       e2e_examples struct_spawn_test)
-add_e2e_file_test(ex_string             e2e_examples string_test)
-add_e2e_file_test(ex_stress_match       e2e_examples stress_match)
-add_e2e_file_test(ex_showcase           e2e_examples showcase)
-add_e2e_file_test(ex_full_validation    e2e_examples full_validation)
-add_e2e_file_test(ex_backpressure       e2e_examples backpressure_test)
-add_e2e_file_test(ex_actor_pipeline_multi e2e_examples actor_pipeline_multi)
-add_e2e_file_test(ex_lambda_capture     e2e_examples lambda_capture_basic)
-add_e2e_file_test(ex_vec_set_ops        e2e_examples vec_set_operations)
-add_e2e_file_test(ex_for_loop_patterns  e2e_examples for_loop_patterns)
-add_e2e_file_test(ex_type_inference     e2e_examples type_inference)
-add_e2e_file_test(ex_operators         e2e_examples test_operators_comprehensive)
-add_e2e_file_test(ex_vec_complete      e2e_examples test_vec_complete)
-add_e2e_file_test(ex_hashmap_complete  e2e_examples test_hashmap_complete)
-add_e2e_file_test(ex_float_arith       e2e_examples test_float_arithmetic)
-add_e2e_file_test(ex_loop_patterns     e2e_examples test_loop_patterns)
-add_e2e_file_test(ex_nested_structs    e2e_examples test_nested_structs)
-add_e2e_file_test(ex_string_edges      e2e_examples test_string_edge_cases)
-add_e2e_file_test(ex_match_patterns    e2e_examples test_match_patterns)
-add_e2e_file_test(ex_actor_lifecycle   e2e_examples test_actor_lifecycle)
-add_e2e_file_test(ex_lambda_patterns   e2e_examples test_lambda_patterns)
+# ── Special test properties ───────────────────────────────────────────────────
 # Force single scheduler worker so mailbox fill/drop is deterministic
 set_tests_properties(e2e_examples_backpressure_test PROPERTIES ENVIRONMENT "HEW_WORKERS=1")
-
-# ── Wire type tests ──────────────────────────────────────────────────────────
-add_e2e_file_test(wire_basic            e2e_wire wire_basic)
-add_e2e_file_test(wire_encode_decode    e2e_wire wire_encode_decode)
-add_e2e_file_test(wire_json             e2e_wire wire_json)
-add_e2e_file_test(wire_json_scalars     e2e_wire wire_json_scalars)
-add_e2e_file_test(wire_json_naming      e2e_wire wire_json_naming)
-add_e2e_file_test(wire_json_override    e2e_wire wire_json_override)
-add_e2e_file_test(wire_json_roundtrip   e2e_wire wire_json_roundtrip)
-add_e2e_file_test(wire_yaml_scalars     e2e_wire wire_yaml_scalars)
-add_e2e_file_test(wire_yaml_naming      e2e_wire wire_yaml_naming)
-add_e2e_file_test(wire_yaml_roundtrip   e2e_wire wire_yaml_roundtrip)
-add_e2e_file_test(wire_struct_basic    e2e_wire wire_struct_basic)
-add_e2e_file_test(wire_struct_json     e2e_wire wire_struct_json)
-add_e2e_file_test(wire_method_to_json  e2e_wire wire_method_to_json)
-add_e2e_file_test(wire_method_from_json e2e_wire wire_method_from_json)
-add_e2e_file_test(wire_binary_roundtrip e2e_wire wire_binary_roundtrip)
-add_e2e_file_test(wire_versioned        e2e_wire wire_versioned)
-add_e2e_file_test(wire_actor_message    e2e_wire wire_actor_message)
-add_e2e_file_test(wire_decode_string_roundtrip e2e_wire wire_decode_string_roundtrip)
-
-# ── Generics monomorphization tests ──────────────────────────────────────────
-add_e2e_file_test(generic_identity      e2e_generics generic_identity)
-add_e2e_file_test(generic_pair          e2e_generics generic_pair)
-add_e2e_file_test(generic_fn            e2e_generics generic_fn)
-add_e2e_file_test(generic_struct        e2e_generics generic_struct)
-add_e2e_file_test(generic_multi_specialize e2e_generics generic_multi_specialize)
-add_e2e_file_test(generic_multi_param   e2e_generics generic_multi_param)
-add_e2e_file_test(generic_struct_param  e2e_generics generic_struct_param)
-add_e2e_file_test(generic_all_types    e2e_generics generic_all_types)
-add_e2e_file_test(generic_nested       e2e_generics generic_nested)
-add_e2e_file_test(generic_trait_bound_dispatch e2e_generics generic_trait_bound_dispatch)
-add_e2e_file_test(generic_receiver_method e2e_generics generic_receiver_method)
-add_e2e_file_test(generic_implicit_identity e2e_generics generic_implicit_identity)
-add_e2e_file_test(generic_implicit_multi e2e_generics generic_implicit_multi)
-
-# ── Regex tests ───────────────────────────────────────────────────────────────
-add_e2e_file_test(regex_is_match        e2e_regex regex_is_match)
-add_e2e_file_test(regex_find_replace    e2e_regex regex_find_replace)
-
-# RegexReplaceOp: focused test for regex pattern .replace() calls
-add_e2e_file_test(regex_replace         e2e_text  regex_replace)
-
-# Sort tests
-add_e2e_file_test(sort_basic            e2e_sort  sort_basic)
-
-# ── Canonicalization tests ──────────────────────────────────────────────────
-add_e2e_file_test(string_concat_identity  e2e_canonicalize string_concat_identity)
-
-# ── Generator tests ──────────────────────────────────────────────────────────
-add_e2e_file_test(simple_generator      e2e_generators simple_generator)
-add_e2e_file_test(for_over_generator    e2e_generators for_over_generator)
-add_e2e_file_test(gen_loop              e2e_generators gen_loop)
-add_e2e_file_test(gen_fib               e2e_generators gen_fib)
-
-# ── Async generator tests ────────────────────────────────────────────────────
-add_e2e_file_test(async_gen             e2e_async_gen  async_gen)
-
-# ── Receive gen fn tests (cross-actor streaming) ─────────────────────────────
-add_e2e_file_test(receive_gen_basic     e2e_receive_gen receive_gen_basic)
-add_e2e_file_test(receive_gen_empty     e2e_receive_gen receive_gen_empty)
-add_e2e_file_test(receive_gen_fib       e2e_receive_gen receive_gen_fib)
-add_e2e_file_test(receive_gen_params    e2e_receive_gen receive_gen_params)
-
-# ── Coalesce overflow tests ──────────────────────────────────────────────────
-add_e2e_file_test(coalesce_basic        e2e_coalesce coalesce_basic)
-
-# ── Closure first-class tests ─────────────────────────────────────────────────
-add_e2e_file_test(closure_firstclass    e2e_closure_firstclass closure_firstclass)
-
-# ── Closure return-type coercion tests ────────────────────────────────────────
-add_e2e_file_test(closure_return_coercion  e2e_closure_coercion closure_return_coercion)
-
-# ── Closure env Rc memory management tests ────────────────────────────────────
-add_e2e_file_test(closure_env_rc        e2e_closure_env_rc closure_env_rc)
-
-# ── Mutable variable capture in closures ──────────────────────────────────────
-add_e2e_file_test(closure_mutable_capture  e2e_closures closure_mutable_capture)
-add_e2e_file_test(closure_read_mutable     e2e_closures closure_read_mutable)
-add_e2e_file_test(closure_match_capture    e2e_closures closure_match_capture)
-
-# ── dyn Trait tests ──────────────────────────────────────────────────────────
-add_e2e_file_test(dyn_dispatch          e2e_dyn_trait dyn_dispatch)
-add_e2e_file_test(dyn_dispatch_string   e2e_dyn_trait dyn_dispatch_string)
-add_e2e_file_test(dyn_dispatch_args     e2e_dyn_trait dyn_dispatch_args)
-add_e2e_file_test(dyn_dispatch_void     e2e_dyn_trait dyn_dispatch_void)
-add_e2e_file_test(dyn_trait_with_generics e2e_dyn_trait dyn_trait_with_generics)
-add_e2e_file_test(trait_inherit         e2e_trait_inherit trait_inherit)
-
-# ── Trait impl tests ─────────────────────────────────────────────────────────
-add_e2e_file_test(trait_impl            e2e_traits trait_impl)
-add_e2e_file_test(trait_multi_impl      e2e_traits trait_multi_impl)
-add_e2e_file_test(trait_default_override e2e_traits trait_default_override)
-add_e2e_file_test(trait_inherit_diamond e2e_traits trait_inherit_diamond)
-
-# ── Trait-bounded generic dispatch tests ────────────────────────────────────
-add_e2e_file_test(trait_bound_method    e2e_trait_bound_dispatch trait_bound_method)
-add_e2e_file_test(trait_bound_multi     e2e_trait_bound_dispatch trait_bound_multi)
-
-# ── Inherent impl tests ─────────────────────────────────────────────────────
-add_e2e_file_test(struct_impl_method    e2e_impl struct_impl_method)
-add_e2e_file_test(generic_impl_method   e2e_impl generic_impl_method)
-add_e2e_file_test(generic_impl_multi    e2e_impl generic_impl_multi)
-add_e2e_file_test(self_sugar            e2e_self_sugar self_sugar)
-add_e2e_file_test(self_sugar_mixed      e2e_self_sugar self_sugar_mixed)
-
-# ── Struct field assignment tests ────────────────────────────────────────────
-add_e2e_file_test(struct_assign         e2e_struct_assign struct_assign)
-
-# ── Tuple destructuring tests ────────────────────────────────────────────────
-add_e2e_file_test(tuple_destruct        e2e_tuple_destruct tuple_destruct)
-add_e2e_file_test(nested_tuple_destruct e2e_nested_tuple_destruct nested_tuple_destruct)
-
-# ── Struct destructuring tests ───────────────────────────────────────────────
-add_e2e_file_test(struct_destruct       e2e_struct_destruct struct_destruct)
-
-# ── Bench tests ──────────────────────────────────────────────────────────────
-add_e2e_file_test(bench_basic           e2e_bench bench_basic)
-
-# ── Import tests ─────────────────────────────────────────────────────────────
-add_e2e_file_test(import_stdlib         e2e_imports import_stdlib)
-add_e2e_file_test(import_fs             e2e_imports test_import_fs)
-add_e2e_file_test(import_io             e2e_imports test_import_io)
-add_e2e_file_test(import_string         e2e_imports test_import_string)
-add_e2e_file_test(import_os             e2e_imports test_import_os)
-add_e2e_file_test(import_multi          e2e_imports test_import_multi)
-add_e2e_file_test(import_string_ops     e2e_imports test_import_string_ops)
-add_e2e_file_test(import_multi_stdlib   e2e_imports test_import_multi_stdlib)
-
-# ── Try operator tests ──────────────────────────────────────────────────────
-add_e2e_file_test(try_operator          e2e_try_operator try_operator)
-
-# Error handling patterns (4 tests)
-add_e2e_file_test(error_return_codes    e2e_error_handling error_return_codes)
-add_e2e_file_test(result_pattern        e2e_error_handling result_pattern)
-add_e2e_file_test(option_pattern        e2e_error_handling option_pattern)
-add_e2e_file_test(option_stdlib         e2e_option_stdlib option_stdlib)
-add_e2e_file_test(enum_error_chain      e2e_error_handling enum_error_chain)
-add_e2e_file_test(result_stdlib         e2e_error_handling result_stdlib)
-add_e2e_file_test(structured_errors    e2e_structured_errors structured_errors)
-add_e2e_file_test(result_inline_match   e2e_error_handling result_inline_match)
-add_e2e_file_test(iter_stdlib           e2e_iter_stdlib iter_stdlib)
-
-# ── Structured concurrency tests ─────────────────────────────────────────────
-add_e2e_file_test(scope_launch          e2e_concurrency scope_launch)
-add_e2e_file_test(scope_launch_await    e2e_concurrency scope_launch_await)
-add_e2e_file_test(scope_launch_await_bool e2e_concurrency scope_launch_await_bool)
-add_e2e_file_test(scope_spawn           e2e_scope_spawn scope_spawn)
-
-# ── Module/import tests ──────────────────────────────────────────────────────
-add_e2e_file_test(module_basic          e2e_modules module_basic)
-add_e2e_file_test(module_qualified      e2e_modules module_qualified)
-add_e2e_file_test(module_glob           e2e_modules module_glob)
-add_e2e_file_test(module_named          e2e_modules module_named)
-add_e2e_reject_test(module_private      e2e_modules module_private_reject "no function")
-add_e2e_file_test(module_alias          e2e_modules module_alias)
-add_e2e_file_test(module_multi_import   e2e_modules module_multi_import)
-add_e2e_file_test(module_types          e2e_modules module_types)
-add_e2e_file_test(module_consts         e2e_modules module_consts)
-add_e2e_file_test(module_chain          e2e_modules module_chain)
-add_e2e_file_test(module_diamond        e2e_modules module_diamond)
-add_e2e_file_test(module_enum           e2e_modules module_enum)
-add_e2e_file_test(module_trait_dispatch e2e_modules module_trait_dispatch)
-add_e2e_file_test(module_trait_inherit  e2e_modules module_trait_inherit)
-add_e2e_file_test(module_actor          e2e_modules module_actor)
-add_e2e_file_test(module_multifile      e2e_modules module_multifile)
-add_e2e_file_test(module_spawn_qualified e2e_modules module_spawn_qualified)
-add_e2e_file_test(module_reexport       e2e_modules module_reexport)
-add_e2e_file_test(module_result_enum    e2e_modules module_result_enum)
-
-# ── Drop trait tests ─────────────────────────────────────────────────────────
-add_e2e_file_test(drop_trait            e2e_drop_trait drop_trait)
-add_e2e_file_test(drop_nested_struct    e2e_drop_trait drop_nested_struct)
-add_e2e_file_test(drop_scope            e2e_drop_scope drop_scope)
-add_e2e_file_test(drop_early_return     e2e_drop_scope drop_early_return)
-add_e2e_file_test(drop_shadow_return    e2e_drop_scope drop_shadow_return)
-
-# ── Temporary materialization tests ──────────────────────────────────────────
-add_e2e_file_test(temp_user_drop        e2e_temp_materialization temp_user_drop)
-add_e2e_file_test(temp_fstring_drop     e2e_temp_materialization temp_fstring_drop)
-add_e2e_file_test(temp_collection_drop  e2e_temp_materialization temp_collection_drop)
-
-# ── Actor send ownership tests ───────────────────────────────────────────────
-add_e2e_file_test(actor_send_named_drop e2e_actor_drop actor_send_named_drop)
-add_e2e_file_test(actor_send_vec_drop e2e_actor_drop actor_send_vec_drop)
-
-# ── Return statement tests ───────────────────────────────────────────────────
-add_e2e_file_test(return_after_drop     e2e_return return_after_drop)
-
-# ── Stress tests ─────────────────────────────────────────────────────────────
-add_e2e_file_test(stress_mass_spawn     e2e_stress stress_mass_spawn)
-add_e2e_file_test(stress_ring           e2e_stress stress_ring)
-add_e2e_file_test(stress_message_burst  e2e_stress stress_message_burst)
 
 # Stress tests spawn many worker threads and are sensitive to extreme CPU/memory
 # contention from parallel test execution.  Serialize them against each other and
@@ -741,53 +382,6 @@ set_tests_properties(
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   4
 )
-
-# ── Bytes stream tests (Stream<T> / Sink<T> first-class streams) ─────────────
-add_e2e_file_test(stream_file_count      e2e_bytes stream_file_count)
-add_e2e_file_test(stream_channel_count   e2e_bytes stream_channel_count)
-add_e2e_file_test(stream_channel_data    e2e_bytes stream_channel_data)
-add_e2e_file_test(stream_file_write_read e2e_bytes stream_file_write_read)
-add_e2e_file_test(stream_chunks          e2e_bytes stream_chunks)
-add_e2e_file_test(stream_multi_channel   e2e_bytes stream_multi_channel)
-add_e2e_file_test(stream_inline_call        e2e_bytes stream_inline_call)
-add_e2e_file_test(stream_method_forawait    e2e_bytes stream_method_forawait)
-add_e2e_file_test(stream_producer_consumer e2e_bytes stream_producer_consumer)
-add_e2e_file_test(stream_file_relay      e2e_bytes stream_file_relay)
-add_e2e_file_test(stream_actor_sink      e2e_bytes stream_actor_sink)
-add_e2e_file_test(http_actor_handler     e2e_bytes http_actor_handler)
-add_e2e_file_test(stream_break           e2e_bytes stream_break)
-add_e2e_file_test(stream_collect         e2e_bytes stream_collect)
-add_e2e_file_test(stream_write_string    e2e_bytes stream_write_string)
-add_e2e_file_test(stream_lines_no        e2e_bytes stream_lines_no_newline)
-add_e2e_file_test(stream_idiomatic       e2e_bytes stream_idiomatic)
-add_e2e_file_test(stream_actor_fs        e2e_bytes stream_actor_fileserver)
-add_e2e_file_test(stream_pipe            e2e_bytes stream_pipe)
-add_e2e_file_test(stream_result          e2e_bytes stream_result)
-add_e2e_file_test(stream_map             e2e_bytes stream_map)
-add_e2e_file_test(stream_filter          e2e_bytes stream_filter)
-add_e2e_file_test(stream_take            e2e_bytes stream_take)
-add_e2e_file_test(stream_map_filter_collect e2e_bytes stream_map_filter_collect)
-add_e2e_file_test(stream_write_read_bytes  e2e_bytes stream_write_read_bytes)
-add_e2e_file_test(stream_forawait_bytes   e2e_bytes stream_forawait_bytes)
-add_e2e_file_test(stream_map_bytes        e2e_bytes stream_map_bytes)
-add_e2e_file_test(stream_map_bytes_fresh  e2e_bytes stream_map_bytes_fresh)
-add_e2e_file_test(stream_filter_bytes     e2e_bytes stream_filter_bytes)
-add_e2e_file_test(stream_filter_inline    e2e_bytes stream_filter_inline)
-add_e2e_file_test(stream_map_bytes_if_branch e2e_bytes stream_map_bytes_if_branch)
-add_e2e_file_test(stream_map_match_let    e2e_bytes stream_map_match_let)
-add_e2e_file_test(stream_take_bytes       e2e_bytes stream_take_bytes)
-add_e2e_file_test(stream_sink_auto_close  e2e_bytes stream_sink_auto_close)
-
-# ── Link/Monitor tests ──────────────────────────────────────────────────────
-add_e2e_file_test(link_monitor          e2e_link_monitor link_monitor)
-
-# ── Supervisor tests ───────────────────────────────────────────────────────
-add_e2e_file_test(supervisor_basic      e2e_supervisor_basic supervisor_basic)
-add_e2e_file_test(supervisor_strategy   e2e_supervisor_strategy supervisor_strategy)
-add_e2e_file_test(supervisor_child      e2e_supervisor_child supervisor_child)
-add_e2e_file_test(supervisor_restart    e2e_supervisor_restart supervisor_restart)
-add_e2e_file_test(supervisor_nested     e2e_supervisor_nested supervisor_nested)
-add_e2e_file_test(supervisor_named_child e2e_supervisor_named_child supervisor_named_child)
 
 # Supervisor tests intentionally crash and restart actors — sensitive to
 # CPU contention from parallel test execution.
@@ -802,30 +396,6 @@ set_tests_properties(
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   2
 )
-
-# ── Const tests ────────────────────────────────────────────────────────────
-add_e2e_file_test(const_expressions     e2e_const const_expressions)
-
-# ── Defer tests ────────────────────────────────────────────────────────────
-add_e2e_file_test(defer                 e2e_defer defer)
-add_e2e_file_test(defer_multi_return    e2e_defer defer_multi_return)
-add_e2e_file_test(defer_cleanup_call    e2e_defer defer_cleanup_call)
-add_e2e_file_test(defer_block           e2e_defer defer_block)
-
-# ── Loop tests ─────────────────────────────────────────────────────────────
-add_e2e_file_test(for_range_break       e2e_loops for_range_break)
-add_e2e_file_test(labeled_break_drops   e2e_loops labeled_break_drops)
-add_e2e_file_test(loop_return           e2e_loops loop_return)
-
-# ── Named arguments tests ─────────────────────────────────────────────────
-add_e2e_file_test(named_args            e2e_named_args main)
-
-# ── Logging tests ─────────────────────────────────────────────────────────
-add_e2e_file_test(log_levels            e2e_log_levels main)
-add_e2e_file_test(log_kwargs            e2e_log_kwargs main)
-
-# ── Canonicalization tests ────────────────────────────────────────────────
-add_e2e_file_test(cast_chain             e2e_canonicalize cast_chain)
 
 # ── Learning/playground example tests (auto-discovered) ─────────────────────
 # Any .hew file in examples/playground/ or examples/junior/ with a matching
@@ -881,103 +451,6 @@ foreach(HEW_FILE ${JUNIOR_HEWS})
     message(VERBOSE "Skipping junior/${HEW_NAME} — no .expected file")
   endif()
 endforeach()
-
-# ── Missing E2E test registrations ────────────────────────────────────────────
-add_e2e_file_test(ranges               e2e_ranges range_value)
-add_e2e_file_test(char_literals        e2e_char_literals char_literals)
-add_e2e_file_test(for_labels           e2e_for_labels for_labels)
-add_e2e_file_test(tail_call            e2e_tail_call tail_call)
-add_e2e_file_test(vec_bool             e2e_vec vec_bool)
-add_e2e_file_test(tuple_pattern        e2e_match tuple_pattern)
-add_e2e_file_test(match_struct_variant_last_arm e2e_match match_struct_variant_last_arm)
-add_e2e_file_test(match_nested_pattern  e2e_match match_nested_pattern)
-add_e2e_file_test(if_let_basic         e2e_if_let if_let_basic)
-add_e2e_file_test(if_let_return        e2e_if_let if_let_return)
-add_e2e_file_test(while_let_basic      e2e_while_let while_let_basic)
-add_e2e_file_test(duration_methods     e2e_duration duration_methods)
-add_e2e_file_test(duration_arithmetic  e2e_duration duration_arithmetic)
-add_e2e_file_test(duration_from_nanos  e2e_duration duration_from_nanos)
-add_e2e_file_test(duration_suffixes    e2e_duration duration_suffixes)
-
-# ── Coverage tests (ops with zero prior E2E coverage) ────────────────────────
-add_e2e_file_test(coverage_assert_ops         e2e_coverage assert_ops)
-add_e2e_file_test(coverage_string_case        e2e_coverage string_case_methods)
-add_e2e_file_test(coverage_string_methods     e2e_coverage string_method_calls)
-add_e2e_file_test(coverage_to_string          e2e_coverage to_string_op)
-add_e2e_file_test(coverage_sleep              e2e_coverage sleep_op)
-add_e2e_file_test(coverage_return_in_loop     e2e_coverage return_in_loop)
-add_e2e_file_test(coverage_actor_stop_close  e2e_coverage actor_stop_close)
-add_e2e_file_test(coverage_cooperate         e2e_coverage cooperate_op)
-add_e2e_file_test(coverage_vec_remove_clear  e2e_coverage vec_remove_clear)
-add_e2e_file_test(coverage_struct_field_set  e2e_coverage struct_field_set)
-add_e2e_file_test(coverage_vec_string_ops      e2e_coverage vec_string_ops)
-add_e2e_file_test(coverage_hashmap_string_vals  e2e_coverage hashmap_string_vals)
-add_e2e_file_test(scope_cancel_check         e2e_coverage scope_cancel_check)
-add_e2e_file_test(log_basic_cov              e2e_coverage log_basic)
-add_e2e_file_test(supervisor_stop_cov       e2e_coverage supervisor_stop)
-add_e2e_file_test(lambda_send               e2e_coverage lambda_send)
-add_e2e_file_test(regex_literal             e2e_coverage regex_literal)
-add_e2e_file_test(cast_numeric              e2e_coverage cast_numeric)
-add_e2e_file_test(coverage_narrowing_check  e2e_coverage narrowing_check)
-add_e2e_file_test(coverage_var_reassign_drop e2e_coverage var_reassign_drop)
-add_e2e_file_test(coverage_match_exhaustive e2e_coverage match_exhaustive)
-add_e2e_file_test(coverage_match_nested_enum   e2e_coverage match_nested_enum)
-add_e2e_file_test(coverage_option_chain        e2e_coverage option_chain)
-add_e2e_file_test(coverage_result_propagation  e2e_coverage result_propagation)
-add_e2e_file_test(coverage_shadowing_scopes    e2e_coverage shadowing_error_recovery)
-add_e2e_warn_test(coverage_shadowing_nested    e2e_coverage shadowing_nested_warns      "shadows a binding in an outer scope")
-add_e2e_file_test(coverage_closure_capture     e2e_coverage closure_capture_types)
-add_e2e_file_test(coverage_actor_ask_reply     e2e_coverage actor_ask_reply)
-add_e2e_file_test(coverage_actor_close_await   e2e_coverage actor_close_await)
-add_e2e_file_test(coverage_enum_patterns       e2e_coverage enum_complex_patterns)
-add_e2e_file_test(coverage_loop_control        e2e_coverage loop_control_flow)
-add_e2e_file_test(coverage_hashmap_option      e2e_coverage hashmap_option_integration)
-add_e2e_file_test(coverage_trait_dispatch      e2e_coverage trait_dispatch_generic)
-add_e2e_file_test(coverage_where_clause_gen    e2e_coverage where_clause_generics)
-add_e2e_file_test(coverage_nested_match        e2e_coverage nested_match_exhaust)
-add_e2e_file_test(coverage_dyn_param           e2e_coverage dyn_param_dispatch)
-add_e2e_file_test(coverage_result_error        e2e_coverage result_error_match)
-add_e2e_file_test(coverage_vec_functional      e2e_coverage vec_functional_ops)
-add_e2e_file_test(coverage_string_interp       e2e_coverage string_interp_complex)
-add_e2e_file_test(coverage_enum_data           e2e_coverage enum_data_methods)
-add_e2e_file_test(coverage_nested_scope        e2e_coverage nested_scope_cleanup)
-add_e2e_file_test(coverage_if_let_nested       e2e_coverage if_let_nested)
-add_e2e_file_test(coverage_match_tuple_guard   e2e_coverage match_tuple_guard)
-add_e2e_file_test(coverage_actor_multi_handler e2e_coverage actor_multi_handler)
-add_e2e_file_test(coverage_supervisor_children e2e_coverage supervisor_children)
-add_e2e_file_test(coverage_expr_deep_nesting   e2e_coverage expr_deep_nesting)
-add_e2e_file_test(coverage_loop_edge_cases     e2e_coverage loop_edge_cases)
-add_e2e_file_test(coverage_closure_edge_cases  e2e_coverage closure_edge_cases)
-add_e2e_file_test(coverage_defer_multi_scope   e2e_coverage defer_multi_scope)
-add_e2e_file_test(coverage_std_testing         e2e_coverage std_testing)
-add_e2e_panic_test(testing_assert_fail         e2e_coverage testing_assert_fail "assertion failed: expected 2, got 1")
-
-# ── DNS / TLS stdlib tests ────────────────────────────────────────────────────
-add_e2e_file_test(dns_resolve                  e2e_dns dns_resolve)
-add_e2e_file_test(tls_import                   e2e_tls tls_import)
-
-# ── Golden dialect IR validation tests ────────────────────────────────────────
-# Each test targets specific Hew MLIR dialect ops to ensure the compiler
-# produces correct IR for known source constructs.
-add_e2e_file_test(golden_struct              e2e_golden golden_struct)
-add_e2e_file_test(golden_enum                e2e_golden golden_enum)
-add_e2e_file_test(golden_vec                 e2e_golden golden_vec)
-add_e2e_file_test(golden_hashmap             e2e_golden golden_hashmap)
-add_e2e_file_test(golden_closure             e2e_golden golden_closure)
-add_e2e_file_test(golden_actor               e2e_golden golden_actor)
-add_e2e_file_test(golden_scope               e2e_golden golden_scope)
-add_e2e_file_test(golden_option_result       e2e_golden golden_option_result)
-add_e2e_file_test(golden_string              e2e_golden golden_string)
-add_e2e_file_test(golden_generator           e2e_golden golden_generator)
-
-# ── Indirect enum tests ────────────────────────────────────────────────────
-add_e2e_file_test(indirect_expr              e2e_indirect_enum indirect_expr)
-add_e2e_file_test(indirect_list              e2e_indirect_enum indirect_list)
-add_e2e_file_test(indirect_option_tree       e2e_indirect_enum indirect_option_tree)
-
-# ── Qualified enum constructor tests ──────────────────────────────────────
-add_e2e_file_test(enum_qualified_construct   e2e_enum_qualified enum_qualified_construct)
-
 # ── Coroutine prototype tests ────────────────────────────────────────────────
 # Validates LLVM coroutine intrinsic integration (CoroSplit pass).
 # These compile raw .ll files with coroutine intrinsics and verify output.

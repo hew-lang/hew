@@ -5687,6 +5687,96 @@ impl Checker {
         ty
     }
 
+    fn check_string_method(&mut self, method: &str, args: &[CallArg], span: &Span) -> Ty {
+        match method {
+            "len" => Ty::I64,
+            "contains" | "starts_with" | "ends_with" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                Ty::Bool
+            }
+            "is_digit" | "is_alpha" | "is_alphanumeric" | "is_empty" => {
+                self.check_arity(args, 0, &format!("`String::{method}`"), span);
+                Ty::Bool
+            }
+            "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" => Ty::String,
+            "replace" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                if let Some(arg) = args.get(1) {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                Ty::String
+            }
+            "split" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![Ty::String],
+                }
+            }
+            "lines" => {
+                self.check_arity(args, 0, "`String::lines`", span);
+                Ty::Named {
+                    name: "Vec".to_string(),
+                    args: vec![Ty::String],
+                }
+            }
+            "find" | "index_of" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::String);
+                }
+                Ty::I64
+            }
+            "slice" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                if let Some(arg) = args.get(1) {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                Ty::String
+            }
+            "repeat" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                Ty::String
+            }
+            "char_at" => {
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, &Ty::I64);
+                }
+                Ty::I64
+            }
+            "chars" => Ty::Named {
+                name: "Vec".to_string(),
+                args: vec![Ty::Char],
+            },
+            _ => {
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!("no method `{method}` on string"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     fn check_hashmap_method(
         &mut self,
         type_args: &[Ty],
@@ -6259,93 +6349,7 @@ impl Checker {
                 Ty::Unit
             }
             // String methods
-            (Ty::String, _) => match method {
-                "len" => Ty::I64,
-                "contains" | "starts_with" | "ends_with" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    Ty::Bool
-                }
-                "is_digit" | "is_alpha" | "is_alphanumeric" | "is_empty" => {
-                    self.check_arity(args, 0, &format!("`String::{method}`"), span);
-                    Ty::Bool
-                }
-                "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" => Ty::String,
-                "replace" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    if let Some(arg) = args.get(1) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    Ty::String
-                }
-                "split" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    Ty::Named {
-                        name: "Vec".to_string(),
-                        args: vec![Ty::String],
-                    }
-                }
-                "lines" => {
-                    self.check_arity(args, 0, "`String::lines`", span);
-                    Ty::Named {
-                        name: "Vec".to_string(),
-                        args: vec![Ty::String],
-                    }
-                }
-                "find" | "index_of" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::String);
-                    }
-                    Ty::I64
-                }
-                "slice" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    if let Some(arg) = args.get(1) {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    Ty::String
-                }
-                "repeat" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    Ty::String
-                }
-                "char_at" => {
-                    if let Some(arg) = args.first() {
-                        let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, &Ty::I64);
-                    }
-                    Ty::I64
-                }
-                "chars" => Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![Ty::Char],
-                },
-                _ => {
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("no method `{method}` on string"),
-                    );
-                    Ty::Error
-                }
-            },
+            (Ty::String, _) => self.check_string_method(method, args, span),
             // http.Server methods
             (Ty::Named { name, .. }, _) if name == "http.Server" => match method {
                 "accept" => Ty::Named {

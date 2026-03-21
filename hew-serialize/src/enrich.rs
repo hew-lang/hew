@@ -137,78 +137,45 @@ fn ty_element_name(ty: &Ty) -> String {
     }
 }
 
+/// Map primitive `Ty` variants to their serialized type name.
+fn primitive_name(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::I8 => Some("i8"),
+        Ty::I16 => Some("i16"),
+        Ty::I32 => Some("i32"),
+        Ty::I64 => Some("i64"),
+        Ty::U8 => Some("u8"),
+        Ty::U16 => Some("u16"),
+        Ty::U32 => Some("u32"),
+        Ty::U64 => Some("u64"),
+        Ty::F32 => Some("f32"),
+        Ty::F64 => Some("f64"),
+        Ty::Bool => Some("bool"),
+        Ty::Char => Some("char"),
+        Ty::String => Some("string"),
+        Ty::Bytes => Some("bytes"),
+        Ty::Duration => Some("duration"),
+        Ty::Never => Some("!"),
+        _ => None,
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers many Ty variants"
 )]
 fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
     let span: Span = 0..0; // synthetic span for inferred types
-    let te = match ty {
-        Ty::I8 => TypeExpr::Named {
-            name: "i8".into(),
+
+    let te = if let Some(name) = primitive_name(ty) {
+        TypeExpr::Named {
+            name: name.into(),
             type_args: None,
-        },
-        Ty::I16 => TypeExpr::Named {
-            name: "i16".into(),
-            type_args: None,
-        },
-        Ty::I32 => TypeExpr::Named {
-            name: "i32".into(),
-            type_args: None,
-        },
-        Ty::I64 => TypeExpr::Named {
-            name: "i64".into(),
-            type_args: None,
-        },
-        Ty::U8 => TypeExpr::Named {
-            name: "u8".into(),
-            type_args: None,
-        },
-        Ty::U16 => TypeExpr::Named {
-            name: "u16".into(),
-            type_args: None,
-        },
-        Ty::U32 => TypeExpr::Named {
-            name: "u32".into(),
-            type_args: None,
-        },
-        Ty::U64 => TypeExpr::Named {
-            name: "u64".into(),
-            type_args: None,
-        },
-        Ty::F32 => TypeExpr::Named {
-            name: "f32".into(),
-            type_args: None,
-        },
-        Ty::F64 => TypeExpr::Named {
-            name: "f64".into(),
-            type_args: None,
-        },
-        Ty::Bool => TypeExpr::Named {
-            name: "bool".into(),
-            type_args: None,
-        },
-        Ty::Char => TypeExpr::Named {
-            name: "char".into(),
-            type_args: None,
-        },
-        Ty::String => TypeExpr::Named {
-            name: "string".into(),
-            type_args: None,
-        },
-        Ty::Bytes => TypeExpr::Named {
-            name: "bytes".into(),
-            type_args: None,
-        },
-        Ty::Duration => TypeExpr::Named {
-            name: "duration".into(),
-            type_args: None,
-        },
-        Ty::Unit => TypeExpr::Tuple(Vec::new()),
-        Ty::Never => TypeExpr::Named {
-            name: "!".into(),
-            type_args: None,
-        },
+        }
+    } else if matches!(ty, Ty::Unit) {
+        TypeExpr::Tuple(Vec::new())
+    } else {
+        match ty {
 
         Ty::Named { name, args } => match (name.as_str(), args.len()) {
             ("Option", 1) => {
@@ -378,6 +345,9 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
             name: name.clone(),
             type_args: None,
         },
+        // Primitives, Unit, and Never are handled by the table above
+        _ => unreachable!("primitive_name should have matched {ty:?}"),
+    }
     };
 
     Ok((te, span))

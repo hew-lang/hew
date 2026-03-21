@@ -218,6 +218,15 @@ private:
   mlir::Value generatePostfixExpr(const ast::ExprPostfixTry &expr);
   mlir::Value generateStructInit(const ast::ExprStructInit &expr);
   mlir::Value generateMethodCall(const ast::ExprMethodCall &expr);
+  std::optional<mlir::Value> generateModuleMethodCall(const ast::ExprMethodCall &mc,
+                                                      const ast::ExprIdentifier &ident,
+                                                      mlir::Location location);
+  std::optional<mlir::Value> generateHandleMethodCall(const ast::ExprMethodCall &mc,
+                                                      mlir::Value receiver,
+                                                      mlir::Location location);
+  std::optional<mlir::Value> generateActorMethodCall(const ast::ExprMethodCall &mc,
+                                                     mlir::Value receiver,
+                                                     mlir::Location location);
   std::optional<mlir::Value> generateBuiltinMethodCall(const ast::ExprMethodCall &expr,
                                                        mlir::Value receiver,
                                                        mlir::Location location);
@@ -321,6 +330,10 @@ private:
   /// Emit a RuntimeCallOp, returning the result (or nullptr for void calls).
   mlir::Value emitRuntimeCall(llvm::StringRef callee, mlir::Type resultType, mlir::ValueRange args,
                               mlir::Location location);
+
+  /// Emit an Option<T> wrapping: builds an scf::IfOp with Some(payload)/None branches.
+  mlir::Value emitOptionWrap(mlir::Value condition, mlir::Value payload,
+                             mlir::Type optionType, mlir::Location location);
 
   /// Allocate the returnFlag and (if the return type is memref-compatible)
   /// the returnSlot for early-return support inside SCF regions.

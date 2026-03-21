@@ -1333,6 +1333,24 @@ mlir::Value MLIRGen::generateUnaryExpr(const ast::ExprUnary &expr) {
 // Call expression generation
 // ============================================================================
 
+mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
+                                    mlir::Type optionType, mlir::Location location) {
+  auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, condition,
+                                      /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  auto someVal = hew::EnumConstructOp::create(
+      builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+      mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+  mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+  builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+  auto noneVal = hew::EnumConstructOp::create(
+      builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+      mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+  mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+  builder.setInsertionPointAfter(ifOp);
+  return ifOp.getResult(0);
+}
+
 mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   auto location = currentLoc;
 
@@ -1408,21 +1426,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
 
   if (calleeName == "hew_channel_try_recv_int") {
@@ -1469,21 +1473,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
   // ── Intercept channel recv → Option<T> wrapping ──────────────────────
@@ -1515,21 +1505,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
 
   if (calleeName == "hew_channel_recv_int") {
@@ -1573,21 +1549,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
   // Handle generic function calls with explicit type arguments
@@ -3129,20 +3091,21 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // HashSet<T> method dispatcher
   auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType, mlir::Value argValue,
                                mlir::Value &resultOut) -> bool {
-    if (method == "insert") {
+    // Helper for insert/contains/remove — identical structure, different runtime function.
+    auto emitHashSetElemOp = [&](llvm::StringRef opName) -> bool {
       if (!argValue) {
-        emitError(location) << "HashSet::insert requires an argument";
+        emitError(location) << "HashSet::" << opName << " requires an argument";
         return true;
       }
       auto val = coerceType(argValue, elemType, location);
-      // Call hew_hashset_insert_int or hew_hashset_insert_string based on element type
       std::string funcName;
       if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_insert_int";
+        funcName = ("hew_hashset_" + opName + "_int").str();
       } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_insert_string";
+        funcName = ("hew_hashset_" + opName + "_string").str();
       } else {
-        emitError(location) << "HashSet::insert only supports int and String element types";
+        emitError(location) << "HashSet::" << opName
+                            << " only supports int and String element types";
         return true;
       }
       resultOut = hew::RuntimeCallOp::create(
@@ -3150,49 +3113,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                       mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
       return true;
-    }
-    if (method == "contains") {
-      if (!argValue) {
-        emitError(location) << "HashSet::contains requires an argument";
-        return true;
-      }
-      auto val = coerceType(argValue, elemType, location);
-      std::string funcName;
-      if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_contains_int";
-      } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_contains_string";
-      } else {
-        emitError(location) << "HashSet::contains only supports int and String element types";
-        return true;
-      }
-      resultOut = hew::RuntimeCallOp::create(
-                      builder, location, mlir::TypeRange{builder.getI1Type()},
-                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
-                      .getResult();
-      return true;
-    }
-    if (method == "remove") {
-      if (!argValue) {
-        emitError(location) << "HashSet::remove requires an argument";
-        return true;
-      }
-      auto val = coerceType(argValue, elemType, location);
-      std::string funcName;
-      if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_remove_int";
-      } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_remove_string";
-      } else {
-        emitError(location) << "HashSet::remove only supports int and String element types";
-        return true;
-      }
-      resultOut = hew::RuntimeCallOp::create(
-                      builder, location, mlir::TypeRange{builder.getI1Type()},
-                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
-                      .getResult();
-      return true;
-    }
+    };
+
+    if (method == "insert")
+      return emitHashSetElemOp("insert");
+    if (method == "contains")
+      return emitHashSetElemOp("contains");
+    if (method == "remove")
+      return emitHashSetElemOp("remove");
     if (method == "len") {
       resultOut = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                              mlir::SymbolRefAttr::get(&context, "hew_hashset_len"),
@@ -3622,241 +3550,271 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
 // Method call generation
 // ============================================================================
 
-mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
-  auto location = currentLoc;
+/// Dispatch a module-qualified method call (math.exp, random.seed, etc.).
+/// Returns the result value if the call was handled, or std::nullopt if
+/// the receiver is not a known module/struct name.
+std::optional<mlir::Value> MLIRGen::generateModuleMethodCall(
+    const ast::ExprMethodCall &mc, const ast::ExprIdentifier &ident,
+    mlir::Location location) {
   const auto &methodName = mc.method;
 
-  // Intercept module-qualified calls before generating the receiver expression,
-  // because module names (log, string, crypto, etc.) are not variables.
-  if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
-    // Special handling for log (has custom emit logic).
-    if (ident->name == "log") {
-      return generateLogCall(mc);
+  // Special handling for log (has custom emit logic).
+  if (ident.name == "log") {
+    return generateLogCall(mc);
+  }
+
+  // std::math module — emit LLVM math intrinsics directly
+  // No import required: math.exp(x), math.log(x), etc. are always available.
+  if (ident.name == "math") {
+    if (mc.args.empty()) {
+      // Constants: math.pi, math.e
+      if (methodName == "pi")
+        return mlir::arith::ConstantOp::create(builder, location,
+                                                builder.getF64FloatAttr(3.14159265358979323846))
+            .getResult();
+      if (methodName == "e")
+        return mlir::arith::ConstantOp::create(builder, location,
+                                                builder.getF64FloatAttr(2.71828182845904523536))
+            .getResult();
+      emitError(location) << "unknown math constant: math." << methodName;
+      return nullptr;
     }
 
-    // std::math module — emit LLVM math intrinsics directly
-    // No import required: math.exp(x), math.log(x), etc. are always available.
-    if (ident->name == "math") {
-      if (mc.args.empty()) {
-        // Constants: math.pi, math.e
-        if (methodName == "pi")
-          return mlir::arith::ConstantOp::create(builder, location,
-                                                 builder.getF64FloatAttr(3.14159265358979323846))
-              .getResult();
-        if (methodName == "e")
-          return mlir::arith::ConstantOp::create(builder, location,
-                                                 builder.getF64FloatAttr(2.71828182845904523536))
-              .getResult();
-        emitError(location) << "unknown math constant: math." << methodName;
+    auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
+    if (!arg)
+      return nullptr;
+    auto f64Type = builder.getF64Type();
+    if (arg.getType() != f64Type)
+      arg = coerceType(arg, f64Type, location);
+
+    // Single-argument math functions → LLVM intrinsics
+    if (methodName == "exp")
+      return mlir::math::ExpOp::create(builder, location, arg).getResult();
+    if (methodName == "log")
+      return mlir::math::LogOp::create(builder, location, arg).getResult();
+    if (methodName == "sqrt")
+      return mlir::math::SqrtOp::create(builder, location, arg).getResult();
+    if (methodName == "sin")
+      return mlir::math::SinOp::create(builder, location, arg).getResult();
+    if (methodName == "cos")
+      return mlir::math::CosOp::create(builder, location, arg).getResult();
+    if (methodName == "floor")
+      return mlir::math::FloorOp::create(builder, location, arg).getResult();
+    if (methodName == "ceil")
+      return mlir::math::CeilOp::create(builder, location, arg).getResult();
+    if (methodName == "abs")
+      return mlir::math::AbsFOp::create(builder, location, arg).getResult();
+    if (methodName == "abs_f")
+      return mlir::math::AbsFOp::create(builder, location, arg).getResult();
+    if (methodName == "round")
+      return mlir::math::RoundOp::create(builder, location, arg).getResult();
+    if (methodName == "tanh")
+      return mlir::math::TanhOp::create(builder, location, arg).getResult();
+    if (methodName == "log2")
+      return mlir::math::Log2Op::create(builder, location, arg).getResult();
+    if (methodName == "log10")
+      return mlir::math::Log10Op::create(builder, location, arg).getResult();
+    if (methodName == "exp2")
+      return mlir::math::Exp2Op::create(builder, location, arg).getResult();
+
+    // Two-argument: math.pow(base, exp)
+    if (methodName == "pow") {
+      if (mc.args.size() < 2) {
+        emitError(location) << "math.pow requires 2 arguments";
         return nullptr;
       }
+      auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!arg2)
+        return nullptr;
+      if (arg2.getType() != f64Type)
+        arg2 = coerceType(arg2, f64Type, location);
+      return mlir::math::PowFOp::create(builder, location, arg, arg2).getResult();
+    }
+    // math.max(a, b), math.min(a, b)
+    if (methodName == "max") {
+      if (mc.args.size() < 2) {
+        emitError(location) << "math.max requires 2 arguments";
+        return nullptr;
+      }
+      auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!arg2)
+        return nullptr;
+      if (arg2.getType() != f64Type)
+        arg2 = coerceType(arg2, f64Type, location);
+      return mlir::arith::MaximumFOp::create(builder, location, arg, arg2).getResult();
+    }
+    if (methodName == "min") {
+      if (mc.args.size() < 2) {
+        emitError(location) << "math.min requires 2 arguments";
+        return nullptr;
+      }
+      auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!arg2)
+        return nullptr;
+      if (arg2.getType() != f64Type)
+        arg2 = coerceType(arg2, f64Type, location);
+      return mlir::arith::MinimumFOp::create(builder, location, arg, arg2).getResult();
+    }
 
+    // math.sign(x) — returns -1, 0, or 1 (integer)
+    if (methodName == "sign") {
+      auto i64Type = builder.getI64Type();
+      // If arg is f64, convert to i64 for integer sign
+      if (arg.getType() == f64Type)
+        arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
+      auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                    builder.getI64IntegerAttr(0));
+      auto negOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                      builder.getI64IntegerAttr(-1));
+      auto posOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
+                                                      builder.getI64IntegerAttr(1));
+      auto isNeg = mlir::arith::CmpIOp::create(builder, location,
+                                                  mlir::arith::CmpIPredicate::slt, arg, zero);
+      auto isPos = mlir::arith::CmpIOp::create(builder, location,
+                                                  mlir::arith::CmpIPredicate::sgt, arg, zero);
+      auto selPos = mlir::arith::SelectOp::create(builder, location, isPos, posOne, zero);
+      return mlir::arith::SelectOp::create(builder, location, isNeg, negOne, selPos).getResult();
+    }
+
+    // math.clamp(x, lo, hi) — clamp x to [lo, hi]
+    if (methodName == "clamp") {
+      if (mc.args.size() < 3) {
+        emitError(location) << "math.clamp requires 3 arguments";
+        return nullptr;
+      }
+      auto lo = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      auto hi = generateExpression(ast::callArgExpr(mc.args[2]).value);
+      if (!lo || !hi)
+        return nullptr;
+      auto i64Type = builder.getI64Type();
+      if (arg.getType() == f64Type)
+        arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
+      if (lo.getType() == f64Type)
+        lo = mlir::arith::FPToSIOp::create(builder, location, i64Type, lo).getResult();
+      if (hi.getType() == f64Type)
+        hi = mlir::arith::FPToSIOp::create(builder, location, i64Type, hi).getResult();
+      if (lo.getType() != i64Type)
+        lo = coerceType(lo, i64Type, location);
+      if (hi.getType() != i64Type)
+        hi = coerceType(hi, i64Type, location);
+      if (arg.getType() != i64Type)
+        arg = coerceType(arg, i64Type, location);
+      // clamp = max(lo, min(x, hi))
+      auto minXHi = mlir::arith::MinSIOp::create(builder, location, arg, hi);
+      return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
+    }
+
+    emitError(location) << "unknown math function: math." << methodName;
+    return nullptr;
+  }
+
+  // std::random module — route to hew_random_* runtime functions
+  if (ident.name == "random") {
+    auto f64Type = builder.getF64Type();
+    auto i64Type = builder.getI64Type();
+
+    if (methodName == "seed") {
       auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
       if (!arg)
         return nullptr;
-      auto f64Type = builder.getF64Type();
-      if (arg.getType() != f64Type)
-        arg = coerceType(arg, f64Type, location);
+      if (arg.getType() != i64Type)
+        arg = coerceType(arg, i64Type, location);
+      emitRuntimeCall("hew_random_seed", {}, {arg}, location);
+      return nullptr;
+    }
+    if (methodName == "random") {
+      return emitRuntimeCall("hew_random_random", f64Type, {}, location);
+    }
+    if (methodName == "gauss") {
+      auto mu = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!mu || !sigma)
+        return nullptr;
+      if (mu.getType() != f64Type)
+        mu = coerceType(mu, f64Type, location);
+      if (sigma.getType() != f64Type)
+        sigma = coerceType(sigma, f64Type, location);
+      return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
+    }
+    if (methodName == "randint") {
+      auto lo = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      if (!lo || !hi)
+        return nullptr;
+      if (lo.getType() != i64Type)
+        lo = coerceType(lo, i64Type, location);
+      if (hi.getType() != i64Type)
+        hi = coerceType(hi, i64Type, location);
+      return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
+    }
+    if (methodName == "shuffle") {
+      auto vec = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      if (!vec)
+        return nullptr;
+      emitRuntimeCall("hew_random_shuffle_i64", {}, {vec}, location);
+      return nullptr;
+    }
+    if (methodName == "choices") {
+      auto cumWeights = generateExpression(ast::callArgExpr(mc.args[0]).value);
+      auto total = generateExpression(ast::callArgExpr(mc.args[1]).value);
+      auto n = generateExpression(ast::callArgExpr(mc.args[2]).value);
+      if (!cumWeights || !total || !n)
+        return nullptr;
+      return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
+    }
+    emitError(location) << "unknown random function: random." << methodName;
+    return nullptr;
+  }
 
-      // Single-argument math functions → LLVM intrinsics
-      if (methodName == "exp")
-        return mlir::math::ExpOp::create(builder, location, arg).getResult();
-      if (methodName == "log")
-        return mlir::math::LogOp::create(builder, location, arg).getResult();
-      if (methodName == "sqrt")
-        return mlir::math::SqrtOp::create(builder, location, arg).getResult();
-      if (methodName == "sin")
-        return mlir::math::SinOp::create(builder, location, arg).getResult();
-      if (methodName == "cos")
-        return mlir::math::CosOp::create(builder, location, arg).getResult();
-      if (methodName == "floor")
-        return mlir::math::FloorOp::create(builder, location, arg).getResult();
-      if (methodName == "ceil")
-        return mlir::math::CeilOp::create(builder, location, arg).getResult();
-      if (methodName == "abs")
-        return mlir::math::AbsFOp::create(builder, location, arg).getResult();
-      if (methodName == "abs_f")
-        return mlir::math::AbsFOp::create(builder, location, arg).getResult();
-      if (methodName == "round")
-        return mlir::math::RoundOp::create(builder, location, arg).getResult();
-      if (methodName == "tanh")
-        return mlir::math::TanhOp::create(builder, location, arg).getResult();
-      if (methodName == "log2")
-        return mlir::math::Log2Op::create(builder, location, arg).getResult();
-      if (methodName == "log10")
-        return mlir::math::Log10Op::create(builder, location, arg).getResult();
-      if (methodName == "exp2")
-        return mlir::math::Exp2Op::create(builder, location, arg).getResult();
-
-      // Two-argument: math.pow(base, exp)
-      if (methodName == "pow") {
-        if (mc.args.size() < 2) {
-          emitError(location) << "math.pow requires 2 arguments";
-          return nullptr;
-        }
-        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2)
-          return nullptr;
-        if (arg2.getType() != f64Type)
-          arg2 = coerceType(arg2, f64Type, location);
-        return mlir::math::PowFOp::create(builder, location, arg, arg2).getResult();
-      }
-      // math.max(a, b), math.min(a, b)
-      if (methodName == "max") {
-        if (mc.args.size() < 2) {
-          emitError(location) << "math.max requires 2 arguments";
-          return nullptr;
-        }
-        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2)
-          return nullptr;
-        if (arg2.getType() != f64Type)
-          arg2 = coerceType(arg2, f64Type, location);
-        return mlir::arith::MaximumFOp::create(builder, location, arg, arg2).getResult();
-      }
-      if (methodName == "min") {
-        if (mc.args.size() < 2) {
-          emitError(location) << "math.min requires 2 arguments";
-          return nullptr;
-        }
-        auto arg2 = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!arg2)
-          return nullptr;
-        if (arg2.getType() != f64Type)
-          arg2 = coerceType(arg2, f64Type, location);
-        return mlir::arith::MinimumFOp::create(builder, location, arg, arg2).getResult();
-      }
-
-      // math.sign(x) — returns -1, 0, or 1 (integer)
-      if (methodName == "sign") {
-        auto i64Type = builder.getI64Type();
-        // If arg is f64, convert to i64 for integer sign
-        if (arg.getType() == f64Type)
-          arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
-        auto zero = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                     builder.getI64IntegerAttr(0));
-        auto negOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                       builder.getI64IntegerAttr(-1));
-        auto posOne = mlir::arith::ConstantOp::create(builder, location, i64Type,
-                                                       builder.getI64IntegerAttr(1));
-        auto isNeg = mlir::arith::CmpIOp::create(builder, location,
-                                                   mlir::arith::CmpIPredicate::slt, arg, zero);
-        auto isPos = mlir::arith::CmpIOp::create(builder, location,
-                                                   mlir::arith::CmpIPredicate::sgt, arg, zero);
-        auto selPos = mlir::arith::SelectOp::create(builder, location, isPos, posOne, zero);
-        return mlir::arith::SelectOp::create(builder, location, isNeg, negOne, selPos).getResult();
-      }
-
-      // math.clamp(x, lo, hi) — clamp x to [lo, hi]
-      if (methodName == "clamp") {
-        if (mc.args.size() < 3) {
-          emitError(location) << "math.clamp requires 3 arguments";
-          return nullptr;
-        }
-        auto lo = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        auto hi = generateExpression(ast::callArgExpr(mc.args[2]).value);
-        if (!lo || !hi)
-          return nullptr;
-        auto i64Type = builder.getI64Type();
-        if (arg.getType() == f64Type)
-          arg = mlir::arith::FPToSIOp::create(builder, location, i64Type, arg).getResult();
-        if (lo.getType() == f64Type)
-          lo = mlir::arith::FPToSIOp::create(builder, location, i64Type, lo).getResult();
-        if (hi.getType() == f64Type)
-          hi = mlir::arith::FPToSIOp::create(builder, location, i64Type, hi).getResult();
-        if (lo.getType() != i64Type)
-          lo = coerceType(lo, i64Type, location);
-        if (hi.getType() != i64Type)
-          hi = coerceType(hi, i64Type, location);
-        if (arg.getType() != i64Type)
-          arg = coerceType(arg, i64Type, location);
-        // clamp = max(lo, min(x, hi))
-        auto minXHi = mlir::arith::MinSIOp::create(builder, location, arg, hi);
-        return mlir::arith::MaxSIOp::create(builder, location, lo, minXHi).getResult();
-      }
-
-      emitError(location) << "unknown math function: math." << methodName;
+  // General module-qualified call: string.from_int(), crypto.sha256(), etc.
+  auto modIt = moduleNameToPath.find(ident.name);
+  if (modIt != moduleNameToPath.end()) {
+    const auto &modulePath = modIt->second;
+    std::string mangledFunc = mangleName(modulePath, "", methodName);
+    auto callee = module.lookupSymbol<mlir::func::FuncOp>(mangledFunc);
+    if (!callee) {
+      emitError(location) << "undefined function '" << ident.name << "." << methodName
+                          << "' (mangled: " << mangledFunc << ")";
       return nullptr;
     }
 
-    // std::random module — route to hew_random_* runtime functions
-    if (ident->name == "random") {
-      auto f64Type = builder.getF64Type();
-      auto i64Type = builder.getI64Type();
-
-      if (methodName == "seed") {
-        auto arg = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        if (!arg)
-          return nullptr;
-        if (arg.getType() != i64Type)
-          arg = coerceType(arg, i64Type, location);
-        emitRuntimeCall("hew_random_seed", {}, {arg}, location);
+    llvm::SmallVector<mlir::Value, 4> args;
+    auto calleeFuncType = callee.getFunctionType();
+    for (size_t i = 0; i < mc.args.size(); ++i) {
+      const auto &arg = mc.args[i];
+      auto val = generateExpression(ast::callArgExpr(arg).value);
+      if (!val)
         return nullptr;
+      materializeTemporary(val, ast::callArgExpr(arg).value);
+      if (i < calleeFuncType.getNumInputs()) {
+        auto expectedType = calleeFuncType.getInput(i);
+        if (val.getType() != expectedType)
+          val = coerceType(val, expectedType, location);
       }
-      if (methodName == "random") {
-        return emitRuntimeCall("hew_random_random", f64Type, {}, location);
-      }
-      if (methodName == "gauss") {
-        auto mu = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        auto sigma = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!mu || !sigma)
-          return nullptr;
-        if (mu.getType() != f64Type)
-          mu = coerceType(mu, f64Type, location);
-        if (sigma.getType() != f64Type)
-          sigma = coerceType(sigma, f64Type, location);
-        return emitRuntimeCall("hew_random_gauss", f64Type, {mu, sigma}, location);
-      }
-      if (methodName == "randint") {
-        auto lo = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        auto hi = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        if (!lo || !hi)
-          return nullptr;
-        if (lo.getType() != i64Type)
-          lo = coerceType(lo, i64Type, location);
-        if (hi.getType() != i64Type)
-          hi = coerceType(hi, i64Type, location);
-        return emitRuntimeCall("hew_random_randint", i64Type, {lo, hi}, location);
-      }
-      if (methodName == "shuffle") {
-        auto vec = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        if (!vec)
-          return nullptr;
-        emitRuntimeCall("hew_random_shuffle_i64", {}, {vec}, location);
-        return nullptr;
-      }
-      if (methodName == "choices") {
-        auto cumWeights = generateExpression(ast::callArgExpr(mc.args[0]).value);
-        auto total = generateExpression(ast::callArgExpr(mc.args[1]).value);
-        auto n = generateExpression(ast::callArgExpr(mc.args[2]).value);
-        if (!cumWeights || !total || !n)
-          return nullptr;
-        return emitRuntimeCall("hew_random_choices_vec", i64Type, {cumWeights, total, n}, location);
-      }
-      emitError(location) << "unknown random function: random." << methodName;
-      return nullptr;
+      args.push_back(val);
     }
 
-    // General module-qualified call: string.from_int(), crypto.sha256(), etc.
-    auto modIt = moduleNameToPath.find(ident->name);
-    if (modIt != moduleNameToPath.end()) {
-      const auto &modulePath = modIt->second;
-      std::string mangledFunc = mangleName(modulePath, "", methodName);
-      auto callee = module.lookupSymbol<mlir::func::FuncOp>(mangledFunc);
-      if (!callee) {
-        emitError(location) << "undefined function '" << ident->name << "." << methodName
-                            << "' (mangled: " << mangledFunc << ")";
-        return nullptr;
-      }
+    auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
+    if (callOp.getNumResults() > 0)
+      return callOp.getResult(0);
+    return nullptr;
+  }
 
+  // Wire type static methods: Point.from_json(json), Point.decode(buf), etc.
+  // When the receiver is an identifier naming a known struct type (not a
+  // variable or module), look up the mangled static method and call it.
+  auto structIt = structTypes.find(ident.name);
+  if (structIt != structTypes.end()) {
+    std::string funcName = mangleName(currentModulePath, ident.name, methodName);
+    auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
+    if (callee) {
       llvm::SmallVector<mlir::Value, 4> args;
       auto calleeFuncType = callee.getFunctionType();
       for (size_t i = 0; i < mc.args.size(); ++i) {
-        const auto &arg = mc.args[i];
-        auto val = generateExpression(ast::callArgExpr(arg).value);
+        auto val = generateExpression(ast::callArgExpr(mc.args[i]).value);
         if (!val)
           return nullptr;
-        materializeTemporary(val, ast::callArgExpr(arg).value);
+        materializeTemporary(val, ast::callArgExpr(mc.args[i]).value);
         if (i < calleeFuncType.getNumInputs()) {
           auto expectedType = calleeFuncType.getInput(i);
           if (val.getType() != expectedType)
@@ -3864,47 +3822,22 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
         }
         args.push_back(val);
       }
-
       auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
       if (callOp.getNumResults() > 0)
         return callOp.getResult(0);
       return nullptr;
     }
-
-    // Wire type static methods: Point.from_json(json), Point.decode(buf), etc.
-    // When the receiver is an identifier naming a known struct type (not a
-    // variable or module), look up the mangled static method and call it.
-    auto structIt = structTypes.find(ident->name);
-    if (structIt != structTypes.end()) {
-      std::string funcName = mangleName(currentModulePath, ident->name, methodName);
-      auto callee = module.lookupSymbol<mlir::func::FuncOp>(funcName);
-      if (callee) {
-        llvm::SmallVector<mlir::Value, 4> args;
-        auto calleeFuncType = callee.getFunctionType();
-        for (size_t i = 0; i < mc.args.size(); ++i) {
-          auto val = generateExpression(ast::callArgExpr(mc.args[i]).value);
-          if (!val)
-            return nullptr;
-          materializeTemporary(val, ast::callArgExpr(mc.args[i]).value);
-          if (i < calleeFuncType.getNumInputs()) {
-            auto expectedType = calleeFuncType.getInput(i);
-            if (val.getType() != expectedType)
-              val = coerceType(val, expectedType, location);
-          }
-          args.push_back(val);
-        }
-        auto callOp = mlir::func::CallOp::create(builder, location, callee, args);
-        if (callOp.getNumResults() > 0)
-          return callOp.getResult(0);
-        return nullptr;
-      }
-    }
   }
 
-  // Generate receiver
-  auto receiver = generateExpression(mc.receiver->value);
-  if (!receiver)
-    return nullptr;
+  return std::nullopt;
+}
+
+/// Dispatch a method call on a typed handle (http.Server, net.Connection, etc.)
+/// or an i32-typed handle. Returns the result if handled, std::nullopt otherwise.
+std::optional<mlir::Value> MLIRGen::generateHandleMethodCall(
+    const ast::ExprMethodCall &mc, mlir::Value receiver,
+    mlir::Location location) {
+  const auto &methodName = mc.method;
 
   // Local wrapper around member emitRuntimeCall, capturing `location`.
   auto rtCall = [&](llvm::StringRef callee, mlir::Type resultType,
@@ -3990,13 +3923,13 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     if (handleType == "regex.Pattern") {
       if (method == "is_match")
         return hew::RegexIsMatchOp::create(builder, location, builder.getI1Type(), argVals[0],
-                                           argVals[1]);
+                                            argVals[1]);
       if (method == "find")
         return hew::RegexFindOp::create(builder, location, hew::StringRefType::get(&context),
-                                        argVals[0], argVals[1]);
+                                         argVals[0], argVals[1]);
       if (method == "replace")
         return hew::RegexReplaceOp::create(builder, location, hew::StringRefType::get(&context),
-                                           argVals[0], argVals[1], argVals[2]);
+                                            argVals[0], argVals[1], argVals[2]);
       if (method == "free") {
         hew::RegexFreeOp::create(builder, location, argVals[0]);
         return nullptr;
@@ -4100,6 +4033,17 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
 
+  return std::nullopt;
+}
+
+/// Dispatch a method call on an actor reference or generator.
+/// Returns the result if handled, std::nullopt otherwise.
+std::optional<mlir::Value> MLIRGen::generateActorMethodCall(
+    const ast::ExprMethodCall &mc, mlir::Value receiver,
+    mlir::Location location) {
+  const auto &methodName = mc.method;
+  auto receiverType = receiver.getType();
+
   // Check if receiver is an actor (ptr type + tracked in actorVarTypes,
   // or i64 PID from Node::lookup for remote actors)
   if (isPointerLikeType(receiverType) || mlir::isa<mlir::IntegerType>(receiverType)) {
@@ -4151,16 +4095,39 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
           auto nextFuncOp = module.lookupSymbol<mlir::func::FuncOp>(nextFuncName);
           if (nextFuncOp) {
             auto callResult = mlir::func::CallOp::create(builder, location, nextFuncOp,
-                                                         mlir::ValueRange{receiver});
+                                                          mlir::ValueRange{receiver});
             return callResult.getResult(0);
           }
         }
       }
     }
-
-    if (auto builtinMethodResult = generateBuiltinMethodCall(mc, receiver, location))
-      return *builtinMethodResult;
   }
+
+  return std::nullopt;
+}
+
+mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
+  auto location = currentLoc;
+  const auto &methodName = mc.method;
+
+  // Module-qualified calls (math.exp, random.seed, log.info, etc.)
+  if (auto *ident = std::get_if<ast::ExprIdentifier>(&mc.receiver->value.kind)) {
+    if (auto result = generateModuleMethodCall(mc, *ident, location))
+      return *result;
+  }
+
+  // Generate receiver expression
+  auto receiver = generateExpression(mc.receiver->value);
+  if (!receiver)
+    return nullptr;
+
+  // Handle type dispatch (http.Server, net.Connection, etc.)
+  if (auto result = generateHandleMethodCall(mc, receiver, location))
+    return *result;
+
+  // Actor / generator dispatch
+  if (auto result = generateActorMethodCall(mc, receiver, location))
+    return *result;
 
   // Trait object dispatch
   {
@@ -4228,11 +4195,12 @@ mlir::Value MLIRGen::generateMethodCall(const ast::ExprMethodCall &mc) {
     }
   }
 
-  // Try builtin methods on non-pointer scalar types (numeric conversions, etc.)
-  if (auto builtinMethodResult = generateBuiltinMethodCall(mc, receiver, location))
-    return *builtinMethodResult;
+  // Builtin methods on scalars
+  if (auto result = generateBuiltinMethodCall(mc, receiver, location))
+    return *result;
 
   // Determine struct type name from the receiver's MLIR type
+  auto receiverType = receiver.getType();
   auto structType = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(receiverType);
   if (!structType || !structType.isIdentified()) {
     emitError(location) << "method call on non-struct type"

@@ -137,200 +137,169 @@ fn ty_element_name(ty: &Ty) -> String {
     }
 }
 
+/// Map primitive `Ty` variants to their serialized type name.
+fn primitive_name(ty: &Ty) -> Option<&'static str> {
+    match ty {
+        Ty::I8 => Some("i8"),
+        Ty::I16 => Some("i16"),
+        Ty::I32 => Some("i32"),
+        Ty::I64 => Some("i64"),
+        Ty::U8 => Some("u8"),
+        Ty::U16 => Some("u16"),
+        Ty::U32 => Some("u32"),
+        Ty::U64 => Some("u64"),
+        Ty::F32 => Some("f32"),
+        Ty::F64 => Some("f64"),
+        Ty::Bool => Some("bool"),
+        Ty::Char => Some("char"),
+        Ty::String => Some("string"),
+        Ty::Bytes => Some("bytes"),
+        Ty::Duration => Some("duration"),
+        Ty::Never => Some("!"),
+        _ => None,
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "type mapping covers many Ty variants"
 )]
 fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError> {
     let span: Span = 0..0; // synthetic span for inferred types
-    let te = match ty {
-        Ty::I8 => TypeExpr::Named {
-            name: "i8".into(),
-            type_args: None,
-        },
-        Ty::I16 => TypeExpr::Named {
-            name: "i16".into(),
-            type_args: None,
-        },
-        Ty::I32 => TypeExpr::Named {
-            name: "i32".into(),
-            type_args: None,
-        },
-        Ty::I64 => TypeExpr::Named {
-            name: "i64".into(),
-            type_args: None,
-        },
-        Ty::U8 => TypeExpr::Named {
-            name: "u8".into(),
-            type_args: None,
-        },
-        Ty::U16 => TypeExpr::Named {
-            name: "u16".into(),
-            type_args: None,
-        },
-        Ty::U32 => TypeExpr::Named {
-            name: "u32".into(),
-            type_args: None,
-        },
-        Ty::U64 => TypeExpr::Named {
-            name: "u64".into(),
-            type_args: None,
-        },
-        Ty::F32 => TypeExpr::Named {
-            name: "f32".into(),
-            type_args: None,
-        },
-        Ty::F64 => TypeExpr::Named {
-            name: "f64".into(),
-            type_args: None,
-        },
-        Ty::Bool => TypeExpr::Named {
-            name: "bool".into(),
-            type_args: None,
-        },
-        Ty::Char => TypeExpr::Named {
-            name: "char".into(),
-            type_args: None,
-        },
-        Ty::String => TypeExpr::Named {
-            name: "string".into(),
-            type_args: None,
-        },
-        Ty::Bytes => TypeExpr::Named {
-            name: "bytes".into(),
-            type_args: None,
-        },
-        Ty::Duration => TypeExpr::Named {
-            name: "duration".into(),
-            type_args: None,
-        },
-        Ty::Unit => TypeExpr::Tuple(Vec::new()),
-        Ty::Never => TypeExpr::Named {
-            name: "!".into(),
-            type_args: None,
-        },
 
-        Ty::Named { name, args } => match (name.as_str(), args.len()) {
-            ("Option", 1) => {
-                let inner_expr = require_converted(&args[0], "Option inner type")?;
-                TypeExpr::Option(Box::new(inner_expr))
-            }
-            ("Result", 2) => {
-                let ok_expr = require_converted(&args[0], "Result ok type")?;
-                let err_expr = require_converted(&args[1], "Result error type")?;
-                TypeExpr::Result {
-                    ok: Box::new(ok_expr),
-                    err: Box::new(err_expr),
+    let te = if let Some(name) = primitive_name(ty) {
+        TypeExpr::Named {
+            name: name.into(),
+            type_args: None,
+        }
+    } else if matches!(ty, Ty::Unit) {
+        TypeExpr::Tuple(Vec::new())
+    } else {
+        match ty {
+            Ty::Named { name, args } => match (name.as_str(), args.len()) {
+                ("Option", 1) => {
+                    let inner_expr = require_converted(&args[0], "Option inner type")?;
+                    TypeExpr::Option(Box::new(inner_expr))
+                }
+                ("Result", 2) => {
+                    let ok_expr = require_converted(&args[0], "Result ok type")?;
+                    let err_expr = require_converted(&args[1], "Result error type")?;
+                    TypeExpr::Result {
+                        ok: Box::new(ok_expr),
+                        err: Box::new(err_expr),
+                    }
+                }
+                ("Generator", _) => {
+                    return Err(TypeExprConversionError::unsupported(
+                        ty,
+                        "generator type is not representable in serialized TypeExpr",
+                    ));
+                }
+                ("AsyncGenerator", _) => {
+                    return Err(TypeExprConversionError::unsupported(
+                        ty,
+                        "async generator type is not representable in serialized TypeExpr",
+                    ));
+                }
+                ("Range", 1) => {
+                    let inner = match &args[0] {
+                        Ty::Var(_) => &Ty::I64,
+                        other => other,
+                    };
+                    let inner_expr = require_converted(inner, "Range element type")?;
+                    TypeExpr::Named {
+                        name: "Range".into(),
+                        type_args: Some(vec![inner_expr]),
+                    }
+                }
+                _ => {
+                    let type_args = if args.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            args.iter()
+                                .enumerate()
+                                .map(|(index, arg)| {
+                                    require_converted(
+                                        arg,
+                                        format!("type argument {index} of `{name}`"),
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        )
+                    };
+                    TypeExpr::Named {
+                        name: name.clone(),
+                        type_args,
+                    }
+                }
+            },
+
+            Ty::Function { params, ret } => {
+                let param_exprs = params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        require_converted(param, format!("function parameter {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret_expr = require_converted(ret, "function return type")?;
+                TypeExpr::Function {
+                    params: param_exprs,
+                    return_type: Box::new(ret_expr),
                 }
             }
-            ("Generator", _) => {
-                return Err(TypeExprConversionError::unsupported(
-                    ty,
-                    "generator type is not representable in serialized TypeExpr",
-                ));
-            }
-            ("AsyncGenerator", _) => {
-                return Err(TypeExprConversionError::unsupported(
-                    ty,
-                    "async generator type is not representable in serialized TypeExpr",
-                ));
-            }
-            ("Range", 1) => {
-                let inner = match &args[0] {
-                    Ty::Var(_) => &Ty::I64,
-                    other => other,
-                };
-                let inner_expr = require_converted(inner, "Range element type")?;
-                TypeExpr::Named {
-                    name: "Range".into(),
-                    type_args: Some(vec![inner_expr]),
+
+            Ty::Closure { params, ret, .. } => {
+                let param_exprs = params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        require_converted(param, format!("closure parameter {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret_expr = require_converted(ret, "closure return type")?;
+                TypeExpr::Function {
+                    params: param_exprs,
+                    return_type: Box::new(ret_expr),
                 }
             }
-            _ => {
-                let type_args = if args.is_empty() {
-                    None
-                } else {
-                    Some(
-                        args.iter()
-                            .enumerate()
-                            .map(|(index, arg)| {
-                                require_converted(arg, format!("type argument {index} of `{name}`"))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    )
-                };
-                TypeExpr::Named {
-                    name: name.clone(),
-                    type_args,
+
+            Ty::Tuple(elements) => {
+                let elem_exprs = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(index, element)| {
+                        require_converted(element, format!("tuple element {index}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                TypeExpr::Tuple(elem_exprs)
+            }
+            Ty::Array(element, size) => {
+                let elem = require_converted(element, "array element type")?;
+                TypeExpr::Array {
+                    element: Box::new(elem),
+                    size: *size,
                 }
             }
-        },
-
-        Ty::Function { params, ret } => {
-            let param_exprs = params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    require_converted(param, format!("function parameter {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let ret_expr = require_converted(ret, "function return type")?;
-            TypeExpr::Function {
-                params: param_exprs,
-                return_type: Box::new(ret_expr),
+            Ty::Slice(element) => {
+                let elem = require_converted(element, "slice element type")?;
+                TypeExpr::Slice(Box::new(elem))
             }
-        }
 
-        Ty::Closure { params, ret, .. } => {
-            let param_exprs = params
-                .iter()
-                .enumerate()
-                .map(|(index, param)| {
-                    require_converted(param, format!("closure parameter {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let ret_expr = require_converted(ret, "closure return type")?;
-            TypeExpr::Function {
-                params: param_exprs,
-                return_type: Box::new(ret_expr),
+            Ty::Pointer {
+                is_mutable,
+                pointee,
+            } => {
+                let pointee_expr = require_converted(pointee, "pointer pointee type")?;
+                TypeExpr::Pointer {
+                    is_mutable: *is_mutable,
+                    pointee: Box::new(pointee_expr),
+                }
             }
-        }
 
-        Ty::Tuple(elements) => {
-            let elem_exprs = elements
-                .iter()
-                .enumerate()
-                .map(|(index, element)| {
-                    require_converted(element, format!("tuple element {index}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            TypeExpr::Tuple(elem_exprs)
-        }
-        Ty::Array(element, size) => {
-            let elem = require_converted(element, "array element type")?;
-            TypeExpr::Array {
-                element: Box::new(elem),
-                size: *size,
-            }
-        }
-        Ty::Slice(element) => {
-            let elem = require_converted(element, "slice element type")?;
-            TypeExpr::Slice(Box::new(elem))
-        }
-
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => {
-            let pointee_expr = require_converted(pointee, "pointer pointee type")?;
-            TypeExpr::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee_expr),
-            }
-        }
-
-        Ty::TraitObject { traits } => {
-            let bounds = traits
+            Ty::TraitObject { traits } => {
+                let bounds = traits
                 .iter()
                 .enumerate()
                 .map(|(bound_index, b)| {
@@ -358,26 +327,29 @@ fn ty_to_type_expr(ty: &Ty) -> Result<Spanned<TypeExpr>, TypeExprConversionError
                     })
                 })
                 .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
-            TypeExpr::TraitObject(bounds)
-        }
-        Ty::Var(_) => {
-            return Err(TypeExprConversionError::unsupported(
-                ty,
-                "unresolved type variable reached serializer",
-            ));
-        }
-        Ty::Error => {
-            return Err(TypeExprConversionError::unsupported(
-                ty,
-                "type-checker error sentinel reached serializer",
-            ));
-        }
+                TypeExpr::TraitObject(bounds)
+            }
+            Ty::Var(_) => {
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "unresolved type variable reached serializer",
+                ));
+            }
+            Ty::Error => {
+                return Err(TypeExprConversionError::unsupported(
+                    ty,
+                    "type-checker error sentinel reached serializer",
+                ));
+            }
 
-        // Machine types map to Named for serialization
-        Ty::Machine { name } => TypeExpr::Named {
-            name: name.clone(),
-            type_args: None,
-        },
+            // Machine types map to Named for serialization
+            Ty::Machine { name } => TypeExpr::Named {
+                name: name.clone(),
+                type_args: None,
+            },
+            // Primitives, Unit, and Never are handled by the table above
+            _ => unreachable!("primitive_name should have matched {ty:?}"),
+        }
     };
 
     Ok((te, span))
@@ -415,11 +387,16 @@ pub fn enrich_program(
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<EnrichProgramDiagnostics, TypeExprConversionError> {
     let mut diagnostics = Vec::new();
+    let mut import_paths: Vec<String> = Vec::new();
     for (item, _span) in &mut program.items {
+        // Collect import module paths for extern synthesis (avoids a second pass).
+        if let Item::Import(import_decl) = &*item {
+            import_paths.push(import_decl.path.join("::"));
+        }
         enrich_item_with_diagnostics(item, tco, &mut diagnostics, registry)?;
     }
     normalize_all_types(program, registry);
-    synthesize_stdlib_externs(program, registry)?;
+    synthesize_stdlib_externs_from_imports(program, &import_paths, registry)?;
     Ok(EnrichProgramDiagnostics { diagnostics })
 }
 
@@ -507,65 +484,63 @@ fn normalize_type_expr(te: &mut TypeExpr, registry: &hew_types::module_registry:
     }
 }
 
-/// Synthesize `ExternBlock` items for each stdlib import.
+/// Synthesize `ExternBlock` items for stdlib imports.
 ///
-/// The serializer embeds extern function declarations as top-level
-/// `ExternBlock` items so the C++ backend can generate extern declarations.
-fn synthesize_stdlib_externs(
+/// Takes pre-collected import module paths (from the enrichment pass) so we
+/// don't need to re-iterate `program.items`.
+fn synthesize_stdlib_externs_from_imports(
     program: &mut Program,
+    import_paths: &[String],
     registry: &hew_types::module_registry::ModuleRegistry,
 ) -> Result<(), TypeExprConversionError> {
     let mut new_items: Vec<Spanned<Item>> = Vec::new();
 
-    for (item, _span) in &program.items {
-        if let Item::Import(import_decl) = item {
-            let module_path = import_decl.path.join("::");
-            if let Some(info) = registry.get(&module_path) {
-                let extern_fns = info
-                    .functions
-                    .iter()
-                    .map(|(name, params, ret_ty)| {
-                        let param_exprs = params
-                            .iter()
-                            .enumerate()
-                            .map(|(index, ty)| {
-                                let type_expr = require_converted(
-                                    ty,
-                                    format!("stdlib extern `{name}` parameter {index}"),
-                                )?;
-                                Ok(Param {
-                                    name: format!("p{index}"),
-                                    ty: type_expr,
-                                    is_mutable: false,
-                                })
+    for module_path in import_paths {
+        if let Some(info) = registry.get(module_path) {
+            let extern_fns = info
+                .functions
+                .iter()
+                .map(|(name, params, ret_ty)| {
+                    let param_exprs = params
+                        .iter()
+                        .enumerate()
+                        .map(|(index, ty)| {
+                            let type_expr = require_converted(
+                                ty,
+                                format!("stdlib extern `{name}` parameter {index}"),
+                            )?;
+                            Ok(Param {
+                                name: format!("p{index}"),
+                                ty: type_expr,
+                                is_mutable: false,
                             })
-                            .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
-                        let return_type = if matches!(ret_ty, Ty::Unit) {
-                            None
-                        } else {
-                            Some(require_converted(
-                                ret_ty,
-                                format!("stdlib extern `{name}` return type"),
-                            )?)
-                        };
-                        Ok(ExternFnDecl {
-                            name: name.clone(),
-                            params: param_exprs,
-                            return_type,
-                            is_variadic: false,
                         })
+                        .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
+                    let return_type = if matches!(ret_ty, Ty::Unit) {
+                        None
+                    } else {
+                        Some(require_converted(
+                            ret_ty,
+                            format!("stdlib extern `{name}` return type"),
+                        )?)
+                    };
+                    Ok(ExternFnDecl {
+                        name: name.clone(),
+                        params: param_exprs,
+                        return_type,
+                        is_variadic: false,
                     })
-                    .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
+                })
+                .collect::<Result<Vec<_>, TypeExprConversionError>>()?;
 
-                if !extern_fns.is_empty() {
-                    new_items.push((
-                        Item::ExternBlock(ExternBlock {
-                            abi: "C".to_string(),
-                            functions: extern_fns,
-                        }),
-                        0..0,
-                    ));
-                }
+            if !extern_fns.is_empty() {
+                new_items.push((
+                    Item::ExternBlock(ExternBlock {
+                        abi: "C".to_string(),
+                        functions: extern_fns,
+                    }),
+                    0..0,
+                ));
             }
         }
     }
@@ -1588,11 +1563,130 @@ fn enrich_else_block_with_diagnostics(
     Ok(())
 }
 
+/// Rewrite `MethodCall` nodes to the forms the C++ codegen expects.
+///
+/// Handles three categories of method call rewriting:
+/// 1. Module-qualified stdlib calls (e.g. `os.pid()` → `hew_os_pid()`)
+/// 2. User module calls (e.g. `utils.helper(x)` → `helper(x)`)
+/// 3. Handle/stream/channel method calls (receiver prepended as first argument)
+fn enrich_method_call(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = &mut expr.0
+    else {
+        return;
+    };
+
+    // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
+    if let Expr::Identifier(module_name) = &receiver.0 {
+        if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
+            // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
+            // non-trivial Hew wrappers that must be compiled as module graph
+            // functions and called via their mangled name. Leaving them as
+            // MethodCall lets the C++ codegen dispatch them correctly.
+            if c_symbol != *method {
+                let old_args = std::mem::take(args);
+                expr.0 = Expr::Call {
+                    function: Box::new((Expr::Identifier(c_symbol.clone()), receiver.1.clone())),
+                    type_args: None,
+                    args: old_args,
+                    is_tail_call: false,
+                };
+                return;
+            }
+        }
+        // Rewrite user module calls: e.g. utils.helper(args) → helper(args)
+        // User module functions compile under their own name, not a C symbol.
+        if tco.user_modules.contains(module_name) {
+            let old_args = std::mem::take(args);
+            expr.0 = Expr::Call {
+                function: Box::new((Expr::Identifier(method.clone()), receiver.1.clone())),
+                type_args: None,
+                args: old_args,
+                is_tail_call: false,
+            };
+            return;
+        }
+    }
+
+    // Rewrite handle method calls to C function calls.
+    // The receiver type is looked up from the type checker output;
+    // if it's a handle type (e.g. http.Request), the method call is
+    // rewritten to a plain function call with the receiver prepended
+    // as the first argument.
+    let key = SpanKey {
+        start: receiver.1.start,
+        end: receiver.1.end,
+    };
+    let c_fn: Option<String> = match tco.expr_types.get(&key) {
+        Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
+            let elem = args.first().map(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
+            let elem = args.first().map(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
+            hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Receiver" || name == "channel.Receiver" => {
+            hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
+        _ => None,
+    };
+    if let Some(c_fn) = c_fn {
+        let span = expr.1.clone();
+        let recv = std::mem::replace(
+            receiver.as_mut(),
+            (
+                Expr::Literal(hew_parser::ast::Literal::Integer {
+                    value: 0,
+                    radix: hew_parser::ast::IntRadix::Decimal,
+                }),
+                0..0,
+            ),
+        );
+        let old_args = std::mem::take(args);
+        let mut all_args = Vec::with_capacity(1 + old_args.len());
+        all_args.push(hew_parser::ast::CallArg::Positional(recv));
+        all_args.extend(old_args);
+        expr.0 = Expr::Call {
+            function: Box::new((Expr::Identifier(c_fn), span)),
+            type_args: None,
+            args: all_args,
+            is_tail_call: false,
+        };
+    }
+}
+
+fn enrich_expr_with_diagnostics(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<(), TypeExprConversionError> {
+    stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
+        enrich_expr_with_diagnostics_inner(expr, tco, diagnostics, registry)
+    })
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "pattern enrichment covers all pattern variants"
+    reason = "pattern enrichment covers all expression variants"
 )]
-fn enrich_expr_with_diagnostics(
+fn enrich_expr_with_diagnostics_inner(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,
@@ -1646,106 +1740,12 @@ fn enrich_expr_with_diagnostics(
         Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
             enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
-        Expr::MethodCall {
-            receiver,
-            method,
-            args,
-        } => {
+        Expr::MethodCall { receiver, args, .. } => {
             enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
-            // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
-            // This happens during AST enrichment, before serialization.
-            if let Expr::Identifier(module_name) = &receiver.0 {
-                if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
-                    // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
-                    // non-trivial Hew wrappers that must be compiled as module graph
-                    // functions and called via their mangled name. Leaving them as
-                    // MethodCall lets the C++ codegen dispatch them correctly.
-                    if c_symbol != *method {
-                        let old_args = std::mem::take(args);
-                        expr.0 = Expr::Call {
-                            function: Box::new((
-                                Expr::Identifier(c_symbol.clone()),
-                                receiver.1.clone(),
-                            )),
-                            type_args: None,
-                            args: old_args,
-                            is_tail_call: false,
-                        };
-                        return Ok(());
-                    }
-                }
-                // Rewrite user module calls: e.g. utils.helper(args) → helper(args)
-                // User module functions compile under their own name, not a C symbol.
-                if tco.user_modules.contains(module_name) {
-                    let old_args = std::mem::take(args);
-                    expr.0 = Expr::Call {
-                        function: Box::new((Expr::Identifier(method.clone()), receiver.1.clone())),
-                        type_args: None,
-                        args: old_args,
-                        is_tail_call: false,
-                    };
-                    return Ok(());
-                }
-            }
-            // Rewrite handle method calls to C function calls.
-            // The receiver type is looked up from the type checker output;
-            // if it's a handle type (e.g. http.Request), the method call is
-            // rewritten to a plain function call with the receiver prepended
-            // as the first argument.
-            let key = SpanKey {
-                start: receiver.1.start,
-                end: receiver.1.end,
-            };
-            let c_fn: Option<String> = match tco.expr_types.get(&key) {
-                Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
-                    let elem = args.first().map(ty_element_name);
-                    hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
-                    let elem = args.first().map(ty_element_name);
-                    hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
-                    hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args })
-                    if name == "Receiver" || name == "channel.Receiver" =>
-                {
-                    hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
-                _ => None,
-            };
-            if let Some(c_fn) = c_fn {
-                let span = expr.1.clone();
-                let recv = std::mem::replace(
-                    receiver.as_mut(),
-                    (
-                        Expr::Literal(hew_parser::ast::Literal::Integer {
-                            value: 0,
-                            radix: hew_parser::ast::IntRadix::Decimal,
-                        }),
-                        0..0,
-                    ),
-                );
-                let old_args = std::mem::take(args);
-                let mut all_args = Vec::with_capacity(1 + old_args.len());
-                all_args.push(hew_parser::ast::CallArg::Positional(recv));
-                all_args.extend(old_args);
-                expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_fn), span)),
-                    type_args: None,
-                    args: all_args,
-                    is_tail_call: false,
-                };
-            }
+            enrich_method_call(expr, tco, registry);
         }
         Expr::Call {
             function,
@@ -1889,6 +1889,27 @@ fn enrich_expr(
     let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
     let mut diagnostics = Vec::new();
     enrich_expr_with_diagnostics(expr, tco, &mut diagnostics, &registry)
+}
+
+/// Test-only wrapper that extracts import paths from `program.items` and
+/// delegates to `synthesize_stdlib_externs_from_imports`.
+#[cfg(test)]
+fn synthesize_stdlib_externs(
+    program: &mut Program,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<(), TypeExprConversionError> {
+    let import_paths: Vec<String> = program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::Import(import_decl) = item {
+                Some(import_decl.path.join("::"))
+            } else {
+                None
+            }
+        })
+        .collect();
+    synthesize_stdlib_externs_from_imports(program, &import_paths, registry)
 }
 
 #[cfg(test)]

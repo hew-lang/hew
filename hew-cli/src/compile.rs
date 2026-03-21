@@ -382,8 +382,11 @@ fn resolve_imports(
     options: &CompileOptions,
 ) -> Result<(), String> {
     if let Some(deps) = &project.manifest_deps {
-        let errs =
-            validate_imports_against_manifest(&program.items, deps, project.package_name.as_deref());
+        let errs = validate_imports_against_manifest(
+            &program.items,
+            deps,
+            project.package_name.as_deref(),
+        );
         if !errs.is_empty() {
             for e in &errs {
                 eprintln!("{e}");
@@ -1259,10 +1262,7 @@ fn resolve_file_imports(
                         .collect::<Vec<_>>()
                         .join(", ");
                     // Hint based on whether we're in package mode.
-                    let hint = if ctx
-                        .manifest_deps
-                        .is_some_and(|d| d.contains(&module_str))
-                    {
+                    let hint = if ctx.manifest_deps.is_some_and(|d| d.contains(&module_str)) {
                         "\n  hint: this dependency is declared in hew.toml — run `adze install`"
                     } else if ctx.manifest_deps.is_some() {
                         "\n  hint: add this module to [dependencies] in hew.toml"

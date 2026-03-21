@@ -558,33 +558,31 @@ mlir::Value MLIRGen::coerceType(mlir::Value value, mlir::Type targetType, mlir::
   bool srcIsFloat = llvm::isa<mlir::FloatType>(value.getType());
   bool dstIsInt = llvm::isa<mlir::IntegerType>(targetType);
 
-  // Numeric conversions go through hew.cast so the dialect folder /
-  // canonicalizer can optimise cast chains before lowering.
-  if ((srcIsInt && dstIsFloat) || (srcIsFloat && dstIsInt)) {
+  // Create a hew.cast and optionally tag it as unsigned for integer operands.
+  auto emitCast = [&]() -> mlir::Value {
     auto castOp = hew::CastOp::create(builder, location, targetType, value);
     if (isUnsigned)
       castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
     return castOp;
-  }
+  };
+
+  // Numeric conversions go through hew.cast so the dialect folder /
+  // canonicalizer can optimise cast chains before lowering.
+  if ((srcIsInt && dstIsFloat) || (srcIsFloat && dstIsInt))
+    return emitCast();
   // int -> int width conversion (e.g. i64 literal to i32 field, or i32 to i64)
   if (srcIsInt && dstIsInt) {
     auto srcWidth = mlir::cast<mlir::IntegerType>(value.getType()).getWidth();
     auto dstWidth = mlir::cast<mlir::IntegerType>(targetType).getWidth();
-    if (srcWidth != dstWidth) {
-      auto castOp = hew::CastOp::create(builder, location, targetType, value);
-      if (isUnsigned)
-        castOp->setAttr("is_unsigned", builder.getBoolAttr(true));
-      return castOp;
-    }
+    if (srcWidth != dstWidth)
+      return emitCast();
   }
   // float -> float width conversion (f32 ↔ f64)
   if (srcIsFloat && dstIsFloat) {
     auto srcWidth = mlir::cast<mlir::FloatType>(value.getType()).getWidth();
     auto dstWidth = mlir::cast<mlir::FloatType>(targetType).getWidth();
-    if (srcWidth != dstWidth) {
-      auto castOp = hew::CastOp::create(builder, location, targetType, value);
-      return castOp;
-    }
+    if (srcWidth != dstWidth)
+      return emitCast();
   }
   // concrete struct → dyn Trait coercion
   if (auto traitObjType = mlir::dyn_cast<hew::HewTraitObjectType>(targetType)) {

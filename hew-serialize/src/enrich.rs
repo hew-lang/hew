@@ -1588,11 +1588,22 @@ fn enrich_else_block_with_diagnostics(
     Ok(())
 }
 
+fn enrich_expr_with_diagnostics(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    diagnostics: &mut Vec<TypeExprConversionError>,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<(), TypeExprConversionError> {
+    stacker::maybe_grow(32 * 1024, 2 * 1024 * 1024, || {
+        enrich_expr_with_diagnostics_inner(expr, tco, diagnostics, registry)
+    })
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "pattern enrichment covers all pattern variants"
+    reason = "pattern enrichment covers all expression variants"
 )]
-fn enrich_expr_with_diagnostics(
+fn enrich_expr_with_diagnostics_inner(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
     diagnostics: &mut Vec<TypeExprConversionError>,

@@ -4149,19 +4149,7 @@ impl Checker {
                 expr,
                 body,
                 else_body,
-            } => {
-                let scr_ty = self.synthesize(&expr.0, &expr.1);
-                self.env.push_scope();
-                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                let then_ty = self.check_block(body);
-                self.env.pop_scope();
-                if let Some(block) = else_body {
-                    let else_ty = self.check_block(block);
-                    self.unify_branches(&then_ty, &else_ty, span)
-                } else {
-                    Ty::Unit
-                }
-            }
+            } => self.synthesize_iflet(pattern, expr, body, else_body.as_ref(), span),
 
             // Match
             Expr::Match { scrutinee, arms } => {
@@ -4254,54 +4242,10 @@ impl Checker {
             }
 
             // Send: target <- message
-            Expr::Send { target, message } => {
-                let _target_ty = self.synthesize(&target.0, &target.1);
-                let msg_ty_raw = self.synthesize(&message.0, &message.1);
-                let msg_ty = self.subst.resolve(&msg_ty_raw);
-                // Check message is Send
-                if !self.registry.implements_marker(&msg_ty, MarkerTrait::Send) {
-                    self.report_error(
-                        TypeErrorKind::InvalidSend,
-                        span,
-                        format!("cannot send `{msg_ty}` to actor: type is not Send"),
-                    );
-                }
-                // Mark sent value as moved (unless Copy)
-                if !self.registry.implements_marker(&msg_ty, MarkerTrait::Copy) {
-                    if let Expr::Identifier(name) = &message.0 {
-                        self.env.mark_moved(name, message.1.clone());
-                    }
-                }
-                Ty::Unit
-            }
+            Expr::Send { target, message } => self.synthesize_send(target, message, span),
 
             // Yield
-            Expr::Yield(value) => {
-                if !self.in_generator {
-                    self.report_error(
-                        TypeErrorKind::YieldOutsideGenerator,
-                        span,
-                        "`yield` outside of generator function".to_string(),
-                    );
-                }
-                if let Some(val_expr) = value {
-                    // Check yielded value against the declared yield type
-                    if let Some(return_ty) = &self.current_return_type {
-                        let resolved = self.subst.resolve(return_ty);
-                        let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
-                            yields.clone()
-                        } else if let Some(yields) = resolved.as_async_generator() {
-                            yields.clone()
-                        } else {
-                            resolved
-                        };
-                        self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
-                    } else {
-                        self.synthesize(&val_expr.0, &val_expr.1);
-                    }
-                }
-                Ty::Unit
-            }
+            Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
             // Cooperate
             Expr::Cooperate => Ty::Unit,
@@ -4675,6 +4619,82 @@ impl Checker {
                 args: vec![first_key_ty, first_val_ty],
             }
         }
+    }
+
+    fn synthesize_iflet(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        expr: &Spanned<Expr>,
+        body: &Block,
+        else_body: Option<&Block>,
+        span: &Span,
+    ) -> Ty {
+        let scr_ty = self.synthesize(&expr.0, &expr.1);
+        self.env.push_scope();
+        self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+        let then_ty = self.check_block(body);
+        self.env.pop_scope();
+        if let Some(block) = else_body {
+            let else_ty = self.check_block(block);
+            self.unify_branches(&then_ty, &else_ty, span)
+        } else {
+            Ty::Unit
+        }
+    }
+
+    fn synthesize_send(
+        &mut self,
+        target: &Spanned<Expr>,
+        message: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        let _target_ty = self.synthesize(&target.0, &target.1);
+        let msg_ty_raw = self.synthesize(&message.0, &message.1);
+        let msg_ty = self.subst.resolve(&msg_ty_raw);
+        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Send) {
+            self.report_error(
+                TypeErrorKind::InvalidSend,
+                span,
+                format!("cannot send `{msg_ty}` to actor: type is not Send"),
+            );
+        }
+        // Mark sent value as moved (unless Copy)
+        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Copy) {
+            if let Expr::Identifier(name) = &message.0 {
+                self.env.mark_moved(name, message.1.clone());
+            }
+        }
+        Ty::Unit
+    }
+
+    fn synthesize_yield(
+        &mut self,
+        value: Option<&Spanned<Expr>>,
+        span: &Span,
+    ) -> Ty {
+        if !self.in_generator {
+            self.report_error(
+                TypeErrorKind::YieldOutsideGenerator,
+                span,
+                "`yield` outside of generator function".to_string(),
+            );
+        }
+        if let Some(val_expr) = value {
+            if let Some(return_ty) = &self.current_return_type {
+                let resolved = self.subst.resolve(return_ty);
+                let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
+                    yields.clone()
+                } else if let Some(yields) = resolved.as_async_generator() {
+                    yields.clone()
+                } else {
+                    resolved
+                };
+                self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+            } else {
+                self.synthesize(&val_expr.0, &val_expr.1);
+            }
+        }
+        Ty::Unit
     }
 
     /// Check: verify expression against expected type (top-down).

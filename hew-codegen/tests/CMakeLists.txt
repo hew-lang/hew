@@ -386,12 +386,12 @@ set_tests_properties(
 # Supervisor tests intentionally crash and restart actors — sensitive to
 # CPU contention from parallel test execution.
 set_tests_properties(
-  e2e_supervisor_basic_supervisor_basic
-  e2e_supervisor_strategy_supervisor_strategy
-  e2e_supervisor_child_supervisor_child
-  e2e_supervisor_restart_supervisor_restart
-  e2e_supervisor_nested_supervisor_nested
-  e2e_supervisor_named_child_supervisor_named_child
+  e2e_supervisor_supervisor_basic
+  e2e_supervisor_supervisor_strategy
+  e2e_supervisor_supervisor_child
+  e2e_supervisor_supervisor_restart
+  e2e_supervisor_supervisor_nested
+  e2e_supervisor_supervisor_named_child
   PROPERTIES
     RESOURCE_LOCK actor_crash_tests
     PROCESSORS   2
@@ -579,16 +579,16 @@ add_wasm_file_test(dyn_dispatch_void    e2e_dyn_trait dyn_dispatch_void)
 add_wasm_file_test(trait_inherit        e2e_trait_inherit trait_inherit)
 
 # Closures
-add_wasm_file_test(closure_firstclass   e2e_closure_firstclass closure_firstclass)
-add_wasm_file_test(closure_env_rc       e2e_closure_env_rc closure_env_rc)
+add_wasm_file_test(closure_firstclass   e2e_closures closure_firstclass)
+add_wasm_file_test(closure_env_rc       e2e_closures closure_env_rc)
 add_wasm_file_test(closure_mutable      e2e_closures closure_mutable_capture)
 add_wasm_file_test(closure_read_mutable e2e_closures closure_read_mutable)
 add_wasm_file_test(closure_match_capture e2e_closures closure_match_capture)
-add_wasm_file_test(move_closure         e2e_move_closure move_closure)
+add_wasm_file_test(move_closure         e2e_closures move_closure)
 
 # Struct/tuple features
-add_wasm_file_test(struct_assign        e2e_struct_assign struct_assign)
-add_wasm_file_test(tuple_destruct       e2e_tuple_destruct tuple_destruct)
+add_wasm_file_test(struct_assign        e2e_structs struct_assign)
+add_wasm_file_test(tuple_destruct       e2e_tuples tuple_destruct)
 
 # Error handling
 add_wasm_file_test(error_return_codes   e2e_error_handling error_return_codes)
@@ -614,7 +614,7 @@ add_wasm_file_test(cast_chain           e2e_canonicalize cast_chain)
 # Drop/cleanup
 add_wasm_file_test(drop_trait           e2e_drop_trait drop_trait)
 add_wasm_file_test(drop_scope           e2e_drop_scope drop_scope)
-add_wasm_file_test(string_drop          e2e_string_drop string_drop)
+add_wasm_file_test(string_drop          e2e_strings string_drop)
 
 # Named args, coverage
 add_wasm_file_test(named_args           e2e_named_args main)
@@ -716,7 +716,7 @@ add_wasm_file_test(trait_bound_multi          e2e_trait_bound_dispatch trait_bou
 add_wasm_file_test(dyn_trait_with_generics    e2e_dyn_trait           dyn_trait_with_generics)
 
 # Closures (extended)
-add_wasm_file_test(closure_return_coercion    e2e_closure_coercion closure_return_coercion)
+add_wasm_file_test(closure_return_coercion    e2e_closures closure_return_coercion)
 
 # Self sugar
 add_wasm_file_test(self_sugar                 e2e_self_sugar       self_sugar)
@@ -758,12 +758,12 @@ add_wasm_file_test(indirect_option_tree       e2e_indirect_enum    indirect_opti
 # Strings (extended)
 add_wasm_file_test(string_lines               e2e_strings          string_lines)
 add_wasm_file_test(string_predicates          e2e_strings          string_predicates)
-add_wasm_file_test(string_ordering            e2e_string_ordering  string_ordering)
+add_wasm_file_test(string_ordering            e2e_strings  string_ordering)
 
 # Struct/enum (extended)
-add_wasm_file_test(struct_destruct            e2e_struct_destruct  struct_destruct)
-add_wasm_file_test(struct_enum                e2e_struct_enum      struct_enum)
-add_wasm_file_test(nested_tuple_destruct      e2e_nested_tuple_destruct nested_tuple_destruct)
+add_wasm_file_test(struct_destruct            e2e_structs  struct_destruct)
+add_wasm_file_test(struct_enum                e2e_structs      struct_enum)
+add_wasm_file_test(nested_tuple_destruct      e2e_tuples nested_tuple_destruct)
 
 # Error handling (extended)
 add_wasm_file_test(result_stdlib              e2e_error_handling   result_stdlib)

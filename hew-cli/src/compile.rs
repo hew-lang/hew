@@ -104,6 +104,29 @@ struct ImportResolutionContext<'a> {
     project_dir: &'a Path,
 }
 
+/// Project metadata loaded from the source file and manifest.
+struct ProjectContext {
+    source: String,
+    project_dir: PathBuf,
+    manifest_deps: Option<Vec<String>>,
+    package_name: Option<String>,
+    locked_versions: Option<Vec<(String, String)>>,
+}
+
+/// Result of the type-checking stage.
+struct TypeCheckResult {
+    tco: Option<hew_types::check::TypeCheckOutput>,
+    module_registry: hew_types::module_registry::ModuleRegistry,
+}
+
+/// Metadata required by the codegen serialization stage.
+struct CodegenMetadata {
+    handle_types: Vec<String>,
+    handle_type_repr: std::collections::HashMap<String, String>,
+    abs_source_path: Option<String>,
+    line_map: Option<Vec<usize>>,
+}
+
 /// Build a line map: a Vec where entry\[i\] is the byte offset of the start of line (i+1).
 /// Line 1 always starts at offset 0. Handles both `\n` and `\r\n` line endings.
 fn line_map_from_source(source: &str) -> Vec<usize> {
@@ -286,33 +309,41 @@ fn build_module_search_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Returns a human-readable message when any pipeline stage fails.
-#[expect(
-    clippy::too_many_lines,
-    reason = "compilation pipeline has many sequential stages"
-)]
-pub fn compile(
-    input: &str,
-    output: Option<&str>,
-    check_only: bool,
-    options: &CompileOptions,
-) -> Result<String, String> {
+// ---------------------------------------------------------------------------
+// Pipeline stage helpers
+// ---------------------------------------------------------------------------
+
+/// **Stage 1 — Setup.** Read the source file and load project metadata from
+/// the manifest (`hew.toml`), lockfile, and package name.
+fn load_project_context(input: &str) -> Result<ProjectContext, String> {
     let source =
         std::fs::read_to_string(input).map_err(|e| format!("Error: cannot read {input}: {e}"))?;
+    let project_dir = Path::new(input)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let manifest_deps = super::manifest::load_dependencies(&project_dir);
+    let package_name = super::manifest::load_package_name(&project_dir);
+    let locked_versions = super::manifest::load_lockfile(&project_dir);
+    Ok(ProjectContext {
+        source,
+        project_dir,
+        manifest_deps,
+        package_name,
+        locked_versions,
+    })
+}
 
-    // Detect hew.toml manifest (script mode if absent).
-    let project_dir = Path::new(input).parent().unwrap_or(Path::new("."));
-    let manifest_deps = super::manifest::load_dependencies(project_dir);
-    let package_name = super::manifest::load_package_name(project_dir);
-
-    // 1. Parse
-    let result = hew_parser::parse(&source);
+/// **Stage 2 — Parse.** Run the parser and render any diagnostics. Returns
+/// the parsed program or an error if there were parse errors.
+fn parse_source(source: &str, input: &str) -> Result<hew_parser::ast::Program, String> {
+    let result = hew_parser::parse(source);
     if !result.errors.is_empty() {
         for err in &result.errors {
             let hints: Vec<String> = err.hint.iter().cloned().collect();
             match err.severity {
                 hew_parser::Severity::Warning => super::diagnostic::render_warning(
-                    &source,
+                    source,
                     input,
                     &err.span,
                     &err.message,
@@ -320,7 +351,7 @@ pub fn compile(
                     &hints,
                 ),
                 hew_parser::Severity::Error => super::diagnostic::render_diagnostic(
-                    &source,
+                    source,
                     input,
                     &err.span,
                     &err.message,
@@ -337,12 +368,22 @@ pub fn compile(
             return Err("parsing failed".into());
         }
     }
+    Ok(result.program)
+}
 
-    let mut program = result.program;
-
-    // 2. Validate manifest imports then resolve file-path imports
-    if let Some(deps) = &manifest_deps {
-        let errs = validate_imports_against_manifest(&program.items, deps, package_name.as_deref());
+/// **Stage 3 — Import resolution.** Validate manifest imports, inject
+/// synthetic imports for implicit stdlib dependencies, and build the module
+/// graph by recursively resolving file and module-path imports.
+fn resolve_imports(
+    program: &mut hew_parser::ast::Program,
+    source: &str,
+    input: &str,
+    project: &ProjectContext,
+    options: &CompileOptions,
+) -> Result<(), String> {
+    if let Some(deps) = &project.manifest_deps {
+        let errs =
+            validate_imports_against_manifest(&program.items, deps, project.package_name.as_deref());
         if !errs.is_empty() {
             for e in &errs {
                 eprintln!("{e}");
@@ -351,21 +392,19 @@ pub fn compile(
         }
     }
 
-    let locked_versions = super::manifest::load_lockfile(project_dir);
-
     // Inject synthetic imports for features that implicitly depend on stdlib
-    // modules (wire types, regex literals, core modules like log). Must happen
-    // BEFORE resolve_file_imports so the imports get their resolved_items populated.
-    inject_implicit_imports(&mut program.items, &source);
+    // modules (wire types, regex literals). Must happen BEFORE resolve_file_imports
+    // so the imports get their resolved_items populated.
+    inject_implicit_imports(&mut program.items, source);
 
     let input_path = Path::new(input);
     let mut import_ctx = ImportResolutionContext {
         imported: HashSet::new(),
-        manifest_deps: manifest_deps.as_deref(),
+        manifest_deps: project.manifest_deps.as_deref(),
         extra_pkg_path: options.pkg_path.as_deref(),
-        locked_versions: locked_versions.as_deref(),
-        package_name: package_name.as_deref(),
-        project_dir,
+        locked_versions: project.locked_versions.as_deref(),
+        package_name: project.package_name.as_deref(),
+        project_dir: &project.project_dir,
     };
     let module_graph = build_module_graph(
         input_path,
@@ -376,97 +415,108 @@ pub fn compile(
     .map_err(|errs| errs.join("\n"))?;
     program.module_graph = Some(module_graph);
 
-    // All stdlib symbols are in libhew.a — no per-package lib discovery needed.
+    Ok(())
+}
 
-    // 3. Type-check
+/// **Stage 4 — Type-check.** Run the type checker, render errors and warnings,
+/// and return the type-check output together with the module registry.
+///
+/// Returns `Err` if any type errors are found.
+fn typecheck_program(
+    program: &hew_parser::ast::Program,
+    source: &str,
+    input: &str,
+    options: &CompileOptions,
+) -> Result<TypeCheckResult, String> {
     let search_paths = build_module_search_paths();
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
-    let (tco, module_registry) = if options.no_typecheck {
-        (None, module_registry)
-    } else {
-        let mut checker = hew_types::Checker::new(module_registry);
-        if options
-            .target
-            .as_deref()
-            .is_some_and(|t| t.starts_with("wasm32"))
-        {
-            checker.enable_wasm_target();
-        }
-        let tco = checker.check_program(&program);
-        let has_errors = !tco.errors.is_empty();
-
-        for err in &tco.errors {
-            let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = err
-                .notes
-                .iter()
-                .map(|(span, msg)| super::diagnostic::DiagnosticNote {
-                    span,
-                    message: msg.as_str(),
-                })
-                .collect();
-            super::diagnostic::render_diagnostic(
-                &source,
-                input,
-                &err.span,
-                &err.message,
-                &notes,
-                &err.suggestions,
-            );
-        }
-
-        // Render warnings (these don't block compilation).
-        for warn in &tco.warnings {
-            let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = warn
-                .notes
-                .iter()
-                .map(|(span, msg)| super::diagnostic::DiagnosticNote {
-                    span,
-                    message: msg.as_str(),
-                })
-                .collect();
-            super::diagnostic::render_warning(
-                &source,
-                input,
-                &warn.span,
-                &warn.message,
-                &notes,
-                &warn.suggestions,
-            );
-        }
-
-        if check_only {
-            return if has_errors {
-                Err("type errors found".into())
-            } else {
-                Ok(String::new())
-            };
-        }
-
-        if has_errors {
-            if options.werror {
-                eprintln!("--Werror is accepted for compatibility; type errors are already fatal");
-            }
-            return Err("type errors found".into());
-        }
-
-        let module_registry = checker.into_module_registry();
-        (Some(tco), module_registry)
-    };
-
-    if check_only {
-        return Ok(String::new());
+    if options.no_typecheck {
+        return Ok(TypeCheckResult {
+            tco: None,
+            module_registry,
+        });
     }
 
-    // 4. Flatten resolved_items from module imports into top-level items,
-    // then enrich AST with inferred types and serialize to MessagePack.
+    let mut checker = hew_types::Checker::new(module_registry);
+    if options
+        .target
+        .as_deref()
+        .is_some_and(|t| t.starts_with("wasm32"))
+    {
+        checker.enable_wasm_target();
+    }
+    let tco = checker.check_program(program);
+    let has_errors = !tco.errors.is_empty();
+
+    for err in &tco.errors {
+        let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = err
+            .notes
+            .iter()
+            .map(|(span, msg)| super::diagnostic::DiagnosticNote {
+                span,
+                message: msg.as_str(),
+            })
+            .collect();
+        super::diagnostic::render_diagnostic(
+            source,
+            input,
+            &err.span,
+            &err.message,
+            &notes,
+            &err.suggestions,
+        );
+    }
+
+    // Render warnings (these don't block compilation).
+    for warn in &tco.warnings {
+        let notes: Vec<super::diagnostic::DiagnosticNote<'_>> = warn
+            .notes
+            .iter()
+            .map(|(span, msg)| super::diagnostic::DiagnosticNote {
+                span,
+                message: msg.as_str(),
+            })
+            .collect();
+        super::diagnostic::render_warning(
+            source,
+            input,
+            &warn.span,
+            &warn.message,
+            &notes,
+            &warn.suggestions,
+        );
+    }
+
+    if has_errors {
+        return Err("type errors found".into());
+    }
+
+    let module_registry = checker.into_module_registry();
+    Ok(TypeCheckResult {
+        tco: Some(tco),
+        module_registry,
+    })
+}
+
+/// **Stage 5 — Enrich.** Flatten imported items into the top-level program,
+/// enrich the AST with inferred type information, sync enriched items back
+/// to the module graph, and mark tail-call positions.
+fn enrich_program_ast(
+    program: &mut hew_parser::ast::Program,
+    tco: Option<&hew_types::check::TypeCheckOutput>,
+    module_registry: &hew_types::module_registry::ModuleRegistry,
+    source: &str,
+    input: &str,
+) -> Result<Vec<hew_serialize::ExprTypeEntry>, String> {
+    // Flatten resolved_items from module imports into top-level items.
     // Flattening must happen before enrichment so that normalize_all_types
     // and enrich_fn_decl process the imported functions too.
-    let imported_item_sources = flatten_import_items(&mut program);
+    let imported_item_sources = flatten_import_items(program);
 
-    let expr_type_map = if let Some(tco) = &tco {
+    let expr_type_map = if let Some(tco) = tco {
         let mut seen_inferred_type_diagnostics = HashSet::new();
-        let enrich_diagnostics = hew_serialize::enrich_program(&mut program, tco, &module_registry)
+        let enrich_diagnostics = hew_serialize::enrich_program(program, tco, module_registry)
             .map_err(|e| format!("Error: cannot enrich inferred types: {e}"))?;
         for diagnostic in collect_new_inferred_type_diagnostics(
             enrich_diagnostics.diagnostics(),
@@ -475,7 +525,7 @@ pub fn compile(
             &mut seen_inferred_type_diagnostics,
         ) {
             render_inferred_type_serialization_diagnostic(
-                &source,
+                source,
                 input,
                 &imported_item_sources,
                 diagnostic,
@@ -492,7 +542,7 @@ pub fn compile(
             // and len(x) → x.len() etc.
             for (id, module) in &mut mg.modules {
                 if *id != mg.root {
-                    hew_serialize::normalize_items_types(&mut module.items, &module_registry);
+                    hew_serialize::normalize_items_types(&mut module.items, module_registry);
                     hew_serialize::rewrite_builtin_calls(&mut module.items);
                 }
             }
@@ -505,7 +555,7 @@ pub fn compile(
             &mut seen_inferred_type_diagnostics,
         ) {
             render_inferred_type_serialization_diagnostic(
-                &source,
+                source,
                 input,
                 &imported_item_sources,
                 diagnostic,
@@ -516,19 +566,22 @@ pub fn compile(
         Vec::new()
     };
 
-    // 4b. Mark tail calls (purely syntactic, must run after enrichment so that
-    //     MethodCall→Call rewrites are already in place)
-    hew_parser::tail_call::mark_tail_calls(&mut program);
+    // Mark tail calls (purely syntactic, must run after enrichment so that
+    // MethodCall→Call rewrites are already in place).
+    hew_parser::tail_call::mark_tail_calls(program);
 
-    // 4c. If --emit-ast, dump enriched AST as JSON and return
-    if options.codegen_mode == CodegenMode::EmitAst {
-        let json = serde_json::to_string_pretty(&program)
-            .map_err(|e| format!("Error: cannot serialize AST: {e}"))?;
-        println!("{json}");
-        return Ok(String::new());
-    }
+    Ok(expr_type_map)
+}
 
-    // Build handle type metadata for C++ codegen (replaces hardcoded type lists)
+/// **Stage 6 — Codegen metadata.** Build handle type metadata for C++ codegen
+/// and compute debug information (source path + line map) when building with
+/// `--debug`.
+fn build_codegen_metadata(
+    module_registry: &hew_types::module_registry::ModuleRegistry,
+    input: &str,
+    source: &str,
+    options: &CompileOptions,
+) -> CodegenMetadata {
     let handle_types = module_registry.all_handle_types();
     let handle_type_repr: std::collections::HashMap<String, String> = handle_types
         .iter()
@@ -541,64 +594,30 @@ pub fn compile(
         })
         .collect();
 
-    // Compute debug metadata (source path + line map) when building with --debug.
     let (abs_source_path, line_map) = if options.debug {
         let path = std::fs::canonicalize(input)
             .map_or_else(|_| input.to_string(), |p| p.display().to_string());
-        (Some(path), Some(line_map_from_source(&source)))
+        (Some(path), Some(line_map_from_source(source)))
     } else {
         (None, None)
     };
 
-    // 4d. If --emit-json, dump the full TypedProgram (same as what codegen
-    // receives via msgpack) as pretty-printed JSON and return.
-    if options.codegen_mode == CodegenMode::EmitJson {
-        let json = hew_serialize::serialize_to_json(
-            &program,
-            expr_type_map,
-            handle_types,
-            handle_type_repr,
-            abs_source_path.as_deref(),
-            line_map.as_deref(),
-        );
-        println!("{json}");
-        return Ok(String::new());
-    }
-
-    let ast_data = hew_serialize::serialize_to_msgpack(
-        &program,
-        expr_type_map,
+    CodegenMetadata {
         handle_types,
         handle_type_repr,
-        abs_source_path.as_deref(),
-        line_map.as_deref(),
-    );
-
-    if options.codegen_mode == CodegenMode::EmitMsgpack {
-        if let Some(output_path) = output {
-            fs::write(output_path, &ast_data)
-                .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
-            return Ok(output_path.to_string());
-        }
-
-        std::io::stdout()
-            .write_all(&ast_data)
-            .map_err(|e| format!("Error: cannot write msgpack output: {e}"))?;
-        return Ok(String::new());
+        abs_source_path,
+        line_map,
     }
+}
 
-    // 5. Run embedded codegen
-    if let Some(mode) = options.codegen_mode.embedded_mode() {
-        let text_output = run_embedded_codegen(&ast_data, mode, options, None)?;
-        if let Some(output_path) = output {
-            fs::write(output_path, &text_output)
-                .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
-            return Ok(output_path.to_string());
-        }
-        print!("{}", String::from_utf8_lossy(&text_output));
-        return Ok(String::new());
-    }
-
+/// **Stage 7 — Link.** Compile the serialized AST to an object file via the
+/// embedded MLIR/LLVM backend, then link the result into a final executable.
+fn compile_and_link(
+    ast_data: &[u8],
+    input: &str,
+    output: Option<&str>,
+    options: &CompileOptions,
+) -> Result<String, String> {
     let obj_temp = tempfile::Builder::new()
         .prefix("hew_")
         .suffix(".o")
@@ -608,13 +627,12 @@ pub fn compile(
     let obj_path = obj_temp.display().to_string();
 
     run_embedded_codegen(
-        &ast_data,
+        ast_data,
         EmbeddedCodegenMode::EmitObject,
         options,
         Some(&obj_path),
     )?;
 
-    // 6. Link
     let default_output = Path::new(input)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -638,8 +656,114 @@ pub fn compile(
     )?;
 
     // obj_temp (TempPath) auto-deletes on drop
-
     Ok(output_path.to_string())
+}
+
+/// Write binary output to a file or stdout.
+fn write_output(output: Option<&str>, data: &[u8]) -> Result<String, String> {
+    if let Some(output_path) = output {
+        fs::write(output_path, data)
+            .map_err(|e| format!("Error: cannot write output to {output_path}: {e}"))?;
+        Ok(output_path.to_string())
+    } else {
+        std::io::stdout()
+            .write_all(data)
+            .map_err(|e| format!("Error: cannot write output: {e}"))?;
+        Ok(String::new())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Run the full compilation pipeline for a `.hew` source file.
+///
+/// When `check_only` is `true` the pipeline stops after type-checking and no
+/// binary is produced.
+///
+/// # Errors
+///
+/// Returns a human-readable message when any pipeline stage fails.
+pub fn compile(
+    input: &str,
+    output: Option<&str>,
+    check_only: bool,
+    options: &CompileOptions,
+) -> Result<String, String> {
+    // 1. Setup — read source, load manifest
+    let project = load_project_context(input)?;
+
+    // 2. Parse
+    let mut program = parse_source(&project.source, input)?;
+
+    // 3. Import resolution — validate, inject implicit imports, build module graph
+    resolve_imports(&mut program, &project.source, input, &project, options)?;
+
+    // 4. Type-check
+    let TypeCheckResult {
+        tco,
+        module_registry,
+    } = typecheck_program(&program, &project.source, input, options)?;
+
+    if check_only {
+        return Ok(String::new());
+    }
+
+    // 5. Enrich AST with inferred types, flatten imports, mark tail calls
+    let expr_type_map = enrich_program_ast(
+        &mut program,
+        tco.as_ref(),
+        &module_registry,
+        &project.source,
+        input,
+    )?;
+
+    // Early exit: dump enriched AST as JSON
+    if options.codegen_mode == CodegenMode::EmitAst {
+        let json = serde_json::to_string_pretty(&program)
+            .map_err(|e| format!("Error: cannot serialize AST: {e}"))?;
+        println!("{json}");
+        return Ok(String::new());
+    }
+
+    // 6. Build codegen metadata and serialize
+    let meta = build_codegen_metadata(&module_registry, input, &project.source, options);
+
+    if options.codegen_mode == CodegenMode::EmitJson {
+        let json = hew_serialize::serialize_to_json(
+            &program,
+            expr_type_map,
+            meta.handle_types,
+            meta.handle_type_repr,
+            meta.abs_source_path.as_deref(),
+            meta.line_map.as_deref(),
+        );
+        println!("{json}");
+        return Ok(String::new());
+    }
+
+    let ast_data = hew_serialize::serialize_to_msgpack(
+        &program,
+        expr_type_map,
+        meta.handle_types,
+        meta.handle_type_repr,
+        meta.abs_source_path.as_deref(),
+        meta.line_map.as_deref(),
+    );
+
+    if options.codegen_mode == CodegenMode::EmitMsgpack {
+        return write_output(output, &ast_data);
+    }
+
+    // Early exit: emit MLIR/LLVM/object without linking
+    if let Some(mode) = options.codegen_mode.embedded_mode() {
+        let text_output = run_embedded_codegen(&ast_data, mode, options, None)?;
+        return write_output(output, &text_output);
+    }
+
+    // 7. Codegen to object file and link executable
+    compile_and_link(&ast_data, input, output, options)
 }
 
 // ---------------------------------------------------------------------------

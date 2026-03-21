@@ -378,6 +378,11 @@ private:
   /// Declare a mutable variable (allocates a memref slot).
   void declareMutableVariable(llvm::StringRef name, mlir::Type type, mlir::Value initialValue);
 
+  /// Create a memref alloca for a variable slot. When return guards are active,
+  /// hoists the alloca to the function entry block and zero-initialises
+  /// pointer-like types so unconditional drops are safe.
+  mlir::Value createHoistedAlloca(mlir::Type storageType, mlir::Type semanticType);
+
   /// Store to a mutable variable.
   void storeVariable(llvm::StringRef name, mlir::Value value);
 

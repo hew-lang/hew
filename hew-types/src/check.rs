@@ -4188,55 +4188,9 @@ impl Checker {
                     Ty::Array(Box::new(first_ty), elems.len() as u64)
                 }
             }
-            Expr::ArrayRepeat { value, count } => {
-                let elem_ty = self.synthesize(&value.0, &value.1);
-                let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
-                let resolved_count = self.subst.resolve(&count_ty);
-                if !resolved_count.is_integer() && !matches!(resolved_count, Ty::Var(_)) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &count.1,
-                        format!("array repeat count must be an integer, found `{resolved_count}`"),
-                    );
-                }
-                if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
-                    if *value < 0 {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            &count.1,
-                            "array repeat count cannot be negative".to_string(),
-                        );
-                    }
-                }
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![elem_ty],
-                }
-            }
+            Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count),
 
-            Expr::MapLiteral { entries } => {
-                if entries.is_empty() {
-                    let k = TypeVar::fresh();
-                    let v = TypeVar::fresh();
-                    Ty::Named {
-                        name: "HashMap".to_string(),
-                        args: vec![Ty::Var(k), Ty::Var(v)],
-                    }
-                } else {
-                    let (ref ke, ref ks) = entries[0].0;
-                    let (ref ve, ref vs) = entries[0].1;
-                    let first_key_ty = self.synthesize(ke, ks);
-                    let first_val_ty = self.synthesize(ve, vs);
-                    for (k, v) in &entries[1..] {
-                        self.check_against(&k.0, &k.1, &first_key_ty);
-                        self.check_against(&v.0, &v.1, &first_val_ty);
-                    }
-                    Ty::Named {
-                        name: "HashMap".to_string(),
-                        args: vec![first_key_ty, first_val_ty],
-                    }
-                }
-            }
+            Expr::MapLiteral { entries } => self.synthesize_map_literal(entries),
 
             // Struct init
             Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
@@ -4664,6 +4618,63 @@ impl Checker {
 
         self.record_type(span, &target);
         target
+    }
+
+    fn synthesize_array_repeat(
+        &mut self,
+        value: &Spanned<Expr>,
+        count: &Spanned<Expr>,
+    ) -> Ty {
+        let elem_ty = self.synthesize(&value.0, &value.1);
+        let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
+        let resolved_count = self.subst.resolve(&count_ty);
+        if !resolved_count.is_integer() && !matches!(resolved_count, Ty::Var(_)) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &count.1,
+                format!("array repeat count must be an integer, found `{resolved_count}`"),
+            );
+        }
+        if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
+            if *value < 0 {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &count.1,
+                    "array repeat count cannot be negative".to_string(),
+                );
+            }
+        }
+        Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+        }
+    }
+
+    fn synthesize_map_literal(
+        &mut self,
+        entries: &[(Spanned<Expr>, Spanned<Expr>)],
+    ) -> Ty {
+        if entries.is_empty() {
+            let k = TypeVar::fresh();
+            let v = TypeVar::fresh();
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![Ty::Var(k), Ty::Var(v)],
+            }
+        } else {
+            let (ref ke, ref ks) = entries[0].0;
+            let (ref ve, ref vs) = entries[0].1;
+            let first_key_ty = self.synthesize(ke, ks);
+            let first_val_ty = self.synthesize(ve, vs);
+            for (k, v) in &entries[1..] {
+                self.check_against(&k.0, &k.1, &first_key_ty);
+                self.check_against(&v.0, &v.1, &first_val_ty);
+            }
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![first_key_ty, first_val_ty],
+            }
+        }
     }
 
     /// Check: verify expression against expected type (top-down).

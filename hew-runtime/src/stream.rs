@@ -361,6 +361,14 @@ fn into_stream_ptr(backing: impl StreamBacking + 'static) -> *mut HewStream {
     }))
 }
 
+/// Like [`into_stream_ptr`] but accepts an already-boxed backing.
+fn into_stream_ptr_dyn(backing: Box<dyn StreamBacking>) -> *mut HewStream {
+    Box::into_raw(Box::new(HewStream {
+        inner: backing,
+        closed: false,
+    }))
+}
+
 /// Consume a `HewStream` pointer, extract its inner backing, and free the
 /// outer allocation.  Equivalent to `Box::from_raw` + field move, but marks
 /// the stream as closed first so `HewStream::drop` won't double-close.
@@ -382,27 +390,72 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
 
 // into_sink_ptr is defined in hew_cabi::sink and re-exported above.
 
-// ── Map adapter ───────────────────────────────────────────────────────────────
+// ── Stream transform infrastructure ────────────────────────────────────────────
+//
+// The four stream transform adapters (map/filter × string/bytes) share identical
+// struct layout, Send safety, Drop behaviour, and C ABI entry-point patterns.
+// Two macros eliminate this duplication while keeping the `next()` methods
+// explicit since their marshalling logic genuinely differs.
+
+/// Defines a map-style transform stream struct with Send, Drop, and trivial
+/// close/is_closed delegating to upstream.
+macro_rules! define_map_stream {
+    ($name:ident, $fn_type:ty) => {
+        #[derive(Debug)]
+        struct $name {
+            upstream: Box<dyn StreamBacking>,
+            fn_ptr: $fn_type,
+            env_ptr: *const c_void,
+        }
+
+        // SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
+        // environment that is only accessed from one thread at a time.
+        unsafe impl Send for $name {}
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // SAFETY: env_ptr is an RC'd block; decrement its reference count.
+                unsafe { hew_rc_drop_env(self.env_ptr) };
+            }
+        }
+    };
+}
+
+/// Defines a filter-style transform stream struct with a `done` flag,
+/// Send, Drop, and filter-aware close/is_closed.
+macro_rules! define_filter_stream {
+    ($name:ident, $fn_type:ty) => {
+        #[derive(Debug)]
+        struct $name {
+            upstream: Box<dyn StreamBacking>,
+            fn_ptr: $fn_type,
+            env_ptr: *const c_void,
+            done: bool,
+        }
+
+        // SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
+        // environment that is only accessed from one thread at a time.
+        unsafe impl Send for $name {}
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // SAFETY: env_ptr is an RC'd block; decrement its reference count.
+                unsafe { hew_rc_drop_env(self.env_ptr) };
+            }
+        }
+    };
+}
+
+// ── Map adapter (string) ──────────────────────────────────────────────────────
 
 /// Calling convention matching the Hew closure ABI: (env, string) → owned C string.
 type StringMapFn = unsafe extern "C" fn(*const c_void, *const c_char) -> *mut c_char;
 
-/// Wraps a stream and lazily applies a `fn(String) -> String` closure to every item.
-#[derive(Debug)]
-struct MapStringStream {
-    upstream: Box<dyn StreamBacking>,
-    fn_ptr: StringMapFn,
-    env_ptr: *const c_void,
-}
-
-// SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure environment
-// that is only accessed from one thread at a time (stream ownership is single-threaded).
-unsafe impl Send for MapStringStream {}
+define_map_stream!(MapStringStream, StringMapFn);
 
 impl StreamBacking for MapStringStream {
     fn next(&mut self) -> Option<Item> {
         let item = self.upstream.next()?;
-        // Build a null-terminated copy for the closure.
         let mut with_nul = item.clone();
         with_nul.push(0);
         // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
@@ -410,7 +463,6 @@ impl StreamBacking for MapStringStream {
         if result_ptr.is_null() {
             return Some(Vec::new());
         }
-        // Convert the malloc'd result string to an owned Vec<u8> (without the NUL).
         // SAFETY: result_ptr is a valid null-terminated C string from the closure.
         let result_cstr = unsafe { std::ffi::CStr::from_ptr(result_ptr) };
         let bytes = result_cstr.to_bytes().to_vec();
@@ -428,29 +480,12 @@ impl StreamBacking for MapStringStream {
     }
 }
 
-impl Drop for MapStringStream {
-    fn drop(&mut self) {
-        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
-        unsafe { hew_rc_drop_env(self.env_ptr) };
-    }
-}
-
-// ── Filter adapter ────────────────────────────────────────────────────────────
+// ── Filter adapter (string) ───────────────────────────────────────────────────
 
 /// Calling convention: (env, string) → i32 (non-zero means keep the item).
 type StringFilterFn = unsafe extern "C" fn(*const c_void, *const c_char) -> i32;
 
-/// Wraps a stream and lazily skips items for which the predicate returns false.
-#[derive(Debug)]
-struct FilterStringStream {
-    upstream: Box<dyn StreamBacking>,
-    fn_ptr: StringFilterFn,
-    env_ptr: *const c_void,
-    done: bool,
-}
-
-// SAFETY: same as MapStringStream.
-unsafe impl Send for FilterStringStream {}
+define_filter_stream!(FilterStringStream, StringFilterFn);
 
 impl StreamBacking for FilterStringStream {
     fn next(&mut self) -> Option<Item> {
@@ -479,13 +514,6 @@ impl StreamBacking for FilterStringStream {
     }
 }
 
-impl Drop for FilterStringStream {
-    fn drop(&mut self) {
-        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
-        unsafe { hew_rc_drop_env(self.env_ptr) };
-    }
-}
-
 // ── Map adapter (bytes) ───────────────────────────────────────────────────────
 
 /// Calling convention for bytes map closures.
@@ -495,29 +523,16 @@ impl Drop for FilterStringStream {
 /// and the caller owns the returned vec.
 type BytesMapFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> *mut HewVec;
 
-/// Wraps a stream and lazily applies a `fn(bytes) -> bytes` closure to every item.
-#[derive(Debug)]
-struct MapBytesStream {
-    upstream: Box<dyn StreamBacking>,
-    fn_ptr: BytesMapFn,
-    env_ptr: *const c_void,
-}
-
-// SAFETY: fn_ptr is a plain function pointer; env_ptr is an RC'd closure
-// environment that is only accessed from one thread at a time.
-unsafe impl Send for MapBytesStream {}
+define_map_stream!(MapBytesStream, BytesMapFn);
 
 impl StreamBacking for MapBytesStream {
     fn next(&mut self) -> Option<Item> {
         let item = self.upstream.next()?;
-        // Convert raw item bytes to a HewVec for the closure.
         // SAFETY: u8_to_hwvec allocates a fresh HewVec.
         let input_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
         // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
         let result_vec = unsafe { (self.fn_ptr)(self.env_ptr, input_vec) };
         // Free the input vec when the closure returned a new allocation.
-        // If the closure mutated and returned the same pointer, skip to
-        // avoid a double-free (result_vec will be freed below).
         if result_vec != input_vec {
             // SAFETY: input_vec was allocated by u8_to_hwvec and is no longer
             // referenced — the closure returned a different allocation.
@@ -528,7 +543,6 @@ impl StreamBacking for MapBytesStream {
         }
         // SAFETY: result_vec is a valid HewVec returned by the closure.
         let result_bytes = unsafe { hew_cabi::vec::hwvec_to_u8(result_vec) };
-        // Free the closure's returned vec.
         // SAFETY: result_vec was allocated by the closure.
         unsafe { hew_cabi::vec::hew_vec_free(result_vec) };
         Some(result_bytes)
@@ -543,13 +557,6 @@ impl StreamBacking for MapBytesStream {
     }
 }
 
-impl Drop for MapBytesStream {
-    fn drop(&mut self) {
-        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
-        unsafe { hew_rc_drop_env(self.env_ptr) };
-    }
-}
-
 // ── Filter adapter (bytes) ────────────────────────────────────────────────────
 
 /// Calling convention for bytes filter closures.
@@ -559,17 +566,7 @@ impl Drop for MapBytesStream {
 /// after the predicate returns.
 type BytesFilterFn = unsafe extern "C" fn(*const c_void, *mut HewVec) -> i32;
 
-/// Wraps a stream and lazily skips items for which the predicate returns false.
-#[derive(Debug)]
-struct FilterBytesStream {
-    upstream: Box<dyn StreamBacking>,
-    fn_ptr: BytesFilterFn,
-    env_ptr: *const c_void,
-    done: bool,
-}
-
-// SAFETY: same as MapBytesStream.
-unsafe impl Send for FilterBytesStream {}
+define_filter_stream!(FilterBytesStream, BytesFilterFn);
 
 impl StreamBacking for FilterBytesStream {
     fn next(&mut self) -> Option<Item> {
@@ -578,12 +575,10 @@ impl StreamBacking for FilterBytesStream {
                 return None;
             }
             let item = self.upstream.next()?;
-            // Build a temporary HewVec for the predicate.
             // SAFETY: u8_to_hwvec allocates a fresh HewVec.
             let tmp_vec = unsafe { hew_cabi::vec::u8_to_hwvec(&item) };
             // SAFETY: fn_ptr is a valid Hew closure, env_ptr is its environment.
             let keep = unsafe { (self.fn_ptr)(self.env_ptr, tmp_vec) };
-            // Free the temporary vec — the predicate borrows it, not owns it.
             // SAFETY: tmp_vec was allocated by u8_to_hwvec and the predicate
             // only reads it (returns i32 bool, not the vec).
             unsafe { hew_cabi::vec::hew_vec_free(tmp_vec) };
@@ -600,13 +595,6 @@ impl StreamBacking for FilterBytesStream {
 
     fn is_closed(&self) -> bool {
         self.done || self.upstream.is_closed()
-    }
-}
-
-impl Drop for FilterBytesStream {
-    fn drop(&mut self) {
-        // SAFETY: env_ptr is an RC'd block; decrement its reference count on drop.
-        unsafe { hew_rc_drop_env(self.env_ptr) };
     }
 }
 
@@ -1120,6 +1108,28 @@ pub unsafe extern "C" fn hew_stream_is_closed(stream: *mut HewStream) -> i32 {
     i32::from(s.inner.is_closed())
 }
 
+/// Common entry-point logic for stream transform C ABI functions.
+///
+/// Validates inputs, consumes the upstream stream, and invokes `build`
+/// to construct the platform-specific backing.
+///
+/// # Safety
+///
+/// - `stream` must be a valid `HewStream` pointer.
+/// - `fn_ptr` must be non-null.
+/// - `build` must produce a valid `StreamBacking` from the given upstream and pointers.
+unsafe fn stream_transform_entry(
+    stream: *mut HewStream,
+    fn_ptr: *const c_void,
+    env_ptr: *const c_void,
+    build: impl FnOnce(Box<dyn StreamBacking>, *const c_void, *const c_void) -> Box<dyn StreamBacking>,
+) -> *mut HewStream {
+    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
+    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
+    let upstream = unsafe { consume_stream_inner(stream) };
+    into_stream_ptr_dyn(build(upstream, fn_ptr, env_ptr))
+}
+
 /// Wrap a stream with a lazy map adapter.
 ///
 /// Every item yielded by `stream` is transformed by calling `fn_ptr(env_ptr, item)`.
@@ -1140,16 +1150,17 @@ pub unsafe extern "C" fn hew_stream_map_string(
     fn_ptr: *const c_void,
     env_ptr: *const c_void,
 ) -> *mut HewStream {
-    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
-    let fn_typed: StringMapFn = unsafe { std::mem::transmute(fn_ptr) };
-    into_stream_ptr(MapStringStream {
-        upstream,
-        fn_ptr: fn_typed,
-        env_ptr,
-    })
+    // SAFETY: caller satisfies all pointer contracts.
+    unsafe {
+        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
+            let fn_typed: StringMapFn = std::mem::transmute(fp);
+            Box::new(MapStringStream {
+                upstream,
+                fn_ptr: fn_typed,
+                env_ptr: ep,
+            })
+        })
+    }
 }
 
 /// Wrap a stream with a lazy filter adapter.
@@ -1170,17 +1181,18 @@ pub unsafe extern "C" fn hew_stream_filter_string(
     fn_ptr: *const c_void,
     env_ptr: *const c_void,
 ) -> *mut HewStream {
-    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
-    let fn_typed: StringFilterFn = unsafe { std::mem::transmute(fn_ptr) };
-    into_stream_ptr(FilterStringStream {
-        upstream,
-        fn_ptr: fn_typed,
-        env_ptr,
-        done: false,
-    })
+    // SAFETY: caller satisfies all pointer contracts.
+    unsafe {
+        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
+            let fn_typed: StringFilterFn = std::mem::transmute(fp);
+            Box::new(FilterStringStream {
+                upstream,
+                fn_ptr: fn_typed,
+                env_ptr: ep,
+                done: false,
+            })
+        })
+    }
 }
 
 /// Wrap a bytes stream with a lazy map adapter.
@@ -1202,16 +1214,17 @@ pub unsafe extern "C" fn hew_stream_map_bytes(
     fn_ptr: *const c_void,
     env_ptr: *const c_void,
 ) -> *mut HewStream {
-    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
-    let fn_typed: BytesMapFn = unsafe { std::mem::transmute(fn_ptr) };
-    into_stream_ptr(MapBytesStream {
-        upstream,
-        fn_ptr: fn_typed,
-        env_ptr,
-    })
+    // SAFETY: caller satisfies all pointer contracts.
+    unsafe {
+        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
+            let fn_typed: BytesMapFn = std::mem::transmute(fp);
+            Box::new(MapBytesStream {
+                upstream,
+                fn_ptr: fn_typed,
+                env_ptr: ep,
+            })
+        })
+    }
 }
 
 /// Wrap a bytes stream with a lazy filter adapter.
@@ -1232,17 +1245,18 @@ pub unsafe extern "C" fn hew_stream_filter_bytes(
     fn_ptr: *const c_void,
     env_ptr: *const c_void,
 ) -> *mut HewStream {
-    cabi_guard!(stream.is_null() || fn_ptr.is_null(), ptr::null_mut());
-    // SAFETY: stream is a valid HewStream pointer from the Hew runtime ABI.
-    let upstream = unsafe { consume_stream_inner(stream) };
-    // SAFETY: fn_ptr is a valid function pointer with the documented ABI.
-    let fn_typed: BytesFilterFn = unsafe { std::mem::transmute(fn_ptr) };
-    into_stream_ptr(FilterBytesStream {
-        upstream,
-        fn_ptr: fn_typed,
-        env_ptr,
-        done: false,
-    })
+    // SAFETY: caller satisfies all pointer contracts.
+    unsafe {
+        stream_transform_entry(stream, fn_ptr, env_ptr, |upstream, fp, ep| {
+            let fn_typed: BytesFilterFn = std::mem::transmute(fp);
+            Box::new(FilterBytesStream {
+                upstream,
+                fn_ptr: fn_typed,
+                env_ptr: ep,
+                done: false,
+            })
+        })
+    }
 }
 
 /// Wrap a stream with a take adapter that yields at most `n` items.

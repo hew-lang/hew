@@ -27,7 +27,10 @@ fmt_and_restage() {
 staged_into rs_files '*.rs'
 # shellcheck disable=SC2154 # rs_files set via nameref in staged_into
 if ((${#rs_files[@]} > 0)); then
-    cargo fmt --quiet 2>/dev/null
+    if ! cargo fmt --all --quiet; then
+        echo "cargo fmt failed — check Cargo.toml workspace resolution"
+        exit 1
+    fi
     git add "${rs_files[@]}"
 
     # Block commit if clippy finds warnings — matches CI enforcement.

@@ -828,6 +828,39 @@ private:
   // recv_int / try_recv_int call sites to avoid stack growth in loops.
   mlir::Value channelIntOutValidAlloca; // LLVM ptr to i32, nullptr when not active
 
+  /// RAII guard that saves/restores function generation state.
+  /// On construction: saves currentFunction, returnFlag, returnSlot,
+  /// channelIntOutValidAlloca; sets currentFunction to newFunc and
+  /// resets the rest to nullptr.
+  /// On destruction: restores all saved values.
+  struct FunctionGenerationScope {
+    MLIRGen &gen;
+    mlir::func::FuncOp prevFunction;
+    mlir::Value prevReturnFlag;
+    mlir::Value prevReturnSlot;
+    mlir::Value prevChannelIntOutValidAlloca;
+
+    FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
+        : gen(g), prevFunction(g.currentFunction), prevReturnFlag(g.returnFlag),
+          prevReturnSlot(g.returnSlot),
+          prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
+      gen.currentFunction = newFunc;
+      gen.returnFlag = nullptr;
+      gen.returnSlot = nullptr;
+      gen.channelIntOutValidAlloca = nullptr;
+    }
+
+    ~FunctionGenerationScope() {
+      gen.currentFunction = prevFunction;
+      gen.returnFlag = prevReturnFlag;
+      gen.returnSlot = prevReturnSlot;
+      gen.channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
+    }
+
+    FunctionGenerationScope(const FunctionGenerationScope &) = delete;
+    FunctionGenerationScope &operator=(const FunctionGenerationScope &) = delete;
+  };
+
   // ── Try/catch context ────────────────────────────────────────
   // When non-null, PostfixTry (?) jumps here instead of func.return.
   mlir::Block *tryErrorDest = nullptr;

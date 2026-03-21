@@ -296,14 +296,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
 
         SymbolTableScopeT varScope(symbolTable);
         MutableTableScopeT mutScope(mutableVars);
-        auto prevFunction = currentFunction;
-        currentFunction = bodyFnOp;
-        auto prevReturnFlag = returnFlag;
-        auto prevReturnSlot = returnSlot;
-        auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
-        returnFlag = nullptr;
-        returnSlot = nullptr;
-        channelIntOutValidAlloca = nullptr;
+        FunctionGenerationScope funcScope(*this, bodyFnOp);
 
         auto argsPtr = entryBlock->getArgument(0);
         auto genCtxArg = entryBlock->getArgument(1);
@@ -350,10 +343,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
           mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
         currentGenCtx = prevGenCtx;
-        currentFunction = prevFunction;
-        returnFlag = prevReturnFlag;
-        returnSlot = prevReturnSlot;
-        channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
         builder.restoreInsertionPoint(savedIP);
       }
 
@@ -368,8 +357,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto *entryBlock = initFuncOp.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
 
-        auto prevFunction = currentFunction;
-        currentFunction = initFuncOp;
+        FunctionGenerationScope funcScope(*this, initFuncOp);
 
         auto selfPtr = entryBlock->getArgument(0);
 
@@ -415,7 +403,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         // Emit gen-next → null check → wrap/cleanup → return
         emitGenNextResult(ctx, selfPtr, stateType, genFrameIdx, yieldType, wrapperType, location);
 
-        currentFunction = prevFunction;
         builder.restoreInsertionPoint(savedIP);
       }
 
@@ -430,8 +417,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         auto *entryBlock = nextFuncOp.addEntryBlock();
         builder.setInsertionPointToStart(entryBlock);
 
-        auto prevFunction = currentFunction;
-        currentFunction = nextFuncOp;
+        FunctionGenerationScope funcScope(*this, nextFuncOp);
 
         auto selfPtr = entryBlock->getArgument(0);
 
@@ -444,7 +430,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
         // Emit gen-next → null check → wrap/cleanup → return
         emitGenNextResult(ctx, selfPtr, stateType, genFrameIdx, yieldType, wrapperType, location);
 
-        currentFunction = prevFunction;
         builder.restoreInsertionPoint(savedIP);
       }
 
@@ -478,15 +463,8 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     SymbolTableScopeT varScope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
 
-    auto prevFunction = currentFunction;
-    currentFunction = funcOp;
-    auto prevReturnFlag = returnFlag;
-    auto prevReturnSlot = returnSlot;
-    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
+    FunctionGenerationScope funcScope(*this, funcOp);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
-    returnFlag = nullptr;
-    returnSlot = nullptr;
-    channelIntOutValidAlloca = nullptr;
     funcLevelDropScopeBase = dropScopes.size();
 
     // Bind actor state pointer as internal variable for field access
@@ -561,10 +539,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
       }
     }
 
-    currentFunction = prevFunction;
-    returnFlag = prevReturnFlag;
-    returnSlot = prevReturnSlot;
-    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
     builder.restoreInsertionPoint(savedIP);
   }
@@ -584,14 +558,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     SymbolTableScopeT varScope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
 
-    auto prevFunction = currentFunction;
-    currentFunction = initFuncOp;
-    auto prevReturnFlag = returnFlag;
-    auto prevReturnSlot = returnSlot;
-    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
-    returnFlag = nullptr;
-    returnSlot = nullptr;
-    channelIntOutValidAlloca = nullptr;
+    FunctionGenerationScope funcScope(*this, initFuncOp);
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
@@ -632,10 +599,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     if (!hasRealTerminator(builder.getInsertionBlock()))
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
-    currentFunction = prevFunction;
-    returnFlag = prevReturnFlag;
-    returnSlot = prevReturnSlot;
-    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -654,14 +617,7 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     SymbolTableScopeT varScope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
 
-    auto prevFunction = currentFunction;
-    currentFunction = terminateFuncOp;
-    auto prevReturnFlag = returnFlag;
-    auto prevReturnSlot = returnSlot;
-    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
-    returnFlag = nullptr;
-    returnSlot = nullptr;
-    channelIntOutValidAlloca = nullptr;
+    FunctionGenerationScope funcScope(*this, terminateFuncOp);
 
     // Bind actor state pointer as internal variable for field access
     auto selfPtr = entryBlock->getArgument(0);
@@ -674,10 +630,6 @@ void MLIRGen::generateActorDecl(const ast::ActorDecl &decl) {
     if (!hasRealTerminator(builder.getInsertionBlock()))
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
-    currentFunction = prevFunction;
-    returnFlag = prevReturnFlag;
-    returnSlot = prevReturnSlot;
-    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     builder.restoreInsertionPoint(savedIP);
   }
 
@@ -1212,15 +1164,8 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
   {
     SymbolTableScopeT varScope(symbolTable);
     MutableTableScopeT mutScope(mutableVars);
-    auto prevFunction = currentFunction;
-    currentFunction = recvFuncOp;
-    auto prevReturnFlag = returnFlag;
-    auto prevReturnSlot = returnSlot;
-    auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
+    FunctionGenerationScope funcScope(*this, recvFuncOp);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
-    returnFlag = nullptr;
-    returnSlot = nullptr;
-    channelIntOutValidAlloca = nullptr;
     funcLevelDropScopeBase = dropScopes.size();
 
     // Bind actor state pointer as internal variable for field access
@@ -1256,10 +1201,6 @@ mlir::Value MLIRGen::generateSpawnLambdaActorExpr(const ast::ExprSpawnLambdaActo
     if (!hasRealTerminator(builder.getInsertionBlock()))
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{});
 
-    currentFunction = prevFunction;
-    returnFlag = prevReturnFlag;
-    returnSlot = prevReturnSlot;
-    channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
   }
   std::string dispatchName = actorName + "_dispatch";

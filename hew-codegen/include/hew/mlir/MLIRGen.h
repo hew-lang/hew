@@ -339,6 +339,11 @@ private:
   /// the returnSlot for early-return support inside SCF regions.
   void initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes, mlir::Location location);
 
+  /// Lazily create returnSlot for aggregate types (structs, tuples, arrays)
+  /// when an early return from a nested SCF region actually needs it.
+  /// Creates the alloca at the function entry block to ensure visibility.
+  void ensureReturnSlot(mlir::Location location);
+
   /// Apply a compound assignment arithmetic operation to (lhs, rhs).
   /// Returns the result value, or nullptr on unsupported operator.
   mlir::Value emitCompoundArithOp(ast::CompoundAssignOp op, mlir::Value lhs, mlir::Value rhs,
@@ -742,6 +747,9 @@ private:
   // tracking doesn't work (variables declared in an unsafe block at depth 1
   // can appear in if/match arms at depth 2+).
   std::set<std::string> funcLevelReturnVarNames;
+  // Variables referenced ONLY by explicit return statements (not trailing
+  // expressions). Used for path-specific drops when returnSlotIsLazy.
+  std::set<std::string> funcLevelEarlyReturnVarNames;
   // dropScopes.size() at the point where the current function body starts.
   size_t funcLevelDropScopeBase = 0;
   /// Pending parameter drops: populated before generateBlock, drained at
@@ -839,6 +847,12 @@ private:
   mlir::Value returnFlag; // memref<i1>, nullptr when not active
   // Per-function slot for storing the return value.
   mlir::Value returnSlot; // memref<LLVM storage of ReturnType>, nullptr when not active
+  // True when returnSlot was lazily created by ensureReturnSlot (aggregate types).
+  // Deferred drops only apply to lazily-created slots.
+  bool returnSlotIsLazy = false;
+  // Flag set ONLY by generateReturnStmt (not by trailing expressions).
+  // Used by popDropScope to distinguish early return from normal flow.
+  mlir::Value earlyReturnFlag; // memref<i1>, nullptr when not active
 
   // ── Channel recv int out-valid alloca ────────────────────────
   // Hoisted to function entry block and reused across all
@@ -855,15 +869,20 @@ private:
     mlir::func::FuncOp prevFunction;
     mlir::Value prevReturnFlag;
     mlir::Value prevReturnSlot;
+    bool prevReturnSlotIsLazy;
+    mlir::Value prevEarlyReturnFlag;
     mlir::Value prevChannelIntOutValidAlloca;
 
     FunctionGenerationScope(MLIRGen &g, mlir::func::FuncOp newFunc)
         : gen(g), prevFunction(g.currentFunction), prevReturnFlag(g.returnFlag),
-          prevReturnSlot(g.returnSlot),
+          prevReturnSlot(g.returnSlot), prevReturnSlotIsLazy(g.returnSlotIsLazy),
+          prevEarlyReturnFlag(g.earlyReturnFlag),
           prevChannelIntOutValidAlloca(g.channelIntOutValidAlloca) {
       gen.currentFunction = newFunc;
       gen.returnFlag = nullptr;
       gen.returnSlot = nullptr;
+      gen.returnSlotIsLazy = false;
+      gen.earlyReturnFlag = nullptr;
       gen.channelIntOutValidAlloca = nullptr;
     }
 
@@ -871,6 +890,8 @@ private:
       gen.currentFunction = prevFunction;
       gen.returnFlag = prevReturnFlag;
       gen.returnSlot = prevReturnSlot;
+      gen.returnSlotIsLazy = prevReturnSlotIsLazy;
+      gen.earlyReturnFlag = prevEarlyReturnFlag;
       gen.channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     }
 

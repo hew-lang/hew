@@ -121,6 +121,12 @@ void MLIRGen::initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes,
   auto falseVal = createIntConstant(builder, location, i1Type, 0);
   mlir::memref::StoreOp::create(builder, location, falseVal, returnFlag);
 
+  // earlyReturnFlag: set ONLY by generateReturnStmt, not by trailing
+  // expressions.  Used to distinguish early return from normal flow
+  // in path-specific drop logic.
+  earlyReturnFlag = mlir::memref::AllocaOp::create(builder, location, flagMemrefType);
+  mlir::memref::StoreOp::create(builder, location, falseVal, earlyReturnFlag);
+
   if (!resultTypes.empty() && !mlir::isa<mlir::LLVM::LLVMStructType>(resultTypes[0]) &&
       !mlir::isa<mlir::LLVM::LLVMArrayType>(resultTypes[0]) &&
       !mlir::isa<hew::HewTupleType>(resultTypes[0]) &&
@@ -132,6 +138,28 @@ void MLIRGen::initReturnFlagAndSlot(mlir::ArrayRef<mlir::Type> resultTypes,
     if (storageType != resultTypes[0])
       slotSemanticTypes[returnSlot] = resultTypes[0];
   }
+}
+
+void MLIRGen::ensureReturnSlot(mlir::Location location) {
+  if (returnSlot)
+    return; // Already created (simple types create it eagerly).
+  if (!currentFunction || currentFunction.getResultTypes().empty())
+    return;
+
+  auto resultType = currentFunction.getResultTypes()[0];
+
+  // For aggregate types (structs, tuples, arrays, trait objects), create
+  // the returnSlot lazily at the function entry block. This avoids enabling
+  // return guards for functions that don't need them (which would change
+  // how body values are produced), while still supporting early returns from
+  // nested SCF regions.
+  mlir::OpBuilder::InsertionGuard guard(builder);
+  auto &entryBlock = currentFunction.getBody().front();
+  builder.setInsertionPointToStart(&entryBlock);
+
+  auto slotMemrefType = mlir::MemRefType::get({}, resultType);
+  returnSlot = mlir::memref::AllocaOp::create(builder, location, slotMemrefType);
+  returnSlotIsLazy = true;
 }
 
 // ============================================================================
@@ -879,6 +907,11 @@ mlir::Value MLIRGen::createHoistedAlloca(mlir::Type storageType, mlir::Type sema
     if (mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) || isPointerLikeType(semanticType)) {
       auto zero = createDefaultValue(builder, builder.getUnknownLoc(), storageType);
       mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
+    } else if (mlir::isa<mlir::LLVM::LLVMStructType>(storageType)) {
+      // Struct types get zeroinitializer (all pointer fields null) so that
+      // unconditional drops on zero-initialized allocas are safe.
+      auto zero = mlir::LLVM::ZeroOp::create(builder, builder.getUnknownLoc(), storageType);
+      mlir::memref::StoreOp::create(builder, builder.getUnknownLoc(), zero, alloca);
     }
     builder.restoreInsertionPoint(savedIP);
   } else {
@@ -905,6 +938,10 @@ void MLIRGen::declareVariable(llvm::StringRef name, mlir::Value value) {
                       mlir::isa<mlir::FloatType>(storageType) ||
                       mlir::isa<mlir::LLVM::LLVMPointerType>(storageType) ||
                       mlir::isa<mlir::IndexType>(storageType) || isPointerLikeType(semanticType);
+    // Struct types only need alloca promotion when return guards are active
+    // (returnSlotIsLazy), to handle let-bindings inside guarded scf.if regions.
+    if (returnSlotIsLazy && mlir::isa<mlir::LLVM::LLVMStructType>(storageType))
+      canPromote = true;
     if (canPromote) {
       auto alloca = createHoistedAlloca(storageType, semanticType);
       // Store the value at the current insertion point
@@ -3600,6 +3637,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   currentFunction = funcOp;
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
+  auto prevReturnSlotIsLazy = returnSlotIsLazy;
+  auto prevEarlyReturnFlag = earlyReturnFlag;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
@@ -3607,6 +3646,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
   channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
   funcLevelDropScopeBase = dropScopes.size();
@@ -3664,6 +3705,8 @@ void MLIRGen::generateTraitDefaultMethod(const ast::TraitMethod &method,
 
   returnFlag = prevReturnFlag;
   returnSlot = prevReturnSlot;
+  returnSlotIsLazy = prevReturnSlotIsLazy;
+  earlyReturnFlag = prevEarlyReturnFlag;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
@@ -3749,6 +3792,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
 
   auto prevReturnFlag = returnFlag;
   auto prevReturnSlot = returnSlot;
+  auto prevReturnSlotIsLazy = returnSlotIsLazy;
+  auto prevEarlyReturnFlag = earlyReturnFlag;
   auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
   auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
   auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
@@ -3756,6 +3801,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   auto prevFnDefers = std::move(currentFnDefers);
   returnFlag = nullptr;
   returnSlot = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
   channelIntOutValidAlloca = nullptr;
   funcLevelDropExcludeVars.clear();
   currentFnDefers.clear();
@@ -3820,7 +3867,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       }
     }
   };
-  collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf](
+  collectExcludeVarsFromBlock = [&collectExcludeVars, &collectExcludeVarsFromStmtIf,
+                                 &collectExcludeVarsFromBlock](
       const ast::Block &blk, ExcludeSet &out, size_t depth, bool producesValue) {
     if (blk.trailing_expr) {
       collectExcludeVars(blk.trailing_expr->value, out, depth);
@@ -3842,11 +3890,47 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         }
       }
     }
-    // Scan all let/var bindings whose RHS is a match/if/block expression.
-    // The arm/branch results are ownership-transferred into the binding,
-    // so the branch-local variables producing those results must be
-    // excluded from drops at their enclosing block scope exit.
+    // Scan ALL statements for return expressions and let/var bindings
+    // that transfer ownership. Return statements can appear anywhere in
+    // the block (not just at the end), and each one's referenced variables
+    // must be excluded from function-level drops. We recurse into nested
+    // statement forms (if/for/while/match) to catch returns in inner scopes.
     for (const auto &stmt : blk.stmts) {
+      if (auto *retStmt = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
+        if (retStmt->value)
+          collectExcludeVars(retStmt->value->value, out, depth);
+        continue;
+      }
+      // Recurse into nested control flow to find return statements.
+      if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+        collectExcludeVarsFromBlock(ifStmt->then_block, out, depth + 1, producesValue);
+        if (ifStmt->else_block) {
+          if (ifStmt->else_block->block)
+            collectExcludeVarsFromBlock(*ifStmt->else_block->block, out, depth + 1, producesValue);
+          if (ifStmt->else_block->if_stmt) {
+            const auto &nested = ifStmt->else_block->if_stmt->value;
+            if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+              collectExcludeVarsFromStmtIf(*nestedIf, out, depth, producesValue);
+          }
+        }
+        continue;
+      }
+      if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+        collectExcludeVarsFromBlock(forStmt->body, out, depth + 1, producesValue);
+        continue;
+      }
+      if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+        collectExcludeVarsFromBlock(whileStmt->body, out, depth + 1, producesValue);
+        continue;
+      }
+      if (auto *matchStmt = std::get_if<ast::StmtMatch>(&stmt->value.kind)) {
+        for (const auto &arm : matchStmt->arms) {
+          if (arm.body)
+            collectExcludeVars(arm.body->value, out, depth);
+        }
+        continue;
+      }
+      // Scan let/var bindings whose RHS is a match/if/block expression.
       const ast::Expr *rhs = nullptr;
       if (auto *letStmt = std::get_if<ast::StmtLet>(&stmt->value.kind)) {
         if (letStmt->value)
@@ -3946,14 +4030,65 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   for (const auto &[name, depth] : funcLevelDropExcludeVars)
     funcLevelReturnVarNames.insert(name);
 
+  // Build a separate set of vars referenced ONLY by explicit return
+  // statements. Used for path-specific drops when returnSlotIsLazy:
+  // the early-return path excludes these vars, the normal path does not.
+  funcLevelEarlyReturnVarNames.clear();
+  bool hasNestedReturn = false;
+  std::function<void(const ast::Block &)> scanReturns;
+  std::function<void(const ast::StmtIf &)> scanReturnsIf;
+  scanReturnsIf = [&scanReturns, &scanReturnsIf](const ast::StmtIf &ifStmt) {
+    scanReturns(ifStmt.then_block);
+    if (ifStmt.else_block) {
+      if (ifStmt.else_block->block)
+        scanReturns(*ifStmt.else_block->block);
+      if (ifStmt.else_block->if_stmt) {
+        auto &nested = ifStmt.else_block->if_stmt->value;
+        if (auto *nestedIf = std::get_if<ast::StmtIf>(&nested.kind))
+          scanReturnsIf(*nestedIf);
+      }
+    }
+  };
+  scanReturns = [&scanReturns, &scanReturnsIf, &collectExcludeVars,
+                 &hasNestedReturn, this](const ast::Block &blk) {
+    for (const auto &stmt : blk.stmts) {
+      if (auto *retStmt = std::get_if<ast::StmtReturn>(&stmt->value.kind)) {
+        hasNestedReturn = true;
+        if (retStmt->value) {
+          ExcludeSet tmp;
+          collectExcludeVars(retStmt->value->value, tmp, 0);
+          for (const auto &[name, d] : tmp)
+            funcLevelEarlyReturnVarNames.insert(name);
+        }
+      } else if (auto *ifStmt = std::get_if<ast::StmtIf>(&stmt->value.kind)) {
+        scanReturnsIf(*ifStmt);
+      } else if (auto *forStmt = std::get_if<ast::StmtFor>(&stmt->value.kind)) {
+        scanReturns(forStmt->body);
+      } else if (auto *whileStmt = std::get_if<ast::StmtWhile>(&stmt->value.kind)) {
+        scanReturns(whileStmt->body);
+      }
+    }
+  };
+  scanReturns(fn.body);
+
   // NOTE: param drops are not yet registered here.  Adding them requires
   // null-after-move tracking to avoid double-frees when a param is consumed
   // by match destructuring, callee move, or return.  See RAII Phase 1 plan.
+
+  // If the pre-scan found return statements in nested scopes (if/for/while)
+  // and the function returns an aggregate type that didn't get an eager
+  // returnSlot, create the slot now so useReturnGuards activates in
+  // generateBlock. Without this, statements after the early return would
+  // execute unconditionally (creating and leaking temporaries).
+  if (hasNestedReturn && returnFlag && !returnSlot) {
+    ensureReturnSlot(location);
+  }
 
   // Generate the function body
   mlir::Value bodyValue = generateBlock(fn.body);
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
+  funcLevelEarlyReturnVarNames.clear();
 
   // Infer return type from body if not explicitly annotated (skip for
   // implicit main — we handle its return separately below).
@@ -4005,14 +4140,15 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
     }
 
     if (returnFlag && returnSlot && !resultTypes.empty()) {
-      // Select between returnSlot (early return) and bodyValue (normal flow)
+      // Select between returnSlot (early return) and bodyValue (normal flow).
+      // Drops were already emitted path-specifically in popDropScope.
       auto flagVal =
           mlir::memref::LoadOp::create(builder, location, returnFlag, mlir::ValueRange{});
 
       auto selectOp = mlir::scf::IfOp::create(builder, location, resultTypes[0], flagVal,
                                               /*withElseRegion=*/true);
 
-      // Then (early return was taken): load from return slot
+      // Then (early return was taken): yield slot value
       builder.setInsertionPointToStart(&selectOp.getThenRegion().front());
       auto slotVal = mlir::memref::LoadOp::create(builder, location, returnSlot, mlir::ValueRange{})
                          .getResult();
@@ -4020,7 +4156,7 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
         slotVal = coerceType(slotVal, resultTypes[0], location);
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{slotVal});
 
-      // Else (normal flow): use body value or default
+      // Else (normal flow): yield body value
       builder.setInsertionPointToStart(&selectOp.getElseRegion().front());
       mlir::Value normalValue = bodyValue;
       if (!normalValue) {
@@ -4030,11 +4166,6 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
       mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{normalValue});
 
       builder.setInsertionPointAfter(selectOp);
-      // Emit drops before return (excluding the returned variables)
-      if (!trailingVarNames.empty())
-        emitDropsExcept(trailingVarNames);
-      else
-        emitAllDrops();
       mlir::func::ReturnOp::create(builder, location, mlir::ValueRange{selectOp.getResult(0)});
     } else if (bodyValue && !resultTypes.empty()) {
       // Emit drops before return (excluding the returned variables)
@@ -4061,6 +4192,8 @@ mlir::func::FuncOp MLIRGen::generateFunction(const ast::FnDecl &fn,
   // Restore previous function state
   returnFlag = prevReturnFlag;
   returnSlot = prevReturnSlot;
+  returnSlotIsLazy = prevReturnSlotIsLazy;
+  earlyReturnFlag = prevEarlyReturnFlag;
   channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
   funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
   funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
@@ -4138,6 +4271,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
 
     auto prevReturnFlag = returnFlag;
     auto prevReturnSlot = returnSlot;
+    auto prevReturnSlotIsLazy = returnSlotIsLazy;
+    auto prevEarlyReturnFlag = earlyReturnFlag;
     auto prevChannelIntOutValidAlloca = channelIntOutValidAlloca;
     auto prevFuncLevelDropExcludeVars = std::move(funcLevelDropExcludeVars);
     auto prevFuncLevelDropScopeBase = funcLevelDropScopeBase;
@@ -4145,6 +4280,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     auto prevFnDefers = std::move(currentFnDefers);
     returnFlag = nullptr;
     returnSlot = nullptr;
+    returnSlotIsLazy = false;
+    earlyReturnFlag = nullptr;
     channelIntOutValidAlloca = nullptr;
     funcLevelDropExcludeVars.clear();
     funcLevelDropScopeBase = dropScopes.size();
@@ -4192,6 +4329,8 @@ void MLIRGen::generateGeneratorFunction(const ast::FnDecl &fn) {
     currentCoroPromisePtr = prevCoroPromisePtr;
     returnFlag = prevReturnFlag;
     returnSlot = prevReturnSlot;
+    returnSlotIsLazy = prevReturnSlotIsLazy;
+    earlyReturnFlag = prevEarlyReturnFlag;
     channelIntOutValidAlloca = prevChannelIntOutValidAlloca;
     funcLevelDropExcludeVars = std::move(prevFuncLevelDropExcludeVars);
     funcLevelDropScopeBase = prevFuncLevelDropScopeBase;
@@ -4454,6 +4593,42 @@ void MLIRGen::popDropScope() {
       // still alive (the DropScopeGuard destructor runs before the
       // SymbolTableScope destructor in generateBlock).
       //
+      // When returnSlot was lazily created (aggregate return types with
+      // nested returns), emit PATH-SPECIFIC drops using an scf.if on
+      // earlyReturnFlag. The early-return path excludes return-expression
+      // vars; the normal-flow path excludes trailing-expression vars.
+      if (returnSlotIsLazy && !hasRealTerminator(block)) {
+        emitDeferredCalls();
+        auto &scope = dropScopes.back();
+        auto loc = builder.getUnknownLoc();
+        auto flagVal =
+            mlir::memref::LoadOp::create(builder, loc, earlyReturnFlag, mlir::ValueRange{});
+        auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, flagVal,
+                                             /*withElseRegion=*/true);
+
+        // Then (early return): drop everything except return-expr vars.
+        builder.setInsertionPointToStart(&guard.getThenRegion().front());
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+          if (!funcLevelEarlyReturnVarNames.count(it->varName))
+            emitDropEntry(*it);
+        }
+
+        // Else (normal flow): drop everything except trailing-expr vars.
+        builder.setInsertionPointToStart(&guard.getElseRegion().front());
+        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+          if (it->closeAlloca) {
+            if (!funcLevelReturnVarNames.count(it->varName))
+              emitDropEntry(*it);
+          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
+            emitDropEntry(*it);
+          }
+        }
+
+        builder.setInsertionPointAfter(guard);
+        dropScopes.pop_back();
+        return;
+      }
+      //
       // Drops are emitted UNCONDITIONALLY (no !returnFlag guard).  Early
       // returns inside SCF regions only store to returnSlot / set returnFlag
       // — they do NOT emit their own drops.  The trailing-expression path
@@ -4669,6 +4844,35 @@ void MLIRGen::emitDropEntry(const DropEntry &entry) {
     }
     builder.setInsertionPointAfter(guard);
     return;
+  }
+  // Null-guard for user-defined drops on struct types: extract the first
+  // pointer field and skip the drop if it's null.  For scalar-only structs
+  // (no pointer fields), compare the entire struct with zeroinitializer.
+  // This handles zero-initialized struct allocas (variable never assigned
+  // because the code path was skipped by return guards).
+  if (entry.isUserDrop) {
+    if (auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(dropVal.getType())) {
+      auto bodyTypes = structTy.getBody();
+      bool guardEmitted = false;
+      // First try: find a pointer field to null-check.
+      for (unsigned i = 0; i < bodyTypes.size(); ++i) {
+        if (mlir::isa<mlir::LLVM::LLVMPointerType>(bodyTypes[i])) {
+          auto fieldVal = mlir::LLVM::ExtractValueOp::create(builder, loc, bodyTypes[i], dropVal, i);
+          auto nullPtr = mlir::LLVM::ZeroOp::create(builder, loc, ptrType);
+          auto isNotNull = mlir::LLVM::ICmpOp::create(
+              builder, loc, builder.getI1Type(), mlir::LLVM::ICmpPredicate::ne, fieldVal, nullPtr);
+          auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, isNotNull,
+                                               /*withElseRegion=*/false);
+          builder.setInsertionPointToStart(&guard.getThenRegion().front());
+          hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
+          builder.setInsertionPointAfter(guard);
+          guardEmitted = true;
+          break;
+        }
+      }
+      if (guardEmitted)
+        return;
+    }
   }
    hew::DropOp::create(builder, loc, dropVal, entry.dropFuncName, entry.isUserDrop);
   if (entry.isUserDrop)

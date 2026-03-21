@@ -5014,9 +5014,11 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   // NOT dropped before the return op.
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  auto savedEarlyReturnVarNames = std::move(funcLevelEarlyReturnVarNames);
   auto savedDropScopeBase = funcLevelDropScopeBase;
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
+  funcLevelEarlyReturnVarNames.clear();
   funcLevelDropScopeBase = dropScopes.size();
   if (lam.body) {
     // Mutually recursive helpers: expr ↔ block ↔ stmtIf (depth-aware)
@@ -5139,6 +5141,7 @@ mlir::Value MLIRGen::generateLambdaExpr(const ast::ExprLambda &lam) {
   }
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
+  funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames);
   funcLevelDropScopeBase = savedDropScopeBase;
 
   if (!returnType && bodyVal && bodyVal.getType()) {
@@ -5232,7 +5235,11 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
   currentTaskScopePtr = taskScopePtr;
 
   auto savedReturnFlag = returnFlag;
+  auto savedReturnSlotIsLazy = returnSlotIsLazy;
+  auto savedEarlyReturnFlag = earlyReturnFlag;
   returnFlag = nullptr;
+  returnSlotIsLazy = false;
+  earlyReturnFlag = nullptr;
 
   // Manually create scopes instead of calling generateBlock, so that
   // scope.join/destroy happen BEFORE the block-level drops fire.
@@ -5319,6 +5326,8 @@ mlir::Value MLIRGen::generateScopeExpr(const ast::ExprScope &se) {
   popDropScope();
 
   returnFlag = savedReturnFlag;
+  returnSlotIsLazy = savedReturnSlotIsLazy;
+  earlyReturnFlag = savedEarlyReturnFlag;
 
   return bodyResult;
 }
@@ -5415,9 +5424,11 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   auto savedDropScopeBase = funcLevelDropScopeBase;
   auto savedExcludeVars = std::move(funcLevelDropExcludeVars);
   auto savedReturnVarNames = std::move(funcLevelReturnVarNames);
+  auto savedEarlyReturnVarNames2 = std::move(funcLevelEarlyReturnVarNames);
   funcLevelDropScopeBase = dropScopes.size();
   funcLevelDropExcludeVars.clear();
   funcLevelReturnVarNames.clear();
+  funcLevelEarlyReturnVarNames.clear();
 
   SymbolTableScopeT taskVarScope(symbolTable);
   MutableTableScopeT taskMutScope(mutableVars);
@@ -5453,6 +5464,7 @@ mlir::Value MLIRGen::generateScopeLaunchImpl(const ast::Block &block) {
   funcLevelDropScopeBase = savedDropScopeBase;
   funcLevelDropExcludeVars = std::move(savedExcludeVars);
   funcLevelReturnVarNames = std::move(savedReturnVarNames);
+  funcLevelEarlyReturnVarNames = std::move(savedEarlyReturnVarNames2);
 
   currentScopePtr = savedScopePtr;
   currentTaskScopePtr = savedTaskScopePtr;

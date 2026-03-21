@@ -587,6 +587,10 @@ struct ActorSpawnConfig {
 /// - `config.state` must be a deep-copied allocation (or null for zero-sized state).
 /// - `config.mailbox` must be a valid mailbox pointer (already configured).
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
+)]
 unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // SAFETY: Caller already deep-copied state; make a second copy for restart.
     let init_state = unsafe { deep_copy_state(config.state, config.state_size) };
@@ -638,6 +642,10 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
 ///
 /// Same requirements as [`spawn_actor_internal`] but for WASM targets.
 #[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "config is a lightweight aggregate of Copy fields; consuming it reads clearly at call sites"
+)]
 unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
     // SAFETY: Caller already deep-copied state; make a second copy for restart.
     let init_state = unsafe { deep_copy_state(config.state, config.state_size) };

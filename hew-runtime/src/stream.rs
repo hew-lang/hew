@@ -398,7 +398,7 @@ unsafe fn consume_stream_inner(stream: *mut HewStream) -> Box<dyn StreamBacking>
 // explicit since their marshalling logic genuinely differs.
 
 /// Defines a map-style transform stream struct with Send, Drop, and trivial
-/// close/is_closed delegating to upstream.
+/// `close`/`is_closed` delegating to upstream.
 macro_rules! define_map_stream {
     ($name:ident, $fn_type:ty) => {
         #[derive(Debug)]
@@ -422,7 +422,7 @@ macro_rules! define_map_stream {
 }
 
 /// Defines a filter-style transform stream struct with a `done` flag,
-/// Send, Drop, and filter-aware close/is_closed.
+/// Send, Drop, and filter-aware `close`/`is_closed`.
 macro_rules! define_filter_stream {
     ($name:ident, $fn_type:ty) => {
         #[derive(Debug)]

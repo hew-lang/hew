@@ -3,7 +3,9 @@
 //! The Hew runtime recovers from poisoned locks rather than panicking,
 //! because a panicked thread should not cascade-crash independent actors.
 
-use std::sync::{Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Condvar, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use std::time::Duration;
 
 /// Extension trait for [`Mutex`] that recovers from poisoned locks.
@@ -13,7 +15,7 @@ pub(crate) trait MutexExt<T> {
 
 impl<T> MutexExt<T> for Mutex<T> {
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
-        self.lock().unwrap_or_else(|e| e.into_inner())
+        self.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -25,11 +27,11 @@ pub(crate) trait RwLockExt<T> {
 
 impl<T> RwLockExt<T> for RwLock<T> {
     fn read_or_recover(&self) -> RwLockReadGuard<'_, T> {
-        self.read().unwrap_or_else(|e| e.into_inner())
+        self.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn write_or_recover(&self) -> RwLockWriteGuard<'_, T> {
-        self.write().unwrap_or_else(|e| e.into_inner())
+        self.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -46,7 +48,7 @@ pub(crate) trait CondvarExt {
 
 impl CondvarExt for Condvar {
     fn wait_or_recover<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-        self.wait(guard).unwrap_or_else(|e| e.into_inner())
+        self.wait(guard).unwrap_or_else(PoisonError::into_inner)
     }
 
     fn wait_timeout_or_recover<'a, T>(
@@ -55,6 +57,6 @@ impl CondvarExt for Condvar {
         dur: Duration,
     ) -> (MutexGuard<'a, T>, std::sync::WaitTimeoutResult) {
         self.wait_timeout(guard, dur)
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }

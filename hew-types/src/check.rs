@@ -3425,7 +3425,7 @@ impl Checker {
                     message: "unreachable code".to_string(),
                     notes: vec![],
                     suggestions: vec![
-                        "remove this code or restructure the control flow".to_string(),
+                        "remove this code or restructure the control flow".to_string()
                     ],
                 });
                 // Still type-check the remaining statements for error coverage,
@@ -3496,7 +3496,7 @@ impl Checker {
                     message: "unreachable code".to_string(),
                     notes: vec![],
                     suggestions: vec![
-                        "remove this code or restructure the control flow".to_string(),
+                        "remove this code or restructure the control flow".to_string()
                     ],
                 });
             }
@@ -3821,7 +3821,7 @@ impl Checker {
                         message: "`while true` can be simplified".to_string(),
                         notes: vec![],
                         suggestions: vec![
-                            "use `loop { ... }` instead of `while true { ... }`".to_string(),
+                            "use `loop { ... }` instead of `while true { ... }`".to_string()
                         ],
                     });
                 }
@@ -9153,12 +9153,10 @@ mod tests {
         };
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::YieldOutsideGenerator)
-        );
+        assert!(output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::YieldOutsideGenerator));
     }
 
     #[test]
@@ -9437,12 +9435,10 @@ mod tests {
             0..17,
         );
         checker.synthesize(&call.0, &call.1);
-        assert!(
-            checker
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::ArityMismatch)
-        );
+        assert!(checker
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch));
     }
 
     #[test]
@@ -9460,12 +9456,10 @@ mod tests {
             0..13,
         );
         checker.synthesize(&call.0, &call.1);
-        assert!(
-            checker
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::ArityMismatch)
-        );
+        assert!(checker
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::ArityMismatch));
     }
 
     #[test]

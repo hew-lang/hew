@@ -4425,6 +4425,17 @@ void MLIRGen::pushDropScope() {
   dropScopes.emplace_back();
 }
 
+void MLIRGen::emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth) {
+  for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
+    if (it->closeAlloca) {
+      if (!funcLevelReturnVarNames.count(it->varName))
+        emitDropEntry(*it);
+    } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
+      emitDropEntry(*it);
+    }
+  }
+}
+
 void MLIRGen::popDropScope() {
   if (dropScopes.empty())
     return;
@@ -4458,17 +4469,7 @@ void MLIRGen::popDropScope() {
       // will be true and this block is skipped entirely.
       if (!hasRealTerminator(block)) {
         emitDeferredCalls();
-        auto &scope = dropScopes.back();
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          // RAII close entries use depth-independent name check because the
-          // enricher's unsafe-block wrapping shifts depths.
-          if (it->closeAlloca) {
-            if (!funcLevelReturnVarNames.count(it->varName))
-              emitDropEntry(*it);
-          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-            emitDropEntry(*it);
-          }
-        }
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
       }
       dropScopes.pop_back();
       return;
@@ -4485,24 +4486,6 @@ void MLIRGen::popDropScope() {
         }
       }
 
-      // Inner-scope drop helper: skip variables whose (name, depth) pair
-      // matches funcLevelDropExcludeVars.  This ensures only the specific
-      // scope that actually yields the return value is excluded, not a
-      // shadowed variable with the same name at a different depth.
-      auto emitScopeDropsExcluding = [&](const std::vector<DropEntry> &scope) {
-        for (auto it = scope.rbegin(); it != scope.rend(); ++it) {
-          if (it->closeAlloca) {
-            if (!funcLevelReturnVarNames.count(it->varName))
-              emitDropEntry(*it);
-          } else if (!funcLevelDropExcludeVars.count({it->varName, relDepth})) {
-            emitDropEntry(*it);
-          }
-        }
-      };
-
-      // Guard drops with !returnFlag: when an early return stores a value
-      // to returnSlot, we must not free it (or any other inner-scope var
-      // that might alias it). The arena will reclaim the memory.
       if (returnFlag) {
         auto loc = builder.getUnknownLoc();
         auto flagVal = mlir::memref::LoadOp::create(builder, loc, returnFlag, mlir::ValueRange{});
@@ -4511,11 +4494,11 @@ void MLIRGen::popDropScope() {
         auto guard = mlir::scf::IfOp::create(builder, loc, mlir::TypeRange{}, notReturned,
                                              /*withElseRegion=*/false);
         builder.setInsertionPointToStart(&guard.getThenRegion().front());
-        emitScopeDropsExcluding(dropScopes.back());
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
         // scf.if auto-adds yield; set insertion after guard
         builder.setInsertionPointAfter(guard);
       } else {
-        emitScopeDropsExcluding(dropScopes.back());
+        emitDropsWithExclusion(dropScopes.back(), relDepth);
       }
     }
   }

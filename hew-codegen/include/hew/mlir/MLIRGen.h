@@ -750,6 +750,10 @@ private:
   bool structHasOwnedFields(const std::string &name) const;
   void pushDropScope();
   void popDropScope();
+  /// Emit drops for a scope, excluding variables that match the
+  /// funcLevelDropExcludeVars (by name+depth) or funcLevelReturnVarNames
+  /// (for RAII close entries).
+  void emitDropsWithExclusion(const std::vector<DropEntry> &scope, size_t relDepth);
   void registerDroppable(const std::string &varName, const std::string &dropFunc,
                          bool isUserDrop = false);
   /// Remove a variable from all drop scopes (ownership transferred, e.g. actor send).

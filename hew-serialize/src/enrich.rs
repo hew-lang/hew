@@ -1747,45 +1747,8 @@ fn enrich_expr_with_diagnostics_inner(
             }
             enrich_method_call(expr, tco, registry);
         }
-        Expr::Call {
-            function,
-            args,
-            type_args,
-            ..
-        } => {
-            enrich_expr_with_diagnostics(function, tco, diagnostics, registry)?;
-            for arg in args.iter_mut() {
-                enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
-            }
-
-            // Fill in inferred type arguments for generic calls that omit
-            // explicit type annotations (e.g. `identity(42)` → `identity<int>(42)`).
-            if type_args.is_none() {
-                let call_span_key = SpanKey::from(&expr.1);
-                if let Some(inferred) = tco.call_type_args.get(&call_span_key) {
-                    let converted: Result<Vec<_>, _> =
-                        inferred.iter().map(ty_to_type_expr).collect();
-                    if let Ok(ta) = converted {
-                        *type_args = Some(ta);
-                    }
-                }
-            }
-
-            // Rewrite len(x) → x.len() method call so the C++ codegen
-            // dispatches to VecLenOp / HashMapLenOp / StringMethodOp.
-            if let Expr::Identifier(name) = &function.0 {
-                if name == "len" && args.len() == 1 {
-                    let receiver = match std::mem::take(args).remove(0) {
-                        CallArg::Positional(e) => e,
-                        CallArg::Named { value, .. } => value,
-                    };
-                    expr.0 = Expr::MethodCall {
-                        receiver: Box::new(receiver),
-                        method: "len".to_string(),
-                        args: Vec::new(),
-                    };
-                }
-            }
+        Expr::Call { .. } => {
+            enrich_call_expr(expr, tco, diagnostics, registry)?;
         }
         Expr::Binary { left, right, .. } => {
             enrich_expr_with_diagnostics(left, tco, diagnostics, registry)?;

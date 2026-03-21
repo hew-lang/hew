@@ -27,11 +27,11 @@ fmt_and_restage() {
 staged_into rs_files '*.rs'
 # shellcheck disable=SC2154 # rs_files set via nameref in staged_into
 if ((${#rs_files[@]} > 0)); then
-    cargo fmt --quiet 2>/dev/null
+    cargo fmt --all --quiet
     git add "${rs_files[@]}"
 
     # Block commit if clippy finds warnings — matches CI enforcement.
-    if ! cargo clippy --workspace --tests --quiet 2>/dev/null; then
+    if ! cargo clippy --workspace --tests --quiet; then
         echo ""
         echo "clippy found issues. Fix before committing."
         cargo clippy --workspace --tests 2>&1 | grep "^error\[" | head -10

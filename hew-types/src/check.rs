@@ -4106,43 +4106,7 @@ impl Checker {
             Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right),
 
             // Unary ops
-            Expr::Unary { op, operand } => match op {
-                UnaryOp::Not => {
-                    self.check_against(&operand.0, &operand.1, &Ty::Bool);
-                    Ty::Bool
-                }
-                UnaryOp::Negate => {
-                    let ty = self.synthesize(&operand.0, &operand.1);
-                    let resolved = self.subst.resolve(&ty);
-                    if !resolved.is_numeric()
-                        && !resolved.is_duration()
-                        && !matches!(resolved, Ty::Var(_))
-                        && resolved != Ty::Error
-                    {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("cannot negate type `{resolved}`"),
-                        );
-                    }
-                    ty
-                }
-                UnaryOp::BitNot => {
-                    let ty = self.synthesize(&operand.0, &operand.1);
-                    let resolved = self.subst.resolve(&ty);
-                    if !resolved.is_integer()
-                        && !matches!(resolved, Ty::Var(_))
-                        && resolved != Ty::Error
-                    {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("bitwise NOT requires integer type, found `{resolved}`"),
-                        );
-                    }
-                    ty
-                }
-            },
+            Expr::Unary { op, operand } => self.synthesize_unary_op(op, operand, span),
 
             // Call
             Expr::Call {
@@ -4463,52 +4427,13 @@ impl Checker {
                 start,
                 end,
                 inclusive: _,
-            } => {
-                let ty = if let Some(s) = start {
-                    let start_ty = self.synthesize(&s.0, &s.1);
-                    if let Some(e) = end {
-                        self.check_against(&e.0, &e.1, &start_ty);
-                    }
-                    start_ty
-                } else if let Some(e) = end {
-                    self.synthesize(&e.0, &e.1)
-                } else {
-                    Ty::I64
-                };
-                Ty::range(ty)
-            }
+            } => self.synthesize_range(start.as_deref(), end.as_deref()),
 
             // Cast expression: `expr as Type`
             Expr::Cast {
                 expr: inner,
                 ty: type_expr,
-            } => {
-                let actual = self.synthesize(&inner.0, &inner.1);
-                let target = self.resolve_type_expr(&type_expr.0);
-                let actual_resolved = self.subst.resolve(&actual);
-                let target_resolved = self.subst.resolve(&target);
-
-                // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
-                let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
-                    // Allow bool → integer
-                    || (actual_resolved == Ty::Bool && target_resolved.is_integer())
-                    // Allow integer → bool
-                    || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
-
-                if !valid {
-                    self.report_error(
-                        TypeErrorKind::Mismatch {
-                            expected: target_resolved.to_string(),
-                            actual: actual_resolved.to_string(),
-                        },
-                        span,
-                        format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
-                    );
-                }
-
-                self.record_type(span, &target);
-                target
-            }
+            } => self.synthesize_cast(inner, type_expr, span),
 
             _ => {
                 // Scope, Select, Join, Unsafe
@@ -4642,6 +4567,103 @@ impl Checker {
 
         self.record_type(span, &ty);
         ty
+    }
+
+    fn synthesize_unary_op(
+        &mut self,
+        op: &UnaryOp,
+        operand: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        match op {
+            UnaryOp::Not => {
+                self.check_against(&operand.0, &operand.1, &Ty::Bool);
+                Ty::Bool
+            }
+            UnaryOp::Negate => {
+                let ty = self.synthesize(&operand.0, &operand.1);
+                let resolved = self.subst.resolve(&ty);
+                if !resolved.is_numeric()
+                    && !resolved.is_duration()
+                    && !matches!(resolved, Ty::Var(_))
+                    && resolved != Ty::Error
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot negate type `{resolved}`"),
+                    );
+                }
+                ty
+            }
+            UnaryOp::BitNot => {
+                let ty = self.synthesize(&operand.0, &operand.1);
+                let resolved = self.subst.resolve(&ty);
+                if !resolved.is_integer()
+                    && !matches!(resolved, Ty::Var(_))
+                    && resolved != Ty::Error
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("bitwise NOT requires integer type, found `{resolved}`"),
+                    );
+                }
+                ty
+            }
+        }
+    }
+
+    fn synthesize_range(
+        &mut self,
+        start: Option<&Spanned<Expr>>,
+        end: Option<&Spanned<Expr>>,
+    ) -> Ty {
+        let ty = if let Some(s) = start {
+            let start_ty = self.synthesize(&s.0, &s.1);
+            if let Some(e) = end {
+                self.check_against(&e.0, &e.1, &start_ty);
+            }
+            start_ty
+        } else if let Some(e) = end {
+            self.synthesize(&e.0, &e.1)
+        } else {
+            Ty::I64
+        };
+        Ty::range(ty)
+    }
+
+    fn synthesize_cast(
+        &mut self,
+        inner: &Spanned<Expr>,
+        type_expr: &Spanned<TypeExpr>,
+        span: &Span,
+    ) -> Ty {
+        let actual = self.synthesize(&inner.0, &inner.1);
+        let target = self.resolve_type_expr(&type_expr.0);
+        let actual_resolved = self.subst.resolve(&actual);
+        let target_resolved = self.subst.resolve(&target);
+
+        // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
+        let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
+            // Allow bool → integer
+            || (actual_resolved == Ty::Bool && target_resolved.is_integer())
+            // Allow integer → bool
+            || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
+
+        if !valid {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: target_resolved.to_string(),
+                    actual: actual_resolved.to_string(),
+                },
+                span,
+                format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
+            );
+        }
+
+        self.record_type(span, &target);
+        target
     }
 
     /// Check: verify expression against expected type (top-down).

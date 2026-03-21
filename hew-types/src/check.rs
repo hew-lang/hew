@@ -5315,17 +5315,7 @@ impl Checker {
                     inferred_args.push(Ty::Var(TypeVar::fresh()));
                 }
             }
-            if args.len() != expected_params.len() {
-                self.report_error(
-                    TypeErrorKind::ArityMismatch,
-                    span,
-                    format!(
-                        "this function takes {} argument(s) but {} were supplied",
-                        expected_params.len(),
-                        args.len()
-                    ),
-                );
-            }
+            self.check_arity(args, expected_params.len(), "this function", span);
             for (i, arg) in args.iter().enumerate() {
                 if let Some(param_ty) = expected_params.get(i) {
                     let (expr, span) = arg.expr();
@@ -5349,13 +5339,7 @@ impl Checker {
         // Handle polymorphic constructors with fresh linked type vars
         match func_name.as_str() {
             "Some" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!("`Some` takes 1 argument but {} were supplied", args.len()),
-                    );
-                }
+                self.check_arity(args, 1, "`Some`", span);
                 let t = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5364,23 +5348,11 @@ impl Checker {
                 return Ty::option(t);
             }
             "None" => {
-                if !args.is_empty() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!("`None` takes 0 arguments but {} were supplied", args.len()),
-                    );
-                }
+                self.check_arity(args, 0, "`None`", span);
                 return Ty::option(Ty::Var(TypeVar::fresh()));
             }
             "Ok" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!("`Ok` takes 1 argument but {} were supplied", args.len()),
-                    );
-                }
+                self.check_arity(args, 1, "`Ok`", span);
                 let t = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5389,13 +5361,7 @@ impl Checker {
                 return Ty::result(t, Ty::Var(TypeVar::fresh()));
             }
             "Err" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!("`Err` takes 1 argument but {} were supplied", args.len()),
-                    );
-                }
+                self.check_arity(args, 1, "`Err`", span);
                 let e = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5404,12 +5370,7 @@ impl Checker {
                 return Ty::result(Ty::Var(TypeVar::fresh()), e);
             }
             "close" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!("`close` takes 1 argument but {} were supplied", args.len()),
-                    );
+                if !self.check_arity(args, 1, "`close`", span) {
                     return Ty::Error;
                 }
                 let (expr, sp) = args[0].expr();
@@ -5426,16 +5387,7 @@ impl Checker {
                 return Ty::Error;
             }
             "bytes::from" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`bytes::from` takes 1 argument but {} were supplied",
-                            args.len()
-                        ),
-                    );
-                }
+                self.check_arity(args, 1, "`bytes::from`", span);
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
@@ -5443,16 +5395,7 @@ impl Checker {
                 return Ty::Bytes;
             }
             "Vec::from" => {
-                if args.len() != 1 {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "`Vec::from` takes 1 argument but {} were supplied",
-                            args.len()
-                        ),
-                    );
-                }
+                self.check_arity(args, 1, "`Vec::from`", span);
                 let elem = Ty::Var(TypeVar::fresh());
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5619,17 +5562,7 @@ impl Checker {
                 if let Some(sig) = self.lookup_trait_method_inner(trait_name, method_name, false) {
                     // The trait sig includes all non-receiver params.
                     // For qualified calls the first positional arg is the receiver.
-                    if args.len() != sig.params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`{func_name}` expects {} argument(s), found {}",
-                                sig.params.len(),
-                                args.len(),
-                            ),
-                        );
-                    }
+                    self.check_arity(args, sig.params.len(), &format!("`{func_name}`"), span);
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -5667,17 +5600,7 @@ impl Checker {
         let resolved = self.subst.resolve(func_ty);
         match resolved {
             Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
-                if args.len() != params.len() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "this function takes {} argument(s) but {} were supplied",
-                            params.len(),
-                            args.len()
-                        ),
-                    );
-                }
+                self.check_arity(args, params.len(), "this function", span);
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param) = params.get(i) {
                         let (expr, sp) = arg.expr();
@@ -5876,17 +5799,7 @@ impl Checker {
             // Look up "TypeName.method" in fn_sigs (registered by wire types etc.)
             let static_key = format!("{name}.{method}");
             if let Some(sig) = self.fn_sigs.get(&static_key).cloned() {
-                if args.len() != sig.params.len() {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        format!(
-                            "expected {} arguments, found {}",
-                            sig.params.len(),
-                            args.len()
-                        ),
-                    );
-                }
+                self.check_arity(args, sig.params.len(), &format!("`{static_key}`"), span);
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
                         let (expr, sp) = arg.expr();
@@ -5915,16 +5828,7 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "push" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::push` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`Vec::push`", span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &elem_ty);
@@ -5934,16 +5838,7 @@ impl Checker {
                     "pop" => elem_ty,
                     "len" => Ty::I64,
                     "get" | "remove" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::{method}` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, &format!("`Vec::{method}`"), span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &Ty::I64);
@@ -5959,16 +5854,7 @@ impl Checker {
                     }
                     "is_empty" => Ty::Bool,
                     "clear" => {
-                        if !args.is_empty() {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::clear` takes 0 arguments but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 0, "`Vec::clear`", span);
                         Ty::Unit
                     }
                     "set" => {
@@ -5990,16 +5876,7 @@ impl Checker {
                         Ty::Unit
                     }
                     "join" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::join` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`Vec::join`", span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &Ty::String);
@@ -6016,16 +5893,7 @@ impl Checker {
                         Ty::String
                     }
                     "map" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::map` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`Vec::map`", span);
                         // The closure takes one element and returns a new type
                         let ret_ty = Ty::Var(TypeVar::fresh());
                         let expected_fn = Ty::Function {
@@ -6043,16 +5911,7 @@ impl Checker {
                         }
                     }
                     "filter" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::filter` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`Vec::filter`", span);
                         // The closure takes one element and returns Bool
                         let expected_fn = Ty::Function {
                             params: vec![elem_ty.clone()],
@@ -6065,16 +5924,7 @@ impl Checker {
                         resolved.clone()
                     }
                     "fold" => {
-                        if args.len() != 2 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`Vec::fold` takes 2 arguments but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 2, "`Vec::fold`", span);
                         // First arg is the initial accumulator value
                         let acc_ty = if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
@@ -6121,16 +5971,7 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "insert" => {
-                        if args.len() != 2 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashMap::insert` takes 2 arguments but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 2, "`HashMap::insert`", span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &key_ty);
@@ -6142,16 +5983,7 @@ impl Checker {
                         Ty::Unit
                     }
                     "get" | "remove" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashMap::{method}` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, &format!("`HashMap::{method}`"), span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &key_ty);
@@ -6159,16 +5991,7 @@ impl Checker {
                         Ty::option(val_ty)
                     }
                     "contains_key" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashMap::contains_key` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`HashMap::contains_key`", span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &key_ty);
@@ -6177,32 +6000,14 @@ impl Checker {
                         Ty::Bool
                     }
                     "keys" => {
-                        if !args.is_empty() {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashMap::keys` takes 0 arguments but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 0, "`HashMap::keys`", span);
                         Ty::Named {
                             name: "Vec".to_string(),
                             args: vec![key_ty],
                         }
                     }
                     "values" => {
-                        if !args.is_empty() {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashMap::values` takes 0 arguments but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 0, "`HashMap::values`", span);
                         Ty::Named {
                             name: "Vec".to_string(),
                             args: vec![val_ty],
@@ -6234,16 +6039,7 @@ impl Checker {
                     .unwrap_or(Ty::Var(TypeVar::fresh()));
                 match method {
                     "insert" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashSet::insert` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, "`HashSet::insert`", span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &elem_ty);
@@ -6251,16 +6047,7 @@ impl Checker {
                         Ty::Bool
                     }
                     "contains" | "remove" => {
-                        if args.len() != 1 {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "`HashSet::{method}` takes 1 argument but {} were supplied",
-                                    args.len()
-                                ),
-                            );
-                        }
+                        self.check_arity(args, 1, &format!("`HashSet::{method}`"), span);
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             self.check_against(expr, sp, &elem_ty);
@@ -6338,42 +6125,15 @@ impl Checker {
             // Duration methods
             (Ty::Duration, _) => match method {
                 "nanos" | "micros" | "millis" | "secs" | "mins" | "hours" => {
-                    if !args.is_empty() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`duration::{method}` takes 0 arguments but {} were supplied",
-                                args.len()
-                            ),
-                        );
-                    }
+                    self.check_arity(args, 0, &format!("`duration::{method}`"), span);
                     Ty::I64
                 }
                 "abs" => {
-                    if !args.is_empty() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`duration::abs` takes 0 arguments but {} were supplied",
-                                args.len()
-                            ),
-                        );
-                    }
+                    self.check_arity(args, 0, "`duration::abs`", span);
                     Ty::Duration
                 }
                 "is_zero" => {
-                    if !args.is_empty() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`duration::is_zero` takes 0 arguments but {} were supplied",
-                                args.len()
-                            ),
-                        );
-                    }
+                    self.check_arity(args, 0, "`duration::is_zero`", span);
                     Ty::Bool
                 }
                 _ => {
@@ -6488,16 +6248,7 @@ impl Checker {
                     Ty::Bool
                 }
                 "is_digit" | "is_alpha" | "is_alphanumeric" | "is_empty" => {
-                    if !args.is_empty() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`String::{method}` takes 0 arguments but {} were supplied",
-                                args.len()
-                            ),
-                        );
-                    }
+                    self.check_arity(args, 0, &format!("`String::{method}`"), span);
                     Ty::Bool
                 }
                 "to_uppercase" | "to_lowercase" | "to_upper" | "to_lower" | "trim" => Ty::String,
@@ -6523,16 +6274,7 @@ impl Checker {
                     }
                 }
                 "lines" => {
-                    if !args.is_empty() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "`String::lines` takes 0 arguments but {} were supplied",
-                                args.len()
-                            ),
-                        );
-                    }
+                    self.check_arity(args, 0, "`String::lines`", span);
                     Ty::Named {
                         name: "Vec".to_string(),
                         args: vec![Ty::String],
@@ -7042,18 +6784,12 @@ impl Checker {
             (Ty::Machine { name }, _) => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(sig) = td.methods.get(method) {
-                        if args.len() != sig.params.len() {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "method '{}' expects {} argument(s), found {}",
-                                    method,
-                                    sig.params.len(),
-                                    args.len(),
-                                ),
-                            );
-                        }
+                        self.check_arity(
+                            args,
+                            sig.params.len(),
+                            &format!("method '{method}'"),
+                            span,
+                        );
                         for (i, arg) in args.iter().enumerate() {
                             if let Some(param_ty) = sig.params.get(i) {
                                 let (expr, sp) = arg.expr();
@@ -7084,18 +6820,12 @@ impl Checker {
             ) => {
                 if let Some(td) = self.lookup_type_def(name) {
                     if let Some(sig) = td.methods.get(method) {
-                        if args.len() != sig.params.len() {
-                            self.report_error(
-                                TypeErrorKind::ArityMismatch,
-                                span,
-                                format!(
-                                    "method '{}' expects {} argument(s), found {}",
-                                    method,
-                                    sig.params.len(),
-                                    args.len(),
-                                ),
-                            );
-                        }
+                        self.check_arity(
+                            args,
+                            sig.params.len(),
+                            &format!("method '{method}'"),
+                            span,
+                        );
                         for (i, arg) in args.iter().enumerate() {
                             if let Some(param_ty) = sig.params.get(i) {
                                 // Substitute generic type params with concrete args
@@ -7117,18 +6847,7 @@ impl Checker {
                 // Try fn_sigs with Name::method pattern
                 let method_key = format!("{name}::{method}");
                 if let Some(sig) = self.lookup_fn_sig(&method_key) {
-                    if args.len() != sig.params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "method '{}' expects {} argument(s), found {}",
-                                method,
-                                sig.params.len(),
-                                args.len(),
-                            ),
-                        );
-                    }
+                    self.check_arity(args, sig.params.len(), &format!("method '{method}'"), span);
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -7164,18 +6883,12 @@ impl Checker {
                                 &self_ty,
                             );
 
-                            if args.len() != trait_sig.params.len() {
-                                self.report_error(
-                                    TypeErrorKind::ArityMismatch,
-                                    span,
-                                    format!(
-                                        "method '{}' expects {} argument(s), found {}",
-                                        method,
-                                        trait_sig.params.len(),
-                                        args.len(),
-                                    ),
-                                );
-                            }
+                            self.check_arity(
+                                args,
+                                trait_sig.params.len(),
+                                &format!("method '{method}'"),
+                                span,
+                            );
                             for (i, arg) in args.iter().enumerate() {
                                 if let Some(param_ty) = trait_sig.params.get(i) {
                                     let (expr, sp) = arg.expr();
@@ -7240,18 +6953,7 @@ impl Checker {
                         }
                     }
 
-                    if args.len() != sig.params.len() {
-                        self.report_error(
-                            TypeErrorKind::ArityMismatch,
-                            span,
-                            format!(
-                                "method '{}' expects {} argument(s), found {}",
-                                method,
-                                sig.params.len(),
-                                args.len(),
-                            ),
-                        );
-                    }
+                    self.check_arity(args, sig.params.len(), &format!("method '{method}'"), span);
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
@@ -8640,6 +8342,28 @@ impl Checker {
             notes: vec![],
             suggestions: vec![],
         });
+    }
+
+    fn check_arity(
+        &mut self,
+        args: &[CallArg],
+        expected: usize,
+        context: &str,
+        span: &Span,
+    ) -> bool {
+        if args.len() != expected {
+            self.report_error(
+                TypeErrorKind::ArityMismatch,
+                span,
+                format!(
+                    "{context} takes {expected} argument(s) but {} were supplied",
+                    args.len()
+                ),
+            );
+            false
+        } else {
+            true
+        }
     }
 
     fn report_error_with_suggestions(

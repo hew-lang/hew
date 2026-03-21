@@ -1333,6 +1333,24 @@ mlir::Value MLIRGen::generateUnaryExpr(const ast::ExprUnary &expr) {
 // Call expression generation
 // ============================================================================
 
+mlir::Value MLIRGen::emitOptionWrap(mlir::Value condition, mlir::Value payload,
+                                    mlir::Type optionType, mlir::Location location) {
+  auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, condition,
+                                      /*withElseRegion=*/true);
+  builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  auto someVal = hew::EnumConstructOp::create(
+      builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
+      mlir::ValueRange{payload}, /*payload_positions=*/mlir::ArrayAttr{});
+  mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
+  builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+  auto noneVal = hew::EnumConstructOp::create(
+      builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
+      mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
+  mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
+  builder.setInsertionPointAfter(ifOp);
+  return ifOp.getResult(0);
+}
+
 mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
   auto location = currentLoc;
 
@@ -1408,21 +1426,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
 
   if (calleeName == "hew_channel_try_recv_int") {
@@ -1469,21 +1473,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
   // ── Intercept channel recv → Option<T> wrapping ──────────────────────
@@ -1515,21 +1505,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isNotNull =
         mlir::LLVM::ICmpOp::create(builder, location, mlir::LLVM::ICmpPredicate::ne, rawPtr, nullVal);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isNotNull,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawPtr}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isNotNull, rawPtr, optionType, location);
   }
 
   if (calleeName == "hew_channel_recv_int") {
@@ -1573,21 +1549,7 @@ mlir::Value MLIRGen::generateCallExpr(const ast::ExprCall &call) {
     auto isValid = mlir::arith::CmpIOp::create(builder, location, mlir::arith::CmpIPredicate::ne,
                                                validFlag, zero);
 
-    auto ifOp = mlir::scf::IfOp::create(builder, location, optionType, isValid,
-                                        /*withElseRegion=*/true);
-    builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    auto someVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(1), llvm::StringRef("Option"),
-        mlir::ValueRange{rawVal}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{someVal});
-    builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
-    auto noneVal = hew::EnumConstructOp::create(
-        builder, location, optionType, static_cast<uint32_t>(0), llvm::StringRef("Option"),
-        mlir::ValueRange{}, /*payload_positions=*/mlir::ArrayAttr{});
-    mlir::scf::YieldOp::create(builder, location, mlir::ValueRange{noneVal});
-    builder.setInsertionPointAfter(ifOp);
-
-    return ifOp.getResult(0);
+    return emitOptionWrap(isValid, rawVal, optionType, location);
   }
 
   // Handle generic function calls with explicit type arguments

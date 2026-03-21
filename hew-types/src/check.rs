@@ -3968,181 +3968,17 @@ impl Checker {
             Expr::Literal(Literal::Integer { .. }) => Ty::I64,
             Expr::Literal(Literal::Duration(_)) => Ty::Duration,
 
-            // Identifier lookup
-            Expr::Identifier(name) => {
-                // Handle None specially — fresh type var each usage
-                if name == "None" {
-                    return Ty::option(Ty::Var(TypeVar::fresh()));
-                }
-                if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
-                    let is_moved = binding.is_moved;
-                    let ty = binding.ty.clone();
-                    if is_moved {
-                        self.report_error(
-                            TypeErrorKind::UseAfterMove,
-                            span,
-                            format!("use of moved value `{name}`"),
-                        );
-                    }
-                    // Track captures: variable from scope below the lambda boundary
-                    if let Some(capture_depth) = self.lambda_capture_depth {
-                        if depth < capture_depth {
-                            self.lambda_captures.push(ty.clone());
-                        }
-                    }
-                    ty
-                } else if self.fn_sigs.contains_key(name) {
-                    // It's a function name used as a value (e.g., variant constructor with no args)
-                    if let Some(caller) = &self.current_function {
-                        self.call_graph
-                            .entry(caller.clone())
-                            .or_default()
-                            .insert(name.clone());
-                    }
-                    let sig = self.fn_sigs[name].clone();
-                    if sig.params.is_empty() {
-                        sig.return_type
-                    } else {
-                        // Return a function type for the constructor
-                        Ty::Function {
-                            params: sig.params,
-                            ret: Box::new(sig.return_type),
-                        }
-                    }
-                } else {
-                    // Check if it's a unit enum variant (e.g., Red, Green, Blue)
-                    let mut found = None;
-                    for (type_name, td) in &self.type_defs {
-                        if let Some(variant) = td.variants.get(name) {
-                            if matches!(variant, VariantDef::Unit) {
-                                let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                                    Ty::Machine {
-                                        name: type_name.clone(),
-                                    }
-                                } else {
-                                    Ty::Named {
-                                        name: type_name.clone(),
-                                        args: vec![],
-                                    }
-                                };
-                                found = Some(ty);
-                                break;
-                            }
-                        }
-                    }
-                    // Handle qualified variant names (e.g., Light::Off, LightEvent::Toggle)
-                    if found.is_none() {
-                        if let Some(pos) = name.rfind("::") {
-                            let type_prefix = &name[..pos];
-                            let variant_name = &name[pos + 2..];
-                            if let Some(td) = self.type_defs.get(type_prefix) {
-                                if let Some(variant) = td.variants.get(variant_name) {
-                                    if matches!(variant, VariantDef::Unit) {
-                                        let ty = if matches!(td.kind, TypeDefKind::Machine) {
-                                            Ty::Machine {
-                                                name: type_prefix.to_string(),
-                                            }
-                                        } else {
-                                            Ty::Named {
-                                                name: type_prefix.to_string(),
-                                                args: vec![],
-                                            }
-                                        };
-                                        found = Some(ty);
-                                    }
-                                }
-                            }
-                            // Also check fn_sigs for qualified constructors
-                            if found.is_none() {
-                                if let Some(sig) = self.fn_sigs.get(variant_name) {
-                                    if sig.params.is_empty() {
-                                        let ret = &sig.return_type;
-                                        let matches_type = match ret {
-                                            Ty::Machine { name: n } | Ty::Named { name: n, .. } => {
-                                                n == type_prefix
-                                            }
-                                            _ => false,
-                                        };
-                                        if matches_type {
-                                            found = Some(sig.return_type.clone());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some(ty) = found {
-                        ty
-                    } else {
-                        if name == "self" {
-                            self.report_error(
-                                TypeErrorKind::UndefinedVariable,
-                                span,
-                                "`self` is not a valid identifier in Hew; \
-                                 use a named receiver parameter instead: \
-                                 `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
-                                    .to_string(),
-                            );
-                        } else {
-                            let similar = crate::error::find_similar(
-                                name,
-                                self.env
-                                    .all_names()
-                                    .chain(self.fn_sigs.keys().map(String::as_str)),
-                            );
-                            self.report_error_with_suggestions(
-                                TypeErrorKind::UndefinedVariable,
-                                span,
-                                format!("undefined variable `{name}`"),
-                                similar,
-                            );
-                        }
-                        Ty::Error
-                    }
-                }
+            // Identifier lookup — None bypasses record_type (fresh type var each usage)
+            Expr::Identifier(name) if name == "None" => {
+                return Ty::option(Ty::Var(TypeVar::fresh()));
             }
+            Expr::Identifier(name) => self.synthesize_identifier(name, span),
 
             // Binary ops
             Expr::Binary { left, op, right } => self.check_binary_op(left, *op, right),
 
             // Unary ops
-            Expr::Unary { op, operand } => match op {
-                UnaryOp::Not => {
-                    self.check_against(&operand.0, &operand.1, &Ty::Bool);
-                    Ty::Bool
-                }
-                UnaryOp::Negate => {
-                    let ty = self.synthesize(&operand.0, &operand.1);
-                    let resolved = self.subst.resolve(&ty);
-                    if !resolved.is_numeric()
-                        && !resolved.is_duration()
-                        && !matches!(resolved, Ty::Var(_))
-                        && resolved != Ty::Error
-                    {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("cannot negate type `{resolved}`"),
-                        );
-                    }
-                    ty
-                }
-                UnaryOp::BitNot => {
-                    let ty = self.synthesize(&operand.0, &operand.1);
-                    let resolved = self.subst.resolve(&ty);
-                    if !resolved.is_integer()
-                        && !matches!(resolved, Ty::Var(_))
-                        && resolved != Ty::Error
-                    {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("bitwise NOT requires integer type, found `{resolved}`"),
-                        );
-                    }
-                    ty
-                }
-            },
+            Expr::Unary { op, operand } => self.synthesize_unary_op(*op, operand, span),
 
             // Call
             Expr::Call {
@@ -4185,19 +4021,7 @@ impl Checker {
                 expr,
                 body,
                 else_body,
-            } => {
-                let scr_ty = self.synthesize(&expr.0, &expr.1);
-                self.env.push_scope();
-                self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-                let then_ty = self.check_block(body);
-                self.env.pop_scope();
-                if let Some(block) = else_body {
-                    let else_ty = self.check_block(block);
-                    self.unify_branches(&then_ty, &else_ty, span)
-                } else {
-                    Ty::Unit
-                }
-            }
+            } => self.synthesize_iflet(pattern, expr, body, else_body.as_ref(), span),
 
             // Match
             Expr::Match { scrutinee, arms } => {
@@ -4224,55 +4048,9 @@ impl Checker {
                     Ty::Array(Box::new(first_ty), elems.len() as u64)
                 }
             }
-            Expr::ArrayRepeat { value, count } => {
-                let elem_ty = self.synthesize(&value.0, &value.1);
-                let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
-                let resolved_count = self.subst.resolve(&count_ty);
-                if !resolved_count.is_integer() && !matches!(resolved_count, Ty::Var(_)) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &count.1,
-                        format!("array repeat count must be an integer, found `{resolved_count}`"),
-                    );
-                }
-                if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
-                    if *value < 0 {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            &count.1,
-                            "array repeat count cannot be negative".to_string(),
-                        );
-                    }
-                }
-                Ty::Named {
-                    name: "Vec".to_string(),
-                    args: vec![elem_ty],
-                }
-            }
+            Expr::ArrayRepeat { value, count } => self.synthesize_array_repeat(value, count),
 
-            Expr::MapLiteral { entries } => {
-                if entries.is_empty() {
-                    let k = TypeVar::fresh();
-                    let v = TypeVar::fresh();
-                    Ty::Named {
-                        name: "HashMap".to_string(),
-                        args: vec![Ty::Var(k), Ty::Var(v)],
-                    }
-                } else {
-                    let (ref ke, ref ks) = entries[0].0;
-                    let (ref ve, ref vs) = entries[0].1;
-                    let first_key_ty = self.synthesize(ke, ks);
-                    let first_val_ty = self.synthesize(ve, vs);
-                    for (k, v) in &entries[1..] {
-                        self.check_against(&k.0, &k.1, &first_key_ty);
-                        self.check_against(&v.0, &v.1, &first_val_ty);
-                    }
-                    Ty::Named {
-                        name: "HashMap".to_string(),
-                        args: vec![first_key_ty, first_val_ty],
-                    }
-                }
-            }
+            Expr::MapLiteral { entries } => self.synthesize_map_literal(entries),
 
             // Struct init
             Expr::StructInit { name, fields } => self.check_struct_init(name, fields, span),
@@ -4336,54 +4114,10 @@ impl Checker {
             }
 
             // Send: target <- message
-            Expr::Send { target, message } => {
-                let _target_ty = self.synthesize(&target.0, &target.1);
-                let msg_ty_raw = self.synthesize(&message.0, &message.1);
-                let msg_ty = self.subst.resolve(&msg_ty_raw);
-                // Check message is Send
-                if !self.registry.implements_marker(&msg_ty, MarkerTrait::Send) {
-                    self.report_error(
-                        TypeErrorKind::InvalidSend,
-                        span,
-                        format!("cannot send `{msg_ty}` to actor: type is not Send"),
-                    );
-                }
-                // Mark sent value as moved (unless Copy)
-                if !self.registry.implements_marker(&msg_ty, MarkerTrait::Copy) {
-                    if let Expr::Identifier(name) = &message.0 {
-                        self.env.mark_moved(name, message.1.clone());
-                    }
-                }
-                Ty::Unit
-            }
+            Expr::Send { target, message } => self.synthesize_send(target, message, span),
 
             // Yield
-            Expr::Yield(value) => {
-                if !self.in_generator {
-                    self.report_error(
-                        TypeErrorKind::YieldOutsideGenerator,
-                        span,
-                        "`yield` outside of generator function".to_string(),
-                    );
-                }
-                if let Some(val_expr) = value {
-                    // Check yielded value against the declared yield type
-                    if let Some(return_ty) = &self.current_return_type {
-                        let resolved = self.subst.resolve(return_ty);
-                        let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
-                            yields.clone()
-                        } else if let Some(yields) = resolved.as_async_generator() {
-                            yields.clone()
-                        } else {
-                            resolved
-                        };
-                        self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
-                    } else {
-                        self.synthesize(&val_expr.0, &val_expr.1);
-                    }
-                }
-                Ty::Unit
-            }
+            Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
             // Cooperate
             Expr::Cooperate => Ty::Unit,
@@ -4403,245 +4137,550 @@ impl Checker {
             }
 
             // Index
-            Expr::Index { object, index } => {
-                let obj_ty = self.synthesize(&object.0, &object.1);
-                self.check_against(&index.0, &index.1, &Ty::I64);
-                match &obj_ty {
-                    Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
-                    Ty::Named { name, args } if name == "Vec" && !args.is_empty() => {
-                        args[0].clone()
-                    }
-                    // Custom type indexing: desugar obj[key] → obj.get(key)
-                    Ty::Named { name, args } => {
-                        if let Some(td) = self.lookup_type_def(name) {
-                            if let Some(sig) = td.methods.get("get") {
-                                if let Some(param_ty) = sig.params.first() {
-                                    self.check_against(&index.0, &index.1, param_ty);
-                                }
-                                let mut ret = sig.return_type.clone();
-                                for (param, arg) in td.type_params.iter().zip(args.iter()) {
-                                    ret = self.substitute_named_param(&ret, param, arg);
-                                }
-                                ret
-                            } else {
-                                self.report_error(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "cannot index into `{obj_ty}`: type has no `get` method"
-                                    ),
-                                );
-                                Ty::Error
-                            }
-                        } else if let Some(sig) = self.lookup_fn_sig(&format!("{name}::get")) {
-                            if let Some(param_ty) = sig.params.get(1) {
-                                self.check_against(&index.0, &index.1, param_ty);
-                            }
-                            sig.return_type.clone()
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!("cannot index into `{obj_ty}`"),
-                            );
-                            Ty::Error
-                        }
-                    }
-                    _ => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("cannot index into `{obj_ty}`"),
-                        );
-                        Ty::Error
-                    }
-                }
-            }
+            Expr::Index { object, index } => self.synthesize_index(object, index, span),
 
             // Range
             Expr::Range {
                 start,
                 end,
                 inclusive: _,
-            } => {
-                let ty = if let Some(s) = start {
-                    let start_ty = self.synthesize(&s.0, &s.1);
-                    if let Some(e) = end {
-                        self.check_against(&e.0, &e.1, &start_ty);
-                    }
-                    start_ty
-                } else if let Some(e) = end {
-                    self.synthesize(&e.0, &e.1)
-                } else {
-                    Ty::I64
-                };
-                Ty::range(ty)
-            }
+            } => self.synthesize_range(start.as_deref(), end.as_deref()),
 
             // Cast expression: `expr as Type`
             Expr::Cast {
                 expr: inner,
                 ty: type_expr,
-            } => {
-                let actual = self.synthesize(&inner.0, &inner.1);
-                let target = self.resolve_type_expr(&type_expr.0);
-                let actual_resolved = self.subst.resolve(&actual);
-                let target_resolved = self.subst.resolve(&target);
+            } => self.synthesize_cast(inner, type_expr, span),
 
-                // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
-                let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
-                    // Allow bool → integer
-                    || (actual_resolved == Ty::Bool && target_resolved.is_integer())
-                    // Allow integer → bool
-                    || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
-
-                if !valid {
-                    self.report_error(
-                        TypeErrorKind::Mismatch {
-                            expected: target_resolved.to_string(),
-                            actual: actual_resolved.to_string(),
-                        },
-                        span,
-                        format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
-                    );
-                }
-
-                self.record_type(span, &target);
-                target
-            }
-
-            _ => {
-                // Scope, Select, Join, Unsafe
-                // Purity check: these constructs are inherently impure
-                if self.in_pure_function {
-                    match expr {
-                        Expr::Scope { .. } | Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                "cannot use `scope` in a pure function".to_string(),
-                            );
-                        }
-                        Expr::Select { .. } => {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                "cannot use `select` in a pure function".to_string(),
-                            );
-                        }
-                        Expr::Join(_) => {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                "cannot use `join` in a pure function".to_string(),
-                            );
-                        }
-                        Expr::SpawnLambdaActor { .. } => {
-                            self.report_error(
-                                TypeErrorKind::PurityViolation,
-                                span,
-                                "cannot use `spawn` in a pure function".to_string(),
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-                match expr {
-                    Expr::SpawnLambdaActor { params, .. } => {
-                        // spawn (x: i32) => { ... } returns Actor<T> (lambda actor handle)
-                        let param_ty = params
-                            .first()
-                            .and_then(|p| p.ty.as_ref())
-                            .map_or(Ty::Var(TypeVar::fresh()), |(te, _)| {
-                                self.resolve_type_expr(te)
-                            });
-                        Ty::Named {
-                            name: "Actor".to_string(),
-                            args: vec![param_ty],
-                        }
-                    }
-                    Expr::Scope { body: block, .. } => self.check_block(block),
-                    Expr::Unsafe(block) => {
-                        let prev = self.in_unsafe;
-                        self.in_unsafe = true;
-                        let ty = self.check_block(block);
-                        self.in_unsafe = prev;
-                        ty
-                    }
-                    Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
-                        let body_ty = self.check_block(block);
-                        Ty::Named {
-                            name: "Task".to_string(),
-                            args: vec![body_ty],
-                        }
-                    }
-                    Expr::Select { arms, timeout } => {
-                        // Each arm: binding from source => body
-                        // Bind the pattern to the source's result type, then check body
-                        // Unify all arm body types like match expressions do
-                        let mut result_ty: Option<Ty> = None;
-                        for arm in arms {
-                            self.env.push_scope();
-                            let source_ty = self.synthesize_actor_concurrency_source(
-                                &arm.source.0,
-                                &arm.source.1,
-                                "select arm source",
-                            );
-                            self.bind_pattern(&arm.binding.0, &source_ty, false, &arm.binding.1);
-                            let body_ty = if let Some(expected) = &result_ty {
-                                self.check_against(&arm.body.0, &arm.body.1, expected)
-                            } else {
-                                self.synthesize(&arm.body.0, &arm.body.1)
-                            };
-                            if result_ty.is_none() {
-                                result_ty = Some(body_ty);
-                            }
-                            self.env.pop_scope();
-                        }
-                        if let Some(tc) = timeout {
-                            self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
-                            let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
-                            if let Some(expected) = &result_ty {
-                                self.expect_type(expected, &timeout_ty, &tc.body.1);
-                            } else {
-                                result_ty = Some(timeout_ty);
-                            }
-                        }
-                        result_ty.unwrap_or(Ty::Unit)
-                    }
-                    Expr::Join(exprs) => {
-                        let types: Vec<Ty> = exprs
-                            .iter()
-                            .map(|(e, s)| {
-                                self.synthesize_actor_concurrency_source(
-                                    e,
-                                    s,
-                                    "join expression element",
-                                )
-                            })
-                            .collect();
-                        if types.len() == 1 {
-                            types[0].clone()
-                        } else {
-                            Ty::Tuple(types)
-                        }
-                    }
-                    Expr::Timeout {
-                        expr: inner,
-                        duration,
-                    } => {
-                        let inner_ty = self.synthesize(&inner.0, &inner.1);
-                        self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                        Ty::option(inner_ty)
-                    }
-
-                    _ => Ty::Unit,
-                }
-            }
+            _ => self.synthesize_concurrency(expr, span),
         };
 
         self.record_type(span, &ty);
         ty
+    }
+
+    fn synthesize_unary_op(&mut self, op: UnaryOp, operand: &Spanned<Expr>, span: &Span) -> Ty {
+        match op {
+            UnaryOp::Not => {
+                self.check_against(&operand.0, &operand.1, &Ty::Bool);
+                Ty::Bool
+            }
+            UnaryOp::Negate => {
+                let ty = self.synthesize(&operand.0, &operand.1);
+                let resolved = self.subst.resolve(&ty);
+                if !resolved.is_numeric()
+                    && !resolved.is_duration()
+                    && !matches!(resolved, Ty::Var(_))
+                    && resolved != Ty::Error
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot negate type `{resolved}`"),
+                    );
+                }
+                ty
+            }
+            UnaryOp::BitNot => {
+                let ty = self.synthesize(&operand.0, &operand.1);
+                let resolved = self.subst.resolve(&ty);
+                if !resolved.is_integer()
+                    && !matches!(resolved, Ty::Var(_))
+                    && resolved != Ty::Error
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("bitwise NOT requires integer type, found `{resolved}`"),
+                    );
+                }
+                ty
+            }
+        }
+    }
+
+    fn synthesize_range(
+        &mut self,
+        start: Option<&Spanned<Expr>>,
+        end: Option<&Spanned<Expr>>,
+    ) -> Ty {
+        let ty = if let Some(s) = start {
+            let start_ty = self.synthesize(&s.0, &s.1);
+            if let Some(e) = end {
+                self.check_against(&e.0, &e.1, &start_ty);
+            }
+            start_ty
+        } else if let Some(e) = end {
+            self.synthesize(&e.0, &e.1)
+        } else {
+            Ty::I64
+        };
+        Ty::range(ty)
+    }
+
+    fn synthesize_cast(
+        &mut self,
+        inner: &Spanned<Expr>,
+        type_expr: &Spanned<TypeExpr>,
+        span: &Span,
+    ) -> Ty {
+        let actual = self.synthesize(&inner.0, &inner.1);
+        let target = self.resolve_type_expr(&type_expr.0);
+        let actual_resolved = self.subst.resolve(&actual);
+        let target_resolved = self.subst.resolve(&target);
+
+        // Allow numeric-to-numeric casts (widening, narrowing, int↔float)
+        let valid = (actual_resolved.is_numeric() && target_resolved.is_numeric())
+            // Allow bool → integer
+            || (actual_resolved == Ty::Bool && target_resolved.is_integer())
+            // Allow integer → bool
+            || (actual_resolved.is_integer() && target_resolved == Ty::Bool);
+
+        if !valid {
+            self.report_error(
+                TypeErrorKind::Mismatch {
+                    expected: target_resolved.to_string(),
+                    actual: actual_resolved.to_string(),
+                },
+                span,
+                format!("cannot cast `{actual_resolved}` to `{target_resolved}`"),
+            );
+        }
+
+        self.record_type(span, &target);
+        target
+    }
+
+    fn synthesize_array_repeat(&mut self, value: &Spanned<Expr>, count: &Spanned<Expr>) -> Ty {
+        let elem_ty = self.synthesize(&value.0, &value.1);
+        let count_ty = self.check_against(&count.0, &count.1, &Ty::I64);
+        let resolved_count = self.subst.resolve(&count_ty);
+        if !resolved_count.is_integer() && !matches!(resolved_count, Ty::Var(_)) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &count.1,
+                format!("array repeat count must be an integer, found `{resolved_count}`"),
+            );
+        }
+        if let Expr::Literal(Literal::Integer { value, .. }) = &count.0 {
+            if *value < 0 {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &count.1,
+                    "array repeat count cannot be negative".to_string(),
+                );
+            }
+        }
+        Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+        }
+    }
+
+    fn synthesize_map_literal(&mut self, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> Ty {
+        if entries.is_empty() {
+            let k = TypeVar::fresh();
+            let v = TypeVar::fresh();
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![Ty::Var(k), Ty::Var(v)],
+            }
+        } else {
+            let (ref ke, ref ks) = entries[0].0;
+            let (ref ve, ref vs) = entries[0].1;
+            let first_key_ty = self.synthesize(ke, ks);
+            let first_val_ty = self.synthesize(ve, vs);
+            for (k, v) in &entries[1..] {
+                self.check_against(&k.0, &k.1, &first_key_ty);
+                self.check_against(&v.0, &v.1, &first_val_ty);
+            }
+            Ty::Named {
+                name: "HashMap".to_string(),
+                args: vec![first_key_ty, first_val_ty],
+            }
+        }
+    }
+
+    fn synthesize_iflet(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        expr: &Spanned<Expr>,
+        body: &Block,
+        else_body: Option<&Block>,
+        span: &Span,
+    ) -> Ty {
+        let scr_ty = self.synthesize(&expr.0, &expr.1);
+        self.env.push_scope();
+        self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
+        let then_ty = self.check_block(body);
+        self.env.pop_scope();
+        if let Some(block) = else_body {
+            let else_ty = self.check_block(block);
+            self.unify_branches(&then_ty, &else_ty, span)
+        } else {
+            Ty::Unit
+        }
+    }
+
+    fn synthesize_send(
+        &mut self,
+        target: &Spanned<Expr>,
+        message: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        let _target_ty = self.synthesize(&target.0, &target.1);
+        let msg_ty_raw = self.synthesize(&message.0, &message.1);
+        let msg_ty = self.subst.resolve(&msg_ty_raw);
+        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Send) {
+            self.report_error(
+                TypeErrorKind::InvalidSend,
+                span,
+                format!("cannot send `{msg_ty}` to actor: type is not Send"),
+            );
+        }
+        // Mark sent value as moved (unless Copy)
+        if !self.registry.implements_marker(&msg_ty, MarkerTrait::Copy) {
+            if let Expr::Identifier(name) = &message.0 {
+                self.env.mark_moved(name, message.1.clone());
+            }
+        }
+        Ty::Unit
+    }
+
+    fn synthesize_yield(&mut self, value: Option<&Spanned<Expr>>, span: &Span) -> Ty {
+        if !self.in_generator {
+            self.report_error(
+                TypeErrorKind::YieldOutsideGenerator,
+                span,
+                "`yield` outside of generator function".to_string(),
+            );
+        }
+        if let Some(val_expr) = value {
+            if let Some(return_ty) = &self.current_return_type {
+                let resolved = self.subst.resolve(return_ty);
+                let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
+                    yields.clone()
+                } else if let Some(yields) = resolved.as_async_generator() {
+                    yields.clone()
+                } else {
+                    resolved
+                };
+                self.check_against(&val_expr.0, &val_expr.1, &yield_ty);
+            } else {
+                self.synthesize(&val_expr.0, &val_expr.1);
+            }
+        }
+        Ty::Unit
+    }
+
+    fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+        if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
+            let is_moved = binding.is_moved;
+            let ty = binding.ty.clone();
+            if is_moved {
+                self.report_error(
+                    TypeErrorKind::UseAfterMove,
+                    span,
+                    format!("use of moved value `{name}`"),
+                );
+            }
+            // Track captures: variable from scope below the lambda boundary
+            if let Some(capture_depth) = self.lambda_capture_depth {
+                if depth < capture_depth {
+                    self.lambda_captures.push(ty.clone());
+                }
+            }
+            ty
+        } else if self.fn_sigs.contains_key(name) {
+            // Function name used as a value (e.g., variant constructor)
+            if let Some(caller) = &self.current_function {
+                self.call_graph
+                    .entry(caller.clone())
+                    .or_default()
+                    .insert(name.to_string());
+            }
+            let sig = self.fn_sigs[name].clone();
+            if sig.params.is_empty() {
+                sig.return_type
+            } else {
+                Ty::Function {
+                    params: sig.params,
+                    ret: Box::new(sig.return_type),
+                }
+            }
+        } else {
+            self.resolve_identifier_variant(name, span)
+        }
+    }
+
+    /// Look up an identifier as a unit enum variant or qualified variant name.
+    fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
+        let mut found = None;
+        for (type_name, td) in &self.type_defs {
+            if let Some(variant) = td.variants.get(name) {
+                if matches!(variant, VariantDef::Unit) {
+                    let ty = if matches!(td.kind, TypeDefKind::Machine) {
+                        Ty::Machine {
+                            name: type_name.clone(),
+                        }
+                    } else {
+                        Ty::Named {
+                            name: type_name.clone(),
+                            args: vec![],
+                        }
+                    };
+                    found = Some(ty);
+                    break;
+                }
+            }
+        }
+        // Handle qualified variant names (e.g., Light::Off, LightEvent::Toggle)
+        if found.is_none() {
+            if let Some(pos) = name.rfind("::") {
+                let type_prefix = &name[..pos];
+                let variant_name = &name[pos + 2..];
+                if let Some(td) = self.type_defs.get(type_prefix) {
+                    if let Some(variant) = td.variants.get(variant_name) {
+                        if matches!(variant, VariantDef::Unit) {
+                            let ty = if matches!(td.kind, TypeDefKind::Machine) {
+                                Ty::Machine {
+                                    name: type_prefix.to_string(),
+                                }
+                            } else {
+                                Ty::Named {
+                                    name: type_prefix.to_string(),
+                                    args: vec![],
+                                }
+                            };
+                            found = Some(ty);
+                        }
+                    }
+                }
+                // Also check fn_sigs for qualified constructors
+                if found.is_none() {
+                    if let Some(sig) = self.fn_sigs.get(variant_name) {
+                        if sig.params.is_empty() {
+                            let ret = &sig.return_type;
+                            let matches_type = match ret {
+                                Ty::Machine { name: n } | Ty::Named { name: n, .. } => {
+                                    n == type_prefix
+                                }
+                                _ => false,
+                            };
+                            if matches_type {
+                                found = Some(sig.return_type.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(ty) = found {
+            ty
+        } else {
+            if name == "self" {
+                self.report_error(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
+                    "`self` is not a valid identifier in Hew; \
+                     use a named receiver parameter instead: \
+                     `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
+                        .to_string(),
+                );
+            } else {
+                let similar = crate::error::find_similar(
+                    name,
+                    self.env
+                        .all_names()
+                        .chain(self.fn_sigs.keys().map(String::as_str)),
+                );
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
+                    format!("undefined variable `{name}`"),
+                    similar,
+                );
+            }
+            Ty::Error
+        }
+    }
+
+    fn synthesize_index(
+        &mut self,
+        object: &Spanned<Expr>,
+        index: &Spanned<Expr>,
+        span: &Span,
+    ) -> Ty {
+        let obj_ty = self.synthesize(&object.0, &object.1);
+        self.check_against(&index.0, &index.1, &Ty::I64);
+        match &obj_ty {
+            Ty::Array(elem, _) | Ty::Slice(elem) => (**elem).clone(),
+            Ty::Named { name, args } if name == "Vec" && !args.is_empty() => args[0].clone(),
+            // Custom type indexing: desugar obj[key] → obj.get(key)
+            Ty::Named { name, args } => {
+                if let Some(td) = self.lookup_type_def(name) {
+                    if let Some(sig) = td.methods.get("get") {
+                        if let Some(param_ty) = sig.params.first() {
+                            self.check_against(&index.0, &index.1, param_ty);
+                        }
+                        let mut ret = sig.return_type.clone();
+                        for (param, arg) in td.type_params.iter().zip(args.iter()) {
+                            ret = self.substitute_named_param(&ret, param, arg);
+                        }
+                        ret
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            format!("cannot index into `{obj_ty}`: type has no `get` method"),
+                        );
+                        Ty::Error
+                    }
+                } else if let Some(sig) = self.lookup_fn_sig(&format!("{name}::get")) {
+                    if let Some(param_ty) = sig.params.get(1) {
+                        self.check_against(&index.0, &index.1, param_ty);
+                    }
+                    sig.return_type.clone()
+                } else {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot index into `{obj_ty}`"),
+                    );
+                    Ty::Error
+                }
+            }
+            _ => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!("cannot index into `{obj_ty}`"),
+                );
+                Ty::Error
+            }
+        }
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "concurrency variants (scope/select/join/spawn/unsafe/timeout) with purity checks"
+    )]
+    fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
+        if self.in_pure_function {
+            match expr {
+                Expr::Scope { .. } | Expr::ScopeLaunch(_) | Expr::ScopeSpawn(_) => {
+                    self.report_error(
+                        TypeErrorKind::PurityViolation,
+                        span,
+                        "cannot use `scope` in a pure function".to_string(),
+                    );
+                }
+                Expr::Select { .. } => {
+                    self.report_error(
+                        TypeErrorKind::PurityViolation,
+                        span,
+                        "cannot use `select` in a pure function".to_string(),
+                    );
+                }
+                Expr::Join(_) => {
+                    self.report_error(
+                        TypeErrorKind::PurityViolation,
+                        span,
+                        "cannot use `join` in a pure function".to_string(),
+                    );
+                }
+                Expr::SpawnLambdaActor { .. } => {
+                    self.report_error(
+                        TypeErrorKind::PurityViolation,
+                        span,
+                        "cannot use `spawn` in a pure function".to_string(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        match expr {
+            Expr::SpawnLambdaActor { params, .. } => {
+                let param_ty = params
+                    .first()
+                    .and_then(|p| p.ty.as_ref())
+                    .map_or(Ty::Var(TypeVar::fresh()), |(te, _)| {
+                        self.resolve_type_expr(te)
+                    });
+                Ty::Named {
+                    name: "Actor".to_string(),
+                    args: vec![param_ty],
+                }
+            }
+            Expr::Scope { body: block, .. } => self.check_block(block),
+            Expr::Unsafe(block) => {
+                let prev = self.in_unsafe;
+                self.in_unsafe = true;
+                let ty = self.check_block(block);
+                self.in_unsafe = prev;
+                ty
+            }
+            Expr::ScopeLaunch(block) | Expr::ScopeSpawn(block) => {
+                let body_ty = self.check_block(block);
+                Ty::Named {
+                    name: "Task".to_string(),
+                    args: vec![body_ty],
+                }
+            }
+            Expr::Select { arms, timeout } => {
+                let mut result_ty: Option<Ty> = None;
+                for arm in arms {
+                    self.env.push_scope();
+                    let source_ty = self.synthesize_actor_concurrency_source(
+                        &arm.source.0,
+                        &arm.source.1,
+                        "select arm source",
+                    );
+                    self.bind_pattern(&arm.binding.0, &source_ty, false, &arm.binding.1);
+                    let body_ty = if let Some(expected) = &result_ty {
+                        self.check_against(&arm.body.0, &arm.body.1, expected)
+                    } else {
+                        self.synthesize(&arm.body.0, &arm.body.1)
+                    };
+                    if result_ty.is_none() {
+                        result_ty = Some(body_ty);
+                    }
+                    self.env.pop_scope();
+                }
+                if let Some(tc) = timeout {
+                    self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
+                    let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
+                    if let Some(expected) = &result_ty {
+                        self.expect_type(expected, &timeout_ty, &tc.body.1);
+                    } else {
+                        result_ty = Some(timeout_ty);
+                    }
+                }
+                result_ty.unwrap_or(Ty::Unit)
+            }
+            Expr::Join(exprs) => {
+                let types: Vec<Ty> = exprs
+                    .iter()
+                    .map(|(e, s)| {
+                        self.synthesize_actor_concurrency_source(e, s, "join expression element")
+                    })
+                    .collect();
+                if types.len() == 1 {
+                    types[0].clone()
+                } else {
+                    Ty::Tuple(types)
+                }
+            }
+            Expr::Timeout {
+                expr: inner,
+                duration,
+            } => {
+                let inner_ty = self.synthesize(&inner.0, &inner.1);
+                self.check_against(&duration.0, &duration.1, &Ty::Duration);
+                Ty::option(inner_ty)
+            }
+            _ => Ty::Unit,
+        }
     }
 
     /// Check: verify expression against expected type (top-down).

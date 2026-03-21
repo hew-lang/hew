@@ -3091,20 +3091,21 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
   // HashSet<T> method dispatcher
   auto emitHashSetMethod = [&](mlir::Value setValue, mlir::Type elemType, mlir::Value argValue,
                                mlir::Value &resultOut) -> bool {
-    if (method == "insert") {
+    // Helper for insert/contains/remove — identical structure, different runtime function.
+    auto emitHashSetElemOp = [&](llvm::StringRef opName) -> bool {
       if (!argValue) {
-        emitError(location) << "HashSet::insert requires an argument";
+        emitError(location) << "HashSet::" << opName << " requires an argument";
         return true;
       }
       auto val = coerceType(argValue, elemType, location);
-      // Call hew_hashset_insert_int or hew_hashset_insert_string based on element type
       std::string funcName;
       if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_insert_int";
+        funcName = ("hew_hashset_" + opName + "_int").str();
       } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_insert_string";
+        funcName = ("hew_hashset_" + opName + "_string").str();
       } else {
-        emitError(location) << "HashSet::insert only supports int and String element types";
+        emitError(location) << "HashSet::" << opName
+                            << " only supports int and String element types";
         return true;
       }
       resultOut = hew::RuntimeCallOp::create(
@@ -3112,49 +3113,14 @@ std::optional<mlir::Value> MLIRGen::generateBuiltinMethodCall(const ast::ExprMet
                       mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
                       .getResult();
       return true;
-    }
-    if (method == "contains") {
-      if (!argValue) {
-        emitError(location) << "HashSet::contains requires an argument";
-        return true;
-      }
-      auto val = coerceType(argValue, elemType, location);
-      std::string funcName;
-      if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_contains_int";
-      } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_contains_string";
-      } else {
-        emitError(location) << "HashSet::contains only supports int and String element types";
-        return true;
-      }
-      resultOut = hew::RuntimeCallOp::create(
-                      builder, location, mlir::TypeRange{builder.getI1Type()},
-                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
-                      .getResult();
-      return true;
-    }
-    if (method == "remove") {
-      if (!argValue) {
-        emitError(location) << "HashSet::remove requires an argument";
-        return true;
-      }
-      auto val = coerceType(argValue, elemType, location);
-      std::string funcName;
-      if (elemType.isInteger(64)) {
-        funcName = "hew_hashset_remove_int";
-      } else if (mlir::isa<hew::StringRefType>(elemType)) {
-        funcName = "hew_hashset_remove_string";
-      } else {
-        emitError(location) << "HashSet::remove only supports int and String element types";
-        return true;
-      }
-      resultOut = hew::RuntimeCallOp::create(
-                      builder, location, mlir::TypeRange{builder.getI1Type()},
-                      mlir::SymbolRefAttr::get(&context, funcName), mlir::ValueRange{setValue, val})
-                      .getResult();
-      return true;
-    }
+    };
+
+    if (method == "insert")
+      return emitHashSetElemOp("insert");
+    if (method == "contains")
+      return emitHashSetElemOp("contains");
+    if (method == "remove")
+      return emitHashSetElemOp("remove");
     if (method == "len") {
       resultOut = hew::RuntimeCallOp::create(builder, location, mlir::TypeRange{i64Type},
                                              mlir::SymbolRefAttr::get(&context, "hew_hashset_len"),

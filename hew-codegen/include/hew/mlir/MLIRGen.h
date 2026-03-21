@@ -178,6 +178,15 @@ private:
   void generateStatement(const ast::Stmt &stmt);
   void generateLetStmt(const ast::StmtLet &stmt);
   void generateVarStmt(const ast::StmtVar &stmt);
+
+  /// Shared drop registration for both let and var bindings.
+  /// Registers Stream/Sink RAII close, collection/string drops,
+  /// user-defined drops, wire struct field drops, and closure env cleanup.
+  void registerDropsForVariable(
+      const std::string &varName, mlir::Value value,
+      const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
+      const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
+      bool isMutable, mlir::Location location);
   void generateAssignStmt(const ast::StmtAssign &stmt);
   void generateIfStmt(const ast::StmtIf &stmt);
   mlir::Value generateIfStmtAsExpr(const ast::StmtIf &stmt);

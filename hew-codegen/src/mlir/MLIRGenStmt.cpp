@@ -751,287 +751,9 @@ void MLIRGen::generateLetStmt(const ast::StmtLet &stmt) {
       }
     }
 
-    // ── RAII auto-close for Stream/Sink handles ──────────────────────────
-    // When a Stream/Sink goes out of scope, call the appropriate close
-    // function.  An alloca tracks the live handle pointer; explicit
-    // .close() nulls the alloca so the scope-exit close is a no-op.
-    {
-      auto sit = streamHandleVarTypes.find(varName);
-      // Also detect stream pipeline method calls (.filter, .map, .take, .chunks)
-      // which create new Box<HewStream> handles not tracked by streamHandleVarTypes.
-      bool isStreamPipelineResult = false;
-      if (sit == streamHandleVarTypes.end() && stmt.value) {
-        if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind)) {
-          if (mc->method == "filter" || mc->method == "map" ||
-              mc->method == "take" || mc->method == "chunks") {
-            // Verify the receiver is a known stream.
-            if (mc->receiver) {
-              if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
-                auto recvSit = streamHandleVarTypes.find(recvId->name);
-                if (recvSit != streamHandleVarTypes.end() && recvSit->second == "Stream")
-                  isStreamPipelineResult = true;
-              }
-              if (!isStreamPipelineResult) {
-                if (auto *typeExpr = resolvedTypeOf(mc->receiver->span))
-                  isStreamPipelineResult = typeExprStreamKind(*typeExpr) == "Stream";
-              }
-            }
-          }
-        }
-      }
-      if (isStreamPipelineResult) {
-        streamHandleVarTypes[varName] = "Stream";
-      }
-      if ((sit != streamHandleVarTypes.end() || isStreamPipelineResult) && value) {
-        std::string closeFn;
-        std::string kind = isStreamPipelineResult ? "Stream" :
-            (sit != streamHandleVarTypes.end() ? sit->second : "");
-        if (kind == "Stream")
-          closeFn = "hew_stream_close";
-        else if (kind == "Sink")
-          closeFn = "hew_sink_close";
-        else if (kind == "Pair")
-          closeFn = "hew_stream_pair_free";
-        if (!closeFn.empty()) {
-          auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-          auto allocaType = mlir::MemRefType::get({}, ptrType);
-          auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
-          mlir::memref::StoreOp::create(builder, location, value, closeAlloca, mlir::ValueRange{});
-          if (!dropScopes.empty())
-            dropScopes.back().push_back({varName, closeFn, false, closeAlloca});
-        }
-      }
-    }
-
-    // Vec/HashMap string getters now return owned (strdup'd) copies
-    bool isBorrowedGetString = false;
-
-    // Register drop functions from type annotation
-    if (stmt.ty) {
-      if (auto *named = std::get_if<ast::TypeNamed>(&stmt.ty->value.kind)) {
-        auto typeName = resolveTypeAlias(named->name);
-        auto *defOp = (value && value.getDefiningOp()) ? value.getDefiningOp() : nullptr;
-        bool isVecCtor = defOp && mlir::isa<hew::VecNewOp>(defOp);
-        bool isHashMapCtor = defOp && mlir::isa<hew::HashMapNewOp>(defOp);
-        bool isHashSetCtor =
-            defOp && defOp->getName().getStringRef() == "hew.runtime_call" &&
-            defOp->hasAttr("callee") &&
-            mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
-                "hew_hashset_new";
-        // Method calls that return new collections.  Only .get() on
-        // Vec<Vec<T>> borrows — everything else allocates fresh.
-        // ExprCall (user functions) excluded — may return input unchanged.
-        bool isNewCollectionMethod = false;
-        if (stmt.value) {
-          if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind))
-            isNewCollectionMethod = (mc->method != "get");
-        }
-        // Bytes literals (b"..." and bytes [...]) are Vec constructors.
-        bool isBytesLiteral = false;
-        if (stmt.value) {
-          const auto &vk = stmt.value->value.kind;
-          isBytesLiteral = std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
-                           std::holds_alternative<ast::ExprByteArrayLiteral>(vk);
-        }
-        if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod || isBytesLiteral))
-          registerDroppable(varName, "hew_vec_free");
-        else if (typeName == "HashMap" && (isHashMapCtor || isNewCollectionMethod))
-          registerDroppable(varName, "hew_hashmap_free_impl");
-        else if (typeName == "HashSet" && (isHashSetCtor || isNewCollectionMethod))
-          registerDroppable(varName, "hew_hashset_free");
-        else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
-                 !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
-          // Don't register string drop for borrowed references from .get()
-          bool isBorrowed = isBorrowedGetString;
-          if (stmt.value) {
-            if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind))
-              isBorrowed = (mc->method == "get");
-          }
-          if (!isBorrowed)
-            registerDroppable(varName, "hew_string_drop");
-        } else {
-          auto dropIt = userDropFuncs.find(typeName);
-          if (dropIt != userDropFuncs.end())
-            registerDroppable(varName, dropIt->second, /*isUserDrop=*/true);
-        }
-      }
-    }
-
-    // Register string drops when VALUE is string-typed
-    if (value && mlir::isa<hew::StringRefType>(value.getType())) {
-      // Opaque handle variables (stream, sink, pair, http, regex, etc.) are
-      // NOT strings — they have their own lifecycle (e.g. hew_stream_close,
-      // hew_sink_close, hew_stream_pair_free).  Do NOT register them for
-      // hew_string_drop.
-      bool isHandle = handleVarTypes.count(varName) || streamHandleVarTypes.count(varName);
-
-      bool alreadyRegistered = false;
-      if (!dropScopes.empty()) {
-        for (auto &e : dropScopes.back()) {
-          if (e.varName == varName) {
-            alreadyRegistered = true;
-            break;
-          }
-        }
-      }
-      if (!alreadyRegistered && !isHandle && !isBorrowedGetString)
-        registerDroppable(varName, "hew_string_drop");
-    }
-
-    // Fallback: register drops for Vec/HashMap by MLIR type when the type
-    // annotation path above didn't fire (e.g. no annotation, or inferred type).
-    // Only register for constructors and provably-new-allocation methods.
-    if (value) {
-      auto valType = value.getType();
-      bool isOwned = false;
-      if (auto *defOp = value.getDefiningOp()) {
-        isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
-      }
-      if (!isOwned && stmt.value) {
-        const auto &vk = stmt.value->value.kind;
-        // Method calls generally return fresh allocations.  Only `.get()`
-        // on Vec<Vec<T>> / Vec<HashMap<K,V>> is a known borrowing accessor
-        // (it returns a raw pointer into Vec storage).  For Vec<String>,
-        // .get() returns strdup, so it IS owned — but that's tracked
-        // separately via hew_vec_get_str.
-        if (auto *mc = std::get_if<ast::ExprMethodCall>(&vk)) {
-          if (mc->method != "get")
-            isOwned = true;
-        }
-        // Function calls where the callee is an external/imported function
-        // (no body in this module) return fresh allocations. Local functions
-        // may return parameters unchanged, so only mark imported calls owned.
-        if (auto *call = std::get_if<ast::ExprCall>(&vk)) {
-          // Look through hew.bitcast to find the underlying CallOp.
-          mlir::Value callResult = value;
-          if (auto *defOp = callResult.getDefiningOp()) {
-            if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() > 0)
-              callResult = defOp->getOperand(0);
-          }
-          if (auto *defOp = callResult.getDefiningOp()) {
-            if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(defOp)) {
-              if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(callOp.getCallee())) {
-                if (callee.isExternal())
-                  isOwned = true;
-              }
-            }
-          }
-        }
-        // Bytes literals are Vec constructors.
-        if (std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
-            std::holds_alternative<ast::ExprByteArrayLiteral>(vk))
-          isOwned = true;
-        // Look through unsafe {} wrappers.
-        if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
-          if (ue->block.trailing_expr) {
-            const auto &inner = ue->block.trailing_expr->value.kind;
-            if (std::holds_alternative<ast::ExprCall>(inner) ||
-                std::holds_alternative<ast::ExprMethodCall>(inner))
-              isOwned = true;
-          }
-        }
-      }
-      auto alreadyRegistered = [&]() {
-        if (dropScopes.empty()) return false;
-        for (auto &e : dropScopes.back())
-          if (e.varName == varName) return true;
-        return false;
-      };
-      if (isOwned && mlir::isa<hew::VecType>(valType) && !alreadyRegistered())
-        registerDroppable(varName, "hew_vec_free");
-      else if (isOwned && mlir::isa<hew::HashMapType>(valType) && !alreadyRegistered())
-        registerDroppable(varName, "hew_hashmap_free_impl");
-      // Module function calls return !llvm.ptr, losing the Hew type info.
-      // Fall back to the resolved AST type or callee function signature to
-      // detect Vec/HashMap/String returns from module functions.
-      else if (isOwned && mlir::isa<mlir::LLVM::LLVMPointerType>(valType) && !alreadyRegistered()) {
-        std::string dropFn;
-        // Try resolved AST type first
-        if (stmt.value) {
-          if (auto *resolvedType = resolvedTypeOf(stmt.value->span))
-            dropFn = dropFuncForType(*resolvedType);
-        }
-        // Fall back to callee function's return type
-        if (dropFn.empty() && value.getDefiningOp()) {
-          if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(value.getDefiningOp())) {
-            if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(callOp.getCallee())) {
-              auto funcType = callee.getFunctionType();
-              if (funcType.getNumResults() > 0)
-                dropFn = dropFuncForMLIRType(funcType.getResult(0));
-            }
-          }
-        }
-        if (!dropFn.empty())
-          registerDroppable(varName, dropFn);
-      }
-    }
-
-    // Register user-defined Drop from struct init
-    if (stmt.value) {
-      if (auto *si = std::get_if<ast::ExprStructInit>(&stmt.value->value.kind)) {
-        bool hasTypedAnnotation =
-            stmt.ty && std::holds_alternative<ast::TypeNamed>(stmt.ty->value.kind);
-        if (!hasTypedAnnotation) {
-          auto dropIt = userDropFuncs.find(si->name);
-          if (dropIt != userDropFuncs.end())
-            registerDroppable(varName, dropIt->second, /*isUserDrop=*/true);
-        }
-      }
-    }
-
-    // Auto-field-drop for wire structs with owned fields (String, Vec, etc.).
-    // Wire structs decoded from JSON/binary/YAML contain freshly-allocated
-    // field copies. Safe to drop at scope exit when the struct was freshly
-    // created (struct init, function/method call, decode).
-    // Non-wire structs are excluded: generic instantiations and user structs
-    // may have borrowed fields that would cause double-frees.
-    if (value && !dropScopes.empty()) {
-      auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
-      if (structTy && structTy.isIdentified() &&
-          !userDropFuncs.count(structTy.getName().str()) &&
-          wireStructNames.count(structTy.getName().str())) {
-        bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
-        if (needsFieldDrop) {
-          bool isOwnedStruct = false;
-          if (stmt.value) {
-            const auto &vk = stmt.value->value.kind;
-            isOwnedStruct = std::holds_alternative<ast::ExprStructInit>(vk) ||
-                            std::holds_alternative<ast::ExprCall>(vk) ||
-                            std::holds_alternative<ast::ExprMethodCall>(vk);
-            if (auto *ue = std::get_if<ast::ExprUnsafe>(&vk)) {
-              if (ue->block.trailing_expr) {
-                const auto &inner = ue->block.trailing_expr->value.kind;
-                isOwnedStruct = std::holds_alternative<ast::ExprCall>(inner) ||
-                                std::holds_alternative<ast::ExprMethodCall>(inner) ||
-                                std::holds_alternative<ast::ExprStructInit>(inner);
-              }
-            }
-          }
-          bool alreadyReg = false;
-          for (auto &e : dropScopes.back())
-            if (e.varName == varName) { alreadyReg = true; break; }
-          if (isOwnedStruct && !alreadyReg)
-            registerDroppable(varName, "__auto_field_drop");
-        }
-      }
-    }
-
-    // Register closure env for RAII cleanup via hew_rc_drop.
-    if (mlir::isa<hew::ClosureType>(value.getType())) {
-      registerDroppable(varName, "hew_rc_drop");
-      if (stmt.value && std::holds_alternative<ast::ExprIdentifier>(stmt.value->value.kind)) {
-        auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-        auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
-        hew::RcCloneOp::create(builder, location, ptrType, envPtr);
-      }
-    }
-    // Track dyn Trait variable types
-    if (stmt.ty) {
-      if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&stmt.ty->value.kind)) {
-        if (!traitObj->bounds.empty())
-          dynTraitVarTypes[varName] = traitObj->bounds[0].name;
-      }
-    }
+    // ── Drop registration (shared with generateVarStmt) ─────────────
+    registerDropsForVariable(varName, value, &stmt.ty, &stmt.value,
+                             /*isMutable=*/false, location);
 
   } else if (auto *tuplePat = std::get_if<ast::PatTuple>(&pattern.kind)) {
     bindTuplePatternFields(*tuplePat, value, location);
@@ -1129,36 +851,76 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
       streamHandleVarTypes[varNameStr] = streamStr;
   }
 
-  // ── RAII auto-close for Stream/Sink handles (var) ───────────────────────
+  // ── Drop registration (shared with generateLetStmt) ──────────────
+  registerDropsForVariable(varNameStr, initValue, &stmt.ty, &stmt.value,
+                           /*isMutable=*/true, location);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Shared drop registration for let/var bindings
+// ═══════════════════════════════════════════════════════════════════════════
+
+void MLIRGen::registerDropsForVariable(
+    const std::string &varName, mlir::Value value,
+    const std::optional<ast::Spanned<ast::TypeExpr>> *stmtTy,
+    const std::optional<ast::Spanned<ast::Expr>> *stmtValue,
+    bool isMutable, mlir::Location location) {
+
+  // ── RAII auto-close for Stream/Sink handles ──────────────────────────
   {
-    auto sit = streamHandleVarTypes.find(varNameStr);
-    if (sit != streamHandleVarTypes.end() && initValue) {
+    auto sit = streamHandleVarTypes.find(varName);
+    // Detect stream pipeline method calls (.filter, .map, .take, .chunks)
+    // which create new Box<HewStream> handles not tracked by streamHandleVarTypes.
+    bool isStreamPipelineResult = false;
+    if (sit == streamHandleVarTypes.end() && stmtValue && *stmtValue) {
+      if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind)) {
+        if (mc->method == "filter" || mc->method == "map" ||
+            mc->method == "take" || mc->method == "chunks") {
+          if (mc->receiver) {
+            if (auto *recvId = std::get_if<ast::ExprIdentifier>(&mc->receiver->value.kind)) {
+              auto recvSit = streamHandleVarTypes.find(recvId->name);
+              if (recvSit != streamHandleVarTypes.end() && recvSit->second == "Stream")
+                isStreamPipelineResult = true;
+            }
+            if (!isStreamPipelineResult) {
+              if (auto *typeExpr = resolvedTypeOf(mc->receiver->span))
+                isStreamPipelineResult = typeExprStreamKind(*typeExpr) == "Stream";
+            }
+          }
+        }
+      }
+    }
+    if (isStreamPipelineResult) {
+      streamHandleVarTypes[varName] = "Stream";
+    }
+    if ((sit != streamHandleVarTypes.end() || isStreamPipelineResult) && value) {
       std::string closeFn;
-      if (sit->second == "Stream")
+      std::string kind = isStreamPipelineResult ? "Stream" :
+          (sit != streamHandleVarTypes.end() ? sit->second : "");
+      if (kind == "Stream")
         closeFn = "hew_stream_close";
-      else if (sit->second == "Sink")
+      else if (kind == "Sink")
         closeFn = "hew_sink_close";
-      else if (sit->second == "Pair")
+      else if (kind == "Pair")
         closeFn = "hew_stream_pair_free";
       if (!closeFn.empty()) {
         auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
         auto allocaType = mlir::MemRefType::get({}, ptrType);
         auto closeAlloca = mlir::memref::AllocaOp::create(builder, location, allocaType);
-        mlir::memref::StoreOp::create(builder, location, initValue, closeAlloca, mlir::ValueRange{});
+        mlir::memref::StoreOp::create(builder, location, value, closeAlloca, mlir::ValueRange{});
         if (!dropScopes.empty())
-          dropScopes.back().push_back({varNameStr, closeFn, false, closeAlloca});
+          dropScopes.back().push_back({varName, closeFn, false, closeAlloca});
       }
     }
   }
 
-  // Vec/HashMap string getters now return owned (strdup'd) copies
   bool isBorrowedGetString = false;
 
-  // Register drop functions from type annotation
-  if (stmt.ty) {
-    if (auto *named = std::get_if<ast::TypeNamed>(&stmt.ty->value.kind)) {
+  // ── Type-annotation-based drops ────────────────────────────────────
+  if (stmtTy && *stmtTy) {
+    if (auto *named = std::get_if<ast::TypeNamed>(&(*stmtTy)->value.kind)) {
       auto typeName = resolveTypeAlias(named->name);
-      auto *defOp = (initValue && initValue.getDefiningOp()) ? initValue.getDefiningOp() : nullptr;
+      auto *defOp = (value && value.getDefiningOp()) ? value.getDefiningOp() : nullptr;
       bool isVecCtor = defOp && mlir::isa<hew::VecNewOp>(defOp);
       bool isHashMapCtor = defOp && mlir::isa<hew::HashMapNewOp>(defOp);
       bool isHashSetCtor =
@@ -1166,96 +928,96 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
           defOp->hasAttr("callee") &&
           mlir::cast<mlir::SymbolRefAttr>(defOp->getAttr("callee")).getLeafReference() ==
               "hew_hashset_new";
-      // Method calls that return new collections.
       bool isNewCollectionMethod = false;
-      if (stmt.value) {
-        if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind))
+      if (stmtValue && *stmtValue) {
+        if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
           isNewCollectionMethod = (mc->method != "get");
       }
-      // Bytes literals (b"..." and bytes [...]) are Vec constructors.
       bool isBytesLiteral = false;
-      if (stmt.value) {
-        const auto &vk = stmt.value->value.kind;
+      if (stmtValue && *stmtValue) {
+        const auto &vk = (*stmtValue)->value.kind;
         isBytesLiteral = std::holds_alternative<ast::ExprByteStringLiteral>(vk) ||
                          std::holds_alternative<ast::ExprByteArrayLiteral>(vk);
       }
       if ((typeName == "Vec" || typeName == "bytes") && (isVecCtor || isNewCollectionMethod || isBytesLiteral))
-        registerDroppable(varNameStr, "hew_vec_free");
+        registerDroppable(varName, "hew_vec_free");
       else if (typeName == "HashMap" && (isHashMapCtor || isNewCollectionMethod))
-        registerDroppable(varNameStr, "hew_hashmap_free_impl");
+        registerDroppable(varName, "hew_hashmap_free_impl");
       else if (typeName == "HashSet" && (isHashSetCtor || isNewCollectionMethod))
-        registerDroppable(varNameStr, "hew_hashset_free");
+        registerDroppable(varName, "hew_hashset_free");
       else if ((typeName == "String" || typeName == "string" || typeName == "str") &&
-               !handleVarTypes.count(varNameStr) && !streamHandleVarTypes.count(varNameStr)) {
+               !handleVarTypes.count(varName) && !streamHandleVarTypes.count(varName)) {
         bool isBorrowed = isBorrowedGetString;
-        if (stmt.value) {
-          if (auto *mc = std::get_if<ast::ExprMethodCall>(&stmt.value->value.kind))
+        if (stmtValue && *stmtValue) {
+          if (auto *mc = std::get_if<ast::ExprMethodCall>(&(*stmtValue)->value.kind))
             isBorrowed = (mc->method == "get");
         }
         if (!isBorrowed)
-          registerDroppable(varNameStr, "hew_string_drop");
+          registerDroppable(varName, "hew_string_drop");
       } else {
         auto dropIt = userDropFuncs.find(typeName);
         if (dropIt != userDropFuncs.end())
-          registerDroppable(varNameStr, dropIt->second, /*isUserDrop=*/true);
+          registerDroppable(varName, dropIt->second, /*isUserDrop=*/true);
       }
     }
   }
 
-  // Register string drops when VALUE is string-typed (runtime detection).
-  // For mutable variables, gate on ownership to avoid double-free on borrowed
-  // values that may be reassigned.
-  if (initValue && mlir::isa<hew::StringRefType>(initValue.getType())) {
-    bool isHandle = handleVarTypes.count(varNameStr) || streamHandleVarTypes.count(varNameStr);
+  // ── Runtime string drop by value type ──────────────────────────────
+  if (value && mlir::isa<hew::StringRefType>(value.getType())) {
+    bool isHandle = handleVarTypes.count(varName) || streamHandleVarTypes.count(varName);
 
     bool alreadyRegistered = false;
     if (!dropScopes.empty()) {
       for (auto &e : dropScopes.back()) {
-        if (e.varName == varNameStr) {
+        if (e.varName == varName) {
           alreadyRegistered = true;
           break;
         }
       }
     }
     if (!alreadyRegistered && !isHandle && !isBorrowedGetString) {
-      bool isOwned = false;
-      if (auto *defOp = initValue.getDefiningOp()) {
-        isOwned = mlir::isa<hew::StringConcatOp>(defOp) ||
-                  defOp->getName().getStringRef() == "hew.to_string" ||
-                  defOp->getName().getStringRef() == "hew.constant" ||
-                  mlir::isa<mlir::func::CallOp>(defOp);
+      if (isMutable) {
+        // Mutable variables gate on ownership to avoid double-free on
+        // borrowed values that may be reassigned.
+        bool isOwned = false;
+        if (auto *defOp = value.getDefiningOp()) {
+          isOwned = mlir::isa<hew::StringConcatOp>(defOp) ||
+                    defOp->getName().getStringRef() == "hew.to_string" ||
+                    defOp->getName().getStringRef() == "hew.constant" ||
+                    mlir::isa<mlir::func::CallOp>(defOp);
+        }
+        if (stmtValue && *stmtValue) {
+          const auto &vk = (*stmtValue)->value.kind;
+          if (std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
+              std::holds_alternative<ast::ExprCall>(vk) ||
+              std::holds_alternative<ast::ExprMethodCall>(vk) ||
+              std::holds_alternative<ast::ExprBinary>(vk) ||
+              std::holds_alternative<ast::ExprLiteral>(vk))
+            isOwned = true;
+        }
+        if (isOwned)
+          registerDroppable(varName, "hew_string_drop");
+      } else {
+        registerDroppable(varName, "hew_string_drop");
       }
-      if (stmt.value) {
-        const auto &vk = stmt.value->value.kind;
-        if (std::holds_alternative<ast::ExprInterpolatedString>(vk) ||
-            std::holds_alternative<ast::ExprCall>(vk) ||
-            std::holds_alternative<ast::ExprMethodCall>(vk) ||
-            std::holds_alternative<ast::ExprBinary>(vk) ||
-            std::holds_alternative<ast::ExprLiteral>(vk))
-          isOwned = true;
-      }
-      if (isOwned)
-        registerDroppable(varNameStr, "hew_string_drop");
     }
   }
 
-  // Fallback: register drops for Vec/HashMap by MLIR type when the type
-  // annotation path above didn't fire (e.g. no annotation, or inferred type).
-  // Only register for constructors and provably-new-allocation methods.
-  if (initValue) {
-    auto valType = initValue.getType();
+  // ── MLIR-type fallback for Vec/HashMap ─────────────────────────────
+  if (value) {
+    auto valType = value.getType();
     bool isOwned = false;
-    if (auto *defOp = initValue.getDefiningOp()) {
+    if (auto *defOp = value.getDefiningOp()) {
       isOwned = mlir::isa<hew::VecNewOp>(defOp) || mlir::isa<hew::HashMapNewOp>(defOp);
     }
-    if (!isOwned && stmt.value) {
-      const auto &vk = stmt.value->value.kind;
+    if (!isOwned && stmtValue && *stmtValue) {
+      const auto &vk = (*stmtValue)->value.kind;
       if (auto *mc = std::get_if<ast::ExprMethodCall>(&vk)) {
         if (mc->method != "get")
           isOwned = true;
       }
       if (auto *call = std::get_if<ast::ExprCall>(&vk)) {
-        mlir::Value callResult = initValue;
+        mlir::Value callResult = value;
         if (auto *defOp = callResult.getDefiningOp()) {
           if (defOp->getName().getStringRef() == "hew.bitcast" && defOp->getNumOperands() > 0)
             callResult = defOp->getOperand(0);
@@ -1284,21 +1046,21 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
     auto alreadyRegistered = [&]() {
       if (dropScopes.empty()) return false;
       for (auto &e : dropScopes.back())
-        if (e.varName == varNameStr) return true;
+        if (e.varName == varName) return true;
       return false;
     };
     if (isOwned && mlir::isa<hew::VecType>(valType) && !alreadyRegistered())
-      registerDroppable(varNameStr, "hew_vec_free");
+      registerDroppable(varName, "hew_vec_free");
     else if (isOwned && mlir::isa<hew::HashMapType>(valType) && !alreadyRegistered())
-      registerDroppable(varNameStr, "hew_hashmap_free_impl");
+      registerDroppable(varName, "hew_hashmap_free_impl");
     else if (isOwned && mlir::isa<mlir::LLVM::LLVMPointerType>(valType) && !alreadyRegistered()) {
       std::string dropFn;
-      if (stmt.value) {
-        if (auto *resolvedType = resolvedTypeOf(stmt.value->span))
+      if (stmtValue && *stmtValue) {
+        if (auto *resolvedType = resolvedTypeOf((*stmtValue)->span))
           dropFn = dropFuncForType(*resolvedType);
       }
-      if (dropFn.empty() && initValue.getDefiningOp()) {
-        if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(initValue.getDefiningOp())) {
+      if (dropFn.empty() && value.getDefiningOp()) {
+        if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(value.getDefiningOp())) {
           if (auto callee = module.lookupSymbol<mlir::func::FuncOp>(callOp.getCallee())) {
             auto funcType = callee.getFunctionType();
             if (funcType.getNumResults() > 0)
@@ -1307,34 +1069,34 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
         }
       }
       if (!dropFn.empty())
-        registerDroppable(varNameStr, dropFn);
+        registerDroppable(varName, dropFn);
     }
   }
 
-  // Register user-defined Drop from struct init
-  if (stmt.value) {
-    if (auto *si = std::get_if<ast::ExprStructInit>(&stmt.value->value.kind)) {
+  // ── User-defined Drop from struct init ─────────────────────────────
+  if (stmtValue && *stmtValue) {
+    if (auto *si = std::get_if<ast::ExprStructInit>(&(*stmtValue)->value.kind)) {
       bool hasTypedAnnotation =
-          stmt.ty && std::holds_alternative<ast::TypeNamed>(stmt.ty->value.kind);
+          stmtTy && *stmtTy && std::holds_alternative<ast::TypeNamed>((*stmtTy)->value.kind);
       if (!hasTypedAnnotation) {
         auto dropIt = userDropFuncs.find(si->name);
         if (dropIt != userDropFuncs.end())
-          registerDroppable(varNameStr, dropIt->second, /*isUserDrop=*/true);
+          registerDroppable(varName, dropIt->second, /*isUserDrop=*/true);
       }
     }
   }
 
-  // Auto-field-drop for wire structs with owned fields (String, Vec, etc.).
-  if (initValue && !dropScopes.empty()) {
-    auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(initValue.getType());
+  // ── Auto-field-drop for wire structs with owned fields ─────────────
+  if (value && !dropScopes.empty()) {
+    auto structTy = mlir::dyn_cast<mlir::LLVM::LLVMStructType>(value.getType());
     if (structTy && structTy.isIdentified() &&
         !userDropFuncs.count(structTy.getName().str()) &&
         wireStructNames.count(structTy.getName().str())) {
       bool needsFieldDrop = structHasOwnedFields(structTy.getName().str());
       if (needsFieldDrop) {
         bool isOwnedStruct = false;
-        if (stmt.value) {
-          const auto &vk = stmt.value->value.kind;
+        if (stmtValue && *stmtValue) {
+          const auto &vk = (*stmtValue)->value.kind;
           isOwnedStruct = std::holds_alternative<ast::ExprStructInit>(vk) ||
                           std::holds_alternative<ast::ExprCall>(vk) ||
                           std::holds_alternative<ast::ExprMethodCall>(vk);
@@ -1349,28 +1111,29 @@ void MLIRGen::generateVarStmt(const ast::StmtVar &stmt) {
         }
         bool alreadyReg = false;
         for (auto &e : dropScopes.back())
-          if (e.varName == varNameStr) { alreadyReg = true; break; }
+          if (e.varName == varName) { alreadyReg = true; break; }
         if (isOwnedStruct && !alreadyReg)
-          registerDroppable(varNameStr, "__auto_field_drop");
+          registerDroppable(varName, "__auto_field_drop");
       }
     }
   }
 
-  // Register closure env for RAII cleanup via hew_rc_drop.
-  if (initValue && mlir::isa<hew::ClosureType>(initValue.getType())) {
-    registerDroppable(varNameStr, "hew_rc_drop");
-    if (stmt.value && std::holds_alternative<ast::ExprIdentifier>(stmt.value->value.kind)) {
+  // ── Closure env RAII cleanup ───────────────────────────────────────
+  if (value && mlir::isa<hew::ClosureType>(value.getType())) {
+    registerDroppable(varName, "hew_rc_drop");
+    if (stmtValue && *stmtValue &&
+        std::holds_alternative<ast::ExprIdentifier>((*stmtValue)->value.kind)) {
       auto ptrType = mlir::LLVM::LLVMPointerType::get(&context);
-      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, initValue);
+      auto envPtr = hew::ClosureGetEnvOp::create(builder, location, ptrType, value);
       hew::RcCloneOp::create(builder, location, ptrType, envPtr);
     }
   }
 
-  // Track dyn Trait variable types
-  if (stmt.ty) {
-    if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&stmt.ty->value.kind)) {
+  // ── dyn Trait variable type tracking ───────────────────────────────
+  if (stmtTy && *stmtTy) {
+    if (auto *traitObj = std::get_if<ast::TypeTraitObject>(&(*stmtTy)->value.kind)) {
       if (!traitObj->bounds.empty())
-        dynTraitVarTypes[varNameStr] = traitObj->bounds[0].name;
+        dynTraitVarTypes[varName] = traitObj->bounds[0].name;
     }
   }
 }

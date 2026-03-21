@@ -5996,6 +5996,7 @@ impl Checker {
         }
     }
 
+    #[allow(clippy::too_many_lines, reason = "Vec has many methods to type-check")]
     fn check_vec_method(
         &mut self,
         type_args: &[Ty],
@@ -8385,19 +8386,18 @@ impl Checker {
         context: &str,
         span: &Span,
     ) -> bool {
-        if args.len() != expected {
-            self.report_error(
-                TypeErrorKind::ArityMismatch,
-                span,
-                format!(
-                    "{context} takes {expected} argument(s) but {} were supplied",
-                    args.len()
-                ),
-            );
-            false
-        } else {
-            true
+        if args.len() == expected {
+            return true;
         }
+        self.report_error(
+            TypeErrorKind::ArityMismatch,
+            span,
+            format!(
+                "{context} takes {expected} argument(s) but {} were supplied",
+                args.len()
+            ),
+        );
+        false
     }
 
     fn report_error_with_suggestions(

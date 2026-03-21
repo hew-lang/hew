@@ -1561,6 +1561,117 @@ fn enrich_else_block_with_diagnostics(
     Ok(())
 }
 
+/// Rewrite `MethodCall` nodes to the forms the C++ codegen expects.
+///
+/// Handles three categories of method call rewriting:
+/// 1. Module-qualified stdlib calls (e.g. `os.pid()` → `hew_os_pid()`)
+/// 2. User module calls (e.g. `utils.helper(x)` → `helper(x)`)
+/// 3. Handle/stream/channel method calls (receiver prepended as first argument)
+fn enrich_method_call(
+    expr: &mut Spanned<Expr>,
+    tco: &TypeCheckOutput,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) {
+    let Expr::MethodCall {
+        receiver,
+        method,
+        args,
+    } = &mut expr.0
+    else {
+        return;
+    };
+
+    // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
+    if let Expr::Identifier(module_name) = &receiver.0 {
+        if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
+            // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
+            // non-trivial Hew wrappers that must be compiled as module graph
+            // functions and called via their mangled name. Leaving them as
+            // MethodCall lets the C++ codegen dispatch them correctly.
+            if c_symbol != *method {
+                let old_args = std::mem::take(args);
+                expr.0 = Expr::Call {
+                    function: Box::new((
+                        Expr::Identifier(c_symbol.clone()),
+                        receiver.1.clone(),
+                    )),
+                    type_args: None,
+                    args: old_args,
+                    is_tail_call: false,
+                };
+                return;
+            }
+        }
+        // Rewrite user module calls: e.g. utils.helper(args) → helper(args)
+        // User module functions compile under their own name, not a C symbol.
+        if tco.user_modules.contains(module_name) {
+            let old_args = std::mem::take(args);
+            expr.0 = Expr::Call {
+                function: Box::new((Expr::Identifier(method.clone()), receiver.1.clone())),
+                type_args: None,
+                args: old_args,
+                is_tail_call: false,
+            };
+            return;
+        }
+    }
+
+    // Rewrite handle method calls to C function calls.
+    // The receiver type is looked up from the type checker output;
+    // if it's a handle type (e.g. http.Request), the method call is
+    // rewritten to a plain function call with the receiver prepended
+    // as the first argument.
+    let key = SpanKey {
+        start: receiver.1.start,
+        end: receiver.1.end,
+    };
+    let c_fn: Option<String> = match tco.expr_types.get(&key) {
+        Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
+            let elem = args.first().map(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
+            let elem = args.first().map(ty_element_name);
+            hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
+            hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, args }) if name == "Receiver" || name == "channel.Receiver" => {
+            hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
+                .map(String::from)
+        }
+        Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
+        _ => None,
+    };
+    if let Some(c_fn) = c_fn {
+        let span = expr.1.clone();
+        let recv = std::mem::replace(
+            receiver.as_mut(),
+            (
+                Expr::Literal(hew_parser::ast::Literal::Integer {
+                    value: 0,
+                    radix: hew_parser::ast::IntRadix::Decimal,
+                }),
+                0..0,
+            ),
+        );
+        let old_args = std::mem::take(args);
+        let mut all_args = Vec::with_capacity(1 + old_args.len());
+        all_args.push(hew_parser::ast::CallArg::Positional(recv));
+        all_args.extend(old_args);
+        expr.0 = Expr::Call {
+            function: Box::new((Expr::Identifier(c_fn), span)),
+            type_args: None,
+            args: all_args,
+            is_tail_call: false,
+        };
+    }
+}
+
 fn enrich_expr_with_diagnostics(
     expr: &mut Spanned<Expr>,
     tco: &TypeCheckOutput,
@@ -1631,105 +1742,13 @@ fn enrich_expr_with_diagnostics_inner(
             enrich_expr_with_diagnostics(body, tco, diagnostics, registry)?;
         }
         Expr::MethodCall {
-            receiver,
-            method,
-            args,
+            receiver, args, ..
         } => {
             enrich_expr_with_diagnostics(receiver, tco, diagnostics, registry)?;
             for arg in args.iter_mut() {
                 enrich_expr_with_diagnostics(arg.expr_mut(), tco, diagnostics, registry)?;
             }
-            // Rewrite module-qualified stdlib calls: e.g. os.pid() → hew_os_pid()
-            // This happens during AST enrichment, before serialization.
-            if let Expr::Identifier(module_name) = &receiver.0 {
-                if let Some(c_symbol) = registry.resolve_module_call(module_name, method) {
-                    // Skip identity-mapped wrappers (e.g. log.setup → setup): these are
-                    // non-trivial Hew wrappers that must be compiled as module graph
-                    // functions and called via their mangled name. Leaving them as
-                    // MethodCall lets the C++ codegen dispatch them correctly.
-                    if c_symbol != *method {
-                        let old_args = std::mem::take(args);
-                        expr.0 = Expr::Call {
-                            function: Box::new((
-                                Expr::Identifier(c_symbol.clone()),
-                                receiver.1.clone(),
-                            )),
-                            type_args: None,
-                            args: old_args,
-                            is_tail_call: false,
-                        };
-                        return Ok(());
-                    }
-                }
-                // Rewrite user module calls: e.g. utils.helper(args) → helper(args)
-                // User module functions compile under their own name, not a C symbol.
-                if tco.user_modules.contains(module_name) {
-                    let old_args = std::mem::take(args);
-                    expr.0 = Expr::Call {
-                        function: Box::new((Expr::Identifier(method.clone()), receiver.1.clone())),
-                        type_args: None,
-                        args: old_args,
-                        is_tail_call: false,
-                    };
-                    return Ok(());
-                }
-            }
-            // Rewrite handle method calls to C function calls.
-            // The receiver type is looked up from the type checker output;
-            // if it's a handle type (e.g. http.Request), the method call is
-            // rewritten to a plain function call with the receiver prepended
-            // as the first argument.
-            let key = SpanKey {
-                start: receiver.1.start,
-                end: receiver.1.end,
-            };
-            let c_fn: Option<String> = match tco.expr_types.get(&key) {
-                Some(Ty::Named { name, args }) if name == "Stream" || name == "stream.Stream" => {
-                    let elem = args.first().map(ty_element_name);
-                    hew_types::stdlib::resolve_stream_method("Stream", method, elem.as_deref())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args }) if name == "Sink" || name == "stream.Sink" => {
-                    let elem = args.first().map(ty_element_name);
-                    hew_types::stdlib::resolve_stream_method("Sink", method, elem.as_deref())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args }) if name == "Sender" || name == "channel.Sender" => {
-                    hew_types::stdlib::resolve_channel_method("Sender", method, args.first())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, args })
-                    if name == "Receiver" || name == "channel.Receiver" =>
-                {
-                    hew_types::stdlib::resolve_channel_method("Receiver", method, args.first())
-                        .map(String::from)
-                }
-                Some(Ty::Named { name, .. }) => registry.resolve_handle_method(name, method),
-                _ => None,
-            };
-            if let Some(c_fn) = c_fn {
-                let span = expr.1.clone();
-                let recv = std::mem::replace(
-                    receiver.as_mut(),
-                    (
-                        Expr::Literal(hew_parser::ast::Literal::Integer {
-                            value: 0,
-                            radix: hew_parser::ast::IntRadix::Decimal,
-                        }),
-                        0..0,
-                    ),
-                );
-                let old_args = std::mem::take(args);
-                let mut all_args = Vec::with_capacity(1 + old_args.len());
-                all_args.push(hew_parser::ast::CallArg::Positional(recv));
-                all_args.extend(old_args);
-                expr.0 = Expr::Call {
-                    function: Box::new((Expr::Identifier(c_fn), span)),
-                    type_args: None,
-                    args: all_args,
-                    is_tail_call: false,
-                };
-            }
+            enrich_method_call(expr, tco, registry);
         }
         Expr::Call {
             function,
@@ -1873,6 +1892,27 @@ fn enrich_expr(
     let registry = hew_types::module_registry::ModuleRegistry::new(vec![]);
     let mut diagnostics = Vec::new();
     enrich_expr_with_diagnostics(expr, tco, &mut diagnostics, &registry)
+}
+
+/// Test-only wrapper that extracts import paths from `program.items` and
+/// delegates to `synthesize_stdlib_externs_from_imports`.
+#[cfg(test)]
+fn synthesize_stdlib_externs(
+    program: &mut Program,
+    registry: &hew_types::module_registry::ModuleRegistry,
+) -> Result<(), TypeExprConversionError> {
+    let import_paths: Vec<String> = program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::Import(import_decl) = item {
+                Some(import_decl.path.join("::"))
+            } else {
+                None
+            }
+        })
+        .collect();
+    synthesize_stdlib_externs_from_imports(program, &import_paths, registry)
 }
 
 #[cfg(test)]

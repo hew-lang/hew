@@ -36,7 +36,8 @@ fn algo_to_i32(algorithm: String) -> i32 {
 /// let token = jwt.encode("{\"sub\":\"user1\"}", "my_secret", "HS256");
 /// ```
 pub fn encode(payload: String, secret: String, algorithm: String) -> String {
-    unsafe { hew_jwt_encode(payload, secret, algo_to_i32(algorithm)) }
+    let algo = algo_to_i32(algorithm);
+    unsafe { hew_jwt_encode(payload, secret, algo) }
 }
 
 /// Decode and verify a JWT, returning its payload as a JSON string.
@@ -49,7 +50,8 @@ pub fn encode(payload: String, secret: String, algorithm: String) -> String {
 /// let payload = jwt.decode(token, "my_secret", "HS256");
 /// ```
 pub fn decode(token: String, secret: String, algorithm: String) -> String {
-    unsafe { hew_jwt_decode(token, secret, algo_to_i32(algorithm)) }
+    let algo = algo_to_i32(algorithm);
+    unsafe { hew_jwt_decode(token, secret, algo) }
 }
 
 /// Decode a JWT without verifying its signature.
@@ -78,7 +80,8 @@ pub fn decode_insecure(token: String) -> String {
 /// }
 /// ```
 pub fn validate(token: String, secret: String, algorithm: String) -> bool {
-    unsafe { hew_jwt_validate(token, secret, algo_to_i32(algorithm)) } == 1
+    let algo = algo_to_i32(algorithm);
+    unsafe { hew_jwt_validate(token, secret, algo) } == 1
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────

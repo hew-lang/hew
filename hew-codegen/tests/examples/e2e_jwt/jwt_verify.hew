@@ -1,0 +1,20 @@
+// Test: JWT validate — valid token, wrong secret, wrong algorithm
+import std::crypto::jwt;
+
+fn main() {
+    let payload = "{\"sub\":\"1234\"}";
+    let secret = "correct_secret";
+    let token = jwt.encode(payload, secret, "HS256");
+
+    // Validate with correct secret → true
+    let valid = jwt.validate(token, secret, "HS256");
+    println(valid);
+
+    // Validate with wrong secret → false
+    let invalid = jwt.validate(token, "wrong_secret", "HS256");
+    println(invalid);
+
+    // Validate with wrong algorithm → false
+    let wrong_algo = jwt.validate(token, secret, "HS384");
+    println(wrong_algo);
+}

@@ -1674,6 +1674,10 @@ name = "hew-std-encoding-csv"
 version = "0.2.0"
 
 [[package]]
+name = "hew-std-encoding-hex"
+version = "0.2.0"
+
+[[package]]
 name = "hew-std-encoding-json"
 version = "0.2.0"
 dependencies = [

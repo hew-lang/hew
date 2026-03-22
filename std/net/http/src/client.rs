@@ -539,6 +539,8 @@ mod tests {
         (status, body)
     }
 
+    // -- Existing tests (request null/unsupported) --------------------
+
     #[test]
     fn request_null_method_returns_error() {
         let url = CString::new("http://example.com").unwrap();
@@ -578,23 +580,36 @@ mod tests {
 
     #[test]
     fn set_timeout_stores_value() {
+        // Test several timeout scenarios in one test to avoid racing with
+        // parallel tests that also mutate the global HTTP_TIMEOUT_MS.
+        let original = HTTP_TIMEOUT_MS.load(Ordering::Relaxed);
+
         // SAFETY: no pointer arguments; just writes to an atomic.
         unsafe { hew_http_set_timeout(5_000) };
         assert_eq!(HTTP_TIMEOUT_MS.load(Ordering::Relaxed), 5_000);
-        // Restore default so other tests are unaffected.
+
+        // Zero disables timeout.
+        // SAFETY: no pointer arguments.
+        unsafe { hew_http_set_timeout(0) };
+        assert_eq!(HTTP_TIMEOUT_MS.load(Ordering::Relaxed), 0);
+
+        // Negative values are stored; make_agent clamps via .max(0).
+        // SAFETY: no pointer arguments.
+        unsafe { hew_http_set_timeout(-1) };
+        assert_eq!(HTTP_TIMEOUT_MS.load(Ordering::Relaxed), -1);
+
+        // Restore original so other tests are unaffected.
         // SAFETY: no pointer arguments; just writes to an atomic.
-        unsafe { hew_http_set_timeout(30_000) };
+        unsafe { hew_http_set_timeout(original) };
     }
 
     #[test]
     fn request_header_count_zero_is_accepted() {
         let method = CString::new("GET").unwrap();
-        // Use an invalid host so the connection fails quickly without a live server.
         let url = CString::new("http://localhost:0/").unwrap();
         // SAFETY: method and url are valid C strings; headers is null.
         let resp =
             unsafe { hew_http_request(method.as_ptr(), url.as_ptr(), ptr::null(), ptr::null(), 0) };
-        // Expect a transport error (status -1) since no server is running, but no panic.
         // SAFETY: resp is a valid error response.
         let (status, _body) = unsafe { take_response(resp) };
         assert_eq!(status, -1);
@@ -686,5 +701,549 @@ mod tests {
         // SAFETY: resp is still valid.
         unsafe { hew_http_response_free(resp) };
         assert_eq!(val, "text/plain");
+    }
+
+    // -- Null/empty input guards --------------------------------------
+
+    #[test]
+    fn get_null_url_returns_error_response() {
+        // SAFETY: passing null is the tested scenario.
+        let resp = unsafe { hew_http_get(ptr::null()) };
+        assert!(
+            !resp.is_null(),
+            "null URL should return error response, not null"
+        );
+        // SAFETY: resp is a valid error response.
+        let (status, body) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+        assert!(body.contains("invalid argument"));
+    }
+
+    #[test]
+    fn post_null_url_returns_error_response() {
+        let ct = CString::new("text/plain").unwrap();
+        let body = CString::new("hello").unwrap();
+        // SAFETY: url is null (tested scenario); ct and body are valid.
+        let resp = unsafe { hew_http_post(ptr::null(), ct.as_ptr(), body.as_ptr()) };
+        // SAFETY: resp is a valid error response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn post_null_content_type_returns_error_response() {
+        let url = CString::new("http://localhost:1/test").unwrap();
+        let body = CString::new("hello").unwrap();
+        // SAFETY: content_type is null (tested scenario); url and body valid.
+        let resp = unsafe { hew_http_post(url.as_ptr(), ptr::null(), body.as_ptr()) };
+        // SAFETY: resp is a valid error response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn post_null_body_returns_error_response() {
+        let url = CString::new("http://localhost:1/test").unwrap();
+        let ct = CString::new("text/plain").unwrap();
+        // SAFETY: body is null (tested scenario); url and ct are valid.
+        let resp = unsafe { hew_http_post(url.as_ptr(), ct.as_ptr(), ptr::null()) };
+        // SAFETY: resp is a valid error response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn get_string_null_url_returns_null() {
+        // SAFETY: passing null is the tested scenario.
+        let result = unsafe { hew_http_get_string(ptr::null()) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn post_string_null_url_returns_null() {
+        let ct = CString::new("text/plain").unwrap();
+        let body = CString::new("data").unwrap();
+        // SAFETY: url is null (tested scenario); ct and body are valid.
+        let result = unsafe { hew_http_post_string(ptr::null(), ct.as_ptr(), body.as_ptr()) };
+        assert!(result.is_null());
+    }
+
+    // -- Response free ------------------------------------------------
+
+    #[test]
+    fn response_free_null_is_noop() {
+        // SAFETY: null is explicitly handled by hew_http_response_free.
+        unsafe { hew_http_response_free(ptr::null_mut()) };
+    }
+
+    // -- Response body edge cases -------------------------------------
+
+    #[test]
+    fn response_body_null_resp_returns_null() {
+        // SAFETY: null pointer is the tested scenario.
+        let body = unsafe { hew_http_response_body(ptr::null()) };
+        assert!(body.is_null());
+    }
+
+    #[test]
+    fn response_body_empty_returns_empty_string() {
+        let resp = build_response(204, "", ptr::null_mut());
+        // SAFETY: resp is a valid HewHttpResponse.
+        let body_ptr = unsafe { hew_http_response_body(resp) };
+        assert!(!body_ptr.is_null());
+        // SAFETY: body_ptr is a valid malloc'd C string.
+        let body = unsafe { CStr::from_ptr(body_ptr) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: body_ptr was malloc'd by strdup / str_to_malloc.
+        unsafe { libc::free(body_ptr.cast()) };
+        // SAFETY: resp is still valid (body_ptr was a copy).
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(body, "");
+    }
+
+    // -- Response header edge cases -----------------------------------
+
+    #[test]
+    fn response_header_null_name_returns_empty() {
+        let resp = build_response(200, "", ptr::null_mut());
+        // SAFETY: name is null (tested scenario); resp is valid.
+        let h = unsafe { hew_http_response_header(resp, ptr::null()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn response_header_null_resp_returns_empty() {
+        let name = CString::new("x-test").unwrap();
+        // SAFETY: resp is null (tested scenario); name is valid.
+        let h = unsafe { hew_http_response_header(ptr::null(), name.as_ptr()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn response_content_type_null_resp_returns_empty() {
+        // SAFETY: resp is null (tested scenario).
+        let ct = unsafe { hew_http_response_content_type(ptr::null()) };
+        assert!(!ct.is_null());
+        // SAFETY: ct is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(ct) }.to_str().unwrap().to_owned();
+        // SAFETY: ct was malloc'd.
+        unsafe { libc::free(ct.cast()) };
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn response_multiple_headers_finds_correct_one() {
+        let headers = Box::into_raw(Box::new(vec![
+            ("X-Request-Id".to_string(), "abc-123".to_string()),
+            ("Content-Type".to_string(), "application/json".to_string()),
+            ("X-Rate-Limit".to_string(), "100".to_string()),
+        ]));
+        let resp = build_response(200, "", headers);
+        let name = CString::new("X-RATE-LIMIT").unwrap();
+        // SAFETY: resp and name are valid.
+        let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        assert_eq!(val, "100");
+    }
+
+    // -- Timeout ------------------------------------------------------
+    // (consolidated into set_timeout_stores_value above to avoid
+    // parallel test races on the global HTTP_TIMEOUT_MS atomic)
+
+    // -- build_response -----------------------------------------------
+
+    #[test]
+    fn build_response_preserves_body_length() {
+        let resp = build_response(200, "hello world", ptr::null_mut());
+        // SAFETY: resp is a valid HewHttpResponse from build_response.
+        let r = unsafe { &*resp };
+        assert_eq!(r.body_len, 11);
+        assert_eq!(r.status_code, 200);
+        // SAFETY: resp was allocated by build_response.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    #[test]
+    fn error_response_has_status_minus_one_and_null_headers() {
+        let resp = error_response("test error");
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid HewHttpResponse from error_response.
+        let r = unsafe { &*resp };
+        assert_eq!(r.status_code, -1);
+        assert!(r.headers.is_null());
+        // SAFETY: body is a valid C string from str_to_malloc.
+        let body = unsafe { CStr::from_ptr(r.body) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(body, "test error");
+        // SAFETY: resp was allocated by error_response.
+        unsafe { hew_http_response_free(resp) };
+    }
+
+    // -- make_agent ---------------------------------------------------
+
+    #[test]
+    fn make_agent_does_not_panic_with_default_timeout() {
+        let _agent = make_agent();
+    }
+
+    // -- Invalid URL (actual network) ---------------------------------
+
+    #[test]
+    fn get_invalid_url_returns_transport_error() {
+        let url = CString::new("http://[::1]:0/this-will-fail").unwrap();
+        // SAFETY: url is a valid C string.
+        let resp = unsafe { hew_http_get(url.as_ptr()) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, _body) = unsafe { take_response(resp) };
+        assert_eq!(status, -1, "unreachable URL should yield transport error");
+    }
+
+    #[test]
+    fn post_invalid_url_returns_transport_error() {
+        let url = CString::new("http://[::1]:0/this-will-fail").unwrap();
+        let ct = CString::new("text/plain").unwrap();
+        let body = CString::new("test").unwrap();
+        // SAFETY: all pointers are valid C strings.
+        let resp = unsafe { hew_http_post(url.as_ptr(), ct.as_ptr(), body.as_ptr()) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn request_get_invalid_url_returns_transport_error() {
+        let method = CString::new("GET").unwrap();
+        let url = CString::new("http://[::1]:0/nope").unwrap();
+        // SAFETY: method and url are valid C strings.
+        let resp =
+            unsafe { hew_http_request(method.as_ptr(), url.as_ptr(), ptr::null(), ptr::null(), 0) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    // -- hew_http_request with headers --------------------------------
+
+    #[test]
+    fn request_with_null_header_entries_skipped() {
+        let method = CString::new("GET").unwrap();
+        let url = CString::new("http://[::1]:0/test").unwrap();
+        let headers: [*const c_char; 2] = [ptr::null(), ptr::null()];
+        // SAFETY: method and url valid; headers has 2 null entries (skipped).
+        let resp = unsafe {
+            hew_http_request(
+                method.as_ptr(),
+                url.as_ptr(),
+                ptr::null(),
+                headers.as_ptr(),
+                2,
+            )
+        };
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    #[test]
+    fn request_with_malformed_header_skipped() {
+        let method = CString::new("GET").unwrap();
+        let url = CString::new("http://[::1]:0/test").unwrap();
+        let bad_header = CString::new("no-colon-here").unwrap();
+        let headers: [*const c_char; 1] = [bad_header.as_ptr()];
+        // SAFETY: all pointers are valid.
+        let resp = unsafe {
+            hew_http_request(
+                method.as_ptr(),
+                url.as_ptr(),
+                ptr::null(),
+                headers.as_ptr(),
+                1,
+            )
+        };
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, -1);
+    }
+
+    // -- Loopback integration tests -----------------------------------
+
+    use std::thread;
+
+    fn start_echo_server(
+        response_status: u16,
+        response_body: &str,
+    ) -> (String, thread::JoinHandle<()>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind to loopback");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let body = response_body.to_string();
+        let handle = thread::spawn(move || {
+            if let Ok(req) = server.recv() {
+                let response = tiny_http::Response::from_string(&body)
+                    .with_status_code(tiny_http::StatusCode(response_status));
+                let _ = req.respond(response);
+            }
+        });
+        (addr, handle)
+    }
+
+    #[test]
+    fn loopback_get_200_returns_body() {
+        let (addr, handle) = start_echo_server(200, "hello from server");
+        let url = CString::new(format!("{addr}/test")).unwrap();
+        // SAFETY: url is a valid C string.
+        let resp = unsafe { hew_http_get(url.as_ptr()) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, body) = unsafe { take_response(resp) };
+        assert_eq!(status, 200);
+        assert_eq!(body, "hello from server");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_get_404_returns_status_with_empty_body() {
+        let (addr, handle) = start_echo_server(404, "not found");
+        let url = CString::new(format!("{addr}/missing")).unwrap();
+        // SAFETY: url is a valid C string.
+        let resp = unsafe { hew_http_get(url.as_ptr()) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, body) = unsafe { take_response(resp) };
+        // ureq treats 4xx as Error::StatusCode, so hew_http_get builds
+        // a response with the status code but empty body.
+        assert_eq!(status, 404);
+        assert!(body.is_empty());
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_post_sends_body() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let mut req = server.recv().expect("receive request");
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            assert_eq!(body, "posted data");
+            let response = tiny_http::Response::from_string("accepted")
+                .with_status_code(tiny_http::StatusCode(201));
+            let _ = req.respond(response);
+        });
+
+        let url = CString::new(format!("{addr}/submit")).unwrap();
+        let ct = CString::new("text/plain").unwrap();
+        let body = CString::new("posted data").unwrap();
+        // SAFETY: all pointers are valid C strings.
+        let resp = unsafe { hew_http_post(url.as_ptr(), ct.as_ptr(), body.as_ptr()) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, resp_body) = unsafe { take_response(resp) };
+        assert_eq!(status, 201);
+        assert_eq!(resp_body, "accepted");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_get_string_returns_body_only() {
+        let (addr, handle) = start_echo_server(200, "body only");
+        let url = CString::new(format!("{addr}/string")).unwrap();
+        // SAFETY: url is a valid C string.
+        let result = unsafe { hew_http_get_string(url.as_ptr()) };
+        assert!(!result.is_null());
+        // SAFETY: result is a valid malloc'd C string.
+        let body = unsafe { CStr::from_ptr(result) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: result was malloc'd by hew_http_get_string.
+        unsafe { libc::free(result.cast()) };
+        assert_eq!(body, "body only");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_post_string_returns_body_only() {
+        let (addr, handle) = start_echo_server(200, "post body");
+        let url = CString::new(format!("{addr}/pstring")).unwrap();
+        let ct = CString::new("text/plain").unwrap();
+        let body = CString::new("data").unwrap();
+        // SAFETY: all pointers are valid C strings.
+        let result = unsafe { hew_http_post_string(url.as_ptr(), ct.as_ptr(), body.as_ptr()) };
+        assert!(!result.is_null());
+        // SAFETY: result is a valid malloc'd C string.
+        let s = unsafe { CStr::from_ptr(result) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        // SAFETY: result was malloc'd.
+        unsafe { libc::free(result.cast()) };
+        assert_eq!(s, "post body");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_get_string_error_returns_null() {
+        // hew_http_get_string returns null when the underlying request fails.
+        let url = CString::new("http://[::1]:0/will-fail").unwrap();
+        // SAFETY: url is a valid C string.
+        let result = unsafe { hew_http_get_string(url.as_ptr()) };
+        assert!(result.is_null(), "transport error should return null");
+    }
+
+    #[test]
+    fn loopback_request_put_with_body() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let mut req = server.recv().expect("receive request");
+            assert_eq!(req.method().as_str(), "PUT");
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            assert_eq!(body, "update payload");
+            let response = tiny_http::Response::from_string("updated")
+                .with_status_code(tiny_http::StatusCode(200));
+            let _ = req.respond(response);
+        });
+
+        let method = CString::new("PUT").unwrap();
+        let url = CString::new(format!("{addr}/resource")).unwrap();
+        let body = CString::new("update payload").unwrap();
+        // SAFETY: all pointers are valid C strings.
+        let resp = unsafe {
+            hew_http_request(method.as_ptr(), url.as_ptr(), body.as_ptr(), ptr::null(), 0)
+        };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, resp_body) = unsafe { take_response(resp) };
+        assert_eq!(status, 200);
+        assert_eq!(resp_body, "updated");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_request_delete() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let req = server.recv().expect("receive request");
+            assert_eq!(req.method().as_str(), "DELETE");
+            let response =
+                tiny_http::Response::from_string("").with_status_code(tiny_http::StatusCode(204));
+            let _ = req.respond(response);
+        });
+
+        let method = CString::new("DELETE").unwrap();
+        let url = CString::new(format!("{addr}/item/42")).unwrap();
+        // SAFETY: all pointers are valid C strings.
+        let resp =
+            unsafe { hew_http_request(method.as_ptr(), url.as_ptr(), ptr::null(), ptr::null(), 0) };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, 204);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_request_with_custom_headers() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let req = server.recv().expect("receive request");
+            let mut found = false;
+            for h in req.headers() {
+                if h.field.as_str().as_str().eq_ignore_ascii_case("x-custom") {
+                    assert_eq!(h.value.as_str(), "test-value");
+                    found = true;
+                }
+            }
+            assert!(found, "custom header not found on server side");
+            let response =
+                tiny_http::Response::from_string("ok").with_status_code(tiny_http::StatusCode(200));
+            let _ = req.respond(response);
+        });
+
+        let method = CString::new("GET").unwrap();
+        let url = CString::new(format!("{addr}/headers")).unwrap();
+        let h1 = CString::new("X-Custom: test-value").unwrap();
+        let headers: [*const c_char; 1] = [h1.as_ptr()];
+        // SAFETY: all pointers are valid C strings.
+        let resp = unsafe {
+            hew_http_request(
+                method.as_ptr(),
+                url.as_ptr(),
+                ptr::null(),
+                headers.as_ptr(),
+                1,
+            )
+        };
+        assert!(!resp.is_null());
+        // SAFETY: resp is a valid response.
+        let (status, _) = unsafe { take_response(resp) };
+        assert_eq!(status, 200);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn loopback_response_captures_headers() {
+        let server = tiny_http::Server::http("127.0.0.1:0").expect("bind");
+        let addr = format!("http://{}", server.server_addr().to_ip().unwrap());
+
+        let handle = thread::spawn(move || {
+            let req = server.recv().expect("receive request");
+            let header = tiny_http::Header::from_bytes("X-Server-Id", "srv-42").unwrap();
+            let response = tiny_http::Response::from_string("ok")
+                .with_status_code(tiny_http::StatusCode(200))
+                .with_header(header);
+            let _ = req.respond(response);
+        });
+
+        let url = CString::new(format!("{addr}/capture")).unwrap();
+        // SAFETY: url is a valid C string.
+        let resp = unsafe { hew_http_get(url.as_ptr()) };
+        assert!(!resp.is_null());
+
+        let name = CString::new("X-Server-Id").unwrap();
+        // SAFETY: resp and name are valid.
+        let h = unsafe { hew_http_response_header(resp, name.as_ptr()) };
+        assert!(!h.is_null());
+        // SAFETY: h is a valid malloc'd C string.
+        let val = unsafe { CStr::from_ptr(h) }.to_str().unwrap().to_owned();
+        // SAFETY: h was malloc'd.
+        unsafe { libc::free(h.cast()) };
+        assert_eq!(val, "srv-42");
+
+        // SAFETY: resp is still valid.
+        unsafe { hew_http_response_free(resp) };
+        handle.join().unwrap();
     }
 }

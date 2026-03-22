@@ -87,12 +87,18 @@ unsafe impl Sync for HewActor {}
 // identical size, alignment, and field offsets to the canonical native
 // definition so that the C ABI layout never diverges.
 const _: () = {
-    use std::mem::{align_of, offset_of, size_of};
+    use std::mem::offset_of;
     type W = HewActor;
     type N = crate::actor::HewActor;
 
-    assert!(size_of::<W>() == size_of::<N>(), "WASM HewActor size diverged from native");
-    assert!(align_of::<W>() == align_of::<N>(), "WASM HewActor alignment diverged from native");
+    assert!(
+        size_of::<W>() == size_of::<N>(),
+        "WASM HewActor size diverged from native"
+    );
+    assert!(
+        align_of::<W>() == align_of::<N>(),
+        "WASM HewActor alignment diverged from native"
+    );
 
     // Every field must sit at the same offset in both structs.
     assert!(offset_of!(W, sched_link_next) == offset_of!(N, sched_link_next));

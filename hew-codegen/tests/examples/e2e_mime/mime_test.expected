@@ -1,0 +1,12 @@
+text/html
+text/css
+image/jpeg
+application/json
+application/wasm
+application/octet-stream
+html is text
+png is image
+mp3 is audio
+mp4 is video
+png is not text
+html is not image

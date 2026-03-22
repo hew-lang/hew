@@ -67,8 +67,8 @@ pub fn pipe(capacity: i64) -> (Sink<String>, Stream<String>) {
 pub fn bytes_pipe(capacity: i64) -> (Sink<bytes>, Stream<bytes>) {
     unsafe {
         let pair = hew_stream_channel(capacity);
-        let sink = hew_stream_pair_sink(pair);
-        let input = hew_stream_pair_stream(pair);
+        let sink = hew_stream_pair_sink_bytes(pair);
+        let input = hew_stream_pair_stream_bytes(pair);
         hew_stream_pair_free(pair);
         (sink, input)
     }
@@ -165,4 +165,8 @@ extern "C" {
     // Bytes element operations
     fn hew_stream_next_bytes(stream: Stream<bytes>) -> bytes;
     fn hew_sink_write_bytes(sink: Sink<bytes>, data: bytes);
+
+    // Bytes-typed pair extractors (same underlying handle, typed for the checker)
+    fn hew_stream_pair_sink_bytes(pair: StreamPair) -> Sink<bytes>;
+    fn hew_stream_pair_stream_bytes(pair: StreamPair) -> Stream<bytes>;
 }

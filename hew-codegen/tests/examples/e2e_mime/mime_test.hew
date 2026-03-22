@@ -1,0 +1,23 @@
+import std::net::mime;
+
+fn main() {
+    // from_ext — direct extension lookup
+    println(mime.from_ext("html"));
+    println(mime.from_ext("css"));
+    println(mime.from_ext("jpg"));
+    println(mime.from_ext("json"));
+    println(mime.from_ext("wasm"));
+
+    // Unknown extension → fallback
+    println(mime.from_ext("xyz"));
+
+    // Category tests
+    if mime.is_text("text/html") { println("html is text"); }
+    if mime.is_image("image/png") { println("png is image"); }
+    if mime.is_audio("audio/mpeg") { println("mp3 is audio"); }
+    if mime.is_video("video/mp4") { println("mp4 is video"); }
+
+    // Negative category tests
+    if !mime.is_text("image/png") { println("png is not text"); }
+    if !mime.is_image("text/html") { println("html is not image"); }
+}

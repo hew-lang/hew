@@ -7,6 +7,8 @@ use std::ffi::c_void;
 use std::sync::{Condvar, Mutex};
 use std::thread::JoinHandle;
 
+use crate::util::{CondvarExt, MutexExt};
+
 /// Number of worker threads in the blocking pool.
 pub const HEW_BLOCKING_POOL_SIZE: usize = 4;
 
@@ -80,10 +82,6 @@ pub unsafe extern "C" fn hew_blocking_pool_new() -> *mut HewBlockingPool {
 /// `func` must be a valid function pointer. `arg` must remain valid until
 /// `func` completes.
 #[no_mangle]
-#[expect(
-    clippy::missing_panics_doc,
-    reason = "panics indicate unrecoverable thread pool failure"
-)]
 pub unsafe extern "C" fn hew_blocking_pool_submit(
     pool: *mut HewBlockingPool,
     func: HewBlockingFn,
@@ -94,7 +92,7 @@ pub unsafe extern "C" fn hew_blocking_pool_submit(
     }
     // SAFETY: caller guarantees `pool` is valid.
     let p = unsafe { &*pool };
-    let mut guard = p.inner.queue.lock().unwrap();
+    let mut guard = p.inner.queue.lock_or_recover();
     let (ref mut queue, running) = *guard;
     if !running {
         return -1;
@@ -134,7 +132,7 @@ pub unsafe extern "C" fn hew_blocking_pool_stop(pool: *mut HewBlockingPool) {
 fn worker_loop(inner: &PoolInner) {
     loop {
         let task = {
-            let mut guard = inner.queue.lock().unwrap();
+            let mut guard = inner.queue.lock_or_recover();
             loop {
                 let (ref mut queue, running) = *guard;
                 if let Some(t) = queue.pop() {
@@ -143,7 +141,7 @@ fn worker_loop(inner: &PoolInner) {
                 if !running {
                     break None;
                 }
-                guard = inner.condvar.wait(guard).unwrap();
+                guard = inner.condvar.wait_or_recover(guard);
             }
         };
         match task {

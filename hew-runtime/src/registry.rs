@@ -221,6 +221,8 @@ mod wasm {
     use std::ffi::{c_char, c_void, CStr};
     use std::sync::Mutex;
 
+    use crate::util::MutexExt;
+
     /// Wrapper around `*mut c_void` that implements Send.
     /// SAFETY: WASM is single-threaded, no cross-thread sharing.
     struct SendPtr(*mut c_void);
@@ -232,7 +234,7 @@ mod wasm {
     where
         F: FnOnce(&mut HashMap<String, SendPtr>) -> R,
     {
-        let mut guard = REGISTRY.lock().unwrap();
+        let mut guard = REGISTRY.lock_or_recover();
         f(guard.get_or_insert_with(HashMap::new))
     }
 

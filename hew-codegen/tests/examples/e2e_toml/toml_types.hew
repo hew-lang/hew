@@ -1,0 +1,45 @@
+// Test: TOML types — strings, integers, floats, booleans, nested tables, arrays.
+import std::encoding::toml;
+
+fn main() {
+    // Parse a document with nested tables and arrays
+    let doc = toml.parse("[server]\nhost = \"localhost\"\nport = 8080\n\n[server.tls]\nenabled = false\n\n[[users]]\nname = \"Alice\"\n\n[[users]]\nname = \"Bob\"");
+
+    // Access nested table
+    let srv = doc.get_field("server");
+    let host = srv.get_field("host");
+    println(host.get_string());
+    host.free();
+
+    let port = srv.get_field("port");
+    println(port.get_int());
+    port.free();
+
+    // Nested sub-table
+    let tls = srv.get_field("tls");
+    let enabled = tls.get_field("enabled");
+    println(enabled.get_bool());
+    enabled.free();
+    tls.free();
+    srv.free();
+
+    // Array of tables
+    let users = doc.get_field("users");
+    println(users.array_len());
+
+    let u0 = users.array_get(0);
+    let n0 = u0.get_field("name");
+    println(n0.get_string());
+    n0.free();
+    u0.free();
+
+    let u1 = users.array_get(1);
+    let n1 = u1.get_field("name");
+    println(n1.get_string());
+    n1.free();
+    u1.free();
+
+    users.free();
+    doc.free();
+    println("types ok");
+}

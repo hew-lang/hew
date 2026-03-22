@@ -1,0 +1,27 @@
+// Test: parse a TOML string, access fields, print values.
+import std::encoding::toml;
+
+fn main() {
+    let doc = toml.parse("title = \"Hew Config\"\nversion = 2\nenabled = true");
+
+    let title = doc.get_field("title");
+    println(title.get_string());
+    println(title.type_of());
+    title.free();
+
+    let ver = doc.get_field("version");
+    println(ver.get_int());
+    println(ver.type_of());
+    ver.free();
+
+    let enabled = doc.get_field("enabled");
+    println(enabled.get_bool());
+    println(enabled.type_of());
+    enabled.free();
+
+    // type_of on the table itself
+    println(doc.type_of());
+
+    doc.free();
+    println("done");
+}

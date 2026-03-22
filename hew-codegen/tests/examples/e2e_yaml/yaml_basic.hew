@@ -1,0 +1,27 @@
+// Test: parse a YAML string, access fields, print values.
+import std::encoding::yaml;
+
+fn main() {
+    let doc = yaml.parse("name: Hew\nversion: 1\nstable: true");
+
+    let name = doc.get_field("name");
+    println(name.get_string());
+    println(name.type_of());
+    name.free();
+
+    let ver = doc.get_field("version");
+    println(ver.get_int());
+    println(ver.type_of());
+    ver.free();
+
+    let stable = doc.get_field("stable");
+    println(stable.get_bool());
+    println(stable.type_of());
+    stable.free();
+
+    // type_of on the mapping itself
+    println(doc.type_of());
+
+    doc.free();
+    println("done");
+}

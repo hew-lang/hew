@@ -1,0 +1,26 @@
+// Test: parse YAML, stringify, re-parse, and verify round-trip fidelity.
+import std::encoding::yaml;
+
+fn main() {
+    let doc = yaml.parse("language: Hew\nyear: 2025\ncompiled: true");
+
+    // Stringify and re-parse
+    let text = doc.stringify();
+    let doc2 = yaml.parse(text);
+
+    let lang = doc2.get_field("language");
+    println(lang.get_string());
+    lang.free();
+
+    let year = doc2.get_field("year");
+    println(year.get_int());
+    year.free();
+
+    let compiled = doc2.get_field("compiled");
+    println(compiled.get_bool());
+    compiled.free();
+
+    doc2.free();
+    doc.free();
+    println("roundtrip ok");
+}

@@ -1,0 +1,30 @@
+// Test: parse TOML, stringify, re-parse, and verify round-trip fidelity.
+import std::encoding::toml;
+
+fn main() {
+    let doc = toml.parse("name = \"hew\"\nyear = 2025\nstable = false\npi = 3.14");
+
+    // Stringify and re-parse
+    let text = doc.stringify();
+    let doc2 = toml.parse(text);
+
+    let name = doc2.get_field("name");
+    println(name.get_string());
+    name.free();
+
+    let year = doc2.get_field("year");
+    println(year.get_int());
+    year.free();
+
+    let stable = doc2.get_field("stable");
+    println(stable.get_bool());
+    stable.free();
+
+    let pi = doc2.get_field("pi");
+    println(pi.get_float());
+    pi.free();
+
+    doc2.free();
+    doc.free();
+    println("roundtrip ok");
+}

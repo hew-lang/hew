@@ -1,0 +1,41 @@
+// Test: all YAML scalar types — string, integer, float, boolean, null.
+import std::encoding::yaml;
+
+fn main() {
+    // String
+    let s = yaml.from_string("hello");
+    println(s.type_of());
+    println(s.get_string());
+    s.free();
+
+    // Integer
+    let i = yaml.from_int(42);
+    println(i.type_of());
+    println(i.get_int());
+    i.free();
+
+    // Float
+    let f = yaml.from_float(3.14);
+    println(f.type_of());
+    println(f.get_float());
+    f.free();
+
+    // Boolean true
+    let bt = yaml.from_bool(true);
+    println(bt.type_of());
+    println(bt.get_bool());
+    bt.free();
+
+    // Boolean false
+    let bf = yaml.from_bool(false);
+    println(bf.type_of());
+    println(bf.get_bool());
+    bf.free();
+
+    // Null
+    let n = yaml.null();
+    println(n.type_of());
+    n.free();
+
+    println("types ok");
+}

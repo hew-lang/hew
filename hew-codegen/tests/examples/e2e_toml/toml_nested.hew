@@ -1,0 +1,38 @@
+// Test: nested TOML tables and arrays parsed from text.
+import std::encoding::toml;
+
+fn main() {
+    let doc = toml.parse("[database]\nhost = \"db.example.com\"\nports = [5432, 5433]");
+
+    let db = doc.get_field("database");
+    let h = db.get_field("host");
+    println(h.get_string());
+    h.free();
+
+    let p = db.get_field("ports");
+    println(p.array_len());
+
+    let p0 = p.array_get(0);
+    println(p0.get_int());
+    p0.free();
+
+    let p1 = p.array_get(1);
+    println(p1.get_int());
+    p1.free();
+
+    p.free();
+    db.free();
+
+    // Stringify and re-parse to verify round-trip
+    let text = doc.stringify();
+    let doc2 = toml.parse(text);
+    let db2 = doc2.get_field("database");
+    let h2 = db2.get_field("host");
+    println(h2.get_string());
+    h2.free();
+    db2.free();
+    doc2.free();
+
+    doc.free();
+    println("nested ok");
+}

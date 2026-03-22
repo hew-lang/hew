@@ -354,7 +354,7 @@ fn shutdown_orchestrate(drain_timeout: Duration) {
     };
 
     // Stop supervisors without holding the mutex.
-    for s in supervisors_to_stop.iter() {
+    for s in &supervisors_to_stop {
         if !s.0.is_null() {
             // SAFETY: supervisor was registered and is still valid.
             unsafe { crate::supervisor::hew_supervisor_stop(s.0) };
@@ -435,9 +435,11 @@ mod tests {
         reset_shutdown_phase();
 
         // Create a mock supervisor using the C ABI function.
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
         let mock_supervisor = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) }; // strategy=1, max_restarts=3, window_secs=60
 
         // Register the supervisor.
+        // SAFETY: mock_supervisor is a valid supervisor pointer returned from hew_supervisor_new.
         unsafe { hew_shutdown_register_supervisor(mock_supervisor) };
 
         // Put us in QUIESCE phase as if shutdown was initiated.
@@ -467,12 +469,15 @@ mod tests {
         reset_shutdown_phase();
 
         // Create a mock supervisor that was never registered.
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
         let mock_supervisor = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
 
         // This should not crash or deadlock.
+        // SAFETY: mock_supervisor is a valid pointer, unregistering is safe.
         unsafe { hew_shutdown_unregister_supervisor(mock_supervisor) };
 
         // Clean up the mock supervisor.
+        // SAFETY: mock_supervisor is a valid pointer that we own.
         unsafe { crate::supervisor::hew_supervisor_stop(mock_supervisor) };
     }
 
@@ -550,10 +555,7 @@ mod tests {
 
         // This test documents spawn behaviour but doesn't require failures.
         // If failures occur, our shutdown code should handle them via fallback.
-        println!(
-            "Thread spawn failures in stress test: {}/{}",
-            spawn_failures, attempts
-        );
+        println!("Thread spawn failures in stress test: {spawn_failures}/{attempts}");
     }
 
     // ---------------------------------------------------------------------------
@@ -564,12 +566,14 @@ mod tests {
     /// Run this manually after temporarily reverting the deadlock fix to verify
     /// the test actually catches the bug.
     #[test]
-    #[ignore] // Ignored by default since it's for manual verification
+    #[ignore = "Manually run to verify test detects deadlock bug"]
     fn sabotage_deadlock_test() {
         reset_shutdown_phase();
 
         // Create and register a supervisor.
+        // SAFETY: hew_supervisor_new is safe to call with valid parameters.
         let mock_supervisor = unsafe { crate::supervisor::hew_supervisor_new(1, 3, 60) };
+        // SAFETY: mock_supervisor is a valid supervisor pointer.
         unsafe { hew_shutdown_register_supervisor(mock_supervisor) };
 
         // Put us in QUIESCE phase.
@@ -594,7 +598,7 @@ mod tests {
     /// Run this manually after removing the spawn failure fallback to verify
     /// the test catches the infinite wait bug.
     #[test]
-    #[ignore] // Ignored by default since it's for manual verification
+    #[ignore = "Manually run to verify test catches spawn failure stall"]
     fn sabotage_spawn_failure_test() {
         reset_shutdown_phase();
 

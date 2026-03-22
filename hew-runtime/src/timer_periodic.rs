@@ -3,6 +3,7 @@
 //! Provides `hew_actor_schedule_periodic` which schedules a repeating
 //! self-send to an actor at a fixed interval using the runtime's timer wheel.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,6 +91,84 @@ fn start_ticker_thread(tw: *mut HewTimerWheel) {
 // Periodic timer context (stored as callback data)
 // ---------------------------------------------------------------------------
 
+/// Per-actor registry of active periodic timer contexts. Maps the actor's
+/// raw address (as `usize`) to the set of `PeriodicCtx` pointers for that
+/// actor, so `hew_actor_free` can cancel all timers before deallocation.
+static ACTOR_TIMERS: Mutex<Option<HashMap<usize, Vec<usize>>>> = Mutex::new(None);
+
+fn register_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
+    let mut guard = ACTOR_TIMERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard
+        .get_or_insert_with(HashMap::new)
+        .entry(actor as usize)
+        .or_default()
+        .push(ctx_ptr as usize);
+}
+
+fn unregister_timer(actor: *mut HewActor, ctx_ptr: *mut c_void) {
+    let mut guard = ACTOR_TIMERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(map) = guard.as_mut() {
+        if let Some(timers) = map.get_mut(&(actor as usize)) {
+            timers.retain(|&addr| addr != ctx_ptr as usize);
+            if timers.is_empty() {
+                map.remove(&(actor as usize));
+            }
+        }
+    }
+}
+
+/// Cancel all periodic timers for a given actor. Called from `hew_actor_free`
+/// before deallocation to prevent timer callbacks from sending to freed memory.
+pub(crate) fn cancel_all_timers_for_actor(actor: *mut HewActor) {
+    let timers = {
+        let mut guard = ACTOR_TIMERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .as_mut()
+            .and_then(|map| map.remove(&(actor as usize)))
+            .unwrap_or_default()
+    };
+    for ctx_addr in timers {
+        let ctx = ctx_addr as *mut PeriodicCtx;
+        // SAFETY: ctx was allocated by hew_actor_schedule_periodic and is
+        // still valid (the timer callback frees it only after seeing cancelled).
+        unsafe { &*ctx }.cancelled.store(true, Ordering::Release);
+    }
+}
+
+/// Returns true if the given timer handle has been cancelled.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by [`hew_actor_schedule_periodic`].
+#[cfg(test)]
+pub(crate) unsafe fn is_timer_cancelled(handle: *mut c_void) -> bool {
+    if handle.is_null() {
+        return true;
+    }
+    // SAFETY: caller guarantees `handle` is a valid PeriodicCtx pointer.
+    unsafe { &*(handle.cast::<PeriodicCtx>()) }
+        .cancelled
+        .load(Ordering::Acquire)
+}
+
+/// Returns the number of active (registered) periodic timers for an actor.
+#[cfg(test)]
+pub(crate) fn timer_count_for_actor(actor: *mut HewActor) -> usize {
+    let guard = ACTOR_TIMERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    guard
+        .as_ref()
+        .and_then(|map| map.get(&(actor as usize)))
+        .map_or(0, Vec::len)
+}
+
 /// Heap-allocated context for a periodic timer callback.
 struct PeriodicCtx {
     actor: *mut HewActor,
@@ -112,8 +191,9 @@ unsafe extern "C" fn periodic_timer_cb(data: *mut c_void) {
     // SAFETY: data is a valid PeriodicCtx allocated by schedule_periodic.
     let ctx = unsafe { &*(data.cast::<PeriodicCtx>()) };
 
-    if ctx.cancelled.load(Ordering::Relaxed) {
-        // Cancelled — free the context and stop re-scheduling.
+    if ctx.cancelled.load(Ordering::Acquire) {
+        // Cancelled — unregister from per-actor tracking, then free.
+        unregister_timer(ctx.actor, data);
         // SAFETY: ctx was Box::into_raw'd, reclaim it.
         let _ = unsafe { Box::from_raw(data.cast::<PeriodicCtx>()) };
         return;
@@ -169,6 +249,9 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     });
     let ctx_ptr = Box::into_raw(ctx).cast::<c_void>();
 
+    // Track this timer for per-actor cleanup in hew_actor_free.
+    register_timer(actor, ctx_ptr);
+
     // Schedule the first tick.
     // SAFETY: tw is valid, ctx_ptr is valid.
     unsafe {
@@ -190,7 +273,7 @@ pub unsafe extern "C" fn hew_actor_cancel_periodic(handle: *mut c_void) {
     }
     // SAFETY: handle is a valid PeriodicCtx pointer.
     let ctx = unsafe { &*(handle.cast::<PeriodicCtx>()) };
-    ctx.cancelled.store(true, Ordering::Relaxed);
+    ctx.cancelled.store(true, Ordering::Release);
 }
 
 /// Gracefully stop the ticker thread.
@@ -247,7 +330,8 @@ pub unsafe extern "C" fn hew_periodic_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU32;
+    use crate::internal::types::HewActorState;
+    use std::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64};
     use std::time::{Duration, Instant};
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -255,6 +339,37 @@ mod tests {
     // Mock timer callback that increments a counter
     unsafe extern "C" fn test_timer_cb(_data: *mut c_void) {
         TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn create_test_actor(id: u64) -> HewActor {
+        HewActor {
+            sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
+            id,
+            pid: id,
+            state: std::ptr::null_mut(),
+            state_size: 0,
+            dispatch: None,
+            mailbox: std::ptr::null_mut(),
+            actor_state: AtomicI32::new(HewActorState::Idle as i32),
+            budget: AtomicI32::new(0),
+            init_state: std::ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: std::ptr::null_mut(),
+            supervisor_child_index: 0,
+            priority: AtomicI32::new(1),
+            reductions: AtomicI32::new(0),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: std::ptr::null_mut(),
+        }
     }
 
     #[test]
@@ -374,5 +489,63 @@ mod tests {
 
         // Cleanup
         shutdown_ticker();
+    }
+
+    #[test]
+    fn cancel_all_timers_marks_contexts_cancelled() {
+        let mut actor = create_test_actor(50_100);
+        let actor_ptr = &raw mut actor;
+
+        // Manually create PeriodicCtx entries and register them (bypassing
+        // the timer wheel to avoid side-effects).
+        let ctx1 = Box::new(PeriodicCtx {
+            actor: actor_ptr,
+            msg_type: 0,
+            interval_ms: 100,
+            wheel: ptr::null_mut(),
+            cancelled: AtomicBool::new(false),
+        });
+        let ctx1_ptr = Box::into_raw(ctx1).cast::<c_void>();
+        register_timer(actor_ptr, ctx1_ptr);
+
+        let ctx2 = Box::new(PeriodicCtx {
+            actor: actor_ptr,
+            msg_type: 1,
+            interval_ms: 200,
+            wheel: ptr::null_mut(),
+            cancelled: AtomicBool::new(false),
+        });
+        let ctx2_ptr = Box::into_raw(ctx2).cast::<c_void>();
+        register_timer(actor_ptr, ctx2_ptr);
+
+        assert_eq!(timer_count_for_actor(actor_ptr), 2);
+
+        // Act: cancel all timers for this actor.
+        cancel_all_timers_for_actor(actor_ptr);
+
+        // Both contexts should be cancelled.
+        // SAFETY: ctx1_ptr is still valid — only the `cancelled` flag changed.
+        assert!(unsafe { is_timer_cancelled(ctx1_ptr) });
+        // SAFETY: ctx2_ptr is still valid — only the `cancelled` flag changed.
+        assert!(unsafe { is_timer_cancelled(ctx2_ptr) });
+
+        // Registry should be empty for this actor.
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
+
+        // Clean up the leaked boxes.
+        // SAFETY: We own these allocations.
+        unsafe {
+            let _ = Box::from_raw(ctx1_ptr.cast::<PeriodicCtx>());
+            let _ = Box::from_raw(ctx2_ptr.cast::<PeriodicCtx>());
+        }
+    }
+
+    #[test]
+    fn cancel_all_timers_no_timers_does_not_panic() {
+        let mut actor = create_test_actor(50_200);
+        let actor_ptr = &raw mut actor;
+        // Should be a no-op, not panic.
+        cancel_all_timers_for_actor(actor_ptr);
+        assert_eq!(timer_count_for_actor(actor_ptr), 0);
     }
 }

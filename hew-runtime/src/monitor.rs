@@ -159,8 +159,13 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
         }
 
         let monitoring_actor = monitoring_actor_addr as *mut HewActor;
-        // SAFETY: monitoring_actor was stored from a valid HewActor pointer.
-        // The actor might have been freed, but we handle null mailbox gracefully.
+
+        // Guard: skip actors that have already been freed.
+        if !crate::actor::is_actor_live(monitoring_actor) {
+            continue;
+        }
+
+        // SAFETY: monitoring_actor is live (checked above).
         let monitoring_actor_ref = unsafe { &*monitoring_actor };
         let mailbox = monitoring_actor_ref.mailbox.cast::<mailbox::HewMailbox>();
 
@@ -208,6 +213,48 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     }
 }
 
+/// Remove all monitor entries for a dying actor — both as a monitored target
+/// and as a monitoring watcher — from all shards.
+///
+/// Called from `hew_actor_free` before deallocation to prevent
+/// `notify_monitors_on_death` from dereferencing freed memory.
+pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
+    let actor_usize = actor_addr as usize;
+
+    // Remove any monitors-on-this-actor entry from its shard.
+    let own_shard = get_shard_index(actor_id);
+    {
+        let mut shard = MONITOR_TABLE[own_shard].write_or_recover();
+        if let Some(monitors) = shard.monitors.remove(&actor_id) {
+            for m in &monitors {
+                shard.ref_to_monitor.remove(&m.ref_id);
+            }
+        }
+    }
+
+    // Scan all shards and remove this actor's address from other actors'
+    // monitor watcher lists (where this actor was the watcher).
+    for shard_rw in MONITOR_TABLE.iter() {
+        let mut shard = shard_rw.write_or_recover();
+        let mut refs_to_remove = Vec::new();
+        for monitor_list in shard.monitors.values_mut() {
+            monitor_list.retain(|entry| {
+                if entry.monitoring_actor == actor_usize {
+                    refs_to_remove.push(entry.ref_id);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        // Clean up empty entries and ref lookups.
+        shard.monitors.retain(|_id, list| !list.is_empty());
+        for ref_id in refs_to_remove {
+            shard.ref_to_monitor.remove(&ref_id);
+        }
+    }
+}
+
 /// Message data for DOWN system messages.
 #[repr(C)]
 #[derive(Debug)]
@@ -218,6 +265,30 @@ struct DownMessage {
     ref_id: u64,
     /// Reason code (`error_code` from `hew_actor_trap`).
     reason: i32,
+}
+
+/// Returns true if any monitor entries reference the given actor (as monitored
+/// target by ID or as watcher by address).
+#[cfg(test)]
+pub(crate) fn has_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) -> bool {
+    let actor_usize = actor_addr as usize;
+    let own_shard = get_shard_index(actor_id);
+    {
+        let shard = MONITOR_TABLE[own_shard].read().unwrap();
+        if shard.monitors.contains_key(&actor_id) {
+            return true;
+        }
+    }
+    // Check if this actor appears as a watcher in any shard.
+    for shard_rw in MONITOR_TABLE.iter() {
+        let shard = shard_rw.read().unwrap();
+        for monitors in shard.monitors.values() {
+            if monitors.iter().any(|m| m.monitoring_actor == actor_usize) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -382,5 +453,63 @@ mod tests {
         // Demonitor with invalid ref_id should not panic
         hew_actor_demonitor(0);
         hew_actor_demonitor(99999);
+    }
+
+    #[test]
+    fn remove_all_monitors_clears_target_and_watcher_entries() {
+        // Use unique IDs (40xxx) to avoid collisions.
+        let mut watcher = create_test_actor(40_100);
+        let mut target = create_test_actor(40_200);
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
+
+        // SAFETY: Valid stack-allocated test actors.
+        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        assert_ne!(ref_id, 0);
+
+        // Precondition: target has monitors, watcher appears as a watcher.
+        assert!(has_monitors_for_actor(40_200, target_ptr));
+
+        // Act: remove all monitor entries for the target.
+        remove_all_monitors_for_actor(40_200, target_ptr);
+
+        // Target's own monitored-entry should be gone.
+        assert!(
+            !has_monitors_for_actor(40_200, target_ptr),
+            "target should have no monitor entries after cleanup"
+        );
+    }
+
+    #[test]
+    fn remove_all_monitors_as_watcher_clears_watcher_entries() {
+        // Unique IDs (41xxx).
+        let mut watcher = create_test_actor(41_100);
+        let mut target = create_test_actor(41_200);
+        let watcher_ptr = &raw mut watcher;
+        let target_ptr = &raw mut target;
+
+        // SAFETY: Valid stack-allocated test actors.
+        let ref_id = unsafe { hew_actor_monitor(watcher_ptr, target_ptr) };
+        assert_ne!(ref_id, 0);
+
+        // Act: remove all entries where watcher appears (as if freeing watcher).
+        remove_all_monitors_for_actor(41_100, watcher_ptr);
+
+        // Watcher's address should be purged from target's monitor list.
+        let shard = get_shard_index(41_200);
+        let table = MONITOR_TABLE[shard].read().unwrap();
+        let remaining = table.monitors.get(&41_200);
+        assert!(
+            remaining.is_none() || remaining.unwrap().is_empty(),
+            "target's monitor list should no longer contain the freed watcher"
+        );
+    }
+
+    #[test]
+    fn remove_all_monitors_no_monitors_does_not_panic() {
+        let actor = create_test_actor(40_300);
+        let ptr = (&raw const actor).cast_mut();
+        remove_all_monitors_for_actor(40_300, ptr);
+        assert!(!has_monitors_for_actor(40_300, ptr));
     }
 }
